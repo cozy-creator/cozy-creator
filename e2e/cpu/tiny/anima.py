@@ -206,26 +206,34 @@ def _hole(folder: Path) -> Path:
 
 _FOX = _shared.picture("fox", 160, 128)
 _DEPTH = _shared.picture("depth", 128, 128)
-_SMALL: dict[str, Json] = {"prompt": "masterpiece, a red fox in the snow", "steps": 2, "seed": 7, "megapixels": 1}
-_MENTION: dict[str, Json] = {"text": "masterpiece, <fox> in the snow", "references": [{"key": "fox", "type": "image"}]}
+def _prompt(text: str, *keys: str) -> dict[str, Json]:
+    """A `Prompt[Image]` (0.9.0's prompt and instructions): its words and the pictures they mention."""
+    return {"text": text, "references": [{"key": key, "type": "image"} for key in keys]}
+
+
+_SMALL: dict[str, Json] = {"prompt": _prompt("masterpiece, a red fox in the snow"), "steps": 2, "seed": 7, "megapixels": 1}
+_BOX: dict[str, Json] = {"instructions": _prompt("a red fox in the snow"), "megapixels": "1", "seed": 7}
 
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": _SMALL, "check": size(1024, 1024)},
     {"entry": "generate", "name": "wide", "payload": {**_SMALL, "aspect_ratio": "16:9", "negative_prompt": "blurry"}},
     {"entry": "generate", "name": "step-cache", "payload": {**_SMALL, "steps": 4, "first_block_cache": 0.5}},
-    {"entry": "image", "name": "tool", "payload": {"instructions": "a red fox in the snow", "megapixels": "1", "seed": 7}},
+    {"entry": "image", "name": "tool", "payload": _BOX},
     # Image to image: the canvas the start picture's shape at 1 MP, half the schedule redrawing it.
     {"entry": "generate", "name": "image-to-image", "payload": {**_SMALL, "steps": 4, "strength": 0.5},
      "files": {"image": _FOX}, "check": size(1152, 928)},
-    {"entry": "image", "name": "edit", "payload": {"instructions": "a red fox in the snow", "megapixels": "1", "seed": 7,
-                                                   "strength": 0.5}, "files": {"image": _FOX}, "check": size(1152, 928)},
+    {"entry": "image", "name": "edit", "payload": {**_BOX, "strength": 0.5}, "files": {"image": _FOX},
+     "check": size(1152, 928)},
     # The inpaint map's area redrawn from noise, the rest put back each step; its adapter off.
     {"entry": "generate", "name": "inpaint-area", "payload": {**_SMALL, "control": [{"kind": "inpaint", "strength": 0.0}]},
      "files": {"control.0.image": _hole}, "check": size(1024, 1024)},
-    {"entry": "generate", "name": "reference", "payload": {**_SMALL, "prompt": _MENTION},
+    {"entry": "generate", "name": "reference", "payload": {**_SMALL, "prompt": _prompt("masterpiece, <fox> in the snow", "fox")},
      "files": {"prompt.references.0.file": _FOX}, "check": size(1024, 1024)},
     {"entry": "generate", "name": "depth", "payload": {**_SMALL, "control": [{"kind": "depth"}]},
      "files": {"control.0.image": _DEPTH}, "check": size(1024, 1024)},
+    {"entry": "generate", "name": "controls",
+     "payload": {**_SMALL, "control": [{"kind": "pose"}, {"kind": "lineart"}, {"kind": "sketch", "strength": 0.5}]},
+     "files": {f"control.{index}.image": _DEPTH for index in range(3)}, "check": size(1024, 1024)},
     {"entry": "generate", "name": "inpaint", "payload": {**_SMALL, "control": [{"kind": "inpaint"}]},
      "files": {"control.0.image": _hole}, "check": size(1024, 1024)},
     quantize("circlestone-labs/anima@1.0.0", "fp8", "anima", "anima@0.6.1"),
