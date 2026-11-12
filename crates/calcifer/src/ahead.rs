@@ -15,9 +15,8 @@ use tracing::warn;
 
 use crate::{machines::Machines, project::Project};
 
-/// The prefixes the machine's runs of a list take (`tensord::ahead`).
+/// The prefix the machine's runs of an upcoming list take (`tensord::ahead`).
 pub(crate) const UPCOMING: &str = "cozy:upcoming:";
-pub(crate) const PREPARE: &str = "cozy:prepare:";
 
 /// One job a walk planned on a machine, as it is to be ready there.
 #[derive(Clone)]
@@ -105,8 +104,7 @@ impl Lists {
             }
             lock(&self.sent).insert(name.clone(), now);
             let hubs: Vec<String> = upcoming.iter().map(|listed| listed.hub.clone()).chain(prepare.iter().map(|(hub, _)| hub.clone())).collect();
-            let (upcoming, prepare): (Vec<(String, v1::Ahead)>, Vec<(String, v1::Ahead)>) =
-                (upcoming.iter().map(|listed| (listed.hub.clone(), listed.item.clone())).collect(), prepare);
+            let upcoming: Vec<(String, v1::Ahead)> = upcoming.iter().map(|listed| (listed.hub.clone(), listed.item.clone())).collect();
             let machines = machines.clone();
             machines.clone().spawn(async move {
                 if let Err(why) = put(&machines, &name, hubs, upcoming, prepare).await {
