@@ -70,9 +70,10 @@
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beat-body {
   gap: 12px;
 }
-/* A beat's words: six lines to start, growing with them (cl-903). */
-.focus-viewport .focus-card.focus-parameter-tool .prominent .beat .mention-text {
-  min-height: calc(6 * 30px + 28px);
+/* A beat's words: six lines to start, growing with them (cl-903), its pictures behind them or not. */
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat .mention-text,
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat .video-reference-field .mention-text {
+  min-height: calc(6 * 1.55em + 32px);
   max-height: none;
   font-size: 20px;
 }
