@@ -637,8 +637,8 @@ export type DevBuild = { sha256: Digest, name: string, version?: string | null, 
 export type Digest = string;
 
 /**
- * A model's display metadata as set at the Hub: shown in the model browser, never applied (a
- * run's LoRA strength stays 1.0).
+ * A model's display metadata as set at the Hub: shown in the model browser; a LoRA given without a
+ * strength runs at its recommended one.
  */
 export type Displayed = { model: string, trigger: string | null, strength: number | null,
 /**
@@ -783,7 +783,7 @@ lanes: Array<string>, private: boolean,
  */
 author: ModelAuthor | null,
 /**
- * Its owner's recommended LoRA strength, when provided; not applied by a render automatically.
+ * Its owner's recommended LoRA strength, when provided: what it runs at when given without one.
  */
 strength?: number | null,
 /**
@@ -1560,7 +1560,7 @@ model_kind?: ModelKind | null, created_at: string,
  */
 source: string | null, author: ModelAuthor | null,
 /**
- * Words a LoRA's prompt uses, and its recommended strength (a run's default stays 1.0).
+ * Words a LoRA's prompt uses, and its recommended strength: what it runs at when given without one.
  */
 trigger: string | null, strength: number | null,
 /**

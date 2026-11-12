@@ -1,7 +1,11 @@
 //! `/v1/models`: the Hub's model catalog, and a model's family, releases and deletion as a member
 //! of its org. Signed in, a search also lists the caller's own unreleased (private) models and a
 //! model lists its checkpoints to its org's members.
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use futures_util::{StreamExt as _, stream};
 
@@ -521,3 +525,43 @@ mod model_visibility_tests {
         assert!(row.release.is_none());
     }
 }
+
+/// How long a LoRA's recommended strength, as read from its card, stands: its owner can change it.
+const RECOMMENDED_FOR: Duration = Duration::from_secs(600);
+
+static RECOMMENDED: OnceLock<Mutex<HashMap<String, (Instant, Option<f64>)>>> = OnceLock::new();
+
+/// Each LoRA in `models` given without a strength, at its recommended one (its card's on `hub`), else 1: the one
+/// default for `cozy run --lora <ref>`, a box's LoRAs and a warm set. A source, a local alias or an unread card takes 1.
+pub(crate) async fn recommended(hubs: &crate::rentals::Hubs, hub: &str, models: &mut [::api::machine::ModelChoice]) {
+    let hub = if hub.trim().is_empty() { hubs.default_origin() } else { hub.trim().to_owned() };
+    let cache = RECOMMENDED.get_or_init(Default::default);
+    for adapter in models.iter_mut().flat_map(|choice| choice.adapters.iter_mut()).filter(|a| a.scale.is_empty()) {
+        let mut strength = None;
+        if let (true, Some((org, name))) = (adapter.source.is_empty(), adapter.model.split_once('/'))
+            && org != "local"
+            && !name.contains('/')
+        {
+            let key = format!("{hub} {org}/{name}");
+            let held = cache.lock().expect("recommended lock").get(&key).filter(|(at, _)| at.elapsed() < RECOMMENDED_FOR).map(|(_, s)| *s);
+            strength = match held {
+                Some(strength) => strength,
+                None => match hubs.reader(&hub) {
+                    Ok(client) => match client.get_model(org, name).await {
+                        Ok(card) => {
+                            cache.lock().expect("recommended lock").insert(key, (Instant::now(), card.model.strength));
+                            card.model.strength
+                        }
+                        Err(why) => {
+                            tracing::debug!("{org}/{name}: its recommended strength is unread: {why}");
+                            None
+                        }
+                    },
+                    Err(_) => None,
+                },
+            };
+        }
+        adapter.scale = strength.and_then(|s| refs::strength(&s.to_string()).ok()).unwrap_or_else(|| "1".to_owned());
+    }
+}
+

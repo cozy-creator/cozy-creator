@@ -326,6 +326,8 @@ export class CanvasStore {
   openHere: (name: string) => void = () => {}
   /** Each of these again beside where they stand, selected: Ctrl+D. */
   duplicate: (names: string[]) => void = () => {}
+  /** Files from the computer, each a box on the canvas, beside `near`: `then` hears each one's name once it's there. */
+  placeFiles: (files: File[], then: (name: string) => void, near?: string) => void = () => {}
   /** The box to open on its next take's words: an image tool was just put on its pictures. */
   writeOnOpen: string | null = null
   /** Fits the canvas to the box being worked on, and all around it. `only`: only if something no longer fits. */
@@ -1461,6 +1463,29 @@ export class CanvasStore {
     })
   }
 
+  /** An Edit's film joined here, free, from its cut as it stands now, as `cozy render` would: its next version, unless that cut has one. What's
+   *  looked at stays as it is (cl-957). */
+  join(name: string) {
+    const key = this.resolveName(name)
+    const asset = this.views.get(key)?.asset
+    if (!asset?.timeline || !this.projectId) return
+    const id = this.ids.get(key)
+    const settle = (asked?: number) => this.patchId(id, { asked })
+    this.patch(key, { asked: NOT_YET })
+    const once = `join-${crypto.randomUUID()}`
+    this.act(key, {
+      send: (served, write) => this.client.render(this.projectId!, [served], ["local"], once, {}, write.once),
+      done: (answer) => {
+        settle(answer ? nextProjectOrder() : undefined)
+        this.readAfter([id])
+      },
+      refused: (error) => {
+        settle()
+        say(`Couldn't join ${name}`, error)
+      },
+    })
+  }
+
   /** How this computer would do it, by Calcifer, once what's typed is in: poorly, and nothing said for that, the box asks; else it renders. */
   private async askFirst(key: string, also: Also, saved: Promise<boolean>) {
     const id = this.ids.get(key)
@@ -2423,7 +2448,10 @@ export class CanvasStore {
       const clips = asset.timeline.tracks[0]?.clips ?? []
       const taken = given.flatMap((name) => clipOf(this, name, asset.timeline?.fps ?? 24) ?? [])
       if (taken.length < given.length) say("Only video and stills go in an Edit for now")
-      if (taken.length) void this.setFields(key, { timeline: wire([...clips, ...taken]) })
+      if (!taken.length) return
+      void this.setFields(key, { timeline: wire([...clips, ...taken]) })
+      // The cut changed: its film joined after the write, as the editor does (cl-957).
+      this.join(key)
       return
     }
     // A mention goes in its first prompt, at the top or in its first row. Only a box with no prompt has a slot filled by a drop on it.

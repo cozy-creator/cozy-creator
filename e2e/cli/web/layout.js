@@ -307,6 +307,8 @@ function audit({ floor, fitted = true }) {
 /** Where nothing is drawn, the pointer finds the canvas: no box, column, panel or wrapper takes it unseen. Each point of `around` (else the
  *  window) `step` pixels apart. Self-contained: it runs in the page. */
 function emptyHits({ around, step }) {
+  // Focus covers the canvas, and a press on its background leaves it (cl-893): no point of it is the canvas's.
+  if (document.querySelector('[data-focused-asset]')) return [];
   const alpha = (color) => {
     const m = color.match(/rgba?\(([^)]+)\)/);
     const parts = m ? m[1].split(/[ ,/]+/).filter(Boolean) : [];
@@ -735,9 +737,8 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
       if (beforeAudit) await beforeAudit();
       seen.looks = (seen.looks ?? 0) + 1;
       const said = await page.evaluate(audit, { floor: FLOOR, fitted });
-      // The pointer where nothing's drawn, around a box worked on or all over. Not under Focus: it's over the canvas, which takes no press
-      // while it's open (cl-893, CanvasHost's paneClicked), and a press on its own background leaves it (web-dismiss).
-      if ((state === 'rest' || /^(open|writing|zoom|fit)-/.test(state)) && !(await page.locator('.focus-viewport').count())) {
+      // The pointer where nothing's drawn, around a box worked on or all over.
+      if (state === 'rest' || /^(open|writing|zoom|fit)-/.test(state)) {
         const block = await page.evaluate(() => {
           const rects = [...document.querySelectorAll('.card.here, .card.here > .here-side, .card.here > .here-under')].map((el) => el.getBoundingClientRect()).filter((r) => r.width);
           return rects.length ? [Math.min(...rects.map((r) => r.left)) - 60, Math.min(...rects.map((r) => r.top)) - 60, Math.max(...rects.map((r) => r.right)) + 60, Math.max(...rects.map((r) => r.bottom)) + 60] : null;

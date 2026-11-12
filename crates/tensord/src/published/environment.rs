@@ -251,8 +251,11 @@ impl Publisher {
                             let why = format!("its requirements refuse this machine's ({})", ranges.join("; "));
                             return Err(self.unspoken(env, project, &theirs, &why, true));
                         }
-                        fallback.push(format!("its lock's {} can't speak this machine's executor protocol: it runs on this machine's {}; {}",
-                            shown(&theirs), shown(&self.machine_pair()), relock(project, false)));
+                        // The open RC's Runtime runs released packages as a matter of course (cl-952): nothing to say.
+                        if !self.machine_pair().get("cozy-runtime").is_some_and(|runtime| rc_build(runtime)) {
+                            fallback.push(format!("its lock's {} can't speak this machine's executor protocol: it runs on this machine's {}; {}",
+                                shown(&theirs), shown(&self.machine_pair()), relock(project, false)));
+                        }
                         fallback.extend(checked(&found));
                     }
                     Ok(found) => fallback.extend(checked(&found)),
@@ -388,7 +391,7 @@ impl Publisher {
             Err(("package_installation_uv_failed", detail)) => return Ok(Err(crate::triage::ends(&detail, 1000))),
             done => done?,
         }
-        Ok(Ok(self.check(py, job)?.difference(&before).cloned().collect()))
+        Ok(Ok(self.check(py, job)?.difference(&before).filter(|line| !rc_admitted(line)).cloned().collect()))
     }
 
     /// Finds a published version for each of `floors` and for what a prerelease's wheel requires of
@@ -840,6 +843,19 @@ fn same_series(a: &str, b: &str) -> bool {
 /// Whether release `a` is of a later series than `b`.
 fn later_series(a: &str, b: &str) -> bool {
     matches!((Version::from_str(a), Version::from_str(b)), (Ok(a), Ok(b)) if series(&a) > series(&b))
+}
+
+/// Whether uv's finding `line` (`The package `sdxl` requires `cozy-runtime<0.46,>=0.45.0`, but `0.47.0.dev2260+g…` is
+/// installed`) is a cap the open RC's Runtime goes over (`api::release::runs`, cl-952): the RC runs released packages to try them.
+fn rc_admitted(line: &str) -> bool {
+    let mut parts = line.split('`');
+    let (Some(required), Some(installed)) = (parts.nth(3), parts.nth(1)) else { return false };
+    SDK.iter().any(|name| api::release::required([required], name).is_some_and(|versions| api::release::runs(&versions, installed)))
+}
+
+/// Whether a Runtime is the open RC's build: a dev release of the minor it makes (`0.47.0.dev2260+g1a2b3c4d`, cl-952).
+fn rc_build(runtime: &str) -> bool {
+    Version::from_str(runtime).is_ok_and(|version| version.is_dev() && !version.is_pre() && !version.is_post())
 }
 
 /// What uv's check found that the pair added, as the run's warning.

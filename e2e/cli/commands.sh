@@ -85,9 +85,12 @@ cozy --json model show zhengpeng7/birefnet --lane "$lane" > "$OUT/model-show-lan
   && J --arg lane "$lane" '(.lanes | length) == 1 and .lanes[0].lane == $lane' "$OUT/model-show-lane.json" || check "model show --lane $lane: not that one lane"
 cozy model show zhengpeng7/birefnet > "$OUT/model-show.txt" 2>&1 && grep -Eq '^checkpoint +sha256:' "$OUT/model-show.txt" \
   || check "model show: no checkpoint line: $(head -c 300 "$OUT/model-show.txt")"
-lora=$(cozy --json lora ls --limit 1 | jq -r '.models[0].model // empty') || true
+# The H3 LoRA isolated.sh seeds as musubi-tuner writes it: lora_down/lora_up and .alpha of one block.
+lora=alissonerdx/minimax-h3-vfx-edit
+cozy --json lora ls --limit 100 > "$OUT/lora-ls.json" && J --arg m "$lora" 'any(.models[]; .model == $m)' "$OUT/lora-ls.json" \
+  || check "lora ls: $lora not listed: $(head -c 300 "$OUT/lora-ls.json")"
 cozy --json lora show "$lora" > "$OUT/lora-show.json" && J 'any(.lanes[].components[]; .lora.modules > 0)' "$OUT/lora-show.json" \
-  || check "lora show ${lora:-<none listed>}: no component with LoRA modules: $(head -c 300 "$OUT/lora-show.json")"
+  || check "lora show $lora: no component with LoRA modules: $(head -c 300 "$OUT/lora-show.json")"
 lora_lane=$(jq -r '.lanes[0].lane // empty' "$OUT/lora-show.json") || true
 cozy --json lora show "$lora" --lane "$lora_lane" > "$OUT/lora-show-lane.json" && J '(.lanes | length) == 1' "$OUT/lora-show-lane.json" \
   || check "lora show $lora --lane $lora_lane: not one lane"
@@ -635,6 +638,47 @@ if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
 fi
 cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
+machine_ready
+}
+
+# cl-952: a machine runs only a package release its Runtime can run. Publishing refused isolated.sh's e2e-lies, whose floor
+# cozy-runtime>=0.44 lacks the `call` it imports (minimax-h3 0.12.0rc3 declared 0.45 and imported the RC's `preview`: run
+# 47791). e2e-floor 0.2.0 needs cozy-runtime>=0.45.1: local held on 0.45.0 by hand refuses it, naming `cozy machine update
+# local`, and runs 0.1.0 named; with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this shard's
+# isolated Hub: e2e.yaml), which holds nothing, and the unversioned run then moves local to the newest 0.45 release and runs
+# 0.2.0, saying so. e2e-capped 0.2.0 (<0.45.1) then runs as 0.1.0: a machine moves only up.
+runtime_floor() {
+step "a package release runs on a Runtime that meets its floor: publishing refuses a dishonest one; a held machine refuses, another upgrades (cl-952)"
+[ -n "$LOCAL" ] || return 0
+[ -n "${E2E_FLOOR:-}" ] || { check "runtime floor: isolated.sh published no e2e-floor: ${E2E_HELD_REFUSED:-not seeded}"; return; }
+grep -q '"runtime_floor_lacks"' "$E2E_LIES" && grep -q 'call from cozy_runtime.author' "$E2E_LIES" && grep -q 'cozy-runtime>=0\.45' "$E2E_LIES" \
+  || check "runtime floor: publishing e2e-lies (cozy-runtime>=0.44, imports call) wasn't refused naming call and cozy-runtime>=0.45: $(tail -c 400 "$E2E_LIES")"
+local code=0
+cozy --json machine update local --runtime 0.45.0 -y > "$OUT/floor-hold.json" 2>&1 \
+  || { check "runtime floor: local refused Runtime 0.45.0: $(tail -c 300 "$OUT/floor-hold.json")"; return; }
+machine_ready
+in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=held --on local > "$OUT/floor-held.ndjson" 2> "$OUT/floor-held.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-held.ndjson" "$OUT/floor-held.err" && grep -q 'cozy machine update local' "$OUT/floor-held.ndjson" "$OUT/floor-held.err" \
+  || check "runtime floor: held on 0.45.0, e2e-floor (0.2.0 needs >=0.45.1) wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 400 "$OUT/floor-held.ndjson") $(tail -c 300 "$OUT/floor-held.err")"
+cell floor-held-older "$E2E_FLOOR/relay@0.1.0" "text=asked 0.1.0" || true
+cozy --json machine update local -y > "$OUT/floor-unhold.json" 2>&1 \
+  || { check "runtime floor: cozy machine update local (its Hub's pin) failed: $(tail -c 300 "$OUT/floor-unhold.json")"; return; }
+machine_ready
+jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "runtime floor: off its hold, local runs $(jq -r .status.runtime "$OUT/machine.json"), not its Hub's pinned 0.45.0"
+in_project "$RUN_PROJECT" run "$E2E_FLOOR/relay" text=upgrade --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
+  || check "runtime floor: the unversioned e2e-floor run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
+grep -q "upgrading local.s Runtime 0.45.0 → 0.45.[1-9][0-9]* for .*e2e-floor 0.2.0" "$OUT/floor-upgrade.err" \
+  || check "runtime floor: the run didn't say it upgrades local's Runtime for e2e-floor 0.2.0: $(tail -c 400 "$OUT/floor-upgrade.err")"
+machine_ready
+jq -e '.status.runtime | test("^0\\.45\\.([1-9]|[1-9][0-9])$")' "$OUT/machine.json" > /dev/null \
+  || check "runtime floor: after its upgrade local runs $(jq -r .status.runtime "$OUT/machine.json"), not a 0.45 release from 0.45.1"
+# e2e-capped 0.2.0 needs cozy-runtime<0.45.1: local never moves down, so it runs 0.1.0 and says why.
+in_project "$RUN_PROJECT" run "$E2E_CAPPED/relay" text=capped --on local > "$OUT/floor-capped.out" 2> "$OUT/floor-capped.err" \
+  || check "runtime floor: the unversioned e2e-capped run failed: $(tail -c 400 "$OUT/floor-capped.err")"
+grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can take does: this run takes 0.1.0" "$OUT/floor-capped.err" \
+  || check "runtime floor: e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
+cozy --json machine update local ${CAND_RT:+--runtime "$CAND_RT"} ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/floor-back.json" 2>&1 \
+  || check "runtime floor: local refused its candidates again: $(tail -c 300 "$OUT/floor-back.json")"
 machine_ready
 }
 

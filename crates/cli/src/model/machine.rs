@@ -39,6 +39,10 @@ fn made(ctx: &Context, run: &Run) {
     if let Some(added) = model["added"].as_array().filter(|a| !a.is_empty()) {
         record = record.field("added", added.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "));
     }
+    if let Some(adapters) = model["adapter"].as_object().filter(|a| !a.is_empty()) {
+        let shown: Vec<String> = adapters.iter().map(|(c, a)| format!("{c}: {}", a.as_str().unwrap_or_default())).collect();
+        record = record.field("adapter", shown.join(", "));
+    }
     // A Hub checkpoint made complete: what it took from its base.
     let took: Vec<&str> = (["components", "files"].iter())
         .flat_map(|key| model["took"][key].as_array().into_iter().flatten())

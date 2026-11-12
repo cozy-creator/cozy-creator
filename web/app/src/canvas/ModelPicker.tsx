@@ -4,7 +4,6 @@ import { createPortal } from "react-dom"
 import type { FoundModel, ModelDetail, Tool, ToolModel } from "../api/calcifer"
 import { useConnection } from "../app/Connection"
 import { Icon } from "../ui/Icon"
-import { say } from "../ui/notes"
 import { NSFW, isNsfw, useShowNsfw } from "../ui/Tags"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
@@ -15,7 +14,7 @@ type Entry = Record<string, unknown>
 type Kind = "weights" | "lora"
 /** One choice the picker offers: `slot` is its key in a box's `models`, `param` the parameter it fills. */
 export type PickerSlot = ToolModel & { param: string }
-type PickerModel = FoundModel & { strength?: number | null; description?: string | null }
+type PickerModel = FoundModel & { description?: string | null }
 const entryOf = (value: unknown): Entry => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Entry : {}
 const adaptersOf = (value: unknown): unknown[] => Array.isArray(value) ? value : []
 const identityOf = (ref: string) => ref.split("@")[0]
@@ -214,14 +213,9 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
     if (restricted) delete rest.lora
     return rest
   })
-  const addLora = async (model: PickerModel) => {
-    let recommended = model.strength
-    if (recommended === undefined) {
-      try { recommended = (await client.model(model.model)).strength }
-      catch (error) { say("Couldn't read the LoRA's default strength", error); return }
-    }
-    const strength = recommended
-    const adapter = { ref: model.model, ...(typeof strength === "number" && Number.isFinite(strength) ? { strength } : {}) }
+  // Without a strength it runs at its recommended one, which Calcifer reads from its card.
+  const addLora = (model: PickerModel) => {
+    const adapter = { ref: model.model }
     changeSlot(store, name, slot, (held) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model)) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }))
   }
   return <section className="model-picker-slot" data-model-slot={slot.slot}>
@@ -255,7 +249,7 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
       {legacy.length > 0 && <div className="model-picker-legacy"><h4>Existing LoRAs</h4><AdapterList name={name} slot={null} families={slot.family ? [slot.family] : []} adapters={legacy} /></div>}
       <h4>Available LoRAs</h4>
       <ul className="model-picker-choices" aria-label={`Add LoRA for ${slot.slot}`}>
-        {availableLoras.map((model) => <li key={model.model}><button type="button" className="model-picker-lora-option" onClick={() => void addLora(model)}><span><span>{modelChoiceLabel(model.model)}</span><small className="model-picker-lora-description" title={descriptionOf(model)}>{descriptionOf(model)}</small></span></button></li>)}
+        {availableLoras.map((model) => <li key={model.model}><button type="button" className="model-picker-lora-option" onClick={() => addLora(model)}><span><span>{modelChoiceLabel(model.model)}</span><small className="model-picker-lora-description" title={descriptionOf(model)}>{descriptionOf(model)}</small></span></button></li>)}
       </ul>
       {!availableLoras.length && !isPending && <p className="muted model-picker-empty">No compatible LoRAs found.</p>}
     </>}
@@ -286,7 +280,7 @@ function Adapter({ value, families, slot, onRemove, onStrength }: { value: unkno
     enabled: Boolean(ref), staleTime: 60_000, retry: false,
   })
   const valid = Boolean(data?.kind === "lora" && data.family && families.includes(data.family) && identityOf(ref) !== "alibaba-pai/qwen-image-2.1-fun-acc" && (!slot || adapterFits(data, slot)))
-  const strength = held.strength == null ? 1 : typeof held.strength === "number" && Number.isFinite(held.strength) ? held.strength : null
+  const strength = held.strength == null ? data?.strength ?? 1 : typeof held.strength === "number" && Number.isFinite(held.strength) ? held.strength : null
   const [draft, setDraft] = useState<string | null>(null)
   const commit = () => {
     if (draft !== null && draft.trim() && Number.isFinite(Number(draft))) onStrength(Number(draft))

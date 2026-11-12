@@ -41,13 +41,17 @@ export const HEAD = 32
 
 /**
  * What hangs off a box at rest, its name over it and its tool, shape and render's lines under it (cl-932), is drawn at the canvas's scale
- * like the rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
+ * like the rest of it. A box keeps that room clear, once: its name never lies on the box above, nor what hangs under one on the box below,
+ * and boxes stacked are as close as boxes side by side, clear's gap apart (Paul, 11-12: "allow for tiles to get a little closer on the top
+ * and bottoms").
  */
-const HANG = 2
-// As app.css draws them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
+const HANG = 1
+// As app.css draws them: tokens.css's title and body steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
-const SMALL_LINE = 10.5 * 1.35 * 1.25
+const BODY_LINE = 12.5 * 1.35 * 1.25
 const CLOSE = 30
+/** A selected box's ring, outside its picture, that the line under it starts past. */
+const RING = 9
 /** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
 const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
 /** A render's two lines (RunFace, on lines of 1.35), with the gap over them. */
@@ -57,7 +61,7 @@ const RUN = 2 * 10.5 * 1.35 * 1.35 + 4
  *  below it rises into. */
 export function underOf(view: ElementView): number {
   const asset = view.asset
-  const line = asset && (asset.tool || asset.kind !== "text") ? SMALL_LINE + 2 : 0
+  const line = asset && (asset.tool || asset.kind !== "text") ? RING + BODY_LINE + 2 : 0
   return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
 const ENTITY_DESC = 60
@@ -79,7 +83,7 @@ export const faceOf = (view: ElementView): "edit" | "media" => view.asset?.kind 
 /** No box is narrower: its corner stops here, and nothing shrinks one past it. */
 export const NARROWEST = 160
 
-export const widthFor = (view: ElementView | undefined): number => (view?.asset?.timeline ? 720 : view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
+export const widthFor = (view: ElementView | undefined): number => (view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
 
 /** `16:9` as a number, if it's one. */
 export function ratioOf(value: unknown): number | undefined {
@@ -222,8 +226,6 @@ export function heightFor(view: ElementView, width: number): number {
     const subs = view.entity.subs ?? []
     return HEAD + ENTITY_DESC + (hasSlots(view.entity.links) ? ENTITY_SLOTS : 0) + subs.length * SUB_ROW
   }
-  // An Edit on its controls: a picture over a filmstrip.
-  if (view.asset?.timeline && faceOf(view) === "edit") return HEAD + 332
   return HEAD + Math.round(imageViewHeight(view, width) ?? width / aspectOf(view)) + (isPicture(view) ? 40 : 0)
 }
 

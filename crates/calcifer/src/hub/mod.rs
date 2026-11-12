@@ -7,7 +7,7 @@ pub(crate) mod author;
 pub(crate) mod checkpoints;
 pub(crate) mod headers;
 pub(crate) mod jobs;
-mod models;
+pub(crate) mod models;
 mod orgs;
 mod packages;
 mod quantize;

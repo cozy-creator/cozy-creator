@@ -425,6 +425,9 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     }
     let reader = rc_reader(api, &project.version).await?;
     let (files, unshipped) = blocking(|| built(&stage, &python.request, &committed, &result.package, hub, reader.as_deref()))?;
+    // What it imports from the Runtime, its floor has (cl-952).
+    let wheel = single(&stage.root.join("dist"), ".whl")?;
+    crate::floor::check(api, &stage.uv, &python.request, &stage.src, &wheel, &result.package).await?;
     for ui in unshipped {
         say(&format!("the wheel doesn't hold {ui}, so that function draws its declared box: keep it beside the module that names it, and have your build include it"));
     }
@@ -514,8 +517,8 @@ fn built(
         "uv build",
     )?;
     let git_wheels = git_wheels(stage, python)?;
-    let runtime = reader.or(after.get("cozy-runtime").map(String::as_str));
-    let (said, document) = describe_with(&stage.uv, &stage.src, python, runtime)?;
+    let runtime = reader.map(str::to_owned).or_else(|| crate::local_code::locked_runtime(&stage.src));
+    let (said, document) = describe_with(&stage.uv, &stage.src, python, runtime.as_deref())?;
     // A model default with no org stays as written: it names a first-party model (a machine reads
     // `sdxl@1.0.0` as `_/sdxl@1.0.0`), and the Runtime's interface parser refuses an org of `_`.
     let interface = Interface::parse(&document)

@@ -30,7 +30,9 @@
 #              the checkout's code, else the Hub's package. Outputs are in the session's artifact.
 #   version    the release (required unless held)    tags, family   set with `model edit` / `lora edit`
 #   hold       true: commits only, private, never published
-# tensord: true makes this session's cozy (a dev build: `cozy` = its run id) the pod's TensorD first. A Civitai source
+# tensord: true makes this session's cozy (a dev build: `cozy` = its run id) the pod's TensorD first; runtime: true
+# installs this session's RUNTIME_WHEEL (dispatched from rc/<x>, or runtime_ref) there too, for a package tree that
+# needs a Runtime no release has. A Civitai source
 # that needs an account reads CIVITAI_TOKEN, the release-gate secret pod-session.yaml gives Calcifer. A failed item
 # stays private and the next goes on; the session fails if any did.
 . "$(dirname "$0")/lib.sh"
@@ -145,6 +147,11 @@ if [ -n "$MIRRORS" ]; then
   if [ "$(param tensord false)" = true ]; then
     step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod's TensorD"
     cozy machine show "$NAME" > "$OUT/show-update.txt" 2>&1; grep -E '^(version|runtime|tensorfs) ' "$OUT/show-update.txt" | tee -a "$R"
+  fi
+  if [ "$(param runtime false)" = true ]; then
+    [ -n "${RUNTIME_WHEEL:-}" ] || fail "runtime: true, and this session has no RUNTIME_WHEEL (dispatch from rc/<x>, or runtime_ref)"
+    step runtime machine update "$NAME" --runtime "$RUNTIME_WHEEL" -y || fail "the pod's Runtime"
+    cozy machine show "$NAME" 2>&1 | grep -E '^runtime ' | tee -a "$R"
   fi
   failed=()
   for ((i = 0; i < n; i++)); do mirror "$i" || failed+=("$(jq -r ".[$i].model" <<<"$MIRRORS")"); done
