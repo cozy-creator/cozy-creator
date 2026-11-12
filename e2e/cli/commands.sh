@@ -664,7 +664,7 @@ machine_ready
 jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "runtime floor: off its hold, local runs $(jq -r .status.runtime "$OUT/machine.json"), not its Hub's pinned 0.45.0"
 in_project "$RUN_PROJECT" run "$E2E_FLOOR/relay" text=upgrade --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
   || check "runtime floor: the unversioned e2e-floor run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
-grep -q "upgrading local.s Runtime 0.45.0 → 0.45.[1-9][0-9]* for e2e-floor 0.2.0" "$OUT/floor-upgrade.err" \
+grep -q "upgrading local.s Runtime 0.45.0 → 0.45.[1-9][0-9]* for .*e2e-floor 0.2.0" "$OUT/floor-upgrade.err" \
   || check "runtime floor: the run didn't say it upgrades local's Runtime for e2e-floor 0.2.0: $(tail -c 400 "$OUT/floor-upgrade.err")"
 machine_ready
 jq -e '.status.runtime | test("^0\\.45\\.([1-9]|[1-9][0-9])$")' "$OUT/machine.json" > /dev/null \
