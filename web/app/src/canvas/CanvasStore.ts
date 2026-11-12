@@ -1583,8 +1583,11 @@ export class CanvasStore {
     if (!asset?.prefixes?.some((held) => held.number === number)) return
     // A picture box's only picture, with no tool to make another: its × deletes the box, as a person means, and nothing of it stays (cl-919).
     if (!asset.tool && asset.kind !== "text" && asset.prefixes.length === 1 && !asset.making?.length) {
-      if (this.inPlace?.name === key) this.leaveHere()
-      return this.remove([key])
+      const open = this.inPlace?.name === key
+      this.remove([key])
+      // Gone first, so nothing draws its picture on the way back to the canvas.
+      if (open) this.leaveHere()
+      return
     }
     const edit = this.step(`Discarded ${asset.noun} ${number} of ${key}`, [key])
     let note = 0

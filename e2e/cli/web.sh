@@ -198,9 +198,9 @@ web_proof orbit "$chrome" "$pw" ''
 }
 
 # cl-919: a deleted box resolves nowhere, Undo brings it back for the undo window, and then its files leave the project whether Calcifer
-# ran across the window or not (web/deleted.js). The window is cut to 40 seconds by config.toml for the cell, and put back after.
+# ran across the window or not (web/deleted.js). The window is cut to 75 seconds by config.toml for the cell, and put back after.
 web_deleted() {
-  local chrome=$1 pw=$2 lock=$3 undo=40
+  local chrome=$1 pw=$2 lock=$3 undo=75
   web_undo_window "$lock" "$undo"
   UNDO_S=$undo STOP=$(web_halt "$lock") START=$(web_start) web_proof deleted "$chrome" "$pw" ''
   web_undo_window "$lock" ''

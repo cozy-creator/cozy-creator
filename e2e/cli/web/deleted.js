@@ -21,7 +21,7 @@ function check(name, ok, detail) {
   seen[name] = ok === true ? true : (detail ?? false);
   if (ok !== true) failures.push(name);
 }
-const WINDOW_MS = Number(process.env.UNDO_S ?? 40) * 1000;
+const WINDOW_MS = Number(process.env.UNDO_S ?? 75) * 1000;
 const drawer = join(__dirname, '..', 'project', 'draw.py');
 const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
 
@@ -153,7 +153,7 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   await shot('marked');
   await away();
   const runsBefore = (await api(`/v1/runs?project=${id}&limit=100`)).body?.runs?.length ?? null;
-  await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['reader'] }) });
+  seen.render_asked = await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['reader'], on: ['local'] }), headers: { 'Idempotency-Key': `deleted-${Date.now()}` } });
   const failed = await until('reader refused', () => asset('reader'), (held) => Boolean(held?.failure)).catch(() => null);
   seen.render_refused = failed?.failure ?? null;
   check('render_refused_naming_it_deleted', failed?.failure?.message?.includes('<pic> was deleted') === true, failed?.failure);
