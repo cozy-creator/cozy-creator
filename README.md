@@ -2,7 +2,7 @@
 
 Cozy runs generative-media packages on your own machines and on rented GPUs. One `cozy` binary
 carries the command line, Calcifer (the local controller), TensorD (the machine) and TensorFS
-(the weight store).
+(the weight store). How it compares with ComfyUI: [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Install
 
