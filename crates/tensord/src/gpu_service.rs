@@ -1069,7 +1069,6 @@ impl Pool {
         let pool = Arc::new_cyclic(|pool: &Weak<Self>| {
             let gpus = devices.iter().filter_map(|d| d.memory.clone()).map(memory::Source::Gpu);
             let sources: Vec<memory::Source> = gpus.chain(host.clone().map(memory::Source::Host)).collect();
-            let pool = pool.clone();
             let observations = pool.clone();
             let woke = move |woke| match (observations.upgrade(), woke) {
                 (Some(pool), memory::Woke::Gpu) => pool.memory_changed(),
@@ -1082,27 +1081,6 @@ impl Pool {
                     .map_err(|error| tracing::warn!("memory: no memory observation events: {error}"))
                     .ok(),
             };
-            #[cfg(target_os = "linux")]
-            for (index, table) in devices.iter().enumerate().filter_map(|(index, d)| Some((index, d.ledger.clone()?))) {
-                let pool = pool.clone();
-                let watching = std::thread::Builder::new().name(format!("gpu-ledger-{index}"))
-                    .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_on(index, askers))));
-                if let Err(error) = watching {
-                    tracing::warn!("GPU {index}'s idle executors end only with the machine: {error}");
-                }
-            }
-            #[cfg(target_os = "linux")]
-            match varena_ledger::Table::open_host() {
-                Ok(table) => {
-                    let pool = pool.clone();
-                    let watching = std::thread::Builder::new().name("host-ledger".into())
-                        .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_for_host(askers))));
-                    if let Err(error) = watching {
-                        tracing::warn!("idle executors end for host memory only by the host rule: {error}");
-                    }
-                }
-                Err(error) => tracing::warn!("no host ledger: idle executors end for host memory only by the host rule: {error}"),
-            }
             Self {
                 exits: std::sync::OnceLock::new(),
                 launcher,
@@ -1144,7 +1122,33 @@ impl Pool {
             Ok(exits) => drop(pool.exits.set(exits)),
             Err(error) => tracing::warn!("executor exits are not watched: {error}"),
         }
+        #[cfg(target_os = "linux")]
+        pool.supervise_ledgers();
         Ok(pool)
+    }
+    /// Each GPU's ledger and the host's supervised: an asker no peer could help gets an idle executor ended. Started once the
+    /// pool is built, as `Exits` is: a supervisor whose first upgrade finds no pool takes it for the pool's end and stops.
+    #[cfg(target_os = "linux")]
+    fn supervise_ledgers(self: &Arc<Self>) {
+        for (index, table) in self.devices.iter().enumerate().filter_map(|(index, d)| Some((index, d.ledger.clone()?))) {
+            let pool = Arc::downgrade(self);
+            let watching = std::thread::Builder::new().name(format!("gpu-ledger-{index}"))
+                .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_on(index, askers))));
+            if let Err(error) = watching {
+                tracing::warn!("GPU {index}'s idle executors end only with the machine: {error}");
+            }
+        }
+        match varena_ledger::Table::open_host() {
+            Ok(table) => {
+                let pool = Arc::downgrade(self);
+                let watching = std::thread::Builder::new().name("host-ledger".into())
+                    .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_for_host(askers))));
+                if let Err(error) = watching {
+                    tracing::warn!("idle executors end for host memory only by the host rule: {error}");
+                }
+            }
+            Err(error) => tracing::warn!("no host ledger: idle executors end for host memory only by the host rule: {error}"),
+        }
     }
     /// Current driver-attributed process usage. TensorD owns no GPU allocations.
     pub(crate) fn memory(&self) -> BTreeMap<String, api::machine::GpuMemory> {
