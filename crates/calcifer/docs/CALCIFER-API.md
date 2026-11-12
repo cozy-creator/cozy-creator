@@ -239,8 +239,9 @@ a spec.
 - `GET /v1/runs/{id}`: the run. While it waits, `queue_position` (1 is next); while it runs, `progress` with
   `done_fraction`, `bytes_per_s`, `step_steady_ms`, and its time left: `eta_s`, `eta_confidence`, `eta_basis` ("Time left").
   `progress.unit` `tokens` is a decode's count: its `total` is only its cap, so it is no share of the run and times no step. A stage in
-  a part its scope counts up front (`Segment 2 of 3 / denoise`) is that part's share of the whole in `done_fraction`. While it goes, a
-  warning in its log is one of its `warnings` too (`code: log`), and `run.updated` says it. Each output, once it landed, has `url`, the API path that serves it, and `sha256`, and `width`, `height`, `duration_ms` as measured when it landed, where they apply and ffprobe is here. `?detail=full` adds `measurements`, `calls`, `report` (each
+  a part its scope counts up front (`Segment 2 of 3 / denoise`) is that part's share of the whole in `done_fraction`. Once it ended, its
+  results coming here are its `arriving` (bytes, rate, `eta_s`), said each second as `run.arriving`, until they land. While it goes, a warning in its
+  log is one of its `warnings` too (`code: log`), and `run.updated` says it. Each output, once it landed, has `url`, the API path that serves it, and `sha256`, and `width`, `height`, `duration_ms` as measured when it landed, where they apply and ffprobe is here. `?detail=full` adds `measurements`, `calls`, `report` (each
   executor's stages and unaccounted time, models, kernels, and each GPU's memory, with rates against its
   ceiling) and `request {target, input, seed?}`: what it was asked, read-only, each file by its `sha256:` and the models and LoRAs it chose as `models`. To ask it again, send `target` and `input` with a new key.
   A run settled over 30 days ago has dropped `measurements` and each call's, so its `report` is gone. Nothing else

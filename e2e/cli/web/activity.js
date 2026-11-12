@@ -169,6 +169,11 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   check('face_says_where', faces.some((face) => /^local\b/.test(face.where)), faces);
   // Its facts (Paul, 11-12): where, what's ahead and how many wait, its weights, its package, its time elapsed and left.
   check('face_lists_its_facts', faces.some((face) => /Where/.test(face.facts) && /Queue/.test(face.facts) && /Weights/.test(face.facts) && /Package/.test(face.facts) && /\d+:\d\d elapsed/.test(face.time)), faces.map((face) => [face.facts, face.time]).slice(-4));
+  // Made, its file on its way here is a phase of its own with its numbers, never a take that looks done before it's here (Paul, 11-12). On
+  // this runner's loopback a still lands in milliseconds, so it may pass too fast to be seen: whenever it is, it says its bytes.
+  const result = faces.filter((face) => face.phase === 'result');
+  seen.result_phase = result;
+  check('face_result_download_says_its_bytes', result.every((face) => face.says === 'Saving' || /^Downloading the result · \d.* of \d/.test(face.says)), result);
   const gone = await until('its face gone with its take', () => page.locator('.card[data-asset="waits"] .run-face').count(), (n) => n === 0, 15_000).catch(() => 1);
   check('face_gone_with_its_take', gone === 0);
   check('install_listed_with_its_waiter', said.rows.some((row) => /^install: activity_\d+ Install .* for run \d+$/.test(row)), said.rows);

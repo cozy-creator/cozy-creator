@@ -17,7 +17,7 @@ import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
 import { BufferedImage } from "./BufferedImage"
-import { RunFace } from "./RunFace"
+import { RunFace, useArriving } from "./RunFace"
 import { bodyText, CopyError } from "../ui/CopyError"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
@@ -653,7 +653,9 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const making = asset?.standing === "making"
   const onItsWay = making || Boolean(view.queued) || view.asked !== undefined
   const busy = onItsWay && (Boolean(watch && watch.number === undefined) || !shown)
-  const run = onItsWay ? makingRun(view) : undefined
+  // Made, with its file still on its way here: it says so, as a render on its way does.
+  const arriving = useArriving(view)
+  const run = onItsWay ? makingRun(view) : arriving
   const here = shown && !shown.absent ? shown : null
   // A video whose file says `orbit` turns, not plays: open, a drag turns it from the file here.
   const orbit = field === "video" ? orbitOf(shown) : null
@@ -681,7 +683,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   // On its way, its face says so whole, unless a take is looked at, a glimpse of what it's making shows or its words are being written:
   // then along its bottom.
-  const full = busy && view.viewed === undefined && !view.glimpse && !(view.here && view.hereWords)
+  const full = (busy || arriving !== undefined) && view.viewed === undefined && !view.glimpse && !(view.here && view.hereWords)
   // What stopped its last try, in place: an approved box looked at shows nothing wrong (Card's dot).
   const failed = !busy && !placing && Boolean(asset?.failure) && view.viewed === undefined && !(asset?.pinned && faceOf(view) === "media")
   return (
@@ -701,7 +703,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
         {bufferedImage && field === "image" && <BufferedImage sha256={bufferedImage.sha256} originalPath={bufferedImage.path} neighborPaths={neighborPaths} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
-        {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
+        {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       </div>
       {blank && words && !madeFrom && <Said words={words} view={view} name={name} />}
@@ -718,7 +720,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {busy && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
-      {onItsWay && asset?.rendering == null && !view.here && <RunFace view={view} name={name} number={run} full={full} />}
+      {(onItsWay || arriving !== undefined) && asset?.rendering == null && !view.here && <RunFace view={view} name={name} number={run} full={full} />}
       {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {asset?.kind === "video" && tools.get(asset.tool ?? "")?.pickup && !view.hereWords && shown && <button type="button" className="image-edit-action video-pickup-action nodrag nopan" onClick={(event) => {

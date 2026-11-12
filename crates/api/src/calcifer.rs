@@ -438,6 +438,10 @@ pub struct Run {
     /// With `?detail=full`: verified video segment frame ranges and published completion, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_progress: Option<VideoProgress>,
+    /// Live, once it ended: its results coming here (`downloading the result`), their bytes in
+    /// place of all of them, their rate and the time that leaves, until they land.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arriving: Option<Progress>,
     /// A run waiting for its turn: its place in its machine's line (1 is next: only the work
     /// running is ahead of it), or among the runs waiting for a machine to be chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -877,6 +881,9 @@ pub enum Event {
     /// Why the run waits now; an empty reason: it waits no longer.
     #[serde(rename = "run.waiting")]
     Waiting { reason: String },
+    /// Its results coming here once it ended, each second until they land (`Run::arriving`).
+    #[serde(rename = "run.arriving")]
+    Arriving { progress: Progress },
 }
 
 impl Event {
@@ -949,7 +956,7 @@ impl Event {
             | Event::Call {
                 sequence_number, ..
             } => Some(*sequence_number),
-            Event::Progress { .. } | Event::Waiting { .. } => None,
+            Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } => None,
         }
     }
 

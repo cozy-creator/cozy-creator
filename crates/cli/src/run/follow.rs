@@ -626,7 +626,7 @@ impl View {
                 self.waiting = Some(reason.clone()).filter(|r| !r.is_empty());
                 self.show();
             }
-            Event::Progress { progress } => self.progress(progress),
+            Event::Progress { progress } | Event::Arriving { progress } => self.progress(progress),
             // Each output is named once, when its file first lands; a person's terminal shows
             // where to look, the log off a terminal each revision after.
             Event::OutputLanded { item, .. } if item.stays => {}

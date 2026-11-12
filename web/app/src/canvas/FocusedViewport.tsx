@@ -6,7 +6,7 @@ import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
 import { NameField } from "./NameField"
 import { makingRun, shownOf } from "./shown"
-import { RunFace } from "./RunFace"
+import { RunFace, useArriving } from "./RunFace"
 import { useSignal } from "../ui/signal"
 import "./FocusedViewport.css"
 
@@ -45,6 +45,8 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
     held.addEventListener(LET_GO, drop)
     return () => held.removeEventListener(LET_GO, drop)
   }, [name, store, onCopyVersion])
+  // Made, its file still on its way here: it says so as a render on its way does.
+  const arriving = useArriving(view)
   if (!view?.asset && !view?.entity) return null
   const version = shownOf(view)?.number
   // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
@@ -67,7 +69,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
-      {onItsWay && view.asset?.rendering == null && <RunFace view={view} name={name} number={makingRun(view)} full above />}
+      {(onItsWay || arriving !== undefined) && view.asset?.rendering == null && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above />}
       <div className="focus-body"><FocusedCard name={name} /></div>
     </section>
   )

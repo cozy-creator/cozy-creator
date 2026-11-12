@@ -10,6 +10,7 @@ import { countsOf, countWords, stageName, workWords } from "../panels/runs/words
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
+import { shownOf } from "./shown"
 
 /** Where a render is, for its box's face: what it's doing in words, how far the whole of it is and how long it has left, where it runs,
  *  the detail of what it's doing with its numbers, and what it warned of. Every phase says something: nothing on it is wordless. */
@@ -52,7 +53,7 @@ function rentedWords(machine: Machine): string {
 
 /** Its time left, as Calcifer estimates the whole run's: `about 3 min left` while that's little trusted. */
 function runLeft(run: Run): string | undefined {
-  const progress = run.progress
+  const progress = run.status === "completed" ? run.arriving : run.progress
   if (progress?.eta_s != null) return `${(progress.eta_confidence ?? 1) < 0.5 ? "about " : ""}${leftWords(progress.eta_s)}`
   if (progress?.eta_basis === "first_run") return "first run on this machine"
   return undefined
@@ -72,6 +73,16 @@ function fetched(operation: Operation): string {
   if (operation.bytes_per_s) parts.push(`${bytes(operation.bytes_per_s)}/s`)
   if (operation.bytes_here) parts.push(`${bytes(operation.bytes_here)} already here`)
   return parts.join(" · ")
+}
+
+/** The run whose take is shown before its file is here, while that file comes: its box says so (Paul, 11-12: no take looks done before
+ *  it's here). None for a file a machine keeps. */
+export function useArriving(view: ElementView | undefined): number | undefined {
+  const { client } = useConnection()
+  const shown = view ? shownOf(view) : null
+  const number = shown?.absent ? shown.run : undefined
+  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: number !== undefined })
+  return data && data.status === "completed" && owed(data) !== undefined ? number : undefined
 }
 
 /** Its results not here yet: their bytes. */
@@ -134,7 +145,13 @@ export function faceOf(seen: Seen): Face {
     return face("download", `Downloading weights · ${fetched(on)}`, { stageFraction: fraction, left: own ?? (on.eta_s != null ? `at least ${leftWords(on.eta_s)}` : undefined) })
   }
   if (run.queue_position != null) return face("queued", `Queued on ${run.machine}`, { detail: [`number ${run.queue_position} in line`, waiting].filter(Boolean).join(" · ") })
+  // Made, and on its way here (Calcifer's `arriving`): its own phase, by its bytes and their rate, its take not here yet.
   if (run.status === "completed") {
+    const arriving = run.arriving?.bytes_total ? run.arriving : undefined
+    if (arriving) {
+      const numbers = [`${bytes(arriving.bytes_done)} of ${bytes(arriving.bytes_total)}`, arriving.bytes_per_s ? `${bytes(arriving.bytes_per_s)}/s` : ""].filter(Boolean).join(" · ")
+      return face("result", `Downloading the result · ${numbers}`, { stageFraction: arriving.bytes_done / arriving.bytes_total })
+    }
     const left = owed(run)
     return face("result", left ? "Downloading the result" : "Saving", { detail: left ? bytes(left) : undefined })
   }
@@ -198,7 +215,8 @@ export function factsOf({ run, on, face, now, others, boxOf }: { run?: Run; on?:
 function useBar(run: Run | undefined, face: Face, now: number): number | undefined {
   // Only a fraction of the whole job is a bar: none for a phase's own count, and nothing that only moves (Paul, 11-12).
   const held = useRef<{ on: string; fraction: number } | null>(null)
-  const left = run?.progress?.eta_s
+  // Once it ended, what's left is its result coming here.
+  const left = run?.status === "completed" ? run.arriving?.eta_s : run?.progress?.eta_s
   const since = run ? now - run.created_at_ms : 0
   const whole = run && left != null ? Math.min(0.99, since / Math.max(1, since + left * 1000)) : undefined
   const fraction = whole ?? face.fraction
