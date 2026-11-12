@@ -71,6 +71,8 @@ for _ in $(seq 120); do
   cozy --json machine ls > "$OUT/rental-ls.json" 2> /dev/null || true
   ! grep -q 'rent-[0-9a-f]' "$OUT/rental-ls.txt" || handles=$(grep 'rent-' "$OUT/rental-ls.txt" | head -2)
   now=$(jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r) | .placeholder // .name' "$OUT/rental-ls.json" 2> /dev/null || true)
+  # The JSON keeps its handle as its name, which its placeholder stands in for until its Hub names the host.
+  [[ $now != rent-* ]] || handles="machine ls --json: $now with no placeholder"
   [[ " $shown " == *" ${now// /_} "* ]] || shown+=" ${now// /_}"
   word=$(jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' "$OUT/rental-ls.json" 2> /dev/null || true)
   [ -n "$word" ] && grep -qE "^ *$word " "$OUT/rental-ls.txt" && break
