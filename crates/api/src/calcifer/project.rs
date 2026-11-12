@@ -832,6 +832,9 @@ pub struct Version {
     /// The words it was made from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Its saved generation request, including structured prompts and model choices; absent when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Map<String, Value>>,
 }
 
 /// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
