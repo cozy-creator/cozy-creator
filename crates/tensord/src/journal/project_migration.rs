@@ -461,6 +461,7 @@ fn copy_attributed_run_files(
     source_engine: &Path,
     scope: &LocalPrivateStorage,
     ids: &[u64],
+    retire: bool,
 ) -> io::Result<Vec<String>> {
     let target = crate::private_io::root(scope)?;
     let mut pending = vec![];
@@ -469,14 +470,16 @@ fn copy_attributed_run_files(
             let source = source_engine.join(kind).join(id.to_string());
             if source.exists() {
                 copy_run_directory(&source, &target.join(kind).join(id.to_string()))?;
-                if let Err(error) = retire_run_directory(&source) {
-                    if error.kind() == io::ErrorKind::ResourceBusy {
-                        pending.push(format!(
-                            "legacy_run_files_reader_pending:{}",
-                            source.display()
-                        ));
-                    } else {
-                        return Err(error);
+                if retire {
+                    if let Err(error) = retire_run_directory(&source) {
+                        if error.kind() == io::ErrorKind::ResourceBusy {
+                            pending.push(format!(
+                                "legacy_run_files_reader_pending:{}",
+                                source.display()
+                            ));
+                        } else {
+                            return Err(error);
+                        }
                     }
                 }
             }
@@ -951,6 +954,23 @@ impl Journal {
                         .connection
                         .transaction_with_behavior(TransactionBehavior::Immediate)
                         .map_err(db_error)?;
+                    if !receipt.attributed_ids.is_empty() {
+                        let pending = copy_attributed_run_files(
+                            &engine.join("execution"),
+                            scope,
+                            &receipt.attributed_ids,
+                            true,
+                        )?;
+                        if !pending.is_empty() {
+                            receipt.pending.extend(pending);
+                            save(&target.connection, &receipt)?;
+                            checkpoint(&target.connection)?;
+                            return Err(io::Error::new(
+                                io::ErrorKind::ResourceBusy,
+                                "legacy file readers prevent source retirement",
+                            ));
+                        }
+                    }
                     for table in receipt.original.iter().rev() {
                         table.retire(&transaction)?;
                     }
@@ -1407,6 +1427,23 @@ impl Journal {
                 io::ErrorKind::WouldBlock,
                 "legacy required payload closure is incomplete",
             ));
+        }
+        if !receipt.attributed_ids.is_empty() {
+            let pending = copy_attributed_run_files(
+                &engine.join("execution"),
+                scope,
+                &receipt.attributed_ids,
+                true,
+            )?;
+            if !pending.is_empty() {
+                receipt.pending.extend(pending);
+                save(&target.connection, &receipt)?;
+                checkpoint(&target.connection)?;
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "legacy file readers prevent source retirement",
+                ));
+            }
         }
         for table in receipt.original.iter().rev() {
             table.retire(&transaction)?;
