@@ -136,9 +136,10 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
     let set_aside = |key: &str| key.contains(TOMBSTONE);
     let ended = |held: &super::folder::Asset| held.files().next().is_some() && held.lapsed(now);
     let gone: Vec<String> = lock.assets.iter().filter(|(key, held)| set_aside(key) && ended(held)).map(|(key, _)| key.clone()).collect();
-    // Its history read only for a box already emptied: a start looks at every project.
+    // Its history read only for a box emptied, already or now: a start looks at every project. One emptied now is forgotten only once the
+    // history no longer reaches it, so its Undo still says it can't come back.
     let emptied = |held: &super::folder::Asset| held.files().next().is_none() && held.deleted_ms.is_some();
-    let oldest = match lock.assets.iter().any(|(key, held)| set_aside(key) && emptied(held)) {
+    let oldest = match !gone.is_empty() || lock.assets.iter().any(|(key, held)| set_aside(key) && emptied(held)) {
         true => history::oldest_ms(folder).unwrap_or(i64::MAX),
         false => i64::MAX,
     };

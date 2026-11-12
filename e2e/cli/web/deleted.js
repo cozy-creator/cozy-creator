@@ -155,12 +155,15 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   check('no_picture_behind_the_words', (await shown.count()) === 0);
   await shot('marked');
   await away();
-  const runsBefore = (await api(`${at}/runs?limit=100`)).body?.runs?.length ?? null;
+  // A project's run history also lists its look-ahead (warm) runs since project data containment: what it renders is its calls.
+  const calls = async () => ((await api(`${at}/runs?limit=100`)).body?.runs ?? null)?.filter((run) => run.kind === 'call').map((run) => `${run.number} ${run.status} ${run.target}`) ?? null;
+  const runsBefore = await calls();
   seen.render_asked = await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['reader'], on: ['local'] }), headers: { 'Idempotency-Key': `deleted-${Date.now()}` } });
   const failed = await until('reader refused', () => asset('reader'), (held) => Boolean(held?.failure)).catch(() => null);
   seen.render_refused = failed?.failure ?? null;
   check('render_refused_naming_it_deleted', failed?.failure?.message?.includes('<pic> was deleted') === true, failed?.failure);
-  check('render_refused_free', ((await api(`${at}/runs?limit=100`)).body?.runs?.length ?? null) === runsBefore && !(failed?.making?.length), { runsBefore, making: failed?.making });
+  const runsAfter = await calls();
+  check('render_refused_free', runsBefore !== null && JSON.stringify(runsAfter) === JSON.stringify(runsBefore) && !(failed?.making?.length), { runsBefore, runsAfter, making: failed?.making });
   let cli = '';
   try {
     cli = execFileSync(process.env.COZY, ['run', `${drawer}/draw`, 'instructions=a hat on <pic>', '--on', 'local'], { cwd: folder, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: STEP_MS });

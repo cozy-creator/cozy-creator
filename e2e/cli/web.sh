@@ -298,11 +298,13 @@ web_proof() {
   [ "${ENGINE:-}" != webkit ] || shot=''
   HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") ARGV_LOG=$(web_path "$OUT/argv.log") ALONE=${WEB_ALONE:-} RESTART=$restart ENGINE=${ENGINE:-} LAST_LOOK=$(web_path "$OUT/web-$pass") SHOT=$shot CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
     node "$(web_path "$here/web/$name.js")" > "$json" 2> "$OUT/web-$pass.err" || code=$?
-  [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$pass.err")"
+  # What each failed check saw first: the rest of what it saw is cut short.
+  [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '(.failures // []) as $f | .seen | with_entries(select(.key as $k | $f | index($k)))' "$json" 2> /dev/null | head -c 2000) $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$pass.err")"
   # What died on another Hub doesn't leave the next proof on it.
   [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
   folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null)
-  case $folder in */web-*) rm -rf "$folder" ;; esac
+  # A project's machine storage (`.vault-machine`) may still be settling a canceled run: its leftovers never end the suite.
+  case $folder in */web-*) rm -rf "$folder" 2> /dev/null || { sleep 5; rm -rf "$folder"; } || true ;; esac
 }
 
 # web_serves's own, on its project.

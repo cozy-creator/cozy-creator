@@ -53,9 +53,14 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     const epoch = state.epoch
     return { signal: state.active.signal, check: () => { if (state!.blocked || state!.epoch !== epoch) throw new DOMException("Project view retired", "AbortError") } }
   }
+  // The token whose storage proof stands: proven once, not before each request, so what's written as the page goes leaves at once
+  // (`keepalive`). A refused session or an unreachable Calcifer proves it again.
+  let proven: string | null = null
+  const unproven = () => proven !== session()?.token
   const storage = async (signal?: AbortSignal | null) => {
     const token = session()?.token
     if (!token) throw new Error("A browser session is required before opening project data")
+    if (proven === token) return
     const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { Authorization: `Bearer ${token}`, [PROJECT_STORAGE_HEADER]: PROJECT_STORAGE_VERSION } })
     const capability = response.ok ? await response.json() : null
     const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
@@ -65,6 +70,7 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     if (session()?.token !== token || capability?.version !== 3 || typeof birth !== "string" || !birth || capability?.daemon_birth !== birth || capability?.principal !== principal) {
       throw new Error("Calcifer cannot prove project storage protocol 3 for this private session")
     }
+    proven = token
   }
   const needsStorage = (path: string) => ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/events"].some((prefix) => path.startsWith(prefix))
   return {
@@ -81,14 +87,16 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     async fetch(path, init = {}) {
       const project = guard(path)
       const signal = project ? (init.signal ? AbortSignal.any([init.signal, project.signal]) : project.signal) : init.signal
-      if (needsStorage(path)) await storage(signal)
+      if (needsStorage(path) && unproven()) await storage(signal)
       project?.check()
       const headers = new Headers(init.headers)
       const token = session()?.token
       if (token) headers.set("Authorization", `Bearer ${token}`)
       headers.set("Cozy-Client", `page ${TAB}`)
       headers.set(PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION)
-      const response = await fetch(resolve(path), { ...init, signal, headers })
+      let response: Response
+      try { response = await fetch(resolve(path), { ...init, signal, headers }) } catch (error) { proven = null; throw error }
+      if (response.status === 401) proven = null
       try { project?.check() } catch (error) { void response.body?.cancel(); throw error }
       return response
     },
@@ -109,7 +117,12 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     play(path, el) {
       let live = true
       const project = guard(path)
-      void storage(project?.signal).then(() => { project?.check(); if (live) el.src = media(path) }).catch(() => { if (live) el.dispatchEvent(new Event("error")) })
+      const load = () => { project?.check(); if (live) el.src = media(path) }
+      const failed = () => { if (live) el.dispatchEvent(new Event("error")) }
+      // Its storage proven, the file is asked for now: the caller seeks and plays it at once, as it did before the proof.
+      if (!unproven()) {
+        try { load() } catch { failed() }
+      } else void storage(project?.signal).then(load).catch(failed)
       return {
         stop() {
           live = false
