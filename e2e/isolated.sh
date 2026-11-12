@@ -59,21 +59,23 @@ relay() {
 }
 
 # held: e2e-relay's code published again as `e2e-held` 0.1.0 and 0.2.0rc1, as a package built for the open RC's Runtime is
-# published (cl-922): newer by PEP 440, and for machines on the RC only (held_prerelease, cl-952).
+# published (cl-922): newer by PEP 440, for machines on the RC only; and as `e2e-newer` 0.1.0 and 0.1.1 (held_prerelease,
+# cl-952, se-128).
 held() {
-  local copy=$seed/packages/e2e-held account version
+  local copy=$seed/packages/e2e-held account name version
   account=$(cozy --json whoami | jq -r '.account // empty')
-  for version in 0.1.0 0.2.0rc1; do
+  for name in e2e-held:0.1.0 e2e-held:0.2.0rc1 e2e-newer:0.1.0 e2e-newer:0.1.1; do
+    version=${name#*:} name=${name%%:*}
     rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
-    sed -i -e 's/^name = "e2e-relay"$/name = "e2e-held"/' -e "s/^version = \"0.1.0\"$/version = \"$version\"/" "$copy/pyproject.toml"
-    if ! (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-held-$version.json" 2>&1; then
-      E2E_HELD_REFUSED="$version: $(tail -c 400 "$seed/publish-e2e-held-$version.json" | tr '\n' ' ')"
+    sed -i -e "s/^name = \"e2e-relay\"$/name = \"$name\"/" -e "s/^version = \"0.1.0\"$/version = \"$version\"/" "$copy/pyproject.toml"
+    if ! (cd "$copy" && cozy --json package publish -y) > "$seed/publish-$name-$version.json" 2>&1; then
+      E2E_HELD_REFUSED="$name $version: $(tail -c 400 "$seed/publish-$name-$version.json" | tr '\n' ' ')"
       export E2E_HELD_REFUSED
       return 0
     fi
-    log "published $account/e2e-held $version"
+    log "published $account/$name $version"
   done
-  export E2E_HELD=$account/e2e-held
+  export E2E_HELD=$account/e2e-held E2E_NEWER=$account/e2e-newer
 }
 
 # mirror <source> <org/name> <lane> <release> <page> [upload flags...]: a model uploaded by this computer's machine and
