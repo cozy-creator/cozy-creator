@@ -479,8 +479,6 @@ case $SHARD in
   web-trash) export DB_WEB=trash; parts="tools_read db_existing_web logs" ;;
   # The tool beside a box's name (cl-927).
   web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
-  # A box's models and LoRAs, open (web/addons.js; at rest it has no chips, cl-932).
-  web-addons) export DB_WEB=addons; parts="tools_read db_existing_web logs" ;;
   # The right-side panel closed by a click off it (cl-929).
   web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;
   # No New on an empty box (cl-925).
