@@ -1,6 +1,6 @@
 // A box drawn from its tool's fields (tools.md, The types), in a real browser on a real Calcifer, with the every-type fixture `project/boxes.py`.
-// The wire's `Tool.fields` by type; the face and More, its Advanced shut; segments up to four, a menu past that, a dropdown for options that say
-// what they are; Auto and reset, which takes the key out of the file; Random or a kept seed. Groups: rows added, taken out and dragged into a new
+// The wire's `Tool.fields` by type; Focused video parameters without a folded Advanced control; segments up to four, a menu past that, a dropdown for options that say
+// what they are; Auto and reset, which takes the key out of the file; seed data kept without seed UI. Groups: rows added, taken out and dragged into a new
 // order, their sum, a block that may be absent, and rows two deep. Slots: what doesn't fit is refused as it's carried and at the drop, with why;
 // a filled one is on the face, and × unsets it. A video's range: in and out dragged on its frames, written `<walk:in-out>` and shown as
 // timecode, in a prompt and on a plate, whose length is set against the beats. Where this computer runs models: previews land as it renders;
@@ -94,8 +94,11 @@ function linesOf(text, name) {
   const open = (name) => openBox(page, name);
   const more = async (name) => {
     await open(name);
-    if (!(await box(name).locator('.edit-more').count())) await box(name).locator('.more-toggle').click();
-    await box(name).locator('.edit-more').waitFor();
+    const toggle = box(name).locator('.more-toggle');
+    if (await toggle.count()) {
+      if (!(await box(name).locator('.edit-more').count())) await toggle.click();
+      await box(name).locator('.edit-more').waitFor();
+    }
   };
   const field = (name, place) => box(name).locator(`[data-field="${place}"]`).first();
   const noted = (words) => page.locator(`.note:has-text("${words}")`).first();
@@ -121,7 +124,7 @@ function linesOf(text, name) {
   check('nodes_and_tools_are_separate', atRest.length === 2 && atRest[0].title === 'Nodes' && atRest[1].title === 'Tools', atRest);
   check('exactly_four_basic_asset_types', JSON.stringify(atRest.find((one) => one.section === 'nodes')?.tools.map((row) => row.label)) === JSON.stringify(['Image', 'Video', 'Audio', 'Text']), atRest);
   const operations = atRest.find((one) => one.section === 'tools')?.tools ?? [];
-  check('timeline_is_a_tool_category', JSON.stringify(operations.map((row) => row.label)) === JSON.stringify(['Image', 'Edit Image', 'Upscale Image', 'Video', 'Edit Video', 'Upscale Video', 'Timeline', 'LLM']), operations);
+  check('timeline_is_a_tool_category', JSON.stringify(operations.map((row) => row.label)) === JSON.stringify(['Image', 'Edit Image', 'Upscale Image', 'Video', 'Edit Video', 'Upscale Video', 'Video Timeline', 'LLM']), operations);
   check('operation_output_types', JSON.stringify(operations.map((row) => row.kind)) === JSON.stringify(['image', 'image', 'image', 'video', 'video', 'video', 'video', 'text']), operations);
   check('sidebar_has_no_model_rows', operations.every((row) => !row.model), operations);
   check('sidebar_has_no_discovery_controls', await page.locator('.tools input, .tools .browse-toggle, .tools .browse, .tools .box-shelf-head, .tools .tool-off').count() === 0 && !(await page.locator('.tools button').allTextContents()).some((word) => /Browse|Checkpoints|Add file/.test(word)));
@@ -138,23 +141,32 @@ function linesOf(text, name) {
   await require('./page').carry(page, imageNode, spot);
   const choosing = await until('dragged image node for model choices', async () => (await state()).assets.find((asset) => !namesBefore.includes(asset.name)), Boolean);
   await open(choosing.name);
-  const modelOptions = () => box(choosing.name).locator('select[aria-label="Model"] option').evaluateAll((options) => options.map((option) => ({ id: option.value, label: option.textContent })));
-  const hasModel = (options, ref) => options.some((option) => metadata.find((one) => one.id === option.id)?.model?.default?.startsWith(`${ref}@`));
-  const models = await until('Image models include the installed local fixture', modelOptions, (options) => options.some((option) => option.id === `${fixture}/still`) && hasModel(options, 'qwen/qwen-image-2.1') && hasModel(options, 'stabilityai/sdxl'));
-  check('image_models_are_node_configuration_choices', hasModel(models, 'qwen/qwen-image-2.1') && hasModel(models, 'stabilityai/sdxl'), models);
+  await implementationRow(page, 'image');
+  const implementations = () => page.locator('.tools [data-implementation][data-tool-operation="image"]').evaluateAll((rows) => rows.map((row) => row.dataset.tool));
+  const defaults = (tool) => tool?.models?.length ? tool.models.map((slot) => slot.default) : [tool?.model?.default];
+  const hasModel = (ids, ref) => ids.some((id) => defaults(metadata.find((tool) => tool.id === id)).some((model) => model?.startsWith(`${ref}@`)));
+  const models = await until('Image implementations include the installed local fixture', implementations, (ids) => ids.includes(`${fixture}/still`) && hasModel(ids, 'qwen/qwen-image-2.1') && hasModel(ids, 'stabilityai/sdxl'));
+  check('image_category_exposes_real_implementations', hasModel(models, 'qwen/qwen-image-2.1') && hasModel(models, 'stabilityai/sdxl'), models);
   const hasTextModel = metadata.some((one) => one.makes === 'text' && one.id !== 'text');
   check('llm_availability_matches_real_text_tools', await page.locator('.tools [data-operation="llm"]').getAttribute('aria-disabled') === String(!hasTextModel));
   const availability = await page.locator('.tools [data-palette="tools"] [data-operation]').evaluateAll((rows) => rows.map((row) => ({ operation: row.dataset.operation, kind: row.dataset.kind, disabled: row.getAttribute('aria-disabled') === 'true' })));
-  const toolOptions = await box(choosing.name).locator('select[aria-label="Tool"] option').evaluateAll((options) => options.map((option) => ({ operation: option.value, disabled: option.disabled })));
-  check('unavailable_image_operations_are_disabled_in_node_configuration', availability.filter((row) => row.kind === 'image' && row.disabled).every((row) => toolOptions.some((option) => option.operation === row.operation && option.disabled)), { availability, toolOptions });
   check('edit_image_available_for_reference_capable_models', availability.some((row) => row.operation === 'edit_image' && !row.disabled), availability);
-  await box(choosing.name).locator('select[aria-label="Tool"]').selectOption('edit_image');
-  const editModels = await until('Qwen also offered for Edit Image', modelOptions, (options) => hasModel(options, 'qwen/qwen-image-2.1'));
-  const qwen = editModels.find((option) => metadata.find((one) => one.id === option.id)?.model?.default?.startsWith('qwen/qwen-image-2.1@'));
-  await box(choosing.name).locator('select[aria-label="Model"]').selectOption(qwen.id);
-  await until('edit model selected', () => of(choosing.name), (asset) => asset.tool === qwen.id);
-  check('reference_capable_image_model_retains_edit_operation', await box(choosing.name).locator('select[aria-label="Tool"]').inputValue() === 'edit_image' && models.some((option) => option.id === qwen.id), { imageModels: models, editModels });
-  check('model_choice_keeps_category_structure', JSON.stringify(await listed()) === JSON.stringify(atRest));
+  const qwen = metadata.find((tool) => defaults(tool).some((model) => model?.startsWith('qwen/qwen-image-2.1@')));
+  const editQwen = await implementationRow(page, 'edit_image', qwen.id);
+  const target = await box(choosing.name).locator('.media').boundingBox();
+  await require('./page').carry(page, editQwen, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
+  await until('dragged tool attaches to image holder', () => of(choosing.name), (asset) => asset.tool === qwen.id);
+  check('old_tool_settings_box_is_removed', await box(choosing.name).locator('.tool-settings').count() === 0);
+  const versionsBeforePicker = (await of(choosing.name)).versions;
+  await box(choosing.name).getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
+  await picker.waitFor();
+  const slots = qwen.models?.length ? qwen.models : qwen.model ? [qwen.model] : [];
+  check('tool_badge_opens_its_declared_model_slots', slots.length > 0 && await picker.locator('[data-model-slot]').count() === slots.length);
+  check('model_picker_uses_global_nsfw_setting', await picker.getByLabel(/Show NSFW/).count() === 0);
+  await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
+  check('model_picker_keeps_tool_identity_and_versions', (await of(choosing.name)).tool === qwen.id && (await of(choosing.name)).versions === versionsBeforePicker);
+  check('model_configuration_keeps_category_structure', JSON.stringify(await listed()) === JSON.stringify(atRest));
   await closeBox(page);
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
   await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);
@@ -178,15 +190,13 @@ function linesOf(text, name) {
   check('wire_described_choice', byName.edit.descriptions?.head && byName.edit.words?.head === 'Head swap', byName.edit);
   check('wire_advanced', byName.steps.advanced && !byName.segments.advanced, byName.steps);
 
-  // The face: its prompts, its beats and a filled slot. All else is under More, words too, its expert settings shut in Advanced.
+  // Focused video tools expose a large parameter form, without an Advanced fold.
   await open('shot');
   const shotBox = box('shot');
   check('face_holds_prompts_groups_and_filled_slots', (await shotBox.locator('.mention-text[data-field=summary]').count()) === 1 && (await shotBox.locator('.mention-text[data-field=pictures]').count()) === 1 && (await shotBox.locator('.edit-shown .beats-edit[data-field=beats]').count()) === 1 && (await shotBox.locator('.edit-shown .slot-control[data-field=plate]').count()) === 1, await shotBox.innerText());
-  check('more_holds_the_rest', (await shotBox.locator('.edit-more').count()) === 0 && (await shotBox.locator('[data-field=first_frame], [data-field=negative]').count()) === 0);
+  check('video_parameters_are_prominent_without_a_more_fold', await shotBox.locator('.prominent').count() === 1 && await shotBox.locator('[data-field=first_frame]').count() === 1 && await shotBox.locator('[data-field=negative]').count() === 1);
   await more('shot');
-  check('advanced_starts_shut', (await shotBox.locator('input[aria-label=Steps]').count()) === 0 && (await shotBox.locator('.advanced-toggle').count()) === 1);
-  await shotBox.locator('.advanced-toggle').click();
-  check('advanced_opens', (await shotBox.locator('input[aria-label=Steps]').count()) === 1);
+  check('advanced_fold_is_removed', await shotBox.locator('.advanced-toggle').count() === 0 && await shotBox.locator('input[aria-label=Steps]').count() === 1);
   await shot('more');
 
   // Choices: up to four side by side, more in a menu, and options that say what they are in a dropdown, whatever their number.
@@ -221,12 +231,11 @@ function linesOf(text, name) {
   await until('megapixels auto', () => fieldsOf('shot'), (fields) => !('megapixels' in fields));
   check('number_auto_is_unset', true);
 
-  // A seed: Random is no key, a fixed one a number.
-  await shotBox.locator('[aria-label=Seed] button:text-is("Fixed")').click();
-  const fixed = await until('a seed kept', () => fieldsOf('shot'), (fields) => Number.isInteger(fields.seed));
-  await shotBox.locator('[aria-label=Seed] button:text-is("Random")').click();
-  await until('random again', () => fieldsOf('shot'), (fields) => !('seed' in fields));
-  check('seed_random_or_kept', Number.isInteger(fixed.seed));
+  // Existing seed data remains valid, but the UI deliberately has no seed control.
+  await api(`/v1/projects/${id}/assets/shot`, { method: 'PATCH', body: JSON.stringify({ fields: { seed: 17 } }) });
+  await until('stored seed remains supported', () => fieldsOf('shot'), (fields) => fields.seed === 17);
+  check('seed_input_is_hidden_without_clearing_stored_data', await shotBox.locator('[aria-label=Seed], [data-field=seed], .seed').count() === 0 && (await fieldsOf('shot')).seed === 17);
+  await api(`/v1/projects/${id}/assets/shot`, { method: 'PATCH', body: JSON.stringify({ fields: { seed: null } }) });
 
   // Groups: rows with + and ×, dragged into a new order, their sum; a block that may be absent; rows two deep.
   const beatRows = () => shotBox.locator('.beats-edit[data-field=beats] > .beat');

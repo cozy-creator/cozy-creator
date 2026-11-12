@@ -578,6 +578,7 @@ async fn show(
     (run.waiting, run.progress, run.queue_position) = (record.waiting, record.progress, record.queue_position);
     (run.project, run.project_id, run.stalled) = (record.project, record.project_id, record.stalled);
     run.request = crate::runs::asked(&row);
+    run.video_progress = crate::runs::video_progress::of(&run, &api.calcifer.store().events_after(row.id.as_str(), 0)?);
     run.report = crate::runs::report::of(&run);
     Ok(Json(run))
 }

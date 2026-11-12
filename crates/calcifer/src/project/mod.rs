@@ -1749,6 +1749,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         version: standing.version(),
         approved: asset.pin.as_ref().and(standing.version()),
         pinned: asset.pin.is_some(),
+        starred: asset.starred,
         inputs: standing.inputs.clone(),
         path: main_path(lock, &files),
         files: listed(lock, &files),
@@ -2140,7 +2141,8 @@ async fn runs(
 ) -> Result<(StatusCode, Json<Asked>), Refusal> {
     let body = body?;
     let asked: Runs = parse(&body)?;
-    if asked.on.is_empty() || asked.on.iter().any(|on| matches!(on, On::New(_))) {
+    api::calcifer::machine_set(&asked.on).map_err(Refusal)?;
+    if asked.on.iter().any(|on| matches!(on, On::New(_))) {
         let said = "a project's runs go to machines: rent one first, then name it with --on";
         return Err(Refusal(Error::new(Kind::Usage, "project_on_new", said).next("cozy machine rent")));
     }
@@ -2155,12 +2157,17 @@ async fn runs(
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
+    // None named: where `cozy run` naming none goes (cl-894).
+    let on = match asked.on.is_empty() {
+        true => crate::runs::unnamed_set(&api, Some(&id)).await.map_err(Refusal)?,
+        false => asked.on,
+    };
     project.unsent.lock().expect("unsent lock").clear();
     // What this render uses: the project as it is now, its export kept by digest until the render ends.
     let text = project.folder.text().map_err(Refusal)?;
     let doc = Doc::read(&project.folder, &text).map_err(Refusal)?;
     let digest = hex::encode(Sha256::digest(text.as_bytes()));
-    let target = Target { on: asked.on, hub };
+    let target = Target { on, hub };
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let lock = project.folder.lock().map_err(Refusal)?;
     let stand = doc.stand(&lock);
@@ -2239,10 +2246,7 @@ async fn runs(
             said(&name, format!("{name} is made here, free, when what it reads settles"));
             // Named, it is made again, as anything named is.
             if !missing {
-                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: format::KINDS.contains(&asset.kind.as_str()), new: true, pickup: None });
-            }
-            if approve {
-                say(format!("approve {name} in the browser once it is made; open it with `cozy open`"));
+                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: true, pickup: None });
             }
             continue;
         }
@@ -2269,7 +2273,7 @@ async fn runs(
             continue;
         }
         let makes_new = !missing || pickup.is_some();
-        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: approve || format::KINDS.contains(&asset.kind.as_str()), new: makes_new, pickup: pickup.clone() };
+        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: makes_new, pickup: pickup.clone() };
         takes.extend((0..if makes_new { n } else { 1 }).map(take));
     }
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
@@ -4086,7 +4090,7 @@ impl Walk {
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
             warnings.iter().for_each(|message| self.say(Told::Warning { message: message.clone(), name: None }));
-            let mut version = Version { inputs: inputs.clone(), warnings, text: doc.text(i), ..Default::default() };
+            let mut version = Version { inputs: inputs.clone(), warnings, text: doc.text(i), fields: Some(doc.authoring_fields(i)), ..Default::default() };
             if seeded {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
                 // Try again is a render of what failed on these inputs: the same seed, so its finished calls come from the memo.
@@ -4723,7 +4727,7 @@ impl Walk {
                 self.say(Told::Warning { message: format!("{name} reads {}'s newest {noun}, {number}, which is out of date", read.name), name: None });
             }
         }
-        let mut version = Version { inputs, ..Default::default() };
+        let mut version = Version { inputs, fields: Some(doc.authoring_fields(i)), ..Default::default() };
         match doc.tool(i).expect("a tool") {
             Tool::Cut => {
                 // Once a walk: what it cuts stands, or says why not.
@@ -4764,7 +4768,8 @@ impl Walk {
         self.folder().update_lock(|lock| number.set(lock.number(&name, &asset.kind)))?;
         version.number = number.get();
         let selected = version.main().cloned();
-        self.record_free(&name, &asset.kind, version, noun(doc, lock, i))?;
+        let approve = ask.takes.iter().any(|take| name_key(&take.asset) == name_key(&name) && take.approve);
+        self.record_free(&name, &asset.kind, version, noun(doc, lock, i), approve)?;
         if let Some(sha256) = selected {
             self.select_asked(&ask.id, &name, number.get(), &sha256)?;
         }
@@ -4970,16 +4975,17 @@ impl Walk {
     }
 
     /// Lists the built-in tool's next version, retaining its earlier media states.
-    fn record_free(&self, name: &str, kind: &str, version: Version, noun: &str) -> Result<(), Error> {
+    fn record_free(&self, name: &str, kind: &str, version: Version, noun: &str, approve: bool) -> Result<(), Error> {
         let number = version.number;
         self.folder().act(|| {
+            let initialize = format::can_initialize_approval(self.folder(), name)?;
             self.folder().update_lock(|lock| {
                 let held = lock.asset_mut(name, kind);
                 held.versions.push(version.clone());
                 held.versions.sort_by_key(|version| version.number);
                 held.failed = None;
             })?;
-            if let Some(sha256) = version.main() {
+            if let Some(sha256) = version.main() && (approve || initialize) {
                 self.folder().edit(|written| written.selected(name, number, sha256))?;
             }
             Ok(())
@@ -4993,6 +4999,7 @@ impl Walk {
     fn record(&self, key: Option<&str>, name: &str, kind: &str, mut version: Version, noun: &str, approve: bool, settle: impl Fn(&mut Lock)) -> Result<(), Error> {
         let number = std::cell::Cell::new(version.number);
         self.folder().act(|| {
+            let initialize = format::KINDS.contains(&kind) && format::can_initialize_approval(self.folder(), name)?;
             self.folder().update_lock(|lock| {
                 if let Some(key) = key {
                     lock.pending.remove(key);
@@ -5008,7 +5015,7 @@ impl Walk {
                 held.tried = None;
                 held.failed = None;
             })?;
-            if (approve || format::KINDS.contains(&kind)) && let Some(sha256) = version.main() {
+            if let Some(sha256) = version.main() && (approve || initialize) {
                 self.folder().edit(|written| written.selected(name, number.get(), sha256))?;
             }
             Ok(())

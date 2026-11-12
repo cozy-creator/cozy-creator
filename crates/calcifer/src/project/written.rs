@@ -11,7 +11,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::prefix_of,
-    format::{FORMAT, INSTRUCTIONS, LEADS, NODE_KIND, SELECTED_VERSION, TEXT, canonical, end_trimmed, invalid, names_a_file, yaml_key},
+    format::{FORMAT, INSTRUCTIONS, LEADS, NODE_KIND, SELECTED_VERSION, STARRED, TEXT, canonical, end_trimmed, invalid, names_a_file, yaml_key},
     graph::{mention, mention_moved, name_key},
 };
 
@@ -19,7 +19,7 @@ use super::{
 pub(super) const TOOL: &str = "tool";
 const SECTION: &str = "assets";
 /// What a box holds whatever its tool: the platform's words.
-const BOX: [&str; 8] = ["tool", "approved", "description", "models", "lora", "text", NODE_KIND, SELECTED_VERSION];
+const BOX: [&str; 9] = ["tool", "approved", "description", "models", "lora", "text", NODE_KIND, SELECTED_VERSION, STARRED];
 
 /// A project's boxes and what else it says, in order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -273,7 +273,10 @@ impl Written {
     }
 
     pub(crate) fn approved(&mut self, name: &str, sha256: &str) -> Result<(), Error> {
-        self.set(name, &Map::from_iter([("approved".to_owned(), json!(prefix_of(sha256)))])).map(drop)
+        self.set(name, &Map::from_iter([
+            ("approved".to_owned(), json!(prefix_of(sha256))),
+            (SELECTED_VERSION.to_owned(), Value::Null),
+        ])).map(drop)
     }
 
     /// Selecting a version retains its exact number even when another version has identical media.
@@ -285,7 +288,10 @@ impl Written {
     }
 
     pub(crate) fn unapproved(&mut self, name: &str) -> Result<(), Error> {
-        self.set(name, &Map::from_iter([("approved".to_owned(), Value::Null)])).map(drop)
+        self.set(name, &Map::from_iter([
+            ("approved".to_owned(), Value::Null),
+            (SELECTED_VERSION.to_owned(), Value::Null),
+        ])).map(drop)
     }
 
     /// Box `from` called `to`: its name, and every `<from>` and `<from.2>` in any box's words.

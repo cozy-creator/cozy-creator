@@ -4,27 +4,49 @@ import { createPortal } from "react-dom"
 import type { FoundModel, ModelDetail, Tool, ToolModel } from "../api/calcifer"
 import { useConnection } from "../app/Connection"
 import { Icon } from "../ui/Icon"
+import { say } from "../ui/notes"
 import { NSFW, isNsfw, useShowNsfw } from "../ui/Tags"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { modelLabel } from "./palette"
+import { loraNote } from "./loraNotes"
 import "./ModelPicker.css"
 
 type Entry = Record<string, unknown>
 type Kind = "weights" | "lora"
-type PickerSlot = ToolModel & { kind?: "base" | "lora" | null }
+type PickerSlot = ToolModel & { kind?: "base" | "lora" | null; class?: string | null }
+type PickerModel = FoundModel & { strength?: number | null; description?: string | null }
 const entryOf = (value: unknown): Entry => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Entry : {}
 const adaptersOf = (value: unknown): unknown[] => Array.isArray(value) ? value : []
 const identityOf = (ref: string) => ref.split("@")[0]
 const title = (value: string) => value.split(/[-_]+/).filter(Boolean).map((part) => part.toLowerCase() === "lora" ? "LoRA" : !/[aeiou]/i.test(part) ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1)).join(" ")
 const slotName = (slot: PickerSlot, qwen: boolean) => qwen && slot.slot === "rewriter" ? "Prompt-Enhancer I2I" : qwen && slot.slot === "expander" ? "Prompt-Enhancer T2I" : title(slot.slot)
 const modelName = (ref: string) => title(identityOf(ref).split("/").filter(Boolean).at(-1)?.replace(/\.safetensors$/, "") ?? ref)
+export const modelChoiceLabel = (ref: string) => {
+  const parts = identityOf(ref).split("/").filter(Boolean)
+  const owner = parts.length > 1 ? parts.at(-2) : undefined
+  return owner ? `${owner} / ${modelName(ref)}` : modelName(ref)
+}
+const descriptionOf = (model: PickerModel) => (model.description ?? loraNote(model.model)?.description)?.trim().replace(/\s+/g, " ") || "No description provided."
 const slotsOf = (tool: Tool | undefined): PickerSlot[] => {
   const slots = (tool as (Tool & { models?: PickerSlot[] }) | undefined)?.models
   const primary = tool?.model as PickerSlot | undefined
   return slots?.length ? slots : primary ? [{ ...primary, kind: primary.kind ?? "base" }] : []
 }
 const compatible = (model: FoundModel | ModelDetail | undefined, family: string | null | undefined, kind: Kind | undefined) => Boolean(kind && family && model?.family === family && model?.kind === kind)
+const adapterFits = (model: FoundModel | ModelDetail, slot: PickerSlot) => {
+  if (!compatible(model, slot.family, "lora") || identityOf(model.model) === "alibaba-pai/qwen-image-2.1-fun-acc") return false
+  const encoder = model.tags?.some((tag) => tag.toLowerCase().replace(/_/g, "-") === "text-encoder") ?? false
+  return slot.slot === "text_encoder" ? encoder : !encoder
+}
+const fitsSlot = (model: FoundModel | ModelDetail | undefined, ref: string, slot: PickerSlot, kind: Kind | undefined, funAcc: boolean) => {
+  if (funAcc && slot.slot === "model" && identityOf(ref) === "qwen/qwen-image-2.1-turbo") return false
+  if (ref === slot.default) return true
+  if (!compatible(model, slot.family, kind)) return false
+  const tags = model?.tags?.map((tag) => tag.toLowerCase().replace(/_/g, "-")) ?? []
+  if (slot.slot === "text_encoder") return tags.includes("text-encoder")
+  return !tags.includes("text-encoder") && !tags.includes("vae")
+}
 
 /** One modal edits every model slot without changing the node's tool or creating work. */
 export function ModelPicker({ name, onClose }: { name: string; onClose(): void }) {
@@ -39,6 +61,7 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   const [page, setPage] = useState<string | null>(null)
   const tool = tools.get(view?.asset?.tool ?? "")
   const qwen = tool?.package.split("/").at(-1) === "qwen-image-2"
+  const funAcc = Boolean(qwen && slotsOf(tool).some((slot) => slot.slot === "turbo_lora" && (slot.class?.split(".").at(-1) === "FunAccLoRA" || identityOf(slot.default ?? "") === "alibaba-pai/qwen-image-2.1-fun-acc")))
   const imageEdit = view?.operation === "edit_image" || store.mentionedPictures(name).length > 0
   const helper = imageEdit ? "rewriter" : "expander"
   const slots = slotsOf(tool).filter((slot) => !qwen || (slot.slot !== "expander" && slot.slot !== "rewriter") || slot.slot === helper)
@@ -107,7 +130,7 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
               {slots.length !== 1 && legacy.length > 0 && <li><button type="button" onClick={() => setPage("__legacy")}><span>Existing LoRAs</span><Icon name="forward" /></button></li>}
             </ul>
           </>}
-          {active && <Slot key={active.slot} name={name} slot={active} restricted={restricted} showNsfw={showNsfw} legacy={slots.length === 1 ? legacy : []} />}
+          {active && <Slot key={active.slot} name={name} slot={active} restricted={restricted} funAcc={funAcc} showNsfw={showNsfw} legacy={slots.length === 1 ? legacy : []} />}
           {page === "__legacy" && <section className="model-picker-slot">
             <AdapterList name={name} slot={null} families={slots.flatMap((slot) => slot.family ? [slot.family] : [])} adapters={legacy} />
           </section>}
@@ -126,7 +149,7 @@ function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot
   store.putOn(name, { models: Object.keys(models).length ? models : null })
 }
 
-function Slot({ name, slot, restricted, showNsfw, legacy }: { name: string; slot: PickerSlot; restricted: boolean; showNsfw: boolean; legacy: unknown[] }) {
+function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: string; slot: PickerSlot; restricted: boolean; funAcc: boolean; showNsfw: boolean; legacy: unknown[] }) {
   const store = useCanvasStore()
   const { client } = useConnection()
   useElement(name)
@@ -148,26 +171,35 @@ function Slot({ name, slot, restricted, showNsfw, legacy }: { name: string; slot
     queryFn: ({ signal }) => client.models(q, limit, signal, { family: slot.family ?? undefined, noTag: showNsfw ? undefined : NSFW }),
     enabled: Boolean(slot.family) && !restricted, staleTime: 60_000,
   })
-  const found = data?.models.filter((model) => model.family === slot.family && (showNsfw || !isNsfw(model.tags))) ?? []
+  const found: PickerModel[] = data?.models.filter((model) => model.family === slot.family && (showNsfw || !isNsfw(model.tags))) ?? []
   const listed = found.find((model) => model.model === identityOf(selected))
   const { data: detail, isPending: checking } = useQuery({
     queryKey: ["model", identityOf(selected)],
     queryFn: ({ signal }) => client.model(identityOf(selected), signal),
     enabled: Boolean(selected && !listed && (!restricted || !showNsfw)), staleTime: 60_000, retry: false,
   })
-  const selectedValid = restricted ? selected === slot.default : compatible(listed ?? detail, slot.family, kind)
+  const selectedValid = restricted ? selected === slot.default : fitsSlot(listed ?? detail, selected, slot, kind, funAcc)
   const selectionState = selectedValid ? "" : restricted ? " (compatibility unverified)" : checking && !listed ? " (checking compatibility)" : !(listed ?? detail) ? " (compatibility unavailable)" : " (incompatible)"
-  const alternatives = restricted ? [] : found.filter((model) => compatible(model, slot.family, kind) && model.model !== identityOf(selected))
+  const alternatives = restricted ? [] : found.filter((model) => fitsSlot(model, model.model, slot, kind, funAcc) && model.model !== identityOf(selected))
   const adapters = adaptersOf(held.lora)
   const defaultVisible = !slot.default || showNsfw || Boolean(defaultModel && !isNsfw(defaultModel.tags))
   const selectedMeta = listed ?? detail ?? (identityOf(selected) === identityOf(slot.default ?? "") ? defaultModel : undefined)
   const selectedVisible = showNsfw || Boolean(selectedMeta && !isNsfw(selectedMeta.tags))
-  const availableLoras = kind ? found.filter((model) => compatible(model, slot.family, "lora") && !adapters.some((adapter) => identityOf(String(entryOf(adapter).ref ?? "")) === model.model)) : []
+  const availableLoras = kind ? found.filter((model) => adapterFits(model, slot) && !adapters.some((adapter) => identityOf(String(entryOf(adapter).ref ?? "")) === model.model)) : []
   const clearBase = () => changeSlot(store, name, slot.slot, ({ ref: _, ...rest }) => {
     if (restricted) delete rest.lora
     return rest
   })
-  const addLora = (ref: string) => changeSlot(store, name, slot.slot, (held) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(ref)) ? held : ({ ...held, lora: [...adaptersOf(held.lora), { ref, strength: 1 }] }))
+  const addLora = async (model: PickerModel) => {
+    let recommended = model.strength
+    if (recommended === undefined) {
+      try { recommended = (await client.model(model.model)).strength }
+      catch (error) { say("Couldn't read the LoRA's default strength", error); return }
+    }
+    const strength = recommended ?? loraNote(model.model)?.strength
+    const adapter = { ref: model.model, ...(typeof strength === "number" && Number.isFinite(strength) ? { strength } : {}) }
+    changeSlot(store, name, slot.slot, (held) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model)) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }))
+  }
   return <section className="model-picker-slot" data-model-slot={slot.slot}>
     {!restricted && <div className="model-picker-tabs" role="group" aria-label={`Choices for ${slot.slot}`}>
       <button type="button" aria-pressed={tab === "models"} onClick={() => { setTab("models"); setTyped(""); setLimit(50) }}>Models</button>
@@ -181,14 +213,14 @@ function Slot({ name, slot, restricted, showNsfw, legacy }: { name: string; slot
     {tab === "models" || restricted ? <>
       <ul className="model-picker-choices" aria-label={`Base model for ${slot.slot}`}>
         <li><button type="button" aria-pressed={!selected && !malformed} disabled={!defaultVisible} onClick={clearBase}>
-          <span>{defaultVisible ? slot.default ? modelName(slot.default) : "No model selected" : defaultModel ? "Default model hidden" : "Default model"}<small>Default</small></span><span className="model-picker-choice-mark" aria-hidden="true" />
+          <span>{defaultVisible ? slot.default ? modelChoiceLabel(slot.default) : "No model selected" : defaultModel ? "Default model hidden" : "Default model"}<small>Default</small></span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>
         {malformed && <li><button type="button" aria-pressed="true" disabled><span>Invalid model selection</span><span className="model-picker-choice-mark" aria-hidden="true" /></button></li>}
         {selected && <li><button type="button" aria-pressed="true" disabled={!selectedValid || !selectedVisible} onClick={() => changeSlot(store, name, slot.slot, (held) => ({ ...held, ref: selected }))}>
-          <span>{selectedVisible ? modelName(selected) : selectedMeta ? "Selected model hidden" : "Selected model"}<small>{selectedValid ? "Selected" : selectionState.trim().replace(/^\(|\)$/g, "")}</small></span><span className="model-picker-choice-mark" aria-hidden="true" />
+          <span>{selectedVisible ? modelChoiceLabel(selected) : selectedMeta ? "Selected model hidden" : "Selected model"}<small>{selectedValid ? "Selected" : selectionState.trim().replace(/^\(|\)$/g, "")}</small></span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>}
         {alternatives.filter((model) => model.model !== identityOf(slot.default ?? "")).map((model) => <li key={model.model}><button type="button" aria-pressed="false" onClick={() => changeSlot(store, name, slot.slot, (held) => ({ ...held, ref: model.model }))}>
-          <span>{modelName(model.model)}</span><span className="model-picker-choice-mark" aria-hidden="true" />
+          <span>{modelChoiceLabel(model.model)}</span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>)}
       </ul>
       {(selected || malformed) && <button type="button" className="tb model-picker-reset" title={slot.default ? "Use tool default" : "Remove base model"} onClick={clearBase}>{slot.default ? "Reset to default" : "Remove model"}</button>}
@@ -200,7 +232,7 @@ function Slot({ name, slot, restricted, showNsfw, legacy }: { name: string; slot
       {legacy.length > 0 && <div className="model-picker-legacy"><h4>Existing LoRAs</h4><AdapterList name={name} slot={null} families={slot.family ? [slot.family] : []} adapters={legacy} /></div>}
       <h4>Available LoRAs</h4>
       <ul className="model-picker-choices" aria-label={`Add LoRA for ${slot.slot}`}>
-        {availableLoras.map((model) => <li key={model.model}><button type="button" onClick={() => addLora(model.model)}><span>{modelName(model.model)}</span><Icon name="plus" /></button></li>)}
+        {availableLoras.map((model) => <li key={model.model}><button type="button" className="model-picker-lora-option" onClick={() => void addLora(model)}><span><span>{modelChoiceLabel(model.model)}</span><small className="model-picker-lora-description" title={descriptionOf(model)}>{descriptionOf(model)}</small></span></button></li>)}
       </ul>
       {!availableLoras.length && !isPending && <p className="muted model-picker-empty">No compatible LoRAs found.</p>}
     </>}
@@ -210,6 +242,8 @@ function Slot({ name, slot, restricted, showNsfw, legacy }: { name: string; slot
 
 function AdapterList({ name, slot, families, adapters }: { name: string; slot: string | null; families: string[]; adapters: unknown[] }) {
   const store = useCanvasStore()
+  const tool = store.tools.get().get(store.get(name)?.asset?.tool ?? "")
+  const spec = slotsOf(tool).find((held) => held.slot === slot)
   const change = (index: number, strength?: number) => {
     const edit = (items: unknown[]) => strength === undefined ? items.filter((_, at) => at !== index) : items.map((held, at) => at === index ? { ...entryOf(held), strength } : held)
     if (slot === null) {
@@ -218,10 +252,10 @@ function AdapterList({ name, slot, families, adapters }: { name: string; slot: s
     } else changeSlot(store, name, slot, (held) => ({ ...held, lora: edit(adaptersOf(held.lora)) }))
   }
   if (!adapters.length) return <p className="muted model-picker-empty">None added</p>
-  return <ul className="model-picker-adapters">{adapters.map((value, index) => <Adapter key={`${index}:${String(entryOf(value).ref ?? "")}`} value={value} families={families} onRemove={() => change(index)} onStrength={(value) => change(index, value)} />)}</ul>
+  return <ul className="model-picker-adapters">{adapters.map((value, index) => <Adapter key={`${index}:${String(entryOf(value).ref ?? "")}`} value={value} families={families} slot={spec} onRemove={() => change(index)} onStrength={(value) => change(index, value)} />)}</ul>
 }
 
-function Adapter({ value, families, onRemove, onStrength }: { value: unknown; families: string[]; onRemove(): void; onStrength(value: number): void }) {
+function Adapter({ value, families, slot, onRemove, onStrength }: { value: unknown; families: string[]; slot?: PickerSlot; onRemove(): void; onStrength(value: number): void }) {
   const { client } = useConnection()
   const [showNsfw] = useShowNsfw()
   const held = entryOf(value)
@@ -230,14 +264,14 @@ function Adapter({ value, families, onRemove, onStrength }: { value: unknown; fa
     queryKey: ["model", identityOf(ref)], queryFn: ({ signal }) => client.model(identityOf(ref), signal),
     enabled: Boolean(ref), staleTime: 60_000, retry: false,
   })
-  const valid = Boolean(data?.kind === "lora" && data.family && families.includes(data.family))
+  const valid = Boolean(data?.kind === "lora" && data.family && families.includes(data.family) && identityOf(ref) !== "alibaba-pai/qwen-image-2.1-fun-acc" && (!slot || adapterFits(data, slot)))
   const strength = held.strength == null ? 1 : typeof held.strength === "number" && Number.isFinite(held.strength) ? held.strength : null
   const [draft, setDraft] = useState<string | null>(null)
   const commit = () => {
     if (draft !== null && draft.trim() && Number.isFinite(Number(draft))) onStrength(Number(draft))
     setDraft(null)
   }
-  const word = ref ? modelName(ref) : "Unknown adapter"
+  const word = ref ? modelChoiceLabel(ref) : "Unknown adapter"
   if (!showNsfw && (!data || isNsfw(data.tags))) return null
   return <li className={`model-picker-adapter ${valid ? "" : "invalid"}`}>
     <span className="model-picker-adapter-name">{word}{!valid && <small>{ref && isPending ? "Checking compatibility…" : !data ? "Compatibility unavailable" : "Incompatible with this model slot"}</small>}{strength === null && <small>Enter a valid strength.</small>}</span>

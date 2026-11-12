@@ -6,7 +6,7 @@ import { flushSync } from "react-dom"
 import { machinesQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
-import type { MainFile, Snap } from "../api/calcifer"
+import type { MainFile } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -17,10 +17,9 @@ import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapesOf, snapped } from "./controls"
 import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
-import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
-import { FPS, framesIn, timecode } from "./ranges"
+import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
 import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
@@ -150,7 +149,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
     }
     if (writes) return store.writeNext(name)
     store.focusing = name
-    store.patch(name, { hereWords: true })
+    store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watchRun: undefined, watchFrom: undefined })
   }
   const pick = (number: number) => {
     store.pickTake(name, number)
@@ -232,13 +231,6 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
   ) : (
     row
   )
-}
-
-/** The frame a pickup really lands on, asked for `frame` of a take of `last` frames, as its tool's grid says. Null: not this early. */
-function landsOn(frame: number, last: number, snap: Snap | undefined): number | null {
-  if (!snap) return Math.min(frame, last)
-  if (frame < snap.first) return null
-  return Math.min(last, Math.max(snap.first, snap.offset + Math.round((frame - snap.offset) / snap.every) * snap.every))
 }
 
 /** The machines still held, by name: a take's latents on any other went with it. */
@@ -449,29 +441,6 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   return null
 }
 
-/** What this asset is, in words of its own: it reaches what mentions it. Always open, under its label. */
-function Description({ name, view, rule }: { name: string; view: ElementView; rule: boolean }) {
-  const store = useCanvasStore()
-  const held = store.valueOf(name, "description")
-  if (!view.asset) return null
-  return (
-    <div className="desc-field">
-      {rule && <hr className="here-rule" />}
-      <span className="block-label">Description</span>
-      <MentionText
-        asset={name}
-        place="description"
-        value={typeof held === "string" ? held : ""}
-        label="Description"
-        missing={[]}
-        focus={false}
-        onDraft={(words) => store.setDraft(name, "description", words)}
-        onSave={() => void store.save(name)}
-      />
-    </div>
-  )
-}
-
 /** The corner, pulled to size a box. Showing no picture, or its words, a box takes its tool's shape from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. Showing a picture, it only scales. */
 function Corner({ name, view, width, focused = false }: { name: string; view: ElementView; width: number; focused?: boolean }) {
   const store = useCanvasStore()
@@ -570,10 +539,11 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
-const CardBody = memo(function CardBody({ name, width, focused = false }: { name: string; width: number; focused?: boolean }) {
+const CardBody = memo(function CardBody({ name, width, focused = false, snapshot }: { name: string; width: number; focused?: boolean; snapshot?: ElementView }) {
   const store = useCanvasStore()
   const flow = useReactFlow<ElementNode>()
-  const view = useElement(name)
+  const live = useElement(name)
+  const view = snapshot ?? live
   const here = Boolean(view?.here)
   const owner = here ? store.inPlace : null
   // Far out, only what can be seen: its picture, its name and its state.
@@ -707,14 +677,14 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
 
   const asset = view.asset
   const versions = asset?.prefixes ?? []
-  const parameterTool = focused && asset?.kind === "video" && Boolean(asset.tool) && !asset.timeline
   const shown = shownOf(view)
   const at = versions.findIndex((version) => version.number === shown?.number)
   const shownVersion = versions.find((version) => version.number === shown?.number)
   const face = faceOf(view)
   const canFlip = asset?.kind !== "image" && makes(view)
   // On the canvas a box is its name, its picture or its text, its state and an X. All else comes with a click, so 300 boxes cost little.
-  const editing = here && (asset?.kind === "image" ? Boolean(view.hereWords) : asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
+  const editing = here && (asset?.kind === "image" || (asset?.kind === "video" && !asset.timeline) ? Boolean(view.hereWords) : asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
+  const parameterTool = focused && asset?.kind === "video" && Boolean(asset.tool) && !asset.timeline && editing
   const looking = !parameterTool && here && asset?.kind !== "image" && !view.hereWords && paints(view, tools)
   const hasFocusMedia = Boolean(shown || asset?.making?.length || view.queued || view.asked !== undefined)
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
@@ -724,13 +694,16 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
   const originalAspect = firstImage?.width && firstImage.height ? firstImage.width / firstImage.height : aspectOf(view)
   const imageHeight = width / originalAspect
   const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
+  const style: CSSProperties & Record<`--${string}`, string | number> = focused
+    ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 240 : 64 : asset?.kind === "video" && !editing ? 64 : asset?.tool ? 220 : 0}px` }
+    : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
   return (
     <div
       ref={self}
-      className={`card ${focused ? "focus-card" : ""} ${parameterTool ? "focus-parameter-tool" : ""} ${hasFocusMedia ? "has-focus-media" : ""} ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === (view.asset.approved ?? view.asset.version) ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${focused ? "focus-card" : ""} ${parameterTool ? "focus-parameter-tool focus-new-video" : ""} ${hasFocusMedia ? "has-focus-media" : ""} ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === (view.asset.approved ?? view.asset.version) ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
-      style={focused ? ({ width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 240 : 64 : asset?.tool ? 220 : 0}px` } as CSSProperties) : ({ width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` } as CSSProperties)}
+      style={style}
       onClick={buttonsOnly}
       onAnimationEnd={(event) => {
         if (event.target === event.currentTarget && view.landing) store.patch(name, { landing: undefined })
@@ -803,7 +776,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
       <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text" && !(asset?.timeline && editing)}>{asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
-        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width} restWidth={width}>
+        <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : !parameterTool ? <InFrame name={name} view={view} /> : null)}
           {here && !focused && !view.hereWords && asset && shownVersion?.main && (
             <div
@@ -817,7 +790,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
           {asset && !view.placing && !lite && (!focused || view.hereWords) && <Corner name={name} view={view} width={width} focused={focused} />}
         </Media>
       )}</FocusFrame>
-      {!lite && asset?.kind === "image" && !view.placing && <ImageVersions name={name} view={view} width={width} />}
+      {!lite && asset && (asset.kind === "image" || (asset.kind === "video" && !asset.timeline && !editing)) && !view.placing && <ImageVersions name={name} view={view} width={width} />}
       {!lite && asset && asset.kind !== "image" && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
@@ -826,7 +799,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
         </div>
       )}
       {here && asset && asset.kind !== "text" && !asset.timeline && <Takes view={view} name={name} width={width} side />}
-      {here && asset && (asset.kind !== "image" || editing) && (
+      {here && asset && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
             {(asset.kind !== "text" || asset.tool) && <>
@@ -838,7 +811,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
               {!looking && (asset.kind !== "image" || editing) && <AssetEdit name={name} view={view} editing={editing} prominent={parameterTool} head={asset.kind !== "image" ? <Stack name={name} /> : undefined} actions={editing && <RenderButton name={name} view={view} />} />}
               {asset.kind !== "image" && !view.hereWords && <TakeName view={view} />}
               {/* Writing an image tool's next take, its description isn't asked: it's for what's looked at. */}
-              {asset.kind !== "image" && !(view.hereWords && paints(view, tools)) && <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />}
               {view.warned && warned ? (
                 <div className="warned-lines">
                   {view.warnings!.map((warning) => (
@@ -859,11 +831,14 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
 export function Card({ data }: NodeProps<ElementNode>) {
   const store = useCanvasStore()
   const focused = useSignal(store.focusedName)
+  const entering = useSignal(store.focusEntering)
   const view = useElement(data.name)
-  if (focused === data.name) return <div className="focus-placeholder" style={{ width: view ? bodyWidth(view, data.width) : data.width, height: view ? heightFor(view, data.width) : 1 }} />
+  const resting = useRef(view)
+  if (focused !== data.name) resting.current = view
+  if (focused === data.name && !entering) return <div className="focus-placeholder" style={{ width: view ? bodyWidth(view, data.width) : data.width, height: view ? heightFor(view, data.width) : 1 }} />
   return (
     <>
-      <CardBody name={data.name} width={data.width} />
+      <CardBody name={data.name} width={data.width} snapshot={focused === data.name && entering ? resting.current : undefined} />
       <AddOns name={data.name} />
     </>
   )

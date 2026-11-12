@@ -4,6 +4,7 @@ import { signal } from "../ui/signal"
 import { isNsfw } from "../ui/Tags"
 import type { CanvasStore, ElementView } from "./CanvasStore"
 import { madeHere } from "./shown"
+import { loraNote } from "./loraNotes"
 
 /** What a box can be given by a drag: whether this one takes it, and what taking it does. A checkpoint is one; anything else goes by this same path. */
 export interface Carried {
@@ -95,7 +96,7 @@ export function whyNot(found: FoundModel, name: string, view: ElementView | unde
 /** The box under a point, its add-ons being part of it. */
 export function boxAt(store: CanvasStore, x: number, y: number): string | null {
   for (const element of document.elementsFromPoint(x, y)) {
-    const card = element.closest(".react-flow__node")?.querySelector<HTMLElement>(".card[data-asset]")
+    const card = element.closest<HTMLElement>(".card[data-asset]") ?? element.closest(".react-flow__node")?.querySelector<HTMLElement>(".card[data-asset]")
     if (card) return store.resolveName(card.dataset.asset ?? "")
   }
   return null
@@ -154,7 +155,10 @@ export const carrying = (found: FoundModel, tools: Map<string, Tool>): Carried =
     const models = store.valueOf(name, "models")
     if (addOnsOf(lora, models).some((addOn) => addOn.ref === found.model)) return void say(`${wordOf(found.model)} is already on ${name}`)
     const slot = modelsOf(store.tools.get().get(store.get(name)?.asset?.tool ?? "")).find((model) => model.family === found.family)?.slot
-    if (found.kind === "lora") store.putOn(name, { lora: [...(Array.isArray(lora) ? lora : []), { ref: found.model, strength: 1 }] })
+    if (found.kind === "lora") {
+      const strength = found.strength ?? loraNote(found.model)?.strength
+      store.putOn(name, { lora: [...(Array.isArray(lora) ? lora : []), { ref: found.model, ...(typeof strength === "number" && Number.isFinite(strength) ? { strength } : {}) }] })
+    }
     else if (slot) store.putOn(name, { models: { ...slotsOf(models), [slot]: { ...slotsOf(models)[slot], ref: found.model } } })
   },
 })

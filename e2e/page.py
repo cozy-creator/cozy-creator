@@ -7,7 +7,8 @@ no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr a
     page.py render <project> --on M[,M]|auto [--n N] [--approve] [--pickup '<take>' FRAME] [--wait A,B] [--queue] [--missing] <name>...
                                                                      a render, followed until each name's (or --wait's) new
                                                                      versions land: one JSON line each, exit 1 on a failure.
-                                                                     `auto`: what the page sends for Automatically; --queue:
+                                                                     `auto`: none, as the page sends with no machine chosen, for
+                                                                     Calcifer to place (board's `on` says where); --queue:
                                                                      asked, not followed; --missing: only what has no state
     page.py approve <project> <name> <version>                       a version approved, as a double tap on its take does
     page.py asset <project> <name>...                                each box and its versions, a JSON line each
@@ -72,24 +73,10 @@ def read(folder: str) -> Json:
     return call("GET", project(folder) + "?assets=false")
 
 
-def automatic(folder: str) -> list[str]:
-    """What the page sends with no machine green in its machines panel (web/app CanvasHost.tsx `useMachines`): the project's machines, else every
-    rental this computer ordered that's up or booting, another computer's that's up, and this one last where it runs models."""
-    chosen = cast(list[str], read(folder).get("machines", []))
-    if chosen:
-        return chosen
-    listed = cast(list[Json], call("GET", "/v1/machines")["machines"])
-    held = [machine for machine in listed if machine.get("ordered", True) and not machine.get("offline")]
-    rented = [machine for machine in held if machine["kind"] == "rental" and machine["state"] in ("ready", "booting")]
-    up = [machine for machine in held if machine["kind"] != "rental" and machine["state"] == "ready" and not machine.get("unreachable")]
-    others = [machine for machine in up if machine["kind"] != "local"]
-    here = [machine for machine in up if machine["kind"] == "local"] if call("GET", "/v1/status").get("local_usable") else []
-    return [str(machine["name"]) for machine in rented + others + here]
-
-
 def render(args: argparse.Namespace) -> int:
     names: list[str] = args.names
-    on = automatic(args.project) if args.on == "auto" else args.on.split(",")
+    # None: the page's ask with no machine chosen, which Calcifer places as a `cozy run` naming none (cl-894).
+    on: list[str] = [] if args.on == "auto" else args.on.split(",")
     waited = [] if args.queue else args.wait.split(",") if args.wait else [name for name in names if name != "all"]
     before = {name: len(cast(list[object], asset(args.project, name)["versions"])) for name in waited}
     if args.missing:  # a box with a version already makes nothing new

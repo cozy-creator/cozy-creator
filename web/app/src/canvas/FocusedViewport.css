@@ -9,6 +9,10 @@
   min-height: 0;
   background: transparent;
 }
+.focus-viewport[data-entering] {
+  visibility: hidden;
+  pointer-events: none;
+}
 .focus-heading {
   display: flex;
   align-items: center;
@@ -65,7 +69,7 @@
   height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) min(26vw, 280px);
-  grid-template-rows: minmax(0, 1fr) var(--focus-footer-room, 52px);
+  grid-template-rows: minmax(0, 1fr) minmax(var(--focus-footer-room, 52px), auto);
   gap: 12px 20px;
   background: none;
   border: 0;
@@ -98,6 +102,13 @@
   position: relative;
   flex: none;
   transform-origin: center;
+}
+.focus-viewer[data-zoomed] .focus-image-transform {
+  cursor: grab;
+  touch-action: none;
+}
+.focus-viewer[data-zoomed] .focus-image-transform:active {
+  cursor: grabbing;
 }
 .focus-image-transform > .media {
   flex: none;
@@ -179,6 +190,32 @@ body:has(.focus-viewport) .zoom {
   width: 100% !important;
   max-height: calc(var(--focus-footer-room, 200px) - 48px);
   transform: none;
+}
+.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video {
+  grid-template-columns: minmax(0, 1fr) min(22vw, 260px);
+  grid-template-rows: minmax(0, 1fr);
+}
+.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .focus-viewer {
+  display: none;
+}
+.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-under {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: stretch;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+}
+.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-side {
+  grid-column: 2;
+}
+.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-under > .here-all {
+  min-height: 0;
+  overflow-y: auto;
+}
+.media:has(video.live) .video-pickup-action {
+  bottom: 52px;
 }
 .image-tool-name {
   flex: 1;

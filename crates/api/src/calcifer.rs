@@ -435,6 +435,9 @@ pub struct Run {
     /// Live: the machine's latest progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// With `?detail=full`: verified video segment frame ranges and published completion, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_progress: Option<VideoProgress>,
     /// A run waiting for its turn: its place in its machine's line (1 is next: only the work
     /// running is ahead of it), or among the runs waiting for a machine to be chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -480,6 +483,37 @@ impl Run {
             None => self.number.to_string(),
         }
     }
+}
+
+/// A video's verified segment plan and the completed prefix, in absolute shot frames.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VideoProgress {
+    pub fps: u32,
+    /// Frames kept from an earlier video; no computation is claimed for them in this run.
+    pub resumed_at: u64,
+    /// End of the published completed prefix, including the frames kept before this run.
+    pub completed_frames: u64,
+    pub segments: Vec<VideoSegmentProgress>,
+}
+
+/// One actual generated segment; a segment may overlap several authored beats.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VideoSegmentProgress {
+    pub from_frame: u64,
+    pub to_frame: u64,
+    pub status: VideoSegmentStatus,
+}
+
+/// Completed means this segment's output was published, not an estimated elapsed share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum VideoSegmentStatus {
+    Pending,
+    InProgress,
+    Completed,
 }
 
 /// What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.

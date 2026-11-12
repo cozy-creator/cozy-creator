@@ -194,6 +194,10 @@ approved?: number | null,
  */
 pinned?: boolean,
 /**
+ * A person starred it, to find it again (cl-892): `starred: true` in its fields, which `PATCH` sets. Never part of its key.
+ */
+starred?: boolean,
+/**
  * Its memo key's inputs now; None while something it reads has no state.
  */
 inputs?: string | null,
@@ -725,6 +729,10 @@ lanes: Array<string>, private: boolean,
  * Who made it: the org it credits, or the parked org it mirrors into.
  */
 author: ModelAuthor | null,
+/**
+ * Its owner's recommended LoRA strength, when provided; not applied by a render automatically.
+ */
+strength?: number | null,
 /**
  * What its header says it is. None: it couldn't be read.
  */
@@ -2534,6 +2542,10 @@ waiting?: string | null,
  */
 progress?: Progress | null,
 /**
+ * With `?detail=full`: verified video segment frame ranges and published completion, when available.
+ */
+video_progress?: VideoProgress | null,
+/**
  * A run waiting for its turn: its place in its machine's line (1 is next: only the work
  * running is ahead of it), or among the runs waiting for a machine to be chosen.
  */
@@ -2735,7 +2747,7 @@ export type RunStatus = "queued" | "in_progress" | "completed" | "failed" | "can
 /**
  * `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
  * only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
- * is settled; `on` lists the machines they may go to.
+ * is settled; `on` lists the machines they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
  */
 export type Runs = { names: Array<string>, n: number, on: Array<On>,
 /**
@@ -3284,7 +3296,11 @@ execution_ms?: number | null,
 /**
  * The words it was made from.
  */
-text?: string | null, };
+text?: string | null,
+/**
+ * Its saved editable inputs, before prompt binding, including model choices; absent when unknown.
+ */
+fields?: { [key in string]: JsonValue } | null, };
 
 /**
  * `DELETE /v1/projects/{id}/assets/{name}/versions/{number}` and `POST …/versions`: a version discarded, or joined.
@@ -3362,6 +3378,29 @@ without?: Array<string>,
  * An Edit's: the clips that made this version, which an edit can carry on from.
  */
 timeline?: TimelineNow | null, };
+
+/**
+ * A video's verified segment plan and the completed prefix, in absolute shot frames.
+ */
+export type VideoProgress = { fps: number,
+/**
+ * Frames kept from an earlier video; no computation is claimed for them in this run.
+ */
+resumed_at: number,
+/**
+ * End of the published completed prefix, including the frames kept before this run.
+ */
+completed_frames: number, segments: Array<VideoSegmentProgress>, };
+
+/**
+ * One actual generated segment; a segment may overlap several authored beats.
+ */
+export type VideoSegmentProgress = { from_frame: number, to_frame: number, status: VideoSegmentStatus, };
+
+/**
+ * Completed means this segment's output was published, not an estimated elapsed share.
+ */
+export type VideoSegmentStatus = "pending" | "in_progress" | "completed";
 
 /**
  * One member of this controller's warm set on the machine.

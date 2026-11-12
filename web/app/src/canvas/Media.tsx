@@ -312,12 +312,15 @@ type Source = { path: string } | { run: number; output: string }
 const FILE = /^files\/[0-9a-f]{64}(\.\w+)?$/
 
 /** Its bytes are in the project's files/, which the file route serves, so a person can download it. */
-export const downloadable = (file: MainFile) => !file.absent && FILE.test(file.path)
+export const downloadable = (file: Pick<MainFile, "path" | "absent">) => !file.absent && FILE.test(file.path)
 
 export function sourceOf(view: ElementView, shown: Shown | null): Source | null {
   const asset = view.asset
   if (!asset || view.placing) return null
-  if (asset.making?.length && asset.kind === "video" && view.viewed === undefined) return { run: Math.min(...asset.making), output: "video" }
+  if (!shown && asset.kind === "video") {
+    const run = watched(view)?.run ?? (view.viewed === undefined ? asset.making?.[0] : undefined)
+    if (run) return { run, output: "video" }
+  }
   if (shown?.field !== "video" && shown?.field !== "audio") return null
   if (!shown.absent) return FILE.test(shown.path) ? { path: shown.path } : null
   return shown.machine && shown.run ? { run: shown.run, output: shown.output } : null
@@ -352,7 +355,7 @@ export function viewable(view: ElementView | undefined): boolean {
 }
 
 /** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
-export function Player({ field, path, machine, seek, auto }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean }) {
+export function Player({ field, path, machine, seek, auto, onTime }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; onTime?(seconds: number): void }) {
   const { client, stream } = useConnection()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const [why, setWhy] = useState("This browser can't play it")
@@ -443,6 +446,8 @@ export function Player({ field, path, machine, seek, auto }: { field: string; pa
         className={`live nodrag nopan nowheel ${field}`}
         controls
         preload="none"
+        onTimeUpdate={(event) => onTime?.(event.currentTarget.currentTime)}
+        onSeeked={(event) => onTime?.(event.currentTarget.currentTime)}
         onEnded={() => stopRef.current()}
         onError={() => {
           const el = element.current
@@ -707,7 +712,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
-  const busy = (making || Boolean(view.queued) || view.asked !== undefined) && (asset?.kind !== "image" || pendingImage || !shown)
+  const busy = (making || Boolean(view.queued) || view.asked !== undefined) && (Boolean(watch && watch.number === undefined) || !shown)
   const run = busy ? makingRun(view) : undefined
   const here = shown && !shown.absent ? shown : null
   // A video whose file says `orbit` turns, not plays: open, a drag turns it from the file here.
@@ -727,6 +732,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
     const next = imageVersions[imageAt + offset]?.main
     return next && !next.absent ? [next.sha256] : []
   })
+  const neighborPaths = Object.fromEntries(imageVersions.flatMap((version) => version.main && !version.main.absent ? [[version.main.sha256, version.main.path]] : []))
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
@@ -748,7 +754,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           />
         )}
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-        {bufferedImage && field === "image" && <BufferedImage sha256={bufferedImage.sha256} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {bufferedImage && field === "image" && <BufferedImage sha256={bufferedImage.sha256} originalPath={bufferedImage.path} neighborPaths={neighborPaths} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
@@ -761,13 +767,18 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           <Icon name={glyph} />
         </span>
       )}
-      {view.glimpse && !(asset?.kind === "image" && shown) && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
+      {view.glimpse && !shown && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
       {busy && view.viewed === undefined && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {busy && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {busy && <OnItsWay view={view} name={name} number={run} />}
       {asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
+      {asset?.kind === "video" && tools.get(asset.tool ?? "")?.pickup && !view.hereWords && shown && <button type="button" className="image-edit-action video-pickup-action nodrag nopan" onClick={(event) => {
+        event.stopPropagation()
+        const playing = event.currentTarget.closest(".media")?.querySelector<HTMLVideoElement>("video.live")
+        void store.beginVideoPickup(name, playing?.currentTime ?? view.scrub ?? 0)
+      }}>Pick up from here</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit: open it and drag to turn">
@@ -781,6 +792,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           path={"path" in source ? client.file(store.projectId, source.path) : undefined}
           machine={"run" in source ? source : undefined}
           seek={view.seek}
+          onTime={field === "video" ? (seconds) => store.patch(name, { scrub: seconds }) : undefined}
         />
       )}
       {children}

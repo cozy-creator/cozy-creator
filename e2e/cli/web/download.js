@@ -93,7 +93,7 @@ const hex = (digest) => digest?.replace(/^sha256:/, '');
   await settled(page);
   const box = await downloaded(boxOf(page, 'hei').locator('.nm'));
   seen.box = box;
-  check('box_menu_has_download', box.items.join() === 'Download,Rename,Delete', box.items);
+  check('box_menu_has_download', box.items.join() === 'Download,Star,Rename,Delete', box.items);
   check('box_saves_as_its_name', box.name === 'hei.png', box.name);
   check('box_saves_the_take_it_shows', box.sha256 === sha(readFileSync(takes[showing.number])) && box.sha256 === hex(showing.main.sha256), { box, showing: showing.main });
   check('menu_shuts', box.closed);

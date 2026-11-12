@@ -4,8 +4,10 @@ import { useSignal } from "../ui/signal"
 import "./AddOns.css"
 import { type AddOn, addOnsOf, atStrength, carried, takenOff, wordOf } from "./checkpoints"
 import { useCanvasStore, useElement } from "./context"
-import { madeHere, toolName } from "./shown"
+import { madeHere } from "./shown"
+import { modelLabel } from "./palette"
 import { ModelPicker } from "./ModelPicker"
+import { ModelConfig } from "./ModelConfig"
 
 const said = (addOn: AddOn) => `${addOn.lora ? "LoRA" : "Fine-tune"} ${addOn.ref}`
 
@@ -42,13 +44,13 @@ export function Stack({ name }: { name: string }) {
   const mark = useSignal(store.far) && !view?.here
   const tool = view?.asset?.tool
   const known = tool ? tools.get(tool) : undefined
-  const made = tool === "cozy/edit" ? "Video Timeline" : tool && !madeHere(tool) ? (known ? toolName(known) : (tool.split("/").at(-2) ?? tool)) : null
+  const made = tool === "cozy/edit" ? "Video Timeline" : tool && !madeHere(tool) ? (known ? modelLabel(known) : (tool.split("/").at(-2) ?? tool)) : null
   if (!made && !held.length) return null
   return (
     <>
     <ul className="add-ons nodrag nopan" aria-label={`What's on ${name}`}>
       {made && <Chip word={made} title={made} kind="tool" mark={mark} pick={known?.models?.length || known?.model ? () => setModelsOpen(true) : undefined} off={{ label: `Take ${made} off ${name}`, take: () => store.takeToolOff(name) }} />}
-      {held.map((addOn) => (
+      {!view?.here && held.map((addOn) => (
         <Chip
           key={`${addOn.slot}:${addOn.ref}`}
           word={wordOf(addOn.ref)}
@@ -59,6 +61,7 @@ export function Stack({ name }: { name: string }) {
         />
       ))}
     </ul>
+    {view?.here && <ModelConfig name={name} />}
     {modelsOpen && <ModelPicker name={name} onClose={() => setModelsOpen(false)} />}
     </>
   )

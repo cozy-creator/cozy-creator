@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-scale|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-scale|web-canvas|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -262,7 +262,7 @@ cozy --json package uninstall local/one_script --on local > /dev/null || check "
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines machine_set completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   local-wake) parts="local_wake_update logs" ;;
@@ -277,12 +277,13 @@ case $SHARD in
   # The palette against a Hub holding every first-party package (e2e/isolated.sh), and with none (cl-896).
   web-palette) export DB_WEB=palette; parts="tools_read db_existing_web logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
+  web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
   web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
   web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
   web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
-  # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873).
-  projectdb) parts="projectdb statedb machine_set logs" ;;
+  # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), and an idle computer placed on (cl-894).
+  projectdb) parts="projectdb statedb local_idle machine_set logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
@@ -309,7 +310,7 @@ esac
 if [ -z "$LOCAL" ]; then
   case $SHARD in
     entrypoints | projectvault) ;;
-    web-layout-* | web-scale) parts="db_existing_web logs" ;;
+    web-layout-* | web-scale | web-canvas) parts="db_existing_web logs" ;;
     web-core) parts="entrypoints refusals web_native completions homebrew calcifer_faults update remove" ;;
     *) parts="entrypoints refusals web_serves completions homebrew calcifer_faults update remove" ;;
   esac

@@ -33,6 +33,7 @@ pub(crate) mod files;
 pub(crate) mod report;
 pub(crate) mod spec;
 pub(crate) mod target;
+pub(crate) mod video_progress;
 
 use bind::Terms;
 use target::Resolved;
@@ -523,13 +524,20 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     Ok(Prepared::Run { submit, notes, offers })
 }
 
-/// Where a run goes (cl-873): the machines it names, else its project's, else where a render's job would (Paul, 11-06).
+/// Where a run goes (cl-873): the machines it names, else `unnamed_set`.
 async fn run_set(api: &Arc<Api>, ask: &RunRequest) -> Result<Vec<On>, Error> {
     api::calcifer::machine_set(&ask.on)?;
-    if !ask.on.is_empty() {
-        return Ok(ask.on.clone());
+    match ask.on.is_empty() {
+        true => unnamed_set(api, ask.project.as_deref()).await,
+        false => Ok(ask.on.clone()),
     }
-    if let Some(project) = ask.project.as_deref() {
+}
+
+/// Where a run or a project's render that names no machine goes, for the CLI and the page alike (cl-894): its project's machines,
+/// else where a render's job would (Paul, 11-06; `MachineList::render_set`), this computer's `local` stopped or not: it starts to
+/// quote, so its start counts in its finish.
+pub(crate) async fn unnamed_set(api: &Arc<Api>, project: Option<&str>) -> Result<Vec<On>, Error> {
+    if let Some(project) = project {
         let pinned = crate::project::machines_of(api, project)?;
         if !pinned.is_empty() {
             return Ok(pinned);
