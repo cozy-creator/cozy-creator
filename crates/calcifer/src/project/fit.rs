@@ -1,8 +1,9 @@
 //! Whether this computer would render a tool poorly, said before a render on it alone (`POST /v1/projects/{id}/fit`): no GPU for a
-//! function that loads a model on one, or a GPU its weights fill more than three quarters of, the Hub's rule for a card that holds them. A
+//! function that loads a model on one, a GPU its weights fill more than three quarters of (the Hub's rule for a card that holds them),
+//! a GPU that also draws the screen, which a render makes lag (cl-796), or its runs here far slower than on a rented card (cl-897). A
 //! tool's weights are what the Hub places a run of its release by; local code's, its models' releases; either with a checkpoint on its box
-//! in place of its model's. A run of it here already says how long it took. Render here is kept by tool and what this computer has
-//! (`state.db`'s `rendered_here`), and asked again only on another computer, or for weights half as big again.
+//! in place of its model's. Its runs here and on rented cards say how long it takes each. Render here is kept by tool and what this
+//! computer has (`state.db`'s `rendered_here`), and asked again only on another computer, or for weights half as big again.
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path as FsPath,
@@ -37,6 +38,9 @@ use crate::{
 const KEPT: Duration = Duration::from_secs(600);
 /// Render here holds for weights up to half as big again as those it was said for.
 const GROWN: u64 = 2;
+/// Slow here: more than this many times a rented card's time, and more than `LONGER_S` longer.
+const SLOWER: f64 = 3.0;
+const LONGER_S: f64 = 60.0;
 
 static PLACED: LazyLock<Mutex<HashMap<String, (Instant, Option<Placed>)>>> = LazyLock::new(Mutex::default);
 static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<(String, u64)>)>>> = LazyLock::new(Mutex::default);
@@ -46,6 +50,8 @@ static SIZED: LazyLock<Mutex<HashMap<String, (Instant, Option<(String, u64)>)>>>
 struct Placed {
     slots: Vec<(String, String, u64)>,
     pick: Option<RentFor>,
+    /// Each card that holds it on one GPU, by its name as `RentFor::card` says it, and the Hub's speed for it there.
+    speeds: BTreeMap<String, f64>,
 }
 
 /// What one tool asks of a machine.
@@ -54,8 +60,10 @@ struct Need {
     label: String,
     bytes: u64,
     pick: Option<RentFor>,
-    /// Its newest finished run here, in seconds.
+    /// What it takes here, in seconds, by its runs here.
     took_s: Option<f64>,
+    /// What it takes on a rented card, in seconds, and the card.
+    away: Option<(String, f64)>,
 }
 
 /// Whether a Render here said for weights of `kept` bytes holds for `bytes`.
@@ -93,7 +101,8 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
         (targets, project.folder.dir.clone())
     };
     let hub = api.machines.hubs.default_origin();
-    let largest = gpus.iter().map(|(_, bytes)| *bytes).max();
+    let largest = gpus.iter().map(|gpu| gpu.1).max();
+    let display = gpus.iter().any(|gpu| gpu.2);
     let machine = machine_of(&gpus);
     let judging = targets.into_iter().map(|(target, assets)| {
         let (api, hub, dir) = (api.clone(), hub.clone(), dir.clone());
@@ -113,7 +122,7 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
     let mut fit = Fit::default();
     let mut picks = vec![];
     for (need, names) in needs.into_iter().flatten() {
-        let Some(line) = said(&need, largest) else { continue };
+        let Some(line) = said(&need, largest, display) else { continue };
         let here = kept.get(&need.tool).is_some_and(|kept| holds(*kept, need.bytes));
         picks.push((here, need.pick.clone()));
         fit.tools.push(ToolFit { tool: need.tool, label: need.label, names, line, bytes: need.bytes, here });
@@ -152,37 +161,70 @@ fn rendered(doc: &Doc, stand: &[super::Standing], asked: &FitAsk) -> Vec<usize> 
     named.into_iter().filter(|&i| doc.makes(i) && doc.tool(i).is_none()).collect()
 }
 
-/// This computer's GPUs as its machine last said: each one's name and the memory it may use. None: it hasn't said.
-fn gpus(api: &Api) -> Option<Vec<(String, u64)>> {
+/// This computer's GPUs as its machine last said: each one's name, the memory it may use, and whether it draws a screen. None: it hasn't
+/// said.
+fn gpus(api: &Api) -> Option<Vec<(String, u64, bool)>> {
     let frame = api.machines.frame("local")?;
     let usable = |gpu: &api::machine::Gpu| match gpu.memory_limit_bytes {
         0 => gpu.memory_bytes,
         limit => limit.min(gpu.memory_bytes),
     };
-    Some(frame.gpus.iter().map(|gpu| (gpu.name.clone(), usable(gpu))).collect())
+    Some(frame.gpus.iter().map(|gpu| (gpu.name.clone(), usable(gpu), gpu.display)).collect())
+}
+
+/// Whether a GPU of this computer draws its screen now: a render here makes it lag (cl-796).
+pub(super) fn draws_screen(api: &Api) -> bool {
+    gpus(api).is_some_and(|gpus| gpus.iter().any(|gpu| gpu.2))
 }
 
 /// What a Render here holds for: another computer, or a GPU more or less, is another question.
-fn machine_of(gpus: &[(String, u64)]) -> String {
+fn machine_of(gpus: &[(String, u64, bool)]) -> String {
     match gpus {
         [] => "no GPU".into(),
-        gpus => gpus.iter().map(|(name, bytes)| format!("{name} {} MiB", bytes >> 20)).collect::<Vec<_>>().join(", "),
+        gpus => gpus.iter().map(|(name, bytes, _)| format!("{name} {} MiB", bytes >> 20)).collect::<Vec<_>>().join(", "),
     }
 }
 
-/// How it would go here, or None when well enough.
-fn said(need: &Need, largest: Option<u64>) -> Option<String> {
+/// How it would go here, or None when well enough: why first, then how long here against a rented card, then the screen.
+fn said(need: &Need, largest: Option<u64>, display: bool) -> Option<String> {
+    let slow = need.took_s.zip(need.away.as_ref()).is_some_and(|(here, (_, away))| here > SLOWER * away && here - away > LONGER_S);
+    let label = &need.label;
     let mut line = match largest {
-        None => format!("This computer has no GPU, so {} would run on its CPU, slowly.", need.label),
+        None => format!("This computer has no GPU, so {label} would run on its CPU, slowly."),
         Some(largest) if need.bytes > 0 && need.bytes * 4 > largest * 3 => {
-            format!("This computer's GPU has {}, and {} needs about {}, so it would run slowly here.", gb(largest), need.label, gb(need.bytes * 4 / 3))
+            format!("This computer's GPU has {}, and {label} needs about {}, so it would run slowly here.", gb(largest), gb(need.bytes * 4 / 3))
         }
+        Some(_) if slow => format!("{label} runs slowly on this computer's GPU."),
+        Some(_) if display => format!("This computer's GPU also draws your screen, so {label} will slow your screen while it runs."),
         Some(_) => return None,
     };
-    if let Some(seconds) = need.took_s {
-        line.push_str(&format!(" It took {} here last time.", about(seconds)));
+    match (need.took_s, &need.away) {
+        (Some(here), Some((card, away))) if here > *away => line.push_str(&format!(" It takes {} here vs {} on a rented {card}.", about(here), about(*away))),
+        (Some(here), _) => line.push_str(&format!(" It took {} here last time.", about(here))),
+        _ => {}
+    }
+    if display && largest.is_some() && !line.contains("your screen") {
+        line.push_str(" It will slow your screen while it runs.");
     }
     Some(line)
+}
+
+/// A card as a person names it, from its driver's name: `RTX 4090`.
+fn card(model: &str) -> String {
+    model.trim_start_matches("NVIDIA ").trim_start_matches("GeForce ").to_owned()
+}
+
+/// What a rented card takes for `measured` like `made`, in seconds, and the card: the Hub's pick by this computer's runs of it there, else
+/// by its runs on another card scaled by the Hub's speeds; with no pick, the fastest card it ran on. None: it ran on no rented card.
+fn away(api: &Api, measured: &str, made: &Map<String, Value>, placed: Option<&Placed>) -> Option<(String, f64)> {
+    let ran: Vec<(String, f64)> = api.calcifer.away_ms(measured, made).into_iter().map(|(gpu, ms)| (card(&gpu), ms / 1e3)).collect();
+    let fastest = |times: Vec<(String, f64)>| times.into_iter().min_by(|a, b| a.1.total_cmp(&b.1));
+    let Some((pick, placed)) = placed.and_then(|placed| Some((placed.pick.as_ref()?, placed))) else { return fastest(ran) };
+    if let Some((_, seconds)) = ran.iter().find(|(card, _)| *card == pick.card) {
+        return Some((pick.card.clone(), *seconds));
+    }
+    let to = *placed.speeds.get(&pick.card).filter(|speed| **speed > 0.0)?;
+    fastest(ran.iter().filter_map(|(card, seconds)| Some((pick.card.clone(), seconds * placed.speeds.get(card)? / to))).collect())
 }
 
 /// As a card's memory is sold: a GB is 2^30 bytes.
@@ -224,8 +266,11 @@ async fn need_of(api: &Arc<Api>, hub: &str, dir: &FsPath, target: &str, tool: &s
         true => format!("{}/{function}", found.package),
         false => format!("{}/{function}@", found.package),
     };
-    let took_s = Host::new(api).last_took(&measured, "local");
-    Some(Need { tool: tool.to_owned(), label, bytes, pick, took_s })
+    let base = measured.trim_end_matches('@');
+    let took_s = api.calcifer.here_ms(base, made).map(|ms| ms / 1e3).or_else(|| Host::new(api).last_took(&measured, "local"));
+    let placed = (!local_code).then(|| placed_now(hub, &found.package, &found.release, &function)).flatten();
+    let away = away(api, base, made, placed.as_ref());
+    Some(Need { tool: tool.to_owned(), label, bytes, pick, took_s, away })
 }
 
 /// Whether this computer would run `function` of `package` poorly, by what's known here without asking anyone: what the Hub and its
@@ -234,8 +279,42 @@ pub(super) fn poorly_now(api: &Api, hub: &str, package: &super::Package, functio
     let Some(gpus) = gpus(api) else { return false };
     let Some(weights) = Weights::of(package.document(), function, made) else { return false };
     let (bytes, _) = weights.weighed(hub, &package.name, &package.release, function, package.local.is_some());
-    let largest = gpus.iter().map(|(_, bytes)| *bytes).max();
+    let largest = gpus.iter().map(|gpu| gpu.1).max();
     largest.is_none_or(|largest| bytes > 0 && bytes * 4 > largest * 3)
+}
+
+/// What a walk's job sent here alone says first, as `here_now`, unless Render here was said of `tool` on this computer for weights as big.
+pub(super) fn told_here(api: &Api, hub: &str, package: &super::Package, function: &str, made: &Map<String, Value>, tool: &str) -> Option<String> {
+    let interface = Interface::parse(package.document()).ok()?;
+    let release = package.local.is_none().then_some(package.release.as_str());
+    let line = here_now(api, hub, &package.name, release, function, &interface, made)?;
+    let weights = Weights::of_interface(&interface, function, made)?;
+    let (bytes, _) = weights.weighed(hub, &package.name, &package.release, function, package.local.is_some());
+    let kept = api.calcifer.store().rendered_here(&machine_of(&gpus(api)?)).ok()?;
+    (!kept.get(tool).is_some_and(|kept| holds(*kept, bytes))).then_some(line)
+}
+
+/// What a run of `function` of `package@release` here says first when this computer would run it poorly, by what's known here without
+/// asking anyone, as `fit` says it: for `cozy run` and a walk's job sent here, which ask no one (cl-897). None on a computer with no GPU,
+/// which `cozy run` says itself.
+pub(crate) fn here_now(api: &Api, hub: &str, package: &str, release: Option<&str>, function: &str, interface: &Interface, made: &Map<String, Value>) -> Option<String> {
+    let gpus = gpus(api).filter(|gpus| !gpus.is_empty())?;
+    let weights = Weights::of_interface(interface, function, made)?;
+    let local_code = release.is_none();
+    let release = release.unwrap_or_default();
+    let (bytes, _) = weights.weighed(hub, package, release, function, local_code);
+    let base = format!("{package}/{function}");
+    let placed = (!local_code).then(|| placed_now(hub, package, release, function)).flatten();
+    let label = tool::tools_of(package, release, interface).into_iter().find(|tool| tool.function == function).map_or_else(|| base.clone(), |tool| tool.package_title);
+    let need = Need {
+        tool: base.clone(),
+        label,
+        bytes,
+        pick: placed.as_ref().and_then(|placed| placed.pick.clone()),
+        took_s: api.calcifer.here_ms(&base, made).map(|ms| ms / 1e3),
+        away: away(api, &base, made, placed.as_ref()),
+    };
+    said(&need, gpus.iter().map(|gpu| gpu.1).max(), gpus.iter().any(|gpu| gpu.2))
 }
 
 /// The model slots a function loads on a GPU, its own or, for one that orchestrates, those of what it calls; and what's on its box in their
@@ -249,7 +328,10 @@ struct Weights {
 impl Weights {
     /// None: nothing says it loads a model on a GPU.
     fn of(document: &Value, function: &str, made: &Map<String, Value>) -> Option<Self> {
-        let interface = Interface::parse(document).ok()?;
+        Self::of_interface(&Interface::parse(document).ok()?, function, made)
+    }
+
+    fn of_interface(interface: &Interface, function: &str, made: &Map<String, Value>) -> Option<Self> {
         let callable = interface.callables.iter().find(|callable| callable.name == function)?;
         let slots: Vec<Slot> = match callable.models.is_empty() {
             true => interface.call_slots(callable).into_iter().cloned().collect(),
@@ -320,13 +402,20 @@ async fn placed(api: &Api, hub: &str, package: &str, release: &str, function: &s
     let reader = api.machines.hubs.reader(hub).ok()?;
     let answer = tokio::time::timeout(HUB_LATE, reader.place_rental(&request)).await.ok()?;
     let placed = answer.ok().map(|placement| Placed {
+        speeds: (placement.machines.iter())
+            .filter(|machine| machine.accelerator_count <= 1)
+            .filter_map(|machine| Some((card(&machine.accelerator_model), machine.speed?)))
+            .fold(BTreeMap::new(), |mut speeds, (card, speed)| {
+                speeds.entry(card).or_insert(speed);
+                speeds
+            }),
         slots: (placement.weights.iter())
             .map(|slot| (slot.slot.rsplit(".models.").next().unwrap_or_default().to_owned(), slot.lane.clone(), slot.bytes.max(0) as u64))
             .collect(),
         pick: placement.machines.first().map(|machine| RentFor {
             sku: machine.name.clone(),
             gpus: machine.accelerator_count.max(1) as u32,
-            card: machine.accelerator_model.trim_start_matches("NVIDIA ").trim_start_matches("GeForce ").to_owned(),
+            card: card(&machine.accelerator_model),
             vram_gb: machine.vram_gb,
             usd_micros_per_hour: machine.price_usd_micros_per_hour,
             line: String::new(),

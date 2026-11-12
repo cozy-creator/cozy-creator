@@ -14,6 +14,8 @@ no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr a
     page.py board <project>                                          the project's render as the page shows it
     page.py cancel <project> <name>...                               their jobs canceled, as the page cancels them
     page.py tools <project>                                          the tools a box can be, as the page lists them
+    page.py fit <project> <name>...                                  how this computer would render them, as the page asks
+                                                                     before a render here alone
 <project> is its folder, which names it in a route."""
 
 import argparse
@@ -162,9 +164,10 @@ def main() -> int:
     one.add_argument("names", nargs="+")
     for verb in ("board", "tools"):
         verbs.add_parser(verb).add_argument("project")
-    one = verbs.add_parser("cancel")
-    one.add_argument("project")
-    one.add_argument("names", nargs="+")
+    for verb in ("cancel", "fit"):
+        one = verbs.add_parser(verb)
+        one.add_argument("project")
+        one.add_argument("names", nargs="+")
     args = parser.parse_args()
     if args.verb == "import":
         ask = {"source": held(Path(args.file).read_bytes())}
@@ -182,6 +185,8 @@ def main() -> int:
         return render(args)
     elif args.verb == "approve":
         print(json.dumps(call("POST", project(args.project) + "/approve", json.dumps({"name": args.name, "version": args.version}).encode())))
+    elif args.verb == "fit":
+        print(json.dumps(call("POST", project(args.project) + "/fit", json.dumps({"names": args.names}).encode())))
     elif args.verb == "cancel":
         print(json.dumps(call("POST", project(args.project) + "/cancel", json.dumps({"names": args.names}).encode())))
     elif args.verb == "board":

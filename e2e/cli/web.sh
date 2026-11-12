@@ -102,7 +102,7 @@ if [ "$scope" = full ]; then
 fi
 step "web-nodes: the tools, a box's controls, chips, approve, delete and Undo, and Paul's example where this computer runs models"
 web_proof nodes "$chrome" "$pw" ''
-step "web-localfit: a render this computer would do poorly asks on its box first; Render here kept by Calcifer; Rent a GPU chosen; the CLI warns once"
+step "web-localfit: a render this computer would do poorly asks on its box first; Rent a <card> first, Run here anyway kept by Calcifer; the card chosen"
 local on_hub=''
 [ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)
 HUB_RESTART=$on_hub web_proof localfit "$chrome" "$pw" "$restart"
