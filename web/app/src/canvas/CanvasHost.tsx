@@ -33,6 +33,7 @@ import { carriedAt, LET_GO, type Load, type LetGo } from "./carry"
 import { boxAt, carriedOver, letGo } from "./checkpoints"
 import { copyBoxes, ownCopy } from "./copy"
 import { EntityCard } from "./EntityCard"
+import { FocusedViewport } from "./FocusedViewport"
 import { HistoryControls } from "./HistoryControls"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
@@ -58,9 +59,7 @@ const fitOver = () => {
 }
 
 const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
-/** A window this narrow has no room for the tools beside a box being worked on: they fold away, and come back after. */
-const NARROW = 760
-/** How long the canvas takes to draw in on a box, or go back. */
+/** How long an explicit Wander camera action takes. */
 const HERE_MS = 260
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
@@ -254,6 +253,7 @@ function Canvas({
     const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId), projectId, loadSelection(projectId), loadMore(projectId))
     return made
   })
+  const focusedName = useSignal(store.focusedName)
   // A canvas's first box makes its project: kept from then on.
   useEffect(() => {
     if (store.projectId) canvases.set(store.projectId, store)
@@ -277,106 +277,48 @@ function Canvas({
   const compactAsset = useMatch("/p/:code/assets/:name")
   const legacyAsset = useMatch("/projects/:id/assets/:name")
   const opened = (compactAsset ?? legacyAsset)?.params.name
+  const openedNow = useRef(opened)
+  openedNow.current = opened
   const stage = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     if (active) {
       store.refreshSurface(flow.getViewport())
-      store.fitHere(true)
       return
     }
     // Keep draft/import owners alive under the cover, while closing any mention
     // popup portaled outside its hidden DOM subtree. Shell pauses covered media.
     if (document.activeElement instanceof HTMLElement && stage.current?.contains(document.activeElement)) document.activeElement.blur()
   }, [active, store, flow])
-  const returning = useRef<{ view: Viewport; until: number } | null>(null)
-  const folded = useRef(false)
+  const toolsBeforeFocus = useRef<boolean | null>(null)
   const shutNow = useRef(shut)
   shutNow.current = shut
-  const fitHereNow = useCallback(
-    (only = false) => {
-      const held = store.inPlace
-      const id = held && store.idOf(held.name)
-      if (!held || !id || !stage.current || held.moved || held.pulled || store.isDragging(held.name)) return
-      const { left, top, right, bottom } = clearOf()
-      const stageBox = stage.current.getBoundingClientRect()
-      const room = { x: left, y: top, w: stageBox.width - left - right, h: stageBox.height - top - bottom }
-      // What's still in reach stays as it is: nothing moves under what's being typed.
-      const at = held.fitted
-      if (only && at) {
-        const projected = store.drawSurface(undefined, at)
-        if (!projected) return
-        const { bounds } = projected
-        const x = bounds.x * at.zoom + at.x
-        const y = bounds.y * at.zoom + at.y
-        if (x >= room.x - 1 && y >= room.y - 1 && x + bounds.w * at.zoom <= room.x + room.w + 1 && y + bounds.h * at.zoom <= room.y + room.h + 1) return
-      }
-      const fit = store.drawSurface(room)
-      if (!fit) {
-        held.fitted = undefined
-        return
-      }
-      held.fitted = fit.view
-      void flow.setViewport(fit.view, { duration: HERE_MS })
-    },
-    [store, flow],
-  )
-  const fitting = useRef<{ frame: number; only: boolean; owner: NonNullable<CanvasStore["inPlace"]> } | null>(null)
-  const fitHere = useCallback((only = false) => {
-    const owner = store.inPlace
-    if (!owner) return
-    if (fitting.current && fitting.current.owner !== owner) {
-      cancelAnimationFrame(fitting.current.frame)
-      fitting.current = null
-    }
-    if (fitting.current) {
-      fitting.current.only &&= only
-      return
-    }
-    const request = { frame: 0, only, owner }
-    fitting.current = request
-    request.frame = requestAnimationFrame(() => {
-      fitting.current = null
-      if (store.inPlace !== owner) return
-      fitHereNow(request.only)
-    })
-  }, [fitHereNow, store])
-  useEffect(() => () => {
-    if (fitting.current) cancelAnimationFrame(fitting.current.frame)
-    fitting.current = null
-  }, [])
-  store.fitHere = fitHere
-  /** Working on a box where it stands: the canvas draws in on it, and all it can do comes around it. Another box takes over, and leaving goes back to just where it was. */
+  // Focus fits its own viewport surface, never the canvas camera.
+  store.fitHere = () => {}
+  /** Focus one asset while preserving Wander's camera and palette state. */
   const writeHere = useCallback(
     (name: string) => {
+      name = store.resolveName(name)
       if (store.inPlace?.name === name) return
-      if (fitting.current) cancelAnimationFrame(fitting.current.frame)
-      fitting.current = null
+      const view = store.get(name)
+      if (!view) return
       if (store.inPlace) {
+        void store.save(store.inPlace.name)
         store.closeSurface()
         store.patch(store.inPlace.name, { here: undefined, hereWords: undefined })
       }
-      // Still on its way back from the last one, that's where to come back to.
-      const going = returning.current
-      const owner = { name, back: store.inPlace?.back ?? (going && performance.now() < going.until ? going.view : flow.getViewport()) }
+      const owner = { name, back: store.inPlace?.back ?? flow.getViewport() }
       store.inPlace = owner
       store.view(name)
-      const view = store.get(name)
-      // Its approved take, else its newest; with none yet, its words, ready to type in.
-      const words = !view?.asset?.prefixes?.length && !view?.asset?.sha256
+      const words = !view.asset?.prefixes?.length && !view.asset?.sha256
       if (words) store.focusing = name
       store.patch(name, { here: true, hereWords: words || undefined })
-      store.openSurface(name)
       if (store.writeOnOpen === name) store.writeNext(name, true)
       store.writeOnOpen = null
-      if (window.innerWidth < NARROW && !shutNow.current) {
-        folded.current = true
-        setShut(true)
-      }
-      requestAnimationFrame(() => {
-        if (store.inPlace === owner) fitHere()
-      })
+      if (toolsBeforeFocus.current === null) toolsBeforeFocus.current = shutNow.current
+      setShut(true)
+      store.focusedName.set(name)
     },
-    [store, flow, fitHere],
+    [store, flow],
   )
   store.openHere = (name: string) => {
     writeHere(name)
@@ -384,29 +326,28 @@ function Canvas({
   }
   const stopWriting = useCallback(() => {
     const held = store.inPlace
-    if (!held) return
-    if (fitting.current) cancelAnimationFrame(fitting.current.frame)
-    fitting.current = null
     store.inPlace = null
     store.closeSurface()
-    void store.save(held.name)
-    store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
-    store.view(held.name)
-    returning.current = { view: held.back, until: performance.now() + HERE_MS }
-    // A reload while it goes back finds where it was, not where the box was.
-    if (store.projectId) saveViewport(store.projectId, held.back)
-    if (folded.current) {
-      folded.current = false
-      setShut(false)
+    if (held) {
+      void store.save(held.name)
+      store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
+      store.view(held.name)
     }
-    void flow.setViewport(held.back, { duration: HERE_MS })
-  }, [store, flow])
+    store.focusedName.set(null)
+    if (toolsBeforeFocus.current !== null) {
+      setShut(toolsBeforeFocus.current)
+      toolsBeforeFocus.current = null
+    }
+  }, [store])
   const leaveHere = useCallback(() => {
     if (!store.inPlace) return
     stopWriting()
     navigate(to())
   }, [store, navigate, stopWriting, to])
   store.leaveHere = leaveHere
+  useEffect(() => {
+    if (store.focusedName.get() === null && toolsBeforeFocus.current !== null) stopWriting()
+  }, [store, focusedName, stopWriting])
   store.hereRenamed = (name) => navigate(to(`assets/${encodeURIComponent(name)}`), { replace: true })
   // The address says which box is being worked on, so a reload or Back finds it, and anything else leaves it.
   useEffect(() => {
@@ -429,7 +370,7 @@ function Canvas({
     // A project with no rows has nothing to fit at its first read: its first placing is what to look at.
     let fitted = Boolean(saved)
     const fitOnce = async () => {
-      if (fitted || !store.projectId) return
+      if (fitted || !store.projectId || store.focusedName.get() || openedNow.current) return
       fitted = true
       if (openedOn) await flow.fitView(fitOver())
       saveViewport(store.projectId, flow.getViewport())
@@ -474,19 +415,17 @@ function Canvas({
   /** Everything; a box worked on, it and what's under it as they were drawn in. */
   const fit = useCallback(() => {
     aim.current = null
-    if (!store.inPlace) return void flow.fitView({ ...fitOver(), duration: HERE_MS })
-    store.inPlace.moved = false
-    fitHere()
-  }, [flow, store, fitHere])
+    if (store.focusedName.get()) leaveHere()
+    void flow.fitView({ ...fitOver(), duration: HERE_MS })
+  }, [flow, store, leaveHere])
   /** What's selected, else the box worked on. */
   const fitSelected = useCallback(() => {
+    if (store.focusedName.get()) leaveHere()
     const nodes = flow.getNodes().filter((node) => node.selected)
     if (!nodes.length) return fit()
-    if (nodes.length === 1 && nodes[0].data.name === store.inPlace?.name) return fit()
     aim.current = null
-    if (store.inPlace) store.inPlace.moved = true
     void flow.fitView({ ...fitOver(), maxZoom: MOST_HERE, nodes, duration: HERE_MS })
-  }, [flow, store, fit])
+  }, [flow, store, fit, leaveHere])
   const zoomItems = useCallback(
     (): ZoomItem[] => [
       { label: "Zoom in", keys: keys("Mod", "+"), run: () => zoomBy(1) },
@@ -581,12 +520,10 @@ function Canvas({
 
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (!store.projectId || store.inPlace) return
-      // A draw-in cut short by leaving the box ends here part way: what's kept is where it's going back to.
-      const going = returning.current
-      saveViewport(store.projectId, going && performance.now() < going.until ? going.view : viewport)
+      if (store.focusedName.get()) leaveHere()
+      if (store.projectId) saveViewport(store.projectId, viewport)
     },
-    [store],
+    [store, leaveHere],
   )
 
   const selectionChanged = useCallback(
@@ -759,22 +696,16 @@ function Canvas({
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
   const moveStarted = useCallback(
-    (event: unknown) => {
-      if (event && store.inPlace) store.inPlace.moved = true
-      // Moved by hand on its way back: it stays where it's moved to.
-      if (event) returning.current = null
+    () => {
+      if (store.focusedName.get()) leaveHere()
     },
-    [store],
+    [store, leaveHere],
   )
   const nodeClicked = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
       if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
       const { name } = node.data
-      const view = store.get(name)
-      // A double tap on its picture approves the take showing, or unapproves it.
-      const shown = view?.asset?.prefixes?.length ? shownOf(view)?.number : undefined
-      if (event.detail > 1 && shown !== undefined && (event.target as Element).closest(".media")) return view?.asset?.kind === "image" ? store.beginImageEdit(name) : store.toggleApproved(name, shown)
-      if (store.inPlace?.name === name && view?.here) return
+      if (store.focusedName.get() === name) return
       // A click opens at once: only Shift selects.
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
       writeHere(name)
@@ -866,6 +797,7 @@ function Canvas({
         waiting={machines === null}
         shut={shut}
         setShut={(next) => {
+          if (store.focusedName.get()) return
           setShut(next)
           saveToolsShut(next)
         }}
@@ -915,6 +847,7 @@ function Canvas({
           colorMode="dark"
           attributionPosition="bottom-left"
           onMoveStart={moveStarted}
+          onMove={moveStarted}
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
           onNodeClick={nodeClicked}
@@ -933,6 +866,7 @@ function Canvas({
         <Zoom zoomBy={zoomBy} items={zoomItems} />
         {veil && <div className="dropveil" />}
       </div>
+      {active && focusedName && <FocusedViewport name={focusedName} onClose={leaveHere} />}
       {opened && <Addressed name={opened} enter={writeHere} leave={leaveHere} />}
       {active && <AssetMenu />}
       {active && <Viewer />}
