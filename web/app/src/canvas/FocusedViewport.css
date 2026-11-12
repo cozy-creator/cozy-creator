@@ -223,6 +223,29 @@ body:has(.focus-viewport) .zoom {
   width: 24px;
   height: 24px;
 }
+.focus-card .media .ratio-rest,
+.focus-card .authoring-ratio .ratio-rest {
+  font-size: 18px;
+}
+.focus-card .ratio-clear {
+  width: 26px;
+  height: 26px;
+}
+.authoring-ratio {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  z-index: 6;
+}
+.authoring-ratio .ratio-rest {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.focus-new-video .row.actions {
+  padding-right: 110px;
+}
 .focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video {
   grid-template-columns: minmax(0, 1fr) min(22vw, 260px);
   grid-template-rows: minmax(0, 1fr);
