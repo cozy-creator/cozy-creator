@@ -1581,6 +1581,11 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const asset = this.views.get(key)?.asset
     if (!asset?.prefixes?.some((held) => held.number === number)) return
+    // A picture box's only picture, with no tool to make another: its × deletes the box, as a person means, and nothing of it stays (cl-919).
+    if (!asset.tool && asset.kind !== "text" && asset.prefixes.length === 1 && !asset.making?.length) {
+      if (this.inPlace?.name === key) this.leaveHere()
+      return this.remove([key])
+    }
     const edit = this.step(`Discarded ${asset.noun} ${number} of ${key}`, [key])
     let note = 0
     this.dropTake(key, number, edit, () => dismiss(note))

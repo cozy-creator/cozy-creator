@@ -94,13 +94,15 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   seen.thumbs_before = thumbsOf(pic.sha256);
   check('dropped_file_in_files', inFiles(pic.sha256));
 
-  // 2. Its box deleted as a person does: a click opens it, and its ✕ deletes it. From here, what's asked for its picture is counted.
+  // 2. Its box deleted as Paul did: a click opens it in Focus, where the ✕ on its picture is its only one. On the RC before cl-919 that
+  // discarded its one version and left the box, empty, in the project (e2e 43159619369). From here, what's asked for its picture is counted.
   const asked = [];
   page.on('request', (request) => { if (request.url().includes(hexOf(pic.sha256))) asked.push(new URL(request.url()).pathname); });
   await openBox(page, 'pic');
-  await page.locator('.card.here[data-asset="pic"] [aria-label=Delete]').first().click();
-  await until('pic gone', () => asset('pic'), (held) => held === null);
-  check('deleted_box_gone', (await box('pic').count()) === 0);
+  await page.locator('[data-focused-asset="pic"] [aria-label="Discard version 1"]').click();
+  await until('pic gone', () => asset('pic'), (held) => held === null).catch(() => null);
+  check('deleted_box_gone', (await asset('pic')) === null && (await box('pic').count()) === 0, await asset('pic'));
+  check('focus_left', await until('back on the canvas', () => Promise.resolve(page.url()), (url) => !url.includes('/assets/'), 5000).then(() => true, () => false), page.url());
 
   // 3. `<` in another box's prompt, a picture tool's, offers the rest, not it; nor does a box of words.
   const prompt = box('reader').locator('.mention-text[data-field=instructions]');
@@ -178,9 +180,11 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   check('no_picture_after_a_reload', (await shown.count()) === 0);
   check('nothing_of_it_asked_for', asked.length === 0, asked);
 
-  // 6. Undo: back, offered, and its mention a picture again.
+  // 6. Undo of the delete (the history's, as the page's Undo sends it; words typed since are newer): back, offered, and its mention a picture again.
   await away();
-  await page.keyboard.press('ControlOrMeta+z');
+  const deleted = (await api(`${at}/history?limit=50`)).body.entries.find((held) => held.words === 'Deleted pic' && !held.undone);
+  const undone = await api(`${at}/history/undo`, { method: 'POST', body: JSON.stringify({ entry: deleted?.id }) });
+  check('undo_in_the_window', undone.status === 200, undone);
   await box('pic').waitFor();
   await until('pic back', () => asset('pic'), (held) => held?.sha256 === pic.sha256);
   await openReader();
