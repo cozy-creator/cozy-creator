@@ -360,7 +360,8 @@ export function MentionText({
     if (onSubmit && event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault()
       event.stopPropagation()
-      if (menu) choose(menu.options[menu.chosen])
+      // With names offered, Enter takes the one chosen, and writing goes on after it; with none, it renders.
+      if (menu) return choose(menu.options[menu.chosen])
       onSubmit()
       return
     }
