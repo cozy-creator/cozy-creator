@@ -213,8 +213,11 @@ def real_data(gates: list[str], outputs: list[dict[str, object]], corpus: Path |
     lines = ['# Real-data errors over the 8-bit bar', '',
              f"Worst-head relative L2 against FP32 on the captured corpus; the 8-bit bar is {MICRO[8]}. `exact`: the Runtime "
              "holds the site to 16 bits (an exact path, or #2118's outlier-key rule). Crest: an operand's worst head max/RMS.", '']
+    last: dict[str, Path] = {}  # a class's quality comes from its last gate directory given (a rerun's)
     for gate in map(Path, gates):
-        klass = str(detail(gate / 'attention-inventory.json').get('klass', ''))
+        if any(gate.glob('attention-quality-*.json')):
+            last[str(detail(gate / 'attention-inventory.json').get('klass', ''))] = gate
+    for klass, gate in sorted(last.items()):
         for path in sorted(gate.glob('attention-quality-*.json')):
             d = detail(path)
             if d.get('level') != 8:
