@@ -1097,8 +1097,14 @@ pub struct StuckProcess {
     pub command: String,
     /// The kernel function it sleeps in; empty when the kernel hides it.
     pub wchan: String,
-    /// When the machine found it stuck.
+    /// When it was killed.
     pub since_unix_ms: i64,
+    /// Its resident host memory then.
+    pub resident_bytes: u64,
+    /// The GPUs (by index) out of service while it holds their memory, nothing placed on them until it exits (cl-935).
+    pub gpus: Vec<u32>,
+    /// What the driver showed it holding on them.
+    pub gpu_bytes: u64,
 }
 
 /// A starting machine's step and a counter that advances as it moves.

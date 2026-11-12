@@ -54,11 +54,64 @@ pub struct Budget {
 /// How often an end looks at killed members still alive: never a deadline.
 const SAMPLE: Duration = Duration::from_millis(100);
 
+/// How long killed processes may show no sign of leaving before one in the kernel is called stuck
+/// (cl-935). A CUDA process's exit frees its device memory and unpins its host memory in the driver,
+/// its threads in D state while it does and while processes queue on the driver's lock: bercouli's
+/// pid 1161 (24 GB of host memory, two GPUs) sat in `os_acquire_rwlock_write` at 100 ms and was
+/// called stuck. The signs are any waited-on process's CPU time, threads and resident pages: they
+/// leave through the same driver, so one moving is the driver moving.
+pub const STALL: Duration = Duration::from_secs(60);
+
 /// This process's live tree scopes: a token on no live scope is unclaimed.
 static LIVE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// Killed members an end found stuck in the kernel, until each exits.
 static STUCK: Mutex<Vec<(Birth, Stuck)>> = Mutex::new(Vec::new());
+
+/// Killed processes waited on while they leave, and when any of them last moved.
+static LEAVING: Mutex<Leaving> = Mutex::new(Leaving { members: Vec::new(), moved: None });
+
+/// Told of each process once it is found stuck (TensorD takes its GPUs out of service).
+static ON_STUCK: Mutex<Option<std::sync::Arc<dyn Fn(&Stuck) + Send + Sync>>> = Mutex::new(None);
+
+struct Leaving {
+    members: Vec<Member>,
+    moved: Option<Instant>,
+}
+
+struct Member {
+    birth: Birth,
+    killed_unix_ms: i64,
+    /// Its resident bytes when first waited on.
+    resident: u64,
+    signs: Signs,
+}
+
+/// What moves while a process leaves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Signs {
+    cpu_ticks: u64,
+    threads: u64,
+    resident_pages: u64,
+}
+
+fn signs(pid: u32) -> Option<Signs> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields: Vec<&str> = stat.rsplit_once(") ")?.1.split_whitespace().collect();
+    let field = |i: usize| fields.get(i).and_then(|f| f.parse::<u64>().ok());
+    Some(Signs { cpu_ticks: field(11)? + field(12)?, threads: field(17)?, resident_pages: field(21)? })
+}
+
+/// Its resident bytes (`VmRSS`); 0 once its memory is gone.
+fn resident(pid: u32) -> u64 {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    status.lines().find_map(|l| l.strip_prefix("VmRSS:")?.trim().strip_suffix(" kB")?.trim().parse::<u64>().ok()).unwrap_or(0) << 10
+}
+
+/// `hook` hears of each process found stuck, once, on the thread that found it; the latest replaces any earlier.
+pub fn on_stuck(hook: impl Fn(&Stuck) + Send + Sync + 'static) {
+    *ON_STUCK.lock().unwrap() = Some(std::sync::Arc::new(hook));
+}
 
 /// One executor's containment: a delegated cgroup-v2 of its own, else a process-tree token.
 #[derive(Debug)]
@@ -552,21 +605,58 @@ fn threads(pid: u32) -> Vec<(u32, char)> {
         .collect()
 }
 
-/// Whether every one of these killed members is stuck in the kernel; each is then shown until it
-/// exits (`stuck`), and nothing waits on it. It runs no code of its own again, and what it holds
-/// (memory, GPU memory as NVML reads it, files, locks) stays held, and seen held, until it exits.
+/// Whether every one of these killed members is stuck in the kernel: each in D state, and no killed
+/// process waited on has moved for [`STALL`]. A sample, called every [`SAMPLE`] or so by whoever
+/// waits; until then each leaves and is waited on. One stuck is shown until it exits (`stuck`), and
+/// nothing waits on it: it runs no code of its own again, and what it holds (memory, GPU memory as
+/// NVML reads it, files, locks) stays held until it exits.
 pub fn all_stuck(births: &[Birth]) -> bool {
-    if births.is_empty() || !births.iter().all(|birth| in_kernel(birth.pid).is_some()) {
+    if births.is_empty() {
         return false;
     }
-    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let (now, wall) = (Instant::now(), SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
+    let mut guard = LEAVING.lock().unwrap();
+    let leaving = &mut *guard;
+    leaving.members.retain(|m| process_birth(m.birth.pid).is_ok_and(|b| b.start_ticks == m.birth.start_ticks) && !threads(m.birth.pid).is_empty());
+    for birth in births {
+        if leaving.members.iter().any(|m| m.birth == *birth) {
+            continue;
+        }
+        if let Some(signs) = signs(birth.pid) {
+            leaving.members.push(Member { birth: birth.clone(), killed_unix_ms: wall, resident: resident(birth.pid), signs });
+            leaving.moved = Some(now);
+        }
+    }
+    for member in &mut leaving.members {
+        if let Some(signs) = signs(member.birth.pid).filter(|signs| *signs != member.signs) {
+            member.signs = signs;
+            leaving.moved = Some(now);
+        }
+    }
+    let quiet = now.duration_since(leaving.moved.unwrap_or(now));
+    if quiet < STALL || !births.iter().all(|birth| in_kernel(birth.pid).is_some()) {
+        return false;
+    }
     let mut stuck = STUCK.lock().unwrap();
     let fresh: Vec<&Birth> = births.iter().filter(|birth| !stuck.iter().any(|(known, _)| known == *birth)).collect();
+    let mut found = Vec::new();
     for birth in fresh {
         let wchan = in_kernel(birth.pid).unwrap_or_default();
         let command = fs::read_to_string(format!("/proc/{}/comm", birth.pid)).unwrap_or_default().trim().to_owned();
-        tracing::warn!("pid {} ({command}) is stuck in the kernel after its kill (D state, {wchan}): shown, not waited on", birth.pid);
-        stuck.push((birth.clone(), Stuck { pid: birth.pid, command, wchan, since_unix_ms: now }));
+        let member = leaving.members.iter().find(|m| m.birth == *birth);
+        let (since_unix_ms, resident_bytes) = member.map_or((wall, 0), |m| (m.killed_unix_ms, m.resident));
+        tracing::warn!(
+            "pid {} ({command}) is stuck in the kernel after its kill (D state, {wchan}): no killed process moved for {} s; \
+             shown, not waited on", birth.pid, quiet.as_secs()
+        );
+        let shown = Stuck { pid: birth.pid, command, wchan, since_unix_ms, resident_bytes };
+        stuck.push((birth.clone(), shown.clone()));
+        found.push(shown);
+    }
+    drop((stuck, guard));
+    let hook = ON_STUCK.lock().unwrap().clone();
+    if let Some(hook) = hook {
+        found.iter().for_each(|shown| hook(shown));
     }
     true
 }

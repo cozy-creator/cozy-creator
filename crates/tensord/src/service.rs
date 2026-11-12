@@ -207,6 +207,7 @@ impl Service {
         pool.watch_disks();
         if pool.width() > 0 {
             pool.watch_faults();
+            pool.watch_stuck();
             // The current image may prepare ahead. Historical environments stay cold;
             // requested installs and executions use their existing kernel preparation paths.
             pool.image_kernel_boot();

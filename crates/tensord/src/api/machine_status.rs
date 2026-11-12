@@ -99,6 +99,8 @@ struct Held {
     models: crate::held_models::Listing,
     /// Each GPU's page accounting by UUID.
     memory: std::collections::BTreeMap<String, v1::GpuMemory>,
+    /// GPUs out of service by the stuck pid holding them.
+    lost: std::collections::BTreeMap<u32, crate::gpu_service::Lost>,
 }
 
 async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: VerifiedActor) -> Result<Held, Error> {
@@ -110,6 +112,7 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
             warm: runs.warm(actor)?,
             models: crate::held_models::listing(&store),
             memory: runs.memory(),
+            lost: runs.lost(),
         })
     })
     .await
@@ -138,7 +141,7 @@ fn drives_display(uuid: &str) -> bool {
 }
 
 fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
-    let Held { runs, environments, warm, models, mut memory } = held;
+    let Held { runs, environments, warm, models, mut memory, lost } = held;
     let (updates, lifecycle) = (&identity.updates, &identity.lifecycle);
     let software = updates.software();
     let activity = crate::activity::listed(|id| runs.iter().any(|run| run.id == id));
@@ -205,7 +208,13 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
         tensord_pid: std::process::id(),
         stuck: platform::contain::stuck()
             .into_iter()
-            .map(|s| v1::StuckProcess { pid: s.pid, command: s.command, wchan: s.wchan, since_unix_ms: s.since_unix_ms })
+            .map(|s| {
+                let gpus = lost.get(&s.pid).map(|l| l.gpus.clone()).unwrap_or_default();
+                v1::StuckProcess {
+                    pid: s.pid, command: s.command, wchan: s.wchan, since_unix_ms: s.since_unix_ms, resident_bytes: s.resident_bytes,
+                    gpu_bytes: gpus.iter().map(|(_, bytes)| bytes).sum(), gpus: gpus.into_iter().map(|(gpu, _)| gpu).collect(),
+                }
+            })
             .collect(),
         heat: crate::slowed::heat(),
         runtime_kernels: crate::slowed::runtime_kernels(),

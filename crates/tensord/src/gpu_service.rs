@@ -862,9 +862,20 @@ pub(crate) struct Pool {
     lanes: Mutex<BTreeMap<String, std::ops::Range<usize>>>,
     /// Driver faults that failed no run, by GPU: the next run ending there carries them.
     unreported: Mutex<Vec<(usize, String)>>,
+    /// GPUs out of service, by the killed executor stuck in the kernel that holds their memory (cl-935).
+    lost: Mutex<BTreeMap<u32, Lost>>,
     // Drop session/resource custody before ending the actual spawning thread.
     launcher: crate::child_launcher::ChildLauncher,
 }
+/// A killed executor process stuck in the kernel and the GPUs whose memory it holds (cl-935): they
+/// are out of service until it exits.
+#[derive(Clone, Debug)]
+pub(crate) struct Lost {
+    pub stuck: platform::contain::Stuck,
+    /// Each GPU by its index (`nvidia-smi`'s), with the bytes the driver showed held there.
+    pub gpus: Vec<(u32, u64)>,
+}
+
 /// While the pool lives, its idle executors are watched for their exit: one killed or crashed
 /// while idle leaves the pool and is reaped at once, never left a zombie until the next call.
 /// Dropped with the pool, its thread ends.
@@ -1083,6 +1094,7 @@ impl Pool {
                 running,
                 lanes: Mutex::default(),
                 unreported: Mutex::default(),
+                lost: Mutex::default(),
             }
         }))
     }
@@ -1394,6 +1406,116 @@ impl Pool {
                 pool.faulted(&fault);
             }
         }));
+    }
+
+    /// A killed executor found stuck in the kernel takes the GPUs whose memory it holds out of
+    /// service until it exits (cl-935).
+    pub(crate) fn watch_stuck(self: &Arc<Self>) {
+        let pool = Arc::downgrade(self);
+        let lose = move |stuck: &platform::contain::Stuck| {
+            let (pool, stuck, pid) = (pool.clone(), stuck.clone(), stuck.pid);
+            let lose = std::thread::Builder::new().name(format!("lost-{pid}")).spawn(move || {
+                if let Some(pool) = pool.upgrade() {
+                    pool.lose(stuck);
+                }
+            });
+            if let Err(error) = lose {
+                tracing::warn!("pid {pid} is stuck in the kernel; its GPUs stay in service: {error}");
+            }
+        };
+        // Those found before the pool was (this machine's start swept an earlier run's scopes).
+        platform::contain::stuck().iter().for_each(&lose);
+        platform::contain::on_stuck(lose);
+    }
+
+    /// The GPUs `stuck` holds memory on go out of service: those the driver charges it on, else
+    /// (a container, whose pids aren't the driver's) its executor's lane. Back once it exits.
+    fn lose(self: &Arc<Self>, stuck: platform::contain::Stuck) {
+        let pid = stuck.pid;
+        let tenant = self.tenants.lock().unwrap().get(&pid).map(|t| (t.start..t.start + t.width.max(1), t.exact.try_clone()));
+        let readings: Vec<Option<platform::gpu::Reading>> = self.devices.iter()
+            .map(|d| platform::gpu::Device::open(&d.entry).and_then(|gpu| gpu.read()).ok()).collect();
+        let charged: Vec<Option<u64>> = readings.iter()
+            .map(|r| r.as_ref().and_then(|r| r.processes.as_ref()).and_then(|p| p.get(&pid).copied())).collect();
+        let accounted = charged.iter().any(Option::is_some);
+        let held: Vec<(usize, u64)> = (0..self.devices.len()).filter_map(|i| match charged[i] {
+            Some(bytes) => Some((i, bytes)),
+            None if !accounted && tenant.as_ref().is_some_and(|(lane, _)| lane.contains(&i)) =>
+                Some((i, readings[i].as_ref().map_or(0, |r| r.total.saturating_sub(r.free)))),
+            None => None,
+        }).collect();
+        if held.is_empty() {
+            return tracing::warn!("pid {pid} ({}) is stuck in the kernel; no GPU here shows it holding memory", stuck.command);
+        }
+        let index = |i: usize| self.inventory(&self.devices[i].entry).map_or(i as u32, |g| g.device_index);
+        let gpus: Vec<(u32, u64)> = held.iter().map(|(i, bytes)| (index(*i), *bytes)).collect();
+        let shown: Vec<String> = gpus.iter().map(|(gpu, bytes)| format!("GPU {gpu} ({:.1} GiB)", *bytes as f64 / (1u64 << 30) as f64)).collect();
+        tracing::warn!("{} out of service: pid {pid} ({}) holds that memory, killed and stuck in the kernel; \
+            back once it exits", shown.join(", "), stuck.command);
+        self.notes.note(serde_json::json!({"event": "gpu_lost", "pid": pid, "wchan": stuck.wchan, "gpus": gpus}));
+        self.lost.lock().unwrap().insert(pid, Lost { stuck, gpus });
+        self.allocations.set_out(&held.iter().map(|(i, _)| *i).collect::<Vec<_>>(), true);
+        if let Some(engine) = self.engine.get().and_then(Weak::upgrade) {
+            engine.notify_activity();
+        }
+        let exact = match tenant.and_then(|(_, exact)| exact.ok()) {
+            Some(exact) => Some(exact),
+            None => Birth::of(pid).ok().and_then(|birth| Exact::open(&birth).ok().flatten()),
+        };
+        match exact {
+            Some(exact) if exact.wait().is_ok() => (),
+            // Unwatchable: looked for once a second.
+            _ => while platform::contain::stuck().iter().any(|s| s.pid == pid) {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            },
+        }
+        self.found(pid);
+    }
+
+    /// `pid` exited: the GPUs no other stuck process holds are back in service.
+    fn found(&self, pid: u32) {
+        let mut lost = self.lost.lock().unwrap();
+        let Some(gone) = lost.remove(&pid) else { return };
+        let still: std::collections::BTreeSet<u32> = lost.values().flat_map(|l| l.gpus.iter().map(|(gpu, _)| *gpu)).collect();
+        drop(lost);
+        let back: Vec<u32> = gone.gpus.iter().map(|(gpu, _)| *gpu).filter(|gpu| !still.contains(gpu)).collect();
+        let index = |gpu: u32| self.devices.iter().position(|d| self.inventory(&d.entry).is_some_and(|g| g.device_index == gpu));
+        self.allocations.set_out(&back.iter().filter_map(|gpu| index(*gpu)).collect::<Vec<_>>(), false);
+        tracing::info!("GPU {back:?} back in service: pid {pid} exited");
+        self.notes.note(serde_json::json!({"event": "gpu_back", "pid": pid, "gpus": back}));
+        if let Some(engine) = self.engine.get().and_then(Weak::upgrade) {
+            engine.notify_activity();
+        }
+    }
+
+    /// The killed executors stuck in the kernel and the GPUs they hold, by pid (cl-935).
+    pub(crate) fn lost(&self) -> BTreeMap<u32, Lost> {
+        self.lost.lock().unwrap().clone()
+    }
+
+    /// The widest lane of GPUs in service: what a root may be given.
+    pub(crate) fn serving_width(&self) -> usize {
+        self.allocations.serving()
+    }
+
+    /// Why `lane` can't run now: a GPU of it out of service, or, unbound, wider than any lane in
+    /// service. A run waiting for it fails as the machine's (`gpu_lost`), for its client to place it again.
+    pub(crate) fn unservable(&self, lane: Option<std::ops::Range<usize>>, width: usize) -> Option<String> {
+        let lost = self.lost.lock().unwrap();
+        if lost.is_empty() {
+            return None;
+        }
+        let out = match lane {
+            Some(lane) => self.allocations.out(lane),
+            None => width > self.allocations.serving(),
+        };
+        out.then(|| {
+            let held: Vec<String> = lost.values().map(|l| {
+                let gpus: Vec<String> = l.gpus.iter().map(|(gpu, _)| gpu.to_string()).collect();
+                format!("GPU {} held by pid {} ({}), killed and stuck in the kernel", gpus.join(", "), l.stuck.pid, l.stuck.command)
+            }).collect();
+            format!("its {width} GPU(s) aren't in service on this machine: {}", held.join("; "))
+        })
     }
 
     fn faulted(&self, fault: &platform::gpu::Fault) {
@@ -2393,9 +2515,13 @@ impl Pool {
             let width = match record.invocation.gpus {
                 // Unpacked, it takes its narrowest width: never wider than proven (cr-268).
                 0 => width.or_else(|| record.invocation.widths.first().copied())
-                    .unwrap_or_else(|| held.record.widest_group(self.width()).min(1)) as usize,
+                    .unwrap_or_else(|| held.record.widest_group(self.serving_width()).min(1)) as usize,
                 gpus => gpus as usize,
             };
+            if let Some(why) = (record.invocation.parent.is_empty() && width > 0).then(|| self.unservable(None, width)).flatten() {
+                engine.fail_unstarted(&record.id, "gpu_lost", why)?;
+                return Ok(false);
+            }
             let root = (record.invocation.parent.is_empty() && self.width() > 0)
                 .then(|| self.root(engine, record, width))
                 .flatten();
@@ -2429,6 +2555,10 @@ impl Pool {
             Some(width) => plan.at(width)?,
             None => plan,
         };
+        if let Some(why) = self.unservable(lane.clone(), plan.degree as usize) {
+            engine.fail_unstarted(&record.id, "gpu_lost", why)?;
+            return Ok(false);
+        }
         let Some((start, permit)) = self.place(&plan, (Some(root), record.family()), lane, claims) else {
             return Ok(false);
         };
@@ -3368,7 +3498,7 @@ impl Pool {
         executor.keep_memo(match private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
         if plan.degree > 0 {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
-            let tenant = Tenant { plan: plan.executor.clone(), start, exact };
+            let tenant = Tenant { plan: plan.executor.clone(), start, width: plan.degree as usize, exact };
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
                 private_project: private.map(|scope| scope.project_id.clone()),
@@ -3469,6 +3599,7 @@ impl Pool {
                 leader: session.executor.birth.clone(),
                 plan: session.env.clone(),
                 start,
+                width: session.degree as usize,
             }),
             host: self.host.as_deref(),
         };
@@ -4020,7 +4151,15 @@ fn ending(error: io::Error, executor: DeviceExecutor) -> (io::Error, String) {
     let stderr = executor.stderr_tail();
     let error = match executor.terminate() {
         Ok(ended) => with_end(error, &ended, &stderr),
-        Err(unproven) => io::Error::other(format!("{error}; executor exit unproven: {unproven}")),
+        // The run's own reason keeps its type: a refusal stays the run's refusal (cl-935: 46907's
+        // `model_asset_missing` became `executor_invalidated`).
+        Err(unproven) => match refused(&error) {
+            Some(refusal) => io::Error::other(Refused {
+                code: refusal.code.clone(),
+                detail: format!("{}; executor exit unproven: {unproven}", refusal.detail),
+            }),
+            None => io::Error::other(format!("{error}; executor exit unproven: {unproven}")),
+        },
     };
     (error, stderr)
 }
@@ -4521,6 +4660,7 @@ struct Formation {
     leader: Birth,
     plan: String,
     start: usize,
+    width: usize,
 }
 
 impl Formation {
@@ -4533,7 +4673,7 @@ impl Formation {
             .filter_map(|birth| Exact::open(birth).ok().flatten())
             .collect();
         let tenant = |follower: &Exact| -> io::Result<(u32, Tenant)> {
-            let tenant = Tenant { plan: self.plan.clone(), start: self.start, exact: follower.try_clone()? };
+            let tenant = Tenant { plan: self.plan.clone(), start: self.start, width: self.width, exact: follower.try_clone()? };
             Ok((follower.birth().pid, tenant))
         };
         self.tenants.register(followers.iter().map(tenant).collect::<io::Result<Vec<_>>>()?);

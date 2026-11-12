@@ -649,6 +649,10 @@ impl Runs {
     pub(crate) fn memory(&self) -> BTreeMap<String, v1::GpuMemory> {
         self.service.gpu().map(|gpu| gpu.memory()).unwrap_or_default()
     }
+    /// Killed executors stuck in the kernel and the GPUs out of service they hold, by pid (cl-935).
+    pub(crate) fn lost(&self) -> BTreeMap<u32, crate::gpu_service::Lost> {
+        self.service.gpu().map(|gpu| gpu.lost()).unwrap_or_default()
+    }
     /// The caller's warm set, each member with what it holds now (`StatusFrame.warm`).
     pub(crate) fn warm(&self, actor: VerifiedActor) -> Result<Vec<v1::WarmItem>, Error> {
         let actor = actor_id(actor);
