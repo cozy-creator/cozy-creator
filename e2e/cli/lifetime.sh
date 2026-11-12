@@ -34,7 +34,8 @@ settled() {
 update_waiting() {
   (cozy --json machine update local --gpu-memory-limit off -y > "$OUT/$1.update.json" 2>&1; echo $? > "$OUT/$1.update.code") &
   updating=$!
-  local said="waiting for run $n to end"
+  # The machine names no project's run (TensorD says only "protected project execution"): a project run is other work.
+  local said="waiting for other work to end"
   for _ in $(seq 60); do
     cozy --json machine show local > "$OUT/$1.machine.json" 2> /dev/null || true
     J --arg w "$said" '.status.update == $w' "$OUT/$1.machine.json" && break
