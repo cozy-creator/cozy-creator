@@ -27,10 +27,11 @@ use std::{
 /// Readers of a cold call's weights ahead of its executor: enough requests in flight for an
 /// array of disks, as the executor's own reads keep.
 const READ_AHEAD_THREADS: usize = 4;
+use crate::storage::ProjectCheckpoint as Checkpoint;
 use tensorfs::{
     err::{Code, Refusal},
     format::ObjectRef,
-    store::Checkpoint,
+
 };
 
 /// Where `header`, a checkpoint this machine pulled from a Hub (`held_models::Pulled`), comes
@@ -47,20 +48,29 @@ pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<Checkpoint> {
     storage::checkpoint(store, id)
 }
 
+fn whole_cache() -> &'static Mutex<BTreeMap<String, Option<std::time::SystemTime>>> {
+    static WHOLE: Mutex<BTreeMap<String, Option<std::time::SystemTime>>> = Mutex::new(BTreeMap::new());
+    &WHOLE
+}
+pub(crate) fn forget_project(root: &std::path::Path) {
+    let prefix = format!("{}\0", root.display());
+    whole_cache().lock().unwrap().retain(|key, _| !key.starts_with(&prefix));
+}
+
 /// Whether every chunk of `components` of `header` is here (`downloaded`). Once true it is
 /// remembered (Status asks every second) until the store next evicts, in any process.
 pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool {
-    static WHOLE: Mutex<BTreeMap<String, Option<std::time::SystemTime>>> = Mutex::new(BTreeMap::new());
+
     let key = format!("{}\0{header}\0{components:?}", store.root().display());
     let evicted = store.evicted_at();
-    if WHOLE.lock().unwrap().get(&key).is_some_and(|known| *known == evicted) {
+    if whole_cache().lock().unwrap().get(&key).is_some_and(|known| *known == evicted) {
         return true;
     }
     let whole = checkpoint(store, header)
         .is_ok_and(|ck| storage::chunks(&ck, components).iter().all(|o| store.holds(o)));
     match whole {
-        true => WHOLE.lock().unwrap().insert(key, evicted),
-        false => WHOLE.lock().unwrap().remove(&key),
+        true => whole_cache().lock().unwrap().insert(key, evicted),
+        false => whole_cache().lock().unwrap().remove(&key),
     };
     whole
 }

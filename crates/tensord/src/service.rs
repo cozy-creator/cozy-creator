@@ -40,6 +40,10 @@ pub(crate) struct Service {
     pub engine: Arc<Engine>,
     pub catalog: Catalog,
     parallelism: usize,
+    shared_pool: bool,
+    dispatcher: Mutex<Option<std::thread::JoinHandle<()>>>,
+    reclaimer: Mutex<Option<std::thread::JoinHandle<()>>>,
+    project_scope: Option<api::machine::LocalPrivateStorage>,
     stopped: Mutex<bool>,
     retained: Mutex<HashMap<String, Arc<File>>>,
     pool: Mutex<Option<Arc<Pool>>>,
@@ -77,6 +81,12 @@ fn holds_gpus(birth: &Birth, before: u64) -> bool {
 }
 impl Service {
     pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>) -> io::Result<Arc<Self>> {
+        Self::open_in(root, generations, parallelism, store, None, None)
+    }
+    pub(crate) fn open_project(root: &Path, store: Arc<crate::storage::Store>, parent: &Arc<Service>, scope: api::machine::LocalPrivateStorage) -> io::Result<Arc<Self>> {
+        Self::open_in(root, &root.join("generations"), parent.parallelism, store, parent.pool(), Some(scope))
+    }
+    fn open_in(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>, shared: Option<Arc<Pool>>, project_scope: Option<api::machine::LocalPrivateStorage>) -> io::Result<Arc<Self>> {
         if parallelism == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -128,9 +138,13 @@ impl Service {
             engine,
             catalog: Catalog::new(generations)?,
             parallelism,
+            shared_pool: project_scope.is_some(),
+            project_scope: project_scope.clone(),
+            dispatcher: Mutex::default(),
+            reclaimer: Mutex::default(),
             stopped: Mutex::new(false),
             retained: Mutex::new(HashMap::new()),
-            pool: Mutex::new(None),
+            pool: Mutex::new(shared.clone()),
             calls: Mutex::new(None),
             publisher: Mutex::new(None),
             startup_gpu_births: Mutex::new(startup_gpu_births),
@@ -157,12 +171,13 @@ impl Service {
                 service.engine.end_orphan(birth)?;
             }
         }
+        if let Some(pool) = shared { pool.wake_on_freed(&service.engine); }
         let owner = service.clone();
-        std::thread::Builder::new()
+        *service.dispatcher.lock().unwrap() = Some(std::thread::Builder::new()
             .name("machine-dispatch".into())
-            .spawn(move || owner.dispatch_loop())?;
+            .spawn(move || crate::private_io::within(project_scope, || owner.dispatch_loop()))?);
         let weak = Arc::downgrade(&service);
-        std::thread::Builder::new().name("machine-reclaim".into()).spawn(move || Self::reclaim_loop(weak))?;
+        *service.reclaimer.lock().unwrap() = Some(std::thread::Builder::new().name("machine-reclaim".into()).spawn(move || Self::reclaim_loop(weak))?);
         Ok(service)
     }
     /// The executor pool every run runs on, once configured.
@@ -319,11 +334,19 @@ impl Service {
             return Ok(false);
         }
         *stopped = true;
-        if let Some(pool) = self.pool() {
-            pool.stop()?;
-        }
+        if !self.shared_pool { if let Some(pool) = self.pool() { pool.stop()?; } }
         self.engine.notify_activity();
         Ok(true)
+    }
+    /// Project close never stops the shared Pool. Join the dispatcher before releasing its DB.
+    pub(crate) fn seal_project(&self) -> io::Result<()> {
+        if !self.shared_pool || !self.stop()? { return Err(io::Error::new(io::ErrorKind::ResourceBusy, "project execution remains active")); }
+        if let Some(thread) = self.dispatcher.lock().unwrap().take() { thread.join().map_err(|_| io::Error::other("project dispatcher stopped unexpectedly"))?; }
+        if let Some(calls) = self.calls.lock().unwrap().take() { calls.seal(&self.engine)?; }
+        if let Some(thread) = self.reclaimer.lock().unwrap().take() { thread.join().map_err(|_| io::Error::other("project reclaimer stopped unexpectedly"))?; }
+        *self.publisher.lock().unwrap() = None;
+        self.retained.lock().unwrap().clear();
+        Ok(())
     }
     fn dispatch_loop(self: Arc<Self>) {
         loop {
@@ -332,7 +355,7 @@ impl Service {
                 return;
             }
             if let Err(error) = self.engine.reconcile() {
-                tracing::warn!("executor birth observation: {error}");
+                if self.project_scope.is_none() { tracing::warn!("executor birth observation: {error}"); }
             }
             self.retained.lock().unwrap().retain(|id, _| {
                 self.engine
@@ -341,7 +364,7 @@ impl Service {
                     .unwrap_or(true)
             });
             if let Err(error) = self.dispatch_ready() {
-                tracing::warn!("dispatch observation: {error}");
+                if self.project_scope.is_none() { tracing::warn!("dispatch observation: {error}"); }
             }
             // Dispatch wakes on events only: an arrival, an exit, a cancel, freed room.
             self.engine.wait_activity(epoch, None);
@@ -359,7 +382,7 @@ impl Service {
                     // The first once its packages are configured, so the disk is measured early.
                     let due = swept.map_or_else(|| service.publisher.lock().unwrap().is_some(), |at| at.elapsed() >= SWEEP_EVERY);
                     if due {
-                        service.reclaim();
+                        crate::private_io::within(service.project_scope.clone(), || service.reclaim());
                         swept = Some(std::time::Instant::now());
                     }
                     // What fills the disk follows the disk between sweeps: `machine show` on a machine
@@ -367,7 +390,7 @@ impl Service {
                     let free = crate::reclaim::measure(&service.engine.root).map_or(measured, |disk| disk.available);
                     if due || free.abs_diff(measured) >= USAGE_MOVED {
                         measured = free;
-                        service.measure_usage();
+                        crate::private_io::within(service.project_scope.clone(), || service.measure_usage());
                     }
                 }
                 _ => return,

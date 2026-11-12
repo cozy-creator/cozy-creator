@@ -13,13 +13,13 @@ use std::{
 use crate::storage::Store;
 use api::machine::{LOCAL_PRIVATE_MARKER, LocalPrivateMarker, LocalPrivateStorage};
 use sha2::{Digest, Sha256};
+use tracing::instrument::WithSubscriber as _;
 
 pub(crate) const AREA: &str = ".vault-machine";
 
-/// The partial legacy namespace must not advertise the stronger project contract.
+/// Trusted parents stop dumping before proof/project bytes; unsupported hosts refuse early.
 pub(crate) fn require_project_execution() -> io::Result<()> {
-    Err(io::Error::new(io::ErrorKind::Unsupported,
-        "Protected project execution is not available on this worker yet."))
+    platform::private_exec::disable_private_core_dumps().map_err(io::Error::from)
 }
 
 struct Verified {
@@ -28,6 +28,53 @@ struct Verified {
     token_hash: [u8; 32],
     store: Mutex<Option<Arc<Store>>>,
     roots: Mutex<crate::storage::Roots>,
+    execution: Mutex<Option<Arc<ProjectExecution>>>,
+    sealed: std::sync::atomic::AtomicBool,
+    prepared: std::sync::atomic::AtomicBool,
+    transport_prepared: std::sync::atomic::AtomicBool,
+    public_trees: Mutex<Vec<PathBuf>>,
+    executables: Mutex<Vec<PathBuf>>,
+    process_scopes: Mutex<Vec<Arc<platform::contain::Scope>>>,
+}
+
+/// Full execution ownership, including the existing Engine/Journal, belongs to the view.
+struct ProjectExecution { runs: Arc<crate::runs::Runs>, leases: Arc<()> }
+#[derive(Clone, Debug)]
+pub(crate) struct ProjectExecutionLease { _owner: Arc<()> }
+
+pub(crate) fn lease() -> io::Result<Option<ProjectExecutionLease>> {
+    let Some(scope) = current() else { return Ok(None) };
+    let verified = verified_scope(&scope)?;
+    let execution = verified.execution.lock().unwrap();
+    let execution = execution.as_ref().ok_or_else(denied)?;
+    Ok(Some(ProjectExecutionLease { _owner: execution.leases.clone() }))
+}
+
+/// Project routes select a complete Runs/Service/Engine; the ordinary engine never sees a row.
+pub(crate) fn open_execution(scope: &LocalPrivateStorage, ordinary: &Arc<crate::runs::Runs>) -> io::Result<Arc<crate::runs::Runs>> {
+    let verified = verified_scope(scope)?;
+    let mut execution = verified.execution.lock().unwrap();
+    if verified.sealed.load(std::sync::atomic::Ordering::Acquire) { return Err(denied()); }
+    if let Some(execution) = execution.as_ref() { return Ok(execution.runs.clone()); }
+    let root = root(scope)?;
+
+    let store = store(scope)?;
+    let service = crate::service::Service::open_project(&root, store.clone(), &ordinary.service, scope.clone())?;
+    let publisher = ordinary.publisher.for_project(&root, store)?;
+    service.configure_publisher(publisher.clone());
+    let objects = Arc::new(crate::objects::Objects::new(service.engine.clone()));
+    service.engine.hold_memos(&objects);
+    let runs = Arc::new(crate::runs::Runs { service: service.clone(), objects: objects.clone(),
+        local: Arc::new(crate::local_source::LocalSources::new(objects, publisher.clone(), &root.join("generations"))),
+        publisher: publisher.clone(), own_hub: ordinary.own_hub.clone(), contexts: Mutex::default(), projection: Mutex::default() });
+    service.engine.on_settled(Box::new({ let runs = Arc::downgrade(&runs); move |record| { if let Some(runs) = runs.upgrade() { runs.settled(record); } } }));
+    crate::calls::Calls::configure(&service, publisher.origin_machine(), Some(&runs))?;
+    let owned = Arc::new(ProjectExecution { runs: runs.clone(), leases: Arc::new(()) });
+    *execution = Some(owned);
+    drop(execution);
+    runs.restore_warm_sets()?;
+    crate::runs::resume_private(&runs, &scope.project_id)?;
+    Ok(runs)
 }
 
 static VERIFIED: LazyLock<Mutex<HashMap<String, Arc<Verified>>>> = LazyLock::new(Mutex::default);
@@ -82,7 +129,31 @@ fn marker(descriptor: &LocalPrivateStorage) -> io::Result<LocalPrivateMarker> {
     {
         return Err(denied());
     }
+    verify_project_identity(descriptor)?;
     Ok(marker)
+}
+
+/// The token does not authorize an arbitrary directory: its canonical native project document
+/// must independently name the requested project. Projections/meta rows are not authoritative.
+fn verify_project_identity(descriptor: &LocalPrivateStorage) -> io::Result<()> {
+    use automerge::ReadDoc as _;
+    let db = descriptor.view_root.join("project.db");
+    let metadata = fs::symlink_metadata(&db).map_err(|_| denied())?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() { return Err(denied()); }
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let connection = rusqlite::Connection::open_with_flags(db, flags).map_err(|_| denied())?;
+    let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|_| denied())?;
+    if version != 2 { return Err(denied()); }
+    let (bytes, heads): (Vec<u8>, String) = connection.query_row("SELECT snapshot, heads FROM crdt_document WHERE id=1", [], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|_| denied())?;
+    let mut doc = automerge::AutoCommit::load(&bytes).map_err(|_| denied())?;
+    let expected: Vec<String> = serde_json::from_str(&heads).map_err(|_| denied())?;
+    let expected: std::collections::BTreeSet<_> = expected.into_iter().collect();
+    let actual: std::collections::BTreeSet<_> = doc.get_heads().into_iter().map(|head| head.to_string()).collect();
+    if actual != expected { return Err(denied()); }
+    let (_, identity) = doc.get(automerge::ROOT, "identity").map_err(|_| denied())?.ok_or_else(denied)?;
+    let (id, _) = doc.get(&identity, "id").map_err(|_| denied())?.ok_or_else(denied)?;
+    if id.as_str() != Some(descriptor.project_id.as_str()) { return Err(denied()); }
+    Ok(())
 }
 
 fn digest(token: &str) -> [u8; 32] {
@@ -96,6 +167,7 @@ fn verified_scope(descriptor: &LocalPrivateStorage) -> io::Result<Arc<Verified>>
         .get(&descriptor.project_id)
         .cloned()
         .ok_or_else(denied)?;
+    if verified.sealed.load(std::sync::atomic::Ordering::Acquire) { return Err(denied()); }
     // Historical records retain their original generation/context. Full project rekey
     // copies their retained blobs into the new encrypted backing before cutover.
     if descriptor.generation == 0 || descriptor.generation > verified.descriptor.generation {
@@ -129,7 +201,7 @@ pub(crate) fn register(
         if old.descriptor == *descriptor && old.token_hash == token_hash {
             return Ok(false);
         }
-        if marker(&old.descriptor).is_ok_and(|marker| digest(&marker.token) == old.token_hash) {
+        if !old.sealed.load(std::sync::atomic::Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::ResourceBusy,
                 "close the previous private execution scope before replacing it",
@@ -144,6 +216,13 @@ pub(crate) fn register(
             token_hash,
             store: Mutex::new(None),
             roots: Mutex::default(),
+            execution: Mutex::default(),
+            sealed: std::sync::atomic::AtomicBool::new(false),
+            prepared: std::sync::atomic::AtomicBool::new(false),
+            transport_prepared: std::sync::atomic::AtomicBool::new(false),
+            public_trees: Mutex::default(),
+            executables: Mutex::default(),
+            process_scopes: Mutex::default(),
         }),
     );
     Ok(true)
@@ -172,8 +251,8 @@ pub(crate) fn root(descriptor: &LocalPrivateStorage) -> io::Result<PathBuf> {
     Ok(root)
 }
 
-/// Only private run media/trees/results use this store. Public model weights retain the
-/// existing machine-wide store and are never copied here merely because a run is private.
+/// Project objects, provider imports and derived views use this owned store. A source is
+/// never treated as public merely because it is already cached or a provider accepted a token.
 pub(crate) fn store(descriptor: &LocalPrivateStorage) -> io::Result<Arc<Store>> {
     let scope = verified_scope(descriptor)?;
     let path = root(&scope.descriptor)?.join("objects");
@@ -199,13 +278,35 @@ pub(crate) fn retain(
 /// Root first refuses active jobs and reaps only this scope's idle executors. Then the
 /// cache can be dropped so no retained upload/store handle silently keeps FUSE busy.
 pub(crate) fn close(descriptor: &LocalPrivateStorage, actor: &str) -> io::Result<()> {
-    let mut all = VERIFIED.lock().unwrap();
-    let Some(scope) = all.get(&descriptor.project_id) else {
-        return Ok(());
-    };
+    let Some(scope) = VERIFIED.lock().unwrap().get(&descriptor.project_id).cloned() else { return Ok(()); };
     if scope.actor != actor || scope.descriptor.generation != descriptor.generation {
         return Err(denied());
     }
+    if scope.sealed.load(std::sync::atomic::Ordering::Acquire) { return Ok(()); }
+    let mut execution = scope.execution.lock().unwrap();
+    crate::storage::close_project_views(&descriptor.project_id);
+    if let Some(project) = execution.as_ref() {
+        if Arc::strong_count(&project.runs) > 1 || Arc::strong_count(&project.leases) > 1 {
+            return Err(io::Error::new(io::ErrorKind::ResourceBusy, "project requests or native checkpoints remain open"));
+        }
+        project.runs.service.engine.assert_private_idle(&descriptor.project_id)?;
+        if let Some(pool) = project.runs.service.pool() { pool.close_private_namespace(descriptor)?; pool.forget_project_measurements(&project.runs.service.engine); }
+        project.runs.service.engine.close_private_storage(&descriptor.project_id)?;
+        project.runs.service.seal_project()?;
+    }
+    for process_scope in scope.process_scopes.lock().unwrap().iter() {
+            if let Err(error) = process_scope.end() {
+                let error: io::Error = error.into();
+                if error.kind() != io::ErrorKind::NotFound { return Err(error); }
+            }
+            if !platform::private_exec::project_scope_quiescent(process_scope)? { return Err(io::Error::new(io::ErrorKind::ResourceBusy, "a protected descendant has not exited")); }
+        }
+    scope.process_scopes.lock().unwrap().clear();
+    crate::access::forget_project(&root(descriptor)?.join("objects"));
+    *execution = None;
+    drop(execution);
+    crate::storage::close_project_views(&descriptor.project_id);
+    *scope.roots.lock().unwrap() = crate::storage::Roots::default();
     let mut store = scope.store.lock().unwrap();
     if store
         .as_ref()
@@ -219,7 +320,7 @@ pub(crate) fn close(descriptor: &LocalPrivateStorage, actor: &str) -> io::Result
     *scope.roots.lock().unwrap() = crate::storage::Roots::default();
     *store = None;
     drop(store);
-    all.remove(&descriptor.project_id);
+    scope.sealed.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
 }
 
@@ -238,8 +339,9 @@ pub(crate) fn within<T>(scope: Option<LocalPrivateStorage>, work: impl FnOnce() 
             CURRENT.with(|current| *current.borrow_mut() = self.0.take());
         }
     }
+    let private = scope.is_some();
     let restore = Restore(CURRENT.with(|current| current.replace(scope)));
-    let value = work();
+    let value = if private { tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), work) } else { work() };
     drop(restore);
     value
 }
@@ -250,7 +352,7 @@ pub(crate) async fn request<T>(
     scope: LocalPrivateStorage,
     work: impl std::future::Future<Output = T>,
 ) -> T {
-    REQUEST.scope(scope, work).await
+    REQUEST.scope(scope, work.with_subscriber(tracing::subscriber::NoSubscriber::default())).await
 }
 
 /// Distinguish an authenticated HTTP boundary (public or private) from trusted internal
@@ -280,6 +382,11 @@ pub(crate) async fn request_optional<T>(
         Some(scope) => request(scope, work).await,
         None => work.await,
     }
+}
+
+pub(crate) fn executor_prefix(scope: &LocalPrivateStorage) -> String {
+    let identity = tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&serde_json::json!([scope.project_id, scope.generation])));
+    format!("private-{identity}:")
 }
 
 /// Namespace a metadata/cache resource without changing its wire identity or signer.
@@ -357,6 +464,12 @@ pub(crate) fn protect_command(command: &mut std::process::Command) -> io::Result
     command.current_dir(&root)
         .env("UV_CACHE_DIR", root.join("uv-cache"))
         .env("UV_TOOL_DIR", root.join("uv-tools"))
+        .env("UV_PYTHON_INSTALL_DIR", root.join("python"))
+        .env("UV_LINK_MODE", "copy")
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_STATE_HOME", root.join("state"))
         .env("XDG_CACHE_HOME", root.join("cache"))
         .env("PYTHONPYCACHEPREFIX", root.join("bytecode"))
         .env("MPLCONFIGDIR", root.join("matplotlib"))
@@ -365,18 +478,17 @@ pub(crate) fn protect_command(command: &mut std::process::Command) -> io::Result
     Ok(true)
 }
 
-/// Global machine logs keep only opaque run identity for protected (or unresolved)
-/// storage. Detailed failures remain in the authenticated run's private journal.
+/// Protected warnings never enter the global subscriber, including their run identity.
 pub(crate) fn warning(engine: &crate::execution::Engine, run: &str, detail: impl std::fmt::Display) {
     if current().is_none() && matches!(engine.private_storage(run), Ok(None)) {
         tracing::warn!(run, "{detail}");
     } else {
-        tracing::warn!(run, "execution warning; open the authorized run history for details");
+        let _ = detail;
     }
 }
 
-/// Public provider weights keep the shared model cache. A private local weight file
-/// cannot be imported there until model imports have their own protected-store contract.
+/// Local arbitrary-path imports remain unavailable. Provider imports already target the
+/// project Publisher Store and never acquire public-cache authority from a token.
 pub(crate) fn check_model_source(source: &str) -> io::Result<()> {
     if current().is_none() || source.trim().is_empty() { return Ok(()); }
     if source.starts_with("object://") || source.starts_with("input://")
@@ -385,5 +497,151 @@ pub(crate) fn check_model_source(source: &str) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::Unsupported,
             "local model-weight imports are unavailable in encrypted project execution"));
     }
+    Ok(())
+}
+
+/// Known IPC endpoints exist before spawn, so the policy can review their native identity.
+pub(crate) struct CommandIo {
+    pub input: Option<File>,
+    pub output: Option<File>,
+    pub error: Option<File>,
+    inherited: Vec<platform::private_exec::PrivateDescriptor>,
+}
+impl CommandIo {
+    pub(crate) fn control(file: File) -> Self { Self { input: None, output: None, error: None, inherited: vec![platform::private_exec::PrivateDescriptor::KernelIpc(file)] } }
+}
+fn ipc_files() -> io::Result<(File, File)> {
+    let (left, right) = platform::ipc::pair()?;
+    #[cfg(unix)]
+    { use std::os::fd::OwnedFd; Ok((File::from(OwnedFd::from(left)), File::from(OwnedFd::from(right)))) }
+    #[cfg(windows)]
+    { use std::os::windows::io::OwnedHandle; Ok((File::from(OwnedHandle::from(left)), File::from(OwnedHandle::from(right)))) }
+}
+pub(crate) fn command_io(command: &mut std::process::Command, input: bool, output: bool, error: bool) -> io::Result<Option<CommandIo>> {
+    if current().is_none() { return Ok(None); }
+    let mut pipes = CommandIo { input: None, output: None, error: None, inherited: vec![] };
+    for (which, requested) in [(0, input), (1, output), (2, error)] {
+        if !requested { continue; }
+        let (parent, child) = ipc_files()?;
+        let stdio = std::process::Stdio::from(child.try_clone()?);
+        pipes.inherited.push(platform::private_exec::PrivateDescriptor::KernelIpc(child));
+        match which { 0 => { command.stdin(stdio); pipes.input = Some(parent); }, 1 => { command.stdout(stdio); pipes.output = Some(parent); }, _ => { command.stderr(stdio); pipes.error = Some(parent); } }
+    }
+    Ok(Some(pipes))
+}
+
+/// Only machine-owned SDK resources are granted beside the project's tree. Provider model
+/// paths and source JSON never grant global filesystem authority.
+fn native_resources(scope: &LocalPrivateStorage, command: &std::process::Command, inherited: Vec<platform::private_exec::PrivateDescriptor>) -> io::Result<platform::private_exec::PrivateResources> {
+    use platform::private_exec::PrivateResources;
+    let verified = verified_scope(scope)?;
+    let root = resolve(scope)?.view_root;
+    let mut resources = PrivateResources { project_root: File::open(&root)?, read_only_trees: vec![], read_only_files: vec![], executables: vec![], devices: vec![], inherited };
+    for path in ["/usr/lib", "/usr/lib64", "/lib", "/lib64", "/usr/local/lib", "/usr/share/zoneinfo", "/usr/share/ca-certificates", "/etc/ssl/certs", "/sys/devices/system/cpu"] {
+        if std::path::Path::new(path).is_dir() { resources.read_only_trees.push(File::open(path)?); }
+    }
+    for path in ["/etc/ld.so.cache", "/etc/localtime", "/etc/nsswitch.conf", "/etc/resolv.conf", "/etc/hosts", "/etc/gai.conf", "/proc/cpuinfo", "/proc/meminfo"] {
+        if std::path::Path::new(path).is_file() { resources.read_only_files.push(File::open(path)?); }
+    }
+    let public = verified.public_trees.lock().unwrap().clone();
+    for path in &public { if path.is_dir() { resources.read_only_trees.push(File::open(path)?); } else if path.is_file() { resources.read_only_files.push(File::open(path)?); } }
+    let mut executables: Vec<PathBuf> = ["/usr/bin/true", "/bin/true", "/bin/sh", "/usr/bin/env", "/lib64/ld-linux-x86-64.so.2", "/lib/ld-linux-aarch64.so.1"].into_iter().filter_map(|path| fs::canonicalize(path).ok()).collect();
+    executables.extend(verified.executables.lock().unwrap().clone());
+    let program = fs::canonicalize(command.get_program())?;
+    if !program.starts_with(&root) && !executables.contains(&program) && !public.iter().any(|tree| program.starts_with(tree)) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the executable is not a reviewed project or SDK resource"));
+    }
+    executables.push(program);
+    for path in executables { resources.executables.push(File::open(path)?); }
+    for path in ["/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"] { resources.devices.push(File::options().read(true).write(true).open(path)?); }
+    Ok(resources)
+}
+
+pub(crate) fn apply_native(command: &mut std::process::Command, io: Option<&mut CommandIo>, process_scope: Option<&Arc<platform::contain::Scope>>) -> io::Result<()> {
+    let Some(scope) = current() else { return Ok(()) };
+    let inherited = io.map(|pipes| std::mem::take(&mut pipes.inherited)).unwrap_or_default();
+    let policy = platform::private_exec::prepare_project_writes(native_resources(&scope, command, inherited)?)?;
+    let process_scope = process_scope.ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "project command has no kernel lifecycle scope"))?;
+    policy.apply_in_scope(command, process_scope)?;
+    verified_scope(&scope)?.process_scopes.lock().unwrap().push(process_scope.clone());
+    Ok(())
+}
+
+/// The no-payload helper proves installation, including seccomp, before any input is accepted.
+pub(crate) fn probe_native(scope: &LocalPrivateStorage) -> io::Result<()> {
+    let verified = verified_scope(scope)?;
+    if verified.prepared.load(std::sync::atomic::Ordering::Acquire) { return Ok(()); }
+    let mut command = std::process::Command::new("/usr/bin/true");
+    command.env_clear().stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    let process_scope = Arc::new(platform::contain::Scope::create("protected-project")?);
+    apply_native(&mut command, None, Some(&process_scope))?;
+    let status = command.status()?;
+    drop(command);
+    process_scope.end()?;
+    if !platform::private_exec::project_scope_quiescent(&process_scope)? { return Err(io::Error::new(io::ErrorKind::ResourceBusy, "project lifecycle probe has not exited")); }
+    if !status.success() { return Err(io::Error::new(io::ErrorKind::Unsupported, "native project policy installation failed")); }
+    verified.prepared.store(true, std::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
+pub(crate) fn transport_capabilities(bytes: &[u8]) -> io::Result<()> {
+    let answer: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| io::Error::new(io::ErrorKind::Unsupported, "project_transport_unsupported: Runtime has no inherited transport capability"))?;
+    if answer["inherited_local_stream"] != true || answer["transport_challenge"] != true {
+        return Err(io::Error::new(io::ErrorKind::Unsupported, "project_transport_unsupported: Runtime cannot prove protected inherited transport"));
+    }
+    Ok(())
+}
+
+/// The installed/pinned Runtime is checked without running .pth files or authored Start/Invoke.
+pub(crate) fn probe_runtime(python: &std::path::Path) -> io::Result<()> {
+    let process_scope = Arc::new(platform::contain::Scope::create("protected-runtime-probe")?);
+    let mut command = crate::launch_identity::module(python, "cozy_runtime.internal.executor")?;
+    command.arg("--transport-capabilities").env_clear().stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    protect_command(&mut command)?;
+    let mut pipes = command_io(&mut command, false, true, false)?;
+    apply_native(&mut command, pipes.as_mut(), Some(&process_scope))?;
+    let mut child = command.spawn()?;
+    drop(command);
+    let mut bytes = Vec::new();
+    let mut output = pipes.as_mut().and_then(|pipes| pipes.output.take()).ok_or_else(|| io::Error::other("protected Runtime probe has no output channel"))?;
+    output.by_ref().take(65537).read_to_end(&mut bytes)?;
+    if bytes.len() > 65536 { let _ = child.kill(); process_scope.end()?; return Err(io::Error::new(io::ErrorKind::InvalidData, "Runtime transport probe exceeded its protocol bound")); }
+    let status = child.wait()?;
+    process_scope.end()?;
+    if !platform::private_exec::project_scope_quiescent(&process_scope)? { return Err(io::Error::new(io::ErrorKind::ResourceBusy, "Runtime probe descendants remain")); }
+    if !status.success() { return Err(io::Error::new(io::ErrorKind::Unsupported, "project_transport_unsupported: selected Runtime refused the inherited transport probe")); }
+    transport_capabilities(&bytes)
+}
+
+/// A real protected no-payload executor must complete the inherited-channel challenge before
+/// the namespace reports readiness. No project invocation or source is sent by this probe.
+pub(crate) fn probe_transport(scope: &LocalPrivateStorage, ordinary: &crate::published::Publisher, python: &std::path::Path) -> io::Result<()> {
+    let verified = verified_scope(scope)?;
+    if verified.transport_prepared.load(std::sync::atomic::Ordering::Acquire) { return Ok(()); }
+    let mut public = ordinary.public_sdk_trees();
+    let environment = python.parent().and_then(std::path::Path::parent).ok_or_else(denied)?.to_owned();
+    public.push(environment);
+    let real_python = fs::canonicalize(python)?;
+    if let Some(base) = real_python.parent().and_then(std::path::Path::parent) {
+        if base.join("lib").is_dir() { public.push(base.join("lib")); }
+    }
+    *verified.public_trees.lock().unwrap() = public;
+    let mut executables = ordinary.sdk_executables();
+    executables.push(real_python);
+    *verified.executables.lock().unwrap() = executables;
+    let root = root(scope)?;
+    let probe_root = root.join("probes").join(crate::uuid::simple());
+    let mut seal = crate::launch_identity::Seal::prepare(&root, &crate::uuid::simple(), "project-probe", "")?;
+    seal.tensorfs_home = Some(store(scope)?.root().to_owned());
+    let config = crate::device_executor::ExecutorConfig { private: true, python: python.to_owned(), root: probe_root,
+        socket: PathBuf::new(), environment: std::collections::BTreeMap::new(), seal, generation_hold: None,
+        cgroup_namespace: Some("protected-project".into()) };
+    let launcher = crate::child_launcher::ChildLauncher::new()?;
+    let executor = crate::device_executor::DeviceExecutor::spawn_owned(config, &launcher, |_, _| Ok(()))?;
+    executor.terminate()?;
+    for process_scope in verified.process_scopes.lock().unwrap().iter() {
+        if !platform::private_exec::project_scope_quiescent(process_scope)? { return Err(io::Error::new(io::ErrorKind::ResourceBusy, "protected transport probe has a live descendant")); }
+    }
+    verified.transport_prepared.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
 }
