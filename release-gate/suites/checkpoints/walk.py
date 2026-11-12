@@ -15,15 +15,17 @@ import subprocess
 import sys
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
+type Json = Any  # type: ignore[explicit-any]  # `cozy --json` answers and requirements.toml, read by key
 
 
 class Refused(Exception):
     pass
 
 
-def cozy(cli, *args):
+def cozy(cli: str, *args: str) -> Json:
     """`cozy --json <args>`'s answer, or Refused with its message."""
     done = subprocess.run([cli, "--json", *args], capture_output=True, text=True, timeout=900)
     try:
@@ -36,8 +38,9 @@ def cozy(cli, *args):
     return answer
 
 
-def pages(cli, *args, key):
-    rows, offset = [], 0
+def pages(cli: str, *args: str, key: str) -> list[Json]:
+    rows: list[Json] = []
+    offset = 0
     while True:
         page = cozy(cli, *args, "--limit", "100", "--offset", str(offset))
         rows += page[key]
@@ -46,17 +49,17 @@ def pages(cli, *args, key):
             return rows
 
 
-def defaults(cli, jobs):
+def defaults(cli: str, jobs: int) -> dict[str, list[str]]:
     """Each Hub reference a package's model slot loads by default: {ref: ["<package>@<release> <slot path>", ...]}."""
     packages = [p for p in pages(cli, "package", "ls", key="packages") if p.get("latest_release")]
 
-    def slots(package):
+    def slots(package: Json) -> list[tuple[str, str]]:
         named = f"{package['package']}@{package['latest_release']}"
         interface = cozy(cli, "--full", "run", named, "--describe").get("interface") or {}
         return [(slot["default"], f"{named} {slot.get('path', '')}") for entry in interface.get("entrypoints", [])
                 for slot in entry.get("models") or [] if slot.get("default")]
 
-    found = {}
+    found: dict[str, list[str]] = {}
     with ThreadPoolExecutor(jobs) as pool:
         for held in pool.map(slots, packages):
             for ref, where in held:
@@ -65,7 +68,7 @@ def defaults(cli, jobs):
     return found
 
 
-def files_of(component):
+def files_of(component: Json) -> set[str]:
     """Its run data, its config's file among them."""
     held = set(component["assets"])
     if component["config_keys"]:
@@ -73,7 +76,7 @@ def files_of(component):
     return held
 
 
-def component_gaps(name, spec, components):
+def component_gaps(name: str, spec: Json, components: dict[str, Json]) -> list[str]:
     held = components.get(name)
     if held is None:
         return [f"{name} (no such component)"]
@@ -97,7 +100,7 @@ def component_gaps(name, spec, components):
     return gaps
 
 
-def lora_gaps(lane):
+def lora_gaps(lane: Json) -> list[str]:
     adapters = lane["records"].get("adapter")
     adapters = adapters if isinstance(adapters, dict) else {}
     loras = [c for c in lane["components"] if c.get("lora")]
@@ -114,25 +117,27 @@ def lora_gaps(lane):
     return gaps
 
 
-def entries(requirements, model, label, lane):
+def entries(requirements: list[Json], model: str, label: str | None, lane: Json) -> list[Json]:
     """The entries that hold `lane`: those naming the model, else those of its families; and those of its kind alone."""
     families = {lane.get("family"), label} - {None}
-    kind = lambda entry: "kind" not in entry or entry["kind"] == lane.get("kind")
+    def kind(entry: Json) -> bool:
+        return "kind" not in entry or entry["kind"] == lane.get("kind")
     named = [e for e in requirements if model in e.get("models", [])]
     by_family = [e for e in requirements if not named and families & set(e.get("families", [])) and kind(e)]
     by_kind = [e for e in requirements if not e.get("models") and not e.get("families") and kind(e)]
     return named + by_family + by_kind
 
 
-def check(requirements, shown):
+def check(requirements: list[Json], shown: Json) -> tuple[list[tuple[str, str, str]], list[tuple[str, str]]]:
     """(gaps, unchecked) of one release: gaps as (lane, item, reads)."""
-    gaps, unchecked = [], []
+    gaps: list[tuple[str, str, str]] = []
+    unchecked: list[tuple[str, str]] = []
     for lane in shown["lanes"]:
         held = entries(requirements, shown["model"], shown.get("family"), lane)
         if not held:
             unchecked.append((lane["lane"], f"no entry for family {lane.get('family') or shown.get('family') or '-'}, kind {lane.get('kind') or '-'}"))
         components = {c["name"]: c for c in lane["components"]}
-        seen = set()
+        seen: set[tuple[str, str]] = set()
         for entry in held:
             items = [g for name, spec in entry.get("components", {}).items() for g in component_gaps(name, spec, components)]
             items += lora_gaps(lane) if entry.get("lora") else []
@@ -143,7 +148,7 @@ def check(requirements, shown):
     return gaps, unchecked
 
 
-def main():
+def main() -> int:
     ask = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ask.add_argument("--cli", default="cozy")
     ask.add_argument("--requirements", default=str(HERE / "requirements.toml"))
@@ -151,11 +156,11 @@ def main():
     ask.add_argument("--only", default="", help="org/name,... to walk alone (their newest releases)")
     ask.add_argument("--jobs", type=int, default=4)
     args = ask.parse_args()
-    requirements = tomllib.loads(pathlib.Path(args.requirements).read_text())["checkpoint"]
+    requirements: list[Json] = tomllib.loads(pathlib.Path(args.requirements).read_text())["checkpoint"]
     only = {name.strip() for name in args.only.split(",") if name.strip()}
 
-    named = {}  # "org/name@release" -> why it is walked
-    errors = []
+    named: dict[str, list[str]] = {}  # "org/name@release" -> why it is walked
+    errors: list[tuple[str, str]] = []
     for noun in ("model", "lora"):
         for row in pages(args.cli, noun, "ls", key="models"):
             if not row.get("private") and row.get("release") and (not only or row["model"] in only):
@@ -164,21 +169,22 @@ def main():
     for ref, where in slots.items():
         named.setdefault(ref, []).extend(f"default of {w}" for w in where)
 
-    def show(ref):
+    def show(ref: str) -> tuple[str, Json | None, str | None]:
         try:
             return ref, cozy(args.cli, "model", "show", ref), None
         except Refused as why:
             return ref, None, str(why)
 
-    shown, forward = {}, {}
+    shown: dict[str, Json] = {}
+    forward: dict[str, str] = {}
     asked = set(named)
     with ThreadPoolExecutor(args.jobs) as pool:
         todo = list(named)
         while todo:
-            later = []
+            later: list[str] = []
             for ref, answer, why in pool.map(show, todo):
-                if why:
-                    errors.append((ref, why))
+                if answer is None:
+                    errors.append((ref, why or "no answer"))
                     continue
                 key = f"{answer['model']}@{answer['release']}"
                 # A run naming an older release takes its series' newest fix: that, not the one named, is what loads.
@@ -195,32 +201,35 @@ def main():
                     named.setdefault(key, []).extend(named.get(ref, []))
             todo = later
 
-    findings = {"releases": {}, "resolved_forward": forward, "gaps": [], "unchecked": [],
-                "errors": [{"ref": r, "error": e} for r, e in errors]}
+    releases: dict[str, Json] = {}
+    found_gaps: list[Json] = []
+    no_entry: list[Json] = []
     for key in sorted(shown):
         answer = shown[key]
         gaps, unchecked = check(requirements, answer)
         held = sorted({e.get("reads", "") for lane in answer["lanes"] for e in entries(requirements, answer["model"], answer.get("family"), lane)})
-        findings["releases"][key] = {"why": sorted(set(named.get(key, []))), "lanes": [lane["lane"] for lane in answer["lanes"]], "held_to": held}
-        findings["gaps"] += [{"release": key, "lane": lane, "item": item, "reads": reads} for lane, item, reads in gaps]
-        findings["unchecked"] += [{"release": key, "lane": lane, "why": why} for lane, why in unchecked]
-    for gap in findings["gaps"]:
+        releases[key] = {"why": sorted(set(named.get(key, []))), "lanes": [lane["lane"] for lane in answer["lanes"]], "held_to": held}
+        found_gaps += [{"release": key, "lane": lane, "item": item, "reads": reads} for lane, item, reads in gaps]
+        no_entry += [{"release": key, "lane": lane, "why": why} for lane, why in unchecked]
+    findings = {"releases": releases, "resolved_forward": forward, "gaps": found_gaps, "unchecked": no_entry,
+                "errors": [{"ref": r, "error": e} for r, e in errors]}
+    for gap in found_gaps:
         print(f"GAP {gap['release']} {gap['lane']}: {gap['item']}  [{gap['reads']}]")
     for ref, why in errors:
         print(f"UNREAD {ref}: {why}")
-    for lane in findings["unchecked"]:
+    for lane in no_entry:
         print(f"UNCHECKED {lane['release']} {lane['lane']}: {lane['why']}")
-    lanes = sum(len(r["lanes"]) for r in findings["releases"].values())
-    short = len({g["release"] for g in findings["gaps"]})
-    print(f"checkpoints: {len(shown)} releases, {lanes} lanes; {len(findings['gaps'])} gaps in {short} releases, "
-          f"{len(errors)} unread, {len(findings['unchecked'])} lanes no entry covers")
+    lanes = sum(len(r["lanes"]) for r in releases.values())
+    short = len({g["release"] for g in found_gaps})
+    print(f"checkpoints: {len(shown)} releases, {lanes} lanes; {len(found_gaps)} gaps in {short} releases, "
+          f"{len(errors)} unread, {len(no_entry)} lanes no entry covers")
     if args.out:
         out = pathlib.Path(args.out)
         (out / "shown").mkdir(parents=True, exist_ok=True)
         (out / "findings.json").write_text(json.dumps(findings, indent=1) + "\n")
         for key, answer in shown.items():
             (out / "shown" / (key.replace("/", "__") + ".json")).write_text(json.dumps(answer, indent=1) + "\n")
-    return 1 if findings["gaps"] or errors else 0
+    return 1 if found_gaps or errors else 0
 
 
 if __name__ == "__main__":
