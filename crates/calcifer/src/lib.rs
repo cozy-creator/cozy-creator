@@ -539,9 +539,14 @@ impl Calcifer {
         self: &Arc<Self>,
         key: &str,
         digest: &str,
-        submit: SubmitRun,
+        mut submit: SubmitRun,
         batch: &str,
     ) -> Result<(Submitted, Option<RunId>), Error> {
+        if let Some(project)=submit.project.as_deref() {
+            let (id,root)={ let store=self.project_store(project)?; let(id,root)=store.execution_scope(); (id.to_owned(),root.to_owned()) };
+            submit.on=private_io::check_project_placement(&id,&root,&[submit.on]).map_err(Error::Refused)?.into_iter().next()
+                .ok_or_else(||Error::Invalid("project_execution_unavailable".into()))?;
+        }
         if submit
             .spec
             .tensorfs
@@ -1083,6 +1088,7 @@ impl Calcifer {
             let run = match self.with_run_store(id.as_str(), |store| store.run(id.as_str())) {
                 Ok(Some(run)) => run,
                 Ok(None) => return,
+                Err(StoreError::Locked(_)) => return,
                 Err(e) => {
                     warn!(run = %id, "{e}");
                     pause.wait(wake, None).await;
@@ -1766,9 +1772,7 @@ impl Calcifer {
         let names: HashMap<&str, &str> = (run.spec.inputs.iter())
             .map(|i| (i.digest.as_str(), i.field.as_str()))
             .collect();
-        let input_root = private_io::input_root(&run.out_dir, &self.inputs).map_err(|error| Stop::Refused(Reason {
-            code: error.code, message: error.message, origin: "private_storage".into(), ..Default::default()
-        }))?;
+        let input_root = self.run_input_root(run).map_err(Stop::from)?;
         let digests: Vec<Digest> = run.inputs.iter().map(|(digest, _)| *digest).collect();
         let held = link.held_many(&digests).await?;
         // An empty object's ranges cannot say it is held: it is always sent (one empty PUT).
@@ -1894,10 +1898,17 @@ impl Calcifer {
         }
     }
 
+    fn run_input_root(&self, run: &RunRow) -> store::Result<PathBuf> {
+        match self.run_store(run.id.as_str())? {
+            store::RunStore::Project(store)=>store.input_root(),
+            store::RunStore::Maintenance(_)=>Ok(self.inputs.clone()),
+        }
+    }
+
     /// Deletes the staged inputs of a settled run that no unsettled run names.
     fn release_inputs(&self, run: &RunRow) {
         // A locked private view defers cleanup, never redirects it to plaintext staging.
-        let Ok(input_root) = private_io::input_root(&run.out_dir, &self.inputs) else { return };
+        let Ok(input_root) = self.run_input_root(run) else { return };
         let _staging = lock(&self.staging);
         for (digest, _) in &run.inputs {
             if let Ok(false) = self.with_run_store(run.id.as_str(), |store| store.input_in_use(digest)) {

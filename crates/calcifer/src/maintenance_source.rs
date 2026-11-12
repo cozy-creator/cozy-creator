@@ -7,6 +7,13 @@ use rusqlite::{OptionalExtension as _,params};
 use crate::api::{Api,Refusal};
 
 pub(super) const TABLES: &str="CREATE TABLE IF NOT EXISTS maintenance_source_admissions(tree TEXT PRIMARY KEY) STRICT;";
+static OWNERSHIP: std::sync::LazyLock<tokio::sync::RwLock<()>> = std::sync::LazyLock::new(||tokio::sync::RwLock::new(()));
+
+/// Creation changes an unknown folder into a project. Serialize that boundary
+/// against independent source capture before the first project marker is made.
+pub(crate) fn begin_project_creation() -> Result<tokio::sync::RwLockWriteGuard<'static,()>,Error> {
+    OWNERSHIP.try_write().map_err(|_|Error::new(Kind::Conflict,"source_capture_busy","a source snapshot is being captured; retry project creation after it finishes"))
+}
 
 #[derive(serde::Deserialize)]
 pub(crate) struct Capture { path: PathBuf }
@@ -39,6 +46,7 @@ pub(crate) async fn capture(State(api): State<Arc<Api>>, headers: HeaderMap, Jso
         return Err(Refusal(Error::new(Kind::Credential,"native_holder_required","source capture requires this daemon's native holder")));
     }
     if !ask.path.is_absolute() { return Err(refused("source_absolute_required")); }
+    let _ownership=OWNERSHIP.read().await;
     let plan=api::code::plan(&ask.path).map_err(Refusal)?;
     // Check every actual package/dependency root, including empty dependencies,
     // and every file's parent before hashing, digest memo, staging or global writes.
@@ -74,6 +82,14 @@ pub(crate) async fn capture(State(api): State<Arc<Api>>, headers: HeaderMap, Jso
         files.insert(digest,path);
     }
     crate::local_code::materialize(home,&code.tree,&members,|digest|files.get(digest).cloned()).map_err(Refusal)?;
+    let copied=crate::local_code::copy_of(home,&code).map_err(Refusal)?.join("tree");
+    for (name,member) in &members {
+        let path=copied.join(name);
+        let meta=std::fs::symlink_metadata(&path).map_err(|_|refused("source_snapshot_changed"))?;
+        if !meta.is_file() { return Err(refused("source_snapshot_changed")); }
+        let bytes=std::fs::read(&path).map_err(|_|refused("source_snapshot_changed"))?;
+        if bytes.len() as u64!=member.length || hex::encode(Digest::of(&bytes).bytes())!=member.sha256 { return Err(refused("source_snapshot_changed")); }
+    }
     api.calcifer.maintenance_store().write(|tx| { tx.execute("INSERT OR IGNORE INTO maintenance_source_admissions(tree) VALUES(?1)",params![code.tree.to_string()])?; Ok(()) })
         .map_err(|_|refused("source_admission_unavailable"))?;
     Ok(Json(code))

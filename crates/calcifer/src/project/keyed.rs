@@ -51,7 +51,15 @@ async fn project_of(api: &Arc<Api>, parts: &mut axum::http::request::Parts) -> R
 }
 
 /// Around every project route: a write with an `Idempotency-Key` is answered once, and again as it was.
-pub(super) async fn answered(State(api): State<Arc<Api>>, request: Request, next: Next) -> Response {
+pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
+    // Opening a project attaches only its admitted journal, using a bounded lease.
+    // The middleware releases it before a handler waits for a worker or a stream.
+    if request.uri().path()!="/v1/projects" {
+        let (mut parts,body)=request.into_parts();
+        let project=match project_of(&api,&mut parts).await { Ok(project)=>project,Err(refusal)=>return refusal.into_response() };
+        if let Some(project)=project { if let Err(error)=api.projects.store(&api,&project.id).await { return Refusal(error).into_response(); } }
+        request=Request::from_parts(parts,body);
+    }
     if matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         return next.run(request).await;
     }

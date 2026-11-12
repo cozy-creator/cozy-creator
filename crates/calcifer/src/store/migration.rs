@@ -72,13 +72,32 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)", [name], |row| row.get(0))?)
 }
 
+enum Destination<'a,'b> {
+    Open(&'a crate::project::ProjectStore),
+    Sealing(&'a crate::project::journal::SealingStore<'b>),
+}
+impl Destination<'_,'_> {
+    fn project_id(&self)->&str { match self { Self::Open(store)=>store.project_id(),Self::Sealing(store)=>store.project_id() } }
+    fn execution_scope(&self)->(&str,&Path) { match self { Self::Open(store)=>store.execution_scope(),Self::Sealing(store)=>store.execution_scope() } }
+    fn input_root(&self)->Result<PathBuf> { match self { Self::Open(store)=>store.input_root(),Self::Sealing(store)=>store.input_root() } }
+    fn read<T>(&self, f:impl FnOnce(&Connection)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.read(f),Self::Sealing(store)=>store.read(f) } }
+    fn write<T>(&self, f:impl FnOnce(&Transaction<'_>)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.write(f),Self::Sealing(store)=>store.write(f) } }
+}
+
 impl Store {
     /// Only an admitted, mounted project can receive its legacy history. The source's
     /// immediate transaction spans import and retirement, so its closure cannot change.
     pub(crate) fn migrate_project(&self, project: &crate::project::ProjectStore, inputs: &Path) -> Result<()> {
+        self.migrate_into(Destination::Open(project),inputs)
+    }
+    pub(crate) fn migrate_project_sealing(&self, project: &crate::project::journal::SealingStore<'_>, inputs: &Path) -> Result<()> {
+        self.migrate_into(Destination::Sealing(project),inputs)
+    }
+    fn migrate_into(&self, project: Destination<'_,'_>, inputs: &Path) -> Result<()> {
         let mut writer = self.writer.lock().unwrap_or_else(|error| error.into_inner());
         if !table_exists(&writer,"legacy_project_runs")? { return Ok(()); }
         let source = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut changed=false;
         let root = project.execution_scope().1;
         let landing = crate::project::landing(root);
         let candidates: Vec<(String,String,Vec<u8>)> = {
@@ -158,6 +177,7 @@ impl Store {
             for table in ["outputs","run_logs","asks"] { source.execute(&format!("DELETE FROM legacy_project_{table} WHERE run=?1"),[&id])?; }
             if after.is_some() { source.execute("DELETE FROM legacy_project_after_steps WHERE key_sha256=?1",[key_digest(&key)])?; }
             source.execute("DELETE FROM legacy_project_runs WHERE id=?1",[&id])?;
+            changed=true;
         }
         // API mutation retry responses have their own explicit owner, never inferred from a
         // generic body without an absolute admitted project path or protected envelope.
@@ -181,6 +201,7 @@ impl Store {
                     Ok(())
                 })?;
                 source.execute("DELETE FROM legacy_project_answers WHERE key=?1",[named])?;
+                changed=true;
             }
         }
         if table_exists(&source,"legacy_project_projects")? {
@@ -192,10 +213,11 @@ impl Store {
                 let record=format!("{:?}",index.values);
                 project.write(|tx| { tx.execute("INSERT OR REPLACE INTO journal_migrations(source,digest,record) VALUES('controller-v7:index',?1,?2)",params![fingerprint,record])?; Ok(()) })?;
                 source.execute("DELETE FROM legacy_project_projects WHERE id=?1",[project.project_id()])?;
+                changed=true;
             }
         }
         source.commit()?;
         drop(writer);
-        self.cleanup_private_journal()
+        if changed { self.cleanup_private_journal() } else { Ok(()) }
     }
 }

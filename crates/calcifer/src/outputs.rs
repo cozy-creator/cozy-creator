@@ -181,7 +181,7 @@ impl Calcifer {
     }
 
     /// Starts the run's exporter, or wakes it.
-    fn export(self: &Arc<Self>, id: &RunId) {
+    pub(super) fn export(self: &Arc<Self>, id: &RunId) {
         let wake = {
             let mut runs = lock(&self.exports.runs);
             if let Some(wake) = runs.get(id) {

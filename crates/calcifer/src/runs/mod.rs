@@ -96,7 +96,7 @@ pub(crate) async fn quote(
 
 /// What `ask` would rent.
 pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
-    let _access = project_access(api, ask.project.as_deref()).await?;
+    drop(project_access(api, ask.project.as_deref()).await?);
     let scope = match ask.project.as_deref() {
         Some(project) => {
             let root = crate::project::named(api, project)?;
@@ -212,6 +212,7 @@ pub(crate) async fn describe(
 }
 
 async fn describe_asked(api: &Arc<Api>, asked: Asked) -> Result<Json<api::calcifer::Target>, Refusal> {
+    if let Some(project)=asked.project.as_deref() { drop(api.projects.store(api,project).await.map_err(Refusal)?); }
     let hub = hub(api, asked.hub.as_deref().unwrap_or_default());
     // Of several (named, else its project's), the first: what it calls is the same on each.
     let pinned = match (&asked.on, asked.project.as_deref()) {
@@ -277,7 +278,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
     }
     // Prepared inputs can name files in the mounted view. Keep the view
     // leased until submission takes them and their history is kept.
-    let access = project_access(api, ask.project.as_deref()).await?;
+    drop(project_access(api, ask.project.as_deref()).await?);
     let prepared = prepare(api, key, &ask, For::Run).await?;
     let lock = match &ask.code {
         Some(code) => made_lock(api, &ask, code).await,
@@ -298,14 +299,11 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
             }
             if let Some(project) = project.filter(|_| !submitted.replay) {
                 // What Calcifer holds is in this computer's store.
-                let uploads = match crate::private_io::of_output(&crate::project::landing(&project)) {
-                    Ok(Some(scope)) => Some(scope.storage.view_root.join(".vault-uploads")),
-                    Ok(None) => Some(files::store().map(|store| store.root().to_owned()).unwrap_or_default()),
-                    Err(_) => None,
-                };
+                let uploads = crate::project::private_upload_root(api,&project.to_string_lossy()).ok().flatten().map(|root|root.join(".vault-uploads"));
                 if let Some(uploads) = uploads {
                     // Even if this request is canceled, the queued worker owns
                     // the lease until its retention work has finished.
+                    let access=crate::project::vault::admit_root(&project).await?;
                     let (kept, _access) = tokio::task::spawn_blocking(move || {
                         (crate::project::keep_given(&project, &given, &uploads), access)
                     }).await.map_err(|e| Error::internal("keep_given", e.to_string()))?;

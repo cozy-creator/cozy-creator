@@ -344,10 +344,10 @@ impl Machines {
     /// What this computer's unsettled runs on `machine` at `origin` need, but `except`'s.
     fn needs(&self, origin: &Origin, machine: &str, except: Option<&RunRow>) -> Needs {
         let mut needs = Needs::default();
-        let runs = self.store().unsettled().unwrap_or_default();
+        let runs = self.calcifer.each_store(|store|store.unsettled()).unwrap_or_default().into_iter().flatten().collect::<Vec<_>>();
         for row in runs
             .iter()
-            .filter_map(|id| self.store().run(id.as_str()).ok().flatten())
+            .filter_map(|id| self.calcifer.run_store(id.as_str()).and_then(|store|store.run(id.as_str())).ok().flatten())
         {
             let here = row.machine.as_deref() == Some(machine)
                 && row

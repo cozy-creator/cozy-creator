@@ -315,25 +315,8 @@ impl Store {
     }
 
     /// What each header read here said, by Hub and sha256, while TensorFS's families are `families`: what others said goes.
-    pub(crate) fn header_facts(&self, families: &str) -> Result<HashMap<(String, String), Facts>> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM headers WHERE families <> ?1", [families])?;
-            let mut statement = tx.prepare("SELECT hub, sha256, lora, family FROM headers")?;
-            let rows = statement.query_map([], |r| Ok(((r.get(0)?, r.get(1)?), Facts { lora: r.get(2)?, family: r.get(3)? })))?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
-    /// What headers said, by Hub and sha256, read under `families`.
-    pub(crate) fn keep_header_facts(&self, families: &str, read: &[((String, String), Facts)]) -> Result<()> {
-        self.write(|tx| {
-            let mut statement = tx.prepare("INSERT OR REPLACE INTO headers (hub, sha256, families, lora, family) VALUES (?1, ?2, ?3, ?4, ?5)")?;
-            for ((hub, sha256), facts) in read {
-                statement.execute(params![hub, sha256, families, facts.lora, facts.family])?;
-            }
-            Ok(())
-        })
-    }
+    pub(crate) fn header_facts(&self, _families: &str) -> Result<HashMap<(String,String),Facts>> { Ok(HashMap::new()) }
+    pub(crate) fn keep_header_facts(&self, _families: &str, _read: &[((String,String),Facts)]) -> Result<()> { Ok(()) }
 
 
 }

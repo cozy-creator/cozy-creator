@@ -41,6 +41,15 @@ pub(crate) struct SealingStore<'a> {
     transition: &'a vault::ProjectTransition,
 }
 impl SealingStore<'_> {
+    pub(crate) fn project_id(&self) -> &str { &self.project.id }
+    pub(crate) fn execution_scope(&self) -> (&str,&std::path::Path) { (&self.project.id,&self.project.root) }
+    pub(crate) fn input_root(&self) -> store::Result<PathBuf> {
+        self.transition.validate(&self.project).map_err(project_error)?;
+        let path=self.project.folder.dir.join(".vault-inputs");
+        std::fs::create_dir_all(&path).map_err(|_|StoreError::Protected("project_input_storage".into()))?;
+        platform::durable::set_mode(&path,0o700).map_err(|_|StoreError::Protected("project_input_storage".into()))?;
+        Ok(path)
+    }
     pub(crate) fn read<T>(&self, read: impl FnOnce(&Connection) -> store::Result<T>) -> store::Result<T> {
         self.transition.validate(&self.project).map_err(project_error)?;
         self.project.folder.journal_read(read)

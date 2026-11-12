@@ -431,9 +431,8 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
 /// named by its content and linked; anything else is a person's file and is copied. Says what it couldn't keep.
 /// An encrypted project's transport uploads stay inside its mounted storage, never the shared plaintext CAS.
 pub(crate) fn private_upload_root(api: &Arc<Api>, named: &str) -> Result<Option<PathBuf>, Error> {
-    let root = self::named(api, named)?;
-    if !vault::encrypted(&root) { return Ok(None); }
     let project = api.projects.get(api, named).map_err(|e| e.0)?;
+    project.require_view()?;
     Ok(Some(project.folder.dir.clone()))
 }
 
@@ -507,6 +506,7 @@ impl Holding {
         let doc = Doc::load(&folder)?;
         let lock = folder.lock()?;
         let stand = doc.stand(&lock);
+        drop(_access);
         let mut fields = written;
         let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), api::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
         let pickup = match picked {
@@ -771,7 +771,7 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
     let walk = Walk::new(api, project);
     let api = api.clone();
     tokio::spawn(async move {
-        let _access = match vault::admit_work(&walk.project).await {
+        let access = match vault::admit_work(&walk.project).await {
             Ok(access) => access,
             Err(error) => {
                 let mut walking = walk.project.walking.lock().expect("walking lock");
@@ -784,6 +784,7 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
                 return;
             }
         };
+        drop(access);
         let following = following(&api, &walk.project, active);
         remember(&api);
         if let Err(error) = walk.go(&following).await {
@@ -1136,6 +1137,7 @@ pub(super) fn not_saved(why: &str) -> String {
 /// used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     let mut open: Open = parse(&body?)?;
+    let _ownership=crate::maintenance_source::begin_project_creation().map_err(Refusal)?;
     if let Some(path) = open.path.as_ref().filter(|path| path.is_absolute())
         && !path.join(db::DB).is_file() && Folder::legacy_files(path)
     {
@@ -2131,7 +2133,7 @@ async fn runs(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<Asked>), Refusal> {
     let body = body?;
-    let asked: Runs = parse(&body)?;
+    let mut asked: Runs = parse(&body)?;
     if asked.on.is_empty() || asked.on.iter().any(|on| matches!(on, On::New(_))) {
         let said = "a project's runs go to machines: rent one first, then name it with --on";
         return Err(Refusal(Error::new(Kind::Usage, "project_on_new", said).next("cozy machine rent")));
@@ -2146,6 +2148,7 @@ async fn runs(
     };
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
+    asked.on=crate::private_io::check_project_placement(&project.id,&project.root,&asked.on).map_err(Refusal)?;
     let id = project.id.clone();
     project.unsent.lock().expect("unsent lock").clear();
     // What this render uses: the project as it is now, its export kept by digest until the render ends.
@@ -2400,7 +2403,7 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str) ->
             ask.sent.extend(owed.iter().cloned());
         }
     })?;
-    let store = api.calcifer.project_store(&project.id)?;
+    let store = api.calcifer.project_store(&project.id).map_err(|error|Error::new(Kind::Conflict,"project_journal",error.to_string()))?;
     let mut canceled = vec![];
     for pending in lock.pending.values().filter(|pending| pending.run > 0 && wanted(&pending.asset)) {
         let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
