@@ -306,6 +306,16 @@ impl Document {
     /// project from before) merge from what they said then.
     pub(super) fn typed(&self, id: &str, field: &str, heads: &[String], splices: &[Splice]) -> Result<String, Error> {
         let heads = heads.iter().map(|head| head.parse::<ChangeHash>().map_err(invalid)).collect::<Result<Vec<_>, _>>()?;
+        // Typed on the project as it stands, as one person typing is: nothing to merge, and nothing copied.
+        if heads.iter().collect::<BTreeSet<_>>() == self.heads.iter().collect::<BTreeSet<_>>() {
+            let mut words: Vec<char> = self.projected_words(id, field).chars().collect();
+            for splice in splices {
+                let at = (splice.at as usize).min(words.len());
+                let delete = (splice.delete as usize).min(words.len() - at);
+                words.splice(at..at + delete, splice.insert.chars()).for_each(drop);
+            }
+            return Ok(words.into_iter().collect());
+        }
         let mut now = self.doc.clone();
         let mut then = now.fork_at(&heads).map_err(|_| {
             Error::new(Kind::Conflict, "project_heads_unknown", "this edit was made on a project this Calcifer doesn't hold").remedy("read the project again")
@@ -329,6 +339,12 @@ impl Document {
         }
         scratch.merge(&mut theirs).map_err(invalid)?;
         scratch.text(&text).map_err(invalid)
+    }
+
+    /// Box `id`'s `field` as the projection holds it: "" for none or for what isn't words.
+    fn projected_words(&self, id: &str, field: &str) -> String {
+        let Some(Group::Records(boxes)) = self.projection.get("boxes") else { return String::new() };
+        boxes.get(id).and_then(|held| held.get("fields")?.get(field)?.as_str().map(str::to_owned)).unwrap_or_default()
     }
 
     /// Explicit conflict metadata, rather than silently presenting AutoSerde's selected winner.
