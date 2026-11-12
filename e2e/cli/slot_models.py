@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 QWEN35 = "Qwen3_5ForConditionalGeneration"
-TOKENIZER = {
+TOKENIZER: dict[str, object] = {
     "tokenizer_config.json": {"tokenizer_class": "Qwen2Tokenizer", "eos_token": "<|im_end|>"},
     "tokenizer.json": {"version": "1.0", "model": {"type": "BPE", "vocab": {"a": 0}, "merges": []}},
     "chat_template.jinja": "{% for m in messages %}{{ m.content }}{% endfor %}",
@@ -18,7 +18,8 @@ TOKENIZER = {
 
 def weights(path: Path, shapes: dict[str, list[int]]) -> None:
     """A safetensors file of BF16 zeros."""
-    header, at = {}, 0
+    header: dict[str, object] = {}
+    at = 0
     for key, shape in shapes.items():
         size = 2 * shape[0] * shape[1]
         header[key] = {"dtype": "BF16", "shape": shape, "data_offsets": [at, at + size]}
@@ -38,7 +39,7 @@ def files(folder: Path, named: dict[str, object]) -> None:
 
 def lm(folder: Path, cls: str, width: int, parts: tuple[str, ...], run: dict[str, object]) -> None:
     """A Qwen3.5-class LM: its vision tower, language model and head, a multi-token-prediction head among `parts`."""
-    shapes = {
+    shapes: dict[str, dict[str, list[int]]] = {
         "vision": {"model.visual.blocks.0.attn.qkv.weight": [3 * width, width]},
         "language": {"model.language_model.layers.0.mlp.up_proj.weight": [2 * width, width], "lm_head.weight": [16, width]},
         "mtp": {"mtp.layers.0.mlp.up_proj.weight": [2 * width, width], "mtp.fc.weight": [width, 2 * width]},
@@ -51,7 +52,7 @@ def h3(folder: Path, processor: bool) -> None:
     """MiniMax-H3's five components; its text encoder's processor only when `processor`."""
     diffusers = {"transformer": "MiniMaxH3Transformer3DModel", "transformer_ref": "MiniMaxH3Transformer3DModel", "vae": "AutoencoderKLMiniMaxH3",
                  "audio_vae": "AutoencoderKLMiniMaxH3Audio"}
-    index = {"_class_name": "MiniMaxH3Pipeline", "_diffusers_version": "0.37.0", "text_encoder": ["transformers", "Qwen3VLForConditionalGeneration"]}
+    index: dict[str, object] = {"_class_name": "MiniMaxH3Pipeline", "_diffusers_version": "0.37.0", "text_encoder": ["transformers", "Qwen3VLForConditionalGeneration"]}
     for name, cls in diffusers.items():
         index[name] = ["diffusers", cls]
         weights(folder / name / "diffusion_pytorch_model.safetensors", {"blocks.0.attn.qkv.weight": [12, 4], "proj_out.linear.weight": [4, 4]})
@@ -80,24 +81,33 @@ def main() -> None:
     made = [
         # Qwen Image's prompt enhancers (its rewriter's and expander's defaults), Qwen3.6-27B at another size with run files
         # spelled otherwise, Qwen3.6-35B-A3B of another class, and Qwen3.5-9B's head-only lane.
-        ("pe-i2i", "darrellbest/qwen-image-2.1-pe-i2i-abliterated", "0.1.0", lambda d: lm(d, QWEN35, 4, ("vision", "language"), enhancer)),
-        ("pe-t2i", "pottokao/qwen-image-2.1-pe-t2i-abliterated", "0.1.0", lambda d: lm(d, QWEN35, 4, ("vision", "language"), enhancer)),
-        ("qwen3.6-27b", "qwen/qwen3.6-27b", "0.1.0", lambda d: lm(d, QWEN35, 8, ("vision", "language", "mtp"), qwen)),
-        ("qwen3.6-35b-a3b", "qwen/qwen3.6-35b-a3b", "0.1.0", lambda d: lm(d, "Qwen3_5MoeForConditionalGeneration", 8, ("vision", "language", "mtp"), qwen)),
-        ("qwen3.5-9b-mtp", "qwen/qwen3.5-9b-mtp", "0.2.0", lambda d: lm(d, QWEN35, 4, ("mtp",), qwen)),
+        ("pe-i2i", "darrellbest/qwen-image-2.1-pe-i2i-abliterated", "0.1.0"),
+        ("pe-t2i", "pottokao/qwen-image-2.1-pe-t2i-abliterated", "0.1.0"),
+        ("qwen3.6-27b", "qwen/qwen3.6-27b", "0.1.0"),
+        ("qwen3.6-35b-a3b", "qwen/qwen3.6-35b-a3b", "0.1.0"),
+        ("qwen3.5-9b-mtp", "qwen/qwen3.5-9b-mtp", "0.2.0"),
         # Klein's upsampler (its default) and BFL's.
-        ("klein-upsampler-abliterated", "atomicchat/flux-3-klein-upsampler-abliterated", "0.1.0", lambda d: lm(d, QWEN35, 4, ("vision", "language"), upsampler)),
-        ("klein-upsampler", "black-forest-labs/flux-3-klein-upsampler", "0.2.0", lambda d: lm(d, QWEN35, 4, ("vision", "language"), upsampler)),
+        ("klein-upsampler-abliterated", "atomicchat/flux-3-klein-upsampler-abliterated", "0.1.0"),
+        ("klein-upsampler", "black-forest-labs/flux-3-klein-upsampler", "0.2.0"),
         # H3's default; a fine-tune whose first release lacks the text encoder's processor and whose next carries it; one that never does.
-        ("minimax-h3", "minimaxai/minimax-h3", "1.0.0-rc.8", lambda d: h3(d, True)),
-        ("pinkcherry-0.1.0", "sexgod1979/pinkcherry", "0.1.0", lambda d: h3(d, False)),
-        ("pinkcherry-0.1.1", "sexgod1979/pinkcherry", "0.1.1", lambda d: h3(d, True)),
-        ("eros-max", "tenstrip/eros-max", "0.1.0", lambda d: h3(d, False)),
+        ("minimax-h3", "minimaxai/minimax-h3", "1.0.0-rc.8"),
+        ("pinkcherry-0.1.0", "sexgod1979/pinkcherry", "0.1.0"),
+        ("pinkcherry-0.1.1", "sexgod1979/pinkcherry", "0.1.1"),
+        ("eros-max", "tenstrip/eros-max", "0.1.0"),
     ]
-    for folder, model, release, write in made:
-        write(out / folder)
+    lm(out / "pe-i2i", QWEN35, 4, ("vision", "language"), enhancer)
+    lm(out / "pe-t2i", QWEN35, 4, ("vision", "language"), enhancer)
+    lm(out / "qwen3.6-27b", QWEN35, 8, ("vision", "language", "mtp"), qwen)
+    lm(out / "qwen3.6-35b-a3b", "Qwen3_5MoeForConditionalGeneration", 8, ("vision", "language", "mtp"), qwen)
+    lm(out / "qwen3.5-9b-mtp", QWEN35, 4, ("mtp",), qwen)
+    lm(out / "klein-upsampler-abliterated", QWEN35, 4, ("vision", "language"), upsampler)
+    lm(out / "klein-upsampler", QWEN35, 4, ("vision", "language"), upsampler)
+    h3(out / "minimax-h3", True)
+    h3(out / "pinkcherry-0.1.0", False)
+    h3(out / "pinkcherry-0.1.1", True)
+    h3(out / "eros-max", False)
+    for folder, model, release in made:
         print(out / folder, model, release, f"https://huggingface.co/{model}")
-
 
 if __name__ == "__main__":
     main()
