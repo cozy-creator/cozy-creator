@@ -11,12 +11,18 @@
   gap: 10px;
   height: 100%;
   min-height: 0;
-  padding: 12px;
+  /* Room under the last section to scroll it clear of the shape's label in the corner. */
+  padding: 12px 12px 52px;
   overflow: hidden auto;
   overscroll-behavior: contain;
 }
 .frame-sections .beats-edit {
   gap: 10px;
+}
+/* A short frame scrolls its sections; none is squeezed and cut through its words. */
+.frame-sections > *,
+.frame-sections .beats-edit > * {
+  flex-shrink: 0;
 }
 .frame-sections .beat {
   position: relative;
@@ -56,11 +62,17 @@
 }
 .frame-sections .beat-heading .grip {
   padding-top: 0;
+  font-size: 16px;
 }
 .frame-sections .beat-heading > .iconb {
   position: static;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
+}
+.frame-sections .beat-heading > .iconb .icon,
+.frame-sections .beat-toggle > .icon {
+  width: 18px;
+  height: 18px;
 }
 .frame-sections .add-beat {
   min-height: 40px;

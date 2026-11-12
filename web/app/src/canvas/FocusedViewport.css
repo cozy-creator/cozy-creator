@@ -26,6 +26,7 @@
   display: flex;
   align-items: baseline;
   gap: 10px;
+  text-shadow: var(--halo);
 }
 .focus-name {
   min-width: 0;
@@ -95,11 +96,12 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) min(26vw, 280px);
   /* The frame; its tool under it; Render and the fields (cl-938), the same for a picture and a video. */
-  grid-template-rows: minmax(0, 1fr) auto minmax(var(--focus-footer-room, 0px), auto);
+  grid-template-rows: minmax(0, 1fr) auto auto;
   gap: 12px 20px;
   background: none;
   border: 0;
-  border-image: none;
+  /* -source, not the shorthand's none: the build's minifier empties that, and the rule is dropped. */
+  border-image-source: none;
   box-shadow: none;
   transform: none !important;
   translate: none !important;
@@ -189,6 +191,28 @@
   min-height: 40px;
   padding: 6px 12px;
   font-size: 18px;
+}
+/* What makes it reads as its name, not a field being typed in; its trash can as big as the button beside it. */
+.focus-card .image-tool {
+  min-height: 40px;
+  border-color: var(--line2);
+}
+.focus-card .image-tool button {
+  min-width: 36px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.focus-card .image-tool .icon {
+  width: 18px;
+  height: 18px;
+}
+/* Its warnings, beside its name, big enough to see and hit. */
+.focus-heading .iconb.warned {
+  width: 32px;
+  height: 32px;
+  font-size: 20px;
 }
 body:has(.focus-viewport) .tools,
 body:has(.focus-viewport) .zoom {
