@@ -17,7 +17,9 @@
 //! - **Giving way.** Places go to the most urgent waiting range first. Every place taken, a range in flight gives
 //!   its place up at its next bytes to one waiting at an earlier job's order, and asks again from the byte it reached.
 //!   While an object at order 0 is under way (an emergency: what a running call reads now), every other request gives
-//!   way at its next bytes and nothing else starts, so it has the whole link; then the rest go on (cl-966).
+//!   way at its next bytes and nothing else starts, so it has the whole link; then the rest go on (cl-966). A transfer
+//!   outside the downloader at an order (an install's packages, from their own index) holds what comes after it the
+//!   same way while it lasts ([`Shared::give_way`]).
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every byte
 //!   enters the store's admission, which hashes it: wrong bytes are never admitted. A process sharing
 //!   the store that is fetching an object is waited for, not raced (tfs-142).
@@ -217,6 +219,26 @@ impl Waiter {
     }
 }
 
+/// A transfer outside the downloader at its order (`Shared::give_way`): dropped, what waited for it goes on.
+pub struct GiveWay {
+    shared: Arc<Shared>,
+    order: u64,
+}
+
+impl Drop for GiveWay {
+    fn drop(&mut self) {
+        let mut queue = lock(&self.shared.queue);
+        if let Some(count) = queue.aside.get_mut(&self.order) {
+            *count -= 1;
+            if *count == 0 {
+                queue.aside.remove(&self.order);
+            }
+        }
+        self.shared.calmed(&queue);
+        tracing::info!(order = self.order, "given way: the transfer outside ended");
+    }
+}
+
 impl Drop for Waiter {
     fn drop(&mut self) {
         if self.task.waiters.fetch_sub(1, Ordering::AcqRel) == 1 {
@@ -232,9 +254,19 @@ struct Queue {
     seq: u64,
     /// Its tasks at order 0 (emergencies).
     urgent: usize,
+    /// Transfers outside the downloader, by order (`Shared::give_way`).
+    aside: BTreeMap<u64, usize>,
 }
 
 impl Queue {
+    /// The order past which every request waits: 0 during an emergency, else the most urgent transfer outside.
+    fn floor(&self) -> u64 {
+        match self.urgent {
+            0 => self.aside.keys().next().copied().unwrap_or(u64::MAX),
+            _ => 0,
+        }
+    }
+
     /// `task` leaves the queue, unless a task of its own already took its object's place.
     fn remove(&mut self, task: &Arc<Task>) {
         if self.tasks.get(&task.object.sha256).is_some_and(|t| Arc::ptr_eq(t, task)) {
@@ -263,10 +295,10 @@ pub(crate) struct Shared {
     pub volume: Option<VolumeOrigin>,
     queue: Mutex<Queue>,
     queued: Notify,
-    /// A task's order moved earlier (`want`), or the last emergency ended: what waits for a place asks again.
+    /// A task's order moved earlier (`want`), or the floor rose: what waits for a place asks again.
     moved: Notify,
-    /// `Queue::urgent`, read without the queue's lock.
-    urgent: AtomicUsize,
+    /// `Queue::floor`, read without the queue's lock.
+    floor: AtomicU64,
     closed: AtomicBool,
     closing: Notify,
     /// Requests in flight, across every object, as many as the ramp allows (`Pace`).
@@ -665,7 +697,7 @@ impl Shared {
             queue: Mutex::default(),
             queued: Notify::new(),
             moved: Notify::new(),
-            urgent: AtomicUsize::new(0),
+            floor: AtomicU64::new(u64::MAX),
             closed: AtomicBool::new(false),
             closing: Notify::new(),
             slots: Slots::new(START.min(requests.max(1))),
@@ -807,24 +839,23 @@ impl Shared {
     /// Each free place with nothing waiting takes the back half of the in-flight range with the most
     /// left, while that half is at least `STEAL`; the range's own request stops where the half begins.
     fn steal(&self) {
-        // During an emergency, only its ranges.
-        let before = self.held(1).then_some(1);
         while let Some(slot) = self.slots.idle() {
-            if self.take_half(slot, before).is_some() {
+            if self.take_half(slot, None).is_some() {
                 return;
             }
         }
     }
 
-    /// `slot` takes the back half of the in-flight range with the most left of those whose object is an
+    /// `slot` takes the back half of the in-flight range with the most left of those not held whose object is an
     /// earlier job's than order `before` (of any, when None), while that half is at least `STEAL`. The
     /// slot back when there is none.
     fn take_half(&self, slot: Slot, before: Option<u64>) -> Option<Slot> {
         let flights = lock(&self.flights).clone();
-        // Order 1 names the emergencies' (order 0), which share job 0 with what is next to them.
-        let earlier = |order: u64, before: u64| if before == 1 { order == 0 } else { job(order) < job(before) };
         let urgent = |flight: &&Arc<Flight>| {
-            before.is_none_or(|before| flight.taken.as_ref().is_some_and(|(task, _)| earlier(task.priority.load(Ordering::Acquire), before)))
+            flight.taken.as_ref().is_some_and(|(task, _)| {
+                let order = task.priority.load(Ordering::Acquire);
+                !self.held(order) && before.is_none_or(|before| job(order) < job(before))
+            })
         };
         let most = flights.iter().filter(urgent).max_by_key(|flight| {
             let span = lock(&flight.span);
@@ -924,7 +955,7 @@ impl Shared {
                     task.priority.store(priority, Ordering::Release);
                     if priority == 0 {
                         queue.urgent += 1;
-                        self.urgent.store(queue.urgent, Ordering::Release);
+                        self.calmed(&queue);
                     }
                     if !task.started.load(Ordering::Acquire) {
                         queue.seq += 1;
@@ -964,7 +995,7 @@ impl Shared {
                 queue.tasks.insert(object.sha256.clone(), Arc::clone(&task));
                 if priority == 0 {
                     queue.urgent += 1;
-                    self.urgent.store(queue.urgent, Ordering::Release);
+                    self.calmed(&queue);
                 }
                 self.busy_one();
                 self.queued.notify_one();
@@ -994,17 +1025,28 @@ impl Shared {
         next
     }
 
-    /// `queue`'s emergencies, as read without its lock; the last one ended, what waits for one wakes.
+    /// `queue`'s floor, as read without its lock; risen, what waits under it wakes.
     fn calmed(&self, queue: &Queue) {
-        if self.urgent.swap(queue.urgent, Ordering::AcqRel) > 0 && queue.urgent == 0 {
+        let floor = queue.floor();
+        if self.floor.swap(floor, Ordering::AcqRel) < floor {
             self.moved.notify_waiters();
             self.queued.notify_waiters();
         }
     }
 
-    /// Whether a request at `order` waits: it isn't one, and an emergency (order 0) is under way.
+    /// Whether a request at `order` waits: an emergency (order 0) or a transfer outside comes before it.
     fn held(&self, order: u64) -> bool {
-        order != 0 && self.urgent.load(Ordering::Acquire) > 0
+        order > self.floor.load(Ordering::Acquire)
+    }
+
+    /// Until the guard drops, what comes after `order` waits as during an emergency: a transfer outside the
+    /// downloader at that order (an install's packages, from their index) has the link.
+    pub(crate) fn give_way(self: &Arc<Self>, order: u64) -> GiveWay {
+        let mut queue = lock(&self.queue);
+        *queue.aside.entry(order).or_default() += 1;
+        self.calmed(&queue);
+        tracing::info!(order, "giving way: what comes after a transfer outside waits for it");
+        GiveWay { shared: Arc::clone(self), order }
     }
 
     /// The most urgent task nobody has started that someone still wants.

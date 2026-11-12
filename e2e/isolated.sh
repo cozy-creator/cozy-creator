@@ -197,11 +197,11 @@ case $suite:$shard in
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
-  cli:ondemand) needs='packages birefnet downloads' ;;
+  cli:ondemand) needs='packages birefnet downloads spare' ;;
   cli:plan) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras vaes prompts' ;;
-  cli:) needs='packages birefnet downloads loras vaes fits parts prompts' ;;
+  cli:) needs='packages birefnet downloads spare loras vaes fits parts prompts' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published asks about, and CI reads no production (xs-169).
@@ -359,6 +359,11 @@ if [ -n "$needs" ]; then
     mirror "$seed/qwen3.5-0.8b.safetensors" qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B --source-format as-is
     random_weights "$seed/fontbox.safetensors" 115
     mirror "$seed/fontbox.safetensors" lilylilith/fontbox bf16 0.1.0 https://huggingface.co/lilylilith/fontbox --source-format as-is
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" spare "* ]]; then
+    random_weights "$seed/pagebox.safetensors" 900
+    mirror "$seed/pagebox.safetensors" lilylilith/pagebox bf16 0.1.0 https://huggingface.co/lilylilith/pagebox --source-format as-is
     rm -f "$seed"/*.safetensors
   fi
   if [[ " $needs " == *" loras "* ]]; then

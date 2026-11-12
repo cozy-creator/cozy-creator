@@ -60,15 +60,20 @@ while read -r why; do check "ondemand-ahead: $why"; done < "$OUT/ondemand-ahead.
 # TensorD for it (`model_need`), which fetches what of it is absent before every other download (order 0) and answers once it's
 # here: every other request gives way at its next bytes, so the emergency takes the link, and resumes after. The isolated Hub's
 # store is slowed to 30 MB/s (tc on the loopback, from its MinIO's port), so the link is the bottleneck, as on a pod.
+slow_store() {
+local port
+port=$(pgrep -af minio | grep -oE -- '--address[ =]127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$' | head -1)
+[ -n "$port" ] || { check "$1: the isolated Hub's MinIO port wasn't found: $(pgrep -af minio | head -2)"; return 1; }
+sudo tc qdisc add dev lo root handle 1: prio && sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate 240mbit burst 1mb latency 1s \
+  && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:3 \
+  || { sudo tc qdisc del dev lo root 2> /dev/null; check "$1: the store's link wasn't slowed"; return 1; }
+}
+
 ondemand_need() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a started call's read of a model not here comes before every other download (cl-966)"
-local began port
-port=$(pgrep -af minio | grep -oE -- '--address[ =]127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$' | head -1)
-[ -n "$port" ] || { check "ondemand-need: the isolated Hub's MinIO port wasn't found: $(pgrep -af minio | head -2)"; return; }
-sudo tc qdisc add dev lo root handle 1: prio && sudo tc qdisc add dev lo parent 1:3 handle 30: tbf rate 240mbit burst 1mb latency 1s \
-  && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:3 \
-  || { sudo tc qdisc del dev lo root 2> /dev/null; check "ondemand-need: the store's link wasn't slowed"; return; }
+local began
+slow_store ondemand-need || return 0
 began=$(date -u +%s%3N)
 run_submit "$OUT" ondemand-need run "$here/script/ondemand.py/hold" seconds:=10 read:=true --on local > /dev/null
 for _ in $(seq 900); do grep -q '"holding"' "$OUT/ondemand-need.ndjson" 2> /dev/null && break; sleep 0.2; done
@@ -116,4 +121,93 @@ if not queued:
 JUDGE
 cat "$OUT/ondemand-need.timeline.json"
 while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.failed"
+}
+
+# An install's packages come from their own index, outside the downloader, whose many requests starved them on a pod (run
+# 43316018343: 1080 s at 100-450 KiB/s while weights came). While an install builds, every download after it gives way and none
+# starts; then they go on. `spare` holds with pagebox (900 MB, on demand) guessed behind every run's needs over the 30 MB/s link,
+# and meanwhile a package installs whose path dependency takes seconds to build.
+ondemand_install() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "while an install builds, the downloads after it give way (cl-966)"
+local began dir=$OUT/ondemand-install
+mkdir -p "$dir/slow"
+printf '[project]\nname = "e2e-slow-build"\nversion = "0.0.0"\n\n[build-system]\nrequires = ["setuptools>=70"]\nbuild-backend = "setuptools.build_meta"\n' \
+  > "$dir/slow/pyproject.toml"
+printf 'import time\n\nfrom setuptools import setup\n\ntime.sleep(4)\nsetup(py_modules=[])\n' > "$dir/slow/setup.py"
+package_at "$dir/caller" e2e_slow_caller '"cozy-runtime>=0.45", "msgspec>=0.19", "e2e-slow-build"' \
+  "$(printf '\n[tool.uv.sources]\ne2e-slow-build = { path = "../slow" }')" <<'PY'
+import msgspec
+
+from cozy_runtime.author import App
+
+app = App()
+
+
+class Ask(msgspec.Struct):
+    pass
+
+
+class Built(msgspec.Struct):
+    built: bool
+
+
+@app.entrypoint(accelerator=False)
+def built(payload: Ask) -> Built:
+    return Built(built=True)
+PY
+slow_store ondemand-install || return 0
+began=$(date -u +%s%3N)
+run_submit "$OUT" ondemand-spare run "$here/script/ondemand.py/spare" seconds:=40 --on local > /dev/null
+for _ in $(seq 900); do grep -q '"holding"' "$OUT/ondemand-spare.ndjson" 2> /dev/null && break; sleep 0.2; done
+run_submit "$OUT" ondemand-install run "$dir/caller/built" --on local > /dev/null
+for name in ondemand-install ondemand-spare; do
+  run_wait "$OUT" "$name" || check "ondemand-install: $name did not end: $(tail -c 300 "$OUT/$name.ndjson")"
+  [ "$(run_get "$OUT" "$name" .status)" = completed ] || check "ondemand-install: $name $(run_get "$OUT" "$name" .status): $(run_get "$OUT" "$name" .reason.message | head -c 300)"
+done
+sudo tc qdisc del dev lo root || check "ondemand-install: the store's link wasn't restored"
+cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-install.tensord.log" 2>&1 || check "ondemand-install: machine logs local failed"
+python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-install.timeline.json" 2> "$OUT/ondemand-install.failed" || true
+import json, re, sys
+from datetime import datetime
+from pathlib import Path
+out, began = Path(sys.argv[1]), int(sys.argv[2])
+def at(line):
+    try:
+        return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return 0
+opened, windows, fetching, landed = {}, [], [], []
+for line in (out / "ondemand-install.tensord.log").read_text(errors="replace").splitlines():
+    t = at(line)
+    if t < began:
+        continue
+    held = re.search(r"(giving way|given way):.*order=(\d+)", line)
+    if held and held[1] == "giving way":
+        opened[int(held[2])] = t
+    elif held and int(held[2]) in opened:
+        windows.append((opened.pop(int(held[2])), t, int(held[2])))
+    found = re.search(r": (fetching|landed) .*bytes=(\d+).*priority=(\d+)", line)
+    # A guess's order: class 2 of the line's (`priority::guess`).
+    if found and (int(found[3]) - 2) >> 62 == 2:
+        (fetching if found[1] == "fetching" else landed).append((t, int(found[2])))
+build = max(windows, key=lambda w: w[1] - w[0], default=None)
+s, e = (build[0], build[1]) if build else (0, 0)
+print(json.dumps({"windows_ms": [[a - began, b - began] for a, b, _ in windows], "guess_objects": len(landed),
+                  "guess_bytes_before": sum(b for t, b in landed if t < s), "guess_bytes_after": sum(b for t, b in landed if t > e),
+                  "started_during": sum(1 for t, _ in fetching if s < t < e), "landed_during": sum(1 for t, _ in landed if s + 1500 < t < e)}, indent=1))
+fail = lambda why: print(why, file=sys.stderr)
+if not build or e - s < 3000:
+    fail(f"no install held the line for its build of seconds: {windows}")
+elif not any(t < s for t, _ in fetching) or not any(t > e for t, _ in landed):
+    fail("pagebox's guess wasn't in flight across the install's build: nothing was there to give way")
+else:
+    if any(s < t < e for t, _ in fetching):
+        fail(f"{sum(1 for t, _ in fetching if s < t < e)} of pagebox's objects started while the install built")
+    # A request in flight gives way at its next bytes: past a second and a half, nothing of the guess lands until the build ends.
+    if any(s + 1500 < t < e for t, _ in landed):
+        fail(f"{sum(1 for t, _ in landed if s + 1500 < t < e)} of pagebox's objects landed while the install built: they didn't give way")
+JUDGE
+cat "$OUT/ondemand-install.timeline.json"
+while read -r why; do check "ondemand-install: $why"; done < "$OUT/ondemand-install.failed"
 }
