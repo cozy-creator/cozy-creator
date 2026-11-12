@@ -115,7 +115,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     })??;
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
-    warnings.extend(folder.crdt_conflicts()?.into_iter().map(api::calcifer::project::Warning::of_file));
+    warnings.extend(folder.crdt_conflicts()?.into_iter().map(api::calcifer::project::Warning::of_project));
     warnings.extend(doc.said_of_known(&lock));
     let known = known_packages(api, &doc);
     warnings.extend(unmade(&doc, &known, &lock));
@@ -187,7 +187,7 @@ impl Model {
         let mut state = self.head.clone();
         // As it is this moment: it moves no revision, so the model worked out once per revision can't hold it (cl-837).
         if let Some(why) = project.folder.unsaved() {
-            state.warnings.insert(0, api::calcifer::project::Warning::of_file(super::not_saved(&why)));
+            state.warnings.insert(0, api::calcifer::project::Warning::of_project(super::not_saved(&why)));
         }
         state.busy = *project.walking.lock().expect("walking lock");
         state.machines = project.folder.machines();

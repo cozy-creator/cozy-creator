@@ -15,7 +15,7 @@ use api::{
 
 use super::graph::name_key;
 
-/// A version a run is making or about to: what project.lock's pending entry says of it.
+/// A version a run is making or about to: what the lock's pending entry says of it.
 pub(crate) struct Going {
     /// The job it is, as the board knows it.
     pub job: String,
@@ -155,7 +155,7 @@ impl Jobs {
         held.board.clone()
     }
 
-    /// The board as project.lock stands: what it sends and what it still owes, each `coming` with whether it makes a shot. A run it
+    /// The board as the lock stands: what it sends and what it still owes, each `coming` with whether it makes a shot. A run it
     /// holds no row of is read by `run`. The data is read outside this lock and may belong to a walk that has ended.
     pub(crate) fn sync(&self, active: u64, on: Vec<String>, going: Vec<Going>, coming: Vec<(Job, bool)>, run: impl Fn(u64) -> Option<Run>) {
         let mut held = self.held.lock().expect("jobs lock");

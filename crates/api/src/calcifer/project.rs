@@ -62,7 +62,7 @@ pub fn unnamed() -> Error {
         .next("cozy new")
 }
 
-/// Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
+/// Where a card sits on a project's canvas: one row of its canvas.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Card {
@@ -212,12 +212,12 @@ pub struct State {
     /// Assets out of date, and why.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stale: Vec<Stale>,
-    /// Assets project.lock keeps versions of that project.yaml no longer names.
+    /// Assets the project keeps versions of that it no longer names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub orphans: Vec<Orphan>,
     /// Whether its walk is going: runs being made, or asked and not yet sent.
     pub busy: bool,
-    /// How many files project.lock names are not on this computer.
+    /// How many files the project names are not on this computer.
     #[serde(default)]
     pub absent: u64,
     /// How many files `cozy run`s left here, that belong to no asset.
@@ -252,7 +252,7 @@ pub struct Stale {
     pub why: String,
 }
 
-/// What reading a project said: of the asset or entity `name`, or of the file as a whole.
+/// What reading a project said: of the asset or entity `name`, or of the project as a whole.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(rename = "ProjectWarning"))]
 pub struct Warning {
@@ -267,13 +267,13 @@ impl Warning {
         Self { name: Some(name.to_owned()), message }
     }
 
-    /// A warning about the project file as a whole.
-    pub fn of_file(message: String) -> Self {
+    /// A warning about the project as a whole.
+    pub fn of_project(message: String) -> Self {
         Self { name: None, message }
     }
 }
 
-/// A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.
+/// A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the project names it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Read {
@@ -290,9 +290,9 @@ pub struct Read {
     pub key: Option<String>,
 }
 
-/// An asset project.lock keeps versions of that project.yaml no longer names: the bytes `reclaim`
+/// An asset the project keeps versions of that it no longer names: the bytes `reclaim`
 /// would free of it (none that anything else names, and each file once across the orphans), and,
-/// when project.yaml has exactly one new asset of its kind with none, that asset: renamed, it would
+/// when the project has exactly one new asset of its kind with none, that asset: renamed, it would
 /// be this (`POST /v1/projects/{id}/rename`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -324,7 +324,7 @@ pub struct File {
 }
 
 /// `POST /v1/projects/{id}/imports`, under an `Idempotency-Key`: the file at `source` kept in the project, as one constant more of
-/// project.yaml, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), a file of the project's
+/// the project, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), a file of the project's
 /// by its hash or the start of it, or an `http(s)` URL.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -466,7 +466,7 @@ pub struct ClipNow {
     pub missing: Option<String>,
 }
 
-/// A version's number and the hash prefix project.yaml can name its file by.
+/// A version's number and the hash prefix a box's `approved` names its file by.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct VersionPrefix {
@@ -537,7 +537,7 @@ pub struct MainFile {
     pub metadata: Map<String, Value>,
 }
 
-/// Pick up from here: a take, by mention, and the frame its new part starts at. Never written to project.yaml; the take it makes records it.
+/// Pick up from here: a take, by mention, and the frame its new part starts at. Never written to its box; the take it makes records it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Pickup {
@@ -618,7 +618,7 @@ pub struct Asset {
     pub tool: Option<String>,
     /// How many it has.
     pub versions: u32,
-    /// Each one's hash prefix, to name it in project.yaml.
+    /// Each one's hash prefix, what a box's `approved` names it by.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefixes: Vec<VersionPrefix>,
     /// The version that is its state.
@@ -627,7 +627,7 @@ pub struct Asset {
     /// The number (1 first, never reused) of the version `approve` or `--approve` pinned. Its state until `unpin`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved: Option<u32>,
-    /// Its state is a file project.yaml names: nothing is made.
+    /// Its state is a file its box approves: nothing is made.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
     /// A person starred it, to find it again (cl-892): `starred: true` in its fields, which `PATCH` sets. Never part of its key.
@@ -1021,7 +1021,7 @@ pub struct RentFor {
     pub line: String,
 }
 
-/// `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to `version`: a short run of digits is its version (1 first),
+/// `POST /v1/projects/{id}/approve`: `name` approved at `version`: a short run of digits is its version (1 first),
 /// anything else a hash prefix of any file in the project's `files/`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -1083,8 +1083,8 @@ pub struct Machines {
     pub machines: Vec<String>,
 }
 
-/// `POST /v1/projects/{id}/rename`: what project.lock keeps of `from` kept as `to`, an asset project.yaml names now with no
-/// versions. Nothing on disk moves; people rename the asset, and its `<mentions>`, in project.yaml.
+/// `POST /v1/projects/{id}/rename`: box `from` called `to`, with its versions, its canvas row and every `<from>` in the
+/// project's words. Nothing on disk moves.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Rename {
@@ -1347,11 +1347,11 @@ pub struct Preview {
     pub path: String,
 }
 
-/// Who made a change to a project: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client of the API.
+/// Who made a change to a project: the page (`client` names its tab), the CLI, or another client of the API.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct By {
-    /// `page`, `cli`, `file` or `api`.
+    /// `page`, `cli` or `api`.
     pub via: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<String>,

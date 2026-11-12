@@ -1045,7 +1045,7 @@ pub enum StreamEvent {
     /// It left the list.
     #[serde(rename = "machine.removed")]
     MachineRemoved { name: String },
-    /// `rev` is opaque, and changes whenever project.yaml or project.lock does. Optional
+    /// `rev` is opaque, and changes whenever the project does. Optional
     /// `cursor` is its emission position, comparable only with the same controller generation.
     #[serde(rename = "project.changed")]
     ProjectChanged {

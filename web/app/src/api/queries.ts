@@ -91,12 +91,6 @@ export const canvasQuery = (client: Client, stream: EventStream, id: string) =>
     structuralSharing: false,
   })
 
-export const yamlQuery = (client: Client, id: string) =>
-  queryOptions({
-    queryKey: ["yaml", id],
-    queryFn: ({ signal }) => client.yaml(id, signal),
-  })
-
 export const projectsQuery = (client: Client) =>
   queryOptions({
     queryKey: ["projects"],

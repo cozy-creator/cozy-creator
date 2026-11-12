@@ -117,7 +117,7 @@ cozy open                                  # edit assets in the browser
 cozy status                                # project health and warnings
 ```
 
-The format and every command: [PROJECT-YAML.md](crates/calcifer/docs/PROJECT-YAML.md).
+The project model and every command: [PROJECT.md](crates/calcifer/docs/PROJECT.md).
 
 ## Remove cozy
 
