@@ -878,7 +878,7 @@ impl Lock {
         let prefix = format!("{}{TOMBSTONE}", name_key(name));
         let latest = |of_box: bool| {
             (self.assets.iter())
-                .filter(|(at, held)| at.starts_with(&prefix) && held.deleted_ms.is_some() && (!of_box || held.id == id))
+                .filter(|(at, held)| at.starts_with(&prefix) && (!of_box || held.id == id))
                 .max_by_key(|(at, _)| at[prefix.len()..].parse::<u32>().unwrap_or(0))
                 .map(|(_, held)| held)
         };

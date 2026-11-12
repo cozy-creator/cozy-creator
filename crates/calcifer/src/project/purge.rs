@@ -98,22 +98,21 @@ fn purged(api: &Api, path: &Path) -> Option<i64> {
 /// `folder`'s deleted boxes whose undo window ended by `now`, gone for good: each file of theirs that no box still there, nothing on its
 /// way, no run's output and no box Undo can still bring back holds, from `files/`, its record and the `caches` named by its hash, and a
 /// cut's film at the root. A box keeps its name, its id and when, so an Undo of it says why it can't, until the history no longer reaches
-/// it. A box set aside before cl-919 counts from now. When the next is due, if any is.
+/// it. One deleted before cl-919, which says no time, goes now. When the next is due, if any is.
 pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Option<i64>, Error> {
     let window = window_ms();
     // Held throughout: a file kept meanwhile isn't deleted.
     let _collecting = folder.collecting();
     let lock = folder.lock()?;
     let set_aside = |key: &str| key.contains(TOMBSTONE);
-    let holding: Vec<(&String, &super::folder::Asset)> = lock.assets.iter().filter(|(key, held)| set_aside(key) && held.files().next().is_some()).collect();
-    let gone: Vec<String> = holding.iter().filter(|(_, held)| held.lapsed(now)).map(|(key, _)| (*key).clone()).collect();
-    let unstamped = holding.iter().any(|(_, held)| held.deleted_ms.is_none());
+    let ended = |held: &super::folder::Asset| held.files().next().is_some() && (held.deleted_ms.is_none() || held.lapsed(now));
+    let gone: Vec<String> = lock.assets.iter().filter(|(key, held)| set_aside(key) && ended(held)).map(|(key, _)| key.clone()).collect();
     let oldest = history::oldest_ms(folder).unwrap_or(i64::MAX);
     let forgotten = |held: &super::folder::Asset| held.files().next().is_none() && held.deleted_ms.is_some_and(|at| at < oldest);
     let stubs = lock.assets.iter().any(|(key, held)| set_aside(key) && forgotten(held));
     // A box deleted before cl-919, said by a run's row of its file rather than its own.
     let legacy = |row: &super::folder::RunFile| row.run == 0 && row.output == "deleted";
-    if gone.is_empty() && !unstamped && !stubs && !lock.runs.iter().any(legacy) {
+    if gone.is_empty() && !stubs && !lock.runs.iter().any(legacy) {
         return Ok(next_due(&lock, window));
     }
     let doc = Doc::load(folder)?;
@@ -130,8 +129,7 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
                 held.versions.clear();
                 held.discarded.clear();
                 held.held = None;
-            } else if held.deleted_ms.is_none() && held.files().next().is_some() {
-                held.deleted_ms = Some(now);
+                held.deleted_ms.get_or_insert(now);
             }
         }
         lock.assets.retain(|key, held| !(set_aside(key) && forgotten(held)));

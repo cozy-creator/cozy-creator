@@ -807,11 +807,11 @@ fn wanted<T>(way: Way, before: T, after: T) -> T {
     if way == Way::Back { before } else { after }
 }
 
-/// Whether box `back`, deleted, is past bringing back: what it held was set aside longer ago than the undo window, or its own file has left
-/// the project.
+/// Whether box `back`, deleted, is past bringing back: what it held was set aside longer ago than the undo window, or is gone, or its own
+/// file has left the project.
 fn lapsed(folder: &Folder, lock: &Lock, back: &Boxed) -> bool {
     let now = now_ms();
-    if lock.deleted_box(&back.name, &back.id).is_some_and(|held| held.lapsed(now)) {
+    if lock.deleted_box(&back.name, &back.id).is_some_and(|held| held.lapsed(now) || held.files().next().is_none()) {
         return true;
     }
     let Some(approved) = back.get("approved").filter(|approved| !approved.is_null()) else { return false };
