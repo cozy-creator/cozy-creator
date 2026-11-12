@@ -45,7 +45,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     if let Err(e) = crate::completion::install(&ctx.user_home) {
         crate::output::warn(&format!("shell completion not installed: {e}"));
     }
-    let current = env!("CARGO_PKG_VERSION");
+    let current = ::api::VERSION;
     let binary = installed()?;
     if let Some(brew) = crate::calcifer_client::homebrew(&binary) {
         return Err(Error::new(
@@ -226,13 +226,13 @@ async fn text(url: &str) -> Result<String, Error> {
 }
 
 /// Whether release `version` replaces `current`: a newer release, or any release over a dev build
-/// (`+dev.g<sha>`), even the release it was built from.
+/// (the RC's `0.26.0-dev+g<sha>`, a release's `+dev.g<sha>`), even the release it was built from.
 fn newer(version: &str, current: &str) -> bool {
     match (
         semver::Version::parse(version),
         semver::Version::parse(current),
     ) {
-        (Ok(_), Ok(current)) if current.build.as_str().starts_with("dev") => true,
+        (Ok(_), Ok(current)) if !current.build.is_empty() || !current.pre.is_empty() => true,
         (Ok(version), Ok(current)) => version > current,
         _ => false,
     }

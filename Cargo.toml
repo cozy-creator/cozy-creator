@@ -23,7 +23,9 @@ members = [
 ]
 
 [workspace.package]
-version = "0.25.0"
+# An RC branch carries the dev version of the minor it makes (cl-973; builds say `0.26.0-dev+g<sha8>`, crates/api/build.rs). A
+# freeze sets the RC's to the next minor's `-dev`; a release cut sets its plain X.Y.Z.
+version = "0.26.0-dev"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT"

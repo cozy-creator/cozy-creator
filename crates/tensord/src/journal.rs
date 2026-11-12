@@ -195,7 +195,7 @@ impl ExecutorFacts {
     pub(crate) fn observed(pid: u32, runtime_version: String, tensorfs_version: String) -> Self {
         Self {
             pid, runtime_version, tensorfs_version,
-            tensord_version: env!("CARGO_PKG_VERSION").into(),
+            tensord_version: ::api::VERSION.into(),
             tensord_commit: Some(api::COMMIT.to_owned()),
         }
     }

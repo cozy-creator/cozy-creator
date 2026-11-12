@@ -5,7 +5,7 @@ Real runs of `cozy` on GitHub's runners, chosen by what a change touches (CI v2:
 - `ci/affected <repo> <base> <head>` prints what a change must run; `ci/suites.toml` holds the rules.
 - **The candidate set** (`candidates/`): on Linux, TensorD, TensorFS and the Runtime, built from the change at its commit and the
   other repos at master (`stack_ref`, `runtime_ref`), go on the local machine together, so a mismatch between them fails the PR.
-  A built cozy or Runtime is `<version>+dev.g<sha8>`; a taken one is its exact release version (a prerelease's too), which
+  A built cozy is the RC's `<x.y.z>-dev+g<sha8>` or a release's `<version>+dev.g<sha8>`, a built Runtime `<version>+dev.g<sha8>`; a taken one is its exact release version (a prerelease's too), which
   `cozy machine update` fetches and verifies.
 - `hubcheck/`: every suite's cozy reaches tensorhub.com through it, and it holds each request and response to the API
   document the Hub serves (GET /openapi.yaml; tensorhub's server is the truth, the document follows it). A mismatch

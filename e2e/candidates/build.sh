@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # e2e/candidates/build.sh <cozy|tensorfs|runtime> <src> <out>: one candidate for this runner's OS, into <out>; prints
-# its file. cozy (TensorD, the dev cozy <version>+dev.g<sha8>) and the TensorFS wheel come from the cozy-creator
+# its file. cozy (TensorD, the dev cozy: the RC's <x.y.z>-dev+g<sha8>, a release's <version>+dev.g<sha8>) and the TensorFS wheel come from the cozy-creator
 # checkout <src>, the Runtime wheel (<version>+dev.g<sha8>) from the cozy-runtime checkout <src>.
 #   REUSE=1      cozy or tensorfs as a cozy-creator merge-group or dispatched e2e run uploaded it for the same build
 #                inputs: a PR's dispatch builds what its merge-queue entry reuses when the PR is up to date
@@ -75,7 +75,8 @@ elif [ "$what" = cozy ]; then
       esac
     fi
     cargo fetch --locked
-    uv run -q --no-project python -c 'import re,sys; p="Cargo.toml"; s=open(p).read(); open(p,"w").write(re.sub(r"(?m)^version = \"([^\"]+)\"$", lambda m: f"version = \"{m[1]}+dev.g{sys.argv[1][:8]}\"", s, count=1))' "$sha"
+    # A release's version gets +dev.g<sha8>; the RC's dev version (0.26.0-dev) gets +g<sha8> from crates/api/build.rs (cl-973).
+    uv run -q --no-project python -c 'import re,sys; p="Cargo.toml"; s=open(p).read(); open(p,"w").write(re.sub(r"(?m)^version = \"([^\"]+)\"$", lambda m: m[0] if "-" in m[1] else f"version = \"{m[1]}+dev.g{sys.argv[1][:8]}\"", s, count=1))' "$sha"
     cargo update -w --offline
     COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy
     git checkout -- Cargo.toml Cargo.lock)

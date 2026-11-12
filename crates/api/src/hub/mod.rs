@@ -15,13 +15,14 @@ use serde_json::Value;
 pub use client::{Client, Credential, WorkerSigner, worker_message};
 pub use device::{Bearer, DeviceKey, Enrollment, UserSession};
 
-/// What every Hub call goes over: cozy's one outbound client (`tensorfs::fetch::http`: `cozy/<version>` as the
-/// User-Agent, by which a Hub can refuse a cozy too old for it; 5 s to connect), no redirects, and a call that
-/// receives nothing for 30 s fails. `ca_der` is a private Hub's CA. Clones share one pool.
+/// What every Hub call goes over: cozy's one outbound client (`tensorfs::fetch::http`; 5 s to connect) with cozy's own
+/// version as the User-Agent (`cozy/0.26.0-dev+g1a2b3c4d`, not TensorFS's), by which a Hub can refuse a cozy too old for it,
+/// no redirects, and a call that receives nothing for 30 s fails. `ca_der` is a private Hub's CA. Clones share one pool.
 pub fn http(ca_der: Option<&[u8]>) -> Result<reqwest::Client, String> {
     let extra: Vec<&[u8]> = ca_der.into_iter().collect();
     let builder = tensorfs::fetch::http(&extra).map_err(|e| format!("the Hub's TLS: {}", e.detail))?;
     builder
+        .user_agent(concat!("cozy/", env!("COZY_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
         .read_timeout(tensorfs::fetch::STALL)
         .build()

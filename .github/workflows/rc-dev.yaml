@@ -1,7 +1,7 @@
 name: rc-dev
 # The open RC's machine software for dev homes (cl-922): each push to rc/<x.y.z> builds what it changed of the
 # Linux x86_64 `cozy` a machine runs (TensorD: the tensord crate and what it builds on) and the TensorFS wheel,
-# dev-build.yaml's builds (<version>+dev.g<sha8>), and puts them on the rolling GitHub prerelease `rc-<x.y.z>`,
+# dev-build.yaml's builds (cozy <x.y.z>-dev+g<sha8>, TensorFS <version>+dev.g<sha8>), and puts them on the rolling GitHub prerelease `rc-<x.y.z>`,
 # never latest, in place of the last ones. Its SHA256SUMS names them; a dev home's Calcifer reads it and brings its
 # rentals to it. A push that changes neither builds nothing, so a machine restarts only for its own software.
 # By hand: gh workflow run rc-dev.yaml -R cozy-creator/cozy-creator --ref rc/<x.y.z>
@@ -36,7 +36,7 @@ jobs:
         with:
           fetch-depth: 0
       # Each kind is built again when its crates (and their workspace dependencies), the lock or the toolchain changed
-      # since the commit its file on the prerelease says (`+dev.g<sha8>`); with none there, it is built.
+      # since the commit its file on the prerelease says (`+g<sha8>`, `+dev.g<sha8>`); with none there, it is built.
       - id: changed
         run: |
           set -euo pipefail
@@ -54,7 +54,7 @@ jobs:
                   todo += [d["name"] for d in packages[name]["dependencies"] if d.get("path") and d["name"] in packages]
           print(" ".join(sorted(os.path.relpath(os.path.dirname(packages[n]["manifest_path"])) for n in seen)))' "$1"
           }
-          built() { sed -n "s/^[0-9a-f]\{64\} [ *]*$1-[^ ]*+dev\.g\([0-9a-f]\{8\}\)-.*/\1/p" <<< "$sums" | head -1; }
+          built() { sed -n "s/^[0-9a-f]\{64\} [ *]*$1-[^ ]*+\(dev\.\)\?g\([0-9a-f]\{8\}\)-.*/\2/p" <<< "$sums" | head -1; }
           moved() {  # moved <kind> <paths...>
             local from; from=$(built "$1"); shift
             [ -n "$from" ] && git rev-parse -q --verify "$from^{commit}" >/dev/null || return 0
@@ -98,7 +98,7 @@ jobs:
             bin=artifacts/cozy-$SHA/cozy-linux-x86_64
             chmod +x "$bin"
             version=$("$bin" --version | awk '{print $2}')
-            case $version in *"+dev.g${SHA:0:8}") ;; *) echo "::error::the dev cozy says $version"; exit 1 ;; esac
+            case $version in *"+dev.g${SHA:0:8}" | *"-dev+g${SHA:0:8}") ;; *) echo "::error::the dev cozy says $version"; exit 1 ;; esac
             cp "$bin" "up/cozy-$version-linux-x86_64"
             kept=$(grep -v ' [ *]*cozy-' <<< "$kept" || true)
           fi

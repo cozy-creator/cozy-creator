@@ -134,7 +134,7 @@ pub(super) fn identity_frame(identity: &MachineIdentity) -> v1::StatusFrame {
     v1::StatusFrame {
         worker_id: identity.authority.worker_id.clone(),
         boot_id: identity.authority.boot_id.clone(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         commit: api::COMMIT.into(),
         dev: identity.updates.dev(),
         workload_key: crate::hub::workload_key().thumbprint().into(),

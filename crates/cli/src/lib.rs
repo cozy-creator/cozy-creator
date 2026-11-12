@@ -40,7 +40,7 @@ next: cozy run --help";
 #[derive(Parser, Debug)]
 #[command(
     name = "cozy",
-    version,
+    version = ::api::VERSION,
     disable_help_subcommand = true,
     about = "Run models on your machines and rented GPUs",
     after_help = NEXT

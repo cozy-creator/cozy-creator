@@ -28,7 +28,7 @@ const OLDER_RUNTIME_BUILD: &str = "runtime-build";
 /// The service's exit status asking its parent to start the service again on the selected pair.
 pub(crate) const REPLACE_EXIT: i32 = 75;
 /// This binary's release, which an update's `from` and `to` name as `cozy`.
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = ::api::VERSION;
 const MAX_WHEEL_BYTES: u64 = 256 << 20;
 /// A dev binary's: a debug build with its debug info.
 const MAX_BINARY_BYTES: u64 = 2 << 30;

@@ -17,7 +17,7 @@ use api::{
 use crate::{
     api::Api,
     store::now_ms,
-    update::{same_minor, this_release},
+    update::{rc_version, same_minor, this_release},
 };
 
 /// Within this share of the soonest finish (or a second), two machines finish together.
@@ -269,7 +269,7 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         None => link.status().await.map_err(|e| e.to_string())?,
     };
     let own = this_release();
-    if !same_minor(&frame.version, own) {
+    if !same_minor(&frame.version, own) && !rc_version() {
         if !update {
             return Err(format!("it runs cozy {}, another minor than this cozy's {own}: its first run updates it", frame.version));
         }
