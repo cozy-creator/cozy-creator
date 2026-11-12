@@ -109,3 +109,14 @@ for actual successful private execution and the media/browser sequence. The orig
 setting is retained only in RAM and restored in `finally`; restoration failure clears the
 receipt's completion flag. No production CLI flag, mock, request canary in argv/environment,
 or raw captured output artifact is introduced.
+
+## Optional real development/HMR case
+
+`development_web: true` in the coordinator's ready file additionally requires a hosted runner
+with pnpm and the checkout's web dependencies installed. The fixture owns one Vite process,
+sets only the explicit `[calcifer].development_web` field before its foreground Calcifer starts,
+and creates one independent source-only HMR probe. Through the same actual owned browser it
+loads that module, changes the file, and requires value 2 without a document replacement. The
+ordinary project reads/edits/lock/restart cases then run through that same Calcifer origin.
+Probe source and config are restored by exact identity/content checks; no laptop configuration,
+ordinary browser, bearer-injecting development proxy or raw browser trace is used.

@@ -19,6 +19,15 @@ async function containmentProof(input) {
     }
     case 'observe':
       return { visible: document.body.textContent.includes(input.needle), frozen: document.documentElement.inert, images: document.querySelectorAll('img[src]').length };
+    case 'hmr_start': {
+      const development = [...document.scripts].some((script) => script.src && new URL(script.src).pathname === '/@vite/client');
+      if (!development) return { development: false };
+      globalThis.__cozyHmrDocument = crypto.randomUUID();
+      const module = await import('/src/__cozy_hmr_proof.ts');
+      return { development: true, value: module.value, document_sha256: await hash(new TextEncoder().encode(globalThis.__cozyHmrDocument)) };
+    }
+    case 'hmr_observe':
+      return { value: globalThis.__cozyHmrProof ?? 0, document_sha256: await hash(new TextEncoder().encode(globalThis.__cozyHmrDocument ?? '')) };
     case 'storage': {
       const keys = Object.keys(localStorage);
       const databases = indexedDB.databases ? await indexedDB.databases() : null;

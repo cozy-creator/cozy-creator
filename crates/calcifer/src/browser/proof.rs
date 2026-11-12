@@ -29,6 +29,8 @@ mod linux {
         Edit { asset: String, field: String, value: String },
         Observe { needle: String },
         Storage,
+        HmrStart,
+        HmrObserve,
         Media { path: String, #[serde(default)] range: bool, #[serde(default)] conditional: bool },
     }
 
@@ -118,6 +120,14 @@ mod linux {
                     Action::Ready => json!({ "kind": "ready" }),
                     Action::Observe { needle } => json!({ "kind": "observe", "needle": needle }),
                     Action::Storage => json!({ "kind": "storage" }),
+                    Action::HmrStart => {
+                        if api.development_web.get().is_none() { return Err(unavailable()); }
+                        json!({ "kind": "hmr_start" })
+                    }
+                    Action::HmrObserve => {
+                        if api.development_web.get().is_none() { return Err(unavailable()); }
+                        json!({ "kind": "hmr_observe" })
+                    }
                     Action::Media { path, range, conditional } => json!({ "kind": "media", "project": project, "path": path, "range": range, "conditional": conditional }),
                     Action::Edit { asset, field, value } => {
                         let at = fixed(live, session, json!({ "kind": "locate", "asset": asset })).await?;
