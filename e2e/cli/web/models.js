@@ -380,8 +380,12 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
     const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: box.tool.id, kind: 'image', name: box.name, exact: true, fields: { instructions: box.said }, at: { x: box.x, y: 1400 } }) });
     if (made.status >= 300) throw new Error(`the ${box.name} box: ${JSON.stringify(made)}`);
   }
-  for (const box of boxes) await boxOf(page, box.name).waitFor();
-  await fitCanvas(page);
+  // Below the others, off screen until the canvas is fitted to them.
+  const onPage = (names) => until(`${names.join(', ')} on the canvas`, async () => {
+    await fitCanvas(page);
+    return Promise.all(names.map((name) => boxOf(page, name).isVisible()));
+  }, (shown) => shown.every(Boolean));
+  await onPage(boxes.map((box) => box.name));
   const litIn = (name, field) => page.evaluate(({ name, field }) => {
     const held = [...document.querySelectorAll(`.card.here[data-asset="${name}"] [data-field="${field}"]`)];
     const marks = globalThis.CSS?.highlights?.get('lora-trigger');
@@ -447,8 +451,7 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await page.waitForSelector('.top');
   const neg = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: wordsTools.sdxl.id, kind: 'image', name: 'sdxl_neg', exact: true, fields: { instructions: 'A quiet pier' }, at: { x: 1940, y: 1400 } }) });
   if (neg.status >= 300) throw new Error(`the sdxl_neg box: ${JSON.stringify(neg)}`);
-  await boxOf(page, 'sdxl_neg').waitFor();
-  await fitCanvas(page);
+  await onPage(['sdxl_neg']);
   const negFields = await addLora('sdxl_neg', 'ink_wash');
   seen.negative_first = { order: reordered.at(-1), instructions: negFields.instructions, negative_prompt: negFields.negative_prompt };
   check('a_negative_prompt_written_first_never_takes_the_trigger', /^negative_prompt:words,/.test(String(reordered.at(-1))) && negFields.instructions === 'A quiet pier, ink_wash' && !negFields.negative_prompt, seen.negative_first);
