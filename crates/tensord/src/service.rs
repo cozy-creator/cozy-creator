@@ -58,8 +58,6 @@ pub(crate) struct Service {
 }
 
 const SWEEP_EVERY: std::time::Duration = crate::reclaim::IDLE;
-/// The disk's free bytes moved this far: what fills it is read again.
-const USAGE_MOVED: u64 = 64 << 20;
 
 /// Whether an executor this machine run does not supervise still fences GPU dispatch: it, or a
 /// member of its group born before `before`, is alive and not stuck in the kernel after its kill.
@@ -181,6 +179,8 @@ impl Service {
     }
     pub(crate) fn configure_publisher(&self, publisher: Arc<crate::published::Publisher>) {
         *self.publisher.lock().unwrap() = Some(publisher);
+        // The first sweep, now its packages are configured, so the disk is measured early.
+        crate::reclaim::ask();
     }
     pub(crate) fn configure_calls(&self, calls: Arc<crate::calls::Calls>) {
         *self.calls.lock().unwrap() = Some(calls);
@@ -326,6 +326,7 @@ impl Service {
             pool.stop()?;
         }
         self.engine.notify_activity();
+        crate::reclaim::ask();
         Ok(true)
     }
     fn dispatch_loop(self: Arc<Self>) {
@@ -350,26 +351,22 @@ impl Service {
             self.engine.wait_activity(epoch, None);
         }
     }
-    /// Sweep disk caches on their cadence. Native Varena owns GPU pressure service.
+    /// Sweep disk caches each `SWEEP_EVERY` (what each keeps goes once unused that long), the first once its packages are
+    /// configured; and measure what fills the disk after a sweep or when a reader saw it move (`reclaim::seen_free`).
+    /// Native Varena owns GPU pressure service.
     fn reclaim_loop(weak: std::sync::Weak<Self>) {
         platform::process::background_thread(); // nice 19, idle I/O: a big cleanup never crowds out work
         let mut swept: Option<std::time::Instant> = None;
-        let mut measured = 0;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            let asked = crate::reclaim::wait_asked(swept.map(|at| SWEEP_EVERY.saturating_sub(at.elapsed())));
             match weak.upgrade() {
                 Some(service) if !*service.stopped.lock().unwrap() => {
-                    // The first once its packages are configured, so the disk is measured early.
                     let due = swept.map_or_else(|| service.publisher.lock().unwrap().is_some(), |at| at.elapsed() >= SWEEP_EVERY);
                     if due {
                         service.reclaim();
                         swept = Some(std::time::Instant::now());
                     }
-                    // What fills the disk follows the disk between sweeps: `machine show` on a machine
-                    // whose models landed since the last sweep said what it held before them.
-                    let free = crate::reclaim::measure(&service.engine.root).map_or(measured, |disk| disk.available);
-                    if due || free.abs_diff(measured) >= USAGE_MOVED {
-                        measured = free;
+                    if due || asked {
                         service.measure_usage();
                     }
                 }

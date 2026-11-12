@@ -7,7 +7,7 @@ use platform::contain::host_pressure::{self, Growth, HostMode, Nudge};
 use platform::signal::{wait_any, Signal, Waitable};
 use platform::process::Exact;
 use std::{collections::BTreeMap, fs::{self, OpenOptions}, io::{self, Write}, path::PathBuf,
-    sync::{Arc, Mutex}, time::{SystemTime, UNIX_EPOCH}};
+    sync::{Arc, Condvar, LockResult, Mutex, MutexGuard, PoisonError}, time::{SystemTime, UNIX_EPOCH}};
 
 const ROTATE_BYTES: u64 = 4 << 20;
 
@@ -213,8 +213,27 @@ pub(crate) struct Call {
     pub shape: String,
 }
 
-/// TensorD's calls running until they end, including each follower the host rule must watch.
-pub(crate) type Running = Arc<Mutex<BTreeMap<String, Call>>>;
+/// TensorD's calls running until they end, including each follower the host rule must watch. One starting wakes
+/// `wait_busy`.
+#[derive(Clone, Default)]
+pub(crate) struct Running(Arc<(Mutex<BTreeMap<String, Call>>, Condvar)>);
+
+impl Running {
+    pub(crate) fn lock(&self) -> LockResult<MutexGuard<'_, BTreeMap<String, Call>>> {
+        self.0.0.lock()
+    }
+
+    pub(crate) fn start(&self, id: String, call: Call) {
+        self.lock().unwrap_or_else(PoisonError::into_inner).insert(id, call);
+        self.0.1.notify_all();
+    }
+
+    /// Returns once a call runs: at once if one does.
+    pub(crate) fn wait_busy(&self) {
+        let calls = self.lock().unwrap_or_else(PoisonError::into_inner);
+        drop(self.0.1.wait_while(calls, |calls| calls.is_empty()).unwrap_or_else(PoisonError::into_inner));
+    }
+}
 
 /// A process running calls: measured anonymous peak, anonymous bytes now, and call count.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
