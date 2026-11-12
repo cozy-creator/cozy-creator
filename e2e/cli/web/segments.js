@@ -41,17 +41,26 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI}`));
   });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+  /** Paper or dark, as a person turns it, from the menu: the whole page follows, its landscape too. */
+  const themed = async (dark) => {
+    if ((await page.evaluate(() => document.documentElement.dataset.theme === 'dark')) === dark) return;
+    const menu = page.locator('summary[aria-label="Menu"]');
+    await menu.click();
+    await page.locator('details[open] button.tb', { hasText: dark ? 'Dark' : 'Paper' }).first().click();
+    if (await menu.evaluate((summary) => summary.parentElement.open)) await menu.click();
+    await until('the theme turned', () => page.evaluate(() => document.documentElement.dataset.theme === 'dark'), (now) => now === dark, 5_000);
+  };
   /** The page as it is, at 1440x900 and 1920x1080, paper and dark; then as the cell had it. */
   const looks = async (name) => {
     for (const [width, height] of [[1440, 900], [1920, 1080]]) {
       await page.setViewportSize({ width, height });
       for (const dark of [false, true]) {
-        await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, dark);
+        await themed(dark);
         await page.waitForTimeout(300);
         await shot(`${name}-${width}x${height}-${dark ? 'dark' : 'paper'}`);
       }
     }
-    await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+    await themed(false);
     await page.setViewportSize({ width: 1600, height: 1000 });
     await page.waitForTimeout(300);
   };
