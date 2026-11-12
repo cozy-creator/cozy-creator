@@ -646,7 +646,6 @@ async function died(error) {
   await videoFocus.locator('.focus-viewer').getByRole('button', { name: 'Play', exact: true }).waitFor();
   await shot('completed-video');
   // With a take it has New (cl-925).
-  const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
   check('video_has_a_new_state_tile', await newVideo.isVisible());
   await newVideo.click();
   check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1);
