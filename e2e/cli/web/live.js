@@ -511,13 +511,13 @@ function linesOf(text, name) {
     seen.render_progress = places;
     const fractions = places.map((held) => held.match(/-?[\d.]+/)?.[0]).filter(Boolean).map(Number);
     check('render_progress_moves', fractions.length >= 3 && fractions.every((at, i) => !i || at >= fractions[i - 1]), places);
-    // A count reads under the stage its package names (cl-898): `Drawing · 3 of 10`, never another stage's word for it, and no "step" or
+    // A count reads under the stage its package names (cl-898): `Drawing - 3 / 10`, never another stage's word for it, and no "step" or
     // "denoise" for a stage not known to denoise.
     const said = await page.evaluate(() => window.progressSaid);
     seen.render_said = said;
-    const isCount = (text) => /\b\d+ of \d+$/.test(text);
+    const isCount = (text) => /\b\d+ \/ \d+$/.test(text);
     const firstCount = said.findIndex(isCount);
-    check('counts_read_under_their_stage', firstCount >= 0 && said.filter(isCount).every((text) => /^Drawing · \d+ of 10$/.test(text)) && !said.some((text) => /denois/i.test(text)), said);
+    check('counts_read_under_their_stage', firstCount >= 0 && said.filter(isCount).every((text) => /^Drawing - \d+ \/ 10$/.test(text)) && !said.some((text) => /denois/i.test(text)), said);
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);

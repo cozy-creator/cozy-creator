@@ -49,27 +49,27 @@ const STAGES: Record<string, { says: string; counts?: "step" | "frame" | "token"
   denoise: { says: "Denoising", counts: "step" },
   answering: { says: "Answering", counts: "token" },
   // A picture made: its prompt rewritten or thought through, encoded, its denoising steps, decoded, saved.
-  "upsampling prompt": { says: "Rewriting the prompt", counts: "token" },
+  "upsampling prompt": { says: "Rewriting prompt", counts: "token" },
   thinking: { says: "Thinking", counts: "token" },
-  "encoding prompt": { says: "Encoding the prompt" },
-  tokenize: { says: "Reading the prompt" },
-  "encoding reference images": { says: "Encoding the pictures" },
-  "encoding pictures": { says: "Encoding the pictures" },
-  "generating image": { says: "Generating the image", counts: "step" },
-  generate: { says: "Generating the image", counts: "step" },
-  "decoding image": { says: "Decoding the image" },
+  "encoding prompt": { says: "Encoding prompt" },
+  tokenize: { says: "Reading prompt" },
+  "encoding reference images": { says: "Encoding pictures" },
+  "encoding pictures": { says: "Encoding pictures" },
+  "generating image": { says: "Denoising image", counts: "step" },
+  generate: { says: "Denoising image", counts: "step" },
+  "decoding image": { says: "Decoding image" },
   // Anima's.
-  conditioning: { says: "Encoding the inputs" },
-  decoding: { says: "Decoding the image" },
-  "saving image": { says: "Saving the image" },
-  encode_webp: { says: "Saving the image" },
+  conditioning: { says: "Encoding inputs" },
+  decoding: { says: "Decoding image" },
+  "saving image": { says: "Saving image" },
+  encode_webp: { says: "Saving image" },
   // A video made (MiniMax H3): conditioned, denoised and refined by steps, decoded and encoded by frames.
   prepare: { says: "Preparing" },
-  condition: { says: "Encoding the inputs" },
-  condition_text: { says: "Encoding the prompt" },
-  condition_media: { says: "Encoding the pictures" },
-  read_video: { says: "Reading the video" },
-  upscale_latent: { says: "Upscaling the latents" },
+  condition: { says: "Encoding inputs" },
+  condition_text: { says: "Encoding prompt" },
+  condition_media: { says: "Encoding pictures" },
+  read_video: { says: "Reading video" },
+  upscale_latent: { says: "Upscaling latents" },
   refine: { says: "Refining", counts: "step" },
   decode_video: { says: "Decoding video", counts: "frame" },
   encode_video: { says: "Encoding video", counts: "frame" },
@@ -97,15 +97,38 @@ export function countsOf(progress: Progress): "step" | "frame" | "token" | undef
   return stageOf(progress.stage.split(/\s+\/\s+/).at(-1) ?? "")?.counts
 }
 
-/** How far a stage is, by what it counts: `step 6 of 8`, `frame 173 of 350`, `65 tokens` (a cap is no total), bytes, `173 of 350` for a
- *  count of what isn't known, a share. */
+/** Bytes as Paul writes them: `2.1GB`, `340MB`. */
+export function size(n: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  let value = n
+  let unit = 0
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000
+    unit += 1
+  }
+  return `${unit === 0 ? value : value < 10 ? value.toFixed(1) : value.toFixed(0)}${units[unit]}`
+}
+
+/** How far a stage is, by what it counts (Paul, 11-12): `Step 7 / 8`, `Frame 173 / 350`, a decode's `65 tokens` (a cap is no total),
+ *  `2.1GB / 7GB`, `173 / 350` for a count of what isn't known, a share. */
 export function countWords(progress: Progress): string {
   const counts = countsOf(progress)
   if (counts === "token") return `${progress.completed} token${progress.completed === 1 ? "" : "s"}`
-  if (progress.bytes_total) return `${bytes(progress.bytes_done)} of ${bytes(progress.bytes_total)}`
-  if (progress.total) return `${counts ? `${counts} ` : ""}${progress.completed} of ${progress.total}`
+  if (progress.bytes_total) return `${size(progress.bytes_done)} / ${size(progress.bytes_total)}`
+  if (progress.total) return `${counts ? `${counts[0].toUpperCase()}${counts.slice(1)} ` : ""}${progress.completed} / ${progress.total}`
   if (progress.stage_fraction != null) return `${Math.round(progress.stage_fraction * 100)}%`
   return ""
+}
+
+/** A stage with its count, as Paul wrote them: `Denoising image - Step 7 / 8`, `Rewriting prompt: 65 tokens`, `Segment 2 of 3: Decoding
+ *  video - Frame 173 / 350`. */
+export function stageLine(progress: Progress): string {
+  const parts = progress.stage.trim().split(/\s+\/\s+/).filter(Boolean)
+  const own = parts.length ? stageName(parts.at(-1)!) : "Working"
+  const scope = parts.slice(0, -1).map((part) => stageName(part)).join(", ")
+  const count = countWords(progress)
+  const said = !count ? own : countsOf(progress) === "token" ? `${own}: ${count}` : `${own} - ${count}`
+  return scope ? `${scope}: ${said}` : said
 }
 
 /** Its own work, as a person reads it: its stage and what it counts, `Generating the image · step 6 of 8, 3s left`,
@@ -115,8 +138,7 @@ export function workWords(run: Run): string {
   if (!progress?.stage && !progress?.total) return ""
   const left = secondsLeft(run)
   const after = left !== undefined ? `, ${span(left)} left` : firstRun(run) ? ", time left not known yet" : ""
-  const count = countWords(progress)
-  return `${stageName(progress.stage)}${count ? ` · ${count}` : ""}${after}`
+  return `${stageLine(progress)}${after}`
 }
 
 /** Worth saying more than a bar: it has run over 10 s, or has over 10 s to go. */

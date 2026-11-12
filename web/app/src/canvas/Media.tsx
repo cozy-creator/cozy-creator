@@ -752,13 +752,11 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 /** Why its last render failed, along its bottom, until it's tried again. */
 function FailedHere({ message, copy }: { message: string; copy: string }) {
   return (
-    <div className="run-face strip failed" data-phase="failed">
-      <div className="face">
-        <div className="face-state error-text nodrag nopan">
-          <b title={message}>Didn't render: {message}</b>
-          <CopyError text={copy} />
-        </div>
-      </div>
+    <div className="run-face lines failed" data-phase="failed">
+      <p className="face-state error-text nodrag nopan">
+        <b title={message}>Didn't render: {message}</b>
+        <CopyError text={copy} />
+      </p>
     </div>
   )
 }

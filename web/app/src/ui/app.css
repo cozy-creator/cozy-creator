@@ -913,63 +913,56 @@ code {
   color: #cfe6ff;
   font: var(--small) var(--sans);
 }
-/* A render on its way, on its box's face (RunFace.tsx): its state and Cancel, one bar for the whole of it and its time left, then where it
-   runs, what it's doing with its numbers, and what it warned of. Over a take looked at, or a glimpse, only the first two, along the bottom.
-   At rest at the box's small step; open (Focus), between its name and its picture, large. */
+/* A render on its way (RunFace.tsx), as Paul wrote it (11-12): two plain lines, its machine and time, then what it's doing with how far
+   and how fast, and a small Cancel. No box, panel or bar. On the canvas, along its box's bottom at the box's text size, legible over a
+   picture; in Focus, between its name and its picture. */
 .run-face {
   position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  overflow: hidden;
-  pointer-events: none;
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 3;
-  --face-font: calc(var(--t-small) * var(--ui));
-}
-.card.here .run-face {
-  --face-font: var(--small);
-}
-.run-face.strip {
-  justify-content: flex-end;
-}
-.run-face .face {
-  display: flex;
-  flex-direction: column;
-  gap: calc(0.35 * var(--face-font));
-  max-height: 100%;
-  overflow: hidden;
-  padding: calc(0.8 * var(--face-font));
+  padding: var(--s3) var(--s4);
+  pointer-events: none;
   color: var(--ink);
-  font: var(--face-font) / 1.35 var(--sans);
+  font: calc(var(--t-small) * var(--ui)) / 1.35 var(--sans);
+  text-shadow: 0 0 3px var(--card), 0 0 6px var(--card);
 }
-.run-face.strip .face,
-.run-face.full .face {
-  background: color-mix(in srgb, var(--card) 86%, transparent);
-}
-.run-face .face-state {
+.run-face p {
   display: flex;
   align-items: baseline;
   gap: var(--s4);
   min-width: 0;
+  margin: 0;
+}
+.run-face .face-machine {
+  overflow: hidden;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .run-face .face-state b {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   font-weight: var(--w-heading);
+  font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.run-face.failed .face-state b {
+  color: var(--bad);
+}
 .run-face .face-cancel {
   flex: none;
-  padding: 0 calc(0.6 * var(--face-font));
+  padding: 0 var(--s3);
   border: 1px solid var(--line2);
   border-radius: var(--round);
   background: var(--field);
   color: var(--ink);
   font: inherit;
-  line-height: 1.6;
+  text-shadow: none;
   pointer-events: auto;
   cursor: pointer;
 }
@@ -977,102 +970,12 @@ code {
   border-color: var(--bad);
   color: var(--bad);
 }
-.run-face .face-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--s4);
-}
-.run-face .face-track {
-  position: relative;
-  flex: 1;
-  height: calc(0.5 * var(--face-font));
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--tint2);
-}
-.run-face .face-track i {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: var(--mak);
-  transition: transform 300ms linear;
-}
-.run-face.download .face-track i {
-  background: #2f8fe0;
-}
-.run-face.install .face-track i,
-.run-face.renting .face-track i {
-  background: #b5762a;
-}
-.run-face.canceling .face-track i {
-  background: var(--mute);
-}
-.run-face .face-left {
-  flex: none;
-  color: var(--mute);
-  white-space: nowrap;
-}
-/* Its facts, a line each, labelled: where, what's ahead, its weights, its package, its time. */
-.run-face .face-facts {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: calc(0.15 * var(--face-font)) calc(0.6 * var(--face-font));
-  margin: 0;
-}
-.run-face .face-fact {
-  display: contents;
-}
-.run-face .face-fact dt {
-  color: var(--mute);
-}
-.run-face .face-fact dd {
-  margin: 0;
-  overflow: hidden;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.run-face p {
-  margin: 0;
-  overflow: hidden;
-  color: var(--mute);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.run-face .face-warning {
-  color: var(--ood);
-}
-.run-face.failed .face-state b {
-  color: var(--bad);
-  font-size: var(--face-font);
-  font-weight: normal;
-}
-/* Open (focus), between its name and its picture, across its width and large: its state and time left read as a heading over a thick
-   bar, the numbers first. Its picture stays below, uncovered. */
 .focus-viewport > .run-face.above {
   position: relative;
-  inset: auto;
-  z-index: auto;
   flex: none;
-  pointer-events: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--round2);
-  background: var(--card);
-  /* The Focus card's small step (FocusedViewport.css): normal text, the numbers first. */
-  --face-font: 17px;
-}
-.focus-viewport > .run-face.above .face {
-  gap: calc(0.4 * var(--face-font));
-  padding: calc(0.7 * var(--face-font)) var(--face-font);
-}
-.focus-viewport > .run-face.above .face-left {
-  color: var(--ink);
-  font-weight: var(--w-heading);
-  font-variant-numeric: tabular-nums;
-}
-.focus-viewport > .run-face.above .face-cancel {
-  line-height: 1.8;
+  padding: 0 4px;
+  font-size: 17px;
+  text-shadow: none;
 }
 /* At rest, one line, so nothing hangs under it but what its box keeps room for. */
 .card:not(.here) .prog > b {
