@@ -122,6 +122,7 @@ async function loseAnswers(page, method, path, times) {
   check('box_in_the_frame_of_the_drop', dropped.after === dropped.boxes + 1, seen.drop);
   const name = await page.locator('.card.landing').first().getAttribute('data-asset');
   check('box_named_before_any_answer', Boolean(name) && !hasAsset(name), { name });
+  check('a_pending_tool_drop_stays_in_Wander', await page.locator('[data-focused-asset]').count() === 0);
   check('post_is_held', posts.calls.length <= 1, posts.calls.length);
 
   // Moved and typed in while nothing is saved: each keeps its place in line, and nothing on screen says so.
