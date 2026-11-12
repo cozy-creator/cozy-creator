@@ -3059,6 +3059,45 @@ J '.cuts[0].frames == 24' <<< "$(status "$T")" || check "truth: status doesn't r
 }
 
 # A cut's versions are all kept and listed; approving an older one brings it and its timeline to the root, and unpinning goes back.
+# An edit named while its cut stands on what it reads (cl-910; project gates 43129295755, 43136632769): the answer says at once that
+# it's current and queues nothing, where it put a job on the board that made nothing. Once what it reads changes, naming it cuts again.
+# As the page asks (e2e/page.py).
+edit_current() {
+step "an edit named while its cut is current: answered at once, nothing queued; changed, it cuts again"
+[ -n "$LOCAL" ] || return 0
+local P=$OUT/edit-current a b
+page_py() { python3 "$E2E/page.py" "$@"; }
+edit_yaml() {
+  { printf 'version: 4\nassets:\n  a: {approved: %s}\n  b: {approved: %s}\n  edit:\n    tool: cozy/edit\n    tracks:\n      - clips:\n' "$a" "$b"
+    printf '          - <%s>\n' "$@"; } > "$P.yaml"
+  page_py yaml "$P" "$P.yaml" > /dev/null
+}
+versions() { page_py asset "$P" edit | jq '.versions | length'; }
+waiting='[.jobs[]? | select(.asset == "edit" and (.state == "waiting" or .state == "running"))] | length == 0'
+cozy --json new --unencrypted "$P" > "$OUT/edit-current-new.json" 2>&1 || { check "edit current: new: $(tail -c 300 "$OUT/edit-current-new.json")"; return; }
+plate "$OUT/edit-current-a.mp4" testsrc2 440 800 2; plate "$OUT/edit-current-b.mp4" smptebars 660 800 2
+a=$(page_py import "$P" "$OUT/edit-current-a.mp4" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]')
+b=$(page_py import "$P" "$OUT/edit-current-b.mp4" | jq -r '.sha256 | sub("sha256:"; "") | .[:12]')
+edit_yaml a || { check "edit current: project.yaml"; return; }
+page_py render "$P" --on local edit > "$OUT/edit-current-first.log" 2>&1 || { check "edit current: first cut: $(tail -c 300 "$OUT/edit-current-first.log")"; return; }
+[ "$(versions)" = 1 ] || { check "edit current: the first cut made $(versions) versions"; return; }
+
+page_py render "$P" --on local --queue edit > "$OUT/edit-current-again.json" 2> "$OUT/edit-current-again.err" \
+  || { check "edit current: named again: $(tail -c 300 "$OUT/edit-current-again.err")"; return; }
+jq -c '{said: .asked.said, jobs: .asked.board.jobs}' "$OUT/edit-current-again.json"
+J '.asked.said // [] | any(.names == ["edit"] and (.message | test("current")))' "$OUT/edit-current-again.json" \
+  || check "edit current: the answer doesn't say it's current: $(jq -c '.asked.said' "$OUT/edit-current-again.json")"
+J ".asked.board | $waiting" "$OUT/edit-current-again.json" || check "edit current: the answer queued a job: $(jq -c '.asked.board.jobs' "$OUT/edit-current-again.json")"
+# Whatever was queued, nothing of it is left a minute on, and no version came of the same cut.
+for _ in $(seq 60); do page_py board "$P" > "$OUT/edit-current-board.json"; J "$waiting" "$OUT/edit-current-board.json" && break; sleep 1; done
+J "$waiting" "$OUT/edit-current-board.json" || check "edit current: its job still stands a minute on: $(jq -c '.jobs' "$OUT/edit-current-board.json")"
+[ "$(versions)" = 1 ] || check "edit current: the same cut made another version: $(versions)"
+
+edit_yaml a b || { check "edit current: project.yaml with b"; return; }
+page_py render "$P" --on local edit > "$OUT/edit-current-changed.log" 2>&1 || check "edit current: the changed edit: $(tail -c 300 "$OUT/edit-current-changed.log")"
+[ "$(versions)" = 2 ] || check "edit current: the changed edit made $(versions) versions, not 2"
+}
+
 cut_versions() {
 step "a project: a cut keeps its versions, and the film follows the state"
 local T=$OUT/edits a b one first_timeline two
