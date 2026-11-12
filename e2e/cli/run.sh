@@ -120,7 +120,8 @@ for form in script folder; do
   fi
 done
 # accelerator=True is the default's GPU-when-there-is-one: an interface writes only `false`.
-kept=$(ls ~/.cozy/packages/local/words/*.json 2> /dev/null | head -1)
+# A project's runs keep their interfaces inside it (.vault-calcifer); a call outside any project keeps them in the home.
+kept=$(ls "$RUN_PROJECT"/.vault-calcifer/packages/local/words/*.json ~/.cozy/packages/local/words/*.json 2> /dev/null | head -1 || true)
 [ -n "$kept" ] && ! grep -q '"accelerator":false' "$kept" || check "the script's interface is not accelerator=True (${kept:-none kept})"
 }
 
