@@ -157,7 +157,9 @@ impl OwnedBrowser {
 
     /// `project_ref` is an index reference, resolved by the native-only route without opening project.db.
     pub(crate) async fn open(&self, sessions: &Sessions, address: SocketAddr, project_ref: &str) -> Result<(), Refusal> {
-        let mut held = self.live.lock().await;
+        // A prepared close owns this mutex while shutdown drains mutation leases.
+        // Never wait here while a browser-open request itself owns such a lease.
+        let mut held = self.live.try_lock().map_err(|_| busy())?;
         if self.retirement_incomplete.load(Ordering::Acquire) { return Err(unavailable()); }
         if held.is_none() {
             self.retirement_incomplete.store(true, Ordering::Release);
@@ -237,7 +239,9 @@ impl OwnedBrowser {
     }
 
     pub(crate) async fn prepare_close(&self) -> Result<PreparedBrowserClose, Refusal> {
-        let mut held = self.live.clone().lock_owned().await;
+        // Another admitted operation must release its lease instead of waiting behind a
+        // prepared token whose owner may be waiting to close global admission.
+        let mut held = self.live.clone().try_lock_owned().map_err(|_| busy())?;
         if self.retirement_incomplete.load(Ordering::Acquire) { return Err(unavailable()); }
         let mut pages = Vec::new();
         if let Some(live) = held.as_mut() {
