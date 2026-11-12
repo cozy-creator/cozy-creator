@@ -20,7 +20,7 @@ from tiny import _shared
 
 MODEL, ENCODER = "qwen/qwen-image-2.1@0.1.0", "atomicchat/qwen-image-2.1-text-encoder-abliterated@0.1.0"
 ENHANCERS = ("pottokao/qwen-image-2.1-pe-t2i-abliterated@0.1.0", "darrellbest/qwen-image-2.1-pe-i2i-abliterated@0.1.0")
-VAE = "madebyollin/texture-fix-vae@0.2.0"
+VAE = "madebyollin/texture-fix-vae@0.3.0"
 #: 0.1.1 carries `pdd_config.json` (xs-183); qwen-image-2 before 0.10.0rc2 names 0.1.0.
 FUN_ACC = ("alibaba-pai/qwen-image-2.1-fun-acc@0.1.0", "alibaba-pai/qwen-image-2.1-fun-acc@0.1.1")
 #: Fun Acc's `pdd_config.json`: the 4-step grid, already shifted, and its terminal 0.

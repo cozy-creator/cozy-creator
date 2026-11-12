@@ -133,6 +133,33 @@ J --arg lane "$lane" 'any(.models[]; .model == "zhengpeng7/birefnet" and .lane =
 grep -q e2e-birefnet "$OUT/models.json" || check "model ls --on local: the local/e2e-birefnet alias is not listed"
 }
 
+# xs-190: a model of one component (e2e/parts-vae, uploaded as `<file>:vae` by e2e/isolated.sh), composed at run time with another
+# model's other components. Its card and install hold its `vae` alone; a run whose `vae` slot names it reads the default
+# pipeline's transformer and its VAE, and its stored picture differs from the default's.
+component_models() {
+step "a model of one component, composed with another model's at run time"
+local script=$here/script/parts.py default composed
+cozy --json model show e2e/parts-vae > "$OUT/parts-show.json" 2>&1 && J '[.lanes[].components[].name] == ["vae"]' "$OUT/parts-show.json" \
+  || check "model show e2e/parts-vae: not its vae alone: $(jq -c '[.lanes[]?.components[]?.name]' "$OUT/parts-show.json" 2>/dev/null || head -c 300 "$OUT/parts-show.json")"
+cozy --json model show e2e/parts > "$OUT/parts-pipeline.json" 2>&1 && J '[.lanes[].components[].name] == ["transformer", "vae"]' "$OUT/parts-pipeline.json" \
+  || check "model show e2e/parts: not a transformer and a VAE: $(jq -c '[.lanes[]?.components[]?.name]' "$OUT/parts-pipeline.json" 2>/dev/null || head -c 300 "$OUT/parts-pipeline.json")"
+cozy --json model install e2e/parts-vae --on local > "$OUT/parts-install.ndjson" 2>&1 || check "model install e2e/parts-vae failed: $(tail -c 300 "$OUT/parts-install.ndjson")"
+# Its 256 KiB VAE, never the pipeline's 4 MiB transformer.
+cozy --json model ls --on local > "$OUT/parts-models.json" \
+  && J 'any(.models[]; .model == "e2e/parts-vae" and .bytes > 262144 and .bytes < 1048576)' "$OUT/parts-models.json" \
+  || check "model install e2e/parts-vae: not its VAE alone on local: $(jq -c '[.models[]? | select(.model | startswith("e2e/parts")) | {model, bytes}]' "$OUT/parts-models.json")"
+cell parts-default "$script" || return 0
+cell parts-composed "$script" --model vae=e2e/parts-vae@0.1.0 || return 0
+default=$(jq -c .result "$OUT/parts-default.json") composed=$(jq -c .result "$OUT/parts-composed.json")
+J '.result.transformer.part == "dit" and .result.vae.part == "vae-a"' "$OUT/parts-default.json" \
+  || check "parts-default: not e2e/parts's transformer and VAE: $default"
+J --argjson was "$default" '.result.transformer == $was.transformer and .result.vae.part == "vae-b" and .result.vae.sum != $was.vae.sum' "$OUT/parts-composed.json" \
+  || check "parts-composed: not e2e/parts's transformer with e2e/parts-vae's VAE: $composed (default $default)"
+local was is
+was=$(output parts-default png) is=$(output parts-composed png)
+{ [ -n "$was" ] && [ -n "$is" ] && ! cmp -s "$was" "$is"; } || check "parts: the composed run's stored picture is not another than the default's (${was:-none}, ${is:-none})"
+}
+
 # safetensors_file <file>: a 4×4 F16 .safetensors file.
 safetensors_file() {
 uv run -q --no-project python -I - "$1" <<'PY'

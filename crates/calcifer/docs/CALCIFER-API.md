@@ -519,7 +519,9 @@ hand), and one a Calcifer stopped under fails `calcifer_stopped`: asking again i
   say so. `source` is a provider source, a Hub model, a
   `local/` alias, a held file's `sha256:<hex>` (`PUT /v1/files`, `404 file_not_held`; `name` its client's name for it): a `.safetensors` file, or a
   CozyTensors folder's tree document, its files held too, or `run:N[#output]`, which runs
-  on the machine that holds the output. A commit, `org/name@sha256:…`, on no `base` is at the Hub
+  on the machine that holds the output. `components` (the CLI's `<source>:<component>,…`) cuts the checkpoint to those of the
+  source's components, a source of one taking the one name (a VAE file as `vae`): its card and installs hold them alone, and a
+  slot reads them composed with its other slots' models. A commit, `org/name@sha256:…`, on no `base` or `components` is at the Hub
   already: it's recorded as a commit of `destination` when the caller may read its whole closure,
   checked against `lane` before anything is recorded. That is Calcifer's own run, its result a `RecordedCommit`, and its quote
   `null`, since nothing rents. Its triggers and strength (the flags, else the source's own)
