@@ -35,6 +35,8 @@ export function eta(run: Run): string | null {
   const progress = run.progress
   if (firstRun(run)) return "time left not known yet: nothing like it has run"
   if (progress?.eta_s == null) return null
+  // Only the bytes it moves are known: at least that.
+  if (progress.eta_basis === "bytes") return `at least ${span(progress.eta_s)} left`
   return `${(progress.eta_confidence ?? 1) < 0.5 ? "about " : ""}${span(progress.eta_s)} left`
 }
 

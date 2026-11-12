@@ -260,7 +260,8 @@ a spec.
 Calcifer says how long a run has left, all of it until its results are here, so the page, `cozy run`, `run watch`, `run ls` and a
 machine's activity show one number. `eta_s` is the seconds left, `eta_confidence` 0 to 1, and `eta_basis` what it stands on:
 `machine` (runs like it on this machine), `gpu` (on other machines of its GPU, by the name each run's record keeps as `gpu`), `card`
-(on another card, scaled by the Hub's per-SKU speeds for the function, cl-913's bar's third tier), `steps` (its own steps alone), or
+(on another card, scaled by the Hub's per-SKU speeds for the function, cl-913's bar's third tier), `steps` (its own steps alone),
+`bytes` (only the bytes it moves now are known: their bytes left at their rate, at least that long), or
 `first_run` with no `eta_s` (nothing like it ran on any card this computer knows, and no step of its own yet). A live run's record
 keeps its machine's GPU in `gpu` from the moment it has a machine.
 
@@ -278,6 +279,7 @@ keeps its machine's GPU in `gpu` from the moment it has a machine.
   next starts. What its machine says before the prior's first stage (`importing <package>`, `starting the executor`, `loading …`) is
   the prior's start and load. Its results come here once it ends: the newest five like runs' results' bytes (their median) at its
   machine's last measured export rate are part of the time left until it ends, then its `arriving` is.
+- **Bytes.** Whatever it stands on, it is never less than the bytes it moves now (a download, a model loading) left at their rate.
 - **Smooth.** It's said again each second as it counts down. A new estimate within 10% (or 2 s) of what was shown is shown as it is; a
   bigger one is eased to over about a second, never jumped to.
 - **Parts.** A run whose stages are in parts a scope counts (`Segment 2 of 3`): once a part has ended, each part left takes as long as

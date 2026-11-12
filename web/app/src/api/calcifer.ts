@@ -692,7 +692,7 @@ export type ErrorKind = "usage" | "validation" | "not_found" | "credential" | "f
 /**
  * What a time left stands on.
  */
-export type EtaBasis = "machine" | "gpu" | "card" | "steps" | "first_run";
+export type EtaBasis = "machine" | "gpu" | "card" | "steps" | "bytes" | "first_run";
 
 /**
  * A key for another computer: its file, which the client writes owner-only.
