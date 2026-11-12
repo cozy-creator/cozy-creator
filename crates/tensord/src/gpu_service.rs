@@ -3345,11 +3345,13 @@ impl Pool {
         let root = base.join(crate::uuid::simple());
         fs::create_dir(&root)?;
         let directory = platform::durable::open_dir(&root)?;
-        // An encrypted project's executor uses an inherited local stream: no socket inode. Any
-        // other dials the root's own path, or a short private one when that is too long; never
-        // this process's /proc descriptors, which its non-dumpable state closes to other processes.
-        let socket = match protected {
-            true if cfg!(target_os = "linux") => PathBuf::new(),
+        // An encrypted project's executor uses an inherited local stream: no socket inode. An
+        // unencrypted one's dials a random short path outside its project; any other the root's own
+        // path, or a short private one when that is too long. Never this process's /proc
+        // descriptors, which its non-dumpable state closes to other processes.
+        let socket = match (protected, private) {
+            (true, _) if cfg!(target_os = "linux") => PathBuf::new(),
+            (false, Some(_)) => crate::device_executor::ordinary_project_socket(&root, "executor")?,
             _ => crate::device_executor::socket_path(&root, "executor")?,
         };
         Ok((root, socket, directory))
