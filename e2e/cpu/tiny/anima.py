@@ -111,7 +111,7 @@ class _File:
         for key, tensor in self.tensors.items():
             data = tensor.to(torch.bfloat16).contiguous()
             component.put(key, memoryview(data.view(torch.uint8).numpy()).cast("B"), dtype="BF16", shape=list(data.shape))
-        writer.set_metadata("safetensors_metadata", {"model": metadata})
+        writer.metadata["safetensors_metadata"] = {"model": metadata}
         return writer.commit().id
 
 
