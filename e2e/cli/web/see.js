@@ -412,11 +412,13 @@ async function rest(page, handle) {
     await take(1);
     await take(2);
     await open(page, 'card');
-    await until('its count', () => card.locator('.count').textContent(), (text) => text === '2/2');
+    // Which it shows of how many: the take pressed in its column (06718eb3a: no counter).
+    const looking = () => card.evaluate((node) => `${node.querySelector('.take[aria-pressed="true"]')?.dataset.take}/${node.querySelectorAll('.take[data-take]').length}`);
+    await until('its count', looking, (text) => text === '2/2');
     const made = await asset('card');
     check('wire_execution_ms', made.prefixes.every((version) => version.execution_ms > 0 && version.run > 0), made.prefixes);
     await card.locator('.take[aria-label$=" 1"]').click();
-    await until('looking at the first', () => card.locator('.count').textContent(), (text) => text === '1/2');
+    await until('looking at the first', looking, (text) => text === '1/2');
     check('looking_is_only_this_page', (await asset('card')).version === made.version, (await asset('card')).version);
     // A double tap on it approves it, and again unapproves it.
     await card.locator('.take[aria-label$=" 1"]').dblclick();
