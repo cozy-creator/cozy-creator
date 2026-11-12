@@ -560,6 +560,36 @@ echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing
 [ "$callee" = _/minimax-h3-tools ] || check "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
 }
 
+# cl-952: a machine off the RC never gets a package built for the RC's Runtime. e2e-held 0.2.0rc1 (isolated.sh) is newer than
+# its 0.1.0 by PEP 440. On the candidate, an RC build (`+dev`), local takes 0.2.0rc1 (cl-922), and holds only that; put on a
+# released Runtime by hand it runs 0.1.0, never the prerelease it holds (sdxl 0.10.0rc1 failed to import on 0.45.0, run 47170).
+held_prerelease() {
+step "a machine off the RC runs a package's final, never its RC prerelease (cl-952)"
+[ -n "$LOCAL" ] || return 0
+[ -n "${E2E_HELD:-}" ] || { check "held prerelease: isolated.sh published no e2e-held: ${E2E_HELD_REFUSED:-not seeded}"; return; }
+local released=${HELD_RUNTIME:-0.45.1} was
+machine_ready
+was=${CAND_RT:-$(jq -r '.status.runtime // empty' "$OUT/machine.json")}
+case $(jq -r '.status.runtime // empty' "$OUT/machine.json") in
+  *+dev*)
+    if cell held-prerelease-rc "$E2E_HELD/relay" "text=on the RC"; then
+      grep -q '0\.2\.0rc1' "$OUT/held-prerelease-rc.ndjson" \
+        || check "held prerelease: local on an RC build didn't take 0.2.0rc1: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease-rc.ndjson" | head -1)"
+    fi ;;
+esac
+cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.json" 2>&1 \
+  || { check "held prerelease: local refused Runtime $released: $(tail -c 300 "$OUT/held-update.json")"; return; }
+machine_ready
+if cell held-prerelease "$E2E_HELD/relay" "text=off the RC"; then
+  grep -q '"release": *"0.1.0"' "$OUT/held-prerelease.ndjson" && ! grep -q '0\.2\.0rc1' "$OUT/held-prerelease.ndjson" \
+    || check "held prerelease: local on Runtime $released didn't run e2e-held 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease.ndjson" | head -1)"
+fi
+# Back on what it ran, for the cells after this one.
+cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
+  || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
+machine_ready
+}
+
 # cr-276: a package calling another package's function whose result holds a `Latents` field, as orbit calls minimax-h3's
 # `generate` for its `ShotResult`: the callee, a path dependency, fills the field with a file it saved. The caller gets that
 # field as a `Latents` holding the callee's bytes, and the `File` beside it as a `File`. Runtime 0.45.0 failed the call in the

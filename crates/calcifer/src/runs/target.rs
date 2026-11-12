@@ -249,21 +249,35 @@ impl Held {
     }
 
     /// Of `releases`, the newest this machine runs: on the RC's Runtime, by PEP 440 alone, so a prerelease built for it
-    /// (`0.10.0rc1`) is newer than the last final; elsewhere a final before any prerelease.
+    /// (`0.10.0rc1`) is newer than the last final; elsewhere finals only. A prerelease is built for the RC's Runtime, so a
+    /// machine held off the RC or on a released one never runs one, even one it installed while it was on the RC (cl-952).
     fn newest<'a>(&self, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
         match self.rc {
             true => releases.into_iter().filter_map(|r| Some((pep440_rs::Version::from_str(r).ok()?, r))).max_by(|a, b| a.0.cmp(&b.0)).map(|(_, r)| r),
-            false => newest_by(releases, |release| release),
+            false => newest_by(releases.into_iter().filter(|release| !prerelease(release)), |release| release),
         }
     }
 
-    /// The Hub's newest release of `read` for this machine: a prerelease included on the RC's Runtime, never a yanked one.
+    /// The Hub's newest release of `read` for this machine, never a yanked one: a prerelease included on the RC's Runtime;
+    /// elsewhere the Hub's newest final, and with none, a refusal that says how to run the prerelease (cl-952).
     fn newest_released(&self, read: &cards::Releases, package: &str) -> Result<String, Error> {
         let open = read.released.iter().map(String::as_str).filter(|release| !read.yanked.contains(*release));
-        match self.newest(open).filter(|_| self.rc) {
-            Some(release) => Ok(release.to_owned()),
-            None => read.newest(package),
+        if self.rc {
+            return self.newest(open).map_or_else(|| read.newest(package), |release| Ok(release.to_owned()));
         }
+        let latest = read.newest(package)?;
+        if !prerelease(&latest) {
+            return Ok(latest);
+        }
+        let machine = if self.machine.is_empty() { "<machine>" } else { self.machine.as_str() };
+        self.newest(open).map(str::to_owned).ok_or_else(|| {
+            Error::new(
+                Kind::Conflict,
+                "package_rc_only",
+                format!("{package} has only {latest}, built for the open RC's Runtime, which {machine} doesn't run"),
+            )
+            .next(format!("cozy machine update {machine}"))
+        })
     }
 
     /// The releases of `package` from this run's Hub.
@@ -341,6 +355,11 @@ async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> R
             (top, ReleaseFrom::Installed, Some(moved))
         }
     })
+}
+
+/// A PEP 440 pre- or dev release (`0.10.0rc1`): built for the open RC's Runtime (cl-922). An unparsable one is no prerelease.
+fn prerelease(release: &str) -> bool {
+    pep440_rs::Version::from_str(release).is_ok_and(|version| version.any_prerelease())
 }
 
 /// A Hub's one spelling.
