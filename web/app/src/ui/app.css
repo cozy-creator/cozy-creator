@@ -2730,6 +2730,9 @@ a.tab:hover {
 .media.image-editing .media-pixels {
   opacity: 0.22;
 }
+.media.pending-image .media-pixels {
+  visibility: hidden;
+}
 .media.image-editing:has(.ghosts img) .media-pixels {
   opacity: 0;
 }
@@ -2739,11 +2742,26 @@ a.tab:hover {
   gap: 3px;
 }
 .image-history .take img {
-  object-fit: contain;
+  object-fit: cover;
 }
 .here-side.image-history {
+  width: 280px;
   left: calc(50% + var(--image-history-offset, 0px) + var(--here-gap) * var(--text, 1) * var(--here));
   height: calc(var(--image-history-height, 200px) / (var(--text, 1) * var(--here)));
+}
+.image-history .takes {
+  align-items: flex-end;
+}
+.image-history .take-at {
+  flex: none;
+  width: auto;
+  max-width: 100%;
+}
+.image-history .take.add,
+.image-history .take.making {
+  width: 150px;
+  height: 100px;
+  aspect-ratio: auto;
 }
 .media.image-editing {
   overflow: visible;

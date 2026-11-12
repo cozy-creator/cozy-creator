@@ -7,6 +7,7 @@ import { Icon } from "../ui/Icon"
 import { NSFW, ShowNsfw, isNsfw, useShowNsfw } from "../ui/Tags"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
+import { modelLabel } from "./palette"
 import "./ModelPicker.css"
 
 type Entry = Record<string, unknown>
@@ -75,16 +76,15 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
     <div className="model-picker-overlay nodrag nopan nowheel" onPointerDown={(event) => { event.stopPropagation(); if (event.target === event.currentTarget) onClose() }} onClick={(event) => event.stopPropagation()}>
       <div ref={dialog} className="model-picker" role="dialog" aria-modal="true" aria-label="Models and LoRAs" tabIndex={-1} onKeyDown={(event) => event.stopPropagation()}>
         <header className="model-picker-head">
-          <div><h2>Models and LoRAs</h2><p>{tool?.label ?? "Attach a tool to choose its models"}</p></div>
+          <div className="model-picker-title"><h2>{tool ? modelLabel(tool) : "Models and LoRAs"}</h2>{tool && <span>Models &amp; LoRAs</span>}</div>
           <button type="button" className="iconb" aria-label="Close model picker" title="Close" onClick={onClose}><Icon name="close" /></button>
         </header>
         <div className="model-picker-preferences"><ShowNsfw shown={showNsfw} onChange={setShowNsfw} /></div>
         <div className="model-picker-body">
-          {!slots.length && <p className="muted">This tool has no configurable model slots.</p>}
-          {slots.map((slot) => <Slot key={slot.slot} name={name} slot={slot} showNsfw={showNsfw} legacy={slots.length === 1 ? legacy : []} />)}
+          {!slots.length && <p className="muted">No model settings for this tool.</p>}
+          {slots.map((slot) => <Slot key={slot.slot} name={name} slot={slot} single={slots.length === 1} showNsfw={showNsfw} legacy={slots.length === 1 ? legacy : []} />)}
           {slots.length !== 1 && legacy.length > 0 && <section className="model-picker-slot">
             <h3>Existing LoRAs</h3>
-            <p className="muted">These adapters are already attached. New LoRAs are added to a model slot above.</p>
             <AdapterList name={name} slot={null} families={slots.flatMap((slot) => slot.family ? [slot.family] : [])} adapters={legacy} />
           </section>}
         </div>
@@ -102,7 +102,7 @@ function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot
   store.putOn(name, { models: Object.keys(models).length ? models : null })
 }
 
-function Slot({ name, slot, showNsfw, legacy }: { name: string; slot: ToolModel; showNsfw: boolean; legacy: unknown[] }) {
+function Slot({ name, slot, single, showNsfw, legacy }: { name: string; slot: ToolModel; single: boolean; showNsfw: boolean; legacy: unknown[] }) {
   const store = useCanvasStore()
   const { client } = useConnection()
   useElement(name)
@@ -131,33 +131,34 @@ function Slot({ name, slot, showNsfw, legacy }: { name: string; slot: ToolModel;
   const availableLoras = found.filter((model) => compatible(model, slot.family, "lora") && !adapters.some((adapter) => identityOf(String(entryOf(adapter).ref ?? "")) === model.model))
   const clearBase = () => changeSlot(store, name, slot.slot, ({ ref: _, ...rest }) => rest)
   return <section className="model-picker-slot" data-model-slot={slot.slot}>
-    <h3>{title(slot.slot)}</h3>
-    <label className="model-picker-field">
-      <span>Search compatible models and LoRAs</span>
-      <input type="search" className="field" aria-label={`Search models for ${slot.slot}`} placeholder="Search models and LoRAs" value={typed} disabled={!slot.family} onChange={(event) => { setTyped(event.target.value); setLimit(50) }} />
-    </label>
-    {!slot.family && <p className="muted">Compatible choices are unavailable until this slot declares a model family.</p>}
-    {Boolean(slot.family) && isPending && <p className="muted">Loading compatible choices…</p>}
-    {error && <p className="warn">Could not load compatible models.</p>}
-    <label className="model-picker-field">
-      <span>Base model</span>
-      <select className="field" aria-label={`Base model for ${slot.slot}`} value={malformed ? "__invalid" : selected} onChange={(event) => event.target.value ? changeSlot(store, name, slot.slot, (held) => ({ ...held, ref: event.target.value })) : clearBase()}>
-        <option value="">{slot.default ? `Default: ${modelName(slot.default)}` : "No model selected"}</option>
-        {malformed && <option value="__invalid" disabled>Invalid model selection</option>}
-        {selected && <option value={selected} disabled={!selectedValid}>{modelName(selected)}{selectionState}</option>}
-        {weights.map((model) => <option key={model.model} value={model.model}>{modelName(model.model)}</option>)}
+    {!single && <h3>{title(slot.slot)}</h3>}
+    <div className="model-picker-model-row">
+      <label className="model-picker-field">
+        <span>Model</span>
+        <select className="field" aria-label={`Base model for ${slot.slot}`} value={malformed ? "__invalid" : selected} onChange={(event) => event.target.value ? changeSlot(store, name, slot.slot, (held) => ({ ...held, ref: event.target.value })) : clearBase()}>
+          <option value="">{slot.default ? `Default: ${modelName(slot.default)}` : "No model selected"}</option>
+          {malformed && <option value="__invalid" disabled>Invalid model selection</option>}
+          {selected && <option value={selected} disabled={!selectedValid}>{modelName(selected)}{selectionState}</option>}
+          {weights.map((model) => <option key={model.model} value={model.model}>{modelName(model.model)}</option>)}
+        </select>
+      </label>
+      {(selected || malformed) && <button type="button" className="tb model-picker-reset" title={slot.default ? "Use tool default" : "Remove base model"} onClick={clearBase}>{slot.default ? "Reset" : "Remove"}</button>}
+    </div>
+    <input type="search" className="field model-picker-search" aria-label={`Search models for ${slot.slot}`} placeholder="Find a model or LoRA" value={typed} disabled={!slot.family} onChange={(event) => { setTyped(event.target.value); setLimit(50) }} />
+    {!slot.family && <p className="muted">Compatible choices aren't available for this slot.</p>}
+    {Boolean(slot.family) && isPending && <p className="muted">Loading choices…</p>}
+    {error && <p className="warn">Couldn't load models.</p>}
+    <div className="model-picker-lora-head">
+      <h4>LoRAs</h4>
+      <select className="field" aria-label={`Add LoRA for ${slot.slot}`} value="" disabled={!availableLoras.length} onChange={(event) => {
+        const ref = event.target.value
+        if (ref) changeSlot(store, name, slot.slot, (held) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(ref)) ? held : ({ ...held, lora: [...adaptersOf(held.lora), { ref, strength: 1 }] }))
+      }}>
+        <option value="">{availableLoras.length ? "Add a LoRA…" : "No compatible LoRAs"}</option>
+        {availableLoras.map((model) => <option key={model.model} value={model.model}>{modelName(model.model)}</option>)}
       </select>
-    </label>
-    {(selected || malformed) && <button type="button" className="tb model-picker-reset" onClick={clearBase}>{slot.default ? "Use tool default" : "Remove base model"}</button>}
-    <h4>LoRAs</h4>
+    </div>
     <AdapterList name={name} slot={slot.slot} families={slot.family ? [slot.family] : []} adapters={adapters} />
-    <select className="field" aria-label={`Add LoRA for ${slot.slot}`} value="" disabled={!availableLoras.length} onChange={(event) => {
-      const ref = event.target.value
-      if (ref) changeSlot(store, name, slot.slot, (held) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(ref)) ? held : ({ ...held, lora: [...adaptersOf(held.lora), { ref, strength: 1 }] }))
-    }}>
-      <option value="">{availableLoras.length ? "Add a LoRA…" : "No compatible LoRAs found"}</option>
-      {availableLoras.map((model) => <option key={model.model} value={model.model}>{modelName(model.model)}</option>)}
-    </select>
     {legacy.length > 0 && <div className="model-picker-legacy"><h4>Existing LoRAs</h4><AdapterList name={name} slot={null} families={slot.family ? [slot.family] : []} adapters={legacy} /></div>}
     {Boolean(data?.older) && (limit < 100 ? <button type="button" className="tb" onClick={() => setLimit(Math.min(100, limit + 25))}>Show more choices</button> : <p className="muted">Refine the search to see more choices.</p>)}
   </section>
@@ -172,7 +173,7 @@ function AdapterList({ name, slot, families, adapters }: { name: string; slot: s
       store.putOn(name, { lora: next.length ? next : null })
     } else changeSlot(store, name, slot, (held) => ({ ...held, lora: edit(adaptersOf(held.lora)) }))
   }
-  if (!adapters.length) return <p className="muted">No LoRAs attached.</p>
+  if (!adapters.length) return <p className="muted model-picker-empty">None added</p>
   return <ul className="model-picker-adapters">{adapters.map((value, index) => <Adapter key={`${index}:${String(entryOf(value).ref ?? "")}`} value={value} families={families} onRemove={() => change(index)} onStrength={(value) => change(index, value)} />)}</ul>
 }
 

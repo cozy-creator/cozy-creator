@@ -1276,9 +1276,9 @@ export class CanvasStore {
     if (!asset || !numbersOf(asset).includes(number)) return
     if (asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     void this.save(key)
+    this.patch(key, { viewed: undefined, watchRun: undefined, watchFrom: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
     if (asset.version === number) return
     const edit = this.step(`Selected version ${number} of ${key}`, [key])
-    this.patch(key, { viewed: undefined, watchRun: undefined, watchFrom: undefined })
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select version", edit)
     if (view?.hereWords && asset.tool) {
       const field = this.promptOf(asset.tool)
@@ -1344,6 +1344,7 @@ export class CanvasStore {
     }
     // From an image tool's words, the box looks at the take being made, and its + goes back to them. Not before it goes: what it waits
     // for or asks first is said under its words.
+    if (asset.kind === "image") this.watchTake(key)
     this.patch(key, { waiting: undefined, asking: undefined, scrub: undefined, pickingUp: undefined, glimpse: undefined, asked: NOT_YET })
     const id = this.ids.get(key)
     const settle = (asked?: number) => this.patchId(id, { asked })
@@ -1729,12 +1730,14 @@ export class CanvasStore {
 
   /** Stops one of its runs, gone from the box at once, and its others go on. */
   cancelRun(name: string, run: number) {
-    const making = this.get(name)?.asset?.making
+    const view = this.get(name)
+    const making = view?.asset?.making
+    if (view?.asset?.kind === "image" && watched(view)?.run === run) this.patch(name, { watchRun: undefined, watchFrom: undefined })
     if (making) this.over(name, { making: making.filter((number) => number !== run) }, (_, write) => this.client.cancelRun(String(run), write.once).then(() => ({})), `cancel run ${run} of`, undefined)
   }
 
   cancelRender(name: string) {
-    this.patch(name, { asked: undefined })
+    this.patch(name, { asked: undefined, ...(this.get(name)?.asset?.kind === "image" ? { watchRun: undefined, watchFrom: undefined } : {}) })
     this.act(name, {
       send: (served, write) => this.client.cancelRender(this.projectId!, [served], write.once),
       refused: (error) => say(`Couldn't cancel ${name}`, error),
