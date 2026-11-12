@@ -5,7 +5,7 @@
 use executor_api::{
     Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, CheckpointItem, ChildCall, ChildCancel,
     ChildEvents, ChildForget, ChildPoll, Command, Construction, DisplayPace, Fork, GpuRelease, InputFile,
-    InputMetadata, Invoke, Load, Map, MemoSettings, ModelPrefetch, PrepareRequest, Preview, Publish, PublishPart, SavedFile,
+    InputMetadata, Invoke, Load, Map, MemoSettings, ModelNeed, ModelPrefetch, PrepareRequest, Preview, Publish, PublishPart, SavedFile,
     StageMemoLookup, StageMemoStore, Start, TensorFSOptions, View,
 };
 use pyo3::{create_exception, exceptions::PyValueError, prelude::*, IntoPyObjectExt};
@@ -79,6 +79,7 @@ pub(crate) fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ChildForget>()?;
     m.add_class::<GpuRelease>()?;
     m.add_class::<ModelPrefetch>()?;
+    m.add_class::<ModelNeed>()?;
     m.add_class::<Publish>()?;
     m.add_class::<PublishPart>()?;
     m.add_class::<SavedFile>()?;

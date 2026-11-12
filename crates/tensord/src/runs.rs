@@ -1854,6 +1854,26 @@ impl Runs {
         Ok(())
     }
 
+    /// Run `id`'s function reads checkpoint `manifest`'s `components` (all, when none) now: what of them isn't here comes at
+    /// once, before every other download (`priority::EMERGENCY`, cl-966), and this returns once it has landed, so its executor
+    /// reads it from disk. Nothing to fetch when it's all here or never came from a Hub.
+    pub(crate) fn need(&self, id: &str, manifest: &str, components: &[String]) -> Result<(), Refused> {
+        let store = self.publisher.store();
+        let checkpoint = crate::storage::checkpoint(store, manifest)?;
+        let absent: Vec<ObjectRef> = crate::storage::chunks(&checkpoint, components).into_iter().filter(|object| !store.holds(object)).collect();
+        let Some(hub) = self.hub(id).filter(|_| !absent.is_empty()) else { return Ok(()) };
+        let machine = self.publisher.machine();
+        let Some(remote) = crate::access::remote(machine, &hub, checkpoint.id())? else { return Ok(()) };
+        let model = crate::held_models::Pulled::of(store, checkpoint.id())?.map_or_else(|| manifest.to_string(), |pulled| pulled.model);
+        let (run, bytes, began) = (self.service.engine.caller_id(id), absent.iter().map(|object| object.length).sum::<u64>(), std::time::Instant::now());
+        tracing::info!(run, bytes, "emergency: {model} is read now, before every other download");
+        machine.objects(&remote, &absent, crate::origin::priority::EMERGENCY, &Stop::default())
+            .map_err(|refusal| refused("model_fetch_failed", format!("{model}: {refusal}")))?;
+        let seconds = began.elapsed().as_secs_f64();
+        tracing::info!(run, bytes, seconds, mb_s = bytes as f64 / seconds.max(1e-3) / 1e6, "emergency: {model} is here");
+        Ok(())
+    }
+
     /// Observe required-input readiness without consuming the existing fetch owner.
     pub(crate) fn source_ready(&self, id: &str) -> crate::access::Ready {
         self.contexts.lock().unwrap().get(id)

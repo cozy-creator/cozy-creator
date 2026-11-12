@@ -37,6 +37,7 @@ __all__ = [
     'Malformed',
     'Map',
     'MemoSettings',
+    'ModelNeed',
     'ModelPrefetch',
     'PrepareRequest',
     'Preview',
@@ -491,6 +492,19 @@ class ModelPrefetch:
     def json(self) -> str: ...
     def replace(self, /, **changes: Unpack[_ModelPrefetchChanges]) -> Self: ...
 
+_ModelNeedFields = TypedDict("_ModelNeedFields", {'manifest': str, 'components': NotRequired[Sequence[str]]})
+_ModelNeedChanges = TypedDict("_ModelNeedChanges", {'manifest': str, 'components': Sequence[str]}, total=False)
+
+@final
+class ModelNeed:
+    @property
+    def manifest(self) -> str: ...
+    @property
+    def components(self) -> list[str]: ...
+    def __new__(cls, /, **fields: Unpack[_ModelNeedFields]) -> Self: ...
+    def json(self) -> str: ...
+    def replace(self, /, **changes: Unpack[_ModelNeedChanges]) -> Self: ...
+
 _PublishFields = TypedDict("_PublishFields", {'output': str, 'label': NotRequired[str], 'asset_ref': str, 'asset_kind': str, 'media_type': NotRequired[str], 'size_bytes': NotRequired[int], 'digest': NotRequired[str], 'parts': NotRequired[Sequence[PublishPart]]})
 _PublishChanges = TypedDict("_PublishChanges", {'output': str, 'label': str, 'asset_ref': str, 'asset_kind': str, 'media_type': str, 'size_bytes': int, 'digest': str, 'parts': Sequence[PublishPart]}, total=False)
 
@@ -682,6 +696,7 @@ Request: TypeAlias = (
     | ChildForget
     | GpuRelease
     | ModelPrefetch
+    | ModelNeed
     | Publish
     | CheckpointItem
     | StageMemoLookup
