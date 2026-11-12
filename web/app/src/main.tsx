@@ -15,7 +15,7 @@ import { type Boot, type Connection, ConnectionProvider, connect } from "./app/C
 import { theRouter } from "./app/routes"
 import { saveSession, takeCode } from "./app/session"
 import { Copyable } from "./ui/Copyable"
-import { useSignal } from "./ui/signal"
+import { tabShown, useSignal } from "./ui/signal"
 
 /** Consumes a sign-in link, then asks Calcifer who it is. Runs once, outside React. */
 async function boot(): Promise<Boot> {
@@ -43,7 +43,7 @@ function SignedOut() {
   )
 }
 
-/** Asked again every few seconds: the page opens by itself once Calcifer answers. */
+/** Asked again every few seconds while the tab is in view: the page opens by itself once Calcifer answers. */
 function Unreachable() {
   return (
     <main className="gate">
@@ -74,11 +74,12 @@ function App() {
   useEffect(() => {
     void booted.then(setState)
   }, [])
+  const inView = useSignal(tabShown)
   useEffect(() => {
-    if (!state || !("failed" in state) || state.failed !== "unreachable") return
+    if (!state || !("failed" in state) || state.failed !== "unreachable" || !inView) return
     const again = setTimeout(() => void connect().then(setState), ASK_AGAIN_MS)
     return () => clearTimeout(again)
-  }, [state])
+  }, [state, inView])
   if (!state) return <main className="gate">Connecting…</main>
   if ("connection" in state) return <Connected connection={state.connection} />
   return state.failed === "signed_out" ? <SignedOut /> : <Unreachable />

@@ -35,6 +35,8 @@ export class Preview {
   private loaded: string | null = null
   private release: (() => void) | null = null
   private waiting: AbortController | null = null
+  /** The ask for a slot in line: a seek while it waits waits on it too. */
+  private holding: Promise<boolean> | null = null
   private wanted: number | null = null
   private turn = 0
   private raf = 0
@@ -207,33 +209,27 @@ export class Preview {
     })
   }
 
-  private async hold(): Promise<boolean> {
-    if (this.release) return true
-    if (!this.waiting) {
-      const waiting = new AbortController()
-      this.waiting = waiting
-      if (playingHere.length >= 2) playingHere[0]()
-      playingHere.push(this.stop)
-      try {
-        const release = await holdMedia(waiting.signal)
-        if (waiting.signal.aborted) {
-          release()
-          return false
-        }
-        this.release = release
-        this.waiting = null
-        this.live.set(true)
-        return true
-      } catch {
+  private hold(): Promise<boolean> {
+    if (this.release) return Promise.resolve(true)
+    if (this.holding) return this.holding
+    const waiting = new AbortController()
+    this.waiting = waiting
+    if (playingHere.length >= 2) playingHere[0]()
+    playingHere.push(this.stop)
+    const holding: Promise<boolean> = holdMedia(waiting.signal).then((release) => {
+      if (waiting.signal.aborted) {
+        release()
         return false
       }
-    }
-    // Another seek is already in line for the slot.
-    const waiting = this.waiting
-    return new Promise((done) => {
-      const look = () => (this.release ? done(true) : waiting.signal.aborted ? done(false) : setTimeout(look, 20))
-      look()
+      this.release = release
+      this.waiting = null
+      this.live.set(true)
+      return true
+    }, () => false).finally(() => {
+      if (this.holding === holding) this.holding = null
     })
+    this.holding = holding
+    return holding
   }
 
   private seeked(video: HTMLVideoElement) {
@@ -290,6 +286,7 @@ export class Preview {
     cancelAnimationFrame(this.raf)
     this.waiting?.abort()
     this.waiting = null
+    this.holding = null
     this.gaveUp?.()
     this.playback?.stop()
     this.playback = null

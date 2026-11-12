@@ -182,7 +182,8 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const installing = useInstalling(run || waits ? undefined : installsOf && (installsOf.installs ?? installsOf.package))
   useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
   useSignal(store.ahead)
-  const now = useNow(true)
+  // Its clock ticks only while it has a time to show.
+  const now = useNow(run !== undefined && leftOf(run) !== undefined)
   const face = faceOf({ view, run, machine, on, installing, waits: waits && !on ? waits : undefined, ahead: store.aheadOf(name), preparing: store.preparing(name), canceling: Boolean(view.canceling), boxOf: (n) => store.boxOfRun(n) })
   const since = run ? (now - run.created_at_ms) / 1000 : undefined
   const left = run ? leftOf(run) : undefined
@@ -228,7 +229,7 @@ export function RunMeter({ view, number }: { view: ElementView; number?: number 
   const later = number !== undefined && number !== view.run?.number
   const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: later })
   const run = later ? data : view.run
-  const now = useNow(true)
+  const now = useNow(run !== undefined && leftOf(run) !== undefined)
   const since = run ? (now - run.created_at_ms) / 1000 : undefined
   const whole = useWhole(run, since, run ? leftOf(run) : undefined)
   if (whole === undefined || view.canceling || run?.cancel_requested || run?.status === "failed") return null
