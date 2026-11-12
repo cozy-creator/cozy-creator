@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { GPU, STEP_MS, calcifer, importFile, importYaml, lastLook, launch, lookAt, noStall, png, projectUrl, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { GPU, STEP_MS, addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectJson, projectUrl, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
 const { runnerSpeed } = require('./speed');
 
 const failures = [];
@@ -269,15 +269,16 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
     importFile(made.path, join(scratch, 'a.png'), 'a_picture');
     const held = await api(`/v1/projects/${made.id}`);
     const hash = held.assets.find((row) => row.name === 'a_picture').sha256.replace('sha256:', '').slice(0, 12);
-    let text = 'version: 4\nassets:\n';
+    const boxes = [];
     const cards = {};
     for (const [i, [x, y]] of [[0, 0], [400, 0], [0, 400], [400, 400]].entries()) {
-      text += `  n${i}:\n    approved: "${hash}"\n    tool: see-no-such-package/draw\n    instructions: box ${i}\n`;
+      boxes.push({ name: `n${i}`, tool: 'see-no-such-package/draw', kind: 'image', fields: { approved: hash, instructions: `box ${i}` } });
       cards[`n${i}`] = { x, y, w: 240 };
     }
-    importYaml(made.path, text);
+    addBoxes(made.path, boxes);
+    // The picture stays a file, each box approved on it, and its own box goes.
+    projectJson(made.path, 'DELETE', '/assets/a_picture');
     await api(`/v1/projects/${made.id}/canvas`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cards }) });
-    // The import is the project's whole list: the picture stays a file, each box approved on it.
     await until('four boxes read', async () => (await api(`/v1/projects/${made.id}`)).assets?.length, (n) => n === 4);
     const url = await projectUrl(made.id);
 
