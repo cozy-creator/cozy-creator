@@ -984,6 +984,23 @@ code {
   font-size: 17px;
   text-shadow: none;
 }
+/* At rest, how far the whole job is (cl-928): a thin meter along its box's bottom edge, line 1's numbers, drawn only once there's an
+   estimate. Nothing pulses in it. */
+.run-face .face-meter {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(3px * var(--ui));
+  background: color-mix(in srgb, var(--mak) 22%, transparent);
+}
+.run-face .face-meter i {
+  position: absolute;
+  inset: 0;
+  background: var(--mak);
+  transform-origin: left;
+  transition: transform 400ms linear;
+}
 /* At rest, a render breathes around its box, outside its edge (cl-928, Paul 11-12): ambient, no progress. How far it is, is on its face. */
 .render-wave {
   position: absolute;

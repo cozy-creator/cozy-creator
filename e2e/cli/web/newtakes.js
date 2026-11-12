@@ -1,5 +1,6 @@
 // A rendering box at rest, and new takes not looked at (cl-928, Paul 11-12), in a real browser on a real Calcifer with a weightless local
-// tool. At rest a render breathes around its box, outside its edge. With nothing approved, a box shows its new take and no dot. Approved,
+// tool. At rest a render breathes around its box, outside its edge, with a meter of the whole job once there's an estimate. With nothing
+// approved, a box shows its new take and no dot. Approved,
 // it keeps showing the approved take while it renders and after, with a green dot left of its name and on the new take in Focus's list;
 // a reload keeps them (Calcifer's own state.db, never the project); looking at the take clears both, and a reload keeps that too.
 //   node newtakes.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
@@ -125,7 +126,8 @@ async function died(why) {
         outside: Boolean(wave && media && !media.contains(wave) && Math.abs(w.top - m.top) < 1.5 && Math.abs(w.bottom - m.bottom) < 1.5 && Math.abs(w.width - m.width) < 1.5),
         breathes: wave ? getComputedStyle(wave, '::before').animationName : '',
         shows: card.querySelector('.node-version-label')?.textContent ?? '',
-        face: Boolean(card.querySelector('.media .run-face')),
+        line: card.querySelector('.media .run-face .face-machine')?.textContent ?? '',
+        meter: card.querySelector('.media .run-face .face-meter')?.getAttribute('aria-valuenow') ?? null,
       };
       if (JSON.stringify(said.at(-1)) !== JSON.stringify(now)) said.push(now);
     };
@@ -161,6 +163,9 @@ async function died(why) {
   seen.second_render = second.said;
   const kept = second.said.filter((now) => now.rendering);
   check('approved_breathes_and_stays_shown', kept.length > 0 && kept.every((now) => now.wave && now.outside && now.shows === 'v1'), second.said);
+  // Its second run has an estimate (the first's): a meter of the whole job, only with line 1's 'so far / whole job', and it never goes back.
+  const metered = kept.filter((now) => now.meter !== null).map((now) => ({ ...now, meter: Number(now.meter) }));
+  check('meter_of_the_whole_job', metered.length > 0 && metered.every((now, i) => now.meter >= 0 && now.meter <= 99 && (i === 0 || now.meter >= metered[i - 1].meter) && / - \d+[hms]( \d+[ms])? \/ \d+[hms]/.test(now.line)), kept);
   check('approved_take_still_shown', (await label()) === 'v1', await label());
   check('new_take_unseen', second.row.approved === 1 && JSON.stringify(second.row.unseen) === '[2]', second.row);
   check('name_dot', (await until('a dot by its name', nameDots, (n) => n === 1, 15_000).catch(() => 0)) === 1);
