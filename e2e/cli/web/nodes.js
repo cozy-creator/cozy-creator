@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { implementationRow, selectVersion, chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
+const { implementationRow, previewVersion, approveVersion, chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -257,10 +257,10 @@ function linesOf(text, name) {
     const fresh = await dragOut(fromTheList, x, y);
     await chooseModel(page, fresh.name, tool, "image");
     await until("local model selected", () => of(fresh.name), (held) => held.tool === tool);
-    await box(fresh.name).locator('.nm').dblclick();
-    await page.waitForSelector('.nm-field');
-    await page.keyboard.type(name);
-    await page.keyboard.press('Enter');
+    await box(fresh.name).getByRole('button', { name: 'Rename node', exact: true }).click();
+    const naming = box(fresh.name).locator('.focus-heading input[aria-label="Name"]');
+    await naming.fill(name);
+    await naming.press('Enter');
     await until(`named ${name}`, () => of(name), Boolean);
     await away();
     return fresh;
@@ -299,10 +299,10 @@ function linesOf(text, name) {
   await away();
   await page.waitForTimeout(100);
 
-  // The image keeps its deletion target and its current-version controls at rest.
+  // A plain imported image keeps its deletion target at rest, with no linear counter/arrow control.
   const atRest = box('source-a').locator('.head button[aria-label="Delete"]');
   check('at_rest_delete_is_always_visible', await atRest.isVisible() && ((await atRest.boundingBox())?.width ?? 0) >= 24, await box('source-a').innerText());
-  check('at_rest_image_has_version_controls', await box('source-a').getByLabel('Current version', { exact: true }).innerText() === '1/1' && await box('source-a').getByRole('button', { name: 'Previous version', exact: true }).isDisabled() && await box('source-a').getByRole('button', { name: 'Next version', exact: true }).isDisabled());
+  check('at_rest_image_has_no_linear_version_controls', await box('source-a').getByLabel('Current version', { exact: true }).count() === 0 && await box('source-a').getByRole('button', { name: /^(Previous|Next) version$/ }).count() === 0);
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
   await open('Sheet');
   check('hover_shows_render', (await box('Sheet').locator('button[aria-label=Render]').count()) === 1);
@@ -557,7 +557,7 @@ function linesOf(text, name) {
   check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Download,Star,Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
   await page.keyboard.press('Escape');
   await open('Sheet');
-  await box('Sheet').locator('.nm').click({ button: 'right' });
+  await box('Sheet').getByRole('button', { name: 'Rename node', exact: true }).click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
   const items = await page.locator('.asset-menu > button').allTextContents();
   check('box_menu', ['Change the tool', 'Rename', 'Delete'].every((item) => items.includes(item)), items);
@@ -587,10 +587,10 @@ function linesOf(text, name) {
       const fresh = await dragOut(await implementationRow(page, 'image'), point.x, point.y);
       await chooseModel(page, fresh.name, implementationOf(name).id, 'image');
       await until('the selected implementation lands', () => of(fresh.name), (held) => held.tool === implementationOf(name).id);
-      await box(fresh.name).locator('.nm').dblclick();
-      await page.waitForSelector('.nm-field');
-      await page.keyboard.type(`${name}_1`);
-      await page.keyboard.press('Enter');
+      await box(fresh.name).getByRole('button', { name: 'Rename node', exact: true }).click();
+      const naming = box(fresh.name).locator('.focus-heading input[aria-label="Name"]');
+      await naming.fill(`${name}_1`);
+      await naming.press('Enter');
       await box(`${name}_1`).waitFor();
       await open(`${name}_1`);
     };
@@ -667,13 +667,16 @@ function linesOf(text, name) {
     check('rendered_with_no_reload', await page.evaluate(() => window.notReloaded === true));
     await render('Sheet', 2);
     await open('Sheet');
-    await until('its count', () => box('Sheet').getByLabel('Current version', { exact: true }).textContent(), (text) => text === '2/2');
+    await until('its two retained previews', () => box('Sheet').locator('.image-history.here-side .take[data-take]').count(), (count) => count === 2);
 
-    // Back/forward changes the one selected state, durably, without adding versions.
-    await selectVersion(page, 'Sheet', 1);
+    // Preview is local; double-click approval is the separate persistent action.
+    const beforePreview = (await of('Sheet')).version;
+    await previewVersion(page, 'Sheet', 1);
+    check('thumbnail_preview_does_not_approve', (await of('Sheet')).version === beforePreview);
+    await approveVersion(page, 'Sheet', 1);
     await until('first version selected in the project', () => of('Sheet'), (held) => held.version === 1);
-    check('selected_version_is_persistent', (await box('Sheet').getByLabel('Current version', { exact: true }).innerText()) === '1/2');
-    check('images_have_no_thumbnail_strip', await box('Sheet').locator('.here-side .take, .takes .take[data-take]').count() === 0);
+    check('selected_version_is_persistent', await box('Sheet').locator('.image-history .take.on[data-take]').getAttribute('data-take') === '1');
+    check('images_keep_the_original_right_previews', await box('Sheet').locator('.image-history.here-side .take[data-take]').count() === 2);
     check('image_view_has_no_description', await box('Sheet').locator('.desc-field').count() === 0);
     await openBox(page, 'Sheet');
     const viewButton = box('Sheet').getByRole('button', { name: 'View image', exact: true });
@@ -682,7 +685,7 @@ function linesOf(text, name) {
     const selectedBefore = (await of('Sheet')).version;
     await renderOf(page, 'Sheet');
     check('editing_keeps_current_selection', (await of('Sheet')).version === selectedBefore && await box('Sheet').locator('.in-frame').count() === 1);
-    await box('Sheet').getByRole('button', { name: 'View image', exact: true }).click();
+    await previewVersion(page, 'Sheet', 1);
 
     // Stored version deletion and Undo remain available independently of the removed strip.
     const asked = await versions('Sheet');
@@ -702,9 +705,9 @@ function linesOf(text, name) {
     await open('Sheet');
     // The drag carries what the page holds, and that came by the stream, a moment behind the answer above.
     check('image_description_stays_hidden', await box('Sheet').locator('.desc-field').count() === 0);
-    await selectVersion(page, 'Sheet', 2);
+    await previewVersion(page, 'Sheet', 2);
     const selected = await of('Sheet');
-    check('selection_keeps_versions_on_one_asset', selected.version === 2 && selected.versions === asked && !(await of('Sheet_2')), selected);
+    check('preview_keeps_approval_and_versions_on_one_asset', selected.version === 1 && selected.versions === asked && !(await of('Sheet_2')) && await box('Sheet').locator('.image-history .take.on[data-take]').getAttribute('data-take') === '2', selected);
     check('selection_creates_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);
     await shot('versions');
 
@@ -876,7 +879,7 @@ function linesOf(text, name) {
     // The box is back as it's asked for, ahead of the file and its versions: then all its versions, in the project and on the page.
     const restored = await until('its versions back', () => versions('Other'), (n) => n === takes).catch(() => versions('Other'));
     await open('Other');
-    const shown = Number((await box('Other').getByLabel('Current version', { exact: true }).innerText()).split('/')[1]);
+    const shown = await box('Other').locator('.image-history.here-side .take[data-take]').count();
     check('undo_brings_its_versions', restored === takes && shown === takes, { takes, restored, shown });
     await away();
 

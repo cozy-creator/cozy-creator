@@ -1,5 +1,5 @@
-// Selected asset versions in a real browser on a real Calcifer: imported v1, edits append numbered states, and back/forward persists the current image.
-// `<name>` follows that selection while `<name.2>` remains fixed. The image stays full-size behind explicit editing; output aspect ratio is independent.
+// Retained asset states in a real browser on a real Calcifer: imported v1, edits append alternatives, and the original right-hand previews select the current image.
+// `<name>` follows that selection while `<name.2>` remains fixed. There is no linear counter/arrow UI and editing an older state prunes nothing.
 // Real CLI/API/browser writes retain rename, deletion/Undo, reclaim, typed input/refusal and render identity guarantees.
 //   node versions.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: not on this computer's machine, which the rename during a
@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { implementationRow, selectVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
+const { implementationRow, previewVersion, approveVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -187,7 +187,7 @@ async function died(why) {
   const back = await undoOf('Ada');
   check('undo_brings_it_back', back.status === 200 && !(await until('it reads again', () => asset('fixed'), (row) => !row.missing?.includes('Ada.2'))).missing?.length, back);
 
-  // One full image is current. Browsing versions writes that selection, without adding or deleting versions.
+  // Original right-hand state previews remain, and selecting one writes current state without deleting alternatives.
   const shut = async () => {
     await page.keyboard.press('Escape');
     await page.goto(await projectUrl(id));
@@ -197,46 +197,131 @@ async function died(why) {
     await page.goto(await projectUrl(id, `/assets/${name}`));
     await page.locator(`.card.here[data-asset="${name}"]`).first().waitFor();
   };
-  const counter = (name) => box(name).getByLabel('Current version', { exact: true });
   const current = (name) => asset(name).then((row) => row.version);
   const shaOf = (row, number) => row.prefixes?.find((version) => version.number === number)?.main?.sha256 ?? (number === 1 ? row.sha256 : undefined);
-  const noStrip = (name) => box(name).locator('.here-side .take, .takes .take[data-take]').count();
+  const history = (name) => box(name).locator('.image-history.here-side');
+  const previews = (name) => history(name).locator('.take[data-take]');
+  const selected = (name) => history(name).locator('.take.on[data-take]').getAttribute('data-take');
+  const noLinearControls = (name) => box(name).getByLabel('Current version', { exact: true }).count().then(async (count) => count + await box(name).getByRole('button', { name: /^(Previous|Next) version$/ }).count());
   const noDescription = (name) => box(name).locator('.desc-field, [aria-label="Description"]').count();
-  const previous = (name) => box(name).getByRole('button', { name: 'Previous version', exact: true });
-  const next = (name) => box(name).getByRole('button', { name: 'Next version', exact: true });
+  const geometry = (name) => box(name).evaluate((node) => {
+    const media = node.querySelector('.media-pixels').getBoundingClientRect();
+    const viewer = node.querySelector('.focus-viewer').getBoundingClientRect();
+    const controls = node.querySelector('.image-controls')?.getBoundingClientRect();
+    const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+    return { width: media.width, height: media.height, zoom, viewer: { x: viewer.x, y: viewer.y, width: viewer.width, height: viewer.height }, controls: controls ? { x: controls.x, y: controls.y, width: controls.width, height: controls.height } : null };
+  });
+  const stableRoomAndZoom = (before, after) => Math.abs(before.zoom - after.zoom) < 0.001 && ['x', 'y', 'width', 'height'].every((field) => Math.abs(before.viewer[field] - after.viewer[field]) < 2);
+  const displayedAspect = (name) => box(name).locator('.focus-viewer .media-pixels img').evaluateAll((images) => {
+    const image = [...images].reverse().find((image) => image.complete && image.naturalWidth && image.getBoundingClientRect().width && Number(getComputedStyle(image).opacity) > 0);
+    return image ? image.naturalWidth / image.naturalHeight : 0;
+  });
 
   await open('Ada');
-  await selectVersion(page, 'Ada', 3);
-  check('one_image_and_counter_replace_thumbnail_strip', await counter('Ada').innerText() === '3/3' && await noStrip('Ada') === 0, await box('Ada').innerText());
+  await approveVersion(page, 'Ada', 3);
+  check('retained_states_have_original_right_previews', await history('Ada').isVisible() && await previews('Ada').count() === 3 && await selected('Ada') === '3', await box('Ada').innerText());
+  check('linear_counter_and_arrow_controls_are_removed', await noLinearControls('Ada') === 0);
   check('image_has_no_description_editor', await noDescription('Ada') === 0, await box('Ada').innerText());
-  check('last_version_disables_next', await next('Ada').isDisabled());
+  await settled(page);
+  const wideGeometry = await geometry('Ada');
+  await previewVersion(page, 'Ada', 2);
+  await settled(page);
+  const squareGeometry = await geometry('Ada');
+  check('browsing_states_keeps_the_focus_room_and_wander_zoom', stableRoomAndZoom(wideGeometry, squareGeometry) && Math.abs(wideGeometry.width - squareGeometry.width) > 20, { wideGeometry, squareGeometry });
+  check('thumbnail_preview_does_not_change_approval', await current('Ada') === 3);
+  await previewVersion(page, 'Ada', 3);
   const beforeBrowse = (await asset('Ada')).prefixes.map((version) => [version.number, version.main.sha256]);
   const readerBefore = await asset('fixed');
-  await selectVersion(page, 'Ada', 1);
+  await previewVersion(page, 'Ada', 1);
+  check('preview_keeps_bare_reference_and_approval_unchanged', await current('Ada') === 3 && (await asset('fixed')).inputs === readerBefore.inputs);
+  await approveVersion(page, 'Ada', 1);
   await until('selected version is durable', () => current('Ada'), (number) => number === 1);
   const readerAfter = await until('bare reference follows selected version', () => asset('fixed'), (row) => row.inputs !== readerBefore.inputs);
   const readKey = (row, number) => row.reads.find((read) => read.name === 'Ada' && read.version === number)?.key;
-  check('plain_name_follows_selection_explicit_versions_stay_fixed', readKey(readerBefore) !== readKey(readerAfter) && readKey(readerBefore, 1) === readKey(readerAfter, 1) && readKey(readerBefore, 2) === readKey(readerAfter, 2), { before: readerBefore.reads, after: readerAfter.reads });
-  check('first_version_disables_previous', await previous('Ada').isDisabled());
+  check('plain_name_follows_approval_explicit_versions_stay_fixed', readKey(readerBefore) !== readKey(readerAfter) && readKey(readerBefore, 1) === readKey(readerAfter, 1) && readKey(readerBefore, 2) === readKey(readerAfter, 2), { before: readerBefore.reads, after: readerAfter.reads });
   await page.reload();
-  await box('Ada').getByLabel('Current version', { exact: true }).waitFor();
-  check('selected_version_survives_reload', await counter('Ada').innerText() === '1/3' && await current('Ada') === 1);
+  await history('Ada').waitFor();
+  check('selected_version_survives_reload', await selected('Ada') === '1' && await current('Ada') === 1);
   check('browsing_preserves_all_versions', JSON.stringify((await asset('Ada')).prefixes.map((version) => [version.number, version.main.sha256])) === JSON.stringify(beforeBrowse));
-  await next('Ada').click();
-  await until('forward selects second version', () => current('Ada'), (number) => number === 2);
-  await previous('Ada').click();
-  await until('back selects first version', () => current('Ada'), (number) => number === 1);
-  check('back_forward_are_selection_not_new_edits', await counter('Ada').innerText() === '1/3' && (await asset('Ada')).versions === 3);
+  const warmedAda = await asset('Ada');
+  const aspectOf = (number) => {
+    const main = warmedAda.prefixes.find((version) => version.number === number).main;
+    return main.width / main.height;
+  };
+  for (const number of [2, 1]) {
+    await previewVersion(page, 'Ada', number);
+    await until(`image ${number} decoded for warm switching`, () => displayedAspect('Ada'), (ratio) => Math.abs(ratio / aspectOf(number) - 1) < 0.02);
+  }
+  check('preview_selection_is_not_a_new_edit', await selected('Ada') === '1' && (await asset('Ada')).versions === 3);
+  const flip = (number) => page.evaluate(({ number, wanted }) => {
+    const card = () => document.querySelector('.card.here[data-asset="Ada"]');
+    const began = performance.now();
+    card().querySelector(`.image-history .take[data-take="${number}"]`).click();
+    let emptyFrames = 0;
+    return new Promise((done) => {
+      const look = () => {
+        const images = [...card().querySelectorAll('.focus-viewer .media-pixels img')].filter((image) => {
+          if (!image.complete || !image.naturalWidth || !image.getBoundingClientRect().width) return false;
+          for (let element = image; element && !element.classList.contains('card'); element = element.parentElement) {
+            const style = getComputedStyle(element);
+            if (style.visibility !== 'visible' || Number(style.opacity) === 0) return false;
+          }
+          return true;
+        });
+        if (!images.length) emptyFrames++;
+        if (images.some((image) => Math.abs((image.naturalWidth / image.naturalHeight) / wanted - 1) < 0.02)) return done({ first: performance.now() - began, emptyFrames });
+        if (performance.now() - began > 10_000) return done({ first: null, emptyFrames });
+        requestAnimationFrame(look);
+      };
+      requestAnimationFrame(look);
+    });
+  }, { number, wanted: aspectOf(number) });
+  const flips = [];
+  for (const number of [2, 1, 2, 1]) {
+    flips.push(await flip(number));
+    await until('thumbnail click previews its state', () => selected('Ada'), (selected) => selected === String(number));
+  }
+  check('decoded_state_switching_has_no_empty_flash', flips.every((look) => look.first !== null && look.first < 400 && look.emptyFrames === 0), flips);
+  check('warm_thumbnail_clicks_do_not_change_approval', await current('Ada') === 1);
 
-  // A longer version history remains a counter and two controls, not a row of thumbnails.
+  // A longer state history keeps the original scrollable previews, with both mouse and touch scrolling.
   await imported('many', 50);
   for (const shade of [51, 52, 53, 54, 55, 56, 57, 58]) await joined('many', shade);
   await open('many');
-  await selectVersion(page, 'many', 9);
-  check('many_versions_stay_one_visible_image', await counter('many').innerText() === '9/9' && await noStrip('many') === 0);
-  await selectVersion(page, 'many', 5);
+  await approveVersion(page, 'many', 9);
+  check('all_alternative_states_keep_previews', await previews('many').count() === 9 && await selected('many') === '9');
+  const side = history('many');
+  await settled(page);
+  const sideBox = await side.boundingBox();
+  const scrolled = () => side.evaluate((element) => element.scrollTop);
+  const across = sideBox.x + sideBox.width / 2;
+  await page.mouse.move(across, sideBox.y + sideBox.height - 12);
+  await page.mouse.down();
+  for (let step = 1; step <= 8; step++) await page.mouse.move(across, sideBox.y + sideBox.height - 12 - step * 18);
+  const scrolling = { marked: await page.locator('.scroll-marker.on').count(), ghosts: await page.locator('.carry-ghost').count() };
+  await page.mouse.up();
+  const byMouse = await scrolled();
+  await page.waitForTimeout(500);
+  const coasted = await scrolled();
+  const looks = await side.evaluate((element) => ({ bar: element.offsetWidth - element.clientWidth, mask: getComputedStyle(element).maskImage || getComputedStyle(element).webkitMaskImage, top: element.style.getPropertyValue('--fade-top') }));
+  check('right_previews_scroll_with_a_mouse', byMouse > 40 && coasted >= byMouse && looks.bar === 0 && looks.top === '24px' && /gradient/.test(looks.mask), { byMouse, coasted, looks });
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const beforeFinger = await scrolled();
+  const touchFrom = { x: across, y: sideBox.y + sideBox.height - 12 };
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [touchFrom] });
+  for (let step = 1; step <= 6; step++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: touchFrom.x, y: touchFrom.y - step * 18 }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await page.waitForTimeout(500);
+  const byFinger = await scrolled();
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await cdp.detach();
+  check('right_previews_scroll_with_a_finger', byFinger > beforeFinger + 40, { beforeFinger, byFinger });
+  const unmarked = await until('scroll marker gone', () => page.locator('.scroll-marker.on').count(), (count) => count === 0, 4000).then(() => true, (why) => String(why));
+  check('scroll_marker_does_not_carry_or_remove_a_state', scrolling.marked === 1 && scrolling.ghosts === 0 && unmarked === true && (await asset('many')).versions === 9, { scrolling, unmarked });
+  await approveVersion(page, 'many', 5);
   await until('fifth version selected', () => current('many'), (number) => number === 5);
-  check('counter_names_current_and_total', await counter('many').innerText() === '5/9');
+  check('preview_selects_fifth_retained_state', await selected('many') === '5');
   await shut();
 
   // A category click only opens implementations; clicking an implementation also creates nothing.
@@ -265,41 +350,42 @@ async function died(why) {
   await carryToolOnto('other');
   await until('image tool attached', () => asset('other'), (row) => row.tool === tool.id);
   await open('other');
-  check('source_is_version_one_after_tool_attachment', await counter('other').innerText() === '1/1' && shaOf(await asset('other'), 1) === originalSha);
+  check('source_is_version_one_after_tool_attachment', await selected('other') === '1' && await previews('other').count() === 1 && shaOf(await asset('other'), 1) === originalSha);
   check('attachment_starts_in_image_view', await box('other').getByRole('button', { name: 'Edit image', exact: true }).count() === 1 && await box('other').locator('.in-frame .mention-text').count() === 0);
   check('tool_attachment_does_not_add_a_description_box', await noDescription('other') === 0);
   await box('other').getByRole('button', { name: 'Edit image', exact: true }).click();
   const prompt = box('other').locator('.in-frame .mention-text').first();
   await prompt.waitFor();
-  const reference = box('other').locator('[data-image-reference]');
-  await until('reference image loaded behind editor', () => reference.evaluate((element) => {
-    const image = element.matches('img') ? element : element.querySelector('img');
-    return Boolean(image?.complete && image.naturalWidth > 0);
-  }), Boolean);
+  await prompt.click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' beside <Ada.2> ');
+  const reference = box('other').locator('.ghosts[data-image-reference]');
+  await until('all referenced image previews load behind editor', () => reference.locator('img').evaluateAll((images) => images.length === 2 && images.every((image) => image.complete && image.naturalWidth > 0)), Boolean);
   const referenceGeometry = () => reference.evaluate((element) => {
-    const image = element.matches('img') ? element : element.querySelector('img');
-    const rect = image.getBoundingClientRect();
-    let opacity = 1;
-    for (let node = image; node && !node.classList.contains('card'); node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
-    return { width: rect.width, height: rect.height, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity };
+    return [...element.querySelectorAll('img')].map((image) => {
+      const rect = image.getBoundingClientRect();
+      let opacity = 1;
+      for (let node = image; node && !node.classList.contains('card'); node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
+      return { width: rect.width, height: rect.height, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity };
+    });
   });
   const beforeShape = await referenceGeometry();
-  check('edit_mode_shows_full_faded_reference', beforeShape.opacity > 0 && beforeShape.opacity < 1 && Math.abs(beforeShape.width / beforeShape.height - beforeShape.naturalWidth / beforeShape.naturalHeight) < 0.02, beforeShape);
+  check('edit_mode_shows_all_faded_references_without_cropping', beforeShape.length === 2 && beforeShape.every((image) => image.opacity > 0 && image.opacity < 1 && image.fit === 'contain'), beforeShape);
   const ratioBefore = (await asset('other')).fields?.aspect_ratio;
-  const outputRatio = box('other').getByRole('combobox', { name: 'Output aspect ratio', exact: true });
-  await outputRatio.waitFor();
-  const ratios = await outputRatio.locator('option').evaluateAll((options) => options.map((option) => option.value));
-  const chosenRatio = ['1:1', '16:9', '9:16'].find((ratio) => ratio !== ratioBefore && ratios.includes(ratio));
-  if (!chosenRatio) throw new Error(`no different output ratio offered: ${JSON.stringify(ratios)}`);
-  await outputRatio.selectOption(chosenRatio);
+  check('output_ratio_uses_the_corner_not_a_new_dropdown', await box('other').getByRole('combobox', { name: 'Output aspect ratio', exact: true }).count() === 0);
+  const corner = await box('other').getByRole('slider', { name: 'Its size', exact: true }).boundingBox();
+  await page.mouse.move(corner.x + corner.width / 2, corner.y + corner.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(corner.x + corner.width / 2 + 110, corner.y + corner.height / 2 - 50, { steps: 8 });
+  await page.mouse.up();
   await until('output aspect ratio changed in edit mode', () => asset('other'), (row) => Boolean(row.fields?.aspect_ratio) && row.fields.aspect_ratio !== ratioBefore);
   const afterShape = await referenceGeometry();
-  check('output_ratio_does_not_resize_or_crop_reference', Math.abs(afterShape.width - beforeShape.width) < 2 && Math.abs(afterShape.height - beforeShape.height) < 2 && Math.abs(afterShape.width / afterShape.height - afterShape.naturalWidth / afterShape.naturalHeight) < 0.02, { beforeShape, afterShape });
-  await box('other').getByRole('button', { name: 'View image', exact: true }).click();
+  check('output_ratio_keeps_all_reference_previews_fixed_and_uncropped', afterShape.length === beforeShape.length && afterShape.every((image, index) => image.fit === 'contain' && Math.abs(image.width - beforeShape[index].width) < 2 && Math.abs(image.height - beforeShape[index].height) < 2), { beforeShape, afterShape });
+  await previewVersion(page, 'other', 1);
   check('view_mode_leaves_editor_and_keeps_selection', await box('other').locator('.in-frame .mention-text').count() === 0 && await current('other') === 1);
   await box('other').getByRole('button', { name: 'Remove image tool', exact: true }).click();
   await until('image tool removed', () => asset('other'), (row) => !row.tool);
-  check('tool_removal_preserves_image_and_versions', (await asset('other')).kind === 'image' && shaOf(await asset('other'), 1) === originalSha && await counter('other').innerText() === '1/1');
+  check('tool_removal_preserves_image_and_versions', (await asset('other')).kind === 'image' && shaOf(await asset('other'), 1) === originalSha && await selected('other') === '1' && await previews('other').count() === 1);
   await undoOf('other');
   await until('undo restores tool', () => asset('other'), (row) => row.tool === tool.id);
 
@@ -314,9 +400,16 @@ async function died(why) {
     check('first_modification_is_v2_and_current', second.version === 2 && shaOf(second, 1) === originalSha && shaOf(second, 2) !== originalSha, second);
     check('new_output_has_requested_ratio', Math.abs(second.prefixes.find((row) => row.number === 2).main.width / second.prefixes.find((row) => row.number === 2).main.height - 1) < 0.02);
     await open('other');
-    await until('counter reflects new current version', () => counter('other').innerText(), (value) => value === '2/2');
-    check('new_version_does_not_create_thumbnail_strip', await noStrip('other') === 0);
-    await selectVersion(page, 'other', 1);
+    await until('new current state has a retained preview', () => selected('other'), (value) => value === '2');
+    check('new_output_adds_a_retained_preview', await previews('other').count() === 2);
+    await approveVersion(page, 'other', 1);
+    await settled(page);
+    const sourceGeometry = await geometry('other');
+    await approveVersion(page, 'other', 2);
+    await settled(page);
+    const editedGeometry = await geometry('other');
+    check('variant_browsing_keeps_focus_room_zoom_and_tool_controls_stable', stableRoomAndZoom(sourceGeometry, editedGeometry) && ['x', 'y', 'width', 'height'].every((field) => Math.abs(sourceGeometry.controls[field] - editedGeometry.controls[field]) < 2), { sourceGeometry, editedGeometry });
+    await approveVersion(page, 'other', 1);
     await (await renderOf(page, 'other')).click();
     const third = await until('editing an older version appends v3', () => asset('other'), (row) => row.versions === 3 && !row.making?.length, 5 * STEP_MS);
     check('editing_old_version_keeps_forward_history', third.version === 3 && third.prefixes.map((row) => row.number).join() === '1,2,3' && shaOf(third, 1) === originalSha && shaOf(third, 2) === shaOf(second, 2), third.prefixes);
@@ -325,7 +418,7 @@ async function died(why) {
     check('edit_reads_the_selected_source_version', editedFrom?.instructions?.references?.length === 1 && editedFrom.instructions.references[0].file === originalSha, editedFrom);
     importYaml(folder, `${yaml().trimEnd()}\n  current_reader:\n    tool: ${fixture}/wait\n    instructions: <other> now, with <other.1> kept.\n`);
     const followed = await until('current and explicit references read', () => asset('current_reader'), (row) => row.reads?.length === 2);
-    await selectVersion(page, 'other', 2);
+    await approveVersion(page, 'other', 2);
     const refChanged = await until('reader tracks selection', () => asset('current_reader'), (row) => row.inputs !== followed.inputs);
     const key = (row, version) => row.reads.find((read) => read.name === 'other' && read.version === version)?.key;
     check('selected_output_is_the_plain_reference', key(followed) !== key(refChanged) && key(followed, 1) === key(refChanged, 1), { before: followed.reads, after: refChanged.reads });
@@ -335,8 +428,8 @@ async function died(why) {
     const referenceFile = (name) => sent?.instructions?.references?.find((reference) => reference.key.toLowerCase() === name)?.file;
     check('bare_and_explicit_references_reach_the_function', sent?.instructions?.references?.length === 2 && referenceFile('other') === shaOf(second, 2) && referenceFile('other.1') === originalSha, sent);
     await page.reload();
-    await box('other').getByLabel('Current version', { exact: true }).waitFor();
-    check('rendered_version_selection_survives_reload', await current('other') === 2 && await counter('other').innerText() === '2/3');
+    await history('other').waitFor();
+    check('rendered_version_selection_survives_reload', await current('other') === 2 && await selected('other') === '2' && await previews('other').count() === 3);
 
     // Selecting a state must not make its image tool disappear from Render all.
     const beforeAll = (await asset('other')).versions;
