@@ -2202,7 +2202,7 @@ export class CanvasStore {
     const tool = this.tools.get().get(asset?.tool ?? "")
     const refused = names.map((name) => refusal(tool, this.get(name))).find(Boolean)
     if (refused) say(refused)
-    const given = names.map((name) => this.resolveName(name)).filter((name) => name !== key && !refusal(tool, this.get(name)))
+    const given = [...new Set(names.map((name) => this.resolveName(name)))].filter((name) => name !== key && !refusal(tool, this.get(name)))
     if (!asset || !given.length) return
     const tags = given.map((name) => `<${name}>`)
     const asText = (held: unknown) => [typeof held === "string" ? held.trimEnd() : "", ...tags].filter(Boolean).join(" ")

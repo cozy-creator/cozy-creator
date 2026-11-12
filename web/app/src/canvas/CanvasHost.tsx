@@ -624,6 +624,8 @@ function Canvas({
   )
   const dragStop = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
+      // React Flow can deliver both node and selection stop for one group drag.
+      if (!nodes.some((node) => store.isDragging(node.data.name))) return
       carrying(false)
       stage.current?.removeAttribute("data-offering")
       const { clientX, clientY } = pointOf(event)
@@ -759,19 +761,25 @@ function Canvas({
   }, [active, store, client, flow, placer, visibleCentre])
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
-  const nodeClicked = useCallback(
-    (event: ReactMouseEvent, node: ElementNode) => {
-      if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
-      const { name } = node.data
+  const focusNode = useCallback(
+    (name: string) => {
+      const view = store.get(name)
+      if (!store.projectId || !view?.asset || view.placing) return
       if (store.focusedName.get() === name) return
-      // A click opens at once: only Shift selects.
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
       writeHere(name)
       navigate(to(`assets/${encodeURIComponent(name)}`))
     },
     [store, flow, writeHere, navigate, to],
   )
+  const nodeDoubleClicked = useCallback((event: ReactMouseEvent, node: ElementNode) => {
+    if (node.type !== "element" || event.shiftKey || event.metaKey || event.ctrlKey || (event.target as Element).closest("button, input, select, textarea, [contenteditable]")) return
+    focusNode(node.data.name)
+  }, [focusNode])
+  const touchPress = useRef<{ id: number; name: string; x: number; y: number } | null>(null)
+  const lastTap = useRef<{ name: string; at: number; x: number; y: number } | null>(null)
   // A click on open canvas leaves the box worked on, unless its press began on a box: a selection or a drag let go out here.
+
   const paneClicked = useCallback(() => {
     if (!store.focusedName.get() && pressBeganOutside((element) => Boolean(element.closest(".react-flow__node, .react-flow__nodesselection")))) leaveHere()
   }, [store, leaveHere])
@@ -838,6 +846,24 @@ function Canvas({
         data-layered={LAYERED ? "" : undefined}
         data-tools={shut ? "shut" : "open"}
         data-lod={band}
+        onPointerDownCapture={(event) => {
+          if (event.pointerType === "mouse" || store.focusedName.get() || (event.target as Element).closest("button, input, select, textarea, [contenteditable]")) return
+          const name = (event.target as Element).closest<HTMLElement>(".card[data-asset]")?.dataset.asset
+          touchPress.current = name ? { id: event.pointerId, name, x: event.clientX, y: event.clientY } : null
+        }}
+        onPointerUpCapture={(event) => {
+          const press = touchPress.current
+          if (!press || press.id !== event.pointerId) return
+          touchPress.current = null
+          if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > 6) { lastTap.current = null; return }
+          const previous = lastTap.current
+          const at = performance.now()
+          if (previous?.name === press.name && at - previous.at <= 500 && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) < 24) {
+            lastTap.current = null
+            focusNode(press.name)
+          } else lastTap.current = { name: press.name, at, x: event.clientX, y: event.clientY }
+        }}
+        onPointerCancelCapture={() => { touchPress.current = null; lastTap.current = null }}
         onPointerMove={(event) => {
           pointer.current = { x: event.clientX, y: event.clientY }
         }}
@@ -881,7 +907,7 @@ function Canvas({
           attributionPosition="bottom-left"
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
-          onNodeClick={nodeClicked}
+          onNodeDoubleClick={nodeDoubleClicked}
           onPaneClick={paneClicked}
           onNodeContextMenu={nodeMenu}
           onNodeDragStart={nodeDragStart}
