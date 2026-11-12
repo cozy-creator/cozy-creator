@@ -356,7 +356,7 @@ fn lora_split<'k>(lora: &Lora, key: &'k str) -> Option<(&'k str, Factor)> {
             }
         }
     }
-    best
+    best.or_else(|| LOKR.iter().find_map(|(suffix, factor)| key.strip_suffix(suffix).map(|stem| (stem, *factor))))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,7 +365,24 @@ enum Factor {
     B,
     Alpha,
     Magnitude,
+    /// A LoKr's (LyCORIS' Kronecker adapter, `ΔW = kron(W1, W2)`) factors, each whole or an `_a @ _b` pair.
+    W1,
+    W2,
+    W1A,
+    W1B,
+    W2A,
+    W2B,
 }
+
+/// LyCORIS' LoKr factor names, the same under every table's prefixes and module names; stored as they are.
+const LOKR: [(&str, Factor); 6] = [
+    (".lokr_w1", Factor::W1),
+    (".lokr_w2", Factor::W2),
+    (".lokr_w1_a", Factor::W1A),
+    (".lokr_w1_b", Factor::W1B),
+    (".lokr_w2_a", Factor::W2A),
+    (".lokr_w2_b", Factor::W2B),
+];
 
 /// Whether `key`, past `c`'s prefix, is a factor of one of its modules shaped for it (A
 /// `[r, in, kernel…]`, B `[out, r, 1…]` as stored, a scalar alpha, a magnitude `[out]`, `[out, 1]`
@@ -384,6 +401,10 @@ fn lora_module(lora: &Lora, c: &Component, key: &str, t: &Tensor) -> bool {
             Factor::B => plain && s[0] == output && s[1] > 0 && s[2..].iter().all(|k| *k == 1),
             Factor::Alpha => s.is_empty(),
             Factor::Magnitude => matches!(s.as_slice(), [o] | [o, 1] if *o == output) || s.as_slice() == [1, input],
+            // A Kronecker factor's rows divide the module's output and its columns its input; the pair is checked when planned.
+            Factor::W1 | Factor::W2 => kernel.is_empty() && matches!(s.as_slice(), [rows, cols] if *rows > 0 && *cols > 0 && output % rows == 0 && input % cols == 0),
+            Factor::W1A | Factor::W2A => kernel.is_empty() && matches!(s.as_slice(), [rows, rank] if *rows > 0 && *rank > 0 && output % rows == 0),
+            Factor::W1B | Factor::W2B => kernel.is_empty() && matches!(s.as_slice(), [rank, cols] if *rank > 0 && *cols > 0 && input % cols == 0),
         }
     };
     c.rows.iter().any(|r| r.key() == Some(stem) && shaped(r))
@@ -1219,6 +1240,7 @@ fn plan_lora(
     out: &mut Vec<Planned>,
 ) -> Result<()> {
     let mut factors: BTreeMap<&str, [Option<(&str, &Tensor)>; 4]> = BTreeMap::new();
+    let mut kron: BTreeMap<&str, [Option<(&str, &Tensor)>; 6]> = BTreeMap::new();
     let longest = |key: &str| {
         table
             .components
@@ -1234,7 +1256,10 @@ fn plan_lora(
     {
         let local = &key[c.prefix.len()..];
         let Some((stem, factor)) = lora_split(lora, local) else { continue };
-        let slot = &mut factors.entry(stem).or_default()[factor as usize];
+        let slot = match factor as usize {
+            i @ 0..4 => &mut factors.entry(stem).or_default()[i],
+            i => &mut kron.entry(stem).or_default()[i - 4],
+        };
         if slot.replace((key, t)).is_some() {
             return refuse(
                 Code::DUPLICATE_KEY,
@@ -1243,6 +1268,14 @@ fn plan_lora(
         }
     }
     for row in &c.rows {
+        if let Some(k) = row.key().and_then(|stem| kron.get(stem)) {
+            let lora = row.key().and_then(|stem| factors.get(stem));
+            if lora.is_some_and(|[a, b, _, m]| a.is_some() || b.is_some() || m.is_some()) {
+                return refuse(Code::UNPLACED_KEYS, format!("{}: both LoRA and LoKr factors for one module", row.target));
+            }
+            plan_lokr(&claim.name, row, k, lora.and_then(|f| f[2]), out)?;
+            continue;
+        }
         let Some([a, b, alpha, magnitude]) = row.key().and_then(|k| factors.get(k)) else {
             continue;
         };
@@ -1300,6 +1333,83 @@ fn plan_lora(
         }
     }
     Ok(())
+}
+
+/// A LoKr's factors for `row` (LyCORIS' Kronecker adapter: `ΔW = kron(W1, W2)`, each factor whole or an `_a @ _b`
+/// pair), stored as they are under `<target>.lokr_w1` …, with their alpha; for a row that takes part of its module's
+/// output (a fused Q/K/V's third, a SwiGLU's swapped halves), `<target>.lokr_rows`: the rows of `kron(W1, W2)` it
+/// takes, in order, as I32.
+fn plan_lokr(
+    component: &str,
+    row: &Row,
+    k: &[Option<(&str, &Tensor)>; 6],
+    alpha: Option<(&str, &Tensor)>,
+    out: &mut Vec<Planned>,
+) -> Result<()> {
+    let refused = |why: String| refuse(Code::ADAPTER_TARGET_UNSUPPORTED, format!("{}: {why}", row.target));
+    let Some((input, output)) = row.ops.io else { return refused("a LoKr row without io".into()) };
+    if !row.ops.kernel.is_empty() || row.ops.table.is_some() {
+        return refused("a LoKr on a convolution or a curve site; only a linear's applies".into());
+    }
+    let [w1, w2, w1a, w1b, w2a, w2b] = k;
+    let dims = |whole: &Option<(&str, &Tensor)>, a: &Option<(&str, &Tensor)>, b: &Option<(&str, &Tensor)>| match (whole, a, b) {
+        (Some((_, t)), None, None) => Some((t.shape[0], t.shape[1])),
+        (None, Some((_, ta)), Some((_, tb))) if ta.shape[1] == tb.shape[0] => Some((ta.shape[0], tb.shape[1])),
+        _ => None,
+    };
+    let (Some((a, b)), Some((c, d))) = (dims(w1, w1a, w1b), dims(w2, w2a, w2b)) else {
+        return refused("its LoKr factors are not each one whole matrix or one _a/_b pair".into());
+    };
+    if a * c != output || b * d != input {
+        return refused(format!("kron({a}x{b}, {c}x{d}) is not its module's {output}x{input}"));
+    }
+    let float = |t: &Tensor| t.encoded.is_none() && t.shape.len() == 2 && matches!(t.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32);
+    let named = [("lokr_w1", w1), ("lokr_w2", w2), ("lokr_w1_a", w1a), ("lokr_w1_b", w1b), ("lokr_w2_a", w2a), ("lokr_w2_b", w2b)];
+    for (name, factor) in named {
+        let Some((key, t)) = factor else { continue };
+        if !float(t) {
+            return refused(format!("{key}: a LoKr factor that is not a plain float matrix"));
+        }
+        out.push(planned(component, &format!("{}.{name}", row.target), t, &Ops::default(), None)?);
+    }
+    if let Some((key, t)) = alpha {
+        if !t.shape.is_empty() || !matches!(t.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) {
+            return refused(format!("{key}: not a scalar float alpha"));
+        }
+        out.push(planned(component, &format!("{}.alpha", row.target), t, &Ops::default(), None)?);
+    }
+    if let Some(ops) = row.ops.b.as_deref() {
+        let rows = selected(&row.target, output, ops)?;
+        let bytes: Vec<u8> = rows.iter().flat_map(|r| (*r as i32).to_le_bytes()).collect();
+        let shape = vec![rows.len() as u64];
+        let read = Reading::inline(bytes, Dtype::I32);
+        let part = PlannedPart { role: String::new(), dtype: Dtype::I32, shape: shape.clone(), read };
+        out.push(Planned {
+            component: component.to_owned(),
+            key: format!("{}.lokr_rows", row.target),
+            dtype: Dtype::I32,
+            shape,
+            encoding: None,
+            parts: vec![part],
+        });
+    }
+    Ok(())
+}
+
+/// The rows of a module's `output` a row's B op takes, in order: its view `[n, -1]` cuts them into n equal blocks and
+/// its take `[0, [j, …]]` keeps those blocks (a fused Q/K/V's third, a SwiGLU's swapped halves). Another op is no
+/// selection of whole rows.
+fn selected(target: &str, output: u64, ops: &Ops) -> Result<Vec<u64>> {
+    match (&ops.view, &ops.take, &ops.permute) {
+        (Some(view), Some((0, blocks)), None) if view.len() == 2 && view[1] == -1 && view[0] > 0 && output % view[0] as u64 == 0 => {
+            let size = output / view[0] as u64;
+            Ok(blocks.iter().flat_map(|j| j * size..(j + 1) * size).collect())
+        }
+        _ => refuse(
+            Code::ADAPTER_TARGET_UNSUPPORTED,
+            format!("{target}: a LoKr on a module this table re-lays by more than whole row blocks"),
+        ),
+    }
 }
 
 /// A DoRA's magnitude for `row`, `<target>.lora_magnitude_vector` `[out]`: per output channel, so it is cut as

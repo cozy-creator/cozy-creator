@@ -164,7 +164,11 @@ pub(crate) fn of_classes<'a>(classes: impl IntoIterator<Item = &'a str>) -> Vec<
 }
 
 /// What a LoRA's tensors end in: its factors, alpha and a DoRA's magnitude.
-pub(crate) const FACTORS: [&str; 4] = [".lora_A.weight", ".lora_B.weight", ".alpha", ".lora_magnitude_vector"];
+pub(crate) const FACTORS: [&str; 11] = [
+    ".lora_A.weight", ".lora_B.weight", ".alpha", ".lora_magnitude_vector",
+    // A LoKr's (`ΔW = kron(W1, W2)`), each factor whole or an `_a @ _b` pair, and the rows a split module's target takes.
+    ".lokr_w1", ".lokr_w2", ".lokr_w1_a", ".lokr_w1_b", ".lokr_w2_a", ".lokr_w2_b", ".lokr_rows",
+];
 /// What a LoRA keeps beside its factors that adapts no base weight: a parallel decoder's per-step
 /// output heads (PDD, `qwenimage21.lora`'s `proj_out.heads`), and a whole module it was trained with in
 /// place of the base's (a Krea 2 control LoRA's widened image input, `krea2.lora`'s `img_in.modules_to_save`).
@@ -175,17 +179,30 @@ pub(crate) fn lora_key(key: &str) -> bool {
     FACTORS.iter().chain(&KEPT).any(|f| key.ends_with(f))
 }
 
-/// A LoRA target's factors' shapes, A and B.
-pub(crate) type Factors<'a> = (Option<&'a [u64]>, Option<&'a [u64]>);
+/// A LoRA target's factors' shapes, A and B; a LoKr's, those of the update it makes, `[1, in]` and `[out, 1]`.
+pub(crate) type Factors = (Option<Vec<u64>>, Option<Vec<u64>>);
 
 /// A LoRA's targets, by path, from its tensors' keys and shapes.
-pub(crate) fn targets_of<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> BTreeMap<&'a str, Factors<'a>> {
+pub(crate) fn targets_of<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>) -> BTreeMap<&'a str, Factors> {
     let mut targets: BTreeMap<&str, Factors> = BTreeMap::new();
+    let mut kron: BTreeMap<&str, BTreeMap<&str, &[u64]>> = BTreeMap::new();
     for (key, shape) in tensors {
         if let Some(path) = key.strip_suffix(".lora_A.weight") {
-            targets.entry(path).or_default().0 = Some(shape);
+            targets.entry(path).or_default().0 = Some(shape.to_vec());
         } else if let Some(path) = key.strip_suffix(".lora_B.weight") {
-            targets.entry(path).or_default().1 = Some(shape);
+            targets.entry(path).or_default().1 = Some(shape.to_vec());
+        } else if let Some((path, factor)) = key.rsplit_once(".lokr_") {
+            kron.entry(path).or_default().insert(factor, shape);
+        }
+    }
+    for (path, factors) in kron {
+        let dims = |w: &str| match (factors.get(w), factors.get(format!("{w}_a").as_str()), factors.get(format!("{w}_b").as_str())) {
+            (Some([rows, cols]), None, None) | (None, Some([rows, _]), Some([_, cols])) => Some((*rows, *cols)),
+            _ => None,
+        };
+        if let (Some((a, b)), Some((c, d))) = (dims("w1"), dims("w2")) {
+            let out = factors.get("rows").and_then(|rows| rows.first().copied()).unwrap_or(a * c);
+            targets.insert(path, (Some(vec![1, b * d]), Some(vec![out, 1])));
         }
     }
     targets
