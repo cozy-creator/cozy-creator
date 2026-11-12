@@ -606,7 +606,8 @@ pub struct RunState {
     /// This machine's run number.
     pub number: u64,
     /// queued, preparing, needs_access (a restart interrupted its preparation: the same id and spec
-    /// sent again bring its access), running, succeeded, failed, canceled
+    /// sent again bring its access), starting (out of its queue, its executor starting: `waiting` says
+    /// what it does, `importing <package>`, `starting the executor`), running, succeeded, failed, canceled
     pub state: String,
     /// The log's head.
     pub sequence: u64,
@@ -707,6 +708,10 @@ pub struct Product {
 pub struct LogLine {
     pub level: String,
     pub text: String,
+    /// A warning the machine says of the run itself, by its stable code (`gpu_throttled`, `runtime_without_kernels`): its
+    /// controller keeps it among the run's warnings (cl-913). Empty: a line only.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub code: String,
 }
 
 /// How a run ended: status, reason, result and outputs, with its measurements and memo facts.
@@ -1025,6 +1030,37 @@ pub struct StatusFrame {
     /// What it does for the caller's runs besides their own work, each once however many wait on it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub activity: Vec<Operation>,
+    /// Its GPUs the driver held back for heat most of their last loaded run (cl-913): the machine is hot, and its runs slow.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub heat: Vec<GpuHeat>,
+    /// Why the executors' Runtime serves its GPUs none of its native kernels (`this cozy-runtime wheel carries no kernels
+    /// (the pure wheel)`), as its latest executor said; empty: it does, or none has started.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub runtime_kernels: String,
+}
+
+/// A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
+/// readings measured, until a later loaded run there runs cool.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct GpuHeat {
+    pub gpu: u32,
+    /// The share of its busy readings under a heat limit, 0 to 1.
+    pub share: f32,
+    /// Its busy time those readings cover.
+    pub busy_ms: u64,
+    pub sm_mhz_mean: u32,
+    pub sm_mhz_limit: u32,
+    pub temperature_max_c: u32,
+    /// The driver's limits it saw (`hw_thermal`, `sw_thermal`, `hw_slowdown`, `power_cap`, ...).
+    pub throttles: Vec<String>,
+    /// The run it was measured in, by this machine's id.
+    pub run: String,
+    pub at_unix_ms: i64,
+    /// Its readings were recorded ones a test replays (`machine.gpu_samples`), not this GPU's own.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub replayed: bool,
 }
 
 /// Weights arriving or a package's environment built for runs: one per repository or package, whichever runs wait on it.

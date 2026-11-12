@@ -222,7 +222,7 @@ function audit({ floor, fitted = true }) {
   // 3. Each box: its name and × clear of its picture, its takes level with it, and what hangs under it on nothing else's.
   const boxes = [...document.querySelectorAll('.react-flow__node')].filter((node) => visible(node) && onScreen(R(node)));
   // A box and all that hangs off it: its name rises above it as it's drawn larger, and what's under it hangs below.
-  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .add-on, .refused-line')].filter(visible).map(R);
+  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .tile-under, .refused-line')].filter(visible).map(R);
   for (const node of boxes) {
     const card = node.querySelector('.card');
     const media = node.querySelector(':scope .card > .media, :scope .card > .tl');
@@ -861,7 +861,7 @@ ${local ? `  card:
         const rendered = Boolean(media?.checkVisibility?.(visibility));
         const inBounds = Boolean(rect && rect.width && rect.height && rect.left >= left && rect.top >= top && rect.right <= innerWidth && rect.bottom <= innerHeight);
         const progressVisible = Boolean(progress?.checkVisibility?.(visibility));
-        // Its state, and under it the part and step it's on (cl-898): `Segment 3 of 600 · Denoising · step 2 of 5`.
+        // Its state line (cl-898): `Segment 3 of 600: Denoising - Step 2 / 5`.
         const text = media?.querySelector('.prog .face-stage')?.innerText || (progress?.innerText ?? null);
         let reason = null;
         if (!media) reason = 'missing-media';
@@ -879,7 +879,7 @@ ${local ? `  card:
         };
       });
       const restingMaking = (at) => at.zoom === 0.75 && at.mounted && at.visible && !at.open.length && !at.selected.length;
-      const makingProgress = (at) => restingMaking(at) && at.progressVisible && /\bstep \d+ of \d+/.test(at.text ?? '');
+      const makingProgress = (at) => restingMaking(at) && at.progressVisible && /\bStep \d+ \/ \d+/.test(at.text ?? '');
       await making.waitFor().catch(async (error) => {
         const state = await makingState();
         (seen.making_setup ??= []).push({ size: size.name, phase: 'mount', ...state });
@@ -911,7 +911,7 @@ ${local ? `  card:
         return null;
       });
       const said = progress?.text ?? '';
-      check(`making_says_how_far_${size.name}`, /\bstep \d+ of \d+/.test(said), said);
+      check(`making_says_how_far_${size.name}`, /\bStep \d+ \/ \d+/.test(said), said);
       await look('rest-making', true, true, async () => {
         const state = await makingState();
         (seen.making_audit ??= []).push({ size: size.name, ...state });
@@ -953,7 +953,7 @@ ${local ? `  card:
         await settled(page);
         await look(`open-${asset}-warnings`, true);
       }
-      const next = here.locator('.here-side .take.add');
+      const next = here.locator('.take.add');
       if (await next.count()) {
         await (await renderOf(page, asset)).waitFor();
         await settled(page);
@@ -1090,7 +1090,7 @@ ${local ? `  card:
       await settled(page);
       await edges(`open-${many}-zoomed-${step}`);
     }
-    const next = page.locator(`.card.here[data-asset="${many}"] .here-side .take.add`);
+    const next = page.locator(`.card.here[data-asset="${many}"] .take.add`);
     if (await next.count()) {
       await (await renderOf(page, many)).waitFor();
       await settled(page);

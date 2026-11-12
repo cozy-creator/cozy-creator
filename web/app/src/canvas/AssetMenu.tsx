@@ -54,7 +54,7 @@ function EditSettings({ name }: { name: string }) {
   )
 }
 
-/** A right click on a box: an Edit's settings, Download, its star, its name, and gone. On a take, Download alone. */
+/** A right click on a box: an Edit's settings, Download, its star, a copy of it, its name, and gone. On a take, Download alone. */
 export function AssetMenu() {
   const store = useCanvasStore()
   const menu = useSignal(store.menu)
@@ -103,6 +103,18 @@ function BoxMenu({ name, x, y, number }: { name: string; x: number; y: number; n
           }}
         >
           {asset.starred ? "Unstar" : "Star"}
+        </button>
+      )}
+      {asset && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            store.duplicate([name])
+            close()
+          }}
+        >
+          Duplicate
         </button>
       )}
       <button

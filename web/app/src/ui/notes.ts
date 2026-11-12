@@ -12,6 +12,8 @@ export interface Note {
   action?: { label: string; run: () => void }
   /** An error's whole text, to copy and paste (code, commands): every error the page says has it. */
   copy?: string
+  /** A small picture of what it's about: a take's thumbnail, by its path on Calcifer (cl-937). */
+  picture?: string
 }
 
 /** Notes held up: hovered, or with text selected in them. Their time runs out only once they're let go. */
@@ -23,14 +25,15 @@ let last = 0
 const SAID_MS = 5_000
 const FAILED_MS = 12_000
 
-export function say(message: string, error?: unknown, offer?: { action: NonNullable<Note["action"]>; ms: number }): number {
+/** `stays`: up until it's dismissed, as a run's failure is (cl-921: Paul saw them flash past); else gone after `ms`. */
+export function say(message: string, error?: unknown, offer?: { action?: NonNullable<Note["action"]>; ms?: number; picture?: string; stays?: boolean }): number {
   const body = error instanceof ApiError ? error.body : undefined
   const reason = error instanceof Error ? error.message : undefined
   const text = reason && reason !== message ? `${message}: ${reason}` : message
   const id = ++last
   const copy = error === undefined ? undefined : body ? bodyText({ ...body, message: text }) : errorText({ message: text })
-  notes.set([...notes.get().slice(-7), { id, message: text, remedy: body?.remedy ?? undefined, next: body?.next, action: offer?.action, copy }])
-  expire(id, offer?.ms ?? (error ? FAILED_MS : SAID_MS))
+  notes.set([...notes.get().slice(-7), { id, message: text, remedy: body?.remedy ?? undefined, next: body?.next, action: offer?.action, copy, picture: offer?.picture }])
+  if (!offer?.stays) expire(id, offer?.ms ?? (error ? FAILED_MS : SAID_MS))
   return id
 }
 

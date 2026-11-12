@@ -208,17 +208,19 @@ async function closeBox(page) {
   await page.locator('.card.here').waitFor({ state: 'detached' });
   await settled(page);
 }
-// A click works on a box where it stands: the middle of it, where there's nothing else to press.
+// A double click works on a box where it stands: the middle of it, where there's nothing else to press.
 /** An open box's Render. Image tools enter their explicit Edit mode before rendering. */
 async function renderOf(page, name) {
   const here = page.locator(`.card.here[data-asset="${name}"]`).first();
   await here.waitFor();
   const edit = here.getByRole('button', { name: 'Edit image', exact: true });
   if (await edit.count()) await edit.click();
-  const next = here.locator('.here-side .take.add[aria-label="Its next take"]');
+  const nextVideo = here.getByRole('button', { name: 'New video', exact: true });
+  if (await nextVideo.count() && !(await here.locator('.in-frame').count())) await nextVideo.click();
+  const next = here.locator('.take.add[aria-label="Its next take"]');
   // A cold tool list can briefly show fallback fields before an image take gains its +.
   // Wait for an editor (including non-image/custom editors) or that actual next-take control.
-  const editor = here.locator('.in-frame, .tl, .tool-ui, .tool-ui-failed, .media.blank:not(:has(.media-making, .made-from, .prog)), .media:has(.play, video, audio)');
+  const editor = here.locator('.in-frame, .prominent, .tl, .tool-ui, .tool-ui-failed, .media.blank:not(:has(.media-making, .made-from, .prog)), .media:has(.play, video, audio)');
   await editor.or(next).first().waitFor();
   if (!(await here.locator('.in-frame').count()) && (await next.count())) await next.click();
   const render = here.locator('button[aria-label=Render]');
@@ -251,7 +253,7 @@ async function openBox(page, name) {
   // A click only selects it: a double click opens it (Paul, 11-12).
   await page.mouse.dblclick(x, y);
   await card.waitFor();
-  // The canvas draws in on it: a person reaches for it once it's there. Its move starts a frame after the click, which a slow runner draws late.
+  // The canvas draws in on it: a person reaches for it once it's there. Its move starts a frame after entry, which a slow runner draws late.
   await until(`the canvas drawing in on ${name}`, () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform), (now) => now !== before, 2000).catch(() => {});
   await settled(page);
 }
@@ -671,13 +673,15 @@ async function approveVersion(page, name, wanted) {
 
 /** Replace the tool with a real compatible implementation dragged from its category. */
 async function chooseModel(page, name, id, operation) {
-  await openBox(page, name);
   const folder = (await projectFromPage(page)).path;
   const card = boxOf(page, name);
   const tool = await implementationRow(page, operation, id);
   const target = await card.locator('.media').boundingBox();
   await carry(page, tool, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   await until(`tool ${id} attached`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.tool), (held) => held === id);
+  await settled(page);
+  if (await page.locator('[data-focused-asset]').count()) throw new Error('Attaching a tool entered Focus before an explicit double-click');
+  await openBox(page, name);
 }
 
 /** Python as this OS names it: Windows has no python3 of its own. */

@@ -585,7 +585,7 @@ class KnownFailing(TypedDict):
     cell: NotRequired[str]
     issue: str
     what: NotRequired[str]
-    cells: NotRequired[list[str]]  # the cells it parks (varena's check reads these)
+    cells: NotRequired[list[str]]  # the cells it parks (gate.sh and varena's check read these)
 
 
 class GateDir(TypedDict):

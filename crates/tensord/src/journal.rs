@@ -536,7 +536,7 @@ impl Weights {
         let own: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
         let label = format!("downloading {} weights", self.models);
         let stage = match own["stage"].as_str().and_then(|stage| stage.rsplit_once(" / ")) {
-            Some((scope, _)) => format!("{scope} · {label}"),
+            Some((scope, _)) => format!("{scope} / {label}"),
             None => label,
         };
         serde_json::json!({"stage": stage, "bytes_done": self.done, "bytes_total": self.total, "step_ms": 0.0}).to_string()

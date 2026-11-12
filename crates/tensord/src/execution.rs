@@ -439,6 +439,16 @@ impl Engine {
         self.notify_activity();
         Ok(sequence)
     }
+    /// A warning the machine says of run `id` itself, by its stable `code` (`slowed`): its controller keeps it among the
+    /// run's warnings.
+    pub(crate) fn append_coded_warning(&self, id: &str, code: &str, text: &str) -> io::Result<u64> {
+        let line = serde_json::to_vec(&serde_json::json!({"level": "warning", "text": text, "code": code}))?;
+        let progress = self.progress.lock().unwrap();
+        let sequence = self.journal.lock().unwrap().append_log(id, progress.get(id), &line)?;
+        drop(progress);
+        self.notify_activity();
+        Ok(sequence)
+    }
     /// The machine's warning for a run (its precision, its SDK), on its root run's log as its
     /// package's lines are: a call's leads with its function, since only the root's log
     /// reaches its follower and `run watch`.

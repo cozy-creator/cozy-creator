@@ -208,6 +208,8 @@ one_beat() {
 declare -A AHEAD
 ahead() {
   local name=$1 target=$2 want=() key; shift 2
+  # Suite progress (`COLD`) times a first use as a user meets it: its install and download are the cell.
+  [ -z "${COLD:-}" ] || return 0
   while [ $# -gt 0 ]; do
     case $1 in model.*=*|--lane=*|--lora=*) want+=("$1") ;; --lane|--lora) want+=("$1" "${2:-}"); shift ;; esac
     shift
@@ -331,11 +333,12 @@ if [ -z "$ON" ]; then
   # Suite tensorfs's `kill` case kills the rental's TensorD over SSH, suite tensord measures the pod's link over it, suite
   # varena's faults run there (faults.sh), suite bench holds the host's RAM there (pod.sh), and suite attention-corpus fetches
   # its captures over it, suite attention pushes a --corpus to the pod over it, and suite execution's library programs run
-  # there (programs.sh), with this computer's key, or a new one on a runner. An --only without them rents no SSH.
+  # there (programs.sh), and suite slow moves the Runtime's kernels aside and gives the machine a hot host's GPU readings there
+  # (cl-913), with this computer's key, or a new one on a runner. An --only without them rents no SSH.
   SSH=
   if [[ -n $CORPUS && ,$SUITES, == *,attention,* ]] || [[ ,$SUITES, == *,tensord,* || ,$SUITES, == *,bench,* || ,$SUITES, == *,attention-corpus,* ]] || { [[ ,$SUITES, == *,tensorfs,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,kill,* ]]; }; } ||
      { [[ ,$SUITES, == *,varena,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,faults,* || $ONLY == *,public,* || $ONLY == *,core,* || $ONLY == *,offload,* ]]; }; } ||
-     { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; }; then
+     { [[ ,$SUITES, == *,execution,* ]] && { [ -z "$ONLY" ] || [[ $ONLY == *,tensorfs,* ]]; }; } || [[ ,$SUITES, == *,slow,* ]]; then
     SSH=1; [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
   fi
   # Followed in the background: the order's first booting line names it, so a gate cancelled mid-boot still ends it.

@@ -79,8 +79,8 @@ run_inputs() {  # run_inputs <suffix> <seed offset>: every cell, named with <suf
   cell "flux2-max$x" "$(pkg flux-2 generate_turbo)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
     megapixels:=4 prompt_upsampling:=true seed:=$((R + 907 + o))
   fits "flux2-max$x"
-  # Its edit's text rotary table ended at 4,051 rows for 22,526 tokens (se-119): a prompt it reads.
-  cell "qwen-image-max$x" "$(pkg qwen-image generate)" references:="$PICS" prompt="$MENTIONS$(words 8000 "$MENTIONS")" \
+  # The longest prompt: its edit reads what its text rope holds and warns (se-119; 0.9.0 failed, run 46545).
+  cell "qwen-image-max$x" "$(pkg qwen-image generate)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
     megapixels:=2 seed:=$((R + 908 + o))
   fits "qwen-image-max$x"
   pictures f 4 1

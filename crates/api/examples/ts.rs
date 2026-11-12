@@ -82,6 +82,8 @@ fn main() {
     v.visit::<project::AssetVersions>();
     v.visit::<project::NewAsset>();
     v.visit::<project::AssetMade>();
+    v.visit::<project::Copies>();
+    v.visit::<project::Copied>();
     v.visit::<project::AssetPatch>();
     v.visit::<project::AssetPatched>();
     v.visit::<project::AssetDeleted>();

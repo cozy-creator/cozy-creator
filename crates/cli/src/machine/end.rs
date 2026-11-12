@@ -201,6 +201,7 @@ pub(crate) async fn update(
     mode: Option<api::config::MachineMode>,
 ) -> Result<ExitCode, Error> {
     api::calcifer::local_usable(name)?;
+    kernel_less(ctx, name, runtime.as_deref()).await?;
     let ask = MachineUpdate {
         runtime: component(ctx, runtime, "cozy_runtime").await?,
         tensorfs: component(ctx, tensorfs, "tensorfs").await?,
@@ -282,6 +283,21 @@ async fn component(ctx: &Context, value: Option<String>, distribution: &str) -> 
     let version = distribution.is_empty().then(|| says(&file)).flatten();
     let sha256 = crate::send::Sender::new(ctx).await?.file(&file).await?;
     Ok(Some(Component::File(api::calcifer::DevBuild { sha256, name, version })))
+}
+
+/// A Runtime source checkout builds the pure wheel, which carries no kernels: a machine whose GPUs run them is refused it before
+/// anything builds, with the dev-build that makes its wheel with them (cl-913). Calcifer refuses a pure wheel file the same way.
+async fn kernel_less(ctx: &Context, name: &str, runtime: Option<&str>) -> Result<(), Error> {
+    let Some(dir) = runtime.map(Path::new).filter(|path| path.is_dir()) else { return Ok(()) };
+    let m = machine(ctx, name).await?;
+    if !m.status.as_ref().is_some_and(MachineStatus::takes_runtime_kernels) {
+        return Ok(());
+    }
+    let commit = std::process::Command::new("git").arg("-C").arg(dir).args(["rev-parse", "HEAD"]).output().ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned());
+    let what = format!("{} is a source checkout: the pure cozy-runtime wheel it builds", dir.display());
+    Err(calcifer::kernel_less_runtime(&m.handle(), &what, commit.as_deref()))
 }
 
 /// The release a `cozy` binary says it is, when it runs here.

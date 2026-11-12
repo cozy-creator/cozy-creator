@@ -69,6 +69,7 @@ for name in ${DB_WEB:-place nodes versions tools live layout undo offline held};
     palette) CATALOG=1 NO_HUB=$(web_restart "$lock" http://127.0.0.1:9) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     undo | offline) STOP=$(web_halt "$lock") START=$(web_start) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     held) web_held "$chrome" "$pw" ;;
+    deleted) web_deleted "$chrome" "$pw" "$lock" ;;
     *) web_proof "$name" "$chrome" "$pw" '' ;;
   esac
   [ "$name" != scale ] || web_scale_said
@@ -77,6 +78,13 @@ done
 
 # A new take never changes what's approved (cl-908): the page's double tap, its Render, a mention's real run (web/approvals.js).
 approvals() { DB_WEB=approvals db_existing_web; }
+
+# A rendering box at rest breathes around its edge; a take landing beside an approved one is unseen until looked at (cl-928): web/newtakes.js.
+newtakes() { DB_WEB=newtakes db_existing_web; }
+
+# The take looked at in Focus is the one drawn when it finishes, with Focus left and opened again while it's made, and from the toast's View (cl-942):
+# web/focusfinish.js.
+focusfinish() { DB_WEB=focusfinish db_existing_web; }
 
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return

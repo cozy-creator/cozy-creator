@@ -231,6 +231,10 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
     }
     match &m.status {
         Some(status) => {
+            // What makes its runs slow now, red (cl-913).
+            for line in status.slowed() {
+                record = record.alarm("slow", line);
+            }
             for (key, value) in status_fields(status) {
                 let versions = key == "tensorfs";
                 record = record.field(&key, value);
@@ -445,6 +449,9 @@ pub(crate) fn state_cell(m: &Machine) -> String {
     };
     if m.unverified {
         cell += " (unverified)";
+    }
+    if m.state != MachineState::Ended && m.status.as_ref().is_some_and(|status| !status.slowed().is_empty()) {
+        cell += " · slow";
     }
     match m.unreachable_since_ms {
         Some(at) if m.state == MachineState::Ready && m.offline.is_none() && unreachable_since(m).is_none() => {

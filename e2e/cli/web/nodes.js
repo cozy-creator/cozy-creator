@@ -109,7 +109,7 @@ function linesOf(text, name) {
   const open = async (name) => {
     await openBox(page, name);
     const held = await of(name);
-    if (held?.kind === 'image' && held.tool) await renderOf(page, name);
+    if (held?.tool && (held.kind === 'image' || (held.kind === 'video' && !held.timeline && !held.versions))) await renderOf(page, name);
   };
   // The X is a shut box's, under the pointer.
   const deleteBox = async (name) => {
@@ -161,28 +161,37 @@ function linesOf(text, name) {
   // A tool dragged out of the list drops a box at that point: what it is comes from what it makes. The Edit is always there, and costs nothing.
   const dragOut = async (row, x, y) => {
     const namesBefore = (await state()).assets.map((held) => held.name);
+    const modeBefore = await page.locator('[data-focused-asset]').evaluateAll((elements) => elements.map((element) => element.dataset.focusedAsset));
     await carry(page, row, { x, y });
-    return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
+    const added = await until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
+    await settled(page);
+    check(`drop_of_${added.name}_preserves_the_canvas_mode`, JSON.stringify(await page.locator('[data-focused-asset]').evaluateAll((elements) => elements.map((element) => element.dataset.focusedAsset))) === JSON.stringify(modeBefore));
+    return added;
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
   const firstTool = await implementationRow(page, 'image');
   const kind = await firstTool.getAttribute('data-kind');
   // A box is called what its tool's published node says, `image_1` for Qwen Image 2, else its package's word, numbered up from there.
   const dragged = await firstTool.getAttribute('data-tool');
-  const boxName = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.id === dragged)?.name;
-  // Where the drop lands on the canvas, before the box opens and the canvas draws in on it.
+  const toolWire = (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.id === dragged);
+  const boxName = toolWire?.name;
+  // Where the drop lands in Wander; editing begins only after an explicit double-click.
   const place = await page.evaluate(({ x, y }) => {
     const m = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
     return { x: (x - m.e) / m.a, y: (y - m.f) / m.a };
   }, { x: 1300, y: 900 });
   const made = await dragOut(firstTool, 1300, 900);
-  // A picture tool's box opens as it lands, on its words, the caret in them and its shape Auto, with no name asked. The Edit stays shut.
+  // A picture tool stays in Wander; opening it and choosing New explicitly gives it an editor.
   if (kind === 'image') {
+    await openBox(page, made.name);
     const landedOpen = page.locator(`.card.here[data-asset="${made.name}"]`);
     await renderOf(page, made.name);
     const caretIn = await until('the caret in its edit words', () => landedOpen.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
     const shapeSaid = await landedOpen.locator('.ratio-rest').innerText().then((text) => text.trim(), () => null);
-    check('a_dropped_image_tool_can_enter_edit_mode', caretIn === true && shapeSaid === 'Auto' && (await page.locator('.nm-field').count()) === 0, { caretIn, shapeSaid });
+    const shapeField = toolWire?.fields.find((field) => field.type === 'shape');
+    const fixedRatios = (shapeField?.ratios ?? []).filter((ratio) => typeof ratio === 'string');
+    const expectedShape = shapeField?.auto && fixedRatios.length !== 1 ? 'Auto' : fixedRatios.length === 1 ? fixedRatios[0] : typeof shapeField?.default === 'string' ? shapeField.default : fixedRatios[0] ?? '1:1';
+    check('a_dropped_image_tool_can_enter_edit_mode_explicitly', caretIn === true && (shapeSaid === expectedShape || (expectedShape === 'Auto' && Boolean(shapeSaid?.startsWith('Auto · ')))) && (await page.locator('.nm-field').count()) === 0, { caretIn, shapeSaid, expectedShape });
   } else seen.dropped_kind = kind;
   seen.tool_dragged = made.name;
   const word = (name) => name?.replace(/_\d+$/, '');
@@ -222,6 +231,8 @@ function linesOf(text, name) {
     await row.scrollIntoViewIfNeeded();
     const target = await box(name).locator('.card').boundingBox();
     await carry(page, row, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
+    await settled(page);
+    check(`tool_drop_on_${name}_does_not_enter_focus`, await page.locator('[data-focused-asset]').count() === 0);
   };
   const allBefore = (await state()).assets.map((held) => held.name).sort();
   for (const kind of ['image', 'audio', 'text']) {
@@ -235,7 +246,8 @@ function linesOf(text, name) {
   await until('video takes its compatible model', () => of(blanks.video.name), (held) => held.tool === videoToolId);
   check('video_accepts_operation_without_exposing_type_hint', (await of(blanks.video.name)).fields?.node_kind === 'video' && await page.locator('[data-field="node_kind"]').count() === 0);
   check('opening_model_keeps_the_two_sidebar_lists', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .box-shelf-head, .tools input, .tools .picks').count() === 0);
-  await box(blanks.video.name).locator('button[aria-label^="Take "]').first().click();
+  await openBox(page, blanks.video.name);
+  await box(blanks.video.name).getByRole('button', { name: new RegExp(`^Take .* off ${blanks.video.name}$`) }).first().click();
   await until('video model removed', () => of(blanks.video.name), (held) => !held.tool);
   check('removing_model_keeps_blank_video_type', (await of(blanks.video.name)).kind === 'video' && (await of(blanks.video.name)).fields?.node_kind === 'video');
   const timelineTool = await implementationRow(page, 'timeline', 'cozy/edit');
@@ -412,13 +424,15 @@ function linesOf(text, name) {
   check('description_data_is_preserved', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
   check('a_description_makes_it_no_tool', !(await of('source-a')).tool && (await of('source-a')).sha256?.startsWith('sha256:'), await of('source-a'));
 
-  // A click selects a picture's box and opens nothing; a double click opens it at once (Paul, 11-12).
+  // A single click selects in Wander; a double click enters Focus.
   await away();
   const pressed = await box('source-a').locator('.media').boundingBox();
   await page.mouse.click(pressed.x + pressed.width / 2, pressed.y + pressed.height / 2);
-  check('a_click_selects_only', await page.evaluate(() => !document.querySelector('.card.here') && document.querySelector('.react-flow__node.selected .card')?.dataset.asset === 'source-a'));
+  await page.locator('.react-flow__node.selected:has(.card[data-asset="source-a"])').waitFor();
+  check('single_click_selects_without_focus', await page.locator('[data-focused-asset]').count() === 0);
   await page.mouse.dblclick(pressed.x + pressed.width / 2, pressed.y + pressed.height / 2);
-  check('a_double_click_opens_at_once', await page.evaluate(() => Boolean(document.querySelector('.card.here[data-asset="source-a"]'))));
+  await page.locator('[data-focused-asset="source-a"]').waitFor();
+  check('double_click_enters_focus', await page.locator('.card.focus-card[data-asset="source-a"]').count() === 1);
   await away();
 
   // A box from what it holds, for a tool no list knows: what says the most is its prompt, whatever the alphabet says of `style` and `summary`, its beats shown, and what else it holds behind More, with no line of names beside it. Each writes one field and moves nothing else.
@@ -564,7 +578,7 @@ function linesOf(text, name) {
   await away();
   await box('source-b').locator('.nm').click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
-  check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Download,Star,Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
+  check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Download,Star,Duplicate,Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
   await page.keyboard.press('Escape');
   await open('Sheet');
   await box('Sheet').getByRole('button', { name: 'Rename node', exact: true }).click({ button: 'right' });

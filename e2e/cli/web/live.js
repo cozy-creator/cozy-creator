@@ -301,14 +301,15 @@ function linesOf(text, name) {
 
   // A command adds it: it shows by itself where it was told, and lands.
   let place = await spot();
-  const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'cozy/edit', 'live_a', `at=${place.x},${place.y},260`, 'description=Words from the CLI'));
+  // A box of words: its words are what it shows (a description shows nowhere, cl-900).
+  const added = await timed('add', { name: 'live_a', x: place.x, y: place.y }, () => project('add', 'text', 'live_a', `at=${place.x},${place.y},260`, 'text=Words from the CLI'));
   check('add_returns_its_name', added.value.name === 'live_a', added.value);
   check('add_lands', added.landing);
-  check('add_in_the_status', (await held('live_a'))?.tool === 'cozy/edit');
+  check('add_in_the_status', (await held('live_a'))?.kind === 'text');
 
   // Its text.
-  await timed('set_text', { name: 'live_a', has: 'Second words' }, () => project('set', 'live_a', 'description=Second words'));
-  check('set_in_the_status', (await held('live_a')).fields?.description === 'Second words');
+  await timed('set_text', { name: 'live_a', has: 'Second words' }, () => project('set', 'live_a', 'text=Second words'));
+  check('set_in_the_status', (await held('live_a')).fields?.text === 'Second words');
 
   // A picture.
   const picture = join(scratch, 'Live Picture.png');
@@ -368,7 +369,7 @@ function linesOf(text, name) {
   check('delete_has_an_undo_entry', Number.isInteger(back), deleted.value);
   check('delete_gone_from_the_status', !(await held('live_b')));
   await timed('undo', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('undo', back));
-  check('undo_in_the_status', (await held('live_b'))?.fields?.description === 'Hand words two');
+  check('undo_in_the_status', (await held('live_b'))?.fields?.text === 'Hand words two');
 
   // By hand: a row from the API, an asset gone in an edited export, and an export that doesn't read, which is refused and changes nothing.
   place = await spot();
@@ -511,13 +512,13 @@ function linesOf(text, name) {
     seen.render_progress = places;
     const fractions = places.map((held) => held.match(/-?[\d.]+/)?.[0]).filter(Boolean).map(Number);
     check('render_progress_moves', fractions.length >= 3 && fractions.every((at, i) => !i || at >= fractions[i - 1]), places);
-    // A count reads under the stage its package names (cl-898): `Drawing · 3 of 10`, never another stage's word for it, and no "step" or
+    // A count reads under the stage its package names (cl-898): `Drawing - 3 / 10`, never another stage's word for it, and no "step" or
     // "denoise" for a stage not known to denoise.
     const said = await page.evaluate(() => window.progressSaid);
     seen.render_said = said;
-    const isCount = (text) => /\b\d+ of \d+$/.test(text);
+    const isCount = (text) => /\b\d+ \/ \d+$/.test(text);
     const firstCount = said.findIndex(isCount);
-    check('counts_read_under_their_stage', firstCount >= 0 && said.filter(isCount).every((text) => /^Drawing · \d+ of 10$/.test(text)) && !said.some((text) => /denois/i.test(text)), said);
+    check('counts_read_under_their_stage', firstCount >= 0 && said.filter(isCount).every((text) => /^Drawing - \d+ \/ 10$/.test(text)) && !said.some((text) => /denois/i.test(text)), said);
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);
@@ -561,9 +562,12 @@ function linesOf(text, name) {
     check('undo_keeps_its_takes', (await held('live_shot')).versions === 3, await held('live_shot'));
 
   }
-  // A description, on what has a picture. It says its words when it's open.
+  // A description, on what has a picture: kept in the file, and shown nowhere, open or not (cl-900).
   await open('live_pic');
-  await timed('description_set', { name: 'live_pic', has: 'Said by the CLI' }, () => project('set', 'live_pic', 'description=Said by the CLI'));
+  await project('set', 'live_pic', 'description=Said by the CLI');
+  await until('the description in the file', async () => (await held('live_pic'))?.fields?.description, (said) => said === 'Said by the CLI');
+  await page.waitForTimeout(500);
+  check('a_description_is_shown_nowhere', !(await page.locator('body').innerText()).includes('Said by the CLI'));
   await away();
   await shot('single');
 
@@ -573,7 +577,7 @@ function linesOf(text, name) {
   // Clear of everything so far, and all of it fitted on the screen. A row apart by more than an Edit at rest and the room it keeps under it
   // for its add-ons and the name of a box below (e139a61c6, shown.ts): about 460 at 260 wide. Closer, the page moves one off the other.
   const ROW = 500;
-  const addedBurst = await Promise.all(fixed.map((name, i) => project('add', 'cozy/edit', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * ROW},260`, 'description=start')));
+  const addedBurst = await Promise.all(fixed.map((name, i) => project('add', 'text', name, `at=${260 + (i % 4) * 300},${2000 + Math.floor(i / 4) * ROW},260`, 'text=start')));
   // Fitted to all of them: a box that comes after a fit is drawn for a moment, then not, off the screen (macOS, 41955999465).
   try {
     await until('the boxes for the burst', async () => {
@@ -617,7 +621,7 @@ function linesOf(text, name) {
     } else {
       const text = `burst-text-${edit}-end`;
       last.set(fixed[which], text);
-      lane.push(['set', fixed[which], `description=${text}`]);
+      lane.push(['set', fixed[which], `text=${text}`]);
     }
   }
   for (let more = 0; more < 40; more++) lanes[more % lanes.length].push(['add', 'cozy/edit', `arrived_${more}`, 'description=Arrived in the burst']);
@@ -669,7 +673,7 @@ function linesOf(text, name) {
   check('burst_shown_as_it_goes', burst.shown_along_the_way >= 3, { burst, texts: texts.slice(0, 8) });
   check('burst_not_thrashing', burst.thread <= BURST_THREAD, burst);
   const after = await status();
-  for (const [name, text] of last) if (after.assets.find((asset) => asset.name === name)?.fields?.description !== text) check(`burst_${name}_in_the_file`, false, text);
+  for (const [name, text] of last) if (after.assets.find((asset) => asset.name === name)?.fields?.text !== text) check(`burst_${name}_in_the_file`, false, text);
   const arrived = after.assets.filter((asset) => asset.name.startsWith('arrived_'));
   check('burst_all_arrived', arrived.length === 40, arrived.length);
   // Fitted to what's there as the last of them find their places.
@@ -704,7 +708,7 @@ function linesOf(text, name) {
     if (answer.status !== 200) throw new Error(`filling: ${JSON.stringify(answer)}`);
   }
   await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: Object.fromEntries(Object.keys(big).map((name) => [name, null])) }) });
-  await project('set', fixed[0], 'description=SAID-WHILE-BEHIND');
+  await project('set', fixed[0], 'text=SAID-WHILE-BEHIND');
   await project('set', fixed[1], `at=${clearOfAll.x},${clearOfAll.y},260`);
   await project('add', 'cozy/edit', 'made_while_behind', 'at=1000,700,260', 'description=Made while behind');
   for (let ping = 0; ping < RING + 64; ping++) {
@@ -728,9 +732,9 @@ function linesOf(text, name) {
   check('fell_behind_read_again', behind.canvas_reads >= 1, behind);
   await page.keyboard.press('f');
   await until('what was made while behind', () => box('made_while_behind').count(), (count) => count === 1);
-  check('fell_behind_nothing_lost', (await held(fixed[0])).fields?.description === 'SAID-WHILE-BEHIND' && (await held('made_while_behind'))?.fields?.description === 'Made while behind');
+  check('fell_behind_nothing_lost', (await held(fixed[0])).fields?.text === 'SAID-WHILE-BEHIND' && (await held('made_while_behind'))?.fields?.description === 'Made while behind');
   // The stream is live again: a command shows as before.
-  await timed('live_after_falling_behind', { name: fixed[0], has: 'AND-LIVE-AGAIN' }, () => project('set', fixed[0], 'description=AND-LIVE-AGAIN'));
+  await timed('live_after_falling_behind', { name: fixed[0], has: 'AND-LIVE-AGAIN' }, () => project('set', fixed[0], 'text=AND-LIVE-AGAIN'));
 
   check('never_reloaded', documents === 0 && (await page.evaluate(() => window.notReloaded === true)), { documents });
   check('one_stream_throughout', streams === 0, { streams });

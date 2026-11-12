@@ -5,14 +5,16 @@ import { Icon } from "../ui/Icon"
 import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
 import { NameField } from "./NameField"
-import { makingRun, shownOf } from "./shown"
+import { makingRun, shownOf, watched } from "./shown"
 import { RunFace, useArriving } from "./RunFace"
+import { StateDot, viewState } from "./StateDot"
+import { noHash } from "./text"
 import { useSignal } from "../ui/signal"
 import { pressBeganOutside } from "../ui/press"
 import "./FocusedViewport.css"
 
 /** What's on a focused item rather than its background. */
-const OWN = ".media, .tl, .focus-heading, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
+const OWN = ".media, .tl, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
 
 /** A workspace for one item. The Wander camera stays behind it, unchanged. */
 export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string; onClose(): void; onCopyVersion(file: CarriedFile, x: number, y: number): void }) {
@@ -53,8 +55,11 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   const arriving = useArriving(view)
   if (!view?.asset && !view?.entity) return null
   const version = shownOf(view)?.number
+  const writing = Boolean(view.hereWords) && !watched(view)
   // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
   const onItsWay = view.asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
+  // What its runs said (a slow run, a hot GPU: cl-913), as an open box's head says it: a ! that shows the lines.
+  const warnings = view.warnings ?? []
   return (
     <section ref={element} className="focus-viewport" aria-label="Focused asset" data-focused-asset={name} data-entering={entering || undefined}
       onClick={(event) => {
@@ -70,12 +75,26 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
       <header className="focus-heading">
         <button type="button" className="tb" aria-label="Back to canvas" onClick={onClose}><Icon name="back" />Back to canvas</button>
         <div className="focus-title">
+          {view.draft === undefined && <StateDot state={viewState(view)} unseen={view.asset?.unseen?.length ?? 0} noun={view.asset?.noun ?? "take"} />}
           {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename node" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
-          {view.asset?.kind === "image" && <span className="focus-version-label" aria-label="Image version">{version === undefined ? "New" : `v${version}`}</span>}
+          {/* Which take it is, a picture's or a video's: being written, "New take", unmistakably; none with no takes (cl-925). */}
+          {(view.asset?.kind === "image" || view.asset?.kind === "video") && (version !== undefined || Boolean(view.asset.prefixes?.length) || Boolean(view.asset.sha256) || Boolean(view.asset.making?.length)) && <span className={`focus-version-label ${writing ? "writing" : ""}`} aria-label="Take">{writing ? "New take" : version === undefined ? "Rendering" : `v${version}`}</span>}
+          {warnings.length > 0 && (
+            <button type="button" className="iconb warned" aria-label="Warnings" aria-expanded={Boolean(view.warned)} title={noHash(warnings.join("\n"))} onClick={() => store.patch(name, { warned: !view.warned })}>
+              !
+            </button>
+          )}
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
       {(onItsWay || arriving !== undefined) && view.asset?.rendering == null && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above />}
+      {view.warned && warnings.length > 0 && (
+        <div className="warned-lines focus-warnings">
+          {warnings.map((warning) => (
+            <p key={warning}>{noHash(warning)}</p>
+          ))}
+        </div>
+      )}
       <div className="focus-body"><FocusedCard name={name} /></div>
     </section>
   )

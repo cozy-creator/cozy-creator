@@ -23,6 +23,7 @@ pub(crate) const STALLED: u8 = 4;
 const KEY: Style = Style::new().bold();
 const DIM: Style = Style::new().dimmed();
 const WARN: Style = AnsiColor::Yellow.on_default().bold();
+const ALARM: Style = AnsiColor::Red.on_default().bold();
 
 /// What the terminal can show, read once at the entry.
 #[derive(Clone, Copy, Debug)]
@@ -319,10 +320,10 @@ pub(crate) fn hyperlink(term: Term, path: &Path, shown: &str) -> Option<String> 
     Some(format!("\x1b]8;;{url}\x1b\\{shown}\x1b]8;;\x1b\\"))
 }
 
-/// `key  value` lines, keys aligned, then notes.
+/// `key  value` lines, keys aligned, then notes. An alarm's value is red.
 #[derive(Default)]
 pub(crate) struct Record {
-    fields: Vec<(String, String)>,
+    fields: Vec<(String, String, bool)>,
     notes: Vec<String>,
 }
 
@@ -343,7 +344,13 @@ impl Record {
     }
 
     pub(crate) fn field(mut self, key: &str, value: impl Display) -> Self {
-        self.fields.push((key.to_owned(), shown(&value.to_string())));
+        self.fields.push((key.to_owned(), shown(&value.to_string()), false));
+        self
+    }
+
+    /// A field that says something is wrong now (a machine that makes its runs slow), red.
+    pub(crate) fn alarm(mut self, key: &str, value: impl Display) -> Self {
+        self.fields.push((key.to_owned(), shown(&value.to_string()), true));
         self
     }
 
@@ -353,19 +360,28 @@ impl Record {
     }
 
     pub(crate) fn print(self, _ctx: &Context) {
-        for line in self.styled(KEY, DIM) {
+        for line in self.styled(KEY, DIM, ALARM) {
             anstream::println!("{line}");
         }
     }
 
     /// The lines `print` writes, unstyled: keys aligned, then the notes.
     pub(crate) fn lines(&self) -> Vec<String> {
-        self.styled(Style::new(), Style::new())
+        self.styled(Style::new(), Style::new(), Style::new())
     }
 
-    fn styled(&self, key: Style, note: Style) -> Vec<String> {
-        let width = self.fields.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
-        let fields = (self.fields.iter()).map(|(k, v)| format!("{key}{k:<width$}{key:#}  {v}"));
+    /// `lines`, each with whether it is an alarm.
+    pub(crate) fn marked(&self) -> Vec<(String, bool)> {
+        let alarms = self.fields.iter().map(|(.., alarm)| *alarm).chain(self.notes.iter().map(|_| false));
+        self.lines().into_iter().zip(alarms).collect()
+    }
+
+    fn styled(&self, key: Style, note: Style, alarm: Style) -> Vec<String> {
+        let width = self.fields.iter().map(|(k, ..)| k.len()).max().unwrap_or(0);
+        let fields = (self.fields.iter()).map(|(k, v, alarmed)| match alarmed {
+            true => format!("{key}{k:<width$}{key:#}  {alarm}{v}{alarm:#}"),
+            false => format!("{key}{k:<width$}{key:#}  {v}"),
+        });
         let notes = self.notes.iter().map(|n| format!("{note}{n}{note:#}"));
         fields.chain(notes).collect()
     }

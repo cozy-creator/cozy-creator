@@ -15,6 +15,8 @@ import type {
   CanvasPatched,
   Card,
   Code,
+  Copied,
+  Copies,
   Ended,
   ErrorBody,
   Families,
@@ -512,6 +514,11 @@ export class Client {
     return this.write("POST", `${project(id)}/assets`, body, key, write)
   }
 
+  /** Boxes copied, each with its versions: one step of the history. */
+  copies(id: string, key: string, body: Copies, write: Write = {}): Promise<Copied> {
+    return this.write("POST", `${project(id)}/copies`, body, key, write)
+  }
+
   /** These inputs set. With `read`, only if its own lines are still what that read. */
   /** The fields it names, over whatever they hold: the rest stay as anyone left them. */
   patchAsset(id: string, name: string, body: AssetPatch, write: Write = {}): Promise<AssetPatched> {
@@ -535,6 +542,12 @@ export class Client {
   /** What a version's main file says of itself, whole: `orbit` turns a video. `{}` clears it. */
   patchVersion(id: string, name: string, number: number, metadata: Record<string, unknown>, write: Write = {}): Promise<VersionPatched> {
     return this.write("PATCH", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { metadata }, undefined, write)
+  }
+
+  /** This person looked at it: it leaves the box's `unseen`, in Calcifer's own state, never the project's (cl-928). No key: it's no edit
+   *  of the project, and saying it twice is saying it once. */
+  async seen(id: string, name: string, number: number, write: Write = {}): Promise<void> {
+    await this.send(`${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}/seen`, { method: "POST" }, { once: write.once })
   }
 
   /** The project's history, newest first. */
@@ -642,9 +655,10 @@ export class Client {
     return this.opened(`${run(id)}/events${after ? `?starting_after=${after}` : ""}`, signal)
   }
 
-  /** Where an output's bytes are served, once they landed here. */
-  output(id: string, name: string, index: number): string {
-    return `${run(id)}/outputs/${encodeURIComponent(name)}${index ? `?index=${index}` : ""}`
+  /** Where an output's bytes are served, once they landed here. With `rev`, that revision's own address: a player loads a newer one afresh. */
+  output(id: string, name: string, index: number, rev?: number): string {
+    const query = new URLSearchParams([...(index ? [["index", String(index)]] : []), ...(rev ? [["rev", String(rev)]] : [])]).toString()
+    return `${run(id)}/outputs/${encodeURIComponent(name)}${query ? `?${query}` : ""}`
   }
 
   /** A running run's newest picture of what it's making, from its machine (cr-282): asking is what keeps it making them. */
@@ -749,11 +763,14 @@ export class Client {
 
   // Models
 
-  /** The Hub's models: of `family` only when it's said, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
-  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; noTag?: string } = {}): Promise<ModelSearch> {
+  /** The Hub's models: of `family` only when it's said, only those a tool's slot loads when `fits` (`<tool>:<slot>`, judged by their
+   *  headers; `project` finds local code) is, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
+  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; fits?: string; project?: string; noTag?: string } = {}): Promise<ModelSearch> {
     const asked = new URLSearchParams({ limit: String(limit) })
     if (q) asked.set("q", q)
     if (only.family) asked.set("family", only.family)
+    if (only.fits) asked.set("fits", only.fits)
+    if (only.fits && only.project) asked.set("project", only.project)
     if (only.noTag) asked.set("no_tag", only.noTag)
     return this.json(`/v1/models?${asked}`, { signal })
   }

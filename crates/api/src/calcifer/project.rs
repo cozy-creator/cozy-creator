@@ -668,6 +668,10 @@ pub struct Asset {
     /// An Edit being rendered here: how far, 0 to 1. It runs on no machine, so it has no run to ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rendering: Option<f64>,
+    /// The versions that landed beside an approved one that this person hasn't looked at (cl-928). Calcifer's own (`state.db`), never the
+    /// project's: each person has theirs. `POST …/versions/{number}/seen` clears one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unseen: Vec<u32>,
 }
 
 /// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
@@ -719,6 +723,38 @@ pub struct NewAsset {
 pub struct AssetMade {
     pub name: String,
     pub etag: String,
+    /// Each of its `moves` another wrote since, left as it is: its row now (null: none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub kept: BTreeMap<String, Option<Card>>,
+}
+
+/// `POST /v1/projects/{id}/copies`: boxes copied, in one transaction and one entry of the history. Under an `Idempotency-Key`, a retry makes no more.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Copies {
+    pub boxes: Vec<CopyOf>,
+    /// What their drop pushed aside, written with them, each only if no other client wrote it after the revision in `placed`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub moves: BTreeMap<String, Card>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub placed: BTreeMap<String, u64>,
+}
+
+/// A copy of box `from`: a new box called its name counted up (`hei_2`), with its tool, fields and words, and its versions and approval, their
+/// files the same files by hash. `<self…>` in its words is the copy, a mention of a box copied with it names that box's copy, and any other is unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CopyOf {
+    pub from: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
+}
+
+/// What `POST /v1/projects/{id}/copies` made: each copy, in the order asked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Copied {
+    pub made: Vec<AssetMade>,
     /// Each of its `moves` another wrote since, left as it is: its row now (null: none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub kept: BTreeMap<String, Option<Card>>,
@@ -1136,9 +1172,15 @@ pub struct Ahead {
     pub machine: String,
     /// Its run, kept out of the list people read.
     pub run: u64,
+    /// The boxes it prepares for: each shows it as its own preparation while it waits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
     /// `installing it`, `downloading its weights`, …; none once it ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    /// What it waits for on its machine, as the machine says: its place in a line there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
     #[serde(default)]
     pub done: u64,
     #[serde(default)]

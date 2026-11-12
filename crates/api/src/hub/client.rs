@@ -570,6 +570,19 @@ impl Client {
             .await
     }
 
+    /// What `function` (`org/package/function`) took on the rented cards it ran on.
+    pub async fn run_times(&self, function: &str) -> Result<RunTimes, Error> {
+        self.json(self.at(Method::GET, "/v1/run-times", &[]).query(&[("function", function)]))
+            .await
+    }
+
+    /// Tells the rental's Hub what its runs took, for others' placement on its card.
+    pub async fn report_run_times(&self, id: &str, report: &RunTimesReport) -> Result<(), Error> {
+        self.send(self.at(Method::POST, "/v1/rentals/{id}/run-times", &[id]).json(report))
+            .await
+            .map(drop)
+    }
+
     pub async fn release_rental(&self, id: &str) -> Result<(), Error> {
         self.send(self.at(Method::DELETE, "/v1/rentals/{id}", &[id]))
             .await

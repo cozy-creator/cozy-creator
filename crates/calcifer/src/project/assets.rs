@@ -15,12 +15,12 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use api::{
     error::{Error, Kind},
-    calcifer::project::{NewAsset, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, NewVersion, Version as VersionRow, VersionMoved, VersionPatch, VersionPatched},
+    calcifer::project::{NewAsset, AssetDeleted, AssetMade, Copied, Copies, AssetPatch, AssetPatched, AssetVersions, NewVersion, Version as VersionRow, VersionMoved, VersionPatch, VersionPatched},
     calcifer::tool::{self, FieldType},
 };
 
 use super::{
-    Doc, Host, Project, Tool, Walk, binder, canvas, cancelled, deleted_why, find, folder, format, graph::name_key, history::{self, Took}, keep_file, listed,
+    Doc, Host, Project, Tool, Walk, binder, canvas, cancelled, deleted_why, find, folder, format, graph::{mention, name_key}, history::{self, Took}, keep_file, listed,
     measure_soon, model, noun, stale_names,
     written::{Boxed, Start, Written},
 };
@@ -125,6 +125,63 @@ pub(super) async fn create(
         Ok(AssetMade { name, etag, kept })
     });
     Ok((StatusCode::CREATED, Json(made.map_err(Refusal)?)))
+}
+
+/// `POST /v1/projects/{id}/copies`: boxes copied, as a person copies them on the canvas, in one transaction: one entry of the history, which
+/// undo takes back whole. Each is its box called its name counted up, its fields with a mention of a box copied with it naming that box's copy,
+/// and its versions as the lock holds them: the same files by hash, no bytes copied, and its approval naming the same version.
+pub(super) async fn copy(
+    State(api): State<Arc<Api>>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<(StatusCode, Json<Copied>), Refusal> {
+    let asked: Copies = parse(&body?)?;
+    if asked.boxes.is_empty() {
+        return Err(Refusal(Error::new(Kind::Validation, "copies_none", "name a box to copy")));
+    }
+    let project = api.projects.get(&api, &id)?;
+    let id = project.id.clone();
+    let folder = &project.folder;
+    let copied = folder.act(|| {
+        let written = folder.written()?;
+        let mut taken = written.names();
+        let mut pairs = Vec::with_capacity(asked.boxes.len());
+        for copy in &asked.boxes {
+            let from = written.get(&copy.from).ok_or_else(|| own_lines(&copy.from))?.name.clone();
+            // Chosen in the transaction that writes it, past the others it makes.
+            let name = folder.reading_lock(|lock| format::free_of(|name| taken.contains(&name_key(name)), lock, &from))?;
+            taken.insert(name_key(&name));
+            pairs.push((from, name, copy.at));
+        }
+        let copies: BTreeMap<String, String> = pairs.iter().map(|(from, name, _)| (name_key(from), name.clone())).collect();
+        let renamed = |inner: &str| mention(inner).and_then(|read| Some(format!("{}{}", copies.get(&name_key(read.name))?, &inner[read.name.len()..])));
+        let rows: BTreeMap<String, Option<api::calcifer::project::Card>> = pairs.iter().filter_map(|(_, name, at)| Some((name.clone(), Some((*at)?)))).collect();
+        if !rows.is_empty() {
+            canvas::set(folder, &id, rows)?;
+        }
+        let kept = canvas::pushed(folder, &id, asked.moves.clone(), &asked.placed)?;
+        folder.edit(|written| pairs.iter().try_for_each(|(from, name, _)| written.copied(from, name, &renamed)))?;
+        folder.update_lock(|lock| {
+            for (from, name, _) in &pairs {
+                let Some(held) = lock.asset(from).cloned() else { continue };
+                let key = name_key(name);
+                // What waits under its name for a rename or `reclaim` stays an orphan's.
+                lock.bury(&key);
+                let versions = held.versions.into_iter().map(|version| folder::Version { id: String::new(), ..version }).collect();
+                lock.assets.insert(key, folder::Asset { id: String::new(), name: name.clone(), versions, discarded: vec![], tried: None, failed: None, ..held });
+            }
+        })?;
+        let made = pairs.iter().map(|(_, name, _)| -> Result<AssetMade, Error> {
+            let etag = folder.reading_boxes(|written| written.get(name).map(Boxed::etag))?.ok_or_else(|| own_lines(name))?;
+            Ok(AssetMade { name: name.clone(), etag, kept: BTreeMap::new() })
+        });
+        Ok(Copied { made: made.collect::<Result<_, _>>()?, kept })
+    });
+    let copied = copied.map_err(Refusal)?;
+    for reading in project.walker.lock().expect("walker lock").readings.values_mut() {
+        copied.made.iter().for_each(|made| reading.moved(&made.name));
+    }
+    Ok((StatusCode::CREATED, Json(copied)))
 }
 
 /// `GET /v1/projects/{id}/assets/{name}`: the asset and each of its versions.
@@ -305,7 +362,15 @@ fn authored_versions(project: &Project, doc: &Doc, lock: &folder::Lock, stand: &
         let Some(at) = reading.doc.find(&doc.assets[i].name) else { continue };
         reading.ensure(at, lock);
         if let Some(key) = reading.done[at].inputs.as_ref().filter(|key| wanted.contains(key.as_str())) {
-            found.entry(key.clone()).or_insert_with(|| reading.doc.authoring_fields(at));
+            found.entry(key.clone()).or_insert_with(|| {
+                let mut fields = reading.doc.authoring_fields(at);
+                for (from, to) in &lock.walk.renames {
+                    if doc.find(from).is_none() && doc.find(to).is_some() {
+                        fields.values_mut().for_each(|value| super::written::mentions_renamed(value, &|name| super::graph::mention_moved(name, from, to)));
+                    }
+                }
+                fields
+            });
         }
     }
     found
@@ -352,8 +417,8 @@ fn constant_numbered(folder: &folder::Folder, asset: &format::Asset, pin: &str) 
     Ok(number)
 }
 
-/// `DELETE /v1/projects/{id}/assets/{name}`: it and its row gone, at once, and what it made stands. Its versions wait as an orphan's, its name free,
-/// for undo, for `rename`, or for `reclaim`. A render going still makes what it was asked.
+/// `DELETE /v1/projects/{id}/assets/{name}`: it and its row gone, at once, and what it made stands. Its name is free, and nothing resolves it.
+/// Its files wait, set aside, for Undo until the window ends, then leave the project (`purge`). A render going still makes what it was asked.
 pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetDeleted>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
@@ -366,22 +431,16 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
     let unknown = || Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy status");
     let gone = folder.act(|| {
         // Its name and what it holds approved, from its box alone: a Doc of the whole project took a delete of one of 5,000 boxes 287 ms.
-        let held = folder.reading_boxes(|written| written.get(name).map(|held| (held.name.clone(), held.get("approved").cloned())))?;
-        let (name, approved) = held.ok_or_else(unknown)?;
+        let held = folder.reading_boxes(|written| written.get(name).map(|held| (held.name.clone(), held.id.clone(), held.get("approved").cloned())))?;
+        let (name, box_id, approved) = held.ok_or_else(unknown)?;
         let pin = folder.reading_lock(|lock| format::approved_file(approved.as_ref(), lock))?;
         let at = canvas::row(folder, &name)?;
         folder.edit(|written| written.removed(&name).map(drop))?;
         // Gone from the project, what lands of it lands nothing.
         cancelled(api, project, std::slice::from_ref(&name), &deleted_why).map_err(|Refusal(why)| why)?;
-        // A box that never made anything has no row: nothing to rewrite.
+        // What it holds, set aside for Undo: a box that never made anything holds nothing.
         if pin.is_some() || folder.reading_lock(|lock| lock.asset(&name).is_some())? {
-            folder.update_lock(|lock| {
-                lock.bury(&name_key(&name));
-                // What it held goes on record, so `reclaim` can take it.
-                if let Some(sha256) = pin.clone().filter(|sha256| !lock.recorded().contains(sha256)) {
-                    lock.runs.push(folder::RunFile { run: 0, function: String::new(), output: "deleted".to_owned(), sha256, ..Default::default() });
-                }
-            })?;
+            folder.update_lock(|lock| lock.set_aside(&name, &box_id, pin.clone()))?;
         }
         canvas::set(folder, id, BTreeMap::from([(name.clone(), None)]))?;
         Ok(AssetDeleted { name, at })
@@ -389,6 +448,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
     let gone = gone.map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&gone.name));
     project.asked.notify_one();
+    super::purge::due(api, &project.id, super::now_ms() + super::purge::window_ms());
     Ok(gone)
 }
 
@@ -557,7 +617,7 @@ pub(super) fn put_back_box(project: &Project, id: &str, back: Boxed, at: Option<
             canvas::set(folder, id, BTreeMap::from([(name.clone(), Some(card))]))?;
         }
         folder.update_lock(|lock| {
-            lock.untombstone(&name);
+            lock.restore(&name, &back.id);
         })?;
         folder.edit(|written| written.restored(back))?;
         folder.reading_boxes(|written| written.get(&name).map(Boxed::etag))?.ok_or_else(|| own_lines(&name))

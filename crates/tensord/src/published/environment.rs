@@ -90,6 +90,9 @@ impl Publisher {
     /// design, since packages declare a minimum and machines run the newest Torch.
     pub(crate) fn build(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
         let _install = job.within(crate::activity::Kind::Install, project.package);
+        // One build at a time, in job order (cl-905): its tools' downloads and disk don't split with another's.
+        let said = |reason: Option<String>| job.waiting(reason);
+        let _turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
         let layer = self.layer(job, None)?;
         let missed = match self.build_on(env, project, job, layer.as_deref(), &[]) {
             Err((TORCH_MISSED, missed)) => missed,
@@ -115,12 +118,13 @@ impl Publisher {
         let steps = [true, project.locked.is_some() && project.wheels.is_some(), editable_after, project.locked.is_some()];
         let total = steps.iter().filter(|s| **s).count() + 1 + usize::from(project.fetch.is_some());
         let step = std::cell::Cell::new(0);
-        let next = || {
+        // Each step in words, and how far along the install it is (cl-921): `…: installing its dependencies (3 of 5)`.
+        let next = |doing: &str| {
             step.set(step.get() + 1);
-            job.stage(format!("{} {}/{total}", project.stage, step.get()));
+            job.stage(format!("{}: {doing} ({} of {total})", project.stage, step.get()));
         };
         if let Some(fetch) = project.fetch {
-            next();
+            next("fetching its files");
             fetch()?;
         }
         let carried = carried(project.wheels).map_err(io_failure)?;
@@ -129,7 +133,7 @@ impl Publisher {
         }
         let (dir, envs, py) = (project.dir.to_string_lossy(), env.to_string_lossy(), platform::paths::venv_python(env));
         let py = py.to_string_lossy();
-        next();
+        next("creating its environment");
         self.uv(&["venv", "--no-project", "--python", minor(project.python), &envs], &[], job)?;
         // uv never installs what the layer provides: a lock's Torch rows stay out (`Locked::torch`).
         let provided: Vec<&str> = layer.map(|l| l.provided().collect()).unwrap_or_default();
@@ -163,7 +167,7 @@ impl Publisher {
             }
             Ok(())
         };
-        next();
+        next("installing its dependencies");
         let mut sdk = if over { "machine" } else { "locked" };
         let mut fallback = vec![];
         // Why this machine's own pair isn't what it runs on.
@@ -210,7 +214,7 @@ impl Publisher {
             }
         }
         if let Some(wheels) = project.wheels.filter(|_| steps[1]) {
-            next();
+            next("adding the wheels it brought");
             let pins: Vec<String> = carried.iter().map(|(name, version)| format!("{name}=={version}")).collect();
             let mut args = vec!["pip", "install", "--python", &py, "--no-deps", "--no-index", "--link-mode", "copy",
                 "--find-links", wheels.to_str().unwrap_or_default()];
@@ -218,7 +222,7 @@ impl Publisher {
             self.uv(&args, &[], job)?;
         }
         if editable_after {
-            next();
+            next("installing its code");
             // Its dependencies are in place: the project alone, whatever indexes its sources name.
             self.uv(&["pip", "install", "--python", &py, "--no-deps", "--no-sources", "--editable", &dir], &[], job)?;
         }
@@ -234,7 +238,7 @@ impl Publisher {
         }
         if let Some(locked) = project.locked {
             let build = &self.sdk.runtime_build;
-            next();
+            next("fitting this machine's Runtime");
             // A lock's pair of another series can't speak this machine's executor protocol: this
             // machine's goes over it where every declared range admits it, else nothing runs.
             let theirs = pair_of(&locked.packages);

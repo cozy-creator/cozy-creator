@@ -118,6 +118,8 @@ pub(crate) struct Request {
     pub gpus: u32,
     /// The main model's lane; empty lets the Hub pick for the hardware.
     pub lane: String,
+    /// Its place in this machine's install and download lines (`origin::priority`): its run's.
+    pub order: u64,
 }
 
 impl Request {
@@ -197,6 +199,8 @@ pub(crate) struct Job {
     pub(crate) waiting: Option<Box<dyn Fn(Option<String>) + Send + Sync>>,
     /// What the machine lists it doing now for its run (`activity`), which its stages move.
     pub(crate) within: Mutex<Option<crate::activity::Waiting>>,
+    /// Its run's place in this machine's install and download lines (`origin::priority`).
+    pub(crate) order: u64,
 }
 impl Job {
     fn set(&self, stage: String, moved: u64, total: u64) {
@@ -469,6 +473,7 @@ impl Publisher {
         let job = Job {
             observer: observe,
             stop: stop.cloned(),
+            order: request.order,
             caller: service.engine.caller_id(&run),
             waiting: (!run.is_empty()).then(|| {
                 Box::new(move |reason| {
@@ -603,11 +608,13 @@ impl Publisher {
         made
     }
 
-    /// `named` from its Hub into the store, its ref recording the pull: its tree and header, then
-    /// the `components` given (all when `None`, none when empty). Answers the bytes that came from
+    /// `named` from its Hub into the store, its ref recording the pull: its tree and header (now: a
+    /// resolution reads them), then the `components` given (all when `None`, none when empty) at
+    /// `order`, its run's place in the machine's download line. Answers the bytes that came from
     /// the Hub and from the datacenter volume, and those the store held already (`local`, as the
     /// components' walk found them). Whatever is here moves nothing.
-    fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, stop: Option<&Stop>,
+    #[allow(clippy::too_many_arguments)]
+    fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, order: u64, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
         let _inventory = crate::held_models::ModelChange;
         let header = named.header()?;
@@ -650,7 +657,7 @@ impl Publisher {
         }
         let progress = Arc::new(Counted::default());
         let pulled = origin::watched(&progress, bytes, || {
-            self.machine.pull(&remote, header, components, priority::NOW, Some(progress.clone()), &stop)
+            self.machine.pull(&remote, header, components, order, Some(progress.clone()), &stop)
         });
         let pulled = pulled.map_err(failed)?;
         logged(&pulled);
@@ -658,11 +665,11 @@ impl Publisher {
         Ok(Landed { origin: structure.landed.origin + landed.origin, volume: structure.landed.volume + landed.volume, local: landed.local })
     }
 
-    /// `named` downloaded whole, as a request's weights are: what a caller asked for whole
-    /// (`cozy model download`, an adapter).
-    fn ensure(&self, source: &hub::Source, named: &Named, stop: Option<&Stop>,
+    /// `named` downloaded whole at `order`, as a request's weights are: what a caller asked for
+    /// whole (an adapter).
+    fn ensure(&self, source: &hub::Source, named: &Named, order: u64, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
-        self.pull(source, named, None, stop, bytes)
+        self.pull(source, named, None, order, stop, bytes)
     }
 
     /// The Hub checkpoint `header` is, as this machine pulled it (`Pulled`); none for one never
@@ -687,7 +694,7 @@ impl Publisher {
         let names: Vec<String> = checkpoints.iter().map(Named::shown).collect();
         job.stage(format!("resolving {}", names.join(" and ")));
         for named in checkpoints {
-            self.pull(source, named, Some(&[]), job.stop.as_ref(), &|_, _| ())?;
+            self.pull(source, named, Some(&[]), priority::NOW, job.stop.as_ref(), &|_, _| ())?;
         }
         Ok(())
     }
@@ -700,6 +707,7 @@ impl Publisher {
         if named.tree.is_some() {
             return self.checkpoint(service, source, named);
         }
+        let (named, forward) = forward(source, named);
         let answer = if source.capability.is_some() {
             // An account's earlier read does not authorize this capability's frozen root set.
             Answer::ask(&self.machine, source, &named, hardware)?
@@ -723,7 +731,8 @@ impl Publisher {
                 }
             }
         };
-        Ok(Named { release: answer.release, lane: answer.lane, tree: Some(answer.checkpoint), header: Some(answer.header), reasons: answer.reasons, ..named })
+        let reasons = forward.into_iter().chain(answer.reasons).collect();
+        Ok(Named { release: answer.release, lane: answer.lane, tree: Some(answer.checkpoint), header: Some(answer.header), reasons, ..named })
     }
 
     /// Reads held name `name` again at its Hub on a thread of its own, once at a time. An answer
@@ -816,8 +825,8 @@ impl Publisher {
         Ok(Named { tree: held.tree, lane: held.lane, header: Some(held.header), ..named })
     }
 
-    /// A Hub checkpoint resolved (`resolve`) and downloaded into the store (a warm run's model
-    /// choice: `cozy model download`): whole, or its header and tree alone (`structure`: a
+    /// A Hub checkpoint resolved (`resolve`) and downloaded into the store at `order` (a warm run's
+    /// model choice: `cozy model download`): whole, or its header and tree alone (`structure`: a
     /// composition's base, whose components stay the Hub's). Answers what the Hub named and its
     /// bytes by where they came from (`pull`).
     #[allow(clippy::too_many_arguments)]
@@ -828,6 +837,7 @@ impl Publisher {
         named: Named,
         hardware: &Hardware,
         structure: bool,
+        order: u64,
         stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
@@ -835,7 +845,7 @@ impl Publisher {
         let named = self.resolve(service, source, named, hardware).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
-        let moved = self.pull(source, &named, components, stop, bytes).map_err(failed)?;
+        let moved = self.pull(source, &named, components, order, stop, bytes).map_err(failed)?;
         Ok((named, moved))
     }
 
@@ -1454,7 +1464,10 @@ impl Publisher {
                 warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &runs, &request.providers, job)?);
             }
         }
-        job.stage(format!("preparing {}", request.package));
+        job.stage(match request.package.is_empty() {
+            true => "preparing the plan".to_owned(),
+            false => format!("preparing the plan for {}", request.package),
+        });
         let plan = gpu
             .prepare_root(
                 installation,
@@ -1484,6 +1497,49 @@ impl Publisher {
             .map_err(io_failure)?;
         Ok((plan, warnings))
     }
+}
+
+/// A named release as the newest of its series (xs-183): a model republished complete as a patch
+/// serves whatever names the old release, as cargo's `^` and PEP 440's `~=` read a version. The
+/// series is the release's prefix (`0.1` of `0.1.0`), and a prerelease is taken only for one. Its
+/// public releases are read at most once a minute; unread, the release stands.
+fn forward(source: &hub::Source, named: Named) -> (Named, Option<String>) {
+    static READ: Mutex<BTreeMap<(String, String), (Instant, Vec<String>)>> = Mutex::new(BTreeMap::new());
+    let Some((org, name)) = named.model.split_once('/').filter(|_| !named.release.is_empty() && !named.model.starts_with("local/")) else {
+        return (named, None);
+    };
+    let key = (source.origin.clone(), named.model.clone());
+    let held = READ.lock().unwrap().get(&key).filter(|(at, _)| at.elapsed() < Duration::from_secs(60)).map(|(_, r)| r.clone());
+    let releases = match held {
+        Some(releases) => releases,
+        None => {
+            let card = hub::Catalog::new(source).ok().and_then(|catalog| catalog.model(org, name).ok());
+            let Some(card) = card else { return (named, None) };
+            let releases: Vec<String> = card.releases.into_iter().map(|r| r.version).collect();
+            READ.lock().unwrap().insert(key, (Instant::now(), releases.clone()));
+            releases
+        }
+    };
+    match newest_fix(&named.release, &releases) {
+        Some(newer) => {
+            let said = format!("{} resolves to {newer}, its newest fix", named.release);
+            (Named { release: newer, ..named }, Some(said))
+        }
+        None => (named, None),
+    }
+}
+
+/// The newest of `releases` in `release`'s series and after it, when one is.
+fn newest_fix(release: &str, releases: &[String]) -> Option<String> {
+    let version = |text: &str| pep440_rs::Version::from_str(text).ok();
+    let named = version(release)?;
+    let series = &named.release()[..named.release().len().saturating_sub(1).max(1)];
+    releases
+        .iter()
+        .filter_map(|text| Some((version(text)?, text)))
+        .filter(|(v, _)| v.release().starts_with(series) && *v > named && (named.is_pre() || !v.any_prerelease()))
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, text)| text.clone())
 }
 
 /// A function's main model, the one a run's `--lane` names (owner, 10-22): its first slot
@@ -1751,7 +1807,7 @@ fn apply_adapters(
             })?;
             // An adapter is small and its view composes from all of it: it comes whole.
             let _download = job.within(crate::activity::Kind::Download, &adapter.model);
-            publisher.ensure(source, &named, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
+            publisher.ensure(source, &named, job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
             named.header()?.id()
         } else {
             // A provider-source LoRA (civitai://, hf://) is made here, normalized at ingest.
@@ -1785,7 +1841,7 @@ fn apply_adapters(
     // The view reads the base's own chunks, from this store: they come first.
     let base = object(&grant.manifest)?;
     if let (Some(pulled), Some(source)) = (publisher.pulled(&base).map_err(io_failure)?, source) {
-        publisher.ensure(source, &pulled, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
+        publisher.ensure(source, &pulled, job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
     }
     // The view is composed by reference and kept in memory, never written; Load sends its bytes.
     let composed = crate::adapter::compose(store, &base, &selections)

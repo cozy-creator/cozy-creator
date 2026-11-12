@@ -176,3 +176,24 @@ else
   check "web-localidle: no Chrome or playwright here (${chrome:-none}): $(tail -c 300 "$OUT/web-npm.log" 2> /dev/null)"
 fi
 }
+
+# prepares (cl-905): a picture a video box mentions, rendered from the page in a project pinned to local and a stand-in: only the
+# picture's box shows its run, and the video box shows its own preparation, its tool's environment fetched ahead on the machine it
+# will run on, from the moment Render is pressed (web/prepares.js).
+prepares() {
+step "prepares (cl-905): only the picture's box shows its run; the video box that mentions it prepares at once and says so"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] \
+  || { echo "prepares: its stand-in machine is another user of a fresh GitHub runner"; return; }
+local pw=$OUT/playwright chrome
+cozy --json machine show local > "$OUT/set-local.json" || { check "prepares: machine show local"; return; }
+stand_in stand-p || return
+chrome=$(web_chrome)
+if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1; then
+  STANDS=stand-p web_proof prepares "$chrome" "$pw" ''
+  jq -c '.seen.timeline // empty' "$OUT/web-prepares.json" 2> /dev/null || true
+else
+  check "web-prepares: no Chrome or playwright here (${chrome:-none}): $(tail -c 300 "$OUT/web-npm.log" 2> /dev/null)"
+fi
+timeout 60 "$COZY" --json machine end stand-p --force -y > "$OUT/stand-p-end.json" 2>&1 || true
+sudo pkill -KILL -u cozy-stand-p || true
+}

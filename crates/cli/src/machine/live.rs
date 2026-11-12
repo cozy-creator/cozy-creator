@@ -210,7 +210,8 @@ impl Shown {
         format!("machine {}", self.machine.name) + &silence.map(|s| format!(" · {s}")).unwrap_or_default()
     }
 
-    pub(crate) fn lines(&self, ctx: &Context) -> Vec<String> {
-        list::record(ctx, &self.machine).lines()
+    /// Its record's lines, each with whether it is an alarm.
+    pub(crate) fn lines(&self, ctx: &Context) -> Vec<(String, bool)> {
+        list::record(ctx, &self.machine).marked()
     }
 }

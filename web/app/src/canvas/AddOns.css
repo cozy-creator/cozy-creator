@@ -7,89 +7,6 @@
   pointer-events: none;
 }
 
-/* Under a box at its left, as many as it holds, in the room it keeps clear (shown.ts). The ratio has the right. */
-.add-ons {
-  position: absolute;
-  left: 0;
-  top: calc(100% + 4px);
-  width: 100%;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-}
-/* The first is short of the ratio at the right, which is at most five letters of the same face (`16:9`, `Auto`): `ch` is one of them. */
-.react-flow__node:has(.card:not(.here) > .ratio-rest) .add-on:first-child {
-  max-width: calc(100% - 5ch - 2px);
-}
-/* On a box being worked on, it's a row among the rest, at the sheet's small step. */
-.here-all .add-ons {
-  position: static;
-  width: auto;
-  flex-direction: row;
-  flex-wrap: wrap;
-}
-.here-all .add-on {
-  font-size: var(--small);
-}
-.add-on {
-  max-width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--float);
-  color: var(--ink);
-  font: calc(var(--t-small) * var(--ui)) / 1.25 var(--mono);
-}
-.add-on.tool,
-.add-on.fine-tune {
-  border-color: var(--ember);
-}
-.add-on-word {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.add-on button {
-  flex: none;
-  display: flex;
-  padding: 0;
-  color: var(--faint);
-}
-.add-on button:hover {
-  color: var(--bad);
-}
-.add-on .icon {
-  width: 13px;
-  height: 13px;
-}
-/* Far out a chip is only a mark. */
-.stage[data-lod="2"] .add-on-word,
-.stage[data-lod="2"] .add-on button {
-  display: none;
-}
-.stage[data-lod="2"] .add-on {
-  width: 10px;
-  height: 10px;
-  padding: 0;
-}
-
-.add-on-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.add-on-row .slide {
-  flex: 1;
-  min-width: 0;
-}
-
 .active-models {
   margin: 8px 0 0;
   padding: 0;
@@ -147,17 +64,6 @@
 }
 .checkpoint.away {
   opacity: 0.5;
-}
-/* In the left bar, what's on the box: its name over its strength and its ×. */
-.picks-on .add-on-row .slide {
-  flex-wrap: wrap;
-  gap: 2px 6px;
-}
-.picks-on .add-on-row .ctl-name {
-  flex: 1 0 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .tools .row.center:has(.browse-toggle) {
   gap: 12px;
