@@ -265,7 +265,7 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
                     tls.sendall(pending)
 
 
-def wrong_binding_stays_pending(native: Native, reference: str, project: Path, original_worker: Path, identifiers: list[str], receipt: Receipt) -> None:
+def wrong_binding_stays_pending(native: Native, reference: str, project: Path, original_worker: Path, identifiers: list[str], receipt: Receipt) -> list[dict]:
     # Real source contention prevents the automatic bridge from retiring legacy
     # rows on this first read. No fabricated row or test-only barrier is used.
     blocker = sqlite3.connect(original_worker, timeout=0)
@@ -292,6 +292,26 @@ def wrong_binding_stays_pending(native: Native, reference: str, project: Path, o
         for identifier in identifiers:
             require(connection.execute("SELECT count(*) FROM legacy_project_runs WHERE id=?", (identifier,)).fetchone()[0] == 1, "fixture_failure")
     receipt.add("legacy_wrong_binding", passed=True, source_retained=True, canonical_pending=True, status=status)
+    return [value["binding"] for value in lookup]
+
+
+def crash_before_controller_receipt(native: Native, project: Path, bindings: list[dict]) -> None:
+    # An actual worker completes its durable copy/retirement, then the exact Caf
+    # dies before any controller history read can keep that receipt. The next
+    # holder must recover real bindings from the inside receipt, not resubmit.
+    status, _ = worker_request(project, "POST", "migrate", {"legacy_requests": bindings})
+    require(status == 204, "fixture_failure")
+    status, body = worker_request(project, "GET", "migrate", {})
+    covered = json.loads(body).get("bindings", []) if status == 200 else []
+    require(status == 200 and all(binding in covered for binding in bindings), "fixture_failure")
+    with read_db(project / "project.db") as connection:
+        require(connection.execute("SELECT count(*) FROM runs WHERE custody='legacy_pending'").fetchone()[0] >= len(bindings), "fixture_failure")
+    holder = native.holder()
+    exact = birth(holder["pid"])
+    kill_exact(exact)
+    until(lambda: alive(exact), lambda value: not value, "fixture_failure", 90)
+    exclusive_free(CALCIFER / "calcifer.lock")
+    command(INSTALLED, "doctor")
 
 
 def output_bytes(native: Native, run: dict, *, old: bool) -> list[bytes]:
@@ -415,8 +435,10 @@ def qualify(args, receipt: Receipt) -> None:
     command(INSTALLED, *updates, "-y")
     command(INSTALLED, "doctor")
     require(schema() == 8, "fixture_failure")
-    wrong_binding_stays_pending(native, reference, project, original_worker, list(results), receipt)
+    bindings = wrong_binding_stays_pending(native, reference, project, original_worker, list(results), receipt)
+    crash_before_controller_receipt(native, project, bindings)
     complete_migration(native, reference, project)
+    receipt.add("legacy_worker_receipt_crash_recovery", passed=True, no_resubmission=True, runs=len(results))
     require(worker_journal(project / ".vault-machine", list(results))[1] == worker_baseline, "fixture_failure")
     assert_history(native, reference, project, baseline, results)
     # Input closure is required after settlement too; this is not just an API

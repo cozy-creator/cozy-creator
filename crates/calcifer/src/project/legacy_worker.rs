@@ -5,6 +5,10 @@ use api::{calcifer::MachineKind,error::{Error,Kind},machine::ProjectExecutionMig
 use crate::{api::Api,private_io::Scope,store::Endpoint};
 
 fn pending()->Error {Error::new(Kind::Conflict,"legacy_worker_custody_pending","the original worker acceptance and complete private custody still need verification")}
+fn covers(complete:&ProjectExecutionMigrationReceipt,verified:&ProjectExecutionMigrationReceipt)->bool {
+    verified.bindings.iter().all(|expected|complete.bindings.iter().any(|actual|
+        actual.request_id==expected.request_id && actual.source_workspace_id==expected.source_workspace_id && actual.invocation_spec_digest==expected.invocation_spec_digest))
+}
 fn registered(api:&Api)->Result<Endpoint,Error> {
     let machine=api.calcifer.maintenance_store().machine("local").map_err(|_|pending())?.ok_or_else(pending)?;
     if machine.kind!=MachineKind::Local {return Err(pending());}
@@ -44,11 +48,18 @@ pub(crate) async fn migrate(api:&Arc<Api>,scope:Scope,selectors:&[(String,String
         if seen.len()!=expected.len() {return Err(pending());}
     }
     if registered(api)?!=endpoint {return Err(pending());}
+    // A previous holder may have died after the worker's durable retirement but
+    // before recording its complete receipt here. The read-only lookup above
+    // also verifies original acceptance numbers from that exact worker receipt.
+    if let Ok(complete)=selected.migration_receipt().await {
+        if covers(&complete,&verified) {
+            if registered(api)?!=endpoint {return Err(pending());}
+            return Ok(complete);
+        }
+    }
     selected.migrate_private_bindings(&verified).await.map_err(|_|pending())?;
     let complete=selected.migration_receipt().await.map_err(|_|pending())?;
-    for expected in &verified.bindings {
-        if !complete.bindings.iter().any(|actual|actual.request_id==expected.request_id && actual.source_workspace_id==expected.source_workspace_id && actual.invocation_spec_digest==expected.invocation_spec_digest) {return Err(pending());}
-    }
+    if !covers(&complete,&verified) {return Err(pending());}
     if registered(api)?!=endpoint {return Err(pending());}
     Ok(complete)
 }
