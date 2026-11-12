@@ -1,7 +1,9 @@
 """Tiny P-H3-Image: the package's own constructors (MiniMax H3's DiT as uploaded, `bf16-full`; Pruna's text connector;
 the 24-channel VAE with its one-frame ViT decoder) and Qwen3-VL (36 language layers: the connector reads 12 ... 35) and a
 Qwen3.5 upsampler a few channels wide, each with Qwen's tokenizer and Qwen3-VL's processor, written as the seven
-components of `prunaai/p-h3-image` by TensorFS's own writer. The VAE keeps H3's learned latent normalization.
+components of `prunaai/p-h3-image` by TensorFS's own writer. The VAE keeps H3's learned latent normalization, and its
+decoder paints each latent token's 16x16 patch one colour (`_flat_patches`): a random pixel projection averages within a
+patch to nearly its bias, so a picture's blocks (drive.signature) would not read its latents.
 
 The canvas is the card's smallest, 1 MP (the 1-16 MP ladder is the tool's): a tiny model runs it on the CPU."""
 
@@ -71,6 +73,16 @@ def _processor(writer: tensorfs.Writer, name: str, folder: Path) -> None:
             component.asset(path.name, path.read_bytes())
 
 
+def _flat_patches(vae: torch.nn.Module) -> None:
+    """The ViT decoder's pixel projection the same for every pixel of a token's patch, per colour channel."""
+    projection = vae.get_submodule("decoder.proj_out")
+    assert isinstance(projection, torch.nn.Linear) and projection.bias is not None
+    with torch.no_grad():
+        for parameter in (projection.weight, projection.bias):
+            rows = parameter.view(3, -1, *parameter.shape[1:])  # (channel, frame x row x column, ...)
+            rows.copy_(rows[:, :1].clone().expand_as(rows))
+
+
 def _config(value: PreTrainedConfig) -> dict[str, Json]:
     """A Transformers config as its release's config.json holds it."""
     document: dict[str, Json] = json.loads(value.to_json_string())
@@ -88,6 +100,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         connector = TextConnector(text_hidden_size=TEXT_WIDTH, out_channels=TEXT_DIM)
         encoder = module(Qwen3VLForConditionalGeneration(text))
         upsampling = module(Qwen3_5ForConditionalGeneration(upsampler))
+    _flat_patches(vae)
     _write(writer, "transformer", dit, DIT, 1)
     _write(writer, "vae", vae, VAE, 2, torch.float32)
     _write(writer, "text_connector", connector, {"text_hidden_size": TEXT_WIDTH, "out_channels": TEXT_DIM}, 3,
