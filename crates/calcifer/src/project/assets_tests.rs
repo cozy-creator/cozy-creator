@@ -21,7 +21,7 @@ async fn make(api: &Arc<Api>, id: &str, value: Value) -> String {
 }
 
 async fn edit(api: &Arc<Api>, id: &str, name: &str, value: Value) {
-    patch(State(api.clone()), Path((id.to_owned(), name.to_owned())), HeaderMap::new(), Ok(Bytes::from(value.to_string()))).await.unwrap();
+    let _ = patch(State(api.clone()), Path((id.to_owned(), name.to_owned())), Ok(Bytes::from(value.to_string()))).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -122,7 +122,7 @@ async fn typed_nodes_fixture() {
     ] {
         let before = project.folder.written().unwrap();
         let seq = project.folder.seq();
-        let refusal = patch(State(api.clone()), Path((id.clone(), name.to_owned())), HeaderMap::new(), Ok(Bytes::from(value.to_string()))).await.err().unwrap();
+        let refusal = patch(State(api.clone()), Path((id.clone(), name.to_owned())), Ok(Bytes::from(value.to_string()))).await.err().unwrap();
         assert_eq!(refusal.0.code, "asset_tool_kind");
         assert_eq!(project.folder.written().unwrap(), before, "a rejected model must not change type, tool or words");
         assert_eq!(project.folder.seq(), seq);
