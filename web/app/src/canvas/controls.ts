@@ -100,8 +100,8 @@ export function totalOf(group: ToolField, rows: Row[]): { member: ToolField; sum
   return { member, sum: Math.round(rows.reduce((all, row) => all + (Number(row[member.field] ?? member.default) || 0), 0) * 100) / 100 }
 }
 
-/** The shapes a box snaps to when its tool doesn't say. */
-const SHAPES = ["32:9", "2.39:1", "21:9", "2:1", "16:9", "5:3", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "3:5", "9:16", "1:2", "9:21"]
+/** The shapes a box snaps to when its tool gives bounds, not a list (cl-936). */
+const SHAPES = ["21:9", "16:9", "3:2", "4:3", "5:4", "1:1", "4:5", "3:4", "2:3", "9:16"]
 
 const parts = (shape: string) => shape.split(":").map(Number)
 
