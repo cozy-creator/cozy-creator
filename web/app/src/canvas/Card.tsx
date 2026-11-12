@@ -448,11 +448,21 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
   const flow = useReactFlow()
   const tools = useSignal(store.tools)
   const control = view.asset && reshapes(view) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
+  const validRatio = (ratio: unknown): ratio is string => typeof ratio === "string" && ratio.split(":").length === 2 && ratio.split(":").map(Number).every((value) => value > 0 && Number.isFinite(value))
+  const ratios = (control?.ratios ?? []).filter(validRatio)
+  const dynamic = Boolean(control?.auto) && ratios.length !== 1
+  const fallback = control?.default
+  const defaultShape = ratios.length === 1 ? ratios[0] : validRatio(fallback) ? fallback : ratios[0] ?? "1:1"
+  const held = control ? store.valueOf(name, control.field) : undefined
+  const override = validRatio(held) ? held : null
+  const hasOverride = held !== undefined && held !== null && held !== ""
+  const badge = Boolean(control && view.hereWords && (view.asset?.kind === "image" || view.asset?.kind === "video"))
   const from = useRef<{ x: number; y: number; w: number; h: number; pixels?: { w: number; h: number }; inverse: number; owner: CanvasStore["inPlace"] } | null>(null)
   const pulled = useRef<{ w: number; h: number; shape?: string } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
+  const label = nearest ?? override ?? (dynamic ? "Auto" : defaultShape)
   const shapeFor = (width: number, height: number) => {
-    if (control?.ratios?.length) return snapped(width / height, shapesOf(control))
+    if (ratios.length) return snapped(width / height, ratios)
     let w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height))
     const ratio = Math.min(control?.max ?? Infinity, Math.max(control?.min ?? 0, w / h))
     if (ratio !== w / h) { w = Math.round(ratio * 1_000_000); h = 1_000_000 }
@@ -500,9 +510,25 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
       })
     })
   }
+  const resetShape = () => {
+    if (!control) return
+    flushSync(() => {
+      from.current = null
+      pulled.current = null
+      setNearest(null)
+      store.patch(name, { shape: undefined })
+      if (dynamic) store.unshape(name, control.field)
+      else void store.setField(name, control.field, defaultShape)
+      focusResize?.end()
+    })
+  }
   return (
     <>
-      {nearest && (
+      {badge && <span className="ratio-rest" data-output-aspect={label} title="Output aspect ratio">
+        {label}
+        {hasOverride && <button type="button" className="ratio-clear nodrag nopan" aria-label={dynamic ? "Auto aspect ratio" : `Reset aspect ratio to ${defaultShape}`} title={dynamic ? "Use the reference image's aspect ratio" : `Reset to ${defaultShape}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); resetShape() }}><Icon name="close" /></button>}
+      </span>}
+      {nearest && !badge && (
         <div className="ratio-live">
           <span>{nearest}</span>
         </div>
