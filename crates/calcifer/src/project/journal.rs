@@ -117,8 +117,31 @@ impl Projects {
         let view = vault::admit_project(api, named).await?;
         let project = self.get(api, named).map_err(|error| error.0)?;
         project.require_view()?;
-        let store = ProjectStore { project, controller: Arc::downgrade(&api.calcifer), _view: view, access:Access::Viewing };
+        let mut store = ProjectStore { project, controller: Arc::downgrade(&api.calcifer), _view: view, access:Access::Viewing };
         api.calcifer.maintenance_store().migrate_project(&store, &api.calcifer.inputs).map_err(|_| Error::new(api::error::Kind::Conflict,"project_migration_pending","legacy project history could not be verified; its source is preserved"))?;
+        // A history read never starts a worker. If the registered local worker is
+        // already available, resolve actual bindings without retaining this view lease.
+        if store.legacy_worker_pending().map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","legacy custody remains unresolved"))? && api.machines.local.running() {
+            if let Ok(selectors)=api.calcifer.maintenance_store().verify_legacy_worker_requests(&store) {
+                if !selectors.is_empty() && selectors.iter().all(|(_,machine,_)|machine=="local") {
+                    if let Ok(scope)=crate::private_io::scope_for_project(store.project_id(),store.execution_scope().1) {
+                        let owner=store.owner();
+                        let _activity=self.track_request(api,store.execution_scope().1);
+                        drop(store);
+                        if let Ok(receipt)=super::legacy_worker::migrate(api,scope,&selectors).await {
+                            let work=owner.store().map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","the original view changed during worker migration"))?;
+                            work.keep_worker_migration_receipt("local",&receipt).map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","worker coverage could not be recorded"))?;
+                            api.calcifer.maintenance_store().migrate_project(&work,&api.calcifer.inputs).map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","verified source retirement remains pending"))?;
+                            let fresh=api.calcifer.attach_project(&work).map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","verified work could not be resumed"))?;
+                            if fresh {tokio::spawn(crate::hub::jobs::resume_project(api.clone(),work.project_id().into()));}
+                        }
+                        let view=vault::admit_project(api,named).await?;
+                        let project=self.get(api,named).map_err(|error|error.0)?;
+                        store=ProjectStore {project,controller:Arc::downgrade(&api.calcifer),_view:view,access:Access::Viewing};
+                    }
+                }
+            }
+        }
         let fresh=api.calcifer.attach_project(&store).map_err(|_| Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"))?;
         if fresh {
             tokio::spawn(crate::hub::jobs::resume_project(api.clone(),store.project_id().into()));

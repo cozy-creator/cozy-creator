@@ -26,6 +26,7 @@ mod jobs;
 pub(crate) mod journal;
 pub(crate) use journal::{ProjectRef, ProjectStore, RunOwner};
 mod keyed;
+pub(crate) mod legacy_worker;
 mod view;
 pub(crate) mod model;
 mod remote;

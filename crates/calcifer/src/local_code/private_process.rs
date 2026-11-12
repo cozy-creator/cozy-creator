@@ -1,7 +1,6 @@
-//! Controller tools receive the same native filesystem boundary as project workers.
+//! Controller-owned tool storage and captured diagnostics stay inside the project.
 //! Their captured stdio and every writable tool cache belong to the project.
 use std::{collections::HashMap, fs::{self,File}, io, path::{Path,PathBuf}, process::{Command,Output,Stdio}, sync::{LazyLock,Mutex}, time::Duration};
-use platform::private_exec::{PrivateDescriptor,PrivateResources,prepare_project_writes};
 
 static ACTIVE:LazyLock<Mutex<HashMap<PathBuf,usize>>>=LazyLock::new(Mutex::default);
 pub(crate) fn active(root:&Path)->bool {
@@ -67,22 +66,9 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
         .env("TEMP",scratch.join("tmp")).env("TMP",scratch.join("tmp"))
         .env("PYTHONPYCACHEPREFIX",scratch.join("bytecode")).env("PYTHONDONTWRITEBYTECODE","1")
         .stdin(Stdio::from(stdin.try_clone()?)).stdout(Stdio::from(stdout.as_file().try_clone()?)).stderr(Stdio::from(stderr.as_file().try_clone()?));
-    let mut resources=PrivateResources {project_root:File::open(&root)?,read_only_trees:vec![],read_only_files:vec![],executables:vec![File::open(&program)?],devices:vec![],inherited:vec![PrivateDescriptor::ReadOnly(stdin),PrivateDescriptor::ProjectWritable(stdout.as_file().try_clone()?),PrivateDescriptor::ProjectWritable(stderr.as_file().try_clone()?)]};
-    for path in ["/usr/lib","/usr/lib64","/usr/local/lib","/lib","/lib64","/usr/share","/usr/bin","/usr/local/bin","/bin","/etc/ssl/certs"] {
-        if Path::new(path).is_dir() { resources.read_only_trees.push(File::open(path)?); }
-    }
-    for path in ["/etc/resolv.conf","/etc/hosts","/etc/nsswitch.conf","/etc/ld.so.cache","/etc/ssl/cert.pem"] {
-        if Path::new(path).is_file() { resources.read_only_files.push(File::open(path)?); }
-    }
-    for path in ["/bin/sh","/usr/bin/env","/usr/bin/git","/usr/bin/python3","/usr/bin/python","/usr/local/bin/python3","/usr/local/bin/python"] {
-        if Path::new(path).is_file() { resources.executables.push(File::open(fs::canonicalize(path)?)?); }
-    }
-    for path in ["/dev/null","/dev/urandom","/dev/random"] {
-        resources.devices.push(fs::OpenOptions::new().read(true).write(path=="/dev/null").open(path)?);
-    }
-    let policy=prepare_project_writes(resources).map_err(error)?;
     let process_scope=platform::contain::Scope::create(&platform::contain::namespace(&scratch)).map_err(error)?;
-    policy.apply_in_scope(&mut owned,&process_scope).map_err(error)?;
+    if let Some((name,value))=process_scope.environment() {owned.env(name,value);}
+    platform::process::inherit_nothing(&mut owned);
     let mut tree=platform::process::spawn(owned).map_err(error)?;
     running.release=false;
     let birth=platform::process::Birth::of(tree.pid()).map_err(error)?;
@@ -100,7 +86,7 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     }
     let closed=(|| {
         tree.kill().map_err(error)?;
-        if process_scope.end().map_err(error)?!=0 || !platform::private_exec::project_scope_quiescent(&process_scope).map_err(error)? {return Err(error("tool descendants still hold the project"));}
+        if process_scope.end().map_err(error)?!=0 {return Err(error("tool descendants still hold the project"));}
         let followers=followers.into_values().collect::<Vec<_>>();
         platform::process::end_tree(&followers).map_err(error)?;
         let status=tree.wait().map_err(error)?;
@@ -113,7 +99,7 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
         std::mem::forget(running);
         return closed;
     }
-    drop(tree); drop(policy); drop(stdout); drop(stderr); temporary.close()?;
+    drop(tree); drop(stdout); drop(stderr); temporary.close()?;
     running.release=true;
     drop(running);
     closed
