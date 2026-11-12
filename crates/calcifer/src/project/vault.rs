@@ -557,7 +557,16 @@ pub(crate) fn start(api: &Arc<Api>) {
                         session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
                     });
                     if !needs { return; }
+                    // The browser's save acknowledgements may include activity writes
+                    // under this operation mutex. Never wait for them while owning it.
+                    drop(_operation);
                     let Ok(mut browser) = prepare_browser(&api) else { return; };
+                    let Ok(_operation) = op.try_lock() else { return; };
+                    let still_needs = held(&root).is_some_and(|session| {
+                        let session = session.lock().expect("vault session");
+                        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
+                    });
+                    if !still_needs { return; }
                     if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
                     let Ok(transition) = exclusive(&root) else { return; };
                     let _ = close(&api, &root, &transition, &mut browser);
