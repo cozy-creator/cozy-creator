@@ -705,6 +705,8 @@ impl Machines {
                             if let Some(id)=result.get("installation").and_then(serde_json::Value::as_str) {installations.insert(id.to_owned());}
                             for model in result.get("models").and_then(serde_json::Value::as_array).into_iter().flatten() {
                                 if let (Some(name),Some(commit))=(model.get("repository").and_then(serde_json::Value::as_str),model.get("checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
+                                // What the run made: an install's local alias, or an upload's commit, held by its destination.
+                                if let (Some(name),Some(commit))=(model.pointer("/published/destination").and_then(serde_json::Value::as_str),model.pointer("/published/checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
                             }
                         }
                     }
