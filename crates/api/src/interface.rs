@@ -412,7 +412,7 @@ impl Struct {
         };
         let given = self.fields.iter().filter(|field| values.contains_key(&field.name));
         let conditional = given.filter_map(|field| Some((field.name.clone(), field.when()?)));
-        conditional.filter(|(_, when)| held(&when.field).is_some_and(|value| !when.holds(&value))).collect()
+        conditional.filter(|(_, when)| held(when.field.as_str()).is_some_and(|value| !when.holds(&value))).collect()
     }
 
     /// `when`, of one of its fields, in words.
