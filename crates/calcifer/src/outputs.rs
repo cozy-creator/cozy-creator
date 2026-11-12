@@ -627,6 +627,9 @@ pub(crate) struct Item {
     index: u32,
     #[serde(default)]
     member: Option<String>,
+    /// Saved by a browser under this name (cl-891, `files::save_as`).
+    #[serde(default)]
+    download: Option<String>,
 }
 
 /// `GET /v1/runs/{id|number}/outputs/{name}[?index=i]`: the output's exported file, whole or one
@@ -638,7 +641,7 @@ pub(crate) async fn serve(
     query: Result<Query<Item>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
-    let Item { index, member } = query?.0;
+    let Item { index, member, download } = query?.0;
     let row = api::find(&api, &run)?;
     crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
     let readable = crate::project::vault::readable_token(&row.out_dir);
@@ -697,6 +700,10 @@ pub(crate) async fn serve(
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut response = crate::files::send(file, len, &item.media_type, &format!("\"r{rev}\""), &headers)
         .map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))?;
+    if let Some(saved) = download {
+        let ext = item.path.as_deref().and_then(Path::extension).and_then(|ext| ext.to_str()).unwrap_or_default();
+        crate::files::save_as(&mut response, &saved, ext);
+    }
     if item.done && rev == item.rev
         && let Ok(digest) = HeaderValue::from_str(&item.digest)
     {

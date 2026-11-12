@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-scale|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-scale|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -273,6 +273,8 @@ case $SHARD in
   project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
   web-core) parts="tools_read web_core page_resend logs" ;;
   web-firefox) parts="tools_read web_firefox logs" ;;
+  # The palette against a Hub holding every first-party package (e2e/isolated.sh), and with none (cl-896).
+  web-palette) export DB_WEB=palette; parts="tools_read db_existing_web logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
   web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
   web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
@@ -280,7 +282,7 @@ case $SHARD in
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873).
   projectdb) parts="projectdb statedb machine_set logs" ;;
-  projectvault) parts="projectvault vault_web logs" ;;
+  projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;

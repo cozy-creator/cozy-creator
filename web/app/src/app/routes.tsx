@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { createBrowserRouter, Navigate, type RouteObject } from "react-router-dom"
 import { projectsQuery } from "../api/queries"
 import { Account } from "../panels/Account"
+import { Files } from "../panels/Files"
 import { ModelDrawer, Models } from "../panels/library/Models"
 import { PackageDrawer, Packages } from "../panels/library/Packages"
 import { MachineDrawer } from "../panels/machines/MachineDrawer"
@@ -11,7 +12,6 @@ import { Projects } from "../panels/Projects"
 import { ProjectVault } from "../panels/ProjectVault"
 import { RunDrawer } from "../panels/runs/RunDrawer"
 import { Runs } from "../panels/runs/Runs"
-import { Stub } from "../panels/Stub"
 import { Yaml } from "../panels/Yaml"
 import { useConnection } from "./Connection"
 import { Shell } from "./Shell"
@@ -76,7 +76,7 @@ export const theRouter = () =>
             { path: "assets/:name", element: null },
             ...drawers,
             drawer("new", <NewRun />),
-            drawer("files", <Stub title="Files" />),
+            drawer("files", <Files />),
             drawer("yaml", <Yaml />),
             drawer("vault", <ProjectVault />),
           ],

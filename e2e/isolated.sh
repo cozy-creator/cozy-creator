@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # e2e/skew/run.sh --admin --command: OUT INSTALLED_COZY RUNTIME TENSORFS cli|imports|cpu <that suite's run.sh arguments>.
 # A suite against its own isolated Hub. Signed in as that Hub's admin, it first publishes there what the suite reads
-# from a Hub, as production holds it. The cli suite's shards read, at the root, from run.sh's --packages checkout, the
-# toolbox's defaults (qwen-image-2, minimax-h3, sdxl) and birefnet, and a stand-in minimax-h3-tools (hub_away locks it from the
+# from a Hub, as production holds it. The cli suite's shards read, at the root, from run.sh's --packages checkout,
+# qwen-image-2, minimax-h3, sdxl and birefnet (web-palette: every first-party package), and a stand-in minimax-h3-tools (hub_away locks it from the
 # root index, hub_dependency calls its echo); then the models their cells download: BiRefNet's weights from the Hugging Face
 # revision production mirrors, and random weights for queued_download's two. macOS and Windows run no models and need no
 # weights: their shards take the packages alone. Imports stages Hub-dependent locks against its own published dependencies.
@@ -100,6 +100,7 @@ case $suite:$shard in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake) needs='' ;;
   cli:runs | cli:commands | cli:local-code) needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
+  cli:web-palette) needs='packages catalog' ;;
   cli:) needs='packages birefnet downloads' ;;
   cli:*) needs='packages' ;;
   imports:*)
@@ -164,6 +165,18 @@ if [ -n "$needs" ]; then
   done
   publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
+  # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
+  # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
+  if [[ " $needs " == *" catalog "* ]]; then
+    sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
+    systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
+    for dir in "$packages"/*/; do
+      dir=${dir%/} && case ${dir##*/} in qwen-image-2 | minimax-h3 | sdxl | birefnet) continue ;; esac
+      grep -q '^\[project.entry-points."cozy.application"\]' "$dir/pyproject.toml" 2> /dev/null || continue
+      publish "$dir" || log "${dir##*/} not published: $(tail -c 300 "$seed/publish-${dir##*/}.json" | tr '\n' ' ')"
+    done
+  fi
   case $shard in
     local-code | '')
       # Its lock reads the Hub's index, under the Hub's own CA: Calcifer's uv takes the system's bundle once restarted.

@@ -51,10 +51,7 @@ pub(crate) async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCo
         return Ok(ExitCode::SUCCESS);
     }
     let said = match (machine.kind, changed) {
-        _ if order => format!(
-            "{}'s order is stopped: it buys nothing more. Once the Hub answers, Calcifer ends anything it placed; `cozy machine ls` shows it until then.",
-            machine.name
-        ),
+        _ if order => "The order is stopped: it buys nothing more. Once the Hub answers, Calcifer ends anything it placed; `cozy machine ls` shows it until then.".to_owned(),
         (MachineKind::Added, true) => format!(
             "{} is no longer one of this computer's machines.",
             machine.name
@@ -62,9 +59,9 @@ pub(crate) async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCo
         (MachineKind::Added, false) => format!("{} was already removed.", machine.name),
         (_, true) => format!(
             "{} shut down. Temporary pod files are gone. Local outputs and uploaded checkpoints remain.",
-            machine.name
+            machine.called()
         ),
-        (_, false) => format!("{} is already shut down.", machine.name),
+        (_, false) => format!("{} is already shut down.", machine.called()),
     };
     println!("{said}");
     if let Ok(list) = calcifer.get::<MachineList>("/v1/machines").await {
@@ -96,7 +93,7 @@ pub(crate) async fn confirmed(ctx: &Context, calcifer: &Client, mut machine: Mac
 /// An end that ended nothing: Calcifer's reason when its end failed (this computer's sign-in, the
 /// Hub's refusal), else the state it is in.
 fn not_ended(m: &Machine) -> Error {
-    let name = &m.name;
+    let (name, handle) = (m.called(), m.handle());
     let why = match &m.end_failed {
         Some(why) => why.clone(),
         None => format!("it is {}, not ended", super::list::state_cell(m)),
@@ -107,7 +104,7 @@ fn not_ended(m: &Machine) -> Error {
     };
     Error::new(Kind::Conflict, "end_failed", format!("{name} was not shut down: {why}"))
         .remedy(billing)
-        .next(format!("cozy machine end {name}"))
+        .next(format!("cozy machine end {handle}"))
 }
 
 /// Follows an ending machine while it ends: while its end waits for its runs' outputs to land,
@@ -123,11 +120,11 @@ async fn ended(
     while machine.state == MachineState::Ending {
         match &machine.ending {
             Some(waits) if *waits != waited => {
-                output::say(ctx, &format!("Waiting to end {}: {waits}", machine.name));
+                output::say(ctx, &format!("Waiting to end {}: {waits}", machine.called()));
                 waited.clone_from(waits);
             }
             None if !releasing => {
-                output::say(ctx, &format!("Shutting down {}…", machine.name));
+                output::say(ctx, &format!("Shutting down {}…", machine.called()));
                 releasing = true;
             }
             _ => {}
@@ -143,7 +140,7 @@ async fn ended(
                 },
             },
             _ = tokio::signal::ctrl_c() => {
-                let (name, waits) = (&machine.name, machine.ending.is_some());
+                let (name, handle, waits) = (machine.called(), machine.handle(), machine.ending.is_some());
                 return Err(match waits {
                     true => Error::new(
                         Kind::Unavailable,
@@ -151,13 +148,13 @@ async fn ended(
                         format!("Stopped watching; {name} will shut down after its outputs are saved"),
                     )
                     .remedy("To stop immediately and discard unsaved outputs, use --force")
-                    .next(format!("cozy machine end {name} --force")),
+                    .next(format!("cozy machine end {handle} --force")),
                     false => Error::new(
                         Kind::Unavailable,
                         "end_unconfirmed",
                         format!("Stopped watching; {name} is still shutting down"),
                     )
-                    .next(format!("cozy machine show {name}")),
+                    .next(format!("cozy machine show {handle}")),
                 });
             }
         }

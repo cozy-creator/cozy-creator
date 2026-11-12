@@ -125,7 +125,7 @@ function linesOf(text, name) {
   check('operation_output_types', JSON.stringify(operations.map((row) => row.kind)) === JSON.stringify(['image', 'image', 'image', 'video', 'video', 'video', 'video', 'text']), operations);
   check('sidebar_has_no_model_rows', operations.every((row) => !row.model), operations);
   check('sidebar_has_no_discovery_controls', await page.locator('.tools input, .tools .browse-toggle, .tools .browse, .tools .box-shelf-head, .tools .tool-off').count() === 0 && !(await page.locator('.tools button').allTextContents()).some((word) => /Browse|Checkpoints|Add file/.test(word)));
-  const metadata = (await api(`/v1/tools?project=${id}&palette=true`)).body.tools;
+  const metadata = (await api(`/v1/tools?project=${id}`)).body.tools;
   check('local_output_capabilities_remain', metadata.some((row) => row.id === `${fixture}/shot` && row.makes === 'video') && metadata.some((row) => row.id === `${fixture}/still` && row.makes === 'image'), metadata.filter((row) => row.id.startsWith(fixture)).map((row) => ({ id: row.id, makes: row.makes })));
   const namesBefore = (await state()).assets.map((asset) => asset.name);
   const imageNode = page.locator('.tools [data-palette="nodes"] [data-node="image"]');

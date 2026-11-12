@@ -24,7 +24,7 @@ cap off
 refused() {
   [ -f "$1.json" ] || return 0
   jq -e '(.status != "completed") or ([.measurements, .calls[]?.measurements] | map(.memory.stats.varena[]?.stats // {})
-    | any(((.finer_splits // 0) + (.swallowed_ooms // 0)) > 0 or any(.working_splits[]?; .refused != null)
+    | any(((.retries // 0) + (.swallowed_ooms // 0)) > 0 or any(.working_splits[]?; .refused != null)
           or any(.escaped[]?; .refused != null)))' "$1.json" >/dev/null 2>&1
 }
 # Each such cell again uncapped on the same pod (<cell>-uncapped), which tells a capacity failure from a bug: a package

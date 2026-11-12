@@ -222,11 +222,9 @@ test = "pr: entrypoints, local authenticated URL and expiry; web-serves redeems 
 "--directory" = "pr: projectvault: convert and rekey from outside the backing folder"
 
 ["vault encrypt"]
-test = "pr: projectvault: conversion preserves mounted media and logical state"
+test = "pr: projectvault: conversion preserves mounted media and logical state; an interrupted one is recovered; nothing is left outside the vault"
 "--passphrase-file" = "pr: projectvault: conversion reads its credential file"
 "--recovery-out" = "pr: projectvault: recovery is saved outside storage; unsafe destination refuses"
-"--remove-plaintext" = "pr: projectvault: deprecated removal flag remains compatible; removal is the default"
-"--preserve-plaintext" = "pr: projectvault: explicit opt-out retains and reports the verified original"
 "--idle" = "pr: projectvault: conversion disables idle expiry"
 "--max-duration" = "pr: projectvault: returned absolute expiry is within the submitted clock interval"
 

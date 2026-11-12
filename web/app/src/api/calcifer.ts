@@ -194,6 +194,10 @@ approved?: number | null,
  */
 pinned?: boolean,
 /**
+ * A person starred it, to find it again (cl-892): `starred: true` in its fields, which `PATCH` sets. Never part of its key.
+ */
+starred?: boolean,
+/**
  * Its memo key's inputs now; None while something it reads has no state.
  */
 inputs?: string | null,
@@ -763,7 +767,11 @@ export type Gpu = { index: number, name: string, memory_bytes: number, driver: s
 /**
  * The most of `memory_bytes` the machine uses; 0: all of it.
  */
-memory_limit_bytes?: number, };
+memory_limit_bytes?: number,
+/**
+ * It draws a screen now: a render on it makes the screen lag.
+ */
+display?: boolean, };
 
 /**
  * `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.
@@ -1070,7 +1078,16 @@ at?: string, };
 /**
  * One machine as Calcifer knows it: its kind, state, address, rental, latest status and runs.
  */
-export type Machine = { name: string, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null,
+export type Machine = {
+/**
+ * A rental's name is its host's, as its Hub names it once it places it there (Paul 11-12: one host, one name).
+ */
+name: string,
+/**
+ * What a rental is said as, in its name's place, until its Hub names the host it's placed on: `Renting an RTX 4090…`.
+ * Its name meanwhile is a handle, never shown. Placed again on another host, it's said so again until that host's word.
+ */
+placeholder?: string | null, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null,
 /**
  * The name it had before its Hub named it; it keeps resolving.
  */
@@ -1114,7 +1131,7 @@ boot?: string | null,
  */
 attempt?: Attempt | null,
 /**
- * Calcifer's runs on it.
+ * Calcifer's function runs on it, its GPUs' work: installs, downloads, updates and removals aren't counted (cl-889).
  */
 running: number, queued: number,
 /**
@@ -3074,7 +3091,7 @@ bytes: number,
 here?: boolean, };
 
 /**
- * Your own tools, the same in every project: these packages' media functions, less `without`, by a tool's `id`. Installing has nothing to do with it.
+ * Your changes to the tools, the same in every project: these packages beside what the Hub lists, and `without`, tools taken off, by a tool's `id`. Installing has nothing to do with it.
  */
 export type ToolList = { packages: Array<string>, without?: Array<string>, };
 
@@ -3155,7 +3172,7 @@ detail: string, };
  */
 export type Tools = { tools: Array<Tool>,
 /**
- * Why the list holds only what's installed: the Hub didn't answer.
+ * Why the list holds only what's installed, or the Hub's as last read: the Hub didn't answer.
  */
 note?: string | null, };
 
@@ -3209,20 +3226,12 @@ target: string, warnings?: Array<string>, };
 /**
  * POST /v1/projects/{id}/vault. Credentials are deliberately not Debug; neither the request nor its response is cached in history.
  */
-export type VaultAsk = { action: string, passphrase?: string | null, recovery_secret?: string | null, idle_timeout_s?: number | null, max_duration_s?: number | null,
-/**
- * Legacy removal flag. Verified source removal is now the default; false does not preserve it.
- */
-remove_plaintext: boolean,
-/**
- * Explicitly keep the original plaintext after a verified encrypt conversion. Not valid for rekey/decrypt.
- */
-preserve_plaintext?: boolean, };
+export type VaultAsk = { action: string, passphrase?: string | null, recovery_secret?: string | null, idle_timeout_s?: number | null, max_duration_s?: number | null, };
 
 /**
  * A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
  */
-export type VaultChanged = { vault: VaultStatus, recovery_secret?: string | null, preserved_source?: string | null,
+export type VaultChanged = { vault: VaultStatus, recovery_secret?: string | null,
 /**
  * The project's runs a lock canceled first, by number.
  */

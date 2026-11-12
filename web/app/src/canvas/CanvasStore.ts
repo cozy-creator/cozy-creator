@@ -282,8 +282,8 @@ export class CanvasStore {
   readonly tools = signal<Map<string, Tool>>(new Map())
   /** Names came or went: a text shows a name as a chip or as words by it. */
   readonly names = signal(0)
-  /** The menu open, and where. */
-  readonly menu = signal<{ name: string; x: number; y: number } | null>(null)
+  /** The menu open, and where: a box's, or with `number` its take's. */
+  readonly menu = signal<{ name: string; x: number; y: number; number?: number } | null>(null)
   /** The box whose file is being looked at large, over everything. */
   readonly viewing = signal<string | null>(null)
   /** The one asset shown in the viewport-sized Focus surface; the canvas camera stays in Wander. */
@@ -559,8 +559,9 @@ export class CanvasStore {
     return null
   }
 
-  /** Writing its next take in its frame, the caret in its words, which takes them again when it's already there. Words that hold nothing but a take of its
-   * own begin from the one looked at, as `<self.N>`; `lead`: whatever they hold, that take is the first they mention. */
+  /** Writing its next take in its frame, the caret in its words, which takes them again when it's already there. The words are those last written, word
+   * for word (cl-909), from the take looked at: their first take of its own is that one, `<self.N>` (Paul 11-06). Words with none stay as they are; `lead`
+   * puts it first. */
   writeNext(name: string, lead = false) {
     const view = this.get(name)
     const asset = view?.asset
@@ -570,8 +571,7 @@ export class CanvasStore {
     const words = typeof said === "string" ? said : ""
     const number = shownOf(view)?.number
     const self = `<${SELF}.${number}>`
-    const first = mentionsIn(words)[0]
-    const next = asset.kind === "image" && number !== undefined ? `${self} ` : /^\s*(<self\.\d+>\s*)?$/i.test(words) ? `${self} ` : !lead ? words : first && isSelf(versionOf(first)?.name ?? "") ? words.replace(`<${first}>`, self) : `${self} ${words}`
+    const next = /^\s*(<self\.\d+>\s*)?$/i.test(words) ? `${self} ` : /<self\.\d+>/i.test(words) ? words.replace(/<self\.\d+>/i, self) : lead ? `${self} ${words}` : words
     if (number !== undefined && next !== words) this.setDraft(name, field, next)
     this.focusing = name
     this.patch(name, { hereWords: true })
@@ -1723,6 +1723,13 @@ export class CanvasStore {
     const noun = this.views.get(key)?.asset?.noun ?? "version"
     const by = edit ?? this.step(`Approved ${noun} ${number} of ${key}`, [key])
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "approve", by)
+  }
+
+  /** Starred, it leads the project's Files list (cl-892). A star is no input: nothing goes out of date, and it's no approval. */
+  star(name: string, on: boolean) {
+    const key = this.resolveName(name)
+    const edit = this.step(`${on ? "Starred" : "Unstarred"} ${key}`, [key])
+    this.over(key, { starred: on }, (served, write) => this.client.patchAsset(this.projectId!, served, { fields: { starred: on || null } }, undefined, write), on ? "star" : "unstar", edit)
   }
 
   /** A double tap on a take: it's approved, or if it was, nothing is, and it's still the one looked at. */

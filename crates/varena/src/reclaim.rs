@@ -70,6 +70,10 @@ pub(crate) struct Protect<'a> {
 /// behind it (SDXL at 6 GiB, run 43986).
 const OUTSIDE_WAIT: Duration = Duration::from_secs(300);
 const OUTSIDE_POLL: Duration = Duration::from_millis(250);
+/// How long a request waits for an ended idle peer's memory to come back, reading the card this often.
+const END_RETURN: Duration = Duration::from_secs(5);
+const END_POLL: Duration = Duration::from_millis(50);
+const END_SETTLED: u32 = 4;
 
 /// Whether at least `want` more bytes came free on the card than at `start` before `deadline`.
 fn outside_gave(gpu: &Device, want: usize, start: usize, deadline: Instant) -> Result<bool> {
@@ -217,6 +221,22 @@ impl<'a> Sequence<'a> {
                 Ok(self.released > released)
             }
             Step::Weights => {
+                // A loop's weight demand that would wait on a weight's use waits on its own freed working
+                // pages instead and takes what is beyond the loop's need: the weight is read again next
+                // step, the pages only remap. H3 15 s on a 4090 kept 21.3 GB mapped against a 16.0 GB
+                // live peak, and re-read 20 GB of weights a step.
+                if waiting && self.protect.keep_phase && self.protect.into.is_some() && working::phase_known(self.device)? {
+                    let released = self.released;
+                    if self.weights(want, PREFETCHED..=PHASE_NEXT, false, false)? {
+                        return Ok(true);
+                    }
+                    if working::wait_pending(self.device, want, self.protect.pool)? {
+                        self.working(want)?;
+                        if self.released > released {
+                            return Ok(true);
+                        }
+                    }
+                }
                 // A guess takes no other guess and no region this phase still needs.
                 let classes = if self.protect.speculative { UNPLANNED..=PHASE_FRESH } else { PREFETCHED..=PHASE_NEXT };
                 self.weights(want, classes, waiting, waiting)
@@ -236,8 +256,11 @@ impl<'a> Sequence<'a> {
                 self.working(want)?;
                 Ok(true)
             }
-            // Processes in no request hold what nothing is about to use: theirs before our weights.
-            Step::IdlePeers if waiting && physical => Ok(idle_peers_gave(self.device, want)),
+            // Processes in no request hold what nothing is about to use: theirs before our weights. What
+            // they can't give back (a context, a graph's pinned weights) returns when TensorD ends one:
+            // Ideogram 4 paged its two DiTs every step beside 10 GB that idle MOSS and Anima kept.
+            Step::IdlePeers if waiting && physical => Ok(idle_peers_gave(self.device, want)
+                || (self.wait == Wait::Yes && self.gpu.in_request() && ended_idle_peer(self.gpu, want)?)),
             Step::Join if waiting => {
                 let classes = CONTENTLESS..=PHASE_NEXT;
                 let blocks = working::unjoined(self.device)?;
@@ -343,6 +366,31 @@ fn idle_peers_gave(device: i32, bytes: usize) -> bool {
     return crate::cooperative::peers_idle(device) && crate::cooperative::ask_idle_peers(device, bytes);
     #[cfg(not(target_os = "linux"))]
     { let _ = (device, bytes); false }
+}
+
+/// An idle peer TensorD ended, and its memory back on the card: `want` more free, or no more coming.
+fn ended_idle_peer(gpu: &Device, want: usize) -> Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        let before = free_now(gpu)?;
+        if !crate::cooperative::end_idle_peer(gpu.ordinal) {
+            return Ok(false);
+        }
+        // Settled: grown, then the same for a few reads.
+        let (deadline, mut last, mut same) = (Instant::now() + END_RETURN, before, 0);
+        while Instant::now() < deadline {
+            std::thread::sleep(END_POLL);
+            let free = free_now(gpu)?;
+            same = if free == last { same + 1 } else { 0 };
+            if free >= before.saturating_add(want) || (free > before && same >= END_SETTLED) {
+                break;
+            }
+            last = free;
+        }
+        Ok(true)
+    }
+    #[cfg(not(target_os = "linux"))]
+    { let _ = (gpu, want); Ok(false) }
 }
 
 /// Call `try_map` until it succeeds, running the reclaim order between attempts. `need` is what

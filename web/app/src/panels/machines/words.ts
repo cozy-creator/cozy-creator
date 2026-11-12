@@ -4,6 +4,12 @@ import { span, usd } from "../format"
 /** What `name` in a route means: a machine's name, former name or rental id. */
 export const named = (machine: Machine, name: string) => [machine.name, machine.alias, machine.rental_id].some((known) => known?.toLowerCase() === name.toLowerCase())
 
+/** What people see it called: its name, or until its Hub names the host a rental is placed on, what's being rented (cl-888). */
+export const called = (machine: Machine) => machine.placeholder ?? machine.name
+
+/** What a command names it by: its name, or while it has none, its rental id. */
+export const handle = (machine: Machine) => (machine.placeholder ? (machine.rental_id ?? machine.name) : machine.name)
+
 /** What it's called in a route that must survive a rename: its rental id, else its name. */
 export const stableName = (machine: Machine) => machine.rental_id ?? machine.name
 
@@ -56,7 +62,7 @@ export const kindWords = (machine: Machine) =>
 export function endsWords(machine: Machine, now: number): string {
   const deadline = machine.status?.idle_deadline_ms
   if (deadline != null) return deadline > now ? `ends in ${span((deadline - now) / 1000)} if it stays idle` : "ends now"
-  return machine.status && machine.kind === "rental" ? "ends after its jobs" : ""
+  return machine.status && machine.kind === "rental" ? "ends 15 min after its last job" : ""
 }
 
 export function spentWords(machine: Machine): string {

@@ -11,7 +11,7 @@ import { usd } from "../format"
 import { End } from "./End"
 import { Rent } from "./Rent"
 import { useRenderMachines } from "./RenderHere"
-import { endsWords, gpusWords, stableName, stateClass, stateWords } from "./words"
+import { called, endsWords, gpusWords, stableName, stateClass, stateWords } from "./words"
 
 function MachineRow({ machine, now, here }: { machine: Machine; now: number; here: boolean }) {
   const to = useTo()
@@ -21,7 +21,7 @@ function MachineRow({ machine, now, here }: { machine: Machine; now: number; her
       <Link to={to(`machines/${encodeURIComponent(stableName(machine))}`)}>
         <span className="line">
           <span className={`dot ${stateClass(machine)}`} />
-          <b>{machine.name}</b>
+          <b>{called(machine)}</b>
           <small>{gpusWords(machine)}</small>
           <span className="sp" />
           {machine.rental && <small>{usd(machine.rental.usd_micros_per_hour)}/h</small>}

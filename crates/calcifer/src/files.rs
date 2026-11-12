@@ -3,6 +3,7 @@
 //! revision), an `ETag` and `If-None-Match` as `304`, so a `<video>` seeks it and a browser caches
 //! it. What a run wrote is never script in Calcifer's origin, where script is code execution as you:
 //! each file is sandboxed, and only a picture, video or sound opens in place.
+use std::fmt::Write as _;
 use std::io::{Seek as _, SeekFrom};
 
 use axum::{
@@ -62,6 +63,37 @@ pub(crate) fn send(
         .header(header::CONTENT_LENGTH, count)
         .body(Body::from_stream(tokio_util::io::ReaderStream::new(bytes)))
         .expect("a response"))
+}
+
+/// `?download=<name>` on a file route: a browser saves it as `name`, not shows it (cl-891).
+#[derive(serde::Deserialize)]
+pub(crate) struct Download {
+    pub(crate) download: Option<String>,
+}
+
+/// `response` saved by a browser as `name`, with the file's extension `ext` when it ends otherwise: `hei.2` is `hei.2.png`.
+pub(crate) fn save_as(response: &mut Response, name: &str, ext: &str) {
+    let kept: String = name.chars().map(|c| if c.is_control() || r#"/\:*?"<>|"#.contains(c) { '_' } else { c }).collect();
+    let mut name = kept.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_owned();
+    if name.is_empty() {
+        name.push_str("file");
+    }
+    if !ext.is_empty() && !name.to_lowercase().ends_with(&format!(".{}", ext.to_lowercase())) {
+        name = format!("{name}.{ext}");
+    }
+    let ascii: String = name.chars().map(|c| if c.is_ascii() { c } else { '_' }).collect();
+    let mut encoded = String::new();
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+            encoded.push(char::from(b));
+        } else {
+            let _ = write!(encoded, "%{b:02X}");
+        }
+    }
+    let value = format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}");
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        response.headers_mut().insert(header::CONTENT_DISPOSITION, value);
+    }
 }
 
 fn shown_in_place(media_type: &str) -> bool {

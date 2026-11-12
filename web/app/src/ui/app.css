@@ -2149,8 +2149,24 @@ button:disabled {
   color: var(--mute);
   font-size: var(--small);
 }
-.keep-up:empty {
-  display: none;
+/* A machine's drawer: what it's doing and when it ends, then what to do with it, Render here first. */
+.doing-now {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 6px 0;
+}
+.machine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+.machine-actions > p,
+.machine-actions > .failure {
+  flex-basis: 100%;
+  margin: 0;
 }
 .kv {
   margin: 8px 0;
@@ -2352,12 +2368,6 @@ button:disabled {
 .order p {
   margin: 0 0 8px;
 }
-.ending {
-  margin: 8px 0;
-}
-.ending p {
-  margin: 0 0 6px;
-}
 .stack {
   display: grid;
   gap: 6px;
@@ -2454,6 +2464,53 @@ button:disabled {
 .filerow.bad small {
   color: var(--bad);
   white-space: normal;
+}
+/* The project's assets, starred first (cl-892). */
+.assetlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.assetrow a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-size: var(--body);
+}
+.assetrow a:hover {
+  background: var(--tint);
+}
+.asset-thumb {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--tint);
+}
+.asset-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.assetrow .nm {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assetrow small {
+  color: var(--faint);
+  font-size: var(--small);
+}
+.assetrow .star {
+  color: var(--ember);
 }
 .runform {
   display: grid;
@@ -3898,8 +3955,11 @@ input[type="checkbox"] {
 }
 
 /* Each machine, top right: what it's doing, its name, and how many things. */
+/* Every machine shows: past its width the chips wrap to another row. */
 .mtabs {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: stretch;
   gap: calc(2px * var(--ui));
   min-width: 0;
@@ -3995,7 +4055,7 @@ input[type="checkbox"] {
 }
 .activity header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding: 2px 4px 8px;
   border-bottom: 1px solid var(--line);
@@ -4007,7 +4067,8 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.activity .more {
+.activity .more,
+.activity .render-here {
   flex: none;
 }
 .activity ul {

@@ -16,7 +16,7 @@ import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapesOf, snapped } from "./controls"
 import { useDragScroll } from "./dragScroll"
-import { Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
+import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
 import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
@@ -201,6 +201,12 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             style={asset.kind === "image" ? { height: 100, width: Math.min(280, 100 * (version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5)), aspectRatio: "auto" } : undefined}
             onClick={() => pick(version.number)}
             onDoubleClick={() => store.toggleApproved(name, version.number)}
+            onContextMenu={(event) => {
+              if (!version.main || !downloadable(version.main)) return
+              event.preventDefault()
+              event.stopPropagation()
+              store.menu.set({ name, x: event.clientX, y: event.clientY, number: version.number })
+            }}
           >
             {version.main && !version.main.absent ? (
               <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />

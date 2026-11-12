@@ -74,7 +74,8 @@ async function died(error) {
   const tool = metadata.tools.find((item) => item.makes === 'image' && item.model && item.fields.some((field) => field.type === 'prompt'));
   if (!tool) throw new Error('the image tool metadata needed by the Focus fixture is unavailable');
   const promptField = tool.fields.find((field) => field.type === 'prompt').field;
-  await api(`${at}/assets/${NAME}`, 'PATCH', { tool: tool.id, fields: { [promptField]: '<self.1> stale edit text to replace' } });
+  // The words last run (cl-909): New begins from them.
+  await api(`${at}/assets/${NAME}`, 'PATCH', { tool: tool.id, fields: { [promptField]: '<self.1> make her smile' } });
   await until('ten image states are retained', asset, (item) => item?.versions === 10 && item.version === 1);
   await boxOf(page, NAME).waitFor();
   await fitCanvas(page);
@@ -108,10 +109,12 @@ async function died(error) {
     await focus.waitFor();
     await card.waitFor();
   };
+  // A tap looks at a state; a double tap makes it current (630309269, explicit variant approval).
   const choose = async (number) => {
     const take = history.locator(`.take[data-take="${number}"]`);
     await take.scrollIntoViewIfNeeded();
     await take.click();
+
     await until(`state ${number} is selected in the previews`, () => history.locator('.take.on[data-take]').getAttribute('data-take'), (current) => current === String(number));
   };
   const approve = async (number) => {
@@ -200,18 +203,20 @@ async function died(error) {
   await edit.click();
   const prompt = focus.locator('.in-frame .mention-text').first();
   await prompt.waitFor();
-  await until('Edit begins from the displayed preview rather than the approved state', () => prompt.innerText(), (text) => /<self\.1>/i.test(text) && !text.includes('stale edit text'));
+  await until('Edit begins from the displayed preview rather than the approved state', () => prompt.innerText(), (text) => /<self\.1>/i.test(text) && text.includes('make her smile'));
   check('opening_edit_does_not_approve_the_preview', (await asset()).version === 2 && (await asset()).approved === 2);
   await choose(10);
+
   const newImage = history.locator('.take.add[aria-label="Its next take"]');
   await newImage.scrollIntoViewIfNeeded();
   await newImage.click();
   await prompt.waitFor();
-  await until('New image begins from its displayed preview', () => prompt.innerText(), (text) => /<self\.10>/i.test(text) && !text.includes('stale edit text'));
+  await until('New image begins from its displayed preview', () => prompt.innerText(), (text) => /<self\.10>/i.test(text) && text.includes('make her smile'));
   await choose(1);
   await newImage.click();
   await prompt.waitFor();
-  await until('the fresh source prompt is saved', asset, (item) => /<self\.1>/i.test(item.fields?.[promptField] ?? '') && !item.fields[promptField].includes('stale edit text'));
+  await until('the source prompt keeps the words and updates its reference', asset, (item) => /<self\.1>/i.test(item.fields?.[promptField] ?? '') && item.fields[promptField].includes('make her smile'));
+
   check('new_image_is_explicit_and_does_not_discard_variants', (await asset()).versions === 10 && await history.locator('.take[data-take]').count() === 10);
 
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;

@@ -107,7 +107,9 @@ ended, or when Calcifer stops; a client reconnects from its last `id:`.
 unsatisfiable, and `200` with the whole file when `If-Range` names anything but its ETag), and `If-None-Match`
 naming its ETag with `304`, so a `<video>` seeks it and a browser caches it (`files.rs`, one responder for every
 route). Each answers `Content-Security-Policy: sandbox`, and `Content-Disposition: inline` for `image/`, `video/`
-and `audio/`, else `attachment`: what a run wrote never runs as script in Calcifer's origin. What's named by its
+and `audio/`, else `attachment`: what a run wrote never runs as script in Calcifer's origin. A project's file and a run's
+output take `?download=<name>`, the page's right-click Download: `attachment` named `<name>`, with the file's extension when it
+ends otherwise (`hei.2` saves `hei.2.png`), and what a file system refuses (`/\:*?"<>|`, control characters) as `_`. What's named by its
 own hash (a project's `files/{sha256}.{ext}` and `thumbs/{sha256}`, the page's `/assets/*`) answers `Cache-Control:
 private, max-age=31536000, immutable`; everything else, `outputs/{name}` included, `no-store`.
 
@@ -609,7 +611,7 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   its operation if it has no state, and nothing else. `new`, or `n` over 1, also draws `n` new seeds for those named; a pinned one's state doesn't move.
   `--take`, `--in`: one asset's new take keeps the start of that take, or the one in use (`400 take_unknown`), for a function that fills `continue_from` from `take`: it gets that take's `video`, `latents` and `at_s`, and one its package didn't make is `409 take_not_continued`. `202 {id, path}`, or `200` when
   its key asked it already. The work goes on in the project's walk and is followed on its board.
-- `POST /v1/projects/{id}/fit` `{names, outdated?}`: `{tools: [{tool, label, names, line, bytes, here?}], rent?: {sku, gpus, card, vram_gb, usd_micros_per_hour, line}}`. What a render of `names` (or `all`, as `runs` reads it) on this computer alone would do poorly, a tool a row, said before it's sent. A tool is done poorly with no GPU when its function loads a model on one, as it would then run on the CPU, degraded, and on a GPU its weights fill more than three quarters of, the Hub's rule for a card that holds them. Its `bytes` are what the Hub places a run of its release by (`POST /v1/rental-placements`), local code's those of its models' releases, either with a checkpoint on a box in place of its model's; 0 when the Hub doesn't say in 5 s. `line` says how, and how long its last run here took; `rent` is what the Hub places them on: the biggest card of its picks for those not yet said for, else for all. `here`: Render here was said of it on this computer. A client asks this only of a render whose machines are `local` alone: with another, the walk gives `local` nothing it would do poorly. Nothing is listed while `local` hasn't said what it has, for what loads no model or runs on no GPU, or for what Calcifer makes itself. What the Hub says is kept 10 minutes.
+- `POST /v1/projects/{id}/fit` `{names, outdated?}`: `{tools: [{tool, label, names, line, bytes, here?}], rent?: {sku, gpus, card, vram_gb, usd_micros_per_hour, line}}`. What a render of `names` (or `all`, as `runs` reads it) on this computer alone would do poorly, a tool a row, said before it's sent. A tool is done poorly with no GPU when its function loads a model on one, as it would then run on the CPU, degraded; on a GPU its weights fill more than three quarters of, the Hub's rule for a card that holds them; on a GPU that also draws the screen (the machine's status `gpus[].display`), which a render makes lag; and when its runs here take more than 3× and a minute longer than its runs on a rented card (the Hub's pick, else another card it ran on scaled by the Hub's speeds). Its `bytes` are what the Hub places a run of its release by (`POST /v1/rental-placements`), local code's those of its models' releases, either with a checkpoint on a box in place of its model's; 0 when the Hub doesn't say in 5 s. `line` says why, how long it takes here against a rented card when this computer ran it on one (else how long it took here), and that it slows the screen; `rent` is what the Hub places them on: the biggest card of its picks for those not yet said for, else for all. `here`: Render here was said of it on this computer. A client asks this only of a render whose machines are `local` alone, and shows Rent a <card> first, then Run here anyway: with another, the walk gives `local` nothing it would do poorly, nor anything while its GPU draws the screen. A render sent to `local` alone that asked nothing (`cozy render --on local`) says the same line, and `cozy run` on `local` warns it, never asking. Nothing is listed while `local` hasn't said what it has, for what loads no model or runs on no GPU, or for what Calcifer makes itself. What the Hub says is kept 10 minutes.
 - `POST /v1/projects/{id}/fit/here` `{names, outdated?}`: the same, each tool listed kept as rendered here in `state.db`, by what this computer's GPUs are (their names and usable memory, or none) and its weights: `here` then holds until another computer, or weights half as big again, such as a bigger checkpoint on its box.
 - `POST /v1/projects/{id}/approve` `{name, version}`: `{name, noun, number, files, path, stale, warnings?}`. `version` is a short run of digits, its version, or anything else a hash prefix, which pins any file of the project; `number` is 0 when it is no version's. Writes the version's main file's hash as that asset's `approved`.
   Makes any tool whose reads settled, with no machine.
@@ -660,13 +662,9 @@ Omitting `idle_timeout_s` uses 1800 seconds (30 minutes) for creation/unlock.
 An explicit zero disables idle expiry; explicit durations and the separate absolute
 maximum remain unchanged. Existing unlocked sessions retain their current policy.
 
-For `encrypt`, verified source removal is the default even when the request omits
-`remove_plaintext` or sends it as false. Only `preserve_plaintext: true` keeps the
-original plaintext and returns `preserved_source`; it conflicts with `remove_plaintext: true`.
-The legacy removal field remains accepted. New clients also send it as true for default
-encryption so older controllers remove the source. Preservation is not valid for rekey/decrypt;
-rekey continues retiring the obsolete encrypted source after verification. A durable in-flight
-conversion retains its recorded cleanup policy across restart.
+`encrypt` and `rotate` always remove the source once the replacement is verified; no field keeps
+a plaintext copy. A conversion leaves no stage, moved-aside source, receipt or runtime folder
+behind; one interrupted is recovered at the next start or open.
 
 Conversion validates its source before copying media. A dangling legacy link
 under `files/` is omitted and returned in `skipped_files`; its project-state

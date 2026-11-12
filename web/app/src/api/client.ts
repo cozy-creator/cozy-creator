@@ -554,13 +554,12 @@ export class Client {
     return this.write("POST", `${project(id)}/history/redo`, target, undefined, write)
   }
 
-  /** What can be dropped on a canvas: the Edit, the local code `project` names, what `on` has installed, then the Hub's. */
-  tools(q: string, on: string | null, project: string | null, signal?: AbortSignal, palette = false): Promise<Tools> {
+  /** What can be dropped on a canvas: the Edit, the local code `project` names, what `on` has installed, then every package the Hub lists. */
+  tools(q: string, on: string | null, project: string | null, signal?: AbortSignal): Promise<Tools> {
     const asked = new URLSearchParams()
     if (q) asked.set("q", q)
     if (on) asked.set("on", on)
     if (project) asked.set("project", project)
-    if (palette) asked.set("palette", "true")
     return this.json(`/v1/tools?${asked}`, { signal })
   }
 
@@ -612,6 +611,11 @@ export class Client {
 
   file(id: string, file: string): string {
     return `${project(id)}/${file.split("/").map(encodeURIComponent).join("/")}`
+  }
+
+  /** A file route's file downloaded as `name`, its extension Calcifer's: `hei.2` saves `hei.2.png`. */
+  download(path: string, name: string): void {
+    this.transport.save(`${path}${path.includes("?") ? "&" : "?"}download=${encodeURIComponent(name)}`)
   }
 
   // Runs

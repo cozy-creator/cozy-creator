@@ -7,8 +7,9 @@ import type { Machine } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
 import { Bar } from "../common"
 import { workWords } from "../runs/words"
+import { RenderHere } from "./RenderHere"
 import { type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
-import { gpusWords, stableName, stateWords } from "./words"
+import { called, gpusWords, stableName, stateWords } from "./words"
 
 type Mark = "broken" | "up" | "download" | "install" | "work" | "idle"
 
@@ -111,10 +112,11 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
     }
   }, [chip, close])
   return (
-    <div className="activity" ref={held} role="dialog" aria-label={`What ${machine.name} is doing`} style={at ? { top: at.top, right: at.right } : { visibility: "hidden" }}>
+    <div className="activity" ref={held} role="dialog" aria-label={`What ${called(machine)} is doing`} style={at ? { top: at.top, right: at.right } : { visibility: "hidden" }}>
       <header>
-        <b>{machine.name}</b>
+        <b>{called(machine)}</b>
         <span className="said">{[gpusWords(machine), stateWords(machine, Date.now())].filter(Boolean).join(", ")}</span>
+        <RenderHere name={machine.name} />
         <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)} onClick={close}>
           Details
         </Link>
@@ -132,7 +134,8 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
   )
 }
 
-/** Each machine, top right, `local` first: what it's doing at a glance, and a click shows each thing with how far it is. Kept by the stream. */
+/** Each machine, top right, `local` first: what it's doing at a glance, and a click shows each thing with how far it is, and Render here,
+ *  which makes it one of the open project's preferred machines, green (Paul 11-12). Kept by the stream. */
 export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; projectId: string | null }) {
   const { client, stream } = useConnection()
   const { data } = useQuery(machinesQuery(client))
@@ -140,8 +143,10 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
   const queued = useQuery(runsQuery(client, { status: "queued" }, 100))
   const { data: project } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
   const [open, setOpen] = useState<{ name: string; chip: HTMLElement } | null>(null)
+  const chosen = project?.machines ?? []
+  // Every machine of this computer's, a rental still booting too, and any the project prefers.
   const machines = (data?.machines ?? [])
-    .filter((machine) => machine.kind !== "rental" || (machine.ordered !== false && machine.state !== "ended"))
+    .filter((machine) => machine.kind !== "rental" || (machine.state !== "ended" && (machine.ordered !== false || chosen.includes(machine.name))))
     .sort((a, b) => Number(b.kind === "local") - Number(a.kind === "local"))
   if (!machines.length) return null
   const runs = [...(running.data?.runs ?? []), ...(queued.data?.runs ?? [])]
@@ -152,12 +157,13 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
       <nav className="mtabs" aria-label="Machines">
         {machines.map((machine) => {
           const doing = doingOf(machine, runs)
-          const total = doing.filter((one) => one.kind !== "boot").length
+          // Its jobs are function runs, its GPUs' work: an install or a download is listed, not counted (cl-889).
+          const total = doing.filter((one) => one.kind === "run" && one.run.kind === "call").length
           return (
             <button
               key={machine.name}
               type="button"
-              className={`mtab ${open?.name === machine.name ? "on" : ""} ${project?.machines?.includes(machine.name) ? "render-here" : ""}`}
+              className={`mtab ${open?.name === machine.name ? "on" : ""} ${chosen.includes(machine.name) ? "render-here" : ""}`}
               data-machine={machine.name}
               aria-expanded={open?.name === machine.name}
               title={`${gpusWords(machine)}, ${stateWords(machine, Date.now())}`}
@@ -169,7 +175,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
               {marksOf(machine, doing).map((mark) => (
                 <MarkOf key={mark} mark={mark} />
               ))}
-              <b>{machine.name}</b>
+              <b>{called(machine)}</b>
               {total > 0 && <span className="load">{total}</span>}
             </button>
           )

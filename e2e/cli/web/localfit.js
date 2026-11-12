@@ -1,8 +1,8 @@
 // A render on this computer alone, which it would do poorly (Paul, 11-05: "do you want to run locally? rent a GPU"), in a real browser on a real
 // Calcifer. A runner has no GPU, so a tool that loads a model on one asks first: under its box, where Queued shows, how it would go here and what a
-// rented GPU would do. Render here renders, and is kept by Calcifer: the next Render, and one after a reload, don't ask. Rent a GPU opens Rent with
-// the card the Hub places the tool on chosen, and renders nothing. Render all asks once, on its own control. The CLI says the same line once, as
-// a warning, and goes on, with no --on as with --on local. With a rental held nothing asks: release-gate/sessions/render-placement.sh.
+// rented GPU would do, with Rent a <card> first and Run here anyway second (cl-897). Run here anyway renders, and is kept by Calcifer: the next
+// Render, and one after a reload, don't ask. Rent opens Rent with the card the Hub places the tool on chosen, and renders nothing. Render all asks
+// once, on its own control. With a rental held nothing asks, and a fit compares here with it: release-gate/sessions/render-placement.sh.
 //   node localfit.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as nodes.js; $ALONE: on a shared computer, so it runs nothing. Prints what it saw as JSON, exits 1 if anything failed.
 // $RESTART, $HUB_RESTART: shell commands that bring this Calcifer back, the second on the Hub at @HUB@ (web.sh's web_restart).
@@ -158,7 +158,9 @@ function provider(upstream) {
   await render('heavy');
   await asking('heavy').waitFor({ timeout: FIRST_RUN_MS });
   const said = await asking('heavy').innerText();
-  check('asks_on_the_box', /no GPU/.test(said) && /Render here/.test(said) && /Rent a GPU/.test(said), said);
+  check('asks_on_the_box', /no GPU/.test(said) && /Run here anyway/.test(said) && /Rent an? /.test(said), said);
+  const buttons = await asking('heavy').locator('.row button').allInnerTexts();
+  check('rent_first', buttons.length === 2 && /^Rent an? /.test(buttons[0]) && buttons[1] === 'Run here anyway', buttons);
   seen.line = said;
   // Render keeps the box open, on its words: what it asks is under them, where Queued would be, and nothing covers the canvas. Left, it's under
   // the box at rest.
@@ -170,8 +172,8 @@ function provider(upstream) {
   check('asking_renders_nothing', (await runsOf('heavy')).length === primed && (await versions('heavy')) === 0, await runsOf('heavy'));
   await shot('asks');
 
-  // 2. Render here renders, and Calcifer keeps it.
-  await asking('heavy').locator('button:has-text("Render here")').click();
+  // 2. Run here anyway renders, and Calcifer keeps it.
+  await asking('heavy').locator('button:has-text("Run here anyway")').click();
   check('render_here_renders', Boolean(await until('heavy rendered here', () => versions('heavy'), (n) => n >= 1, FIRST_RUN_MS)));
   const kept = await fit(['heavy']);
   check('kept_by_calcifer', kept?.tools?.length === 1 && kept.tools[0].here === true, kept);
@@ -187,7 +189,7 @@ function provider(upstream) {
   await render('heavy');
   check('reload_does_not_ask', await neverAsks('heavy', 3));
 
-  // 6. Qwen Image from the Hub, as 0.22's tool list drops it. Rent a GPU opens Rent with the card the Hub places it on, and renders nothing.
+  // 6. Qwen Image from the Hub, as 0.22's tool list drops it. Rent a <card> opens Rent with the card the Hub places it on, and renders nothing.
   // Only if it asks: a runner can't hold its weights.
   importYaml(folder, `${yamlOf(folder).trimEnd()}\n  kite:\n    tool: qwen-image-2/image\n    instructions: a red kite over dunes\n`);
   // Drawn in on heavy, the canvas draws only what's near it: back out, and all of it in view.
@@ -205,9 +207,9 @@ function provider(upstream) {
   await render('kite');
   await asking('kite').waitFor({ timeout: STEP_MS });
   const kiteSaid = await asking('kite').innerText();
-  check('kite_asks', /no GPU/.test(kiteSaid) && (!placed || kiteSaid.includes(placed.line)), kiteSaid);
+  check('kite_asks', /no GPU/.test(kiteSaid) && (!placed || (kiteSaid.includes(placed.line) && kiteSaid.includes(placed.card))), kiteSaid);
   await shot('kite-asks');
-  await asking('kite').locator('button:has-text("Rent a GPU")').click();
+  await asking('kite').locator('button:has-text("Rent ")').click();
   await until('Machines open', () => Promise.resolve(page.url()), (url) => url.includes('/machines'));
   check('rent_opens', true);
   if (placed) {
@@ -229,7 +231,7 @@ function provider(upstream) {
   const allSaid = await all.innerText();
   check('render_all_asks_once', (await page.locator('.status.asking').count()) === 1 && /Qwen|qwen|kite/i.test(allSaid) && !/heavy/i.test(allSaid), allSaid);
   await shot('render-all-asks');
-  await all.locator('button:has-text("Rent a GPU")').click();
+  await all.locator('button:has-text("Rent ")').click();
   await page.waitForTimeout(1500);
   check('render_all_rent_renders_nothing', (await versions('heavy')) === before && (await runsOf('image')).length === 0);
   await page.goBack();
