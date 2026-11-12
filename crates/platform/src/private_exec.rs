@@ -232,7 +232,11 @@ mod imp {
         let root = path(&resources.project_root)?;
         let stat = resources.project_root.metadata()?;
         // SAFETY: geteuid has no preconditions.
-        if !stat.is_dir() || stat.uid() != unsafe { libc::geteuid() } || root == Path::new("/") {
+        if !stat.is_dir()
+            || stat.uid() != unsafe { libc::geteuid() }
+            || root == Path::new("/")
+            || std::env::home_dir().as_ref() == Some(&root)
+        {
             return Err(invalid("project root is not an owned native directory"));
         }
         reject_external_links(&root)?;
@@ -442,11 +446,36 @@ mod imp {
 
     pub(super) fn apply(policy: Arc<Policy>, command: &mut Command) -> Result<()> {
         core_pattern()?;
-        // Ensure callers cannot accidentally keep a cwd outside the allowed read/write root.
-        command.current_dir(&policy.root);
+        // Keep the caller's reviewed project subdirectory (uv lock/build relies on it).
+        // A missing cwd defaults to the owned root; an outside cwd is never accepted.
+        let cwd = command
+            .get_current_dir()
+            .map(fs::canonicalize)
+            .transpose()?
+            .unwrap_or_else(|| policy.root.clone());
+        if !cwd.starts_with(&policy.root) {
+            return Err(invalid("command working directory is outside its project"));
+        }
+        command.current_dir(cwd);
         // SAFETY: callback runs only async-signal-safe syscalls, with owned immutable structures.
         unsafe {
             command.pre_exec(move || {
+                // Recheck the actual cwd after Command chdir and earlier callbacks, before exec.
+                let mut cwd = [0u8; 4096];
+                let count = libc::readlink(
+                    c"/proc/self/cwd".as_ptr(),
+                    cwd.as_mut_ptr().cast(),
+                    cwd.len(),
+                );
+                if count <= 0 || count as usize == cwd.len() {
+                    return Err(io::Error::from_raw_os_error(libc::EPERM));
+                }
+                let cwd = std::ffi::OsStr::from_encoded_bytes_unchecked(&cwd[..count as usize]);
+                if !Path::new(cwd).starts_with(&policy.root)
+                    || cwd.as_encoded_bytes().ends_with(b" (deleted)")
+                {
+                    return Err(io::Error::from_raw_os_error(libc::EPERM));
+                }
                 // stdio was installed by Command before pre_exec. It must not be a writable file
                 // outside the project, even if another caller configured it incorrectly.
                 for fd in 0..=2 {
