@@ -4,7 +4,6 @@ import { signal } from "../ui/signal"
 import { isNsfw } from "../ui/Tags"
 import type { CanvasStore, ElementView } from "./CanvasStore"
 import { madeHere } from "./shown"
-import { loraNote } from "./loraNotes"
 
 /** What a box can be given by a drag: whether this one takes it, and what taking it does. A checkpoint is one; anything else goes by this same path. */
 export interface Carried {
@@ -155,7 +154,7 @@ export const carrying = (found: FoundModel, tools: Map<string, Tool>): Carried =
     if (addOnsOf(lora, models).some((addOn) => addOn.ref === found.model)) return void say(`${wordOf(found.model)} is already on ${name}`)
     const slot = modelsOf(store.tools.get().get(store.get(name)?.asset?.tool ?? "")).find((model) => model.family === found.family)?.slot
     if (found.kind === "lora") {
-      const strength = found.strength ?? loraNote(found.model)?.strength
+      const strength = found.strength
       store.putOn(name, { lora: [...(Array.isArray(lora) ? lora : []), { ref: found.model, ...(typeof strength === "number" && Number.isFinite(strength) ? { strength } : {}) }] })
     }
     else if (slot) store.putOn(name, { models: { ...slotsOf(models), [slot]: { ...slotsOf(models)[slot], ref: found.model } } })
