@@ -638,7 +638,7 @@ cozy machine logs local calcifer --lines 5000 2> /dev/null | grep -q "project.db
   || check "migrate: Calcifer's log doesn't say where the copy is"
 migrate_read "$M" now || check "migrate: what this cozy holds of it"
 local part
-for part in facts rows yaml history; do
+for part in facts rows history; do
   cmp -s "$OUT/migrate-0240-$part" "$OUT/migrate-now-$part" || check "migrate: its $part read otherwise here: $(diff "$OUT/migrate-0240-$part" "$OUT/migrate-now-$part" | head -c 800)"
 done
 [ "$(sql1 "$M" "SELECT count(*) FROM versions WHERE coalesce(json_extract(record, '\$.id'), '') = ''")" = 0 ] || check "migrate: a take has no id"
@@ -686,10 +686,9 @@ migrate_facts() {
     held "$1" "$name" | jq -c --arg n "$name" '{name: $n, fields: .asset.fields, approved: .asset.approved, versions: [.versions[] | {number, files: (.files | map_values(.sha256))}], discarded: (.discarded // [])}'
   done
 }
-# migrate_read <project> <tag>: what it holds, to $OUT/migrate-<tag>-{facts,rows,yaml,history}.
+# migrate_read <project> <tag>: what it holds, to $OUT/migrate-<tag>-{facts,rows,history} (0.25 has no YAML export, cl-930).
 migrate_read() {
   migrate_facts "$1" > "$OUT/migrate-$2-facts" && migrate_rows "$1" > "$OUT/migrate-$2-rows" \
-    && project_api "$1" /yaml | sed '/^# cozy-project-base: /d' > "$OUT/migrate-$2-yaml" \
     && project_api "$1" /history | jq -c '[.entries[] | {words, undone: (.undone != null)}]' > "$OUT/migrate-$2-history"
 }
 # dump_of <project.db>: its schema version and the hash of all it holds (read; a WAL copy no one has open needs its -shm made).
