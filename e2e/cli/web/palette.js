@@ -1,7 +1,8 @@
 // The palette offers every tool the Hub lists (cl-896, Paul 11-12: "Where did all of the other image models go?"), in a real browser on a
 // real Calcifer: each package `cozy package ls` names with a release has its tools under what they make, the image models under Image and
-// the video upscalers under Upscale Video; one dragged out is a box of it, and one dropped on a video box goes on it; a tool taken off is
-// off, and back when its package is added; with no Hub the palette says it holds only what's installed.
+// the video upscalers under Upscale Video, and nothing of a release locked to an older Runtime; one dragged out is a box of it, and one
+// dropped on a video box goes on it; a tool taken off is off, and back when its package is added; with no Hub the palette says it holds
+// only what's installed.
 //   node palette.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER. $PLAYWRIGHT: playwright-core's directory;
 // $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $RESTART, $NO_HUB: shell commands that bring this Calcifer
 // back, the second on no Hub (web.sh's web_restart); $CATALOG: the Hub holds every first-party package. Prints what it saw as JSON and exits
@@ -104,6 +105,12 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   for (const [operation, tools] of Object.entries(wanted)) {
     const missing = tools.filter((tool) => !under(operation).includes(tool));
     check(`palette_${operation}_lists_every_hub_tool`, missing.length === 0, { missing, shown: palette[operation] });
+  }
+  // A release locked to the Runtime before this one is on the Hub, and offered nowhere (run 46790: flux-3-klein@0.7.0, Runtime 0.44).
+  if (process.env.CATALOG) {
+    const OLD = 'e2e-runtime-044';
+    check('an_older_runtime_release_is_on_the_hub', released.includes(OLD), released);
+    check('an_older_runtime_release_is_not_offered', !ids.tools.some((tool) => tool.package === OLD) && !Object.values(palette).flat().some((tool) => tool.startsWith(`${OLD}/`)), ids.tools.filter((tool) => tool.package === OLD).map((tool) => tool.id));
   }
   const media = ids.tools.filter((tool) => ['image', 'video'].includes(tool.makes) && tool.id !== 'cozy/edit');
   const unshown = media.filter((tool) => !Object.values(palette).flat().includes(tool.id)).map((tool) => tool.id);
