@@ -143,7 +143,10 @@ full = {num(r.get("number")): row(load(f"run-{num(r.get('number'))}.json")) or r
 
 
 def package(target: Json) -> str:
-    return (text(target).split() or [""])[-1].split("/")[0]
+    """A run's package by its target: `_/qwen-image-2/image@0.9.2`, `ahead _/minimax-h3/generate@0.11.1` (an org, then the package
+    and its function, at a release), or `qwen-image-2/image`."""
+    parts = (text(target).split() or [""])[-1].split("@")[0].split("/")
+    return parts[-2] if len(parts) >= 2 else parts[0]
 
 
 def one(kind: str, tool: str) -> Row:
