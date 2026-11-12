@@ -664,7 +664,7 @@ fn census_checked(strict: bool) -> io::Result<Vec<Row>> {
         else {
             continue;
         };
-        if pid == own || pid == 1 {
+        if !strict && (pid == own || pid == 1) {
             continue;
         }
         let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
