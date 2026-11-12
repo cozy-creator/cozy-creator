@@ -940,9 +940,10 @@ struct Shared {
 type Frames = ((u64, std::time::SystemTime), Option<u64>);
 
 impl Drop for Shared {
-    /// Nothing names the folder now: project.db's connections close, beside whatever dropped it, as closing them may checkpoint its
-    /// WAL. What the project held is freed there too, and its memory given back to the OS (cl-870): without that, Calcifer stays as
-    /// large as the project made it.
+    /// Nothing names the folder now: project.db's connections close, beside whatever dropped it, its WAL checkpointed first. The last
+    /// connection's close checkpoints what's left under an exclusive lock every other open waits on, and a slow disk's checkpoint there
+    /// outlasted the next open's wait (cl-885); a passive one beside reads and writes leaves it nothing. What the project held is freed
+    /// there too, and its memory given back to the OS (cl-870): without that, Calcifer stays as large as the project made it.
     fn drop(&mut self) {
         let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
         if shared.get(&self.key).is_some_and(|held| held.strong_count() == 0) {
@@ -961,6 +962,9 @@ impl Drop for Shared {
         std::thread::spawn(move || {
             let resident = || platform::contain::host_memory::process(std::process::id()).map_or(0, |memory| memory.rss) >> 20;
             let before = (resident(), platform::heap::committed() >> 20);
+            if let Some(conn) = writing.as_ref().or(reading.as_ref()) {
+                let _ = conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()));
+            }
             drop((writing, reading, held, book, films));
             platform::heap::give_back();
             tracing::info!(
