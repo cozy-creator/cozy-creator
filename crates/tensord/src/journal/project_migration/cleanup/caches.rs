@@ -122,7 +122,8 @@ fn retire_runtime_caches(engine: &Path) -> io::Result<Vec<String>> {
         let hold = platform::durable::open_nofollow(
             &gpu.join("kernels").join(format!(".{namespace}.hold")),
             fs::OpenOptions::new().write(true),
-        );
+        )
+        .map_err(io::Error::from);
         match hold {
             Ok(hold) if hold.try_lock().is_ok() => Some(hold),
             Err(error) if error.kind() == io::ErrorKind::NotFound && absent(&kernels)? => None,
