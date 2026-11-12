@@ -667,6 +667,10 @@ code {
     0 0 0 calc(3px * var(--unzoom, 1)) var(--select-gap),
     0 0 calc(24px * var(--unzoom, 1)) calc(10px * var(--unzoom, 1)) var(--select-glow);
 }
+/* Far out the ring outgrows the 12px under its name: the name row rises clear of it, never under it. */
+.react-flow__node.selected .card:not(.entity) > .head {
+  translate: 0 min(0px, calc(9px - 9px * var(--unzoom, 1)));
+}
 .media.alpha {
   background-color: var(--check);
   background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
@@ -1115,7 +1119,9 @@ code {
   z-index: 2;
   display: -webkit-box;
   margin: 0;
-  padding: var(--s2) var(--s3);
+  /* Its room under the words is a border, not padding: what's clamped past four lines would show in padding, cut through. */
+  padding: var(--s2) var(--s3) 0;
+  border-bottom: var(--s2) solid transparent;
   overflow: hidden;
   border-radius: var(--round);
   background: var(--scrim);
