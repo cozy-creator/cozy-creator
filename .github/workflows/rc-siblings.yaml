@@ -1,0 +1,55 @@
+name: rc-siblings
+# A push to cozy-runtime's or packages' open RC runs this RC's e2e within the hour (Paul, 11-12; tracker cl-885): every
+# 10 minutes the siblings' rc/<x.y.z> heads are compared with the ones the newest rc-e2e run tested (its `affected`
+# job's pins), and rc-e2e.yaml is dispatched when one moved. rc-e2e's concurrency keeps one run per RC at a time with
+# only the newest waiting, and a waiting run reads the siblings' heads when it starts, so nothing is dispatched while
+# one waits. Their GITHUB_TOKEN can't dispatch here, and a schedule runs only from the default branch, so this lives here.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: rc-siblings
+  cancel-in-progress: false
+
+jobs:
+  follow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rc=$(gh api "repos/$GITHUB_REPOSITORY/branches?per_page=100" --paginate -q '.[].name' | grep -E '^rc/[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          [ -n "$rc" ] || { echo "no open rc/<x.y.z>"; exit 0; }
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/rc-e2e.yaml/runs?branch=$rc&per_page=30" -q '.workflow_runs')
+          if jq -e 'any(.[]; .status == "queued" or .status == "waiting" or .status == "pending" or .status == "requested")' <<< "$runs" > /dev/null; then
+            echo "an rc-e2e run on $rc waits, and reads the siblings when it starts"; exit 0
+          fi
+          # The newest run that tested something: in progress, or finished with a verdict (a cancelled one tested nothing).
+          newest=$(jq -c 'first(.[] | select(.status == "in_progress" or .conclusion == "success" or .conclusion == "failure")) // empty' <<< "$runs")
+          run=$(jq -r '.id // empty' <<< "$newest")
+          tested=
+          if [ -n "$run" ]; then
+            job=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" -q '.jobs[] | select(.name == "e2e / affected")')
+            if [ "$(jq -r '.status // empty' <<< "$job")" != completed ] && [ "$(jq -r .status <<< "$newest")" = in_progress ]; then
+              echo "rc-e2e $run is reading the siblings now"; exit 0
+            fi
+            [ -z "$job" ] || tested=$(gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$(jq -r .id <<< "$job")/logs" | sed -nE 's/.*Z (runtime|packages)=([0-9a-f]{40})\r?$/\1=\2/p')
+          fi
+          moved=
+          for sibling in runtime packages; do
+            repo=cozy-creator/$([ $sibling = runtime ] && echo cozy-runtime || echo packages)
+            head=$(gh api "repos/$repo/branches/$rc" -q .commit.sha 2>/dev/null) || continue
+            was=$(sed -n "s/^$sibling=//p" <<< "$tested" | tail -1)
+            [ "$head" = "$was" ] || moved+="${moved:+, }$repo ${was:0:9}..${head:0:9}"
+          done
+          [ -n "$moved" ] || { echo "the siblings' $rc heads are the ones rc-e2e ${run:-} tested"; exit 0; }
+          gh workflow run rc-e2e.yaml -R "$GITHUB_REPOSITORY" --ref "$rc"
+          echo "dispatched rc-e2e.yaml on $rc: $moved" | tee -a "$GITHUB_STEP_SUMMARY"
