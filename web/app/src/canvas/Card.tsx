@@ -878,7 +878,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
-              {!looking && (asset.kind !== "image" || editing) && <AssetEdit name={name} view={view} editing={editing} prominent={parameterTool} head={asset.kind !== "image" ? <Stack name={name} /> : undefined} actions={editing && <RenderButton name={name} view={view} />} />}
+              {/* With no tool, a picture or a video asks nothing and has nothing to render (Paul, 11-12). */}
+              {!looking && (asset.kind !== "image" || editing) && Boolean(asset.tool) && <AssetEdit name={name} view={view} editing={editing} prominent={parameterTool} head={asset.kind !== "image" ? <Stack name={name} /> : undefined} actions={editing && <RenderButton name={name} view={view} />} />}
               {asset.kind !== "image" && !view.hereWords && <TakeName view={view} />}
               {view.warned && warned ? (
                 <div className="warned-lines">

@@ -18,7 +18,7 @@ export function VideoScrub({ name, view }: { name: string; view: ElementView }) 
   const go = (to: number) => {
     const at = Math.max(0, Math.min(last, to)) / fps
     store.patch(name, { scrub: at })
-    store.seek(name, at)
+    store.seek(name, at, true)
   }
   const picks = makes(view) && Boolean(tools.get(view.asset?.tool ?? "")?.pickup) && shown.number !== undefined
   return (
@@ -36,7 +36,7 @@ export function VideoScrub({ name, view }: { name: string; view: ElementView }) 
         </button>
         <span className="sp" />
         {picks && (
-          <button type="button" className="run" onClick={() => void store.beginVideoPickup(name, frame / fps)}>
+          <button type="button" className="tb pick-up" onClick={() => void store.beginVideoPickup(name, frame / fps)}>
             Pick up from here
           </button>
         )}

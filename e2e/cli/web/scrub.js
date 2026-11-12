@@ -90,7 +90,9 @@ const pickupAt = (frame, last, snap) => (!snap ? Math.min(frame, last) : frame <
   const range = scrub.locator('input[type=range]');
   await range.waitFor();
   const last = Number(await range.getAttribute('max'));
+  // Scrubbing holds the frame it's taken to: from the start, 50 on.
   await range.focus();
+  await page.keyboard.press('Home');
   for (let step = 0; step < 50; step++) await page.keyboard.press('ArrowRight');
   await page.waitForTimeout(400);
   const frame = Number(await range.inputValue());
@@ -106,7 +108,13 @@ const pickupAt = (frame, last, snap) => (!snap ? Math.min(frame, last) : frame <
 
   // Pick up from here, under it: Render asks to keep up to that frame, on the tool's grid.
   const pickUp = scrub.locator('button:text-is("Pick up from here")');
-  check('pick_up_is_under_the_scrubber', (await pickUp.count()) === 1 && (await focus.locator('.media .video-pickup-action').count()) === 0);
+  // Small, under the player, never over it.
+  const button = await pickUp.boundingBox();
+  const player = await focus.locator('.media').first().boundingBox();
+  const over = button && player && button.x < player.x + player.width && button.x + button.width > player.x && button.y < player.y + player.height && button.y + button.height > player.y;
+  seen.pick_up = { button, player };
+  check('pick_up_is_under_the_player_not_over_it', (await pickUp.count()) === 1 && (await focus.locator('.media .video-pickup-action').count()) === 0 && !over && button.y >= player.y + player.height - 1, seen.pick_up);
+  check('pick_up_is_small', button.height <= 26, button);
   const wanted = pickupAt(51, last, shotTool.pickup);
   seen.wanted_out_frame = wanted;
   const asked = page.waitForRequest((request) => request.method() === 'POST' && /\/v1\/projects\/[^/]+\/runs$/.test(new URL(request.url()).pathname), { timeout: STEP_MS });

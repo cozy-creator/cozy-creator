@@ -300,6 +300,12 @@ body:has(.focus-viewport) .zoom {
   align-items: center;
   gap: 6px;
 }
+/* Small, a word's size, and under the player, never over it (Paul, 11-12). */
+.focus-viewport .video-scrub .pick-up {
+  height: auto;
+  padding: 2px 8px;
+  font-size: var(--small);
+}
 .image-tool-name {
   flex: 1;
   min-width: 0;
