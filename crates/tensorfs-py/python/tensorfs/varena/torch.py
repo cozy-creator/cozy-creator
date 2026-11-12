@@ -15,7 +15,7 @@ import threading
 from typing import TYPE_CHECKING, Iterator, Sequence, TypeAlias, cast
 
 from .. import _ext
-from ._facts import EscapeRecord, PhaseMode, PhaseObservation, Room, SplitContext, SplitObservation, SplitSelection, Verdict, WorkingStats
+from ._facts import DriverShort, EscapeRecord, PhaseMode, PhaseObservation, Room, SplitContext, SplitObservation, SplitSelection, Verdict, WorkingStats
 
 PhaseOverlapError = _ext.PhaseOverlapError
 
@@ -208,9 +208,19 @@ def ooms(device: DeviceLike = 0) -> int:
 
 def room(device: DeviceLike = 0) -> Room:
     """What the card has now, as a split chooses by: `capacity` (the card or its cap, less what is
-    outside this process), `working_live`, `pinned`, `weights_resident` and `free` bytes."""
+    outside this process), `working_live`, `pinned`, `weights_resident` and `free` bytes, and the
+    `driver_reserve` every map leaves free."""
     _installed()
     return _ext._varena_room(_device(device))
+
+
+def driver_short(device: DeviceLike = 0) -> DriverShort:
+    """The driver ran out of memory on its own (a kernel's first launch, local memory, a library's
+    handle), so no allocation of ours was refused and no reclaim ran: the reserve every map leaves
+    free doubles, to at most an eighth of the card, and this process gives up what it can until
+    the card has it free. Run what failed again after it."""
+    _installed()
+    return _ext._varena_driver_short(_device(device))
 
 
 def reset_peak(device: DeviceLike = 0) -> None:

@@ -108,6 +108,19 @@ class Room(TypedDict):
     pinned: int
     weights_resident: int
     free: int
+    driver_reserve: int
+
+
+class DriverShort(TypedDict):
+    """`torch.driver_short`'s answer: the reserve every map now leaves the driver, whether this
+    call grew it, the bytes released for it, the card's free bytes after, and what other programs
+    took since this process's quietest sample (what waiting may bring back)."""
+
+    reserve: int
+    grew: int
+    released: int
+    free: int
+    others: int
 
 
 class WorkingStats(TypedDict):

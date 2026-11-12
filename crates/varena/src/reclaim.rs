@@ -341,7 +341,7 @@ impl<'a> Sequence<'a> {
 /// Of `came` bytes outside this process since its quietest sample, what other programs took
 /// (`cooperative::others_came`), never this process's own; where no ledger or NVML can say (not
 /// Linux), all of it, as before.
-fn theirs(device: i32, came: usize) -> usize {
+pub(crate) fn theirs(device: i32, came: usize) -> usize {
     #[cfg(target_os = "linux")]
     return came.min(crate::cooperative::others_came(device));
     #[cfg(not(target_os = "linux"))]
@@ -408,7 +408,12 @@ pub(crate) fn acquire<T>(
                     );
                 }
             }
-            return Err(failure.into());
+            // Every lever is gone: what is left of the driver's reserve goes before the demand fails.
+            return match crate::waived(&mut try_map) {
+                Ok(value) => Ok(value),
+                Err(again) if again.is_oom() => Err(failure.into()),
+                Err(again) => Err(again.into()),
+            };
         }
         // Gave what the arithmetic said and still short: the driver's free reading is only
         // approximate. A wait that released nothing asks for no more: that overshoot evicted GBs.
@@ -429,7 +434,7 @@ fn shortfall(need: usize, failure: &AllocationFailure, gpu: &Device) -> Result<u
     let gate = crate::gate(gpu.ordinal)?;
     gate.not_capturing()?;
     let _context = gpu.driver().enter()?;
-    Ok(need.saturating_sub(gpu.driver().memory_info()?.0))
+    Ok(need.saturating_sub(gpu.spare(gpu.driver().memory_info()?.0)))
 }
 
 /// No allocation to retry: give up `want` bytes in the same order. Returns regions evicted.
@@ -490,7 +495,7 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
             return Ok(false);
         }
         let _context = gpu.driver().enter()?;
-        let room = gpu.driver().memory_info()?.0.min(gpu.headroom());
+        let room = gpu.spare(gpu.driver().memory_info()?.0).min(gpu.headroom());
         let state = gpu.lock()?;
         let prefix = state.prefix(&order);
         let idle = state.entries.iter()
