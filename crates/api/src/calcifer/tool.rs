@@ -15,7 +15,7 @@ use crate::{
 /// The kinds of file a box can be.
 pub const MEDIA: [&str; 3] = ["image", "video", "audio"];
 /// The platform's words on any box, whatever made it: no tool's field goes by one.
-pub const PLATFORM: [&str; 6] = ["tool", "approved", "description", "models", "lora", "text"];
+pub const PLATFORM: [&str; 8] = ["tool", "approved", "description", "models", "lora", "text", "node_kind", "selected_version"];
 
 /// The Edit: what Calcifer makes itself, free, with no machine.
 pub const EDIT: &str = "cozy/edit";
@@ -231,15 +231,15 @@ pub struct ToolField {
     pub max_items: Option<u64>,
 }
 
-/// The Edit as a tool, listed before any function: clips on a track, rendered here.
+/// Timeline, the built-in video composition tool: clips on a track, rendered here.
 pub fn edit() -> Tool {
     Tool {
         id: EDIT.to_owned(),
         package: "cozy".to_owned(),
         function: "edit".to_owned(),
         release: String::new(),
-        name: "Edit".to_owned(),
-        label: "Edit".to_owned(),
+        name: "Timeline".to_owned(),
+        label: "Timeline".to_owned(),
         package_title: "Cozy".to_owned(),
         makes: "video".to_owned(),
         description: "Put videos and stills together into one video, free, with no machine".to_owned(),
@@ -248,7 +248,7 @@ pub fn edit() -> Tool {
         ui: None,
         pickup: None,
         model: None,
-        fields: vec![ToolField { field: "timeline".to_owned(), ty: FieldType::Timeline, label: "Edit".to_owned(), ..ToolField::default() }],
+        fields: vec![ToolField { field: "timeline".to_owned(), ty: FieldType::Timeline, label: "Timeline".to_owned(), ..ToolField::default() }],
     }
 }
 
