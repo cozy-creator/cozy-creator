@@ -16,6 +16,7 @@ use std::{
     path::Path,
     process::{Command, Stdio},
     str::FromStr,
+    sync::Arc,
 };
 
 /// What one environment is built from.
@@ -471,14 +472,16 @@ impl Publisher {
 
 /// A builder's own group and inherited ownership, supervised while its stderr is drained.
 fn run_builder(command: &mut Command, namespace: &str, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> Result<(Supervised, Vec<u8>), Failure> {
-    let scope = match platform::contain::Scope::inherited(namespace) {
-        Ok(scope) => Some(scope),
+    let scope = match if crate::private_io::current().is_some() { platform::contain::Scope::create(namespace) } else { platform::contain::Scope::inherited(namespace) } {
+        Ok(scope) => Some(Arc::new(scope)),
         Err(error) if error.is_unsupported() => None,
         Err(error) => return Err(io_failure(io::Error::other(error))),
     };
     // After the caller's environment: no override can accidentally erase the owner token.
-    command.envs(scope.as_ref().and_then(platform::contain::Scope::environment));
+    command.envs(scope.as_deref().and_then(platform::contain::Scope::environment));
     platform::process::own_group(command);
+    let mut private_io = crate::private_io::command_io(command, false, false, true).map_err(io_failure)?;
+    crate::private_io::apply_native(command, private_io.as_mut(), scope.as_ref()).map_err(io_failure)?;
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -488,7 +491,9 @@ fn run_builder(command: &mut Command, namespace: &str, stop: Option<&crate::stop
             return Err(("package_installation_uv_absent", format!("cannot run uv: {error}")));
         }
     };
-    let mut stderr = child.stderr.take().expect("piped builder stderr");
+    // Release parent copies of child endpoints before draining to EOF.
+    *command = Command::new("/dev/null");
+    let mut stderr: Box<dyn Read + Send> = match private_io.as_mut().and_then(|pipes| pipes.error.take()) { Some(file) => Box::new(file), None => Box::new(child.stderr.take().expect("piped builder stderr")) };
     std::thread::scope(|threads| {
         let drained = threads.spawn(move || {
             let mut kept = Vec::new();
@@ -499,7 +504,7 @@ fn run_builder(command: &mut Command, namespace: &str, stop: Option<&crate::stop
             .map_err(|error| ("package_installation_uv_failed", format!("uv: {error}")));
         // A build backend can outlive uv and keep its stderr open. End it before waiting on
         // that pipe, including when supervision failed or the run was canceled.
-        let cleaned = scope.as_ref().map(platform::contain::Scope::end).transpose()
+        let cleaned = scope.as_deref().map(platform::contain::Scope::end).transpose()
             .map_err(|error| io_failure(io::Error::other(error)));
         let stderr = drained.join().unwrap_or_default();
         let ended = ended?;
@@ -574,12 +579,19 @@ fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>)
         command.stderr(Stdio::null());
     }
     platform::process::own_group(&mut command);
+    let mut private_io = crate::private_io::command_io(&mut command, true, true, false).map_err(io_failure)?;
+    let process_scope = crate::private_io::current().map(|_| crate::private_io::new_process_scope()).transpose().map_err(|error| io_failure(error.into()))?;
+    crate::private_io::apply_native(&mut command, private_io.as_mut(), process_scope.as_ref()).map_err(io_failure)?;
     let mut child = command.spawn().map_err(io_failure)?;
+    drop(command);
     // Its own exit says why, should it stop before reading the request.
-    let _ = child.stdin.take().expect("piped").write_all(request.to_string().as_bytes());
-    let (mut stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take());
+    let mut input: Box<dyn Write> = match private_io.as_mut().and_then(|pipes| pipes.input.take()) { Some(file) => Box::new(file), None => Box::new(child.stdin.take().expect("piped")) };
+    let _ = input.write_all(request.to_string().as_bytes());
+    drop(input);
+    let mut stdout: Box<dyn Read + Send> = match private_io.as_mut().and_then(|pipes| pipes.output.take()) { Some(file) => Box::new(file), None => Box::new(child.stdout.take().expect("piped")) };
+    let stderr = child.stderr.take();
     // Supervised, as uv is: a cancel ends it, so a description that does not end holds no install.
-    let (ended, read, said) = std::thread::scope(|scope| {
+    let (ended, cleaned, read, said) = std::thread::scope(|scope| {
         let drained = scope.spawn(move || {
             let mut kept = Vec::new();
             let _ = stdout.read_to_end(&mut kept);
@@ -593,8 +605,13 @@ fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>)
             String::from_utf8_lossy(&kept).into_owned()
         });
         let ended = crate::process::supervise(&mut child, stop, &|_| ());
-        (ended, drained.join().unwrap_or_default(), told.join().unwrap_or_default())
+        let cleaned = process_scope.as_deref().map(platform::contain::Scope::end).transpose();
+        (ended, cleaned, drained.join().unwrap_or_default(), told.join().unwrap_or_default())
     });
+    cleaned.map_err(|error| io_failure(error.into()))?;
+    if let Some(scope) = &process_scope {
+        if !platform::private_exec::project_scope_quiescent(scope).map_err(|error| io_failure(error.into()))? { return Err(("project_storage_busy", "a description descendant remains in its kernel scope".into())); }
+    }
     let status = match ended.map_err(io_failure)? {
         Supervised::Exited(status) => status,
         Supervised::Canceled => return Err(canceled()),
@@ -938,6 +955,7 @@ pub(crate) fn hold(dir: &Path) -> Result<(), Failure> {
 /// trampoline, compiles too. compileall's forkserver and workers outlive a killed leader, so the
 /// tree is killed once the leader exits.
 pub(crate) fn compile_bytecode(python: &Path) {
+    if crate::private_io::current().is_some() || crate::private_io::is_private_path(python) { return; }
     let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
     let script = format!(
         "import compileall, os, sysconfig\ngetattr(os, 'nice', lambda _: 0)(19)\n\

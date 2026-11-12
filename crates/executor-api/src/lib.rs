@@ -404,6 +404,7 @@ pub enum Kind {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Hello {
+    pub transport_challenge: String,
     pub pid: u32,
     pub ppid: u32,
     pub pgid: u32,

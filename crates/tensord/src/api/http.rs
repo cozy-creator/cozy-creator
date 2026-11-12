@@ -30,6 +30,7 @@ use futures_util::{Stream, StreamExt};
 use v1::path;
 use tower_service::Service as _;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use http_body_util::BodyExt as _;
 
 /// A refusal as its envelope, at the status its kind names unless the protocol names another.
 #[derive(Debug)]
@@ -98,8 +99,9 @@ async fn legacy_private_request() -> Response {
 async fn project_request(State(m): State<Machine>, Path((project, rest)): Path<(String, String)>, request: Request<Body>) -> Response {
     // No private body is read while the stronger storage/security contract is being prepared.
     // This explicit refusal is removed only when the native backend and project-owned engine qualify.
-    if let Err(error) = crate::private_io::require_project_execution() {
+    if rest != "close" { if let Err(error) = crate::private_io::require_project_execution() {
         return Refusal::from(Error::conflict("project_execution_unavailable", error.to_string())).into_response();
+    }
     }
     private_request(State(m), Path((project, rest)), request).await
 }
@@ -125,27 +127,37 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     let (descriptor, token, actor) = match proof { Ok(value) => value, Err(error) => return Refusal::from(error).into_response() };
     let selected = async {
         let checked = descriptor.clone();
-        let fresh = tokio::task::spawn_blocking(move || crate::private_io::register(&checked, &token, &actor)).await
-            .map_err(|_| Error::internal("private_storage_stopped", "private workspace verification stopped"))?
-            .map_err(|_| Error::forbidden("private_storage_proof", "the private workspace is locked or its proof is invalid"))?;
-        if fresh {
-            let runs = m.runs.clone();
-            let scope = descriptor.clone();
-            tokio::task::spawn_blocking(move || crate::private_io::within(Some(scope.clone()), || {
-                runs.service.engine.reconcile()?;
-                crate::runs::resume_private(&runs, &scope.project_id)
-            })).await.map_err(|_| Error::internal("private_storage_stopped", "private workspace recovery stopped"))?
-                .map_err(|_| Error::conflict("private_storage_recovery", "private execution recovery requires the unlocked project"))?;
-        }
+        tokio::task::spawn_blocking(move || crate::private_io::register(&checked, &token, &actor)).await
+            .map_err(|_| Error::internal("private_storage_stopped", "project workspace verification stopped"))?
+            .map_err(|_| Error::forbidden("private_storage_proof", "the project workspace is locked or its proof is invalid"))?;
         Ok::<_, Error>(descriptor)
     }.await;
     let descriptor = match selected { Ok(value) => value, Err(error) => return Refusal::from(error).into_response() };
-    if rest == "health" && request.method() == axum::http::Method::GET {
-        return StatusCode::NO_CONTENT.into_response();
-    }
     if rest == "close" && request.method() == axum::http::Method::POST {
         let headers = request.headers().clone();
         return crate::private_io::request(descriptor, close_private(State(m), headers)).await.into_response();
+    }
+    let ordinary = m.runs.clone();
+    let selected = descriptor.clone();
+    let selected = tokio::task::spawn_blocking(move || {
+        if ordinary.service.engine.with_journal(|journal| journal.contains_private_project(&selected.project_id))? { return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "project_storage_migration_required")); }
+        crate::private_io::bind_process_namespace(&selected, ordinary.publisher.process_namespace())?;
+        crate::private_io::within(Some(selected.clone()), || crate::private_io::probe_native(&selected))?;
+        let python = ordinary.publisher.probe_project_sdk()?;
+        crate::private_io::within(Some(selected.clone()), || {
+            crate::private_io::probe_transport(&selected, &ordinary.publisher, &python)?;
+            crate::private_io::open_execution(&selected, &ordinary)
+        })
+    }).await;
+    let runs = match selected {
+        Ok(Ok(runs)) => runs,
+        Ok(Err(error)) if error.to_string() == "project_storage_migration_required" => return Refusal::from(Error::conflict("project_storage_migration_required", "Legacy project history remains in the ordinary worker journal; migrate and compact it before protected execution.")).into_response(),
+        _ => return Refusal::from(Error::conflict("project_execution_unavailable", "This worker cannot install the protected project execution policy.")).into_response(),
+    };
+    let m = Machine { identity: m.identity, runs };
+    if rest == "health" && request.method() == axum::http::Method::GET {
+        return Json(v1::ProjectExecutionCapabilities { protected_journal: true, protected_objects_and_scratch: true,
+            filesystem_write_confinement: true, quiescent_seal: true }).into_response();
     }
     // A private scope is data execution, never software updates or global machine log access.
     if rest.starts_with("logs/") || rest == "keepalive" || (rest == "runs" && request.method() != axum::http::Method::GET) {
@@ -165,7 +177,15 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     crate::private_io::request(descriptor, async move {
         let ready = std::future::poll_fn(|context| <Router as tower_service::Service<Request<Body>>>::poll_ready(&mut routing, context)).await;
         match ready { Ok(()) => {}, Err(never) => match never {} }
-        match routing.call(request).await { Ok(response) => response, Err(never) => match never {} }
+        match routing.call(request).await {
+            Ok(response) => {
+                let lease = match crate::private_io::lease() { Ok(lease) => lease, Err(_) => return Refusal::from(Error::conflict("private_storage_busy", "project response custody is unavailable")).into_response() };
+                let (parts, body) = response.into_parts();
+                let body = body.map_frame(move |frame| { let _ = &lease; frame });
+                Response::from_parts(parts, Body::new(body))
+            }
+            Err(never) => match never {}
+        }
     }).await
 }
 
@@ -175,10 +195,8 @@ async fn close_private(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     let descriptor = crate::private_io::current().ok_or_else(|| Error::forbidden("private_storage_scope", "no private workspace was selected"))?;
     let actor = actor_id(caller.actor);
     m.call(move |runs| {
-        runs.service.engine.assert_private_idle(&descriptor.project_id).map_err(|_| Error::conflict("private_storage_busy", "private execution or output finalization is still active"))?;
-        if let Some(pool) = runs.service.pool() { pool.close_private_namespace(&descriptor).map_err(|_| Error::conflict("private_storage_busy", "a private executor is still exiting"))?; }
-        runs.service.engine.close_private_storage(&descriptor.project_id).map_err(|_| Error::conflict("private_storage_busy", "private output custody is still active"))?;
-        crate::private_io::close(&descriptor, &actor).map_err(|_| Error::conflict("private_storage_busy", "private input/output handles are still in use"))
+        if runs.service.engine.with_journal(|journal| journal.contains_private_project(&descriptor.project_id)).map_err(|_| Error::conflict("project_storage_migration_required", "Legacy worker custody could not be verified."))? { return Err(Error::conflict("project_storage_migration_required", "Legacy project history remains in the ordinary journal; migrate and compact it before sealing.")); }
+        crate::private_io::close(&descriptor, &actor).map_err(|_| Error::conflict("private_storage_busy", "Project execution, native handles or output custody are still active."))
     }).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }

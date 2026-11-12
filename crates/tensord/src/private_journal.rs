@@ -1,5 +1,5 @@
 //! Immutable private journal blobs. Only verified local encrypted views receive payload bytes;
-//! global SQLite stores opaque references and the public scheduling projection. A new blob is
+//! the project-owned SQLite stores their references and scheduling projection. A new blob is
 //! fsynced before its reference can participate in a SQLite commit. Never overwrite an old blob.
 use std::{
     fs::{self, OpenOptions},

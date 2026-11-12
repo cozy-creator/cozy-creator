@@ -178,7 +178,7 @@ impl Checkpoint {
                 cache.as_ref()
             }
             Objects::Memory { store, own } => match own.get(&object.sha256) {
-                Some(bytes) => return frozen(bytes),
+                Some(bytes) => return frozen(store, bytes),
                 None => Some(store),
             },
             Objects::Borrowed { .. } => return self.object(object),
@@ -296,7 +296,7 @@ impl Checkpoint {
                 if store.holds(object) { store.file(object) } else { source.file(object) }
             },
             Objects::Memory { store, own } => match own.get(&object.sha256) {
-                Some(bytes) => frozen(bytes),
+                Some(bytes) => frozen(store, bytes),
                 None => store.file(object),
             },
             Objects::Folder { dir, cache } => match folder_file(dir, object)? {
@@ -398,15 +398,15 @@ impl Checkpoint {
     }
 }
 
-/// One of a memory view's own objects as a file: written in the OS temp dir and unlinked at
+/// One of a memory view's own objects as a file: written inside its owning store and unlinked at
 /// once, so this descriptor is the only way to it and it is gone when that closes.
-fn frozen(bytes: &[u8]) -> Result<File> {
+fn frozen(store: &Store, bytes: &[u8]) -> Result<File> {
     use std::io::{Seek, SeekFrom, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     loop {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(".tensorfs-view-{}-{n}", std::process::id()));
+        let path = store.root().join("tmp").join(format!(".tensorfs-view-{}-{n}", std::process::id()));
         let mut file = match fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path) {
             Ok(file) => file,
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,

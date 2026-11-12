@@ -303,6 +303,8 @@ struct Environment<'a> {
 pub(crate) struct Publisher {
     pub(crate) sdk: PackageSdk,
     scope_namespace: String,
+    sdk_probe_root: PathBuf,
+    sdk_probe: Mutex<Option<PathBuf>>,
     machine: Arc<Machine>,
     store: Arc<Store>,
     /// One maker per source: a second asker waits, then finds it held (runs 5393/5394).
@@ -353,6 +355,8 @@ impl Publisher {
         Arc::new(Self {
             sdk,
             scope_namespace: platform::contain::namespace(engine),
+            sdk_probe_root: engine.join("sdk-runtime-probe"),
+            sdk_probe: Mutex::new(None),
             store: machine.store().clone(),
             machine,
             making: Mutex::new(HashMap::new()),
@@ -362,6 +366,52 @@ impl Publisher {
         })
     }
 
+    pub(crate) fn for_project(&self, root: &Path, store: Arc<Store>) -> io::Result<Arc<Self>> {
+        // All provider downloads, source conversions and refs default to the project store.
+        // Authentication is never treated as proof that the resulting weights are public.
+        let machine = Machine::new(store.clone(), None)?;
+        let mut sdk = self.sdk.clone();
+        sdk.uv = sdk.uv.in_project(root);
+        if matches!(sdk.torch, layer::Torch::Own { .. }) { sdk.torch = layer::Torch::Own { engine: root.to_owned(), wanted: Arc::default() }; }
+        Ok(Arc::new(Self { sdk, scope_namespace: self.scope_namespace.clone(), sdk_probe_root: self.sdk_probe_root.clone(), sdk_probe: Mutex::new(None), machine,
+            store, making: Mutex::default(), building: Mutex::default(), layer: Mutex::default(), refreshing: Arc::default() }))
+    }
+    /// One public SDK tool environment, independent of project identity, source and pins.
+    pub(crate) fn probe_project_sdk(&self) -> io::Result<PathBuf> {
+        use std::io::Read as _;
+        use sha2::Digest as _;
+        let mut ready = self.sdk_probe.lock().unwrap();
+        if let Some(python) = ready.as_ref() { return Ok(python.clone()); }
+        let links = self.sdk.find_links.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "project_transport_unsupported: selected SDK wheels are unavailable"))?;
+        let mut wheels = fs::read_dir(links)?.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| (name.starts_with("cozy_runtime-") || name.starts_with("tensorfs-")) && name.ends_with(".whl"))).collect::<Vec<_>>();
+        wheels.sort();
+        if wheels.len() != 2 { return Err(io::Error::new(io::ErrorKind::Unsupported, "project_transport_unsupported: selected SDK wheel pair is incomplete")); }
+        let mut hash = sha2::Sha256::new();
+        for wheel in &wheels {
+            let mut file = File::open(wheel)?;
+            let mut chunk = [0u8; 65536];
+            loop { let count = file.read(&mut chunk)?; if count == 0 { break; } hash.update(&chunk[..count]); }
+        }
+        let identity = tensorfs::sha256::hex(&hash.finalize());
+        let root = self.sdk_probe_root.join(&identity[..32]);
+        fs::create_dir_all(&root)?;
+        let python = platform::paths::venv_python(&root);
+        if !python.is_file() {
+            let output = self.sdk.uv.command()?.args(["venv", "--no-project", "--python", &self.sdk.python]).arg(&root).stdin(std::process::Stdio::null()).output()?;
+            if !output.status.success() { return Err(io::Error::other("selected public SDK environment could not be prepared")); }
+        }
+        let output = self.sdk.uv.command()?.args(["pip", "install", "--python"]).arg(&python).args(&wheels).stdin(std::process::Stdio::null()).output()?;
+        if !output.status.success() { return Err(io::Error::other("selected public SDK wheel pair could not be installed")); }
+        let output = crate::launch_identity::module(&python, "cozy_runtime.internal.executor")?.arg("--transport-capabilities").env_clear().stdin(std::process::Stdio::null()).output()?;
+        if !output.status.success() { return Err(io::Error::new(io::ErrorKind::Unsupported, "project_transport_unsupported: selected SDK does not support protected project transport")); }
+        crate::private_io::transport_capabilities(&output.stdout)?;
+        *ready = Some(python.clone());
+        Ok(python)
+    }
+    pub(crate) fn process_namespace(&self) -> &str { &self.scope_namespace }
+    pub(crate) fn public_sdk_trees(&self) -> Vec<PathBuf> { self.sdk.find_links.iter().cloned().chain(self.sdk.torch.base()).collect() }
+    pub(crate) fn sdk_executables(&self) -> Vec<PathBuf> { std::fs::canonicalize(self.sdk.uv.executable()).into_iter().collect() }
+    pub(crate) fn origin_machine(&self) -> Arc<Machine> { self.machine.clone() }
     /// This machine's PyTorch layer: its base's, read once. A machine with no image installs its
     /// own base the first time a package needs one, at the version `hub` names (`follow`), else
     /// the newest for its accelerator; none when it cannot (offline), and packages then install
@@ -752,12 +802,13 @@ impl Publisher {
                 Ok(())
             }).map_err(|e| e.to_string())
         };
-        let spawned = std::thread::Builder::new().name("name-refresh".into()).spawn(move || {
+        let private = crate::private_io::current();
+        let spawned = std::thread::Builder::new().name("name-refresh".into()).spawn(move || crate::private_io::within(private, || {
             if let Err(why) = read() {
                 tracing::info!(name = %done, "a held model name stands: reading it again failed: {why}");
             }
             refreshing.lock().unwrap().remove(&done);
-        });
+        }));
         if let Err(error) = spawned {
             tracing::warn!("a held model name is not read again: {error}");
             self.refreshing.lock().unwrap().remove(&unspawned);
