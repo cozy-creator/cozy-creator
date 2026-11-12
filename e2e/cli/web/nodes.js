@@ -558,7 +558,7 @@ function linesOf(text, name) {
   check('typed_after_a_name', Boolean(typedAfter.file?.lines?.includes('<source-a> typed')), typedAfter);
   await away();
 
-  // Right click: download, star, rename, delete, and what it's made with.
+  // Right click: download, star, rename and delete; a box's tool changes only by a drop from the palette (Paul, 11-12).
   await away();
   await box('source-b').locator('.nm').click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
@@ -568,7 +568,7 @@ function linesOf(text, name) {
   await box('Sheet').getByRole('button', { name: 'Rename node', exact: true }).click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
   const items = await page.locator('.asset-menu > button').allTextContents();
-  check('box_menu', ['Change the tool', 'Rename', 'Delete'].every((item) => items.includes(item)), items);
+  check('box_menu', ['Rename', 'Delete'].every((item) => items.includes(item)) && !items.includes('Change the tool'), items);
   await page.keyboard.press('Escape');
 
   // A fresh box, from the list: one prompt, or a prompt and one beat that's in the file from the start. All else is behind More, which stays as it's left, says what's set there, and saves what `cozy status` reads.
