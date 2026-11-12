@@ -82,11 +82,20 @@ impl<'a> Choices<'a> {
         let Value::Object(slots) = value else {
             return Err(malformed());
         };
+        // A model slot takes one model (Paul, 11-12): two keys naming one slot (a parameter and its path) with two models are refused.
+        let mut named: BTreeMap<String, (String, String)> = BTreeMap::new();
         for (slot, entry) in slots {
             let Value::Object(entry) = entry else {
                 return Err(malformed());
             };
             if let Some(reference) = entry.get("ref").and_then(Value::as_str) {
+                for path in self.slots(&slot)? {
+                    if let Some((key, was)) = named.get(&path).filter(|(_, was)| was != reference) {
+                        return Err(usage("model_slot_twice", format!("models gives {path} two models, {was} ({key}) and {reference} ({slot}): a model slot takes one"))
+                            .remedy("keep one: pick it in Models & LoRAs, or name the slot once"));
+                    }
+                    named.insert(path, (slot.clone(), reference.to_owned()));
+                }
                 self.choose(&slot, reference.to_owned())?;
             }
             match entry.get("lora") {
