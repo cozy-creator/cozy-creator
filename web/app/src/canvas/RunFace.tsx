@@ -191,7 +191,7 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const time = since !== undefined && left != null ? ` - ${short(since)} / ${short(since + left)}` : ""
   const cancel = !["canceling", "failed", "result"].includes(face.phase)
   return (
-    <div className={`prog run-face ${above ? "above" : "lines"} ${face.phase}`} data-phase={face.phase} data-run={number}>
+    <div className={`prog run-face ${above ? "above" : "lines"} ${face.phase}`} role="status" aria-label={`${name}'s render`} data-phase={face.phase} data-run={number}>
       {/* Its words give way to a narrow box; its numbers never do (cl-953). */}
       <p className="face-machine">
         <span className="face-where">{face.machine}</span>

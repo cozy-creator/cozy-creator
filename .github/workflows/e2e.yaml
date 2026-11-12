@@ -714,12 +714,13 @@ jobs:
       fail-fast: false
       matrix:
         # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
-        # Web behavior and the layout viewport partitions run separately. Manual shard selections remain available.
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","web-core","web-deleted","web-layout-1280","web-layout-1600","web-layout-2560","projectdb","projectvault","local-code"]') }}
+        # web-1, web-2, web-3, web-engines and web-solo are the web suite's lanes (cl-973), each its cells at once; web-core, web-deleted
+        # and web-layout-* go once their cells are in those lanes. Manual shard selections remain available.
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","web-1","web-2","web-3","web-engines","web-solo","web-core","web-deleted","web-layout-1280","web-layout-1600","web-layout-2560","projectdb","projectvault","local-code"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
-    # CLI's typed errors and exits, never on time.
-    timeout-minutes: 90
+    # CLI's typed errors and exits, never on time. A web lane runs in under 10 min.
+    timeout-minutes: ${{ contains(fromJSON('["web-1","web-2","web-3","web-engines","web-solo"]'), matrix.shard) && 20 || 90 }}
     defaults:
       run:
         shell: bash
@@ -759,7 +760,7 @@ jobs:
         working-directory: .creator/web/app
         run: pnpm install --frozen-lockfile
       - name: Install the optional project-encryption filesystem driver
-        if: matrix.shard == 'projectvault' || startsWith(matrix.shard, 'containment')
+        if: matrix.shard == 'projectvault' || matrix.shard == 'web-engines' || matrix.shard == 'web-vault' || startsWith(matrix.shard, 'containment')
         run: bash .creator/e2e/cli/install-vault-driver.sh
       - uses: actions/download-artifact@v4
         with:

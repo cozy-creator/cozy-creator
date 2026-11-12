@@ -277,6 +277,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
             className={`take ${shown?.number === version.number ? "on" : ""} ${asset.pinned && version.number === asset.approved ? "approved" : ""} ${view.slid === version.number ? "fresh" : ""}`}
             aria-label={`${asset.noun} ${version.number}`}
             aria-pressed={shown?.number === version.number}
+            aria-current={asset.pinned && version.number === asset.approved ? "true" : undefined}
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : "", asset.unseen?.includes(version.number) ? "not looked at yet" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
             data-take-id={version.id || undefined}
@@ -644,7 +645,7 @@ function TileMeter({ view }: { view: ElementView }) {
 /** A name with a chance to break after each _, so far out a long one wraps between its words; its text is the same (cl-958). */
 const breakable = (name: string) => name.split(/(?<=_)/).flatMap((part, at) => (at ? [<wbr key={at} />, part] : [part]))
 
-const CardBody = memo(function CardBody({ name, width, focused = false, snapshot }: { name: string; width: number; focused?: boolean; snapshot?: ElementView }) {
+const CardBody = memo(function CardBody({ name, width, focused = false, snapshot, selected }: { name: string; width: number; focused?: boolean; snapshot?: ElementView; selected?: boolean }) {
   const store = useCanvasStore()
   const flow = useReactFlow<ElementNode>()
   const live = useElement(name)
@@ -819,6 +820,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${cut ? "edits" : ""} ${plays ? "plays" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
+      aria-selected={focused ? undefined : Boolean(selected)}
       style={style}
       onClick={buttonsOnly}
       onAnimationEnd={(event) => {
@@ -948,7 +950,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
 })
 
 /** Thin, as React Flow renders it: identity and body width come from one geometry publication. */
-export function Card({ data }: NodeProps<ElementNode>) {
+export function Card({ data, selected }: NodeProps<ElementNode>) {
   const store = useCanvasStore()
   const focused = useSignal(store.focusedName)
   const entering = useSignal(store.focusEntering)
@@ -960,7 +962,7 @@ export function Card({ data }: NodeProps<ElementNode>) {
   const atRest = focused === data.name && entering && resting.current ? { ...resting.current, here: undefined, hereWords: undefined } : undefined
   return (
     <>
-      <CardBody name={data.name} width={data.width} snapshot={atRest} />
+      <CardBody name={data.name} width={data.width} snapshot={atRest} selected={selected} />
       <AddOns name={data.name} />
     </>
   )

@@ -127,7 +127,13 @@ with open(path, "wb") as out:
 PY
 }
 
-case $suite:$shard in
+# The web suite's jobs (cl-973) and one of its cells by hand (web-<cell>, web/<cell>.spec.js) take one seed.
+key=$suite:$shard
+case $shard in
+  web-1 | web-2 | web-3 | web-engines | web-solo | web-native) key=cli:web-suite ;;
+  web-*) [ ! -f "$here/cli/web/${shard#web-}.spec.js" ] || key=cli:web-suite ;;
+esac
+case $key in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web) needs='' ;;
   cli:runs | cli:local-code) needs='packages birefnet' ;;
   # commands shows a LoRA's modules (lora show, xs-183).
@@ -138,6 +144,8 @@ case $suite:$shard in
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;
   cli:ondemand) needs='packages birefnet' ;;
+  # Models & LoRAs, the VAE slot and heavy.py's BiRefNet; macOS and Windows run no models.
+  cli:web-suite) needs='packages birefnet loras vaes'; [ "${RUNNER_OS:-Linux}" = Linux ] || needs='packages' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras vaes' ;;
   cli:) needs='packages birefnet downloads loras vaes' ;;
@@ -245,7 +253,9 @@ if [ -n "$needs" ]; then
   publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
   # MOSS Image, which takes words only: what web/unused.js crosses out (cl-944).
-  case $shard in web-core | web-unused | '') publish "$packages/moss-image" ;; esac
+  case $key in cli:web-core | cli:web-unused | cli: | cli:web-suite) publish "$packages/moss-image" ;; esac
+  # The package-ui cell's own package (e2e/cli/project/boxed) as a release: a component that draws one field.
+  [ "$key" != cli:web-suite ] || publish "$here/cli/project/boxed"
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
   # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
   if [[ " $needs " == *" catalog "* ]]; then

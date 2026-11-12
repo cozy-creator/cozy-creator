@@ -395,6 +395,62 @@ code=0; (cd "$OUT/outside-projects" && cozy --json package uninstall local/one_s
   || check "package uninstall outside a project: exit $code, not project_required naming cozy new: $(tail -c 300 "$OUT/uninstall-outside.json")"
 }
 
+# The web suite's lanes (cl-973), each a job of its own with its own Calcifer: their cells at once (web.sh's web_suite), balanced by
+# measured time, longest first, one cell a line. A cell is web/<cell>.spec.js; its line is uncommented once it's written.
+WEB_1=(
+  # video
+  # render
+  # upload
+  # mention
+  # box-actions
+  # timeline
+  open
+)
+WEB_2=(
+  # fields
+  # layout
+  # type
+  # live
+  # delete-undo
+  # canvas-nav
+)
+WEB_3=(
+  # package-ui
+  # focus
+  # create
+  # takes
+  # no-overlap
+  # instant
+  select
+  # move
+)
+# The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
+WEB_ENGINES=(
+  # upload
+  # type
+  # create
+  # move
+  open
+  # vault
+)
+# What stops, restarts or re-points Calcifer (`@solo`), one at a time.
+WEB_SOLO=(
+  # account-rent
+  # offline
+)
+# macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout and offline.
+WEB_NATIVE=(
+  # layout
+  # offline
+  # upload
+  # type
+  # create
+  # move
+  open
+)
+web_cells=()
+web_lane() { web_suite "${SHARD#web-}" ${web_cells[@]+"${web_cells[@]}"}; }
+
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
   '') parts="
@@ -505,6 +561,12 @@ case $SHARD in
   project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
   # A box from Render to its take, each phase of its face kept as a picture (cl-921).
   web-activity) export DB_WEB=activity; parts="tools_read db_existing_web logs" ;;
+  web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
+  web-2) web_cells=(${WEB_2[@]+"${WEB_2[@]}"}); parts="web_lane logs" ;;
+  web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
+  web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
+  web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
+  web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
   web-core) parts="tools_read web_core page_resend logs" ;;
   web-firefox) parts="tools_read web_firefox logs" ;;
   # The palette against a Hub holding every first-party package (e2e/isolated.sh), and with none (cl-896).
@@ -652,16 +714,21 @@ case $SHARD in
     broken_answers
     logs
   " ;;
-  # Any other web-<cell> or projectdb-<cell> runs web/<cell>.js alone, so a new cell takes no line here. A list above is one
-  # cell a line: cells added by two changes never share a line.
+  # Any other web-<cell> runs web/<cell>.spec.js alone, else web/<cell>.js, as projectdb-<cell> does, so a new cell takes no line here. A
+  # list above is one cell a line: cells added by two changes never share a line.
   web-* | projectdb-*)
-    [ -f "$(dirname "$0")/web/${SHARD#*-}.js" ] || { echo "no cli shard $SHARD" >&2; exit 2; }
-    export DB_WEB=${SHARD#*-}; parts="tools_read db_existing_web logs" ;;
+    if [[ $SHARD == web-* ]] && [ -f "$(dirname "$0")/web/${SHARD#web-}.spec.js" ]; then
+      web_cells=("${SHARD#web-}"); parts="web_lane logs"
+    else
+      [ -f "$(dirname "$0")/web/${SHARD#*-}.js" ] || { echo "no cli shard $SHARD" >&2; exit 2; }
+      export DB_WEB=${SHARD#*-}; parts="tools_read db_existing_web logs"
+    fi ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 # macOS and Windows run what's theirs: the CLI, Calcifer, paths, the service and the page, on a Hub with only packages
-# published (e2e/isolated.sh). The catalog's reads of published weights are the same on every OS: Linux's commands shard.
-if [ -z "$LOCAL" ]; then
+# published (e2e/isolated.sh). The catalog's reads of published weights are the same on every OS: Linux's commands shard. A web lane
+# is the same lane there.
+if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
     entrypoints | projectvault) ;;
     web-layout-* | web-scale | web-canvas) parts="db_existing_web logs" ;;
