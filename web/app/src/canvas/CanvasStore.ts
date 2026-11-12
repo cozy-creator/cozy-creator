@@ -201,6 +201,8 @@ const NOT_THERE = Symbol("the box went before its turn came")
 const NOT_YET = Number.POSITIVE_INFINITY
 export const UNDO_MS = 10_000
 const TYPING_PAUSE_MS = 300
+/** How long after the last take landed what landed is said: several at once are one note (cl-937). */
+const LANDED_MS = 1200
 const CLEAR_OF_FRAME = 24
 /** The gap between a box and one made beside it. */
 
@@ -905,6 +907,9 @@ export class CanvasStore {
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) Object.assign(change, { slid: newest, glimpse: undefined })
+          // A take its run was seen making landed: it's said, with View (cl-937). A file dropped on it or one undo brings back isn't.
+          const made = asset.prefixes?.at(-1)
+          if (this.hasRead && made && newest !== view.asset?.prefixes?.at(-1)?.number && made.run != null && view.asset?.making?.includes(made.run)) this.sayLater(asset.name, made.number, made.main?.sha256)
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at. At rest, an approved box
@@ -1796,6 +1801,34 @@ export class CanvasStore {
     const asset = this.get(name)?.asset
     if (!asset?.unseen?.includes(number)) return
     this.over(name, { unseen: asset.unseen.filter((held) => held !== number) }, (served, write) => this.client.seen(this.projectId!, served, number, write).then(() => ({})), `mark ${asset.noun} ${number} seen on`, undefined)
+  }
+
+  /** Takes landed and not said yet: said together once none has landed for a moment (cl-937). */
+  private landedNow: { name: string; number: number; sha256?: string }[] = []
+  private landedTimer = 0
+
+  private sayLater(name: string, number: number, sha256?: string) {
+    this.landedNow.push({ name, number, sha256 })
+    clearTimeout(this.landedTimer)
+    this.landedTimer = window.setTimeout(() => this.sayLanded(), LANDED_MS)
+  }
+
+  /** What landed, said (Paul, 11-12: "so I can view the result and I know when it's done"): one take with its picture and View, which opens
+   *  its box on it, and that marks it seen; several at once as one note. One already being looked at isn't said. */
+  private sayLanded() {
+    const landed = this.landedNow.splice(0).filter(({ name, number }) => {
+      const view = this.get(name)
+      return view && !(this.focusedName.get() === this.resolveName(name) && shownOf(view)?.number === number)
+    })
+    if (!landed.length) return
+    const [{ name, number, sha256 }] = landed
+    const view = { label: "View", run: () => {
+      this.openHere(name)
+      this.pickTake(name, number)
+    } }
+    if (landed.length > 1) return void say(`${landed.length} renders finished: ${[...new Set(landed.map((one) => one.name))].join(", ")}`, undefined, { action: view, ms: 10_000 })
+    const noun = this.get(name)?.asset?.noun ?? "take"
+    say(`${name} finished: ${noun} ${number}`, undefined, { action: view, ms: 10_000, picture: sha256 && this.projectId ? this.client.thumb(this.projectId, sha256, 96) : undefined })
   }
 
   /** Stops one of its runs, gone from the box at once, and its others go on. */

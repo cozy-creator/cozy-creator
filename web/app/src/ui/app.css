@@ -2128,6 +2128,15 @@ video.preview.on {
   flex: 1;
   min-width: 0;
 }
+/* What a finished render made (cl-937): its take, small, before its words. */
+.note-picture {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--round);
+  background: var(--well);
+  object-fit: cover;
+}
 .note .remedy {
   flex-basis: 100%;
   color: var(--mute);
