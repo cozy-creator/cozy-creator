@@ -1107,6 +1107,10 @@ impl Runs {
     /// the background: a restarted machine re-warms without its controller. A member whose
     /// installation is gone leaves the set.
     pub(crate) fn restore_warm_sets(&self) -> io::Result<()> {
+        // The old ordinary journal has no project custody proof for warm model choices or
+        // authored inputs. Keep those exact preferences for migration; never replay them at
+        // global startup merely because their historical actor was unscoped.
+        if crate::private_io::current().is_none() {return Ok(());}
         let Some(gpu) = self.service.gpu() else {
             return Ok(());
         };

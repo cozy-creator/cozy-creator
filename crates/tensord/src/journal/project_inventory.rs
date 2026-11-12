@@ -239,6 +239,11 @@ mod linux {
             let Some(directory) = inventory.open_root(&engine.join(base)) else { continue };
             for (name, kind) in inventory.list(&directory) {
                 let path = directory.path.join(&name);
+                if base == "gpu/kernels" && kind == FileType::RegularFile && name.to_str().is_some_and(|name|name.strip_prefix(".u").and_then(|name|name.strip_suffix(".hold")).is_some_and(|uid|!uid.is_empty()&&uid.bytes().all(|b|b.is_ascii_digit()))) {
+                    if inventory.read(&directory,&name).is_some_and(|bytes|bytes.is_empty()) { inventory.inspected("system_kernel_cache_lock",&path); }
+                    else { inventory.pending("unparsed_kernel_cache_lock",&path); }
+                    continue;
+                }
                 if kind != FileType::Directory { inventory.pending("unsafe_shared_engine_entry", &path); continue; }
                 let Some(child) = inventory.directory(&directory, &name) else { continue };
                 for (leaf, kind) in inventory.list(&child) {

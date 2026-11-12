@@ -103,7 +103,9 @@ pub(super) fn prepare(
     let mut keys = BTreeSet::new();
     let mut owners = BTreeSet::new();
     for record in &records {
-        generations.insert(record.invocation.generation.clone());
+        if !record.invocation.generation.is_empty() {
+            generations.insert(record.invocation.generation.clone());
+        }
         if let Some(submission) = &record.submission {
             actors.insert(submission.actor.clone());
             if !submission.preparation_id.is_empty() {
@@ -347,7 +349,7 @@ pub(super) fn copy_metadata(
                 "resolutions" => Some((
                     "package",
                     format!(
-                        "resolution:{actor}:{}",
+                        "resolution:{actor}:{}:package",
                         row[column("key")?]
                             .text()
                             .ok_or_else(|| db_error("resolution key is invalid"))?
@@ -672,12 +674,18 @@ pub(super) fn retire_metadata(
         let result = store
             .retire_objects(&receipt.cleanup.objects, &uses, &keep)
             .map_err(crate::storage::io_error)?;
-        let independent = keep
-            .iter()
-            .map(|object| object.sha256.as_str())
-            .collect::<BTreeSet<_>>();
+        let mut independent = BTreeSet::new();
+        for root in &keep {
+            independent.extend(
+                store
+                    .closure(root)
+                    .map_err(crate::storage::io_error)?
+                    .into_iter()
+                    .map(|object| object.sha256),
+            );
+        }
         for object in result.retained {
-            if !independent.contains(object.sha256.as_str()) {
+            if !independent.contains(&object.sha256) {
                 pending.push(format!(
                     "legacy_retention_reader_or_independent_root:{}",
                     object.sha256
