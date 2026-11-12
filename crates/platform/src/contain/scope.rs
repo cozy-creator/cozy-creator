@@ -462,6 +462,40 @@ impl Scope {
         }
     }
 
+    /// Count actual surviving members, including live and previously stuck scopes. Unlike
+    /// `sweep`, this is a post-retirement observation, not a count of signals sent.
+    /// An unreadable same-user process or cgroup membership cannot establish quiescence.
+    pub fn namespace_processes(namespace: &str) -> crate::Result<usize> {
+        if namespace.is_empty() || namespace.contains('/') {
+            return Err(io::Error::other("invalid executor namespace").into());
+        }
+        let rows = census_checked(true)?;
+        let mut found: BTreeSet<u32> = members(&rows, |token| namespace_token(token, namespace))
+            .filter(|row| row.alive)
+            .map(|row| row.pid)
+            .collect();
+        let prefix = format!("cozy-executor-{namespace}-");
+        for row in rows.iter().filter(|row| row.alive) {
+            match fs::read_to_string(format!("/proc/{}/cgroup", row.pid)) {
+                Ok(text) => {
+                    if text.lines().any(|line| {
+                        line.split_once("::").is_some_and(|(_, path)| {
+                            path.split('/').any(|part| {
+                                part.strip_prefix(&prefix)
+                                    .is_some_and(|id| !id.is_empty() && !id.contains('-'))
+                            })
+                        })
+                    }) {
+                        found.insert(row.pid);
+                    }
+                }
+                Err(error) if gone(&error) => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(found.len())
+    }
+
     /// At machine start every scope of this namespace belongs to an earlier run: kill, wait
     /// for and remove each. Returns how many processes they still held.
     pub fn sweep(namespace: &str) -> crate::Result<usize> {
@@ -616,6 +650,10 @@ impl Row {
 /// Every process but this one and init, with its scope token where its environment is
 /// readable (a zombie has none).
 fn census() -> io::Result<Vec<Row>> {
+    census_checked(false)
+}
+
+fn census_checked(strict: bool) -> io::Result<Vec<Row>> {
     let own = std::process::id();
     let mut rows = Vec::new();
     for entry in fs::read_dir("/proc")? {
@@ -629,10 +667,13 @@ fn census() -> io::Result<Vec<Row>> {
         if pid == own || pid == 1 {
             continue;
         }
-        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            continue;
+        let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if !strict || gone(&error) => continue,
+            Err(error) => return Err(error),
         };
         let Some((_, suffix)) = stat.rsplit_once(") ") else {
+            if strict { return Err(io::Error::other("unreadable process identity")); }
             continue;
         };
         let fields: Vec<_> = suffix.split_whitespace().collect();
@@ -641,20 +682,31 @@ fn census() -> io::Result<Vec<Row>> {
             fields.get(1).map(|f| f.parse()),
             fields.get(19).map(|f| f.parse()),
         ) else {
+            if strict { return Err(io::Error::other("unreadable process identity")); }
             continue;
         };
         let alive = !matches!(*state, "Z" | "X");
-        let token = alive
-            .then(|| fs::read(format!("/proc/{pid}/environ")).ok())
-            .flatten()
-            .and_then(|environ| {
-                environ.split(|b| *b == 0).find_map(|entry| {
-                    let value = entry
-                        .strip_prefix(TOKEN_ENV.as_bytes())?
-                        .strip_prefix(b"=")?;
-                    String::from_utf8(value.to_vec()).ok()
-                })
-            });
+        let environ = if alive {
+            match fs::read(format!("/proc/{pid}/environ")) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if !strict || gone(&error) => None,
+                Err(error) => match fs::metadata(format!("/proc/{pid}")) {
+                    Ok(metadata) if metadata.uid() != rustix::process::geteuid().as_raw() => None,
+                    Err(missing) if gone(&missing) => None,
+                    _ => return Err(error),
+                },
+            }
+        } else {
+            None
+        };
+        let token = environ.and_then(|environ| {
+            environ.split(|b| *b == 0).find_map(|entry| {
+                let value = entry
+                    .strip_prefix(TOKEN_ENV.as_bytes())?
+                    .strip_prefix(b"=")?;
+                String::from_utf8(value.to_vec()).ok()
+            })
+        });
         rows.push(Row {
             pid,
             ppid,
@@ -685,6 +737,13 @@ fn members(rows: &[Row], owned: impl Fn(&str) -> bool) -> impl Iterator<Item = &
         }
     }
     rows.iter().filter(move |row| pids.contains(&row.pid))
+}
+
+fn namespace_token(token: &str, namespace: &str) -> bool {
+    token
+        .strip_prefix(namespace)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|id| !id.is_empty() && !id.contains('-'))
 }
 
 /// A token of this namespace that no live scope of this process holds.
