@@ -640,7 +640,8 @@ async function died(error) {
   check('video_has_a_new_state_tile', await newVideo.isVisible());
   await newVideo.click();
   check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1);
-  check('new_video_hides_the_main_player_and_keeps_the_prompt_workspace', !await videoFocus.locator('.focus-viewer').isVisible() && await videoFrame.isVisible() && await summaryPrompt.isVisible());
+  // New keeps the frame's sections as they were, the one open still open.
+  check('new_video_hides_the_main_player_and_keeps_the_prompt_workspace', !await videoFocus.locator('.focus-viewer').isVisible() && await videoFrame.isVisible() && (await videoFrame.locator('.beat-toggle[aria-expanded="true"]').count()) === 1);
   const beatRows = videoFrame.locator('.beats-edit[data-field="beats"] > .beat');
   const summaryOpen = () => videoFrame.locator('.frame-first .beat-toggle').getAttribute('aria-expanded');
   // Closed panels clip their still-laid-out text; descendant isVisible() does not measure that clipping.
@@ -657,8 +658,8 @@ async function died(error) {
   const firstBeatOpen = (panels) => panels.length === 2 && beatPanelMatches(panels[0], true) && beatPanelMatches(panels[1], false);
   const firstBeatToggle = beatRows.first().getByRole('button', { name: 'Beat 1', exact: true });
   const secondBeatToggle = beatRows.nth(1).getByRole('button', { name: 'Beat 2', exact: true });
-  // One section open at a time (cl-938): Summary first; a beat opened shuts Summary and the other beats.
-  await firstBeatToggle.click();
+  // One section open at a time (cl-938): a beat opened shuts Summary and the other beats.
+  if ((await firstBeatToggle.getAttribute('aria-expanded')) !== 'true') await firstBeatToggle.click();
   const firstBeatPanels = await until('the first Beat is open and the second is fully clipped', readBeatPanels, firstBeatOpen);
   check('video_editor_expands_the_first_beat_and_collapses_the_rest', firstBeatOpen(firstBeatPanels) && (await summaryOpen()) === 'false', firstBeatPanels);
   await secondBeatToggle.click();
