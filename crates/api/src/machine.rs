@@ -853,6 +853,13 @@ pub struct EstimateJob {
     /// The caller's time for it on one GPU of this kind, from runs elsewhere; 0: none. Used when
     /// this machine has measured none of the function.
     pub prior_ms: u64,
+    /// The soonest it can start, ms from now: when what it reads is made.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub after_ms: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A checkpoint a job reads, as the catalog resolved it.
@@ -864,6 +871,9 @@ pub struct ModelRef {
     pub checkpoint: String,
     /// Its weights' bytes as the catalog lists them: what a machine that holds none of it fetches.
     pub bytes: u64,
+    /// Its repository (`org/name`): a queued run fetching it (`Queued::models`) brings it for this job too.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub model: String,
 }
 
 /// What a job makes, in the units a function's time scales with; each unknown one is absent.
@@ -1040,6 +1050,83 @@ pub struct StatusFrame {
     /// (the pure wheel)`), as its latest executor said; empty: it does, or none has started.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub runtime_kernels: String,
+    /// Every root here not ended, every caller's, in acceptance order: what a job sent now waits behind (cl-967). On a stream,
+    /// absent: as its last frame said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue: Option<Vec<Queued>>,
+    /// Each function's newest runs here, newest first: what its time here stands on (cl-967). On a stream, absent: as its
+    /// last frame said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub times: Option<Vec<Timed>>,
+    /// Idle executors' loaded models: a job of them loads nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resident: Vec<Resident>,
+    /// Weights' arrival, bytes a second, once 1 GiB came; 0 before.
+    pub link_bytes_per_s: f64,
+    /// The most GPUs side by side in service: the widest a root runs at.
+    pub serving_gpus: u32,
+    /// Its GPUs talk over NVLink.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub nvlink: bool,
+}
+
+/// A root not ended (`StatusFrame::queue`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Queued {
+    /// The caller's id for it; empty: another caller's.
+    pub run: String,
+    /// `<package>/<function>`, as `Timed::function` names it; empty: a private run's.
+    pub function: String,
+    pub size: JobSize,
+    /// The widths it may run at, smallest first; none: no GPU.
+    pub widths: Vec<u32>,
+    /// It gives the machine its width: no count asked, and more than one width.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub chooses: bool,
+    /// It left its queue: its executor starts or it runs.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
+    /// The GPUs it holds, running.
+    pub width: u32,
+    /// When it began executing, this machine's clock; 0 before.
+    pub started_at_unix_ms: i64,
+    /// The repositories it waits to download.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    /// Its weights' bytes still to come.
+    pub bytes_left: u64,
+}
+
+/// A function's newest runs here (`StatusFrame::times`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Timed {
+    /// `<package>/<function>`, any release.
+    pub function: String,
+    pub runs: Vec<TimedRun>,
+}
+
+/// What one completed root took: its width, its size as its input said, its compute, and what it spent putting weights on its
+/// GPUs.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimedRun {
+    pub width: u32,
+    pub size: JobSize,
+    pub ms: f64,
+    pub load_ms: f64,
+}
+
+/// An idle executor's loaded models (`StatusFrame::resident`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Resident {
+    /// Their headers, `sha256:<hex>`.
+    pub checkpoints: Vec<String>,
+    pub gpus: Vec<u32>,
+    /// `host` or `gpu`.
+    pub level: String,
 }
 
 /// A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
@@ -1199,6 +1286,12 @@ pub struct Checkpoint {
     /// Whether every object in the header's closure is cached. None from older machines.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complete: Option<bool>,
+    /// `sha256:<hex>` of its tree, as a Hub card names the checkpoint.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tree: String,
+    /// Its closure's bytes, and of them those held.
+    pub bytes: u64,
+    pub held_bytes: u64,
 }
 
 /// One GPU, as measured at boot: identity, memory, driver and family.
@@ -1281,6 +1374,23 @@ pub struct Environment {
     pub warning: String,
     /// The Hub origin a published installation came from; empty for local code.
     pub hub: String,
+    /// Local code's manifest (`sha256:<hex>`) it was installed from; empty for a release.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub manifest: String,
+    /// Each of its functions as the machine times and packs it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<HeldFunction>,
+}
+
+/// One function of an installation (`Environment::functions`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeldFunction {
+    pub entrypoint: String,
+    /// Its runs' key in `StatusFrame::times`.
+    pub timed_as: String,
+    /// Its widths with no GPU count asked, smallest first; none: it holds no GPU.
+    pub widths: Vec<u32>,
 }
 
 /// The filesystem holding the store: its size, free bytes and what fills it.

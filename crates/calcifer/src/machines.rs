@@ -916,12 +916,21 @@ impl Machines {
         }
     }
 
-    fn observe(&self, name: &str, frame: v1::StatusFrame) {
+    fn observe(&self, name: &str, mut frame: v1::StatusFrame) {
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
         let back = {
             let mut seen = lock(&self.seen);
             let seen = seen.entry(name.to_owned()).or_default();
+            // A stream sends its queue and times only when they change: absent, they stand as its last frame said.
+            if let Some(last) = &seen.frame {
+                if frame.queue.is_none() {
+                    frame.queue = last.queue.clone();
+                }
+                if frame.times.is_none() {
+                    frame.times = last.times.clone();
+                }
+            }
             if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready") {
                 self.placing.notify_one();
                 self.rc_ready.notify_one();

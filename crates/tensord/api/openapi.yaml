@@ -492,6 +492,9 @@ components:
         manifest: {type: string, description: '`sha256:<hex>` of its header.'}
         precision: {type: string, description: 'Its header''s precision family (`int8`, `bf16`, …).'}
         release: {type: string, description: Empty for a local alias or a commit by hash.}
+        tree: {type: string, description: '`sha256:<hex>` of its tree, as a Hub card names the checkpoint.'}
+        bytes: {type: integer, format: int64, minimum: 0, description: Its closure's bytes.}
+        held_bytes: {type: integer, format: int64, minimum: 0, description: Of them, those held.}
     CheckpointRef:
       type: object
       description: 'A weights output''s commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.'
@@ -531,6 +534,20 @@ components:
         warning:
           type: string
           description: Why it does not run the machine's own Runtime; empty when it does.
+        manifest: {type: string, description: 'Local code''s manifest it was installed from; empty for a release.'}
+        functions:
+          type: array
+          items: {$ref: '#/components/schemas/HeldFunction'}
+          description: Each of its functions as the machine times and packs it.
+    HeldFunction:
+      type: object
+      properties:
+        entrypoint: {type: string}
+        timed_as: {type: string, description: Its runs' key in `StatusFrame.times`.}
+        widths:
+          type: array
+          items: {type: integer, format: int32, minimum: 0}
+          description: 'Its widths with no GPU count asked, smallest first; none: it holds no GPU.'
     Error:
       type: object
       required: [kind, code, message]
@@ -1001,6 +1018,11 @@ components:
           format: int64
           minimum: 0
           description: 'The caller''s time for it on one GPU of this kind; 0: none. Used when no run of it here is timed.'
+        after_ms:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 'The soonest it can start, ms from now: when what it reads is made.'
     EstimateRequest:
       type: object
       properties:
@@ -1018,6 +1040,7 @@ components:
       properties:
         commit: {type: string, description: '`sha256:<hex>`: a commit or header.'}
         bytes: {type: integer, format: int64, minimum: 0, description: Its weights' bytes as the catalog lists them.}
+        model: {type: string, description: 'Its repository (`org/name`), as a queued run downloading it names it.'}
     Quote:
       type: object
       description: When one job would run here, in ms from the answer.
@@ -1150,6 +1173,38 @@ components:
           required: [local]
           properties: {local: {$ref: '#/components/schemas/LocalSource'}}
       description: What a run runs.
+    Queued:
+      type: object
+      properties:
+        run: {type: string, description: "The caller's id for it; empty: another caller's."}
+        function: {type: string, description: "`<package>/<function>`, as `Timed.function` names it; empty: a private run's."}
+        size: {$ref: '#/components/schemas/JobSize'}
+        widths: {type: array, items: {type: integer, format: int32, minimum: 0}}
+        chooses: {type: boolean, description: "It gives the machine its width: no count asked, more than one width."}
+        running: {type: boolean, description: "It left its queue: its executor starts or it runs."}
+        width: {type: integer, format: int32, minimum: 0, description: The GPUs it holds, running.}
+        started_at_unix_ms: {type: integer, format: int64}
+        models: {type: array, items: {type: string}, description: The repositories it waits to download.}
+        bytes_left: {type: integer, format: int64, minimum: 0, description: "Its weights' bytes still to come."}
+    Timed:
+      type: object
+      properties:
+        function: {type: string, description: '`<package>/<function>`, any release.'}
+        runs: {type: array, items: {$ref: '#/components/schemas/TimedRun'}}
+    TimedRun:
+      type: object
+      description: "What one completed root took: its width, size, compute, and its load onto the GPUs."
+      properties:
+        width: {type: integer, format: int32, minimum: 0}
+        size: {$ref: '#/components/schemas/JobSize'}
+        ms: {type: number}
+        load_ms: {type: number}
+    Resident:
+      type: object
+      properties:
+        checkpoints: {type: array, items: {type: string}, description: 'Their headers, `sha256:<hex>`.'}
+        gpus: {type: array, items: {type: integer, format: int32, minimum: 0}}
+        level: {type: string, description: '`host` or `gpu`.'}
     StatusFrame:
       type: object
       description: >-
@@ -1222,6 +1277,23 @@ components:
           description: >-
             Why the executors' Runtime serves its GPUs none of its native kernels (`this cozy-runtime wheel carries no
             kernels (the pure wheel)`), as its latest executor said; empty: it does, or none has started.
+        queue:
+          type: array
+          items: {$ref: '#/components/schemas/Queued'}
+          description: >-
+            Every root not ended, every caller's, in acceptance order (cl-967). On a stream, absent: as its last frame
+            said.
+        times:
+          type: array
+          items: {$ref: '#/components/schemas/Timed'}
+          description: "Each function's newest 40 runs here, newest first. On a stream, absent: as its last frame said."
+        resident:
+          type: array
+          items: {$ref: '#/components/schemas/Resident'}
+          description: "Idle executors' loaded models: a job of them loads nothing."
+        link_bytes_per_s: {type: number, description: "Weights' arrival, bytes a second, once 1 GiB came; 0 before."}
+        serving_gpus: {type: integer, format: int32, minimum: 0, description: The most GPUs side by side in service.}
+        nvlink: {type: boolean, description: Its GPUs talk over NVLink.}
         started_at_unix_ms: {type: integer, format: int64}
         stuck:
           type: array

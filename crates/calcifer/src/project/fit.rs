@@ -439,6 +439,14 @@ async fn sized(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Optio
     checkpoint(api, hub, written, lane).await.map(|(_, bytes)| bytes)
 }
 
+/// The repository (`org/name`) a slot's choice names, as a machine names what it downloads; empty for any other choice.
+fn repository(written: &str) -> String {
+    match ModelRef::parse(written) {
+        Ok(ModelRef::Hub { model, .. } | ModelRef::Checkpoint { model, .. }) => model.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// The checkpoint and bytes of a checkpoint in `lane`, else its least, as `sized` reads them.
 async fn checkpoint(api: &Api, hub: &str, written: &str, lane: Option<&str>) -> Option<(String, u64)> {
     let key = format!("{hub}\n{written}\n{}", lane.unwrap_or_default());
@@ -487,7 +495,7 @@ pub(super) async fn checkpoints(api: &Api, hub: &str, package: &super::Package, 
         let placed = placed.as_ref().and_then(|placed| placed.slots.iter().find(|(held, ..)| held == param));
         let lane = placed.map(|(_, lane, _)| lane.clone()).or_else(|| slot.lane.clone());
         if let Some((checkpoint, bytes)) = checkpoint(api, hub, written, lane.as_deref()).await {
-            found.push(api::machine::ModelRef { checkpoint, bytes });
+            found.push(api::machine::ModelRef { checkpoint, bytes, model: repository(written) });
         }
     }
     found
