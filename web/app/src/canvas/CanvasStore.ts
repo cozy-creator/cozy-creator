@@ -1662,13 +1662,14 @@ export class CanvasStore {
     const prefixes = [...first, { number, prefix: file.sha256.slice(0, 12), main }]
     const edit = merged ?? this.step(`Added ${what} to ${key}`, [key])
     let note = 0
-    this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: number, pinned: true, approved: number }, (served, write) => this.client.addVersion(this.projectId!, served, source, write), "add to", edit, {
+    this.over<VersionMoved>(key, { prefixes, versions: prefixes.length }, (served, write) => this.client.addVersion(this.projectId!, served, source, write), "add to", edit, {
       done: (answer) => {
         if (answer.already) dismiss(note)
-        this.patch(key, { asset: { ...this.get(key)!.asset!, version: answer.stands ?? answer.number, approved: answer.stands ?? answer.number, pinned: true } })
+        if (!answer.already) this.view(key, answer.number)
       },
       refused: () => dismiss(note),
     })
+    this.view(key, number)
     if (merged === undefined) note = this.offer(edit, `${what} joined ${name}`)
     return true
   }
