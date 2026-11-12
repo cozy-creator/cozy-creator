@@ -34,18 +34,22 @@ class Held(msgspec.Struct):
     seconds: float
 
 
-@app.entrypoint(accelerator=False, defaults={"extra": "zhengpeng7/birefnet@0.1.0"}, on_demand=("extra",))
-def hold(payload: Hold, extra: Extra, tel: Telemetry) -> Held:
-    """Says it holds and sleeps, then reads `extra` when asked to."""
+@app.entrypoint(accelerator=False, defaults={"extra": "zhengpeng7/birefnet@0.1.0", "base": "lilylilith/fontbox@0.1.0"},
+               on_demand=("extra",))
+def hold(payload: Hold, extra: Extra, base: Extra, tel: Telemetry) -> Held:
+    """Says it holds and sleeps, then reads `extra` when asked to: its first read builds it (beside `base`, it's built
+    on first use, not with the call's load)."""
     with tel.stage("holding"):
         time.sleep(payload.seconds)
     if payload.read:
         with tel.stage("reading it"):
-            extra.forward()
+            _ = extra.graph
     return Held(seconds=payload.seconds)
 
 
 @app.entrypoint(accelerator=False, defaults={"extra": "lilylilith/fontbox@0.1.0"}, on_demand=("extra",))
 def keep(payload: Hold, extra: Extra, tel: Telemetry) -> Held:
-    """`hold`, its on-demand model fontbox."""
-    return hold(payload, extra, tel)
+    """Holds with fontbox as its on-demand model, never reading it."""
+    with tel.stage("holding"):
+        time.sleep(payload.seconds)
+    return Held(seconds=payload.seconds)
