@@ -172,13 +172,29 @@ const RECORD = () => {
     await new Promise((done) => setTimeout(done, ms));
     await route.continue().catch(() => {});
   };
-  await page.route(slowAsk, async (route) => (route.request().method() === 'POST' ? hold(4000)(route) : route.continue()));
-  await page.route(slowRead, async (route) => (route.request().method() === 'GET' ? hold(1500)(route) : route.continue()));
+  // The ask goes on only once this has looked: Calcifer hasn't heard of the take, and the page has read its project meanwhile.
+  let release;
+  const released = new Promise((done) => { release = done; });
+  let reads = 0;
+  await page.route(slowAsk, async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await released;
+    await route.continue().catch(() => {});
+  });
+  await page.route(slowRead, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    reads += 1;
+    return hold(1500)(route);
+  });
   const b = await press();
   check('b_listed_in_the_next_frame', Boolean(b.take), b.pressed);
-  await page.waitForTimeout(4500);
+  await until('a read while the ask is held', () => reads, (n) => n > 0, 15_000).catch(() => {});
+  await page.waitForTimeout(3000);
   const heldB = await now();
-  check('b_listed_while_calcifer_has_not_heard', heldB.making.includes(b.take) && !(await asset()).takes?.some((take) => take.id === b.take), heldB);
+  const heardB = (await asset()).takes?.some((take) => take.id === b.take);
+  seen.b_held = { reads, look: heldB };
+  check('b_listed_while_calcifer_has_not_heard', heldB.making.includes(b.take) && !heardB, { heardB, heldB });
+  release();
   await page.unroute(slowAsk);
   await page.unroute(slowRead);
   const three = await landed(3);
