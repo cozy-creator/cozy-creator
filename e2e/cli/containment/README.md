@@ -157,7 +157,10 @@ File inputs, stdout/failure logs, output bytes, and a known original idempotent 
 The candidate sees the same real V7 home after both old cohorts stop. Real SQLite
 contention keeps the first automatic adoption pending; a native, TLS-pinned,
 owner-signed request proves that a wrong actual worker binding refuses while both
-canonical legacy sources survive. Ordinary project history then drives the real
+canonical legacy sources survive. The native worker then completes its real
+adoption and durable retirement. The fixture kills the exact Calcifer before it
+can keep that receipt, cold-starts its next holder, and requires history to recover
+the worker's complete inside receipt without a resubmission. History drives the real
 binding bridge and verifies exact numbers/keys/digests/cursors/log/output rows,
 inside input closure, and unchanged worker attempt/acceptance/start/finish facts.
 An actual old client is refused. Finally the command encrypts, locks, scans outside
