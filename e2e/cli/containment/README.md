@@ -120,3 +120,19 @@ loads that module, changes the file, and requires value 2 without a document rep
 ordinary project reads/edits/lock/restart cases then run through that same Calcifer origin.
 Probe source and config are restored by exact identity/content checks; no laptop configuration,
 ordinary browser, bearer-injecting development proxy or raw browser trace is used.
+
+## Old-first published legacy subject
+
+`legacy_seed.publish_old(old_cli, work)` publishes the static `legacy-package` directory with
+the installed released 0.24.0 CLI before private canaries. Its pinned target is
+`e2e-containment-legacy/echo@0.1.0`; request fields are `source: File`, `text: str`, and optional
+`fail: bool`. It prints the text, returns a text file containing source bytes + newline + text,
+and raises with that text for the intentional failure case. The package embeds no canary.
+
+Bootstrap the outer owned test-Hub runner with the OLD CLI, pass the candidate separately to
+the legacy command, and keep the default home on schema 7 until old subjects are written.
+The helper verifies old installed/holder hashes, schema 7, owned Hub release/interface, and
+returns exact public bootstrap run IDs plus source/interface hashes. It neither clears nor
+reclassifies history or caches. Any explicitly authorized public-only reset belongs before
+creation of every project/canary; never use the normal isolated.sh end-of-seed home reset
+between private writer and candidate migration phases.

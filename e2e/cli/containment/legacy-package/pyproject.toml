@@ -1,0 +1,17 @@
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13"]
+build-backend = "uv_build"
+
+[project]
+name = "e2e-containment-legacy"
+version = "0.1.0"
+description = "Static public weightless fixture for legacy project custody qualification"
+requires-python = ">=3.12"
+dependencies = ["cozy-runtime>=0.43.1", "msgspec>=0.19"]
+
+[project.entry-points."cozy.application"]
+default = "containment_legacy_probe:app"
+
+[tool.uv.build-backend]
+module-name = "containment_legacy_probe"
+module-root = ""
