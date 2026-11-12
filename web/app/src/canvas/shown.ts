@@ -182,6 +182,13 @@ export function bodyBox(view: ElementView, canonical: Box): Box {
   return { ...canonical, x: canonical.x + (canonical.w - width) / 2, w: width, h: heightFor(view, canonical.w) }
 }
 
+/** A displayed fit result written back to the v1-based canvas row. */
+export function canvasBox(view: ElementView, displayed: Box): Box {
+  const width = displayed.w / bodyWidth(view, 1)
+  if (imageViewHeight(view, 1) === undefined) return displayed
+  return { ...displayed, x: displayed.x + (displayed.w - width) / 2, w: width, h: heightFor(view, width) }
+}
+
 const hasSlots = (links?: Record<string, string>) => Object.keys(links ?? {}).length > 0
 
 export function heightFor(view: ElementView, width: number): number {
