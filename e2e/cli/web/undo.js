@@ -204,12 +204,13 @@ function check(name, ok, detail) {
   await undo();
   await says('green_back', () => lines('green'), Boolean);
 
-  // A tool taken off: its X, then the tool back, and off again.
-  await away();
-  await box('tooled').locator('button[aria-label="Take undo-e2e off tooled"]').click();
+  // A tool taken off: its X beside the tool in Focus (a box at rest has no tool strip: cl-932), then the tool back, said under its picture
+  // at rest at once, and off again.
+  await openBox(page, 'tooled');
+  await box('tooled').getByRole('button', { name: 'Remove image tool', exact: true }).click();
   await says('tool_off_written', () => lines('tooled'), (held) => held && !held.includes('tool:'));
   await undo();
-  check('tool_back_at_once', (await box('tooled').locator('button[aria-label="Take undo-e2e off tooled"]').count()) === 1);
+  check('tool_back_at_once', (await box('tooled').locator('.node-tool').count()) === 1);
   await says('tool_undone_in_the_file', () => lines('tooled'), (held) => held?.includes('tool: undo-e2e/still') && held.includes('instructions: a lighthouse'));
   await redo();
   await says('tool_redone', () => lines('tooled'), (held) => held && !held.includes('tool:'));

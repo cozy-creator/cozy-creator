@@ -247,8 +247,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
   await open(page, 'shot');
   await until('its beats, each a text and a slider', () => element(page, 'shot').locator('.beat input[type=range]').evaluateAll((all) => all.map((input) => input.value).join()), (text) => text === '4,3');
-  // Nothing made yet is nothing wrong: its dot is plain, as is one out of date.
-  check('dot_plain_when_nothing_made', (await element(page, 'shot').locator('.dot.s-current').count()) === 1 && (await element(page, 'shot').locator('.dot.s-missing, .dot.s-ood').count()) === 0, await element(page, 'shot').locator('.dot').getAttribute('class'));
+  // Nothing made yet is nothing wrong: no state dot, as for one out of date (a dot is queued, running, unseen or failed: cl-932).
+  check('dot_plain_when_nothing_made', (await element(page, 'shot').locator('.state-dot').count()) === 0, await element(page, 'shot').locator('.state-dot').evaluateAll((dots) => dots.map((dot) => dot.className)));
   // Drawn in on one box, the canvas holds only what's near it: the rest is read at rest.
   await away(page);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
@@ -306,10 +306,10 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await (await renderOf(page, 'picture')).click();
   await until('the frame landed', () => asset('picture'), (held) => held.standing === 'current' && Math.max(0, ...(held.prefixes ?? []).map((version) => version.number)) > numberBefore);
   await until('its picture shows, unreloaded', () => picture.locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
-  await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1).catch(async (error) => {
+  await until('no dot once done', () => picture.locator('.state-dot').count(), (n) => n === 0).catch(async (error) => {
     // Which of them is behind: the page, or what Calcifer says is still to do.
     const now = await state();
-    seen.at_its_dot = { dot: await picture.locator('.dot').getAttribute('class'), queue: now.queue, busy: now.busy, standing: (await asset('picture')).standing };
+    seen.at_its_dot = { dot: await picture.locator('.state-dot').evaluateAll((dots) => dots.map((dot) => dot.className)), queue: now.queue, busy: now.busy, standing: (await asset('picture')).standing };
     throw error;
   });
   check('a_button_selects_nothing', (await page.locator('.react-flow__node.selected').count()) === 0);
@@ -370,7 +370,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // Render stays Render, and the box stays open, saying nothing at rest of what failed.
   await page.waitForTimeout(300);
   check('render_keeps_the_box', (await page.locator('.card.here[data-asset="needs"]').count()) === 1 && (await needs.locator('button[aria-label=Render]').innerText()).trim() === 'Render', await boxLog(page));
-  await until('its dot', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
+  await until('its dot', () => needs.locator('.state-dot.failed').count(), (n) => n === 1);
   check('failed_dot', true);
   check('no_line_at_rest', (await needs.locator('.status').count()) === 0, await needs.innerText());
   const told = projectJson(folder);
@@ -382,7 +382,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await page.waitForSelector('.react-flow__node');
   await page.evaluate(() => { window.notReloaded = true; });
   await open(page, 'needs');
-  await until('still marked after a reload', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
+  await until('still marked after a reload', () => needs.locator('.state-dot.failed').count(), (n) => n === 1);
   check('failure_survives_reload', (await asset('needs')).failure?.message.includes('cannot render'), (await asset('needs')).failure);
   const afterReload = await cards();
   const moved = named.filter((name) => afterReload[name].x !== beforeReload[name].x || afterReload[name].y !== beforeReload[name].y);
@@ -390,7 +390,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // Its text changes: the old reason no longer stands, with no reload.
   importYaml(folder, yaml().replace('video: <hollow_thing>', 'video: <clip>'));
   await until('the reason gone', () => asset('needs'), (held) => !held.failure);
-  await until('and from the card', () => needs.locator('.dot.s-failed').count(), (n) => n === 0);
+  await until('and from the card', () => needs.locator('.state-dot.failed').count(), (n) => n === 0);
   check('failure_gone_when_text_changes', await notReloaded());
   await away(page);
   await page.keyboard.press('f');
@@ -575,7 +575,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
       const out = [];
       let labels = 0;
       for (const { node, at, name } of boxes) {
-        for (const label of node.querySelectorAll('.nm, .add-on:not(.away), .ratio-rest, .rest-waiting, .dot')) {
+        for (const label of node.querySelectorAll('.nm, .add-on:not(.away), .ratio-rest, .rest-waiting, .state-dot')) {
           const seen = label.getBoundingClientRect();
           if (!seen.width || !seen.height || getComputedStyle(label).visibility === 'hidden') continue;
           labels += 1;

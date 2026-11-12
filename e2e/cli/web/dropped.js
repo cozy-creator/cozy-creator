@@ -119,7 +119,7 @@ const PICTURES = [
         const first = boxes.first[id];
         if (!first) boxes.first[id] = { ...now, at: when };
         else if (!same(first, now) && boxes.changes.length < 60) boxes.changes.push({ id, at: when, first, now });
-        const wrong = [node.classList.contains('glide') && 'glide', node.querySelector('.card.landing') && 'landing', node.querySelector('.prog') && 'progress', node.querySelector('.dot.s-making') && 'pulsing dot'].filter(Boolean);
+        const wrong = [node.classList.contains('glide') && 'glide', node.querySelector('.card.landing') && 'landing', node.querySelector('.prog') && 'progress', node.querySelector('.state-dot.queued, .state-dot.running') && 'state dot'].filter(Boolean);
         if (wrong.length && boxes.bad.length < 60) boxes.bad.push({ id, at: when, wrong });
       }
       requestAnimationFrame(tick);

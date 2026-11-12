@@ -845,7 +845,7 @@ function linesOf(text, name) {
     await away();
     await page.waitForTimeout(300);
     check('approved_stands', (await of('Sheet')).sha256 === heldFile && (await of('Sheet')).pinned, await of('Sheet'));
-    check('approved_shows_nothing_wrong', (await box('Sheet').locator('.dot.s-ood, .dot.s-failed').count()) === 0 && (await of('Sheet')).standing === 'current', await of('Sheet'));
+    check('approved_shows_nothing_wrong', (await box('Sheet').locator('.state-dot.failed').count()) === 0 && (await of('Sheet')).standing === 'current', await of('Sheet'));
     await open('Sheet');
     check('approved_face_has_no_warning', (await box('Sheet').locator('.status.ood, .status.bad, .warned').count()) === 0, await box('Sheet').innerText());
     check('wire_missing', (await of('Sheet')).missing?.join() === 'source-a', (await of('Sheet')).missing);
@@ -877,7 +877,7 @@ function linesOf(text, name) {
     if (await viewSheet.count()) await viewSheet.click();
     await away();
     await page.waitForTimeout(200);
-    check('back_on_its_file_nothing_wrong', (await box('Sheet').locator('.dot.s-failed').count()) === 0);
+    check('back_on_its_file_nothing_wrong', (await box('Sheet').locator('.state-dot.failed').count()) === 0);
 
     // Undo: back with its row, and nothing is missing. Its note has gone by now (10 s, Paul 11-05), so this is what its Undo sends; the button's own below.
     const back = await api(`/v1/projects/${id}/history/undo`, { method: 'POST', body: JSON.stringify({ edit }) });

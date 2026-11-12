@@ -66,9 +66,11 @@ const FIELD = { png: 'image', jpg: 'image', mp4: 'video', wav: 'audio' };
 const constants = (folder) => {
   const found = {};
   const files = readdirSync(folder).includes('files') ? readdirSync(join(folder, 'files')) : [];
-  // A box that only approves a file, as the export writes it.
-  for (const m of yaml(folder).matchAll(/^ {2}(\S+):\n {4}approved:\s*"?(\w+)"?\n(?! {4})/gm)) {
-    found[m[1]] = { field: FIELD[files.find((name) => name.startsWith(m[2]))?.split('.').pop()], hash: m[2] };
+  // A box that holds a file and has no tool, as the export writes it: its approved file, the version it shows and its kind beside it.
+  for (const [, name, body] of yaml(folder).matchAll(/^ {2}(\S+):\n((?: {4}.*\n)*)/gm)) {
+    const approved = body.match(/^ {4}approved:\s*"?(\w+)"?$/m)?.[1];
+    if (!approved || /^ {4}tool:/m.test(body)) continue;
+    found[name] = { field: FIELD[files.find((file) => file.startsWith(approved))?.split('.').pop()], hash: approved };
   }
   return found;
 };
