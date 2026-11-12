@@ -1,7 +1,7 @@
 // How the canvas and what's around it are laid out (Paul, 11-06: "avoid errors and overlaps; make sure there's good spacing and everything is legible"), in a real browser
 // on a real Calcifer, measured: every kind of box (a picture with and without a tool, a shot with beats, text, an Edit, a long name) at rest, under the pointer and selected;
 // open on a take, written in, with More and its warnings open; failed, with many takes and an add-on, on a crowded canvas; far out, at the home zoom and close; one being
-// made, saying how far it's got, at 75%, where what hangs off a box at rest keeps its size on screen; at 1280×720,
+// made, saying how far it's got, at 75%; at 1280×720,
 // 1600×1000 and 2560×1440 at 2×. And the frame around the canvas: the top bar, the tools, the drawers, a note, the menus, the names list. Anything that collides, is cut off,
 // pokes past its edge, touches its neighbour or its panel's edge, reads too small, or is a square shadow under a drawn edge fails it, each said where, with a picture.
 // With scrollbars shown, one anywhere fails. Rastered on the GPU path as a person's Chrome is (page.js GPU), a drawn edge
@@ -56,10 +56,8 @@ if (requestedSizes?.some((name) => !DRAWN_SIZES.some((size) => size.name === nam
 const selectedSizes = SIZES.filter((size) => !requestedSizes || requestedSizes.includes(size.name));
 const selectedDrawnSizes = DRAWN_SIZES.filter((size) => !requestedSizes || requestedSizes.includes(size.name));
 const LONG = 'a_box_whose_name_goes_on_and_on_past_any_width';
-/** The least a word may be drawn on screen, in CSS pixels. */
+/** The least a word may be drawn, in CSS pixels: on screen, or on the canvas at 100%, where all of a box is drawn at the canvas's scale (cl-890). */
 const FLOOR = 10;
-/** Past this zoom what hangs off a box at rest shrinks with the canvas (shown.ts, HANG). */
-const HANG_ZOOM = 0.5;
 
 /** Each finding once, with every state it was seen in. */
 function summed() {
@@ -104,7 +102,7 @@ async function restClose(page) {
 
 /** What's wrong with how `scope` is laid out, in the page: each finding a rule, where, and what. A rule is one person's eye on it, measured.
  *  Self-contained: it runs in the page. */
-function audit({ floor, hangZoom, fitted = true }) {
+function audit({ floor, fitted = true }) {
   const found = [];
   const R = (el) => el.getBoundingClientRect();
   const zoom = Number(document.querySelector('.react-flow__viewport')?.style.transform.match(/scale\(([\d.]+)\)/)?.[1] ?? 1);
@@ -154,10 +152,10 @@ function audit({ floor, hangZoom, fitted = true }) {
   const texts = [...document.querySelectorAll('body *')].filter((el) => ownText(el) && visible(el) && onScreen(R(el)) && !el.closest('.ptabs-ghost, .tool-ghost, [aria-hidden=true]'));
   for (const el of texts) {
     const style = getComputedStyle(el);
-    const px = parseFloat(style.fontSize) * scaleOf(el);
-    // Further out than --hang stops, what hangs off a box at rest shrinks with the canvas, on purpose: only its words in a frame stay one size.
-    const shrinks = el.closest('.react-flow__node') && !el.closest('.card.here') && zoom < hangZoom;
-    if (px < floor && !shrinks) say('illegible', el, `${px.toFixed(1)} px on screen: "${el.textContent.trim().slice(0, 30)}"`);
+    // A box's words grow and shrink with the canvas: they're read at 100%.
+    const onCanvas = Boolean(el.closest('.react-flow__node'));
+    const px = (parseFloat(style.fontSize) * scaleOf(el)) / (onCanvas ? zoom : 1);
+    if (px < floor) say('illegible', el, `${px.toFixed(1)} px ${onCanvas ? 'at 100%' : 'on screen'}: "${el.textContent.trim().slice(0, 30)}"`);
     const clips = /hidden|clip/.test(style.overflowX);
     // An ellipsis is drawn only by a block of text: on a flex or grid box the text is cut where it ends.
     const ellipsis = style.textOverflow === 'ellipsis' && !/flex|grid/.test(style.display);
@@ -750,7 +748,7 @@ ${local ? `  card:
     await render('card', false);
     const waiting = await until('the picture tool waits', () => box('card').locator('.prog b, .take.making').count(), (n) => n > 0, RUN_MS).catch(() => 0);
     seen.waits = waiting > 0;
-    if (waiting) for (const finding of await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM })) findings.push({ size: '1600x1000', state: 'waiting-on-install', ...finding });
+    if (waiting) for (const finding of await page.evaluate(audit, { floor: FLOOR })) findings.push({ size: '1600x1000', state: 'waiting-on-install', ...finding });
     await until('the first take', () => api(`/v1/projects/${id}`), (state) => state.assets.find((held) => held.name === 'card')?.prefixes?.length >= 1, RUN_MS);
     for (let i = 0; i < 8; i++) await render('card');
     await render('shot');
@@ -782,7 +780,7 @@ ${local ? `  card:
       await page.waitForFunction(() => !document.getAnimations().some((held) => held.playState === 'running' && held.timeline === document.timeline && held.effect?.getComputedTiming().iterations !== Infinity), null, { timeout: 5000 }).catch(() => {});
       if (beforeAudit) await beforeAudit();
       seen.looks = (seen.looks ?? 0) + 1;
-      const said = await page.evaluate(audit, { floor: FLOOR, hangZoom: HANG_ZOOM, fitted });
+      const said = await page.evaluate(audit, { floor: FLOOR, fitted });
       // The pointer where nothing's drawn, around a box worked on or all over.
       if (state === 'rest' || /^(open|writing|zoom|fit)-/.test(state)) {
         const block = await page.evaluate(() => {
@@ -792,6 +790,17 @@ ${local ? `  card:
         said.push(...(await page.evaluate(emptyHits, { around: block, step: block ? 10 : 24 })));
       }
       for (const finding of said) findings.push({ size: size.name, state, ...finding });
+      // How large an open box's words are on screen as the canvas draws in on it, for the record: a zoom makes them larger or smaller.
+      if (/^(open|writing)-/.test(state)) {
+        const least = await page.evaluate(() => {
+          const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+          const sizes = [...document.querySelectorAll('.card.here, .card.here *')]
+            .filter((el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) && el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && el.offsetHeight)
+            .map((el) => (parseFloat(getComputedStyle(el).fontSize) * el.getBoundingClientRect().height) / el.offsetHeight);
+          return sizes.length ? { zoom: Math.round(zoom * 1000) / 1000, least_px: Math.round(Math.min(...sizes) * 10) / 10 } : null;
+        });
+        if (least) (seen.open_on_screen ??= []).push({ size: size.name, state, ...least });
+      }
       if (process.env.SHOT && (said.length || keep)) {
         const path = `${process.env.SHOT}-${size.name}-${state.replace(/[^\w.-]+/g, '_')}.png`;
         await page.screenshot({ path, scale: 'css' });
@@ -836,7 +845,7 @@ ${local ? `  card:
       (seen.rest_close ??= []).push({ size: size.name, ...(await restClose(page)) });
       await look('rest-close', true);
     }
-    // At rest, being made, at 75%: what it says of how far it's got hangs off it as all else at rest does, one size on screen.
+    // At rest, being made, at 75%: what it says of how far it's got.
     const making = page.locator('.react-flow__node .card[data-asset="making"] > .media').first();
     await home();
     if (names.includes('making')) {

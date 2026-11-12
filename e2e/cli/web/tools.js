@@ -110,6 +110,19 @@ function linesOf(text, name) {
   // Named first, it's read by PyPI's Runtime, which knows no tool; the install a run makes on this machine's Runtime takes its place.
   importYaml(folder, `${yaml().trimEnd()}\n  shot:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
   await box('shot').waitFor();
+  // No box shows a description field for now (cl-900, Paul 11-12: "remove all of the 'description' boxes since they are confusing"): a
+  // picture, a video, a sound, a box with a tool; a stored one stays in the file.
+  await api(`/v1/projects/${id}/assets/walk`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'A walk by the sea' } }) });
+  await until('walk described', () => fieldsOf('walk'), (fields) => fields.description === 'A walk by the sea');
+  // Open, a picture fills the page (Focus) and anything else stands on the canvas: nowhere on the page is there a description field.
+  for (const name of ['coast', 'walk', 'hum', 'shot']) {
+    await open(name);
+    const shown = await page.locator('.desc-field, [aria-label="Description"], .mention-text[data-field="description"]').count();
+    check(`${name}_shows_no_description`, shown === 0, shown);
+  }
+  check('a_stored_description_stays', (await fieldsOf('walk')).description === 'A walk by the sea', await fieldsOf('walk'));
+  await shot('no-description');
+  await closeBox(page);
   if (local) execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
   // The sidebar names operations only; model implementations stay inside each node's configuration.

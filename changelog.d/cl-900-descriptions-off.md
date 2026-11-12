@@ -1,0 +1,1 @@
+Descriptions are off for now. No box shows a description field, and a mention sends its function an empty `description`; a stored description stays in the project, unused. They come back later as captions a model writes.

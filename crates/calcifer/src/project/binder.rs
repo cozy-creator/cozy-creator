@@ -82,12 +82,14 @@ struct Named {
     /// Its file's hash, or `cut:<n>` for a range.
     file: String,
     files: Files,
-    description: String,
-    /// What its version's file says of itself (`orbit`), sent beside its description.
+    /// What its version's file says of itself (`orbit`).
     metadata: Map<String, Value>,
     made_by: String,
     own: bool,
 }
+
+/// A box's description, as every reader gets it: descriptions are off for now (cl-900, tools §9). What's stored stays in project.db.
+pub(super) const OFF: &str = "";
 
 struct Binder<'a> {
     call: &'a Call<'a>,
@@ -269,7 +271,7 @@ impl Binder<'_> {
                 return Some(mention.name.to_owned());
             }
             if keys.insert(named.key.clone()) {
-                let mut reference = json!({"key": named.key, "type": named.kind, "file": named.file, "description": named.description});
+                let mut reference = json!({"key": named.key, "type": named.kind, "file": named.file, "description": OFF});
                 if !named.metadata.is_empty() {
                     reference["metadata"] = Value::Object(named.metadata.clone());
                 }
@@ -335,7 +337,7 @@ impl Binder<'_> {
         let version = number.and_then(|number| lock.asset(&asset.name)?.version(number));
         let made_by = version.and_then(|version| version.tool.clone()).unwrap_or_default();
         let metadata = version.map(|version| version.metadata_of(&file)).unwrap_or_default();
-        let mut named = Named { key: mention.spelled(&asset.name), kind, file, files, description: asset.description.clone(), metadata, made_by, own: Some(j) == self.call.own };
+        let mut named = Named { key: mention.spelled(&asset.name), kind, file, files, metadata, made_by, own: Some(j) == self.call.own };
         let cut = match mention.span {
             None => return Some(Some(named)),
             Some(Span::Frames(from, to)) => self.range(&named, from, to).map(|cut| Some((cut, named.kind.clone()))),
@@ -366,7 +368,7 @@ impl Binder<'_> {
         }
         let own = self.call.inline.iter().find(|inline| name_key(&inline.name) == name_key(mention.name))?;
         let files = Files::from([(own.kind.clone(), own.file.clone())]);
-        Some(Named { key: own.name.clone(), kind: own.kind.clone(), file: own.file.clone(), files, description: String::new(), metadata: Map::new(), made_by: String::new(), own: false })
+        Some(Named { key: own.name.clone(), kind: own.kind.clone(), file: own.file.clone(), files, metadata: Map::new(), made_by: String::new(), own: false })
     }
 
     /// Frames `from` to `to` of a video, to be cut: past its end, to its end.
@@ -479,8 +481,8 @@ impl Binder<'_> {
                     [file] if kind != "file" && file.media().is_some_and(|media| media != kind) => {
                         self.warn(format!("{}'s {at} takes {}, and {text} is {}: it's left empty", self.call.name, a(kind), a(file.media().unwrap_or_default())));
                     }
-                    [file] => found.push(Named { key: String::new(), kind: file.media().unwrap_or(kind).to_owned(), file: file.sha256.clone(), files: Files::new(), description: String::new(), metadata: Map::new(), made_by: String::new(), own: false }),
-                    _ => found.push(Named { key: String::new(), kind: kind.to_owned(), file: text.to_owned(), files: Files::new(), description: String::new(), metadata: Map::new(), made_by: String::new(), own: false }),
+                    [file] => found.push(Named { key: String::new(), kind: file.media().unwrap_or(kind).to_owned(), file: file.sha256.clone(), files: Files::new(), metadata: Map::new(), made_by: String::new(), own: false }),
+                    _ => found.push(Named { key: String::new(), kind: kind.to_owned(), file: text.to_owned(), files: Files::new(), metadata: Map::new(), made_by: String::new(), own: false }),
                 }
                 continue;
             }
@@ -503,9 +505,9 @@ impl Binder<'_> {
         Ok(found)
     }
 
-    /// A file with its description, and the extras its struct names: what its version holds by that name, when this package made it.
+    /// A file, and the extras its struct names: what its version holds by that name, when this package made it.
     fn media(&self, named: &Named, extras: &Struct) -> Value {
-        let mut out = Map::from_iter([("type".to_owned(), json!(named.kind)), ("file".to_owned(), json!(named.file)), ("description".to_owned(), json!(named.description))]);
+        let mut out = Map::from_iter([("type".to_owned(), json!(named.kind)), ("file".to_owned(), json!(named.file)), ("description".to_owned(), json!(OFF))]);
         if !named.metadata.is_empty() {
             out.insert("metadata".to_owned(), Value::Object(named.metadata.clone()));
         }

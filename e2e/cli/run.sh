@@ -262,12 +262,12 @@ cozy --json package uninstall local/one_script --on local > /dev/null || check "
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   local-wake) parts="local_wake_update logs" ;;
   entrypoints) parts="entrypoints" ;;
-  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references orbit_angles old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
+  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves page_resend logs" ;;
   project-stream) parts="project_stream logs" ;;

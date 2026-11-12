@@ -97,8 +97,8 @@ html.carrying * {
 }
 
 /* The five steps at a surface's size. The frame draws them at --ui; a drawer is zoomed, an open box's sheet and takes are drawn larger
-   by --here, and a box's insides scale with the canvas, so each sets --m. Its name, its words and what's said around them read the
-   same at any zoom: --on. */
+   by --here, and a box's insides scale with the canvas, so each sets --m. All of a box, its name and words too, is drawn at the canvas's
+   scale: a zoom makes it larger or smaller, never different (cl-890). */
 :root,
 .drawer-head,
 .drawer-body,
@@ -110,13 +110,6 @@ html.carrying * {
   --body: calc(var(--t-body) * var(--m));
   --small: calc(var(--t-small) * var(--m));
   --tiny: calc(var(--t-tiny) * var(--m));
-}
-.react-flow__node {
-  /* What hangs off a box at rest stops growing at --hang, past which it shrinks with the canvas, in the room its box keeps (shown.ts). */
-  --on: calc(var(--ui) * var(--hang, 1));
-}
-.card.here {
-  --on: calc(var(--ui) * var(--text, 1));
 }
 .card {
   --m: 1;
@@ -483,8 +476,8 @@ code {
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  /* Clear of the picture and its outline at any zoom: what's taller than the head rises above it. */
-  padding: 0 2px min(calc(4px + 8px * var(--text, 1)), 24px);
+  /* Clear of the picture and its outline: what's taller than the head rises above it. */
+  padding: 0 2px 12px;
   height: var(--head);
 }
 .nm {
@@ -498,9 +491,9 @@ code {
   min-width: 0;
   cursor: text;
 }
-/* A box's name is its title, the same size at any zoom. */
+/* A box's name is its title. */
 .card .nm {
-  font: var(--w-title) calc(var(--t-title) * var(--on)) / 1.25 var(--mono);
+  font: var(--w-title) calc(var(--t-title) * var(--ui)) / 1.25 var(--mono);
 }
 .card.here .nm,
 .react-flow__node.selected .nm {
@@ -508,7 +501,7 @@ code {
 }
 .nm-field {
   user-select: text;
-  font: var(--w-title) calc(var(--t-title) * var(--on)) var(--mono);
+  font: var(--w-title) calc(var(--t-title) * var(--ui)) var(--mono);
   flex: 1;
   min-width: 0;
   background: var(--field);
@@ -809,8 +802,8 @@ code {
   color: #fff;
 }
 .orbit-dial {
-  width: calc(44px * var(--text, 1));
-  height: calc(44px * var(--text, 1));
+  width: 44px;
+  height: 44px;
 }
 .orbit-dial .ring {
   fill: none;
@@ -912,19 +905,16 @@ code {
   color: #cfe6ff;
   font: var(--small) var(--sans);
 }
-/* At rest, one size on screen as the canvas zooms out, down to --hang, as all that hangs off a box at rest is: one line, so nothing hangs
-   under it but what its box keeps room for. */
+/* At rest, one line, so nothing hangs under it but what its box keeps room for. */
 .card:not(.here) .prog b {
-  left: calc(var(--s3) * var(--hang, 1));
-  bottom: calc(var(--s3) * var(--hang, 1));
-  max-width: calc(100% / var(--hang, 1) - 2 * var(--s3));
+  left: var(--s3);
+  bottom: var(--s3);
+  max-width: calc(100% - 2 * var(--s3));
   padding: 1px var(--s3);
   overflow: hidden;
   font: calc(var(--t-small) * var(--ui)) / 1.4 var(--sans);
   text-overflow: ellipsis;
   white-space: nowrap;
-  transform: scale(var(--hang, 1));
-  transform-origin: bottom left;
 }
 .tc {
   position: absolute;
@@ -968,10 +958,10 @@ video.preview.on {
 .in-frame .mention-text {
   padding: 12px;
   color: var(--ink);
-  font-size: calc(var(--t-title) * var(--ui) * var(--text, 1));
+  font-size: calc(var(--t-title) * var(--ui));
   line-height: 1.4;
 }
-/* As many whole lines as the box holds at this zoom: the last one shown is never cut through. */
+/* As many whole lines as the box holds: the last one shown is never cut through. */
 .words {
   margin: 0;
   align-self: flex-start;
@@ -1075,7 +1065,7 @@ video.preview.on {
   opacity: 1;
   transform: translate(1px, 1px);
 }
-/* Worked on where it stands: its words over whatever it shows, and all else just under it, at one size at any zoom. */
+/* Worked on where it stands: its words over whatever it shows, and all else just under it. */
 .card.here .words {
   visibility: hidden;
 }
@@ -1088,18 +1078,18 @@ video.preview.on {
   flex-direction: column;
   z-index: 3;
   pointer-events: none;
-  /* What says so (.prog b), at rest at --hang; open, below. */
-  padding-bottom: calc(var(--hang, 1) * (var(--s3) + 1.4 * var(--t-small) * var(--ui) + 2px));
+  /* What says so (.prog b), at rest; open, below. */
+  padding-bottom: calc(var(--s3) + 1.4 * var(--t-small) * var(--ui) + 2px);
 }
 .card .made-from .words {
   visibility: visible;
 }
-/* Open, what says how far it's got is one size on screen as the canvas is drawn in on its box, as its timecode is. */
+/* Open, what says how far it's got is at its box's small step, as its timecode is. */
 .card.here .prog b {
-  font-size: calc(var(--t-small) * var(--on));
+  font-size: calc(var(--t-small) * var(--ui));
 }
 .card.here .made-from {
-  padding-bottom: calc(10px + 1.4 * var(--t-small) * var(--on));
+  padding-bottom: calc(10px + 1.4 * var(--t-small) * var(--ui));
 }
 .card.here .in-frame {
   background: var(--card);
@@ -1107,48 +1097,45 @@ video.preview.on {
 .card.here .media {
   user-select: text;
 }
-/* At rest, its × and its state are drawn with its name: one size on screen, down to --hang. The × is always there, big enough to hit. */
+/* At rest, its × and its state are drawn with its name. The × is always there, big enough to hit. */
 .card .head .iconb {
-  width: calc(30px * var(--hang, 1));
-  height: calc(30px * var(--hang, 1));
-  border-radius: calc(6px * var(--hang, 1));
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
 }
 .card .head .iconb .icon {
-  width: calc(20px * var(--hang, 1));
-  height: calc(20px * var(--hang, 1));
+  width: 20px;
+  height: 20px;
 }
 .card .head .dot {
-  width: calc(7px * var(--hang, 1));
-  height: calc(7px * var(--hang, 1));
-  margin: 0 calc(2px * var(--hang, 1));
+  width: 7px;
+  height: 7px;
+  margin: 0 2px;
 }
-/* What it can do at its head and on its picture stays one size too: the canvas is drawn in on it. */
+/* What it can do at its head and on its picture. */
 .card.here .head .iconb {
-  width: calc(30px * var(--text, 1));
-  height: calc(30px * var(--text, 1));
-  font-size: calc(22px * var(--text, 1));
-  border-radius: calc(5px * var(--text, 1));
+  font-size: 22px;
+  border-radius: 5px;
 }
-.card.here .head .iconb .icon,
 .card.here .play .icon,
 .card.here .stop .icon {
-  width: calc(20px * var(--text, 1));
-  height: calc(20px * var(--text, 1));
+  width: 20px;
+  height: 20px;
 }
 .card.here .count {
-  font-size: calc(var(--t-small) * var(--on));
+  font-size: calc(var(--t-small) * var(--ui));
 }
 .card.here .dot {
-  width: calc(10px * var(--text, 1));
-  height: calc(10px * var(--text, 1));
+  width: 10px;
+  height: 10px;
 }
 .card.here .play,
 .card.here .stop {
-  width: calc(40px * var(--text, 1));
-  height: calc(40px * var(--text, 1));
+  width: 40px;
+  height: 40px;
 }
 .card.here .tc {
-  font-size: calc(var(--t-small) * var(--on));
+  font-size: calc(var(--t-small) * var(--ui));
 }
 /* Render leaves the box: what it asks first hangs under it, over what's below. */
 .rest-asking {
@@ -1156,8 +1143,6 @@ video.preview.on {
   top: calc(100% + 4px);
   left: 0;
   width: max(100%, 280px);
-  transform: scale(var(--text, 1));
-  transform-origin: top left;
   z-index: 6;
 }
 .rest-asking .status.asking {
@@ -1168,8 +1153,8 @@ video.preview.on {
   box-shadow: 0 4px 16px #0002;
 }
 /* All of a box, under it: one block with its picture and its takes, from the picture's left edge to the takes' right edge and a gap below
-   them, at any zoom. Its words stay one size on screen and wrap. --here-room comes with each fit, --here is how large it's drawn for the
-   screen, and --here-gap, in its own pixels, is between the picture and its takes and under them. */
+   them. --here-room comes with each fit, --here is how large it's drawn against its box, and --here-gap, in its own pixels, is between the
+   picture and its takes and under them. */
 .stage {
   --here: 1.4;
   --here-gap: var(--s6);
@@ -1187,9 +1172,9 @@ video.preview.on {
 }
 .here-under {
   position: absolute;
-  top: calc(100% + var(--here-gap) * var(--text, 1) * var(--here));
+  top: calc(100% + var(--here-gap) * var(--here));
   left: 0;
-  width: calc(100% / (var(--text, 1) * var(--here)));
+  width: calc(100% / var(--here));
   max-height: var(--here-room, 60vh);
   display: flex;
   flex-direction: column;
@@ -1197,30 +1182,26 @@ video.preview.on {
   border-radius: var(--round2);
   background: var(--panel);
   box-shadow: 0 10px 28px var(--shadow);
-  transform: scale(calc(var(--text, 1) * var(--here)));
+  transform: scale(var(--here));
   transform-origin: top left;
   user-select: text;
   z-index: 5;
   animation: fade-in 120ms ease-out;
 }
 .card:has(> .here-side:not(:empty)) > .here-under {
-  width: max(calc(100% / (var(--text, 1) * var(--here))), calc(var(--surface-media-width, 100%) / (var(--text, 1) * var(--here)) + var(--here-gap) + var(--side-width)));
-}
-.here-under > * {
-  --text: 1;
-  --hang: 1;
+  width: max(calc(100% / var(--here)), calc(var(--surface-media-width, 100%) / var(--here) + var(--here-gap) + var(--side-width)));
 }
 /* A box worked on: its takes in a column beside the picture, the newest on top, the first's top on the picture's and the column as tall
    as it. A take's ring is drawn inside it, so nothing of one rises past the picture or is cut off by the column. */
 .here-side {
   position: absolute;
   top: var(--head);
-  left: calc(var(--surface-media-width, 100%) + var(--here-gap) * var(--text, 1) * var(--here));
+  left: calc(var(--surface-media-width, 100%) + var(--here-gap) * var(--here));
   width: var(--side-width);
-  height: calc((100% - var(--head)) / (var(--text, 1) * var(--here)));
+  height: calc((100% - var(--head)) / var(--here));
   overflow: hidden auto;
   overscroll-behavior: contain;
-  transform: scale(calc(var(--text, 1) * var(--here)));
+  transform: scale(var(--here));
   transform-origin: top left;
   z-index: 5;
   animation: fade-in 120ms ease-out;
@@ -1241,10 +1222,6 @@ video.preview.on {
 }
 .here-side:empty {
   display: none;
-}
-.here-side > * {
-  --text: 1;
-  --hang: 1;
 }
 .here-side .takes {
   flex-direction: column;
@@ -1311,12 +1288,6 @@ video.preview.on {
   font: inherit;
   cursor: copy;
 }
-/* What a box is, in its own words: a field of its own, under its label. */
-.desc-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
 .block-label {
   font-size: var(--heading);
   font-weight: var(--w-heading);
@@ -1336,21 +1307,6 @@ video.preview.on {
 }
 .tool-head .add-ons {
   position: static;
-}
-.here-rule {
-  width: 100%;
-  margin: 8px 0 6px;
-  border: 0;
-  border-top: 1px solid var(--line2);
-}
-.desc-field .mention-text {
-  min-height: 3.5em;
-  padding: 8px 10px;
-  border: 1px solid var(--line2);
-  border-radius: var(--round);
-  background: var(--card);
-  font-size: var(--body);
-  line-height: 1.4;
 }
 .here-all {
   display: flex;
@@ -1430,7 +1386,7 @@ video.preview.on {
   text-align: center;
 }
 .card.showing-approved > .media {
-  box-shadow: 0 0 0 calc(4px * var(--text, 1)) #33a852;
+  box-shadow: 0 0 0 4px #33a852;
 }
 .here-under .take.making {
   flex: none;
@@ -1492,15 +1448,15 @@ video.preview.on {
   top: 100%;
   right: 2px;
   color: var(--ink);
-  font: calc(var(--t-small) * var(--on)) / 1.25 var(--mono);
+  font: calc(var(--t-small) * var(--ui)) / 1.25 var(--mono);
   white-space: nowrap;
   pointer-events: none;
 }
 /* Open, it's on the frame beside the corner, and what's set has its ×. */
 .card.here .ratio-rest {
   top: auto;
-  bottom: calc(6px * var(--text, 1));
-  right: calc(30px * var(--text, 1));
+  bottom: 6px;
+  right: 30px;
   z-index: 4;
   display: flex;
   align-items: center;
@@ -1509,7 +1465,7 @@ video.preview.on {
   border-radius: 0.3em;
   background: #000b;
   color: #fff;
-  font-size: calc(var(--t-small) * var(--on));
+  font-size: calc(var(--t-small) * var(--ui));
 }
 .ratio-clear {
   display: grid;
@@ -1528,9 +1484,11 @@ video.preview.on {
 .ratio-clear:hover {
   color: var(--ember);
 }
+/* The shape the pull would make, in the middle of its box while it's pulled. */
 .ratio-live {
   position: absolute;
   inset: 0;
+  font-size: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2817,8 +2775,8 @@ a.tab:hover {
 }
 .here-side.image-history {
   width: 280px;
-  left: calc(50% + var(--image-history-offset, 0px) + var(--here-gap) * var(--text, 1) * var(--here));
-  height: calc(var(--image-history-height, 200px) / (var(--text, 1) * var(--here)));
+  left: calc(50% + var(--image-history-offset, 0px) + var(--here-gap) * var(--here));
+  height: calc(var(--image-history-height, 200px) / var(--here));
 }
 .image-history .takes {
   align-items: center;
@@ -2843,15 +2801,46 @@ a.tab:hover {
   bottom: 0;
   transform: translateX(-50%);
 }
-/* Words over a picture read on either theme: bold, with a halo of the panel's colour round each letter (cl-901). */
+/* Keep the lettering plain; the editor uses a translucent surface for contrast. */
 .words,
 .in-frame .mention-text {
   font-weight: 700;
-  text-shadow: 0 0 1px var(--panel), 0 0 2px var(--panel), 0 0 3px var(--panel), 0 0 6px var(--panel);
+  text-shadow: none;
+}
+.in-frame .mention-text {
+  flex: 0 1 auto;
+  margin: 14px;
+  padding: 12px 16px;
+  min-height: 64px;
+  max-height: calc(100% - 28px);
+  border: 1px solid var(--line);
+  border-radius: var(--round2);
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
 }
 .words .chip,
 .in-frame .mention-text .chip {
   text-shadow: none;
+}
+.image-history .image-version-entry {
+  display: grid;
+  grid-template-columns: 24px minmax(0, auto) 24px;
+  gap: 6px;
+  align-items: center;
+}
+.image-version-entry .variant-number {
+  position: static;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--mute);
+  font: 12px / 1.3 var(--mono);
+  text-align: right;
+}
+.image-history .image-version-entry > .take-off {
+  position: static;
+  align-self: start;
+  justify-self: center;
+  margin-top: 3px;
 }
 .image-edit-action {
   position: absolute;
@@ -3216,7 +3205,7 @@ a.tab:hover {
   border-radius: 0.3em;
   background: var(--bad);
   color: #fff;
-  font-size: calc(var(--t-small) * var(--on));
+  font-size: calc(var(--t-small) * var(--ui));
   pointer-events: none;
   z-index: 6;
 }
@@ -3606,8 +3595,7 @@ input[type="checkbox"] {
 .glimpse.failed {
   opacity: 0.4;
 }
-/* Its words, one line top left, as how far it's got is bottom left: open, as the box's other words are; at rest one size on screen down to
-   --hang. */
+/* Its words, one line top left, as how far it's got is bottom left. */
 .glimpse-label {
   position: absolute;
   left: var(--s3);
@@ -3617,18 +3605,10 @@ input[type="checkbox"] {
   overflow: hidden;
   border-radius: 5px;
   background: color-mix(in srgb, var(--bg) 70%, transparent);
-  font: calc(var(--t-small) * var(--on)) / 1.4 var(--sans);
+  font: calc(var(--t-small) * var(--ui)) / 1.4 var(--sans);
   color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.card:not(.here) .glimpse-label {
-  left: calc(var(--s3) * var(--hang, 1));
-  top: calc(var(--s3) * var(--hang, 1));
-  max-width: calc(100% / var(--hang, 1) - 2 * var(--s3));
-  font-size: calc(var(--t-small) * var(--ui));
-  transform: scale(var(--hang, 1));
-  transform-origin: top left;
 }
 .beats-from input {
   width: 72px;

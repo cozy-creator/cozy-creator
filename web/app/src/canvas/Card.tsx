@@ -189,7 +189,8 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
         </span>
       ))}
       {versions.map((version) => (
-        <span key={version.number} className="take-at">
+        <span key={version.number} className={`take-at ${asset.kind === "image" ? "image-version-entry" : ""}`}>
+          {asset.kind === "image" && <span className="variant-number" aria-hidden="true">v{version.number}</span>}
           <button
             type="button"
             className={`take ${shown?.number === version.number ? "on" : ""} ${asset.pinned && version.number === (asset.approved ?? asset.version) ? "approved" : ""} ${view.slid === version.number ? "fresh" : ""}`}
@@ -197,7 +198,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             aria-pressed={shown?.number === version.number}
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
-            style={asset.kind === "image" ? { height: 100, width: Math.min(280, 100 * (version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5)), aspectRatio: "auto" } : undefined}
+            style={asset.kind === "image" ? { height: 100, width: Math.min(220, 100 * (version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5)), aspectRatio: "auto" } : undefined}
             onClick={() => pick(version.number)}
             onDoubleClick={() => store.toggleApproved(name, version.number)}
             onContextMenu={(event) => {
@@ -210,7 +211,6 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             {version.main && !version.main.absent ? (
               <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />
             ) : null}
-            {asset.kind === "image" && <span className="variant-number">v{version.number}</span>}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
@@ -447,14 +447,14 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
   const flow = useReactFlow()
   const tools = useSignal(store.tools)
   const control = view.asset && reshapes(view) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
-  const from = useRef<{ x: number; y: number; w: number; h: number; owner: CanvasStore["inPlace"]; delta(from: { x: number; y: number }, to: { x: number; y: number }): { x: number; y: number } } | null>(null)
+  const from = useRef<{ x: number; y: number; w: number; h: number; inverse: number; owner: CanvasStore["inPlace"] } | null>(null)
   const pulled = useRef<{ w: number; h: number } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
   const moved = (event: PointerEvent) => {
     const start = from.current
     if (!start) return
     flushSync(() => {
-      const { x: dx, y: dy } = start.delta(start, { x: event.clientX, y: event.clientY })
+      const [dx, dy] = [(event.clientX - start.x) * start.inverse, (event.clientY - start.y) * start.inverse]
       if (!control) {
         const w = Math.min(WIDEST, Math.max(NARROWEST, start.w * Math.max(1 + dx / bodyWidth(view, start.w), 1 + dy / start.h)))
         pulled.current = { w, h: w / aspectOf(view) }
@@ -488,7 +488,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
   return (
     <>
       {nearest && (
-        <div className="ratio-live" style={{ fontSize: view.here ? "calc(30px * var(--surface-inverse))" : 30 / flow.getZoom() }}>
+        <div className="ratio-live">
           <span>{nearest}</span>
         </div>
       )}
@@ -503,11 +503,10 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
           const pose = store.poseOf(name)
           if (!pose) return
           event.currentTarget.setPointerCapture(event.pointerId)
-          const zoom = flow.getZoom()
+          // Canvas pixels per screen pixel: the zoom's, or focused, the frame's against its box.
           const frame = event.currentTarget.closest(".media")?.getBoundingClientRect()
-          const inverse = focused && frame?.width ? pose.w / frame.width : 1 / zoom
-          const delta = (focused ? undefined : store.surfaceOf(name)?.resizeDelta) ?? ((a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (b.x - a.x) * inverse, y: (b.y - a.y) * inverse }))
-          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), delta, owner: store.inPlace }
+          const inverse = focused && frame?.width ? pose.w / frame.width : 1 / flow.getZoom()
+          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), inverse, owner: store.inPlace }
           if (store.inPlace) store.inPlace.pulled = true
         }}
         onPointerMove={moved}
@@ -810,7 +809,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
               {!looking && (asset.kind !== "image" || editing) && <AssetEdit name={name} view={view} editing={editing} prominent={parameterTool} head={asset.kind !== "image" ? <Stack name={name} /> : undefined} actions={editing && <RenderButton name={name} view={view} />} />}
               {asset.kind !== "image" && !view.hereWords && <TakeName view={view} />}
-              {/* Writing an image tool's next take, its description isn't asked: it's for what's looked at. */}
               {view.warned && warned ? (
                 <div className="warned-lines">
                   {view.warnings!.map((warning) => (

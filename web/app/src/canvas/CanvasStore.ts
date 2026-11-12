@@ -313,7 +313,7 @@ export class CanvasStore {
   /** The box being worked on where it stands: the view to go back to, the one fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
   inPlace: { name: string; back: Viewport; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
   /** Only the opened card has a viewport-dependent presentation. The cached value owns no DOM. */
-  private surface: { id: string; current?: ReadableProjection; pose?: Box; zoom?: number; update?: (room?: Box, at?: Viewport) => ReadableProjection | null } | null = null
+  private surface: { id: string; current?: ReadableProjection; pose?: Box; update?: (room?: Box, at?: Viewport) => ReadableProjection | null } | null = null
   private surfaceFrame = 0
   /** Done with the box where it stands: what's typed is saved, and the canvas goes back. */
   leaveHere: () => void = () => {}
@@ -687,10 +687,9 @@ export class CanvasStore {
     return null
   }
 
-  refreshSurface(viewport: Viewport) {
-    if (this.surface?.current && this.surface.zoom === viewport.zoom) this.surface.current = { ...this.surface.current, view: viewport }
-    else if (this.surface?.update) this.surface.update()
-    else if (this.surface?.current && this.surface.current.view.zoom !== viewport.zoom) this.measureSurface()
+  /** Its frame again from what it holds now. A zoom changes nothing of it: the canvas draws it larger or smaller. */
+  refreshSurface() {
+    this.surface?.update?.()
   }
 
   presentSurface(id: string, current: ReadableProjection) {
@@ -701,7 +700,6 @@ export class CanvasStore {
     if (!pose || !node) return
     this.surface.current = current
     this.surface.pose = pose
-    this.surface.zoom = this.flow?.getZoom()
     const { x, y, w: canonicalWidth } = pose
     const { x: left, y: top, w: width, h: height } = current.bounds
     const origin: [number, number] = [(x - left) / width, (y - top) / height]
