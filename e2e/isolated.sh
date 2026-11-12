@@ -130,8 +130,8 @@ PY
 case $suite:$shard in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake) needs='' ;;
   cli:runs | cli:local-code) needs='packages birefnet' ;;
-  # commands shows a LoRA's modules (lora show, xs-183).
-  cli:commands) needs='packages birefnet loras' ;;
+  # commands shows a LoRA's modules (lora show, xs-183), and fits a lane on a slot's components (lane_fit, xs-191).
+  cli:commands) needs='packages birefnet loras fits' ;;
   # web-localfit's heavy tool paints its edit base with BiRefNet (a take is one since cl-909); only Linux's web-core runs it.
   cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
@@ -141,7 +141,7 @@ case $suite:$shard in
   cli:plan) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras vaes' ;;
-  cli:) needs='packages birefnet downloads loras vaes' ;;
+  cli:) needs='packages birefnet downloads loras vaes fits' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).
@@ -354,6 +354,17 @@ PYH3
         || { echo "naming $model's family failed: $(tail -c 600 "$seed/edit-${model##*/}.json")" >&2; exit 1; }
     done
     log "published qwen/qwen-image-2.1@0.1.0 and madebyollin/texture-fix-vae@0.2.0 (stand-ins) of family qwen-image-2"
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" fits "* ]]; then
+    # lane_fit (xs-191): fitting/vae is fitting/whole (an 8 MiB `model`) with a 1 MiB `vae` added, as
+    # madebyollin/texture-fix-vae is Qwen-Image-2.1 with its VAE replaced.
+    random_weights "$seed/fit-whole.safetensors" 8
+    random_weights "$seed/fit-vae.safetensors" 1
+    mirror "$seed/fit-whole.safetensors" fitting/whole bf16 0.1.0 https://huggingface.co/fitting/whole --source-format as-is
+    mirror "$seed/fit-vae.safetensors" fitting/vae bf16 0.1.0 https://huggingface.co/fitting/vae --source-format as-is \
+      --base fitting/whole@0.1.0:vae
+    export E2E_FIT=fitting/vae
     rm -f "$seed"/*.safetensors
   fi
   cd "$start"
