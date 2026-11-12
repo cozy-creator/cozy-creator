@@ -1002,6 +1002,27 @@ code {
   color: var(--mute);
   white-space: nowrap;
 }
+/* Its facts, a line each, labelled: where, what's ahead, its weights, its package, its time. */
+.run-face .face-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: calc(0.15 * var(--face-font)) calc(0.6 * var(--face-font));
+  margin: 0;
+}
+.run-face .face-fact {
+  display: contents;
+}
+.run-face .face-fact dt {
+  color: var(--mute);
+}
+.run-face .face-fact dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .run-face p {
   margin: 0;
   overflow: hidden;

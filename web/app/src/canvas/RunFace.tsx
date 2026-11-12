@@ -3,7 +3,7 @@ import { useRef } from "react"
 import type { Machine, Operation, Run } from "../api/calcifer"
 import { machinesQuery, runQuery, runsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
-import { bytes, leftWords } from "../panels/format"
+import { bytes, leftWords, shown } from "../panels/format"
 import { useNow } from "../panels/common"
 import { modelWords, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { countsOf, countWords, stageName, workWords } from "../panels/runs/words"
@@ -155,6 +155,44 @@ export function faceOf(seen: Seen): Face {
   return face("work", run.machine_state === "preparing" ? "Preparing" : "Starting", { detail: `on ${run.machine}` })
 }
 
+/** A span of time as a clock: `0:42`, `3:05`, `1:02:10`. */
+function clockOf(ms: number): string {
+  const all = Math.max(0, Math.floor(ms / 1000))
+  const [h, m, sec] = [Math.floor(all / 3600), Math.floor((all % 3600) / 60), all % 60]
+  const two = (n: number) => String(n).padStart(2, "0")
+  return h ? `${h}:${two(m)}:${two(sec)}` : `${m}:${two(sec)}`
+}
+
+/** Its facts, each a line of what's known now (Paul, 11-12: "where it is running, what phase it's in, what other tasks are ahead, how many
+ *  items in queue, is the model downloading on this machine, is the package installing, estimated time"): where; what's ahead of it there
+ *  and how many wait; its weights; its package; its time. A line nothing is known for yet isn't drawn. */
+export function factsOf({ run, on, face, now, others, boxOf }: { run?: Run; on?: Operation; face: Face; now: number; others: Run[]; boxOf: (run: number) => string | undefined }): [string, string][] {
+  const facts: [string, string][] = []
+  facts.push(["Where", face.where ?? (run?.machine ? run.machine : face.phase === "renting" ? face.says : "choosing a machine")])
+  if (run?.machine && run.status !== "completed") {
+    const there = others.filter((other) => other.machine === run.machine && other.number !== run.number && other.kind === "call")
+    const working = (other: Run) => other.status === "in_progress" && other.machine_state !== "queued" && other.queue_position == null
+    const before = (other: Run) => working(other) || (run.queue_position != null && other.queue_position != null && other.queue_position < run.queue_position)
+    const name = (other: Run) => boxOf(other.number) ?? shown(other.target)
+    const state = (other: Run) => (working(other) ? `rendering${other.progress?.eta_s != null ? `, ${leftWords(other.progress.eta_s)}` : ""}` : "queued")
+    const ahead = there.filter(before)
+    const behind = there.length - ahead.length
+    const listed = ahead.slice(0, 3).map((other) => `${name(other)} (${state(other)})`).join(", ")
+    const lines = ahead.length ? `${ahead.length} ahead: ${listed}${ahead.length > 3 ? "…" : ""}` : "nothing ahead"
+    facts.push(["Queue", behind > 0 ? `${lines} · ${behind} waiting after it` : lines])
+  }
+  const started = Boolean(run?.started_at_ms) || run?.machine_state === "running"
+  if (on?.kind === "download") facts.push(["Weights", `downloading ${fetched(on)}${on.eta_s != null ? ` · ${leftWords(on.eta_s)}` : ""}`])
+  else if (started) facts.push(["Weights", "on this machine"])
+  if (on?.kind === "install") facts.push(["Package", `installing ${packageWords(on.subject)}${on.stage ? ` · ${on.stage}` : ""}`])
+  else if (started) facts.push(["Package", "installed"])
+  const since = run ? now - run.created_at_ms : undefined
+  const phaseLeft = on?.eta_s != null ? leftWords(on.eta_s) : undefined
+  const time = [since !== undefined ? `${clockOf(since)} elapsed` : "", phaseLeft ? `this phase ${phaseLeft}` : "", face.left ? `whole job ${face.left}` : ""].filter(Boolean)
+  if (time.length) facts.push(["Time", time.join(" · ")])
+  return facts
+}
+
 /** How far its bar is: the whole render by its time, what's passed of what it has taken and has left; else what it's doing now, by its own
  *  count. Neither goes back while it stands on the same. */
 function useBar(run: Run | undefined, face: Face, now: number): number | undefined {
@@ -194,8 +232,8 @@ export function RunFace({ view, name, number, full, above = false }: { view: Ele
   const installsOf = asset?.tool ? tools.get(asset.tool) : undefined
   const installing = useInstalling(run || waits ? undefined : installsOf && (installsOf.installs ?? installsOf.package))
   const read = useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
-  const going = useQuery({ ...runsQuery(client, { status: "in_progress" }, 100), enabled: !run })
-  const lined = useQuery({ ...runsQuery(client, { status: "queued" }, 100), enabled: !run })
+  const going = useQuery(runsQuery(client, { status: "in_progress" }, 100))
+  const lined = useQuery(runsQuery(client, { status: "queued" }, 100))
   const settingUp = (other: Run) => other.kind === "update" || other.target.startsWith("install ")
   const readying = run ? undefined : ([...(going.data?.runs ?? []), ...(lined.data?.runs ?? [])].find(settingUp)?.machine ?? undefined)
   const now = useNow(true)
@@ -213,6 +251,7 @@ export function RunFace({ view, name, number, full, above = false }: { view: Ele
     boxOf: (number) => store.boxOfRun(number),
   })
   const fraction = useBar(run, face, now)
+  const facts = factsOf({ run, on: on ?? installing, face, now, others: [...(going.data?.runs ?? []), ...(lined.data?.runs ?? [])], boxOf: (number) => store.boxOfRun(number) })
   // Made, its result on its way here, there's nothing left to cancel.
   const cancel = !["canceling", "failed", "result"].includes(face.phase)
   return (
@@ -247,7 +286,16 @@ export function RunFace({ view, name, number, full, above = false }: { view: Ele
           )}
           {face.left && <span className="face-left">{face.left}</span>}
         </div>
-        {(full || above) && face.where && <p className="face-where">{face.where}</p>}
+        {(full || above) && (
+          <dl className="face-facts">
+            {facts.map(([label, said]) => (
+              <div key={label} className={`face-fact fact-${label.toLowerCase()}`}>
+                <dt>{label}</dt>
+                <dd title={said}>{said}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
         {(full || above) && face.detail && (
           <p className="face-detail" title={face.detail}>
             {face.detail}
