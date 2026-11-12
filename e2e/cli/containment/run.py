@@ -85,6 +85,18 @@ class ForeignBrowsers:
             shutil.rmtree(profile)
 
 
+def observe_ready(proof: Proof, project: str, seen: dict) -> dict:
+    # Keeps only closed readiness facts for a sanitized failure receipt.
+    try:
+        value = proof.exercise(project, "ready")
+    except Failure:
+        seen["ready_errors"] += 1
+        raise
+    cards = value.get("cards")
+    seen.update(last_page_ready=value.get("page_ready") is True, last_cards=cards if type(cards) is int else -1)
+    return value
+
+
 def scan_case(scanner: Scanner, receipt: Receipt, case: str, roots: list[Path], exclusions: list[Path]) -> None:
     result = scanner.scan(roots, exclusions, receipt.path)
     receipt.add(case, **result)
@@ -123,6 +135,7 @@ def main() -> int:
     foreign: ForeignBrowsers | None = None
     development: Development | None = None
     projects: list[dict] = []
+    readiness = {"slot": -1, "ready_errors": 0, "last_page_ready": False, "last_cards": -1}
     phase = "start"
     try:
         if ready.get("development_web") is True:
@@ -170,9 +183,10 @@ def main() -> int:
             qualify_native(native, scanner, a, receipt)
         phase = "browser_open"
         foreign = ForeignBrowsers()
-        for project in projects:
+        for slot, project in enumerate(projects):
             native.document("open", cwd=project["folder"])
-            until(lambda: proof.exercise(project["id"], "ready"), lambda value: value.get("page_ready") and value.get("cards", 0) >= 2, "owned_page_ready")
+            readiness.update(slot=slot, ready_errors=0, last_page_ready=False, last_cards=-1)
+            until(lambda: observe_ready(proof, project["id"], readiness), lambda value: value.get("page_ready") and value.get("cards", 0) >= 2, "owned_page_ready")
         snapshot = proof.ask("snapshot")
         require(snapshot["present"] and snapshot["pages"] == 2 and len(snapshot.get("processes", [])) >= 2 and snapshot["birth"] in snapshot["processes"], "shared_owned_browser")
         browser_birth, profile = snapshot["birth"], Path(snapshot["profile"])
@@ -339,11 +353,13 @@ def main() -> int:
         if phase == "browser_open" and proof is not None and alive(proof.birth):
             try:
                 observed = proof.ask("snapshot")
+                pages = observed.get("pages")
                 receipt.add("browser_open_failure", present=observed.get("present") is True,
                             retirement_incomplete=observed.get("retirement_incomplete") is True,
-                            caf_alive=alive(proof.birth), observed_processes=len(observed.get("processes", [])))
+                            caf_alive=alive(proof.birth), observed_processes=len(observed.get("processes", [])),
+                            pages=pages if type(pages) is int else -1, **readiness)
             except BaseException:
-                receipt.add("browser_open_failure", snapshot_unavailable=True, caf_alive=alive(proof.birth))
+                receipt.add("browser_open_failure", snapshot_unavailable=True, caf_alive=alive(proof.birth), **readiness)
         receipt.save()
         return 1
     finally:
