@@ -1672,6 +1672,7 @@ impl Store {
     }
 
     pub(crate) fn migration_required(&self) -> Result<bool> {
+        if crate::legacy_cleanup::pending(&self.legacy_home) { return Ok(true); }
         // These are old authoritative sources, not an invitation to sweep a
         // home directory. Unreadable and unattributed files stay pending.
         for name in ["projects.json", "here.json", "checkpoints.json"] {
