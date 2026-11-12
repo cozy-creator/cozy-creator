@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link, useParams } from "react-router-dom"
-import { runFullQuery, runQuery } from "../../api/queries"
+import { maintenanceRunFullQuery, maintenanceRunQuery, runFullQuery, runQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
-import { useProjectHref } from "../../app/project"
+import { useProjectHref, useProjectId } from "../../app/project"
 import { Bar, Confirm, Failure, KV, useAsk, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
 import { masked, usd, when } from "../format"
@@ -17,8 +17,9 @@ export function RunDrawer() {
   const { client } = useConnection()
   const to = useTo()
   const number = Number(useParams().number)
-  const { data: run, error } = useQuery({ ...runQuery(client, number), enabled: Number.isSafeInteger(number) })
-  const { data: full } = useQuery({ ...runFullQuery(client, number, run?.settled_at_ms ?? 0), enabled: Boolean(run) })
+  const project = useProjectId()
+  const { data: run, error } = useQuery({ ...(project ? runQuery(client, project, number) : maintenanceRunQuery(client, number)), enabled: Number.isSafeInteger(number) })
+  const { data: full } = useQuery({ ...(project ? runFullQuery(client, project, number, run?.settled_at_ms ?? 0) : maintenanceRunFullQuery(client, number, run?.settled_at_ms ?? 0)), enabled: Boolean(run) })
   const again = useProjectHref(run?.project_id, `new?again=${number}`)
   const live = Boolean(run && !settled(run))
   const now = useNow(live)
@@ -46,7 +47,7 @@ export function RunDrawer() {
               disabled={cancelled || cancel.busy}
               says={`Cancel run ${run.number}? What it hasn't finished is lost. Its machine goes on.`}
               yes="Cancel it"
-              onYes={() => void cancel.run(() => client.cancelRun(run.id))}
+              onYes={() => void cancel.run(() => project ? client.cancelRun({ project, run: run.id }) : client.cancelMaintenanceRun(run.id))}
             />
           )}
           {again && asked && (
@@ -102,7 +103,7 @@ export function RunDrawer() {
           {adjustment.field}: {adjustment.requested} became {adjustment.applied}. {adjustment.reason}
         </p>
       ))}
-      <Outputs run={run} />
+      <Outputs run={run} project={project} />
       {asked && (
         <details className="sect">
           <summary>What it was asked</summary>
@@ -110,7 +111,7 @@ export function RunDrawer() {
           {asked.seed !== undefined && <p className="muted">Seed {asked.seed}</p>}
         </details>
       )}
-      <RunLog run={run} />
+      <RunLog run={run} project={project} />
       {full?.report && Boolean(full.report.measured?.length) && (
         <details className="sect">
           <summary>Report</summary>

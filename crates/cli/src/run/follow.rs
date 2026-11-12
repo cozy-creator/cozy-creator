@@ -23,7 +23,7 @@ use api::{
 
 use crate::{
     Context,
-    calcifer_client::Client,
+    calcifer_client::{Client, RunAddress},
     machine::{Following, Notices, route},
     output,
 };
@@ -43,7 +43,11 @@ pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -
             ask.agreed = Some(quoted.quote.agreed);
         }
     }
-    let submitted: Submitted = calcifer.post("/v1/runs", &ask, Some(key)).await?;
+    let route = match &ask.project {
+        Some(project) => crate::calcifer_client::path(&["v1", "projects", project, "runs", "submit"]),
+        None => "/v1/runs".into(),
+    };
+    let submitted: Submitted = calcifer.post(&route, &ask, Some(key)).await?;
     for note in &submitted.notes {
         match note.level {
             NoteLevel::Info => output::say(ctx, &note.message),
@@ -204,10 +208,10 @@ async fn watch(
     stop: impl Future<Output = ()>,
 ) -> Result<(Run, bool), Error> {
     let calcifer = ctx.calcifer().await?;
-    let mut events = calcifer.events_until_landed(run.id.as_str(), 0);
+    let address = RunAddress::of(&run);
+    let mut events = calcifer.events_until_landed(&address, 0);
     let mut view = View::new(ctx, &run);
     let mut interrupt = std::pin::pin!(stop);
-    let id = run.id.clone();
     let mut terminal = None;
     // The rental the run was placed on, followed until it is known whether its Hub placed it far
     // away: the Hub decides after it accepts the order.
@@ -232,7 +236,7 @@ async fn watch(
                     },
                     _ = &mut interrupt => {
                         view.done();
-                        let run = calcifer.run(id.as_str()).await?;
+                        let run = calcifer.run(&address).await?;
                         let n = run.name();
                         output::say(ctx, &match settled(&run) {
                             true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run watch {n}` follows them"),
@@ -246,7 +250,7 @@ async fn watch(
         };
         match event {
             None => {
-                let run = calcifer.run(id.as_str()).await?;
+                let run = calcifer.run(&address).await?;
                 // Its Calcifer stopped with an output still owed: wait on the next one.
                 if settled(&run) && owed(&run) {
                     events.again();
@@ -268,7 +272,7 @@ async fn watch(
                     false => view.on(&event),
                 }
                 view.done();
-                return Ok((calcifer.run(id.as_str()).await?, true));
+                return Ok((calcifer.run(&address).await?, true));
             }
             Some(Ok(event)) if events.restarted() && !events_out => {
                 view.line(&format!("  Calcifer restarted; following run {} again", view.number));

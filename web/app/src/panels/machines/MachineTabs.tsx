@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
-import { machinesQuery, projectQuery, runsQuery } from "../../api/queries"
+import { machinesQuery, maintenanceRunsQuery, projectQuery, runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import type { Machine } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
@@ -136,8 +136,8 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
 export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; projectId: string | null }) {
   const { client, stream } = useConnection()
   const { data } = useQuery(machinesQuery(client))
-  const running = useQuery(runsQuery(client, { status: "in_progress" }, 100))
-  const queued = useQuery(runsQuery(client, { status: "queued" }, 100))
+  const running = useQuery(projectId ? runsQuery(client, projectId, { status: "in_progress" }, 100) : maintenanceRunsQuery(client, { status: "in_progress" }, 100))
+  const queued = useQuery(projectId ? runsQuery(client, projectId, { status: "queued" }, 100) : maintenanceRunsQuery(client, { status: "queued" }, 100))
   const { data: project } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
   const [open, setOpen] = useState<{ name: string; chip: HTMLElement } | null>(null)
   const machines = (data?.machines ?? [])
