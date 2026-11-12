@@ -144,8 +144,32 @@ fn access(root: &FsPath) -> Arc<tokio::sync::RwLock<()>> {
     ACCESS.lock().expect("vault access").entry(root.to_owned()).or_default().clone()
 }
 
-fn exclusive(root: &FsPath) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, Error> {
-    access(root).try_write_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "a project request is still running; retry after it finishes"))
+/// Exclusive authority for this exact project's storage transition. Internal final
+/// journal writes may borrow it while public work/read admission is already closed.
+pub(super) struct ProjectTransition {
+    root: PathBuf,
+    _access: tokio::sync::OwnedRwLockWriteGuard<()>,
+}
+
+impl ProjectTransition {
+    pub(super) fn root(&self) -> &FsPath { &self.root }
+
+    pub(super) fn validate(&self, project: &super::Project) -> Result<(), Error> {
+        if self.root != project.root || project.mount_id != mount_identity(&self.root) {
+            return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
+        }
+        let view = if encrypted(&self.root) { work_view(&self.root)? }
+            else { platform::durable::canonical(&self.root).map_err(provider)? };
+        if view != project.folder.dir {
+            return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
+        }
+        Ok(())
+    }
+}
+
+fn exclusive(root: &FsPath) -> Result<ProjectTransition, Error> {
+    let guard = access(root).try_write_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "a project request is still running; retry after it finishes"))?;
+    Ok(ProjectTransition { root: root.to_owned(), _access: guard })
 }
 
 /// Upload routes are outside the project router, but must hold the same storage transition
@@ -164,10 +188,23 @@ pub(crate) async fn admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLock
 /// An already accepted walker may finish while viewing is closing, but only on its own mount.
 pub(super) async fn admit_work(project: &super::Project) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
     let guard = access(&project.root).read_owned().await;
+    validate_work(project)?;
+    Ok(guard)
+}
+
+/// Bounded access for an internal active-run callback. It must not wait behind a
+/// closing transition or turn an unavailable project into global maintenance state.
+pub(super) fn try_admit_work(project: &super::Project) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+    let guard = access(&project.root).try_read_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "the project's storage is changing; retry after it finishes"))?;
+    validate_work(project)?;
+    Ok(guard)
+}
+
+fn validate_work(project: &super::Project) -> Result<(), Error> {
     if project.mount_id != mount_identity(&project.root) || resolve_path(&project.root)? != project.folder.dir {
         return Err(Error::new(Kind::Conflict, "project_view_changed", "the project's mounted view changed; reopen this project"));
     }
-    Ok(guard)
+    Ok(())
 }
 
 pub(crate) fn readable_token(path: &FsPath) -> Option<Arc<AtomicBool>> {
