@@ -1894,20 +1894,26 @@ fn revoke(token: &AtomicBool) {
 /// (an open file in the view) is dropped at once, so the view can unmount.
 pub(crate) fn revocable(body: axum::body::Body, token: Arc<AtomicBool>) -> axum::body::Body {
     use futures_util::StreamExt as _;
-    let source = Arc::new(Mutex::new(Some(body.into_data_stream())));
+    struct Source { body: Mutex<Option<axum::body::BodyDataStream>>, reader: futures_util::task::AtomicWaker }
+    let source = Arc::new(Source { body: Mutex::new(Some(body.into_data_stream())), reader: Default::default() });
     let (reading, ended) = tokio::sync::oneshot::channel::<()>();
     let (held, open, mut told) = (Arc::downgrade(&source), token.clone(), REVOKED.subscribe());
     tokio::spawn(async move {
         let revoked = async { while open.load(Ordering::Acquire) { if told.changed().await.is_err() { std::future::pending::<()>().await; } } };
         tokio::select! {
             _ = ended => {}
-            () = revoked => { if let Some(source) = held.upgrade() { source.lock().expect("private body").take(); } }
+            () = revoked => if let Some(source) = held.upgrade() {
+                source.body.lock().expect("private body").take();
+                // Its reader waits on the dropped source: told now, it reads the end.
+                source.reader.wake();
+            },
         }
     });
     axum::body::Body::from_stream(futures_util::stream::poll_fn(move |cx| {
         let _reading = &reading;
-        let mut source = source.lock().expect("private body");
-        if !token.load(Ordering::Acquire) { source.take(); }
-        match source.as_mut() { Some(body) => body.poll_next_unpin(cx), None => std::task::Poll::Ready(None) }
+        source.reader.register(cx.waker());
+        let mut body = source.body.lock().expect("private body");
+        if !token.load(Ordering::Acquire) { body.take(); }
+        match body.as_mut() { Some(body) => body.poll_next_unpin(cx), None => std::task::Poll::Ready(None) }
     }))
 }
