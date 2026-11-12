@@ -1,8 +1,9 @@
 //! Controller-owned tool storage and captured diagnostics stay inside the project.
 //! Their captured stdio and every writable tool cache belong to the project.
-use std::{collections::HashMap, fs::{self,File}, io, path::{Path,PathBuf}, process::{Command,Output,Stdio}, sync::{Arc,LazyLock,Mutex,atomic::{AtomicBool,Ordering}}, time::Duration};
+use std::{collections::HashMap, fs::{self,File}, io::{self,Read as _,Write as _}, path::{Path,PathBuf}, process::{Command,Output,Stdio}, sync::{Arc,LazyLock,Mutex,atomic::{AtomicBool,Ordering}}, time::Duration};
 
 static ACTIVE:LazyLock<Mutex<HashMap<PathBuf,Vec<Arc<AtomicBool>>>>>=LazyLock::new(Mutex::default);
+static NAMESPACE_FILE:Mutex<()>=Mutex::new(());
 pub(crate) fn active(root:&Path)->bool {
     let root=crate::project::vault::logical(root);
     ACTIVE.lock().expect("private controller tools").get(&root).is_some_and(|tools|!tools.is_empty())
@@ -34,6 +35,63 @@ impl Drop for Running {
 }
 fn error(why:impl std::fmt::Display)->io::Error { io::Error::new(io::ErrorKind::PermissionDenied,format!("project tool custody unavailable: {why}")) }
 
+/// Stable across provider remounts and folder moves, with no outside ledger.
+fn namespace(root:&Path,create:bool)->io::Result<Option<String>> {
+    let _serial=NAMESPACE_FILE.lock().expect("project tool namespace");
+    let scratch=root.join(".vault-calcifer");
+    let path=scratch.join("process-namespace");
+    match fs::symlink_metadata(&path) {
+        Ok(_)=>{},
+        Err(why) if why.kind()==io::ErrorKind::NotFound && !create=>return Ok(None),
+        Err(why) if why.kind()==io::ErrorKind::NotFound=>{
+            let mut random=[0;8];getrandom::fill(&mut random).map_err(error)?;
+            let value=format!("{}\n",hex::encode(random));
+            let mut file=platform::durable::create_private_new(&path).map_err(error)?;
+            file.write_all(value.as_bytes())?;file.sync_all()?;
+            platform::durable::sync_dir(&scratch).map_err(error)?;
+        },
+        Err(why)=>return Err(why),
+    }
+    let metadata=fs::symlink_metadata(&path)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len()!=17 {
+        return Err(error("the retained process namespace has an unknown format"));
+    }
+    #[cfg(unix)] {
+        use std::os::unix::fs::MetadataExt as _;
+        if metadata.uid()!=rustix::process::geteuid().as_raw() || metadata.mode()&0o077!=0 {
+            return Err(error("the retained process namespace is not owner-only"));
+        }
+    }
+    let file=File::open(&path)?;
+    if platform::durable::FileId::of(&file).map_err(error)?!=platform::durable::FileId::at(&path).map_err(error)? {
+        return Err(error("the retained process namespace changed"));
+    }
+    let mut value=String::new();file.take(18).read_to_string(&mut value)?;
+    let Some(value)=value.strip_suffix('\n').filter(|value|value.len()==16&&value.bytes().all(|byte|byte.is_ascii_digit()||(b'a'..=b'f').contains(&byte))) else {
+        return Err(error("the retained process namespace has an unknown format"));
+    };
+    Ok(Some(value.to_owned()))
+}
+
+/// Root calls this under its exclusive transition while work_view still exists.
+/// A prior Calcifer's helpers are native scope members even after ACTIVE is lost.
+pub(crate) fn retire(root:&Path)->Result<(),api::error::Error> {
+    use api::error::{Error,Kind};
+    if active(root) {return Err(Error::new(Kind::Conflict,"project_busy","owned controller tools are still retiring"));}
+    let pending=||Error::new(Kind::Conflict,"project_tool_retirement_pending","the project's retained controller tool custody is not yet verified");
+    let view=crate::project::vault::resolve_path(root)?;
+    let Some(namespace)=namespace(&view,false).map_err(|_|pending())? else {
+        match fs::read_dir(view.join(".vault-calcifer/processes")) {
+            Ok(mut entries)=>{if entries.next().is_some() {return Err(pending());}return Ok(());},
+            Err(why) if why.kind()!=io::ErrorKind::NotFound=>return Err(pending()),
+            _=>return Ok(()),
+        }
+    };
+    platform::contain::Scope::sweep(&namespace).map_err(|_|pending())?;
+    if platform::contain::Scope::namespace_processes(&namespace).map_err(|_|pending())?!=0 {return Err(pending());}
+    Ok(())
+}
+
 fn executable(command:&Command)->io::Result<PathBuf> {
     let program=Path::new(command.get_program());
     if program.is_absolute() { return fs::canonicalize(program); }
@@ -60,6 +118,7 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     for dir in ["processes","tmp","uv-cache","uv-tools","python","cache","data","config","state","bytecode"] {
         platform::durable::private_dir(&scratch.join(dir)).map_err(error)?;
     }
+    let namespace=namespace(&root,true)?.ok_or_else(||error("the process namespace is unavailable"))?;
     let temporary=tempfile::Builder::new().prefix("tool-").tempdir_in(scratch.join("processes"))?;
     let input_path=temporary.path().join("stdin"); fs::write(&input_path,[])?;
     let stdin=File::open(input_path)?;
@@ -80,7 +139,6 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
         .env("TEMP",scratch.join("tmp")).env("TMP",scratch.join("tmp"))
         .env("PYTHONPYCACHEPREFIX",scratch.join("bytecode")).env("PYTHONDONTWRITEBYTECODE","1")
         .stdin(Stdio::from(stdin.try_clone()?)).stdout(Stdio::from(stdout.as_file().try_clone()?)).stderr(Stdio::from(stderr.as_file().try_clone()?));
-    let namespace=platform::contain::namespace(&scratch);
     // These are direct tools, without the worker's cgroup trampoline. Give
     // Linux descendants their ownership token before their very first exec.
     #[cfg(target_os="linux")]

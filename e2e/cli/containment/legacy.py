@@ -387,7 +387,7 @@ def qualify(args, receipt: Receipt) -> None:
     # Keep a known real old HTTP request/key too, so a byte-identical retry after
     # move can establish old digest compatibility without reconstructing a CLI ask.
     retry_key = "legacy-retry-" + os.urandom(16).hex()
-    retry_ask = {"target": provenance["target"], "on": "local", "gpus": 0, "project": str(project),
+    retry_ask = {"target": provenance["target"], "on": "local", "project": str(project),
                  "input": {"source": "sha256:" + source_sha, "text": marker.decode() + "-retry"}}
     response = old.call("POST", "/v1/runs", retry_ask, preflight=False, extra={"Idempotency-Key": retry_key})
     require(not response.get("preparing"), "fixture_failure")
@@ -445,7 +445,9 @@ def qualify(args, receipt: Receipt) -> None:
                *(value["row"][1].encode() for value in baseline.values()),
                *(value["row"][2].encode() for value in baseline.values()),
                *(value["submission"]["invocation_digest"].encode() for value in worker_baseline.values())]
-    scan = outside_scan(markers, [project], receipt)
+    # A locked encrypted folder is not a plaintext allowance. Scan its backing,
+    # keybag and any leftover conversion files along with every outside root.
+    scan = outside_scan(markers, [], receipt)
     receipt.add("legacy_encrypted_retirement", passed=True, **scan)
     stop(native, old=False)
     moved = project.with_name(project.name + "-moved")
@@ -462,7 +464,7 @@ def qualify(args, receipt: Receipt) -> None:
     require(worker_journal(view / ".vault-machine", list(results))[1] == worker_baseline, "fixture_failure")
     command(INSTALLED, "vault", "--directory", str(moved), "lock")
     stop(native, old=False)
-    receipt.add("legacy_move_cold_retry", passed=True, runs=len(results), **outside_scan(markers, [moved], receipt))
+    receipt.add("legacy_move_cold_retry", passed=True, runs=len(results), **outside_scan(markers, [], receipt))
     receipt.value["complete"] = True
     receipt.save()
 
