@@ -474,9 +474,9 @@ impl Codec {
             .generation_hold
             .as_ref()
             .map(|hold| hold.as_raw_fd());
-        let mut command = if crate::private_io::current().is_some() { crate::launch_identity::module(&self.config.python, "cozy_runtime.cli.main")? } else { std::process::Command::new(&self.config.python) };
+        let mut command = std::process::Command::new(&self.config.python);
         platform::process::inherit_nothing(&mut command);
-        if crate::private_io::current().is_some() { command.arg("frame-codec"); } else { command.args(["-I", "-m", "cozy_runtime.cli.main", "frame-codec"]); }
+        command.args(["-I", "-m", "cozy_runtime.cli.main", "frame-codec"]);
         command
             .env_clear()
             .envs(&self.config.environment)
@@ -778,8 +778,9 @@ impl DeviceExecutor {
         let scope = scope(&config)?;
         let mut command =
             if config.private { crate::launch_identity::private_trampoline(&config.python, scope.as_deref())? } else { crate::launch_identity::trampoline(&config.python, scope.as_deref())? };
-        if config.private { command.args(["-I", "-S", "-c", crate::launch_identity::MODULE_BOOTSTRAP, "cozy_runtime.internal.executor"]); }
-        else { command.args(["-I", "-m", "cozy_runtime.internal.executor"]); }
+        // Project generations are editable installs: normal environment site processing
+        // makes their generated .pth links importable, just as in ordinary execution.
+        command.args(["-I", "-m", "cozy_runtime.internal.executor"]);
         let mut private_io = if let Some(child) = listener.child.take() {
             #[cfg(unix)] command.arg("--socket-fd").arg(child.as_raw_fd().to_string());
             Some(crate::private_io::CommandIo::control(child))
