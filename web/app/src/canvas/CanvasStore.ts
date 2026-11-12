@@ -1990,8 +1990,9 @@ export class CanvasStore {
   }
 
   /** A write of `fields` of box `id`: what of its words changed as splices on what they began from, wherever they are in it; the rest as it is.
-   *  `leaving`: a field with a write on its way goes whole, as splices of what that write began from would land twice. */
-  private body(id: string, fields: Record<string, unknown>, view?: ElementView, leaving = false): AssetPatch {
+   *  A field with a write already on its way from there goes whole: the same splices twice would land twice (the last flush as the page goes, and
+   *  the save its text's blur asks after it). */
+  private body(id: string, fields: Record<string, unknown>, view?: ElementView): AssetPatch {
     const from = this.typedFrom.get(id)
     const plain: Record<string, unknown> = {}
     const typed: Record<string, Splice[]> = {}
@@ -1999,13 +2000,13 @@ export class CanvasStore {
     for (const [field, value] of Object.entries(fields)) {
       const base = from?.get(field)
       const local = view?.sent && field in view.sent ? view.sent[field] : value
-      const changed = base && !(leaving && base.sent !== undefined) && (!heads || heads.join() === base.heads.join()) ? wordsChanged(base.value, local) : null
+      const changed = base && base.sent === undefined && (!heads || heads.join() === base.heads.join()) ? wordsChanged(base.value, local) : null
+      if (base) base.sent = local
       if (!base || !changed) {
         plain[field] = value
         continue
       }
       heads = base.heads
-      base.sent = local
       for (const words of changed) typed[words.path ? `${field}.${words.path}` : field] = [spliceOf(words.from, words.to)]
     }
     return { fields: plain, ...(heads ? { typed: { heads, fields: typed } } : {}) } as AssetPatch
@@ -2016,7 +2017,7 @@ export class CanvasStore {
   private typedAnswered(id: string, answer: AssetPatched) {
     const from = this.typedFrom.get(id)
     const name = this.namesById.get(id)
-    for (const [field, merged] of Object.entries(answer.typed ?? {})) {
+    for (const [field, merged] of Object.entries(answer.fields ?? {})) {
       const base = from?.get(field)
       if (!base || base.sent === undefined || !answer.heads?.length) continue
       const view = name ? this.views.get(name) : undefined
@@ -2072,7 +2073,7 @@ export class CanvasStore {
     for (const [name, view] of this.views) {
       const id = this.ids.get(name)
       if (!view.asset || !id || !(view.drafts || view.writing)) continue
-      void this.client.patchAsset(project, this.served.get(id) ?? name, this.body(id, { ...view.sent, ...view.drafts }, undefined, true), { keepalive: true }).catch(() => {})
+      void this.client.patchAsset(project, this.served.get(id) ?? name, this.body(id, { ...view.sent, ...view.drafts }), { keepalive: true }).catch(() => {})
     }
   }
 

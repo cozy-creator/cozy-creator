@@ -309,9 +309,9 @@ typed?: Typed | null, };
  */
 export type AssetPatched = { name: string, etag: string, was: string, warnings?: Array<string>,
 /**
- * Each field typed in, whole, once merged, as the project stands at `heads`.
+ * Each field written, whole, as it stands at `heads` once merged: what the page types on from.
  */
-typed?: { [key in string]: JsonValue }, heads?: Array<string>, };
+fields?: { [key in string]: JsonValue }, heads?: Array<string>, };
 
 /**
  * `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.

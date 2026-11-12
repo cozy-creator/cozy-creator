@@ -364,14 +364,15 @@ pub(super) async fn patch(
             Ok(())
         })?;
         let etag = folder.reading_boxes(|written| written.get(&name).map(Boxed::etag))?.ok_or_else(|| own_lines(&name))?;
-        Ok(AssetPatched { name: name.clone(), etag, was, warnings, typed: Default::default(), heads: vec![] })
+        Ok(AssetPatched { name: name.clone(), etag, was, warnings, fields: Default::default(), heads: vec![] })
     });
     let mut patched = patched.map_err(Refusal)?;
-    // What each field typed in came to, whole, and the heads it's at: what the page types on next.
-    if let Some(typed) = &asked.typed {
-        (patched.typed, patched.heads) = folder.reading_document(|written, heads| {
+    // What each field written came to, whole, and the heads it's at: what the page types on next.
+    let typed = asked.typed.iter().flat_map(|typed| typed.fields.keys().map(|path| path.split('.').next().unwrap_or(path)));
+    let fields: BTreeSet<&str> = asked.fields.keys().map(String::as_str).chain(typed).collect();
+    if !fields.is_empty() {
+        (patched.fields, patched.heads) = folder.reading_document(|written, heads| {
             let held = written.get(&name);
-            let fields: BTreeSet<&str> = typed.fields.keys().map(|path| path.split('.').next().unwrap_or(path)).collect();
             let came = fields.into_iter().map(|field| (field.to_owned(), held.and_then(|held| held.get(field)).cloned().unwrap_or(Value::Null)));
             (came.collect(), heads)
         }).map_err(Refusal)?;

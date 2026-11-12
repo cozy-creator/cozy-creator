@@ -807,9 +807,9 @@ pub struct AssetPatched {
     pub was: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-    /// Each field typed in, whole, once merged, as the project stands at `heads`.
+    /// Each field written, whole, as it stands at `heads` once merged: what the page types on from.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub typed: BTreeMap<String, Value>,
+    pub fields: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub heads: Vec<String>,
 }
