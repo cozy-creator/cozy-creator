@@ -172,11 +172,15 @@ function replaceFile(at, text) {
   const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
   await picker.waitFor();
   const slots = qwen.models?.length ? qwen.models : qwen.model ? [qwen.model] : [];
-  check('tool_badge_opens_its_declared_model_slots', slots.length > 0 && await picker.locator('[data-model-slot]').count() === slots.length);
+  // Each declared slot by its parameter, but of Qwen's two prompt enhancers only the one its operation runs: an edit's I2I `rewriter`, not T2I's `expander` (0cf0389f3).
+  const declaredSlots = slots.map((slot) => slot.slot.split('.models.').at(-1)).filter((slot) => slot !== 'expander').sort();
+  const pickerSlots = (await picker.locator('[data-model-slot]').evaluateAll((rows) => rows.map((row) => row.dataset.modelSlot))).sort();
+  check('tool_badge_opens_its_declared_model_slots', declaredSlots.length > 0 && JSON.stringify(pickerSlots) === JSON.stringify(declaredSlots), { declaredSlots, pickerSlots });
   check('model_picker_uses_global_nsfw_setting', await picker.getByLabel(/Show NSFW/).count() === 0);
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   check('model_picker_keeps_tool_identity_and_versions', (await of(choosing.name)).tool === qwen.id && (await of(choosing.name)).versions === versionsBeforePicker);
-  check('model_configuration_keeps_category_structure', JSON.stringify(await listed()) === JSON.stringify(atRest));
+  const configured = await listed();
+  check('model_configuration_keeps_category_structure', JSON.stringify(configured) === JSON.stringify(atRest), { atRest, configured });
   await closeBox(page);
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
   await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);
@@ -203,8 +207,17 @@ function replaceFile(at, text) {
   // Focused video tools expose a large parameter form, without an Advanced fold.
   await open('shot');
   const shotBox = box('shot');
-  check('face_holds_prompts_groups_and_filled_slots', (await shotBox.locator('.mention-text[data-field=summary]').count()) === 1 && (await shotBox.locator('.mention-text[data-field=pictures]').count()) === 1 && (await shotBox.locator('.edit-shown .beats-edit[data-field=beats]').count()) === 1 && (await shotBox.locator('.edit-shown .slot-control[data-field=plate]').count()) === 1, await shotBox.innerText());
-  check('video_parameters_are_prominent_without_a_more_fold', await shotBox.locator('.prominent').count() === 1 && await shotBox.locator('[data-field=first_frame]').count() === 1 && await shotBox.locator('[data-field=negative]').count() === 1);
+  // Summary and the Beats are written in the frame; the other prompts and the slots are under it (cl-938).
+  const face = {
+    summary: await shotBox.locator('.in-frame .mention-text[data-field=summary]').count(),
+    pictures: await shotBox.locator('.edit-shown .mention-text[data-field=pictures]').count(),
+    beats: await shotBox.locator('.in-frame .beats-edit[data-field=beats]').count(),
+    plate: await shotBox.locator('.edit-shown .slot-control[data-field=plate]').count(),
+  };
+  check('face_holds_prompts_groups_and_filled_slots', face.summary === 1 && face.pictures === 1 && face.beats === 1 && face.plate === 1, { face, text: await shotBox.innerText() });
+  // In Focus every field shows at once, under the frame (cl-934, cl-938): no More.
+  const form = { focused: await shotBox.locator('.edit-face.focused').count(), more: await shotBox.locator('.more-toggle').count(), first_frame: await shotBox.locator('[data-field=first_frame]').count(), negative: await shotBox.locator('[data-field=negative]').count() };
+  check('video_parameters_are_prominent_without_a_more_fold', form.focused === 1 && form.more === 0 && form.first_frame === 1 && form.negative === 1, form);
   await more('shot');
   check('advanced_fold_is_removed', await shotBox.locator('.advanced-toggle').count() === 0 && await shotBox.locator('input[aria-label=Steps]').count() === 1);
   await shot('more');
@@ -260,7 +273,7 @@ function replaceFile(at, text) {
   await page.keyboard.type('The second.');
   await until('both beats in the file', () => fieldsOf('shot'), (fields) => fields.beats?.length === 2 && fields.beats[1].description?.includes('The second.'));
   // No running total under the beats (cl-903).
-  check('no_running_total', (await shotBox.locator('.beats-edit[data-field=beats] .total').count()) === 0 && !/\b10 s\b/.test(await shotBox.locator('.beats-last').innerText()), await shotBox.locator('.beats-last').innerText());
+  check('no_running_total', (await shotBox.locator('.beats-edit[data-field=beats] .total').count()) === 0 && !/\b10 s\b/.test(await shotBox.locator('.beats-edit[data-field=beats] > .beats-last').innerText()), await shotBox.locator('.beats-edit[data-field=beats] > .beats-last').innerText());
   const grip = await shotBox.locator('[aria-label="Move beat 2"]').boundingBox();
   const first = await beatRows().first().boundingBox();
   await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);

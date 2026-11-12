@@ -261,16 +261,19 @@ async function died(why) {
   check('decoded_state_switching_has_no_empty_flash', flips.every((look) => look.first !== null && look.first < 400 && look.emptyFrames === 0), flips);
   check('warm_thumbnail_clicks_do_not_change_approval', await current('Ada') === 1);
 
-  // A longer state history keeps the original scrollable previews, with both mouse and touch scrolling.
+  // A longer state history keeps the original scrollable previews, with both mouse and touch scrolling. Sixteen 100px previews are
+  // longer than Focus's full-height column at this window, so there's always something to scroll (at nine they can just fit).
+  const MANY = 16;
   await imported('many', 50);
-  for (const shade of [51, 52, 53, 54, 55, 56, 57, 58]) await joined('many', shade);
+  for (let shade = 51; shade < 50 + MANY; shade++) await joined('many', shade);
   await open('many');
-  await approveVersion(page, 'many', 9);
-  check('all_alternative_states_keep_previews', await previews('many').count() === 9 && await selected('many') === '9');
+  await approveVersion(page, 'many', MANY);
+  check('all_alternative_states_keep_previews', await previews('many').count() === MANY && await selected('many') === String(MANY));
   const side = history('many');
   await settled(page);
   const sideBox = await side.boundingBox();
   const scrolled = () => side.evaluate((element) => element.scrollTop);
+  const room = await side.evaluate((element) => element.scrollHeight - element.clientHeight);
   const across = sideBox.x + sideBox.width / 2;
   await page.mouse.move(across, sideBox.y + sideBox.height - 12);
   await page.mouse.down();
@@ -281,7 +284,7 @@ async function died(why) {
   await page.waitForTimeout(500);
   const coasted = await scrolled();
   const looks = await side.evaluate((element) => ({ bar: element.offsetWidth - element.clientWidth, mask: getComputedStyle(element).maskImage || getComputedStyle(element).webkitMaskImage, top: element.style.getPropertyValue('--fade-top') }));
-  check('right_previews_scroll_with_a_mouse', byMouse > 40 && coasted >= byMouse && looks.bar === 0 && looks.top === '24px' && /gradient/.test(looks.mask), { byMouse, coasted, looks });
+  check('right_previews_scroll_with_a_mouse', byMouse > 40 && coasted >= byMouse && looks.bar === 0 && looks.top === '24px' && /gradient/.test(looks.mask), { room, byMouse, coasted, looks });
   const cdp = await context.newCDPSession(page);
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
   const beforeFinger = await scrolled();
@@ -295,7 +298,7 @@ async function died(why) {
   await cdp.detach();
   check('right_previews_scroll_with_a_finger', byFinger > beforeFinger + 40, { beforeFinger, byFinger });
   const unmarked = await until('scroll marker gone', () => page.locator('.scroll-marker.on').count(), (count) => count === 0, 4000).then(() => true, (why) => String(why));
-  check('scroll_marker_does_not_carry_or_remove_a_state', scrolling.marked === 1 && scrolling.ghosts === 0 && unmarked === true && (await asset('many')).versions === 9, { scrolling, unmarked });
+  check('scroll_marker_does_not_carry_or_remove_a_state', scrolling.marked === 1 && scrolling.ghosts === 0 && unmarked === true && (await asset('many')).versions === MANY, { scrolling, unmarked });
   await approveVersion(page, 'many', 5);
   await until('fifth version selected', () => current('many'), (number) => number === 5);
   check('preview_selects_fifth_retained_state', await selected('many') === '5');
