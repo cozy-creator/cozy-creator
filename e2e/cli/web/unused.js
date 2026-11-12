@@ -165,13 +165,21 @@ const cozy = (folder, words) => {
   check('status_notes_are_not_warnings', !(said?.warnings ?? []).some((warning) => /is left out/.test(warning.message ?? '')), said?.warnings);
 
   // A run of a stand-in picture tool: the video is its name in the prompt, and `cozy run watch` says it once, as a note.
+  // Each run is read back from Calcifer once it ends, as the page reads it.
+  const newest = async () => Math.max(0, ...((await api('/v1/runs?limit=10')).body?.runs ?? []).map((run) => run.number ?? 0));
+  const ended = async (target, after) => {
+    const ends = (run) => run && ['completed', 'failed', 'canceled'].includes(run.status);
+    const found = await until(`a run of ${target} ended`, async () => (await api('/v1/runs?limit=10')).body?.runs?.find((run) => run.target?.includes(target) && run.number > after), ends, STEP_MS * 3).catch(() => null);
+    return found ? (await api(`/v1/runs/${encodeURIComponent(found.id)}`)).body : null;
+  };
   const still = join(__dirname, '..', 'project', 'tool.py') + '/still';
+  const before = await newest();
   const ran = cozy(project, ['--json', 'run', still, 'instructions=<pic> beside <clip>', '--on', 'local']);
-  const record = (() => { try { return JSON.parse(ran.out.trim().split('\n').at(-1)); } catch { return null; } })();
+  const record = await ended('still', before);
   seen.run = { code: ran.code, status: record?.status, prompt: record?.result?.prompt, warnings: record?.warnings, err: ran.err.slice(-400) };
   check('a_run_sends_what_it_can_use', ran.code === 0 && record?.result?.prompt === '<pic> beside clip', seen.run);
   check('a_run_keeps_the_note', (record?.warnings ?? []).filter((warning) => warning.code === 'mention_unused' && warning.message.includes('<clip> is left out:')).length === 1, record?.warnings);
-  const watch = record?.id ? cozy(project, ['run', 'watch', String(record.number ?? record.id)]) : { code: -1, out: '', err: 'no run' };
+  const watch = record?.number ? cozy(project, ['run', 'watch', String(record.number)]) : { code: -1, out: '', err: 'no run' };
   const lines = `${watch.out}\n${watch.err}`.split('\n').filter((line) => line.includes('<clip> is left out:'));
   seen.watch = { code: watch.code, lines, out: watch.out.slice(-600) };
   check('watch_says_it_once_as_a_note', watch.code === 0 && lines.length === 1 && /note: /.test(lines[0]) && !/warning: /.test(lines[0]), seen.watch);
@@ -180,16 +188,17 @@ const cozy = (folder, words) => {
   // picture prompt, and a picture where only words go, are left out with an `ignored` row, their mentions their names; never refused.
   const assets = (await api(at)).body?.assets ?? [];
   const file = (name) => { const sha = assets.find((asset) => asset.name === name)?.sha256 ?? ''; return sha.startsWith('sha256:') ? sha : `sha256:${sha}`; };
-  const raw = (target, field, prompt) => {
+  const raw = async (target, field, prompt) => {
+    const after = await newest();
     const ran = cozy(project, ['--json', 'run', target, `${field}:=${JSON.stringify(prompt)}`, '--on', 'local']);
-    const record = (() => { try { return JSON.parse(ran.out.trim().split('\n').at(-1)); } catch { return null; } })();
-    return { code: ran.code, status: record?.status, result: record?.result, ignored: (record?.adjustments ?? []).filter((row) => row.kind === 'ignored'), name: record ? String(record.number ?? record.id) : null, err: ran.err.slice(-400) };
+    const record = await ended(target.split('/').at(-1), after);
+    return { code: ran.code, status: record?.status, result: record?.result, ignored: (record?.adjustments ?? []).filter((row) => row.kind === 'ignored'), name: record ? String(record.number) : null, failure: record?.failure ?? record?.error, err: ran.err.slice(-400) };
   };
-  const pictures = raw(still, 'instructions', { text: '<V> and <H> at dusk', references: [{ key: 'V', type: 'video', file: file('clip') }, { key: 'H', type: 'audio', file: file('hum') }] });
+  const pictures = await raw(still, 'instructions', { text: '<V> and <H> at dusk', references: [{ key: 'V', type: 'video', file: file('clip') }, { key: 'H', type: 'audio', file: file('hum') }] });
   seen.runtime_pictures = pictures;
   check('runtime_leaves_a_video_and_a_sound_out_of_a_picture_prompt', pictures.code === 0 && pictures.result?.prompt === 'V and H at dusk', pictures);
   check('runtime_notes_each_once', pictures.ignored.length === 2 && /takes no videos/.test(pictures.ignored.find((row) => row.requested === 'V')?.reason ?? '') && /takes no audio/.test(pictures.ignored.find((row) => row.requested === 'H')?.reason ?? ''), pictures.ignored);
-  const words = raw(join(__dirname, '..', 'project', 'tool.py') + '/words', 'prompt', { text: 'make <A> red', references: [{ key: 'A', type: 'image', file: file('pic') }] });
+  const words = await raw(join(__dirname, '..', 'project', 'tool.py') + '/words', 'prompt', { text: 'make <A> red', references: [{ key: 'A', type: 'image', file: file('pic') }] });
   seen.runtime_words = words;
   check('runtime_leaves_a_picture_out_of_words', words.code === 0 && words.result?.text === 'make A red' && words.ignored.length === 1 && /takes no images/.test(words.ignored[0].reason), words);
   const shown = pictures.name ? cozy(project, ['run', 'watch', pictures.name]) : { code: -1, out: '' };
