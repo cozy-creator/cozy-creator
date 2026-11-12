@@ -19,13 +19,13 @@ import socket
 import ssl
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 from urllib.parse import quote
 
 from common import Failure, Native, Receipt, alive, birth, kill_exact, require, sha, until, project_route
 from legacy_seed import publish_old
-from scan import Scanner
 
 HOME = Path.home()
 COZY = HOME / ".cozy"
@@ -65,7 +65,7 @@ ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_f
     "migration_source_retired", "old_installed", "old_version", "old_project_created",
     "old_retry_prepared", "input_retained", "retry_replayed", "retry_journal_exact",
     "retry_worker_exact", "old_client_refused", "old_client_journal_exact", "encrypted_identity",
-    "moved_identity", "moved_retry_replayed", "moved_worker_exact"})
+    "moved_identity", "moved_retry_replayed", "moved_worker_exact", "scan_process"})
 
 
 class Failed(Failure):
@@ -344,7 +344,7 @@ def journal(path: Path, identifiers: list[str]) -> dict:
     return answer
 
 
-def worker_execution(root: Path, number: int, encoded: str) -> dict:
+def worker_execution(root: Path, number: int, encoded: str, origin: Path | None) -> dict:
     record = json.loads(encoded)
     check(isinstance(record, dict), "worker_record_shape")
     if "_private_payload" in record:
@@ -354,6 +354,10 @@ def worker_execution(root: Path, number: int, encoded: str) -> dict:
         area = root.resolve(strict=True)
         check(root.name == ".vault-machine" and not root.is_symlink(), "worker_projection_owner")
         project = area.parent
+        # A record keeps the view it was written in; Tensord resolves it through the
+        # project's current verified view (private_io.rs verified_scope), so after
+        # encrypt/move it must still name exactly its original view.
+        origin = origin or project
         marker = json.loads((project / ".vault-local-execution.json").read_bytes())
         owner = marker["storage"]
         pointer = record["_private_payload"]
@@ -365,7 +369,7 @@ def worker_execution(root: Path, number: int, encoded: str) -> dict:
         check(reference["format"] == 1 and reference["context"] == context
               and isinstance(scope, dict) and scope.get("project_id") == owner.get("project_id")
               and type(scope.get("generation")) is int and scope["generation"] > 0
-              and Path(scope.get("view_root", "")) == project, "worker_projection_owner")
+              and Path(scope.get("view_root", "")) == origin, "worker_projection_owner")
         name = reference["file"]
         check(isinstance(name, str) and name.endswith(".blob") and len(name) == 37
               and all(char in "0123456789abcdefABCDEF" for char in name[:-5]), "worker_projection_file")
@@ -387,7 +391,7 @@ def worker_execution(root: Path, number: int, encoded: str) -> dict:
     return record
 
 
-def worker_journal(root: Path, identifiers: list[str]) -> tuple[Path, dict]:
+def worker_journal(root: Path, identifiers: list[str], origin: Path | None = None) -> tuple[Path, dict]:
     matches = []
     for path in root.rglob("executions.sqlite3"):
         if path.is_symlink():
@@ -399,7 +403,7 @@ def worker_journal(root: Path, identifiers: list[str]) -> tuple[Path, dict]:
                 check(len(found) <= 1, "worker_record_unique", rows=len(found))
                 if found:
                     number, encoded = found[0]
-                    record = worker_execution(root, number, encoded)
+                    record = worker_execution(root, number, encoded, origin)
                     check(record.get("submission", {}).get("request_id") == identifier, "worker_record_submission")
                     rows[identifier] = {"number": number, **{key: record.get(key) for key in
                         ("attempt", "accepted_at_ms", "started_at_ms", "finished_at_ms", "executed_ms", "submission")}}
@@ -629,17 +633,30 @@ def complete_migration(native: Native, reference: str, project: Path) -> None:
             check(connection.execute("SELECT count(*) FROM " + table).fetchone()[0] == 0, "migration_source_retired")
 
 
-def outside_scan(markers: list[bytes], allowed: list[Path], receipt: Receipt) -> dict:
-    scanner = Scanner()
-    for marker in markers:
-        scanner.add(marker)
-    roots = [HOME, Path("/tmp"), Path("/var/tmp"), Path("/dev/shm"), Path(os.environ["RUNNER_TEMP"])]
-    counts = scanner.scan(roots, allowed, receipt.path)
+def outside_scan(markers: list[bytes], allowed: list[Path], receipt: Receipt, project: Path) -> dict:
+    temp = Path(os.environ["RUNNER_TEMP"])
+    state, engine = MACHINE / "var/lib/cozy/machine", MACHINE / "var/lib/cozy/tensord"
+    classes = {"home": HOME, "user_cache": HOME / ".cache", "tensorfs_cache": HOME / ".cache/tensorfs", "cozy": COZY,
+               "cozy_cache": COZY / "cache", "calcifer": CALCIFER, "machine": MACHINE, "machine_state": state,
+               "machine_start_log": state / "start.log", "machine_logs": state / "logs", "engine": engine,
+               "engine_execution": engine / "execution", "engine_triage": engine / "execution/triage",
+               "engine_gpu": engine / "gpu", "runner_temp": temp, "hub": temp / "e2e/hub", "project": project,
+               "tmp": Path("/tmp"), "var_tmp": Path("/var/tmp"), "dev_shm": Path("/dev/shm")}
+    request = {"markers": [marker.hex() for marker in markers], "excluded": [str(path) for path in allowed],
+               "roots": [str(path) for path in (HOME, Path("/tmp"), Path("/var/tmp"), Path("/dev/shm"), temp)],
+               "receipt": str(receipt.path), "classes": {name: str(path) for name, path in classes.items()}}
+    # Root reads OS-private folders (systemd PrivateTmp, sudo apt state) an unprivileged walk
+    # cannot. Markers travel on stdin; only numeric counts come back.
+    scanned = subprocess.run(["sudo", "-n", sys.executable, "-E", "-s", str(Path(__file__).with_name("scan.py"))],
+                             input=json.dumps(request).encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    check(scanned.returncode == 0, "scan_process", returncode=scanned.returncode)
+    counts = {key: value for key, value in json.loads(scanned.stdout).items() if type(value) is int}
+    CONTEXT["scan"] = counts
     require(not counts.get("matches"), "outside_project_canary")
     require(not any(counts.get(key) for key in ("unreadable", "sqlite_unreadable", "archive_unreadable", "archive_oversize", "leveldb_unreadable", "images_unreadable")), "scan_decoder_unavailable")
     # A matched path hash would itself identify private source custody. Keep
     # numeric boundaries only in this fixture's outside evidence receipt.
-    return {key: value for key, value in counts.items() if isinstance(value, int)}
+    return counts
 
 
 def qualify(args, receipt: Receipt) -> None:
@@ -668,6 +685,7 @@ def qualify(args, receipt: Receipt) -> None:
     # application data and must be migrated or explicitly remain pending.
     checkpoint(receipt, "old_subject_create")
     project = Path(tempfile.mkdtemp(prefix="cozy-legacy-project-", dir=os.environ["RUNNER_TEMP"]))
+    origin = project.resolve(strict=True)
     opened = json.loads(command(args.old, "new", str(project)))
     reference = opened["id"]
     check(schema() == 7 and (project / "project.db").is_file(), "old_project_created")
@@ -774,7 +792,7 @@ def qualify(args, receipt: Receipt) -> None:
                *(value["submission"]["invocation_digest"].encode() for value in worker_baseline.values())]
     # A locked encrypted folder is not a plaintext allowance. Scan its backing,
     # keybag and any leftover conversion files along with every outside root.
-    scan = outside_scan(markers, [], receipt)
+    scan = outside_scan(markers, [], receipt, project)
     receipt.add("legacy_encrypted_retirement", passed=True, **scan)
     checkpoint(receipt, "move_cold_retry")
     stop(native, old=False)
@@ -789,10 +807,10 @@ def qualify(args, receipt: Receipt) -> None:
     assert_history(native, reference, view, baseline, results)
     replay = call(native, "POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key})
     check(replay.get("replay") is True and replay["run"]["id"] == run["id"], "moved_retry_replayed")
-    check(worker_journal(view / ".vault-machine", list(results))[1] == worker_baseline, "moved_worker_exact")
+    check(worker_journal(view / ".vault-machine", list(results), origin=origin)[1] == worker_baseline, "moved_worker_exact")
     command(INSTALLED, "vault", "--directory", str(moved), "lock")
     stop(native, old=False)
-    receipt.add("legacy_move_cold_retry", passed=True, runs=len(results), **outside_scan(markers, [], receipt))
+    receipt.add("legacy_move_cold_retry", passed=True, runs=len(results), **outside_scan(markers, [], receipt, moved))
     checkpoint(receipt, "complete")
     receipt.value["complete"] = True
     receipt.save()

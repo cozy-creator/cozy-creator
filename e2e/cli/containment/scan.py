@@ -135,18 +135,25 @@ class Scanner:
             except (ImportError, OSError, ValueError):
                 self.counts["images_unreadable"] += 1
 
-    def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path) -> dict:
+    def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path] | None = None) -> dict:
         self.counts.clear(); self.matches.clear()
         patterns = self.patterns()
         require(patterns, "scan_markers_missing")
         excluded = [path.resolve() for path in excluded_roots]
+        # Caller-fixed product locations only: counts per closed class name, never a path.
+        places = sorted((classes or {}).items(), key=lambda item: len(item[1].parts), reverse=True)
+        def place(path: Path) -> str:
+            return next((name for name, root in places if path.absolute().is_relative_to(root)), "other")
+        labels: dict[str, str] = {}
         seen: set[tuple[int, int]] = set()
         overlap = max(map(len, patterns)) - 1
         for root in roots:
             if not root.exists():
                 continue
-            def unreadable(_error):
+            def unreadable(error):
                 self.counts["unreadable"] += 1
+                if places:
+                    self.counts["unreadable_" + place(Path(error.filename or root))] += 1
             for directory, dirs, names in os.walk(root, followlinks=False, onerror=unreadable):
                 parent = Path(directory)
                 dirs[:] = [name for name in dirs if not any((parent / name).absolute().is_relative_to(skip) for skip in excluded)]
@@ -155,6 +162,7 @@ class Scanner:
                     if path == receipt or any(path.absolute().is_relative_to(skip) for skip in excluded):
                         continue
                     label = sha(os.fsencode(path))
+                    labels.setdefault(label, place(path) if places else "other")
                     self.found(os.fsencode(path), label, patterns)
                     try:
                         metadata = path.lstat()
@@ -182,6 +190,11 @@ class Scanner:
                         self.counts["vanished"] += 1
                     except PermissionError:
                         self.counts["unreadable"] += 1
+                        if places:
+                            self.counts["unreadable_" + labels[label]] += 1
+        if places:
+            for label in self.matches:
+                self.counts["match_" + labels.get(label, "other")] += 1
         return {**dict(self.counts), "matches": len(self.matches), "path_sha256": sorted(self.matches)}
 
 
@@ -194,3 +207,15 @@ def tmpfs(path: Path) -> bool:
         if resolved.is_relative_to(mount):
             mounts.append((len(mount.parts), after.split()[0]))
     return bool(mounts) and max(mounts)[1] == "tmpfs"
+
+
+if __name__ == "__main__":
+    # Privileged scan entry (legacy.py): markers arrive on stdin, only counts leave on stdout.
+    import sys
+    request = json.loads(sys.stdin.buffer.read())
+    scanner = Scanner()
+    for marker in request["markers"]:
+        scanner.add(bytes.fromhex(marker))
+    result = scanner.scan([Path(root) for root in request["roots"]], [Path(root) for root in request["excluded"]],
+                          Path(request["receipt"]), {name: Path(root) for name, root in request["classes"].items()})
+    sys.stdout.write(json.dumps({key: value for key, value in result.items() if type(value) is int}))
