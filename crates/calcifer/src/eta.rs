@@ -473,8 +473,13 @@ impl Clock {
             *steps = Stepping { stage: progress.stage.clone(), last_at: at, ..Stepping::default() };
         }
         if progress.completed != steps.completed {
-            if steps.first_ms == 0.0 && progress.completed >= 1 && progress.step_ms > 0.0 {
-                steps.first_ms = progress.step_ms;
+            // Its first step's time, as its machine timed it, else from when its stage began (pod run 46947: no number until step 2).
+            if steps.first_ms == 0.0 && progress.completed >= 1 {
+                let entered = self.stage.as_ref().map_or(at, |(_, _, since)| *since);
+                steps.first_ms = match progress.step_ms > 0.0 {
+                    true => progress.step_ms,
+                    false => (at - entered).max(0.0) / progress.completed as f64,
+                };
             }
             if progress.completed >= 2 && progress.step_ms > 0.0 {
                 steps.own.push(progress.step_ms);
