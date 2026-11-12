@@ -44,7 +44,7 @@ ab_model() {
         cell "$n-$i$sfx" "$(pkg sdxl generate)" prompt="A brass astrolabe on a sailor's chart table $v, warm lamplight" \
           megapixels:=1 steps:=20 guidance:=7 seed:=$s ;;
       klein) s=$((R + 710 + i))
-        cell "$n-$i$sfx" "$(pkg flux.3 generate_turbo)" prompt="A ceramic teapot on a windowsill $v, studio photo" \
+        cell "$n-$i$sfx" "$(pkg flux.3-klein generate_turbo)" prompt="A ceramic teapot on a windowsill $v, studio photo" \
           prompt_upsampling:=true seed:=$s ;;
       qwen4mp) s=$((R + 720 + i))
         cell "$n-$i$sfx" "$(pkg qwen-image-2 generate)" prompt="A vintage tram crossing a cobbled square $v, fine architectural detail" \

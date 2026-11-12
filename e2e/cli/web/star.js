@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, launch, lookAt, noStall, png, rowsOf, settled, until, upload, yamlOf } = require('./page');
+const { projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, launch, lookAt, noStall, png, rowsOf, settled, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -95,12 +95,11 @@ async function died(why) {
   };
   const starred = () => rowsOf(folder, "SELECT b.name, f.value FROM fields f JOIN boxes b ON b.key = f.box WHERE f.field = 'starred'");
 
-  // Starred: in project.db, the YAML, its history; nothing out of date, and no approval.
+  // Starred: in project.db and its history; nothing out of date, and no approval.
   const items = await fromMenu('third', 'Star');
   check('menu_says_star', items.join() === 'Download,Star,Duplicate,Rename,Delete', items);
   const now = await until('starred in its state', () => asset('third'), (row) => row?.starred === true);
   check('project_db_holds_it', starred().length === 1 && starred()[0][0] === 'third' && [true, 'true', 1].includes(starred()[0][1]), starred());
-  check('yaml_says_it', /third:\n(?: {4}.*\n)* {4}starred: true/.test(yamlOf(folder)), yamlOf(folder));
   check('nothing_out_of_date', now.standing === before.standing && now.inputs === before.inputs && now.version === before.version, { before, now });
   check('no_approval', now.pinned === before.pinned && now.approved === before.approved, { before, now });
   const history = (await api(`${at}/history`)).body?.entries ?? [];
@@ -137,7 +136,7 @@ async function died(why) {
   await until('unstarred', () => asset('third'), (row) => !row?.starred);
   list = await files();
   check('unstar_returns_it', (await listed(list)).join() === 'first,second,third', await listed(list));
-  check('unstar_leaves_no_field', starred().length === 0 && !/starred/.test(yamlOf(folder)), starred());
+  check('unstar_leaves_no_field', starred().length === 0, starred());
 
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();

@@ -195,6 +195,64 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   const now = await until('the LoRA listed under Models & LoRAs', listed, (refs) => refs.includes(lora)).catch(listed);
   check('the_lora_listed_under_models_and_loras', now.length === 2 && now.includes(tune) && now.includes(lora), now);
   await shot('h3-after');
+
+  // cl-961: each LoRA beneath the node has its strength's slider; dragging it stores the strength at once (Paul, 11-12).
+  const slider = models.locator('.active-lora input[type="range"]').first();
+  await slider.waitFor();
+  const track = await slider.boundingBox();
+  const was = (await fieldsOf('scene')).models?.base_model?.lora?.[0]?.strength;
+  await page.mouse.move(track.x + track.width * 0.5, track.y + track.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(track.x + track.width * 0.9, track.y + track.height / 2, { steps: 6 });
+  await page.mouse.up();
+  const dragged = await until('the dragged strength stored', () => fieldsOf('scene'), (fields) => typeof fields.models?.base_model?.lora?.[0]?.strength === 'number' && fields.models.base_model.lora[0].strength !== was).catch(() => fieldsOf('scene'));
+  const strength = dragged.models?.base_model?.lora?.[0]?.strength;
+  seen.dragged = { was, strength };
+  check('dragging_the_slider_stores_the_strength', typeof strength === 'number' && strength > 1.5 && strength <= 2, seen.dragged);
+  const loraRow = await models.locator('.active-lora').first().evaluate((el) => {
+    const number = el.querySelector('input[type="number"]');
+    return { height: el.getBoundingClientRect().height, number: number?.value, whole: Boolean(number) && number.scrollWidth <= number.clientWidth + 1, reset: Boolean(el.querySelector('button[aria-label*="recommended strength"]')) };
+  });
+  seen.lora_row = loraRow;
+  check('a_lora_row_is_tall_its_number_whole_and_resets', loraRow.height >= 28 && loraRow.whole && Number(loraRow.number) === strength && loraRow.reset, loraRow);
+
+  // cl-960 + cl-959: a model slot takes one model. Its picker lists the Hub's family at once; a second pick replaces the first.
+  const radios = picker.locator('.model-picker-choices [role="radio"]');
+  await button.click();
+  await picker.waitFor();
+  const opened = Date.now();
+  await picker.locator('[data-model-slot]', { hasText: /^Base Model$/ }).click();
+  await until('Base Model lists its models', () => radios.count(), (n) => n >= 4).catch(() => 0);
+  seen.listed_ms = Date.now() - opened;
+  check('a_cold_open_lists_within_2_s', seen.listed_ms <= 2000 && (await radios.count()) >= 4, { ms: seen.listed_ms, choices: await radios.allInnerTexts() });
+  const pick = async (label, model) => {
+    await radios.filter({ hasText: label }).first().click();
+    return until(`${model} picked`, () => fieldsOf('scene'), (fields) => fields.models?.base_model?.ref === model).catch(() => fieldsOf('scene'));
+  };
+  await pick('sexgod1979 / Pinkcherry', 'sexgod1979/pinkcherry');
+  const second = await pick('tenstrip / Eros Max', 'tenstrip/eros-max');
+  const others = Object.entries(second.models ?? {}).filter(([key, held]) => key !== 'base_model' && held?.ref);
+  seen.second = { models: second.models, checked: await picker.locator('.model-picker-choices [aria-checked="true"]').allInnerTexts() };
+  check('a_second_pick_replaces_the_first', second.models?.base_model?.ref === 'tenstrip/eros-max' && others.length === 0 && seen.second.checked.length === 1 && /Eros Max/.test(seen.second.checked[0]), seen.second);
+  // Shown at 1440×900, light and dark: the picker and what's beneath the node (Paul's UI rule).
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForTimeout(300);
+  await shot('one-model-light');
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
+  await page.waitForTimeout(300);
+  await shot('one-model-dark');
+  await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
+  await picker.waitFor({ state: 'detached' });
+  await shot('lora-strength-dark');
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.waitForTimeout(300);
+  await shot('lora-strength-light');
+  await page.setViewportSize({ width: 1600, height: 1100 });
+  // Calcifer refuses a box naming one slot twice with two models, in one line (cl-960).
+  const twice = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: shotTool.id, kind: 'video', name: 'twice', exact: true, at: { x: 80, y: 900 },
+    fields: { summary: 'Twice.', beats: [{ description: 'Boats.', duration: 5 }], models: { base_model: { ref: 'sexgod1979/pinkcherry' }, [bases[0].slot.includes('.models.') ? bases[0].slot : 'ref2va_segment.models.base_model']: { ref: 'tenstrip/eros-max' } } } }) });
+  seen.twice = twice;
+  check('two_models_for_one_slot_refused', twice.status >= 400 && twice.body?.error?.code === 'model_slot_twice' && !String(twice.body?.error?.message).includes('\n'), twice);
   await closeBox(page);
 
   // A picture's Models & LoRAs opens the same picker.

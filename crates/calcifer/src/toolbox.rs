@@ -244,7 +244,7 @@ pub(crate) fn canonical(hub: &str) -> String {
 }
 
 /// What `on` has installed from `hub`: each package and its newest release there, as a run there takes it: on the RC's
-/// Runtime a prerelease built for it before the last final (`target::newest_on`).
+/// Runtime a prerelease built for it before the last final, elsewhere finals only (`api::release::newest`, cl-952).
 async fn installed_releases(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(String, String)> {
     let Some((machine, environments)) = api.machines.holds(on, true).await else { return vec![] };
     let rc = api.machines.takes_rc(&machine, on);
@@ -253,7 +253,7 @@ async fn installed_releases(api: &Arc<Api>, hub: &str, on: &On) -> Vec<(String, 
     packages.sort_unstable();
     packages.dedup();
     let releases = |package: &'_ str| -> Option<String> {
-        target::newest_on(rc, environments.iter().filter(|env| env.package == package && !env.release.is_empty()).map(|env| env.release.as_str())).map(str::to_owned)
+        api::release::newest(environments.iter().filter(|env| env.package == package && !env.release.is_empty()).map(|env| env.release.as_str()), rc).map(str::to_owned)
     };
     packages.into_iter().filter_map(|package| Some((package.to_owned(), releases(package)?))).collect()
 }
@@ -341,7 +341,7 @@ async fn every_tool(api: &Arc<Api>, hub: &str) -> Result<Arc<Vec<Offered>>, Erro
     let reads = released.into_iter().map(|(package, release)| async move {
         match cards::card_requiring(|| api.machines.hubs.reader(hub), root, hub, &package, &release).await {
             Ok(card) => {
-                let pair: Arc<[String]> = card.requirements().unwrap_or_default().into_iter().filter(|required| on_the_pair(required).is_some()).map(str::to_owned).collect();
+                let pair: Arc<[String]> = card.requirements().unwrap_or_default().into_iter().filter(|required| on_the_pair(required)).map(str::to_owned).collect();
                 tool::tools_of(&package, &card.release, &card.interface).into_iter().map(|tool| Offered { tool, pair: pair.clone() }).collect()
             }
             Err(why) => {
@@ -382,35 +382,19 @@ async fn stack(api: &Arc<Api>, hub: &str, on: &On) -> Option<BTreeMap<&'static s
     Some(PAIR.into_iter().zip([runtime, tensorfs]).filter(|(_, version)| !version.is_empty()).collect())
 }
 
-/// Whether a release whose wheel requires `pair` runs on `stack`: each of its requirements admits that member's version, by its release
-/// numbers alone (a dev build of 0.45.0 is 0.45.0). One that can't be read holds nothing back, as TensorD's own check decides.
+/// Whether a release whose wheel requires `pair` runs on `stack`: each member's requirement admits that member's version
+/// (`api::release::runs`: an RC build of the next minor runs a release capped below it). One that can't be read holds nothing
+/// back, as TensorD's own check decides.
 fn runs_on(pair: &[String], stack: &BTreeMap<&str, String>) -> bool {
-    pair.iter().all(|required| {
-        let Some((member, versions)) = on_the_pair(required) else { return true };
-        let Some(version) = stack.get(member).and_then(|version| version.parse::<pep440_rs::Version>().ok()) else { return true };
-        versions.contains(&version.only_release())
+    PAIR.iter().all(|member| match (api::release::required(pair.iter().map(String::as_str), member), stack.get(member)) {
+        (Some(versions), Some(version)) => api::release::runs(&versions, version),
+        _ => true,
     })
 }
 
-/// A requirement on the pair outside any extra (`cozy-runtime[media]<0.46,>=0.45.0`): its member, and the versions it admits.
-fn on_the_pair(required: &str) -> Option<(&'static str, pep440_rs::VersionSpecifiers)> {
-    let (required, marker) = required.split_once(';').unwrap_or((required, ""));
-    if marker.contains("extra") {
-        return None;
-    }
-    let end = required.find(|c: char| " <>=!~[(".contains(c)).unwrap_or(required.len());
-    let name = required[..end].trim().to_lowercase().replace(['_', '.'], "-");
-    let member = PAIR.into_iter().find(|member| *member == name)?;
-    let rest = required[end..].trim_start();
-    let rest = match rest.strip_prefix('[') {
-        Some(extras) => &extras[extras.find(']')? + 1..],
-        None => rest,
-    };
-    let rest = rest.trim().trim_start_matches('(').trim_end_matches(')').trim();
-    if rest.is_empty() {
-        return None;
-    }
-    Some((member, rest.parse().ok()?))
+/// Whether a requirement (`cozy-runtime[media]<0.46,>=0.45.0`) is on a member of the pair, outside any extra.
+fn on_the_pair(required: &str) -> bool {
+    PAIR.iter().any(|member| api::release::required([required], member).is_some())
 }
 
 /// Each `(package, release)`'s tools, in the order asked.
@@ -438,7 +422,7 @@ pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<
     tool::tools_of(&found.package, "", &interface).into_iter().find(|held| held.function == function).map(|held| held.fields)
 }
 
-/// A box's model choices, bound as a run binds them, refused where their slot can't load them (`checkpoints::check_choices`).
+/// A box's model choices, bound as a run binds them, refused where their slot can't take them (`checkpoints::check_choices`).
 pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fields: &Map<String, Value>) -> Result<(), Error> {
     let hub = api.machines.hubs.default_origin();
     let Ok(found) = runs::target::describe(api, &hub, target, None, Some(dir), &runs::default_on(api)).await else { return Ok(()) };
@@ -451,27 +435,7 @@ pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fi
     choices.take(&mut document)?;
     let choices = choices.into_choices();
     choices::wire(&choices)?;
-    crate::hub::checkpoints::check_choices(api, &hub, target, &crate::hub::checkpoints::slots_of(&interface, callable), &choices).await
-}
-
-/// The slots `key` names in `tool`'s function, read as a run of it is (`checkpoints::slots_named`), each with the default a choice
-/// for it is judged by: what `cozy model ls --fits <tool>:<key>` and the page's Models & LoRAs offer for. `dir` finds local code.
-pub(crate) async fn slots_for(api: &Arc<Api>, hub: &str, tool: &str, key: &str, dir: Option<&Path>) -> Result<Vec<api::interface::Slot>, Error> {
-    let found = runs::target::describe(api, hub, tool, None, dir, &runs::default_on(api)).await?;
-    let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;
-    let function = found.function.as_deref().or(target::only_function(&interface));
-    let Some(callable) = function.and_then(|function| interface.callables.iter().find(|callable| callable.name == function)) else {
-        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: name one of its functions")).next(format!("cozy run {tool}")));
-    };
-    let slots: Vec<api::interface::Slot> = crate::hub::checkpoints::slots_named(&interface, callable, key).into_iter().cloned().collect();
-    if slots.is_empty() {
-        let keys: Vec<&str> = crate::hub::checkpoints::slots_of(&interface, callable).into_iter().map(|(key, _)| key).collect();
-        return Err(Error::new(Kind::Usage, "model_slot_unknown", format!("{tool} has no model slot {key:?}")).remedy(format!("its slots: {}", keys.join(", "))));
-    }
-    if slots.iter().any(|slot| slot.default.is_none()) {
-        return Err(Error::new(Kind::Usage, "model_slot_no_default", format!("{tool}'s {key} names no default model to judge a choice by")));
-    }
-    Ok(slots)
+    crate::hub::checkpoints::check_choices(api, &hub, &crate::hub::checkpoints::slots_of(&interface, callable), &choices).await
 }
 
 /// What `tool` makes, `image`, `video` or `audio`, as its function's output says, and what a new box of it is called, read as a run of it

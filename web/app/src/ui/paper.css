@@ -39,8 +39,9 @@
   .tb.primary {
     border-image: var(--frame-primary) 12 fill / 12px / 4px stretch;
   }
+  /* border-image-source, not `border-image: none`: the build's minifier empties that shorthand, and the frame stayed on every row. */
   .main-menu nav .tb {
-    border-image: none;
+    border-image-source: none;
   }
   .ptab.on {
     background: none;
@@ -80,9 +81,31 @@
   outline-offset: 2px;
 }
 
-/* The sheet, and in dark no clouds on it. It's laid out at its rung (Sheet.tsx), its tiles that much larger: paper's sizes, times `--rung`. */
-.paper-world {
+/* A background layer's rung (Sheet.tsx), 4/3 to the power of its `data-rung`, for every zoom (0.05 to 4). An attribute, not the layer's inline
+   style, which is its transform alone: Chrome restyles a layer whole, and paints it again, each time an inline style with a custom property
+   in it is set. */
+.paper-world,
+.paper-landscape > * {
   --rung: 1;
+}
+:is(.paper-world, .paper-landscape > *)[data-rung="-10"] { --rung: 0.05631351; }
+:is(.paper-world, .paper-landscape > *)[data-rung="-9"] { --rung: 0.07508469; }
+:is(.paper-world, .paper-landscape > *)[data-rung="-8"] { --rung: 0.1001129; }
+:is(.paper-world, .paper-landscape > *)[data-rung="-7"] { --rung: 0.1334839; }
+:is(.paper-world, .paper-landscape > *)[data-rung="-6"] { --rung: 0.1779785; }
+:is(.paper-world, .paper-landscape > *)[data-rung="-5"] { --rung: 0.2373047; }
+:is(.paper-world, .paper-landscape > *)[data-rung="-4"] { --rung: 0.3164063; }
+:is(.paper-world, .paper-landscape > *)[data-rung="-3"] { --rung: 0.421875; }
+:is(.paper-world, .paper-landscape > *)[data-rung="-2"] { --rung: 0.5625; }
+:is(.paper-world, .paper-landscape > *)[data-rung="-1"] { --rung: 0.75; }
+:is(.paper-world, .paper-landscape > *)[data-rung="1"] { --rung: 1.333333; }
+:is(.paper-world, .paper-landscape > *)[data-rung="2"] { --rung: 1.777778; }
+:is(.paper-world, .paper-landscape > *)[data-rung="3"] { --rung: 2.370370; }
+:is(.paper-world, .paper-landscape > *)[data-rung="4"] { --rung: 3.160494; }
+:is(.paper-world, .paper-landscape > *)[data-rung="5"] { --rung: 4.213992; }
+
+/* The sheet, and in dark no clouds on it. It's laid out at its rung, its tiles that much larger: paper's sizes, times `--rung`. */
+.paper-world {
   width: calc(134vw + 2048px * var(--rung));
   height: calc(134vh + 2048px * var(--rung));
   background: var(--paper);
@@ -117,8 +140,20 @@
 }
 
 /* A zoom scales the landscape (Sheet.tsx) about the bottom of the window, so the land stays on it. Each layer of land is laid out at its rung
-   by `--landscape-scale`, and wide enough to cover the window drawn at 0.75 of it. The sky zooms out to 0.91 (0.05 to its 0.03): it goes on
-   above the window, its wash stretched over it all and its clouds where they were, and the window and a tile wider. */
+   by `--landscape-scale`, the landscape's times `--rung` (registered, so it computes to a number), and wide enough to cover the window drawn
+   at 0.75 of it. The sky zooms out to 0.91 (0.05 to its 0.03): it goes on above the window, its wash stretched over it all and its clouds
+   where they were, and the window and a tile wider. */
+@property --landscape-scale {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+.paper-landscape {
+  --landscape-size: var(--landscape-scale);
+}
+.paper-landscape > * {
+  --landscape-scale: calc(var(--landscape-size) * var(--rung));
+}
 .paper-landscape-mountains,
 .paper-landscape-hills,
 .paper-landscape-meadow {

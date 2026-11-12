@@ -7,10 +7,11 @@ import type { Snap } from "../api/calcifer"
 /** A video's frames a second when its file doesn't say. */
 export const FPS = 24
 
-/** A continuation starts only on the tool's supported frame grid. */
+/** Where a continuation starts on the tool's frame grid: its last point at or before `frame`, never after what's shown (cl-950). */
 export function pickupAt(frame: number, last: number, snap: Snap | undefined): number | null {
   if (!snap) return Math.min(frame, last)
-  return frame < snap.first ? null : Math.min(last, Math.max(snap.first, snap.offset + Math.round((frame - snap.offset) / snap.every) * snap.every))
+  const at = Math.min(frame, last)
+  return at < snap.first ? null : Math.max(snap.first, snap.offset + Math.floor((at - snap.offset) / snap.every) * snap.every)
 }
 
 export interface Ranged {
@@ -59,6 +60,21 @@ export function timecode(frame: number, fps: number): string {
 
 /** How many frames a video of `ms` holds. */
 export const framesIn = (ms: number | null | undefined, fps: number) => Math.max(1, Math.round(((ms ?? 0) / 1000) * fps))
+
+/** A take's segments as `[start, end)` frames, from its seams (where each after the first starts, se-130) and its length. */
+export function segmentsOf(seams: readonly number[], last: number): Array<[number, number]> {
+  const starts = [0, ...seams.filter((seam) => seam > 0 && seam < last)]
+  return starts.map((start, at) => [start, starts[at + 1] ?? last])
+}
+
+/** The segment a frame is in, from 0. */
+export const segmentAt = (frame: number, seams: readonly number[]) => seams.filter((seam) => seam <= frame).length
+
+/** Segments `from` to `to`, counted from 1: "segment 2", "segments 2–3". */
+export const segmentWords = (from: number, to: number) => (from === to ? `segment ${from}` : `segments ${from}–${to}`)
+
+/** Seconds as "0:12.96", where a cut lands. */
+export const cutClock = (seconds: number) => `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(2).padStart(5, "0")}`
 
 /** `<old>` written as `<now>` wherever the text says it. */
 export const retext = (text: string, old: string, now: string) => text.split(`<${old}>`).join(`<${now}>`)

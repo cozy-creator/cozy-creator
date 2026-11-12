@@ -58,6 +58,36 @@ relay() {
   fi
 }
 
+# held: e2e-relay's code published again as `e2e-held` 0.1.0 and 0.2.0rc1, as a package built for the open RC's Runtime is
+# published (cl-922): newer by PEP 440, for machines on the RC only; and as `e2e-newer` 0.1.0 and 0.1.1 (held_prerelease,
+# cl-952, se-128). Then floors (runtime_floor, cl-952): `e2e-floor` 0.1.0 (cozy-runtime>=0.45) and 0.2.0
+# (cozy-runtime>=0.45.1,<0.46); `e2e-capped` 0.1.0 and 0.2.0 (cozy-runtime>=0.45,<0.45.1, which no Runtime from 0.45.1
+# meets); and `e2e-lies` 0.1.0, whose cozy-runtime>=0.44 lacks the `call` it imports, which publishing refuses (what it said
+# is exported).
+held() {
+  local copy=$seed/packages/e2e-held account name version runtime
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  for name in e2e-held:0.1.0 e2e-held:0.2.0rc1 e2e-newer:0.1.0 e2e-newer:0.1.1 e2e-floor:0.1.0 'e2e-floor:0.2.0:>=0.45.1,<0.46' \
+    e2e-capped:0.1.0 'e2e-capped:0.2.0:>=0.45,<0.45.1'; do
+    IFS=: read -r name version runtime <<< "$name"
+    rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
+    sed -i -e "s/^name = \"e2e-relay\"$/name = \"$name\"/" -e "s/^version = \"0.1.0\"$/version = \"$version\"/" "$copy/pyproject.toml"
+    [ -z "$runtime" ] || sed -i "s/\"cozy-runtime>=0.45\"/\"cozy-runtime$runtime\"/" "$copy/pyproject.toml"
+    if ! (cd "$copy" && cozy --json package publish -y) > "$seed/publish-$name-$version.json" 2>&1; then
+      E2E_HELD_REFUSED="$name $version: $(tail -c 400 "$seed/publish-$name-$version.json" | tr '\n' ' ')"
+      export E2E_HELD_REFUSED
+      return 0
+    fi
+    log "published $account/$name $version"
+  done
+  export E2E_HELD=$account/e2e-held E2E_NEWER=$account/e2e-newer E2E_FLOOR=$account/e2e-floor E2E_CAPPED=$account/e2e-capped
+  rm -rf "$copy" && cp -r "$here/cli/relay" "$copy"
+  sed -i -e 's/^name = "e2e-relay"$/name = "e2e-lies"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.44"/' "$copy/pyproject.toml"
+  export E2E_LIES=$seed/publish-e2e-lies.json
+  if (cd "$copy" && cozy --json package publish -y) > "$E2E_LIES" 2>&1; then log "published $account/e2e-lies 0.1.0, which it should have refused"
+  else log "publishing e2e-lies was refused: $(tail -c 300 "$E2E_LIES" | tr '\n' ' ')"; fi
+}
+
 # mirror <source> <org/name> <lane> <release> <page> [upload flags...]: a model uploaded by this computer's machine and
 # published, as an admin mirrors an author's model.
 mirror() {
@@ -99,12 +129,15 @@ PY
 case $suite:$shard in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake) needs='' ;;
   cli:runs | cli:local-code) needs='packages birefnet' ;;
-  cli:commands) needs='packages birefnet slots' ;;
+  # commands shows a LoRA's modules (lora show, xs-183).
+  cli:commands) needs='packages birefnet loras' ;;
+  # web-localfit's heavy tool paints its edit base with BiRefNet (a take is one since cl-909); only Linux's web-core runs it.
+  cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras' ;;
-  cli:) needs='packages birefnet downloads slots' ;;
+  cli:) needs='packages birefnet downloads loras' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).
@@ -193,7 +226,8 @@ if [ -n "$needs" ]; then
       sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
       systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
       systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
-      relay ;;
+      relay
+      held ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* ]]; then
     update=()
@@ -220,6 +254,12 @@ if [ -n "$needs" ]; then
     mirror "$seed/minimax-h3.safetensors" "${h3%@*}" bf16 "${h3#*@}" https://huggingface.co/MiniMaxAI/MiniMax-H3 --source-format as-is
     cozy --json model edit "${h3%@*}" --family minimax-h3 > "$seed/edit-minimax-h3.json" 2>&1 \
       || { echo "naming ${h3%@*}'s family failed: $(tail -c 600 "$seed/edit-minimax-h3.json")" >&2; exit 1; }
+    # Two fine-tunes of its family for its one Base Model to choose between (cl-960).
+    for tune in sexgod1979/pinkcherry tenstrip/eros-max; do
+      mirror "$seed/minimax-h3.safetensors" "$tune" bf16 0.1.0 "https://huggingface.co/$tune" --source-format as-is
+      cozy --json model edit "$tune" --family minimax-h3 > "$seed/edit-${tune##*/}.json" 2>&1 \
+        || { echo "naming $tune's family failed: $(tail -c 600 "$seed/edit-${tune##*/}.json")" >&2; exit 1; }
+    done
     # An H3 LoRA as musubi-tuner writes it (e2e/release/synthetic.sh's), one rank of one block.
     python3 -I - "$seed/vfx-edit.safetensors" <<'PYH3'
 import json, struct, sys
@@ -250,24 +290,6 @@ PYH3
     done
     log "published ${h3%@*}@${h3#*@} (a stand-in) and two LoRAs of family minimax-h3"
     rm -f "$seed"/*.safetensors
-  fi
-  if [[ " $needs " == *" slots "* ]]; then
-    # What slot_choices (cl-943) asks about: Klein's package, and stand-ins of the models its slots and Qwen Image's and H3's judge.
-    publish "$packages/flux.3-klein"
-    # Written by TensorFS's own writer: the candidate's when there is one.
-    case $tensorfs in '') with=tensorfs ;; [0-9]*) with=tensorfs==$tensorfs ;; *) with=$tensorfs ;; esac
-    uv run -q --no-project --python 3.12 --with "$with" python "$here/cli/slot_models.py" "$seed/slots" > "$seed/slots.txt"
-    while read -r -u 3 file model release page; do
-      name=${model//\//-}-$release
-      cozy --json model upload "$file" "$model" --lane bf16 --mirror "$page" --on local -y > "$seed/upload-$name.json" 2>&1 \
-        || { echo "uploading $model $release failed: $(tail -c 600 "$seed/upload-$name.json")" >&2; exit 1; }
-      commit=$(python3 "$here/model-details.py" "$model" | jq -r '[.checkpoints[] | select((.releases // []) | length == 0)][0].checkpoint // empty')
-      [ -n "$commit" ] || { echo "$model has no unreleased checkpoint after its upload" >&2; exit 1; }
-      cozy --json model publish "$model" "$release" "$commit" -y > "$seed/publish-$name.json" 2>&1 \
-        || { echo "publishing $model $release failed: $(tail -c 600 "$seed/publish-$name.json")" >&2; exit 1; }
-    done 3< "$seed/slots.txt"
-    log "published $(wc -l < "$seed/slots.txt") stand-ins for slot_choices"
-    rm -rf "$seed/slots"
   fi
   cd "$start"
 fi

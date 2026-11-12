@@ -5,11 +5,11 @@ import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useNow } from "../panels/common"
 import { modelWords, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
-import { size, stageLine } from "../panels/runs/words"
+import { size, stageParts } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
-import { shownOf } from "./shown"
+import { shownOf, watched } from "./shown"
 
 /**
  * A render on its way, as Paul wrote it (11-12), two plain lines and nothing else:
@@ -25,8 +25,10 @@ export interface Face {
   phase: string
   /** The machine, or what it's waiting to be placed on. */
   machine: string
-  /** What it's doing, with how far and how fast. */
+  /** What it's doing: the words, which give way to a narrow box. */
   state: string
+  /** How far within it and how fast (`Frame 3 / 12`, `2GB / 7GB - 100 MBps`): never cut (cl-953). */
+  count?: string
 }
 
 /** A span as Paul writes it: `3s`, `2m 5s`, `5m`, `1h 4m`. */
@@ -96,36 +98,37 @@ export function faceOf(seen: Seen): Face {
   const rented = machine?.kind === "rental" && machine.state === "booting"
   const card = machine?.rental?.accelerator || machine?.rental?.sku?.toUpperCase()
   const where = run?.machine ? (rented && card ? `${run.machine} (renting ${card})` : run.machine) : "Choosing a machine"
-  const face = (phase: string, state: string, on = where): Face => ({ phase, machine: on, state })
+  const face = (phase: string, state: string, on = where, count?: string): Face => ({ phase, machine: on, state, ...(count ? { count } : {}) })
   if (seen.canceling || run?.cancel_requested) return face("canceling", "Cancelling…")
   if (run?.status === "failed") return face("failed", `Failed: ${run.reason?.message ?? "its run failed"}`)
   if (waits && !on) return prepared(`Waiting for <${waits}>`, preparing)
   if (!run) {
     if (installing) return face("install", `Installing ${packageWords(installing.subject)}`, "Choosing a machine")
     if (view.queued && (preparing?.stage || preparing?.ready)) return prepared(`Queued: Position ${(ahead?.length ?? 0) + 1}`, preparing)
-    if (view.queued) return face("queued", `Queued: Position ${(ahead?.length ?? 0) + 1}`, "Choosing a machine")
+    if (view.queued) return face("queued", "Queued:", "Choosing a machine", `Position ${(ahead?.length ?? 0) + 1}`)
     return face("queued", "Queued", "Choosing a machine")
   }
   const waiting = reason(run, seen.boxOf)
   if (!run.machine) {
     const renting = waiting?.match(/^renting (.+)$/)
-    return renting ? face("renting", "Ordering it", `Renting ${renting[1]}`) : face("queued", run.queue_position != null ? `Queued: Position ${run.queue_position}` : "Queued")
+    return renting ? face("renting", "Ordering it", `Renting ${renting[1]}`) : run.queue_position != null ? face("queued", "Queued:", where, `Position ${run.queue_position}`) : face("queued", "Queued")
   }
   if (machine?.state === "booting") return face("renting", machine.boot ? sentence(machine.boot) : "Booting")
   if (waiting?.startsWith("uploading ")) return face("uploading", `Uploading ${waiting.slice("uploading ".length)}`)
   if (on?.kind === "install") return face("install", `Installing ${packageWords(on.subject)}${on.stage ? ` - ${on.stage}` : ""}`)
-  if (on?.kind === "download") return face("download", `Downloading weights - ${modelWords(on.subject)} - ${moving(on.bytes_done, on.bytes_total, on.bytes_per_s)}`)
-  if (run.queue_position != null) return face("queued", `Queued: Position ${run.queue_position}`)
+  if (on?.kind === "download") return face("download", `Downloading weights - ${modelWords(on.subject)} -`, where, moving(on.bytes_done, on.bytes_total, on.bytes_per_s))
+  if (run.queue_position != null) return face("queued", "Queued:", where, `Position ${run.queue_position}`)
   if (run.status === "completed") {
     const arriving = run.arriving
-    if (arriving?.bytes_total) return face("result", `Downloading result - ${moving(arriving.bytes_done, arriving.bytes_total, arriving.bytes_per_s)}`)
+    if (arriving?.bytes_total) return face("result", "Downloading result -", where, moving(arriving.bytes_done, arriving.bytes_total, arriving.bytes_per_s))
     return face("result", owed(run) ? "Downloading result" : "Saving")
   }
   const progress = run.progress
   if (progress?.stage || progress?.total) {
-    const line = stageLine(progress)
+    const { words, count } = stageParts(progress)
     const phase = progress.bytes_total ? "download" : /install/i.test(progress.stage) ? "install" : "work"
-    return face(phase, progress.bytes_per_s ? `${line} - ${rateWords(progress.bytes_per_s)}` : line)
+    const numbers = [count, progress.bytes_per_s ? rateWords(progress.bytes_per_s) : ""].filter(Boolean).join(" - ")
+    return face(phase, count || !numbers ? words : `${words} -`, where, numbers || undefined)
   }
   if (waiting) return face("queued", sentence(waiting))
   return face("work", run.machine_state === "preparing" ? "Preparing" : "Starting")
@@ -151,6 +154,8 @@ function prepared(state: string, row?: Ahead): Face {
   if (!row.stage) return { phase: "queued", machine: "Choosing a machine", state }
   const counted = row.total > 0
   const phase = counted || /download/i.test(row.stage) ? "download" : /install/i.test(row.stage) ? "install" : "queued"
+  // Its bytes are its count, which never gives way; with what it waits on after them, all of it is words, as it reads.
+  if (counted && !row.waiting) return { phase, machine: row.machine, state: `${state} - Preparing: ${row.stage} -`, count: moving(row.done, row.total) }
   const parts = [state, `Preparing: ${row.stage}`, counted ? moving(row.done, row.total) : "", row.waiting ? sentence(row.waiting) : ""]
   return { phase, machine: row.machine, state: parts.filter(Boolean).join(" - ") }
 }
@@ -184,19 +189,28 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const time = since !== undefined && left != null ? ` - ${short(since)} / ${short(since + left)}` : ""
   const cancel = !["canceling", "failed", "result"].includes(face.phase)
   return (
-    <div className={`prog run-face ${above ? "above" : "lines"} ${face.phase}`} data-phase={face.phase}>
-      <p className="face-machine">{`${face.machine}${time}`}</p>
+    <div className={`prog run-face ${above ? "above" : "lines"} ${face.phase}`} data-phase={face.phase} data-run={number}>
+      {/* Its words give way to a narrow box; its numbers never do (cl-953). */}
+      <p className="face-machine">
+        <span className="face-where">{face.machine}</span>
+        {time && <span className="face-time">{time}</span>}
+      </p>
       <p className="face-state">
-        <b>{face.state}</b>
+        <b>
+          <span className="face-words">{face.count ? `${face.state} ` : face.state}</span>
+          {face.count && <span className="face-count">{face.count}</span>}
+        </b>
         {cancel && (
           <button
             type="button"
             className="face-cancel nodrag"
             aria-label={`Cancel ${name}'s render`}
             onClick={(event) => {
-              // Its box isn't opened by it.
+              // Its box isn't opened by it. The take looked at, by its id, when one is: its others go on (cl-945).
               event.stopPropagation()
-              store.cancelRender(name)
+              const take = watched(view)
+              if (take) store.cancelTake(name, { id: take.id, run: take.run })
+              else store.cancelRender(name)
             }}
           >
             Cancel

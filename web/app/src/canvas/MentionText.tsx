@@ -77,6 +77,17 @@ function caretAt(box: HTMLElement, offset: number) {
   selection?.collapse(box, box.childNodes.length)
 }
 
+/** Where `at`, in `from`, falls in `to`: moved by what changed before it, and to the end of what changed if it was in it. */
+function carried(from: string, to: string, at: number): number {
+  let prefix = 0
+  while (prefix < from.length && prefix < to.length && from[prefix] === to[prefix]) prefix++
+  let suffix = 0
+  while (suffix < from.length - prefix && suffix < to.length - prefix && from[from.length - 1 - suffix] === to[to.length - 1 - suffix]) suffix++
+  if (at <= prefix) return at
+  if (at >= from.length - suffix) return at + to.length - from.length
+  return to.length - suffix
+}
+
 /** What the box says, as the file will hold it: plain text, `<name>` for each chip. */
 function read(box: HTMLElement): string {
   let text = ""
@@ -157,9 +168,11 @@ export function MentionText({
     const shown = typing ? [...el.querySelectorAll("[data-mention]")] : [...el.childNodes]
     const wanted = typing ? nodes.filter((node) => node instanceof HTMLElement) : nodes
     if (trimmed(shown.map(mark).join("")) === trimmed(wanted.map(mark).join(""))) return
-    const at = typing ? caretIn(el) : null
+    // Typed in, and what it says moved under the caret (another's words merged in): the caret stays where it was in the words.
+    const said = document.activeElement === el ? read(el) : null
+    const at = said === null ? null : caretIn(el)
     el.replaceChildren(...nodes)
-    if (at !== null) return caretAt(el, at)
+    if (at !== null && said !== null) return caretAt(el, typing ? at : carried(said, value, at))
     // What it pointed into is gone: a name dropped now goes at the end.
     caret.current = null
   }, [value, missing, store, names, asset, unused])

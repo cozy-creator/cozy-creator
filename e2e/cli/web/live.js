@@ -8,7 +8,7 @@ const { execFile } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectAction, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, importYaml, yamlOf } = require('./page');
+const { projectFromPage, projectAction, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, addBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -63,22 +63,26 @@ const WATCH = () => {
   for (const type of ['pointerdown', 'pointerup', 'click', 'dblclick']) {
     window.addEventListener(type, ({ target }) => window.clicks.push(`${type} ${target.tagName}.${target.className} ${location.pathname}`.slice(0, 160)), true);
   }
-  /** All it says, at rest or worked on where it stands. */
-  const wordsOf = (name) => box(name)?.textContent ?? '';
+  // An open box is Focus over the canvas (cl-893): what it says is there, and its node on the canvas only keeps its place.
+  const focusedBox = (name) => document.querySelector(`[data-focused-asset="${CSS.escape(name)}"]`);
+  /** All it says, at rest or open. */
+  const wordsOf = (name) => (focusedBox(name) ?? box(name))?.textContent ?? '';
   const placeOf = (node) => {
     const m = new DOMMatrix(getComputedStyle(node).transform);
     return { x: m.e, y: m.f };
   };
   const holds = (spec) => {
     if (spec.all) return spec.all.every(holds);
-    if (spec.gone) return !box(spec.gone);
-    const node = box(spec.name);
+    if (spec.gone) return !box(spec.gone) && !focusedBox(spec.gone);
+    const node = box(spec.name) ?? (spec.x === undefined && spec.w === undefined ? focusedBox(spec.name) : null);
     if (!node) return false;
     if (spec.has !== undefined && !wordsOf(spec.name).includes(spec.has)) return false;
     if (spec.lacks !== undefined && wordsOf(spec.name).includes(spec.lacks)) return false;
     if (spec.x !== undefined && (Math.abs(placeOf(node).x - spec.x) > 0.5 || Math.abs(placeOf(node).y - spec.y) > 0.5)) return false;
     if (spec.w !== undefined && Math.abs(node.offsetWidth - spec.w) > 0.5) return false;
-    if (spec.dot && !node.querySelector(`.dot.${spec.dot}`)) return false;
+    // Its state dot (cl-932): `busy`, queued or running; `none`, nothing to say.
+    if (spec.dot === 'busy' && !node.querySelector('.state-dot.queued, .state-dot.running')) return false;
+    if (spec.dot === 'none' && node.querySelector('.state-dot')) return false;
     if (spec.picture !== undefined && Boolean(node.querySelector('.media img')) !== spec.picture) return false;
     return true;
   };
@@ -139,15 +143,6 @@ function replaceFile(at, text) {
   renameSync(`${at}.part`, at);
 }
 
-/** One asset's lines of a project.yaml, as the file holds them. */
-function linesOf(text, name) {
-  const lines = text.split('\n');
-  const at = lines.findIndex((line) => line.startsWith(`  ${name}:`));
-  if (at < 0) return null;
-  const end = lines.findIndex((line, n) => n > at && /^ {0,2}\S/.test(line));
-  return lines.slice(at, end < 0 ? undefined : end).join('\n');
-}
-
 (async () => {
   const base = calcifer();
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
@@ -189,7 +184,6 @@ function linesOf(text, name) {
   const id = (await projectFromPage(page)).id;
   const folder = (await api(`/v1/projects/${id}`)).body.path;
   seen.project = { id, folder };
-  const yaml = () => yamlOf(folder);
   const scratch = mkdtempSync(join(tmpdir(), 'web-live-'));
 
   await page.evaluate(() => { window.notReloaded = true; });
@@ -264,7 +258,7 @@ function linesOf(text, name) {
       await page.unroute(path, route);
     };
   };
-  /** A save by hand. */
+  /** Another writer's edit, through the project API. */
   const saved = (write) => {
     write();
     return { at: Date.now() };
@@ -323,13 +317,14 @@ function linesOf(text, name) {
   check('lift_returns_its_name', lifted.value.name === 'live_lift', lifted.value);
   check('lift_keeps_its_words', (await held('live_lift'))?.fields?.description === 'Lifted out');
 
-  // By hand, in place and by a rename over it, as editors save.
-  await timed('hand_text_in_place', { name: 'live_a', has: 'Hand words one' }, () => saved(() => importYaml(folder, yaml().replace('Second words', 'Hand words one'))));
-  await timed('hand_text_renamed_over', { name: 'live_a', has: 'Hand words two' }, () => saved(() => importYaml(folder, yaml().replace('Hand words one', 'Hand words two'))));
+  // Another writer's edits, one after another.
+  await timed('hand_text_in_place', { name: 'live_a', has: 'Hand words one' }, () => saved(() => projectJson(folder, 'PATCH', '/assets/live_a', { fields: { text: 'Hand words one' } })));
+  await timed('hand_text_renamed_over', { name: 'live_a', has: 'Hand words two' }, () => saved(() => projectJson(folder, 'PATCH', '/assets/live_a', { fields: { text: 'Hand words two' } })));
 
-  // A new box by hand has no row: the page gives it a free place on screen, writes it, and it lands. Its tool needs no package, so this runs anywhere.
-  const handBox = '  live_tool:\n    tool: no-such-package-here\n    instructions: Hand instructions\n';
-  const handAdded = await timed('hand_add', { name: 'live_tool' }, () => saved(() => importYaml(folder, `${yaml().trimEnd()}\n${handBox}`)));
+  // A new box from another writer has no row: the page gives it a free place on screen, writes it, and it lands. Its tool is no package (its kind
+  // given, so nothing reads it), so this runs anywhere.
+  const handBox = { name: 'live_tool', tool: 'no-such-package-here', kind: 'image', fields: { instructions: 'Hand instructions' } };
+  const handAdded = await timed('hand_add', { name: 'live_tool' }, () => saved(() => addBoxes(folder, [handBox])));
   check('hand_add_lands', handAdded.landing);
   const toolRow = await until('its row', async () => (await rows()).live_tool, Boolean);
   check('hand_add_row_written', Number.isFinite(toolRow.x), toolRow);
@@ -371,18 +366,13 @@ function linesOf(text, name) {
   await timed('undo', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('undo', back));
   check('undo_in_the_status', (await held('live_b'))?.fields?.text === 'Hand words two');
 
-  // By hand: a row from the API, an asset gone in an edited export, and an export that doesn't read, which is refused and changes nothing.
+  // Another writer: a row, an asset gone, and its words.
   place = await spot();
   await timed('hand_row', { name: 'live_b', x: place.x, y: place.y }, () => saved(() => {
     projectJson(folder, 'PATCH', '/canvas', { cards: { 'live_b': { x: place.x, y: place.y } } });
   }));
-  await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => importYaml(folder, yaml().replace(`${linesOf(yaml(), 'live_auto').trimEnd()}\n`, ''))));
-  const whole = yaml();
-  let broken = '';
-  try { importYaml(folder, `${whole}\n  : [ this doesn't read\n`); } catch (error) { broken = `${error.stdout ?? ''}${error.stderr ?? ''}${error.message}`; }
-  check('broken_file_says_why', broken.includes('project_yaml'), broken);
-  check('broken_file_keeps_the_canvas', (await box('live_b').count()) === 1 && yaml() === whole);
-  await timed('hand_mended', { name: 'live_b', has: 'Mended' }, () => saved(() => importYaml(folder, whole.replace('Hand words two', 'Mended'))));
+  await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => projectJson(folder, 'DELETE', '/assets/live_auto')));
+  await timed('hand_mended', { name: 'live_b', has: 'Mended' }, () => saved(() => projectJson(folder, 'PATCH', '/assets/live_b', { fields: { text: 'Mended' } })));
   refused.length = 0;
 
   // What's typed and not saved stays. A command changing another field of that asset leaves it to go on, and what's typed is saved over it.
@@ -405,8 +395,8 @@ function linesOf(text, name) {
   await until('typed saved over it', async () => (await held('live_tool')).fields, (fields) => fields?.instructions?.includes('TYPED-ONE') && fields?.style === 'noir');
   check('typed_and_theirs_both_stand', true);
 
-  // The command changes that field while what's typed is on its way: what's typed stands, shown and then saved over theirs, and typing goes on, with
-  // nothing asked (cl-904, Paul 11-12: the page's unsent words win, field by field). Its write waits until the command's is in, as a slower network's would.
+  // The command changes that field while what's typed is on its way: what's typed stands, then both merge by character, and typing goes on, with
+  // nothing asked (cl-904, Paul 11-12: Automerge text). Its write waits until the command's is in, as a slower network's would.
   await open('live_tool');
   await words.click();
   const release = await holdWrites('live_tool');
@@ -416,12 +406,14 @@ function linesOf(text, name) {
   await project('set', 'live_tool', 'instructions=FROM-THE-CLI');
   check('theirs_in_the_file', (await held('live_tool')).fields?.instructions === 'FROM-THE-CLI');
   await page.waitForTimeout(LIVE_MS);
-  check('unsent_words_stand', (await typedText()) === typedBefore, { typed: await typedText(), typedBefore });
+  check('typed_words_kept', (await typedText()).includes('TYPED-TWO'), { typed: await typedText(), typedBefore });
   await page.keyboard.type(' MORE');
-  check('typing_goes_on', (await typedText()).endsWith('MORE'), await typedText());
-  await shot('unsent-words-stand');
   await release();
-  await until('mine saved over theirs', async () => (await held('live_tool')).fields?.instructions, (text) => text?.includes('TYPED-TWO MORE'));
+  await until('mine merged with theirs', async () => (await held('live_tool')).fields?.instructions, (text) => text?.includes('TYPED-TWO MORE') && text.includes('FROM-THE-CLI'));
+  // The page shows the merged words, typing on where its caret was.
+  const merged = await until('the page shows them merged', typedText, (text) => text.includes('FROM-THE-CLI') && text.endsWith('TYPED-TWO MORE')).catch(typedText);
+  check('typing_goes_on_merged', merged.includes('FROM-THE-CLI') && merged.endsWith('TYPED-TWO MORE'), merged);
+  await shot('merged');
   check('nothing_asked', (await box('live_tool').locator('button:has-text("Keep mine")').count()) === 0);
 
   // Renamed by a command while being typed in: the same box, and what's typed stays.
@@ -482,7 +474,7 @@ function linesOf(text, name) {
   check('a_field_cleared', !('style' in (await held('live_held')).fields));
   // An Edit's tracks and clips from a file, as its timeline's gestures write them: the page shows its clip.
   place = await spot();
-  const cutFile = join(scratch, 'cut.yaml');
+  const cutFile = join(scratch, 'cut.json');
   writeFileSync(cutFile, JSON.stringify({ description: 'A cut from a file', timeline: { tracks: [{ clips: [{ clip: 'live_pic', frames: 24 }] }] } }));
   await project('add', 'cozy/edit', 'live_cut', `at=${place.x},${place.y},260`);
   await timed('edit_from_a_file', { name: 'live_cut', picture: true }, () => project('set', 'live_cut', '--input', cutFile));
@@ -505,7 +497,7 @@ function linesOf(text, name) {
     // landed, its box shows that run whole. Progress sampled from here is the next render's alone.
     await until('the first render over on the page', () => page.evaluate((name) => !window.boxOf(name)?.querySelector('.prog'), 'live_shot'), Boolean);
     const moving = bounded(page.evaluate((name) => window.progressOf(name), 'live_shot'), FIRST_RUN_MS, () => 'its progress never ended');
-    await timed('render_starts', { name: 'live_shot', dot: 's-making' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
+    await timed('render_starts', { name: 'live_shot', dot: 'busy' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
     const landed = until('two takes', async () => (await held('live_shot')).versions, (versions) => versions === 2, FIRST_RUN_MS).then(() => Date.now());
     const places = await moving;
     const shownAt = Date.now();
@@ -522,7 +514,7 @@ function linesOf(text, name) {
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);
-    check('render_lands_a_second_take', (await box('live_shot').locator('.dot.s-making').count()) === 0);
+    check('render_lands_a_second_take', (await box('live_shot').locator('.state-dot.queued, .state-dot.running').count()) === 0);
     await timed('approve_a_take', { name: 'live_shot', picture: true }, () => project('approve', 'live_shot', '2'));
     check('approve_a_take_in_the_status', (await held('live_shot')).approved === 2);
     await project('unapprove', 'live_shot');
@@ -533,8 +525,8 @@ function linesOf(text, name) {
     await project('add', 'text', 'live_mood', 'text=Soft morning light.');
     await project('add', `${TOOL}/still`, 'live_styled', `at=${place.x},${place.y},260`, 'instructions=A still in <live_mood>.');
     await project('render', 'live_styled', '--on', 'local');
-    await shows({ name: 'live_styled', dot: 's-current' });
-    await timed('text_asset_outdates', { all: [{ name: 'live_mood', has: 'Hard evening light.' }, { name: 'live_styled', dot: 's-current' }] }, () => project('set', 'live_mood', 'text=Hard evening light.'));
+    await shows({ name: 'live_styled', dot: 'none' });
+    await timed('text_asset_outdates', { all: [{ name: 'live_mood', has: 'Hard evening light.' }, { name: 'live_styled', dot: 'none' }] }, () => project('set', 'live_mood', 'text=Hard evening light.'));
     check('what_mentions_it_is_out_of_date', (await held('live_styled')).standing === 'out_of_date', await held('live_styled'));
     await project('delete', 'live_styled', 'live_mood');
 
@@ -542,18 +534,18 @@ function linesOf(text, name) {
     await project('set', 'live_shot', 'seconds:=3');
     place = await spot();
     await project('add', `${TOOL}/still`, 'live_after', `at=${place.x},${place.y},260`, 'instructions=After <live_shot>.');
-    const waiting = shows({ name: 'live_after', dot: 's-making' });
+    const waiting = shows({ name: 'live_after', dot: 'busy' });
     await project('render', 'live_shot', 'live_after', '--on', 'local', '--queue');
     await waiting;
     const afterAt = await until('what waited landed', async () => (await held('live_after')).versions, (versions) => versions === 1, FIRST_RUN_MS).then(() => Date.now());
-    const afterDone = await shows({ name: 'live_after', dot: 's-current' });
+    const afterDone = await shows({ name: 'live_after', dot: 'none' });
     times.queued_goes = afterDone.when - afterAt;
     check('queued_goes_when_it_lands', times.queued_goes <= LIVE_MS, times.queued_goes);
     await project('delete', 'live_after');
 
     // Deleted while it renders: its run stops, nothing's left queued, and the box goes. The line it printed brings it back with its takes.
     await project('set', 'live_shot', 'seconds:=60');
-    await timed('long_render_starts', { name: 'live_shot', dot: 's-making' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
+    await timed('long_render_starts', { name: 'live_shot', dot: 'busy' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
     await until('it running', async () => (await held('live_shot')).making?.length, Boolean);
     const stopped = await timed('delete_while_rendering', { gone: 'live_shot' }, () => project('delete', 'live_shot'));
     const going = await until('nothing owed', async () => (await status()).queue ?? [], (queue) => queue.length === 0, 30_000);

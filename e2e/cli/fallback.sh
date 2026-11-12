@@ -9,15 +9,8 @@ local P=$OUT/fallback tool=$here/project/waits.py/wait job='' said
 cozy --json machine show local > "$OUT/set-local.json" || { check "fall back: machine show local"; return; }
 stand_in stand-e || return
 cozy --json new --unencrypted "$P" > "$OUT/fallback-new.json" 2>&1 || { check "fall back: new: $(tail -c 300 "$OUT/fallback-new.json")"; return; }
-yaml_in "$P" <<YAML || return
-version: 4
-assets:
-  after_end:
-    tool: $tool
-    instructions: Rendered once stand-e ended, $RANDOM.
-    megapixels: 0.25
-    seconds: 1
-YAML
+jq -n --arg tool "$tool" --arg r "$RANDOM" \
+  '[{name: "after_end", tool: $tool, kind: "image", fields: {instructions: "Rendered once stand-e ended, \($r).", megapixels: 0.25, seconds: 1}}]' | boxes_in "$P" || return
 in_project "$P" --json machine use stand-e > "$OUT/fallback-use.json" 2>&1 && J '.machines == ["stand-e"]' "$OUT/fallback-use.json" \
   || { check "fall back: machine use stand-e: $(tail -c 300 "$OUT/fallback-use.json")"; return; }
 timeout 60 cozy --json machine end stand-e --force -y > "$OUT/fallback-end.json" 2>&1 || check "fall back: machine end stand-e: $(tail -c 300 "$OUT/fallback-end.json")"

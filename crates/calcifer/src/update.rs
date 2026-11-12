@@ -34,7 +34,7 @@ pub(crate) fn this_release() -> &'static str {
 }
 
 /// Whether this cozy is a dev build (`+dev.g…`): no release of it to fetch.
-fn dev_build() -> bool {
+pub(crate) fn dev_build() -> bool {
     env!("CARGO_PKG_VERSION").contains('+')
 }
 
@@ -192,6 +192,8 @@ impl Machines {
             }
         }
         let platform = m.status.as_ref().map(|s| s.platform.clone()).unwrap_or_default();
+        // Nothing named, off the RC: each moves to its Hub's target, said `(Hub)`, which holds the machine on nothing.
+        let hub_target = if flagless { " (Hub)" } else { "" };
         let (mut payload, mut inputs, mut staged, mut named) = (serde_json::Map::new(), vec![], vec![], vec![]);
         for (member, distribution, component) in asked {
             let (path, built) = match component {
@@ -200,7 +202,9 @@ impl Machines {
                 Component::Version(version) if api::prerelease::dev(&version) => {
                     let version = release(&version)?;
                     let sums = self.rc.now().await?;
-                    let Some((build, url)) = sums.build(member, &platform).filter(|(build, _)| build.version == version) else {
+                    // The RC's Runtime by its version alone (`0.47.0.dev2260`) too.
+                    let same = |build: &api::prerelease::Build| build.version == version || build.version.split_once('+').is_some_and(|(public, _)| public == version);
+                    let Some((build, url)) = sums.build(member, &platform).filter(|(build, _)| same(build)) else {
                         let has = sums.build(member, &platform).map_or_else(|| format!("no build of it for {platform}"), |(build, _)| build.version);
                         return Err(Error::new(Kind::NotFound, "rc_build_absent", format!("{member} {version} is not the open RC's build: rc-{} holds {has}", sums.rc))
                             .remedy(format!("with no version named, `cozy machine update {}` moves it to the open RC's builds", m.name)));
@@ -222,11 +226,11 @@ impl Machines {
                     };
                     match fetched {
                         Some((url, sha256)) => {
-                            named.push(format!("{member} {version} (prerelease)"));
+                            named.push(format!("{member} {version} (prerelease){hub_target}"));
                             payload.insert(member.into(), json!({ "url": url, "sha256": sha256 }));
                         }
                         None => {
-                            named.push(format!("{member} {version}"));
+                            named.push(format!("{member} {version}{hub_target}"));
                             payload.insert(member.into(), version.into());
                         }
                     }

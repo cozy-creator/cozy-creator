@@ -493,7 +493,7 @@ impl Binder<'_> {
                 Some((slot, rest)) if !slot.contains("://") => (Some(slot), rest),
                 _ => (None, raw.as_str()),
             };
-            let (reference, strength) = rest.split_once(',').unwrap_or((rest, "1"));
+            let (reference, strength) = rest.split_once(',').unwrap_or((rest, ""));
             self.choices.lora(slot, reference, strength, raw)?;
         }
         Ok(())

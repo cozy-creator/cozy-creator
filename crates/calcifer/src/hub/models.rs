@@ -1,7 +1,11 @@
 //! `/v1/models`: the Hub's model catalog, and a model's family, releases and deletion as a member
 //! of its org. Signed in, a search also lists the caller's own unreleased (private) models and a
 //! model lists its checkpoints to its org's members.
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use futures_util::{StreamExt as _, stream};
 
@@ -43,10 +47,6 @@ pub(super) struct Search {
     #[serde(default)]
     offset: u32,
     role: Option<String>,
-    /// `<tool>:<slot>`: only models whose checkpoint that slot loads (cl-943), whatever their family.
-    fits: Option<String>,
-    /// The project whose local code `fits` may name.
-    project: Option<String>,
 }
 
 /// A comma-separated list's items.
@@ -76,19 +76,12 @@ pub(super) async fn search(
         return Err(Refusal(Error::new(Kind::Usage, "catalog_role_invalid", "role must be model or lora")));
     }
     let q = ask.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
-    let fits = match ask.fits.as_deref().map(str::trim).filter(|fits| !fits.is_empty()) {
-        Some(asked) => Some(slot_defaults(&api, &hub, asked, ask.project.as_deref()).await.map_err(Refusal)?),
-        None => None,
-    };
-    // What loads is found by headers, never by a family.
-    let family = ask.family.as_deref().map(str::trim).filter(|family| !family.is_empty() && fits.is_none());
-    // What loads somewhere is a model, never a LoRA, and found by its header alone: every model is read.
-    let role = if fits.is_some() { Some("model") } else { role };
-    let whole = family.is_some() || fits.is_some();
-    let upstream_paged = role.is_some() && !whole;
+    let family = ask.family.as_deref().map(str::trim).filter(|family| !family.is_empty());
+    // A role is the Hub's own listing, a family's by its label too: paged there, no header read (Paul 11-12).
+    let upstream_paged = role.is_some();
     // One word that is org/name is that model; anything else is search text.
     let tagged = ask.tag.as_deref().is_some_and(|t| !t.trim().is_empty()) || ask.no_tag.as_deref().is_some_and(|t| !t.trim().is_empty());
-    let exact = match (family, q, tagged && fits.is_none()) {
+    let exact = match (family, q, tagged) {
         (None, Some(one), false) if one.contains('/') && !one.contains(char::is_whitespace) => ModelId::parse(one).ok(),
         _ => None,
     };
@@ -104,14 +97,13 @@ pub(super) async fn search(
             names.len() - before
         };
         loop {
-            let answer = (client.search_models_by_role(q, family, &tags, &no_tags, if fits.is_some() { PAGE } else { limit }, if !whole || upstream_paged { ask.offset } else { names.len() as u32 }, role).await).map_err(|e| refusal(&hub, e))?;
+            let answer = (client.search_models_by_role(q, family, &tags, &no_tags, limit, if family.is_none() || upstream_paged { ask.offset } else { names.len() as u32 }, role).await).map_err(|e| refusal(&hub, e))?;
             if !role_page_matches(&answer, role) {
                 return Err(role_unavailable());
             }
             total = answer.search.total;
             let read = take(&mut names, answer.models);
-            let enough = fits.is_none() && names.len() as u32 >= wanted;
-            if upstream_paged || !whole || read == 0 || enough || names.len() as i64 >= total || names.len() as u32 >= READ_AT_MOST {
+            if upstream_paged || family.is_none() || read == 0 || names.len() as u32 >= wanted || names.len() as i64 >= total {
                 break;
             }
         }
@@ -151,21 +143,8 @@ pub(super) async fn search(
     if role.is_some() && cards.iter().any(|card| canonical_role(&card.model).is_none()) {
         return Err(role_unavailable());
     }
-    let facts = match role.is_none() || whole {
-        true => checkpoints::said(&api, &hub, &cards, &mut models).await,
-        false => vec![],
-    };
-    if let Some(slots) = &fits {
-        let mut held = facts.iter();
-        models.retain(|row| {
-            let Some(facts) = held.next().and_then(Option::as_ref) else { return false };
-            let why = slots.iter().find_map(|(slot, default)| checkpoints::unloadable(slot, default, facts).map(|why| format!("{}: {why}", slot.path)));
-            if let Some(why) = &why {
-                tracing::debug!("{} doesn't load in {why}", row.model);
-            }
-            why.is_none()
-        });
-        total = models.len() as i64;
+    if role.is_none() {
+        checkpoints::said(&api, &hub, &cards, &mut models).await;
     }
     if let Some(family) = family.filter(|_| !upstream_paged) {
         let is = |row: &FoundModel| row.family.as_deref().is_some_and(|its| its.eq_ignore_ascii_case(family));
@@ -179,23 +158,7 @@ pub(super) async fn search(
     // A publication can change the card's role after the summary page was read.
     retain_role(&mut models, role);
     if exact.is_some() { total = models.len() as i64; }
-    Ok(Json(page(models, total, ask.offset, limit, (upstream_paged || !whole) && exact.is_none())))
-}
-
-/// The slots `asked` (`<tool>:<slot>`) names, each with its default's header: what a model must load in. A LoRA slot's choices are
-/// LoRAs of its family, which `family` finds.
-async fn slot_defaults(api: &Arc<Api>, hub: &Origin, asked: &str, project: Option<&str>) -> Result<Vec<(api::interface::Slot, tensorfs::family::Facts)>, Error> {
-    let Some((tool, key)) = asked.rsplit_once(':').filter(|(tool, key)| !tool.is_empty() && !key.is_empty()) else {
-        return Err(Error::new(Kind::Usage, "fits_invalid", format!("--fits {asked:?} is not <tool>:<slot>")).remedy("cozy model ls --fits qwen-image-2/generate:rewriter"));
-    };
-    let dir = project.map(|project| crate::project::named(api, project)).transpose()?;
-    let slots = crate::toolbox::slots_for(api, hub.as_str(), tool, key, dir.as_deref()).await?;
-    let defaults = checkpoints::defaults(api, hub, &slots).await?;
-    if let Some((slot, _)) = defaults.iter().find(|(_, facts)| facts.lora) {
-        return Err(Error::new(Kind::Usage, "model_slot_takes_lora", format!("{tool}'s {key} takes a LoRA, not a model ({})", slot.default.as_deref().unwrap_or_default()))
-            .next("cozy lora ls"));
-    }
-    Ok(defaults)
+    Ok(Json(page(models, total, ask.offset, limit, (upstream_paged || family.is_none()) && exact.is_none())))
 }
 
 fn retain_role(models: &mut Vec<FoundModel>, role: Option<&str>) {
@@ -562,3 +525,43 @@ mod model_visibility_tests {
         assert!(row.release.is_none());
     }
 }
+
+/// How long a LoRA's recommended strength, as read from its card, stands: its owner can change it.
+const RECOMMENDED_FOR: Duration = Duration::from_secs(600);
+
+static RECOMMENDED: OnceLock<Mutex<HashMap<String, (Instant, Option<f64>)>>> = OnceLock::new();
+
+/// Each LoRA in `models` given without a strength, at its recommended one (its card's on `hub`), else 1: the one
+/// default for `cozy run --lora <ref>`, a box's LoRAs and a warm set. A source, a local alias or an unread card takes 1.
+pub(crate) async fn recommended(hubs: &crate::rentals::Hubs, hub: &str, models: &mut [::api::machine::ModelChoice]) {
+    let hub = if hub.trim().is_empty() { hubs.default_origin() } else { hub.trim().to_owned() };
+    let cache = RECOMMENDED.get_or_init(Default::default);
+    for adapter in models.iter_mut().flat_map(|choice| choice.adapters.iter_mut()).filter(|a| a.scale.is_empty()) {
+        let mut strength = None;
+        if let (true, Some((org, name))) = (adapter.source.is_empty(), adapter.model.split_once('/'))
+            && org != "local"
+            && !name.contains('/')
+        {
+            let key = format!("{hub} {org}/{name}");
+            let held = cache.lock().expect("recommended lock").get(&key).filter(|(at, _)| at.elapsed() < RECOMMENDED_FOR).map(|(_, s)| *s);
+            strength = match held {
+                Some(strength) => strength,
+                None => match hubs.reader(&hub) {
+                    Ok(client) => match client.get_model(org, name).await {
+                        Ok(card) => {
+                            cache.lock().expect("recommended lock").insert(key, (Instant::now(), card.model.strength));
+                            card.model.strength
+                        }
+                        Err(why) => {
+                            tracing::debug!("{org}/{name}: its recommended strength is unread: {why}");
+                            None
+                        }
+                    },
+                    Err(_) => None,
+                },
+            };
+        }
+        adapter.scale = strength.and_then(|s| refs::strength(&s.to_string()).ok()).unwrap_or_else(|| "1".to_owned());
+    }
+}
+

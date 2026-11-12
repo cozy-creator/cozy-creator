@@ -292,17 +292,22 @@ impl Declared {
         slot.get_or_insert_with(|| Declared::new(Producer::Comfy, found))
     }
 
+    /// Two declarations of a module (a `_quantization_metadata` layer and its `.comfy_quant` marker) agree when they differ
+    /// only in keys that change how it runs, never its values (`full_precision_matrix_mult`); it keeps both's.
     fn module(&mut self, module: &str, conf: Conf, what: &str) -> Result<()> {
-        match self.modules.get(module) {
-            Some(other) if *other != conf => refuse(
-                Code::AMBIGUOUS_CLASSIFICATION,
-                format!("{module}: {what} declares {conf:?}, another declaration {other:?}"),
-            ),
-            _ => {
-                self.modules.insert(module.to_owned(), conf);
-                Ok(())
+        let values = |c: &Conf| -> Conf {
+            c.iter().filter(|(k, _)| !table().marker_execution.contains(*k)).map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        if let Some(other) = self.modules.get(module) {
+            if values(other) != values(&conf) {
+                return refuse(
+                    Code::AMBIGUOUS_CLASSIFICATION,
+                    format!("{module}: {what} declares {conf:?}, another declaration {other:?}"),
+                );
             }
         }
+        self.modules.entry(module.to_owned()).or_default().extend(conf);
+        Ok(())
     }
 }
 

@@ -3,6 +3,11 @@
 projectvault() (
   step "local project encryption: ordinary storage remains available"
   local work secrets P plain view before after code
+  # boxes_of <project>: its boxes as the API answers them, the logical state compared across encryption, rekey and decryption.
+  boxes_of() {
+    local state
+    state=$(project_api "$1" '') && jq -S '[.assets[] | {name, tool, fields, approved, pinned}]' <<< "$state" || fail "the project's boxes could not be read"
+  }
   work=$(mktemp -d "$OUT/project-vault.XXXXXX")
   secrets=$(mktemp -d "$OUT/vault-credentials.XXXXXX")
   P=$work/encrypted plain=$work/ordinary
@@ -33,8 +38,24 @@ projectvault() (
   in_project "$plain" --json vault status > "$work/plain-status.json"
   jq -e '.encrypted == false and .state == "plain"' "$work/plain-status.json" > /dev/null || fail "ordinary project unexpectedly needs encryption"
   in_project "$plain" --json --full status > "$work/plain-project.json" || fail "ordinary project no longer opens"
+  step "an ordinary project encrypted by the CLI keeps the absolute expiry it asked for"
+  local asked_ms answered_ms
+  asked_ms=$(python3 -c 'import time; print(time.time_ns() // 1000000)')
+  cozy --json vault --directory "$plain" encrypt --passphrase-file "$secrets/initial" --recovery-out "$secrets/plain-recovery" --idle 0 --max-duration 86400 \
+    > "$work/plain-encrypted.json" 2> "$work/plain-encrypted.err" || fail "vault encrypt --max-duration: $(tail -c 300 "$work/plain-encrypted.err")"
+  answered_ms=$(python3 -c 'import time; print(time.time_ns() // 1000000)')
+  jq -e --argjson b "$asked_ms" --argjson a "$answered_ms" '.vault.state == "unlocked" and .vault.expires_at_ms >= $b + 86400000 and .vault.expires_at_ms <= $a + 86400000' \
+    "$work/plain-encrypted.json" > /dev/null || fail "vault encrypt --max-duration 86400: $(jq -c .vault "$work/plain-encrypted.json")"
+  in_project "$plain" --json vault lock > /dev/null || fail "the project the CLI encrypted doesn't lock"
+  step "a new project encrypted from the start: its passphrase from a file, its recovery secret saved outside it"
+  cozy --json new "$work/born" --passphrase-file "$secrets/initial" --recovery-out "$secrets/born-recovery" > "$work/born.json" 2> "$work/born.err" \
+    || fail "new --passphrase-file --recovery-out: $(tail -c 300 "$work/born.err")"
+  in_project "$work/born" --json vault status > "$work/born-status.json"
+  jq -e '.encrypted == true and .state == "unlocked"' "$work/born-status.json" > /dev/null || fail "new --passphrase-file made no unlocked encrypted project: $(cat "$work/born-status.json")"
+  [ -s "$secrets/born-recovery" ] || fail "new --recovery-out saved no recovery secret"
+  in_project "$work/born" --json vault lock > /dev/null || fail "the new encrypted project doesn't lock"
   cozy --json new --unencrypted "$P" > "$work/created.json"
-  project_api "$P" /yaml > "$work/before.yaml"
+  boxes_of "$P" > "$work/before.json"
   mkdir -p "$P/files"
   printf '%s\n' 'SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400' > "$P/files/private-sentinel.txt"
   base64 -d > "$P/files/image.png" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
@@ -73,8 +94,8 @@ PY_ENCRYPT_DEADLINE
   ffprobe -v error -show_entries format=duration -of json "$view/files/movie.mp4" > "$work/video.json"
   ffmpeg -v error -ss 1 -i "$view/files/movie.mp4" -frames:v 1 -f null -
   ffprobe -v error -show_entries format=duration -of json "$view/files/audio.wav" > "$work/audio.json"
-  project_api "$P" /yaml > "$work/after-encryption.yaml"
-  cmp "$work/before.yaml" "$work/after-encryption.yaml" || fail "encryption changed logical project state"
+  boxes_of "$P" > "$work/after-encryption.json"
+  cmp "$work/before.json" "$work/after-encryption.json" || fail "encryption changed logical project state"
   # The fixture directory contains only encrypted backing storage and a public keybag.
   python3 - "$E2E/cli" "$P" > "$work/plaintext-matches.txt" <<'PY_BACKING_SCAN'
 import os
@@ -128,15 +149,15 @@ PY_BACKING_SCAN
     step "a run outliving the idle window or the maximum holds the vault open; a lock mid-run ends the run, then locks"
     python3 "$E2E/cli/vault_work.py" --project "$P" --passphrase-file "$secrets/changed" --out "$work/vault-work" --cli "$COZY"
   fi
-  project_api "$P" /yaml > "$work/before-rekey.yaml"
+  boxes_of "$P" > "$work/before-rekey.json"
   cozy --json vault --directory "$P" rotate --passphrase-file "$secrets/rekey" --recovery-out "$secrets/recovery3" > "$work/rekey.json"
   view=$(jq -r '.vault.view // empty' "$work/rekey.json")
   if [ -n "$LOCAL" ]; then
     python3 "$E2E/cli/private_alias.py" --verify-rekey --project "$P" --view "$view" --out "$work/private-rekey" --cli "$COZY"
   fi
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "rekey changed original video bytes"
-  project_api "$P" /yaml > "$work/after-rekey.yaml"
-  cmp "$work/before-rekey.yaml" "$work/after-rekey.yaml" || fail "rekey changed logical project history"
+  boxes_of "$P" > "$work/after-rekey.json"
+  cmp "$work/before-rekey.json" "$work/after-rekey.json" || fail "rekey changed logical project history"
   step "status polling cannot defeat the absolute unlock deadline"
   in_project "$P" --json vault lock > /dev/null
   in_project "$P" --json vault unlock --passphrase-file "$secrets/rekey" --idle 0 --max-duration 2 > "$work/timed-unlock.json"
@@ -162,15 +183,15 @@ PY_BACKING_SCAN
   jq -e '.error.code == "project_locked"' "$work/locked-decrypt.json" > /dev/null || fail "locked decryption did not return its typed refusal"
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery3" --idle 0 > "$work/decrypt-unlock.json"
   in_project "$P" --json --full status > "$work/before-decrypt-status.json"
-  project_api "$P" /yaml > "$work/before-decrypt.yaml"
+  boxes_of "$P" > "$work/before-decrypt.json"
   in_project "$P" --json vault decrypt > "$work/decrypted.json"
   jq -e '.vault.encrypted == false and .vault.state == "plain"' "$work/decrypted.json" > /dev/null || fail "decryption did not complete as ordinary storage"
   [ -f "$P/project.db" ] && [ ! -e "$P/project.vault.keys.json" ] && [ ! -e "$P/project.vault.data" ] || fail "decryption did not replace the encrypted backing"
   [ "$(sha "$P/files/movie.mp4")" = "$before" ] || fail "decryption changed the video"
   in_project "$P" --json --full status > "$work/after-decrypt-status.json"
   [ "$(jq -r '.project.id' "$work/before-decrypt-status.json")" = "$(jq -r '.project.id' "$work/after-decrypt-status.json")" ] || fail "decryption changed the project identity"
-  project_api "$P" /yaml > "$work/after-decrypt.yaml"
-  cmp "$work/before-decrypt.yaml" "$work/after-decrypt.yaml" || fail "decryption changed project state or history"
+  boxes_of "$P" > "$work/after-decrypt.json"
+  cmp "$work/before-decrypt.json" "$work/after-decrypt.json" || fail "decryption changed project state or history"
   if [ -n "$LOCAL" ]; then
     python3 "$E2E/cli/private_alias.py" --verify-decrypt --project "$P" --view "$P" --out "$work/private-decrypt" --cli "$COZY"
   fi

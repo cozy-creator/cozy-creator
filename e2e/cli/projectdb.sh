@@ -1,11 +1,10 @@
 # e2e/cli/projectdb.sh: a project's state is one SQLite database, project.db (cl-803), each cell through the CLI and Calcifer's HTTP
 # as the page calls it, no machine or model needed.
 #   db_first_open   current creation/reopen and stable undo identity; old physical project formats are refused
-#   db_concurrent   the CLI and the page write at once, one box's fields, new boxes and rows: no write is lost
 #   db_crash        Calcifer killed (kill -9) amid writes of a box, its row and its push-aside: each whole or absent; a resend is done once
-#   db_restart      undo and redo across Calcifer killed
-#   db_roundtrip    export, import of it changes nothing; an edited export imports as one entry, a renamed box keeps its takes
+#   db_crdt         the native CRDT: stable identities, old-schema refusal, projection damage, replica merges, append and restart
 #   db_latency      write latency at a project with 500 takes (it runs on the cozy before project.db too: --shard projectdb-latency)
+#   db_migrate      a project 0.24.0 made opens here with nothing lost: its takes, files and words, ids and history (schema 3)
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -21,8 +20,6 @@ PY
 # sql1 <project> <query>: its first row's first value, plain.
 sql1() { sql "$1" "$2" | head -1 | jq -r '.[0] // empty'; }
 db_calcifer() { local lock=$HOME/.cozy/calcifer/calcifer.lock.holder; ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock"); }
-# The page's own writes: its client, a key per action.
-page() { local method=$1 path=$2 body=$3; api -X "$method" -H 'Content-Type: application/json' -H 'Cozy-Client: page e2e-tab' -H "Idempotency-Key: page-$RANDOM$RANDOM$RANDOM" -d "$body" "http://$ADDR/v1/projects/$ID$path"; }
 id_of() { status "$1" | jq -r .id; }
 # kill9 Calcifer by its lock's pid, and wait for it gone.
 kill9() {
@@ -32,28 +29,13 @@ kill9() {
 }
 tiny() { base64 -d > "$1" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='; }
 
-# The cells from before project.db that it changes most: the project setup and its first eleven, and the page's
-# tools, versions, nodes, place, undo, live, layout, offline and held.
+# The cells project.db changes most: its first open and a crash, and the page's tools, versions, nodes, place, undo, live, layout,
+# offline and held.
 db_existing() {
 tools_read
 db_first_open
 db_crash
 db_existing_web
-}
-
-db_existing_projects() {
-step "a project: new, named, a folder of it, -p"
-local P=$OUT/garden ID
-starter_project "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
-[ "$(ls -A "$P" 2>/dev/null | grep -vxE 'project\.db-(wal|shm)')" = project.db ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.db"
-mkdir -p "$P/sub"
-# A subdirectory uses the project holding it.
-(cd "$P/sub" && cozy --json status) > "$OUT/project-cwd.json" || check "status did not use its working directory"
-J --arg p "$P" '.path == $p' "$OUT/project-cwd.json" || check "status did not find the containing project"
-in_project "$P/sub" --json status > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status of a folder in it failed: $(tail -c 300 "$OUT/project-status.err")"
-local cell
-# Each on its own: one that stops on its `set -e` is said, and the next goes on.
-for cell in cut_of_takes said_once film_is_its_file short_film_heals cut_versions by_asset hard_cut upgrades first_open version_text old_landing; do ( $cell ) || check "$cell stopped part way (exit $?)"; done
 }
 
 db_existing_web() {
@@ -86,6 +68,14 @@ newtakes() { DB_WEB=newtakes db_existing_web; }
 # web/focusfinish.js.
 focusfinish() { DB_WEB=focusfinish db_existing_web; }
 
+# A take is one id from Render to its version: listed at once, never off, through a slow Calcifer, a reload and a Cancel (cl-945):
+# web/takeids.js.
+takeids() { DB_WEB=takeids db_existing_web; }
+
+# A take that fails stays in its column under its id, red, its own error with Copy when picked, through a reload, until its trash deletes
+# it (cl-954): web/failedtakes.js.
+failedtakes() { DB_WEB=failedtakes db_existing_web; }
+
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return
 [ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }
@@ -99,18 +89,90 @@ python3 "$here/cancel_undo.py" "$P" "$OUT" "$tool" > "$OUT/cancel-undo-proof.jso
 cat "$OUT/cancel-undo-proof.json"
 }
 
-# The deleted asset CLI's concurrent-write, undo/redo and YAML roundtrip cases
-# are retired; the retained checks exercise the project API and storage directly.
+# project.db's cells, through the project API and on its storage directly.
 projectdb() {
 db_crdt
 db_cancel_undo
 db_first_open
+db_deleted_024
 db_crash
 db_latency
 }
 
+# Boxes deleted under 0.24 at the first 0.25 open (cl-919): 0.24 set a deleted box aside with no time and kept its files, and its Undo
+# (the last 200 edits) brought it back with them. 0.25 dates such a delete at its first open: the files stay, Undo brings the box back,
+# and once the window ends (config.toml's calcifer.undo_seconds, cut for the cell) the box left deleted loses its files. Two pictures are
+# imported and deleted, then project.db is written as 0.24 left it, with Calcifer stopped: each set-aside row without `deleted_ms` or
+# `held`, an imported picture's file on record as a `run 0, deleted` row.
+db_deleted_024() {
+step "project.db: boxes deleted under 0.24 keep their files for the undo window from the first 0.25 open; Undo brings one back"
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder undo=40 a b entry name
+DB024=$OUT/db-deleted-024
+run_project "$DB024" > "$OUT/db-024-new.log" 2>&1 || { check "0.24 deletes: create: $(tail -c 300 "$OUT/db-024-new.log")"; return; }
+python3 - "$OUT/db-024-kept.png" "$OUT/db-024-gone.png" <<'PNG'
+import struct, sys, zlib
+def png(path, rgb):
+    chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    rows = (b"\x00" + bytes(rgb) * 8) * 8
+    open(path, "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+png(sys.argv[1], (200, 40, 40)); png(sys.argv[2], (40, 40, 200))
+PNG
+a=$(sha "$OUT/db-024-kept.png") b=$(sha "$OUT/db-024-gone.png")
+for name in kept gone; do
+  project_import "$DB024" "$OUT/db-024-$name.png" "${name}_024" > "$OUT/db-024-$name-import.json" || { check "0.24 deletes: import $name: $(cat "$OUT/db-024-$name-import.json")"; return; }
+done
+held_024 "$a" && held_024 "$b" || { check "0.24 deletes: the imports aren't in files/"; return; }
+for name in kept gone; do project_api "$DB024" "/assets/${name}_024" -X DELETE > /dev/null || { check "0.24 deletes: delete $name"; return; }; done
+project_api "$DB024" /history > "$OUT/db-024-history.json" || { check "0.24 deletes: history"; return; }
+entry=$(jq -r '[.entries[] | select((.names // []) | index("kept_024"))][0].id // empty' "$OUT/db-024-history.json")
+[ -n "$entry" ] || { check "0.24 deletes: no history entry deletes kept_024: $(jq -c '[.entries[] | {id, words, names}]' "$OUT/db-024-history.json")"; return; }
+# Stopped, project.db as 0.24 left it; started with a short window, the project not opened since.
+web_undo_window "$lock" "$undo" db_024_written
+[ "$(cat "$OUT/db-024-written.txt" 2> /dev/null)" = 2 ] || check "0.24 deletes: project.db not written as 0.24's: $(cat "$OUT/db-024-written.txt" "$OUT/db-024-written.err" 2> /dev/null)"
+project_api "$DB024" '' > /dev/null || check "0.24 deletes: first open"
+sleep 5
+held_024 "$a" || check "0.24 deletes: the first 0.25 open deleted kept_024's file"
+held_024 "$b" || check "0.24 deletes: the first 0.25 open deleted gone_024's file"
+[ "$(sql "$DB024" "SELECT record FROM lock_assets WHERE key LIKE '%#%'" | jq -s '[.[] | .[0] | fromjson | select(.deleted_ms == null)] | length')" = 0 ] \
+  || check "0.24 deletes: a set-aside row has no time after the first open"
+[ "$(sql1 "$DB024" "SELECT count(*) FROM run_files WHERE run = 0 AND output = 'deleted'")" = 0 ] || check "0.24 deletes: 0.24's deleted rows are still on record"
+project_history_step "$DB024" undo "$entry" > "$OUT/db-024-undo.json" || check "0.24 deletes: Undo of kept_024: $(tail -c 300 "$OUT/db-024-undo.json")"
+J '.assets | any(.name == "kept_024")' <<< "$(status "$DB024")" || check "0.24 deletes: Undo didn't bring kept_024 back: $(status "$DB024" | jq -c '[.assets[].name]')"
+held_024 "$a" || check "0.24 deletes: kept_024 came back without its file"
+for _ in $(seq 1 $((undo + 60))); do held_024 "$b" || break; sleep 1; done
+! held_024 "$b" || check "0.24 deletes: gone_024's file is still in files/ $((undo + 60)) s after the first open"
+held_024 "$a" || check "0.24 deletes: the purge took kept_024's file, which a box holds again"
+web_undo_window "$lock" ''
+}
+# held_024 <hex>: a file of that sha256 is in the cell's project's files/.
+held_024() { find "$DB024/files" -type f -exec sha256sum {} + 2> /dev/null | grep -q "^$1 "; }
+# project.db as 0.24 wrote a delete (Calcifer stopped): no time on a set-aside row (one holding no version's file isn't one, as 0.24 never
+# set those aside), and an imported picture's file as a deleted run row.
+db_024_written() {
+python3 - "$DB024/project.db" > "$OUT/db-024-written.txt" 2> "$OUT/db-024-written.err" <<'SQL'
+import json, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+written = 0
+with db:
+    last = db.execute("SELECT COALESCE(MAX(ord), 0) FROM run_files").fetchone()[0]
+    for key, record in db.execute("SELECT key, record FROM lock_assets WHERE key LIKE '%#%'").fetchall():
+        row = json.loads(record)
+        held = row.pop("held", None)
+        row.pop("deleted_ms", None)
+        if [f for v in row.get("versions", []) + row.get("discarded", []) for f in (v.get("files") or {}).values()]:
+            db.execute("UPDATE lock_assets SET record = ? WHERE key = ?", (json.dumps(row), key))
+        else:
+            db.execute("DELETE FROM lock_assets WHERE key = ?", (key,))
+        if held:
+            last += 1
+            db.execute("INSERT INTO run_files (ord, run, function, output, sha256) VALUES (?, 0, '', 'deleted', ?)", (last, held))
+        written += 1
+print(written)
+SQL
+}
+
 db_first_open() {
-step "project.db: current creation/reopen and stable undo identities; old physical formats are refused"
+step "project.db: current creation/reopen and stable undo identities; a folder of old files is no project"
 local F=$OUT/db-current before entry
 run_project "$F" || { check "current open: create"; return; }
 project_api "$F" /assets -X POST -H 'Content-Type: application/json' -d '{"tool":"","name":"sky","fields":{"text":"A blue sky."}}' > "$OUT/db-current-create.json" || check "current open: create text asset"
@@ -136,63 +198,33 @@ J '.assets | any(.name == "sky" and .fields.text == "An evening sky.")' <<< "$(s
 before=$(sql1 "$F" "SELECT value FROM meta WHERE key = 'seq'")
 project_api "$F" '' > /dev/null || check "current open: reopen"
 [ "$(sql1 "$F" "SELECT value FROM meta WHERE key = 'seq'")" = "$before" ] || check "current open: reopen wrote state"
+# A folder of old files and no project.db is no project (cl-930): nothing reads, imports, upgrades or backs them up, and
+# `cozy new` makes a project beside them. An interrupted creation's project.db.new is no project either.
 local old file digest
-for file in project.yaml project.lock project.db.new; do
-  old=$OUT/refused-${file//./-}
+for file in project.yaml project.lock project.canvas.yaml project.db.new; do
+  old=$OUT/not-a-project-${file//./-}
   mkdir -p "$old"
-  printf 'version: 4\nassets: {}\n' > "$old/$file"
+  printf 'old %s\n' "$file" > "$old/$file"
   digest=$(sha "$old/$file")
-  if (cd "$old" && cozy --json status) > "$old/refusal.json" 2> "$old/refusal.err"; then check "old format $file was accepted"; fi
-  grep -q project_format_unsupported "$old/refusal.json" "$old/refusal.err" || check "old format $file did not explain current-format requirement"
-  [ "$(sha "$old/$file")" = "$digest" ] && [ ! -e "$old/project.db" ] && [ ! -e "$old/.cozy-legacy-v1" ] && [ ! -e "$old/project.db.v1" ] || check "old format $file was changed/imported"
+  if (cd "$old" && cozy --json status) > "$old/status.json" 2> "$old/status.err"; then check "$file alone is a project"; fi
+  grep -q not_in_a_project "$old/status.json" "$old/status.err" || check "$file alone: status says $(tail -c 300 "$old/status.err"), not that it's no project"
+  if [ "$file" != project.db.new ]; then
+    (cd "$old" && cozy --json new --unencrypted) > "$old/new.json" 2> "$old/new.err" || check "$file beside: cozy new: $(tail -c 300 "$old/new.err")"
+    J '.created == true' "$old/new.json" || check "$file beside: cozy new made no project: $(cat "$old/new.json")"
+    (cd "$old" && cozy --json status) > /dev/null 2> "$old/status-new.err" || check "$file beside: the new project: $(tail -c 300 "$old/status-new.err")"
+  fi
+  [ "$(sha "$old/$file")" = "$digest" ] && [ ! -e "$old/.cozy-legacy-v1" ] && [ ! -e "$old/$file.v2" ] && [ ! -e "$old/$file.v3" ] && [ ! -e "$old/project.db.v1" ] \
+    || check "$file was changed, imported or backed up: $(ls -A "$old" | tr '\n' ' ')"
 done
-}
-
-db_concurrent() {
-step "project.db: the CLI and the page write at once: no write is lost"
-local P=$OUT/db-together n=30 i
-starter_project "$P" > /dev/null 2>&1 || { check "together: project new"; return; }
-db_calcifer; ID=$(id_of "$P")
-local seq; seq=$(api "http://$ADDR/v1/projects/$ID/canvas" | jq .seq)
-# The CLI: a field of kyogre each time, and a box of its own. The page: another field of kyogre, its own boxes, and rows it moves.
-(for ((i = 1; i <= n; i++)); do
-  in_project "$P" set kyogre "cli_$i=$i" > /dev/null 2>> "$OUT/db-together-cli.err" || echo "set cli_$i" >> "$OUT/db-together-lost"
-  in_project "$P" add text "cli_box_$i" "text=From the CLI $i." > /dev/null 2>> "$OUT/db-together-cli.err" || echo "add cli_box_$i" >> "$OUT/db-together-lost"
-done) &
-local cli=$!
-(for ((i = 1; i <= n; i++)); do
-  page PATCH /assets/kyogre "{\"fields\": {\"page_$i\": $i}}" > /dev/null || echo "patch page_$i" >> "$OUT/db-together-lost"
-  page POST /assets "{\"tool\": \"\", \"name\": \"page_box_$i\", \"exact\": true, \"fields\": {\"text\": \"From the page $i.\"}, \"at\": {\"x\": $((i * 400)), \"y\": 900}}" > /dev/null || echo "create page_box_$i" >> "$OUT/db-together-lost"
-  page PATCH /canvas "{\"cards\": {\"groudon\": {\"x\": $i, \"y\": $((i * 2))}}}" > /dev/null || echo "move $i" >> "$OUT/db-together-lost"
-done) &
-local pg=$!
-wait "$cli" "$pg"
-[ ! -s "$OUT/db-together-lost" ] || check "together: requests failed: $(head -5 "$OUT/db-together-lost") $(tail -c 300 "$OUT/db-together-cli.err")"
-in_project "$P" export > "$OUT/db-together.yaml"
-local missing=()
-for ((i = 1; i <= n; i++)); do
-  grep -q "^    cli_$i: $i$" "$OUT/db-together.yaml" || missing+=("cli_$i")
-  grep -q "^    page_$i: $i$" "$OUT/db-together.yaml" || missing+=("page_$i")
-  grep -q "^  cli_box_$i:" "$OUT/db-together.yaml" || missing+=("cli_box_$i")
-  grep -q "^  page_box_$i:" "$OUT/db-together.yaml" || missing+=("page_box_$i")
-done
-[ ${#missing[@]} = 0 ] || check "together: lost writes: ${missing[*]}"
-! grep -qE '^  (cli|page)_box_[0-9]+_[0-9]+:' "$OUT/db-together.yaml" || check "together: a box was made twice: $(grep -E '^  (cli|page)_box_[0-9]+_[0-9]+:' "$OUT/db-together.yaml" | head -3)"
-[ "$(sql "$P" "SELECT x, y, by FROM canvas WHERE name = 'groudon'" | tr -d '\n')" = "[$n.0, $((n * 2)).0, \"page e2e-tab\"]" ] || check "together: groudon's row: $(sql "$P" "SELECT x, y, by FROM canvas WHERE name = 'groudon'")"
-local entries; entries=$(in_project "$P" --json history -n 200 | jq '.entries | length')
-echo "together: all $((5 * n)) writes kept (fields, boxes and rows, from both), $entries history entries, groudon at its last row"
-[ "$entries" -ge $((5 * n)) ] || check "together: $entries history entries for $((5 * n)) edits"
 }
 
 db_crash() {
 step "project.db: Calcifer killed amid writes: each is whole or absent, and its resend is done once"
-local K=$OUT/db-crash n=150 i seq yaml writer answer
+local K=$OUT/db-crash n=150 i seq writer answer
 run_project "$K" > "$OUT/db-crash-new.txt" 2>&1 || { check "crash: native bootstrap"; return; }
-yaml="version: 4\nassets:\n"
-for ((i = 1; i <= n; i++)); do yaml+="  m_$i: {text: Marker $i.}\n  r_$i: {text: Renamed $i.}\n"; done
-printf '%b' "$yaml" > "$OUT/db-crash-seed.yaml"
-project_api "$K" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/db-crash-seed.yaml" > "$OUT/db-crash-seed.txt" 2>&1 || { check "crash: seed current native project"; return; }
 db_calcifer; ID=$(id_of "$K")
+seed() { api -f -o /dev/null -X POST -H 'Content-Type: application/json' -d "{\"tool\": \"\", \"name\": \"$1\", \"exact\": true, \"fields\": {\"text\": \"$2\"}}" "http://$ADDR/v1/projects/$ID/assets"; }
+for ((i = 1; i <= n; i++)); do seed "m_$i" "Marker $i." && seed "r_$i" "Renamed $i." || { check "crash: seed m_$i and r_$i"; return; }; done
 for ((i = 1; i <= n; i++)); do echo "\"m_$i\": {\"x\": 0, \"y\": $((i * 10))}"; done | paste -sd, | sed 's/^/{"cards": {/; s/$/}}/' > "$OUT/db-crash-rows.json"
 api -X PATCH -H 'Content-Type: application/json' -d @"$OUT/db-crash-rows.json" "http://$ADDR/v1/projects/$ID/canvas" > /dev/null
 seq=$(api "http://$ADDR/v1/projects/$ID/canvas" | jq .seq)
@@ -240,55 +272,6 @@ echo "crash: resent all $n: $replayed answered as before"
 [ "$replayed" -ge "$whole" ] || check "crash: $whole were done but only $replayed resends were answered as before"
 [ "$(sql1 "$K" "SELECT count(*) FROM boxes WHERE name LIKE 'made_%'")" = "$n" ] || check "crash: after the resends, $(sql1 "$K" "SELECT count(*) FROM boxes WHERE name LIKE 'made_%'") boxes, not $n"
 [ "$(sql1 "$K" "SELECT count(*) FROM boxes WHERE name LIKE 's_%'")" = "$n" ] || check "crash: after the resends, $(sql1 "$K" "SELECT count(*) FROM boxes WHERE name LIKE 's_%'") renamed, not $n"
-}
-
-db_restart() {
-step "project.db: undo and redo across Calcifer killed"
-local U=$OUT/db-undo
-starter_project "$U" > /dev/null 2>&1 || { check "undo: project new"; return; }
-in_project "$U" export > "$OUT/db-undo-0.yaml"
-in_project "$U" set kyogre aspect_ratio=1:1 > /dev/null || check "undo: set"
-in_project "$U" delete coast > /dev/null || check "undo: delete"
-in_project "$U" set groudon at=700,700 > /dev/null || check "undo: move"
-in_project "$U" export > "$OUT/db-undo-3.yaml"
-kill9
-local k
-for k in 1 2 3; do in_project "$U" undo > "$OUT/db-undo-step.txt" 2>&1 || check "undo: undo $k after the kill: $(tail -c 300 "$OUT/db-undo-step.txt")"; done
-in_project "$U" export | cmp -s - "$OUT/db-undo-0.yaml" || check "undo: three undone isn't what it was: $(in_project "$U" export | diff - "$OUT/db-undo-0.yaml" | head -10)"
-kill9
-for k in 1 2 3; do in_project "$U" redo > "$OUT/db-undo-step.txt" 2>&1 || check "undo: redo $k after the kill: $(tail -c 300 "$OUT/db-undo-step.txt")"; done
-in_project "$U" export | cmp -s - "$OUT/db-undo-3.yaml" || check "undo: three redone isn't what it was: $(in_project "$U" export | diff - "$OUT/db-undo-3.yaml" | head -10)"
-db_calcifer
-[ "$(sql "$U" "SELECT x, y FROM canvas WHERE name = 'groudon'" | tr -d '\n')" = '[700.0, 700.0]' ] || check "undo: groudon's row after redo: $(sql "$U" "SELECT x, y FROM canvas WHERE name = 'groudon'")"
-echo "undo: three undone and redone, each across a kill -9: $(in_project "$U" --json history | jq -c '[.entries[] | {id, undone: (.undone != null)}]')"
-}
-
-db_roundtrip() {
-step "project.db: export then import changes nothing; an edited export is one entry, a renamed box keeps its takes"
-local R=$OUT/db-roundtrip pic=$OUT/db-roundtrip.png next=$OUT/db-roundtrip-2.png before after
-starter_project "$R" > /dev/null 2>&1 || { check "roundtrip: project new"; return; }
-tiny "$pic"; ffmpeg -v error -y -f lavfi -i "color=c=navy:size=8x8" -frames:v 1 "$next"
-(cd "$R" && in_project "$R" import "$pic" art > /dev/null) || check "roundtrip: import art"
-(cd "$R" && in_project "$R" import "$next" --into art > /dev/null) || check "roundtrip: art's next version"
-in_project "$R" export -o "$OUT/db-roundtrip-1.yaml" > /dev/null || check "roundtrip: export"
-before=$(in_project "$R" --json history | jq '.entries | length')
-(cd "$R" && in_project "$R" import "$OUT/db-roundtrip-1.yaml" > /dev/null) || check "roundtrip: import of the export"
-in_project "$R" export | cmp -s - "$OUT/db-roundtrip-1.yaml" || check "roundtrip: export, import, export differ"
-[ "$(in_project "$R" --json history | jq '.entries | length')" = "$before" ] || check "roundtrip: importing what it holds made an entry"
-# A hand's edit of the export: a field, a rename, a box gone and one added.
-perl -pe 's/aspect_ratio: "16:9"/aspect_ratio: "4:3"/ if $. < 12; s/^  art:/  painting:/; s/<art>/<painting>/g' "$OUT/db-roundtrip-1.yaml" | perl -0pe 's/\n  coast:\n(    .*\n)+//' > "$OUT/db-roundtrip-2.yaml"
-printf '\n  added:\n    text: New words.\n' >> "$OUT/db-roundtrip-2.yaml"
-(cd "$R" && in_project "$R" import "$OUT/db-roundtrip-2.yaml" > "$OUT/db-roundtrip-import.txt" 2>&1) || check "roundtrip: import of the edit: $(tail -c 300 "$OUT/db-roundtrip-import.txt")"
-after=$(status "$R" || true)
-J '.assets | map(.name) | (index("painting") != null) and (index("art") == null) and (index("coast") == null) and (index("added") != null)' <<< "$after" || check "roundtrip: after the edit: $(jq -c '[.assets[].name]' <<< "$after")"
-J '.versions | length == 2' <<< "$(held "$R" painting)" || check "roundtrip: the renamed box's versions: $(held "$R" painting | jq -c '[.versions[]?.number]')"
-[ "$(in_project "$R" --json history | jq '.entries | length')" = $((before + 1)) ] || check "roundtrip: the import is not one entry: $(in_project "$R" --json history | jq -c '[.entries[].words]')"
-in_project "$R" undo > /dev/null || check "roundtrip: undo the import"
-in_project "$R" export > "$OUT/db-roundtrip-3.yaml"
-# Undone, every box is back, the renamed one under its old name; one put back goes at the end.
-[ "$(grep -c '^  [a-z_]*:' "$OUT/db-roundtrip-3.yaml")" = "$(grep -c '^  [a-z_]*:' "$OUT/db-roundtrip-1.yaml")" ] && grep -q '^  art:' "$OUT/db-roundtrip-3.yaml" && grep -q '^  coast:' "$OUT/db-roundtrip-3.yaml" && ! grep -q '^  added:' "$OUT/db-roundtrip-3.yaml" \
-  || check "roundtrip: undone isn't what it was: $(diff "$OUT/db-roundtrip-1.yaml" "$OUT/db-roundtrip-3.yaml" | head -10)"
-echo "roundtrip: export and import stable, the edit one entry, painting kept its 2 versions, undone"
 }
 
 # Latency: a project holding 500 takes, and each write's time through Calcifer's HTTP (curl's time_total). The same on the cozy before
@@ -350,18 +333,12 @@ step "project CRDT: canonical state, stable identities, old-schema refusal and n
 local P=$OUT/crdt-project V=$OUT/crdt-v1 before after source
 cozy --json new --unencrypted "$P" > "$OUT/crdt-new.json" 2> "$OUT/crdt-new.err" || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.err")"; return; }
 J '.created == true and (.id | length > 0)' "$OUT/crdt-new.json" || check "CRDT: new did not create a project"
-[ "$(sql1 "$P" 'PRAGMA user_version')" = 2 ] || { check "CRDT: project.db is not schema 2"; return; }
+[ "$(sql1 "$P" 'PRAGMA user_version')" = 3 ] || { check "CRDT: project.db is not schema 3"; return; }
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_document WHERE format = 1 AND length(snapshot) > 0')" = 1 ] || check "CRDT: no native snapshot"
-project_api "$P" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary @- <<'YAML' || { check "CRDT: seed the editable graph"; return; }
-version: 4
-assets:
-  kyogre:
-    tool: qwen-image-2/image
-    instructions: A whale.
-  groudon:
-    tool: qwen-image-2/image
-    instructions: On shore with <kyogre>.
-YAML
+boxes_in "$P" <<'JSON' || { check "CRDT: seed the editable graph"; return; }
+[{"name": "kyogre", "tool": "qwen-image-2/image", "kind": "image", "fields": {"instructions": "A whale."}},
+ {"name": "groudon", "tool": "qwen-image-2/image", "kind": "image", "fields": {"instructions": "On shore with <kyogre>."}}]
+JSON
 tiny "$OUT/crdt-a.png"; cp "$OUT/crdt-a.png" "$OUT/crdt-b.png"; printf 'second' >> "$OUT/crdt-b.png"
 project_import "$P" "$OUT/crdt-a.png" art > "$OUT/crdt-import.txt" 2>&1 || check "CRDT: import: $(tail -c 300 "$OUT/crdt-import.txt")"
 db_calcifer
@@ -375,11 +352,6 @@ with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
     open(sys.argv[2],'wb').write(db.execute('SELECT snapshot FROM crdt_document WHERE id=1').fetchone()[0])
 PY
 project_api "$P" /rename -X POST -H 'Content-Type: application/json' -d '{"from":"kyogre","to":"whale"}' > "$OUT/crdt-rename.txt" 2>&1 || check "CRDT: rename: $(tail -c 300 "$OUT/crdt-rename.txt")"
-project_api "$P" /yaml > "$OUT/crdt-export.yaml" || check "CRDT: export"
-before=$(sql1 "$P" 'SELECT heads FROM crdt_document WHERE id=1')
-project_api "$P" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/crdt-export.yaml" > "$OUT/crdt-roundtrip.txt" 2>&1 || check "CRDT: unchanged import"
-after=$(sql1 "$P" 'SELECT heads FROM crdt_document WHERE id=1')
-[ "$before" = "$after" ] || check "CRDT: unchanged YAML export/import rewrote causal history"
 python3 - "$P/project.db" "$OUT/crdt-renamed.am" "$V" <<'PY'
 import os,sqlite3,sys
 with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
@@ -402,24 +374,14 @@ grep -q project_db_version "$OUT/crdt-v1-refusal.json" "$OUT/crdt-v1-refusal.err
 # project edit when the next real HTTP edit commits.
 db_sql "$P" "UPDATE fields SET value = '\"QUERY_CACHE_ONLY\"' WHERE box = 'whale' AND field = 'instructions'; UPDATE ops SET words = 'QUERY_CACHE_ONLY';"
 project_api "$P" /assets/groudon -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"description":"A canonical-store check."}}' > "$OUT/crdt-cache-set.txt" 2>&1 || check "CRDT: write after projection damage"
-project_api "$P" /yaml > "$OUT/crdt-cache-export.yaml" || check "CRDT: read after projection damage"
+project_api "$P" '' > "$OUT/crdt-cache-state.json" || check "CRDT: read after projection damage"
 project_api "$P" /history > "$OUT/crdt-cache-history.json" || check "CRDT: history after projection damage"
-{ ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-export.yaml" && ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json"; } || check "CRDT: a relational projection overrode canonical state/history"
-# An exported edit carries a graph-body base. A subsequent API edit must not be overwritten
-# by an old file; runtime/canvas-only changes do not participate in that precondition.
-project_api "$P" /yaml > "$OUT/crdt-stale-export.yaml" || check "CRDT: export edit base"
-project_api "$P" /assets/groudon -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"description":"An intervening API edit."}}' > "$OUT/crdt-intervening-set.txt" 2>&1 || check "CRDT: intervening API edit"
-if project_api "$P" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/crdt-stale-export.yaml" > "$OUT/crdt-stale-import.json" 2> "$OUT/crdt-stale-import.err"; then
-  check "CRDT: stale same-project export overwrote a newer API edit"
-fi
-grep -q project_changed "$OUT/crdt-stale-import.json" "$OUT/crdt-stale-import.err" || check "CRDT: stale import did not explain project_changed"
-project_api "$P" /yaml > "$OUT/crdt-stale-after.yaml" || check "CRDT: export after stale refusal"
-grep -q 'An intervening API edit.' "$OUT/crdt-stale-after.yaml" || check "CRDT: stale import erased the intervening edit"
+{ ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-state.json" && ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json"; } || check "CRDT: a relational projection overrode canonical state/history"
 # Cargo consumes the same published native library as the product. This is a format/merge proof,
 # not another daemon or a substitute project storage implementation.
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- "$OUT/crdt-before.am" "$OUT/crdt-renamed.am" > "$OUT/crdt-native.json" 2> "$OUT/crdt-native.err" \
   || check "CRDT: native format/replica proof: $(tail -c 400 "$OUT/crdt-native.err")"
-J '.passed and .native_replicas == 3 and .original_versions == 2 and .same_number_versions_preserved == 2 and (.prompt_alternatives == ["dawn","dusk","noon"])' "$OUT/crdt-native.json" \
+J '.passed and .native_replicas == 3 and .no_files_versions_runs and (.prompt_alternatives == ["dawn","dusk","noon"])' "$OUT/crdt-native.json" \
   || check "CRDT: native merge report: $(cat "$OUT/crdt-native.json")"
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --history-fixture "$OUT/crdt-renamed.am" "$OUT/crdt-history-merged.am" > "$OUT/crdt-history-fixture.json" 2> "$OUT/crdt-history-fixture.err" \
   || { check "CRDT: history merge fixture: $(tail -c 300 "$OUT/crdt-history-fixture.err")"; return; }
@@ -563,12 +525,12 @@ with ThreadPoolExecutor(max_workers=1) as worker:
         except Refused as refused:
             error=json.loads(refused.payload)['error']
             assert refused.status==409 and error['code']=='project_changed' and 'while this edit was being committed' in error['message'],refused.payload
-            exported=project_api(peer,'/yaml')
+            held=project_api(peer)
             retained=f'retained native writer crdt-outside-{attempt}'
-            assert asked not in exported and retained in exported,exported
+            assert asked not in held and retained in held,held
             patch(peer,description=asked)
-            exported=project_api(peer,'/yaml')
-            assert asked in exported and retained in exported,exported
+            held=project_api(peer)
+            assert asked in held and retained in held,held
             observed=True
             break
 assert observed,'no observed stale native base; proof is inconclusive'
@@ -596,27 +558,13 @@ patch(mixed,e2e_replace={'branch':[1,1]})
 scans_after=output/'crdt-scans-after.am';scans_after.write_bytes(snapshot(mixed)[0])
 scans=native('--scan-check',scans_before,scans_after)
 
-# A separate valid graph exercises case-only rename and an arbitrary reorder
-# through the project API. The native identity reader checks both retained boxes.
-control=output/'crdt-case-order';clone(project,control)
+# A separate valid graph exercises a case-only rename through the project API. The native identity reader checks the box kept its identity.
+control=output/'crdt-case';clone(project,control)
 case_before=output/'crdt-case-before.am';case_before.write_bytes(snapshot(control)[0])
 rename(control,'groudon','Groudon')
 case_after=output/'crdt-case-after.am';case_after.write_bytes(snapshot(control)[0])
 native('--identity',case_before,case_after,'groudon','Groudon')
-with sqlite3.connect(control/'project.db') as db:
-    ordered=[row[0] for row in db.execute("SELECT name FROM boxes WHERE key IN ('groudon','whale') ORDER BY ord")]
-assert set(ordered)=={'Groudon','whale'},ordered
-wanted=list(reversed(ordered))
-reorder=output/'crdt-reordered.yaml'
-reorder.write_text('version: 4\nassets:\n'+''.join(f'  {name}: {{text: Reordered {name}}}\n' for name in wanted),encoding='utf-8')
-project_api(control,'/yaml','PUT',reorder.read_bytes())
-with sqlite3.connect(control/'project.db') as db:
-    projected=db.execute('SELECT name,ord FROM boxes ORDER BY ord').fetchall()
-assert projected==list(zip(wanted,range(2))),projected
-reordered=output/'crdt-reordered.am';reordered.write_bytes(snapshot(control)[0])
-for name in wanted:
-    native('--identity',case_after,reordered,name)
-scans.update(mixed_projection=chosen(mixed),case_only_id_retained=True,reordered_ids_retained=True)
+scans.update(mixed_projection=chosen(mixed),case_only_id_retained=True)
 (output/'crdt-scans-proof.json').write_text(json.dumps(scans,ensure_ascii=False)+'\n',encoding='utf-8')
 print(json.dumps({'passed':True,'append_type':kind,'prefix_bytes':len(before),'after_bytes':len(after),'project_id':original_id,'partial_and_boundary_truncation_refused':True,'missing_native_row_refused':True,'outside_writer_cas_refused_then_retry':True,'canvas':canvas}))
 STREAM_PROOF
@@ -635,4 +583,129 @@ with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
     data,kind=db.execute('SELECT snapshot,typeof(snapshot) FROM crdt_document WHERE id=1').fetchone()
 assert kind=='blob' and data==open(sys.argv[2],'rb').read()
 STREAM_RESTART
+}
+
+# A project 0.24.0 made, opened by this cozy (cl-904's schema 3: its files, versions and runs leave the Automerge document for
+# project.db's rows on its first open). 0.24.0's own cozy makes it, in this one's place as its release installs it; then this
+# cozy goes back in its place, as an update puts it, and opens it: every take, file, word and history entry reads as 0.24.0
+# read it, each take with the id it had, and Undo reaches past the upgrade.
+db_migrate() {
+step "project.db: a project 0.24.0 made opens here with nothing lost"
+local M=$OUT/migrate was=$OUT/cozy-0.24.0 now=$OUT/cozy-now old arch c source
+arch=$(uname -m); [ "$arch" != arm64 ] || arch=aarch64
+mkdir -p "$was"
+curl -fsSL --retry 3 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/v0.24.0/cozy-$arch-unknown-linux-gnu.tar.gz" \
+  | tar -xz -C "$was" || { check "migrate: 0.24.0's archive"; return; }
+old=$(find "$was" -type f -name cozy -print -quit)
+cp "$COZY" "$now"
+in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "migrate: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
+echo "migrate: Calcifer $(api "http://$ADDR/v1/status" | jq -r .version) makes it"
+mkdir -p "$M"; cp "$here/project/draw.py" "$M/"
+# As its page makes boxes (cl-930). A tool box named, with its kind, is made with no machine to read the tool.
+jq -n '[{name: "notes", fields: {text: "Notes 0.24.0 wrote."}}, {name: "drawn", tool: "./draw.py/draw", kind: "image", fields: {instructions: "A still."}}]' \
+  | boxes_in "$M" || { check "migrate: 0.24.0 made no boxes"; in_cozy "$now"; return; }
+for c in red teal navy olive; do ffmpeg -v error -y -f lavfi -i "color=c=$c:size=832x480" -frames:v 1 "$M/$c.png"; done
+project_import "$M" "$M/red.png" take > "$OUT/migrate-import.txt" 2>&1 || check "migrate: import take: $(tail -c 300 "$OUT/migrate-import.txt")"
+for c in teal navy; do
+  source="sha256:$(sha "$M/$c.png")"
+  api --fail-with-body -X PUT --data-binary "@$M/$c.png" "http://$ADDR/v1/files/$source" > /dev/null || check "migrate: upload $c"
+  project_api "$M" /assets/take/versions -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/migrate-version.txt" 2>&1 \
+    || check "migrate: take from $c: $(tail -c 300 "$OUT/migrate-version.txt")"
+done
+project_api "$M" /approve -X POST -H 'Content-Type: application/json' -d '{"name": "take", "version": "2"}' > /dev/null || check "migrate: approve take 2"
+project_api "$M" /assets/take/versions/3 -X DELETE > /dev/null || check "migrate: discard take 3"
+project_api "$M" /assets/drawn -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"instructions": "A <take.2> in teal, as 0.24.0 had it."}}' > /dev/null || check "migrate: drawn's words"
+project_import "$M" "$M/olive.png" olive > "$OUT/migrate-import.txt" 2>&1 || check "migrate: import olive: $(tail -c 300 "$OUT/migrate-import.txt")"
+project_api "$M" /assets/notes -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"text": "Notes 0.24.0 wrote, then changed."}}' > /dev/null || check "migrate: notes' words"
+[ "$(sql1 "$M" 'PRAGMA user_version')" = 2 ] || check "migrate: 0.24.0 made schema $(sql1 "$M" 'PRAGMA user_version'), not 2"
+# 0.24.0's CLI has no export, history or delete: its Calcifer's routes, as its page asks, read and write alike on both.
+migrate_read "$M" 0240 || check "migrate: what 0.24.0 holds of it"
+local was_0240; was_0240=$(dump_of "$M/project.db")
+# A copy of it whose project.db refuses a take's row, as a migration that fails part-way would meet: below.
+local F=$OUT/migrate-fails was_dump
+mkdir -p "$F" && cp -a "$M/." "$F/" && rm -f "$F"/project.db*
+python3 - "$M/project.db" "$F/project.db" <<'PY' || check "migrate: a copy that fails part-way"
+import sqlite3, sys
+with sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True) as source, sqlite3.connect(sys.argv[2]) as copy:
+    source.backup(copy)
+    copy.execute("CREATE TRIGGER e2e_refused BEFORE INSERT ON versions BEGIN SELECT RAISE(ABORT, 'e2e: a row refused'); END")
+PY
+
+in_cozy "$now" || { check "migrate: this cozy back in its place"; return; }
+in_project "$M" --json status > "$OUT/migrate-open.json" 2> "$OUT/migrate-open.err" || { check "migrate: this cozy opening it: $(tail -c 300 "$OUT/migrate-open.err")"; return; }
+[ "$(sql1 "$M" 'PRAGMA user_version')" = 3 ] || check "migrate: project.db is schema $(sql1 "$M" 'PRAGMA user_version') after its first open here, not 3"
+# The project as 0.24.0 left it, kept beside it once.
+local kept=$M/project.db.pre-schema3 kept_at
+[ -f "$kept" ] && [ "$(dump_of "$kept")" = "$was_0240" ] || check "migrate: no copy of it as 0.24.0 left it: $([ -f "$kept" ] && dump_of "$kept") (was $was_0240)"
+kept_at=$(stat -c %Y.%s "$kept" 2> /dev/null)
+cozy machine logs local calcifer --lines 5000 2> /dev/null | grep -q "project.db before schema 3 kept at .*/migrate/project.db.pre-schema3" \
+  || check "migrate: Calcifer's log doesn't say where the copy is"
+migrate_read "$M" now || check "migrate: what this cozy holds of it"
+local part
+for part in facts rows history; do
+  cmp -s "$OUT/migrate-0240-$part" "$OUT/migrate-now-$part" || check "migrate: its $part read otherwise here: $(diff "$OUT/migrate-0240-$part" "$OUT/migrate-now-$part" | head -c 800)"
+done
+[ "$(sql1 "$M" "SELECT count(*) FROM versions WHERE coalesce(json_extract(record, '\$.id'), '') = ''")" = 0 ] || check "migrate: a take has no id"
+for f in $(status "$M" | jq -r '.assets[].name' | while read -r name; do held "$M" "$name" | jq -r '.versions[].files[].path // empty'; done); do
+  [ -f "$M/$f" ] || check "migrate: $f is gone"
+done
+# Undo reaches what 0.24.0 did: notes' words back, then changed again. (A box 0.24.0 deleted is cl-919's, dated at the first open.)
+local words='.asset.fields.text'
+project_api "$M" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: undo notes' words: $(tail -c 300 "$OUT/migrate-undo.txt")"
+[ "$(held "$M" notes | jq -r "$words")" = "Notes 0.24.0 wrote." ] || check "migrate: notes undone say '$(held "$M" notes | jq -r "$words")'"
+project_api "$M" /history/redo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: redo notes' words: $(tail -c 300 "$OUT/migrate-undo.txt")"
+[ "$(held "$M" notes | jq -r "$words")" = "Notes 0.24.0 wrote, then changed." ] || check "migrate: notes redone say '$(held "$M" notes | jq -r "$words")'"
+# A take after it: number 4 (3 is discarded), its own id, all four there across Calcifer killed.
+source="sha256:$(sha "$M/olive.png")"
+project_api "$M" /assets/take/versions -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/migrate-version.txt" 2>&1 \
+  || check "migrate: a take after: $(tail -c 300 "$OUT/migrate-version.txt")"
+kill9
+J '[.versions[].number] == [1, 2, 4] and .discarded == [3] and .asset.approved == 2' <<< "$(held "$M" take)" \
+  || check "migrate: take after a new take and a kill: $(held "$M" take | jq -c '{versions: [.versions[].number], discarded, approved: .asset.approved}')"
+[ "$(sql "$M" "SELECT json_extract(record, '\$.id') FROM versions WHERE key = 'take'" | sort -u | wc -l)" = 4 ] || check "migrate: take's four versions have not four ids"
+# A migration that fails part-way, past its rows' deletes, leaves the project as it was: one transaction. Let be, it migrates.
+was_dump=$(dump_of "$F/project.db")
+if in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1; then check "migrate: a migration refused part-way opened the project"; fi
+[ "$(dump_of "$F/project.db")" = "$was_dump" ] || check "migrate: a migration refused part-way changed project.db ($was_dump, now $(dump_of "$F/project.db")): $(tail -c 300 "$OUT/migrate-fails.json")"
+db_sql "$F" "DROP TRIGGER e2e_refused"
+in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1 || check "migrate: let be, the copy didn't open: $(tail -c 300 "$OUT/migrate-fails.json")"
+[ "$(sql1 "$F" 'PRAGMA user_version')" = 3 ] || check "migrate: let be, the copy is schema $(sql1 "$F" 'PRAGMA user_version')"
+migrate_facts "$F" | cmp -s - "$OUT/migrate-0240-facts" || check "migrate: let be, the copy reads otherwise: $(migrate_facts "$F" | diff "$OUT/migrate-0240-facts" - | head -c 600)"
+[ "$(stat -c %Y.%s "$kept" 2> /dev/null)" = "$kept_at" ] || check "migrate: the copy kept beside it was written again"
+[ "$(dump_of "$F/project.db.pre-schema3")" = "$was_dump" ] || check "migrate: the refused copy's own kept copy isn't it as it was"
+echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.name): [.versions[].number]}) | add' "$OUT/migrate-now-facts")"
+}
+# in_cozy <file>: that cozy in this one's place, as an update puts it, and its Calcifer the one serving: the last stopped as a
+# service manager stops one, and started by the next verb.
+in_cozy() {
+  local lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid
+  pid=$(jq -r .pid < "$lock" 2> /dev/null) || pid=''
+  [ -z "$pid" ] || { kill -TERM "$pid" 2> /dev/null; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done; }
+  cp "$1" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer
+}
+# migrate_facts <project>: each box's words, takes (number, approved, files by hash) and discarded, as the API reads them.
+migrate_facts() {
+  local name
+  status "$1" | jq -r '.assets[].name' | sort | while read -r name; do
+    held "$1" "$name" | jq -c --arg n "$name" '{name: $n, fields: .asset.fields, approved: .asset.approved, versions: [.versions[] | {number, files: (.files | map_values(.sha256))}], discarded: (.discarded // [])}'
+  done
+}
+# migrate_read <project> <tag>: what it holds, to $OUT/migrate-<tag>-{facts,rows,history} (0.25 has no YAML export, cl-930).
+migrate_read() {
+  migrate_facts "$1" > "$OUT/migrate-$2-facts" && migrate_rows "$1" > "$OUT/migrate-$2-rows" \
+    && project_api "$1" /history | jq -c '[.entries[] | {words, undone: (.undone != null)}]' > "$OUT/migrate-$2-history"
+}
+# dump_of <project.db>: its schema version and the hash of all it holds (read; a WAL copy no one has open needs its -shm made).
+dump_of() {
+  python3 - "$1" <<'PY'
+import hashlib, sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+held = hashlib.sha256("\n".join(conn.iterdump()).encode()).hexdigest()
+print(conn.execute("PRAGMA user_version").fetchone()[0], held)
+PY
+}
+# migrate_rows <project>: project.db's rows of takes, boxes' records and files, sorted.
+migrate_rows() {
+  local q
+  for q in "SELECT key, number, discarded, record FROM versions" "SELECT key, record FROM lock_assets" "SELECT sha256, record FROM lock_files"; do sql "$1" "$q" | sort; done
 }

@@ -21,6 +21,7 @@ pub mod machine;
 pub mod model_ref;
 pub mod names;
 pub mod prerelease;
+pub mod release;
 pub mod stage;
 pub mod target;
 pub mod tree;

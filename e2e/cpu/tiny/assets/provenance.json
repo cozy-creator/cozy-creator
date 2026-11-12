@@ -58,6 +58,14 @@
       "source_blob": "024509b239070886c6ff4a70ae8adbccef00b286",
       "bytes": 4153,
       "sha256": "179f13b2653570684cc01b3b5442182c919a0fbf056211a58630f90794f1ce34"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/flux_3_klein/system_prompts.json",
+      "source_path": "flux.3-klein/flux_3_klein/system_prompts.json",
+      "source_commit": "eed2a6fe7c21589f4dcfb766238d2193c415bfce",
+      "source_blob": "93081c77e82b989fb5ef3d5968943f06952af274",
+      "bytes": 12602,
+      "sha256": "b5da3ed8bc04ab59dbdb747930f7dbff847e868903fed8028f85ee1a4ac82fb4"
     }
   ]
 }

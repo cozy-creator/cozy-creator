@@ -33,9 +33,39 @@
 .active-model-name {
   overflow-wrap: anywhere;
 }
-.active-model-strength {
+/* A LoRA's row: its name, then its strength's slider, number and recommended (Paul, 11-12). Tall enough to drag, its number whole. */
+.active-models li.active-lora {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-height: 28px;
+}
+.active-lora .active-model-name {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.active-lora-strength {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+}
+.active-lora-strength input[type="range"] {
+  width: 120px;
+  height: 28px;
+  margin: 0;
+}
+.active-lora-strength input[type="number"] {
+  width: 7ch;
+  min-width: 7ch;
+  min-height: 28px;
+  padding: 2px 6px;
   font-family: var(--mono);
-  color: var(--ember);
+  font-size: var(--small);
+}
+.active-lora-strength .iconb {
+  flex: none;
 }
 
 .checkpoints h4,

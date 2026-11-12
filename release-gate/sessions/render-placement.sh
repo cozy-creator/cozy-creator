@@ -18,32 +18,16 @@
 WEB=$(cd "$(dirname "$0")/../../e2e/cli" && pwd)
 for f in web/heavy.py project/draw.py project/shots.py; do [ -f "$WEB/$f" ] || fail "no e2e/cli/$f"; done
 J() { jq -e "$@" > /dev/null; }
-cat > "$OUT/placement.yaml" <<YAML
-version: 4
-assets:
-  first:
-    tool: $WEB/project/draw.py/draw
-    instructions: a lighthouse at dusk
-  heavy:
-    tool: $WEB/web/heavy.py/heavy
-    instructions: a lantern in fog
-  long: {tool: $WEB/project/shots.py/slow, seconds: 60}
-  long_again: {tool: $WEB/project/shots.py/slow, seconds: 60}
-  warm:
-    tool: $WEB/project/draw.py/draw
-    instructions: a buoy at noon
-  second:
-    tool: $WEB/project/draw.py/draw
-    instructions: a kite over dunes
-  heavy_again:
-    tool: $WEB/web/heavy.py/heavy
-    instructions: a lamp in rain
-  heavy_here:
-    tool: $WEB/web/heavy.py/heavy
-    instructions: a lamp in the dark
-    seconds: 150
-YAML
-run_page yaml "$OUT/placement.yaml" > "$OUT/yaml.txt" 2>&1 || fail "project.yaml: $(tail -3 "$OUT/yaml.txt")"
+jq -n --arg web "$WEB" '[
+  {name: "first", tool: "\($web)/project/draw.py/draw", kind: "image", fields: {instructions: "a lighthouse at dusk"}},
+  {name: "heavy", tool: "\($web)/web/heavy.py/heavy", kind: "image", fields: {instructions: "a lantern in fog"}},
+  {name: "long", tool: "\($web)/project/shots.py/slow", kind: "video", fields: {seconds: 60}},
+  {name: "long_again", tool: "\($web)/project/shots.py/slow", kind: "video", fields: {seconds: 60}},
+  {name: "warm", tool: "\($web)/project/draw.py/draw", kind: "image", fields: {instructions: "a buoy at noon"}},
+  {name: "second", tool: "\($web)/project/draw.py/draw", kind: "image", fields: {instructions: "a kite over dunes"}},
+  {name: "heavy_again", tool: "\($web)/web/heavy.py/heavy", kind: "image", fields: {instructions: "a lamp in rain"}},
+  {name: "heavy_here", tool: "\($web)/web/heavy.py/heavy", kind: "image", fields: {instructions: "a lamp in the dark", seconds: 150}}
+]' | run_page boxes > "$OUT/boxes.txt" 2>&1 || fail "the boxes: $(tail -3 "$OUT/boxes.txt")"
 # machine_of <function>: the machine the newest render of it ran on (not its package's install).
 machine_of() { (cd "$RUN_PROJECT" && cozy --json run ls --limit 0) | jq -r --arg f "$1" '[.runs[] | select((.target // "") | test("^\\S+/" + $f + "$"))][0].machine // empty'; }
 # rendered <step> <asset>: rendered as the page asks it at Automatically, to its end; fails on a warning that this computer would do it poorly.

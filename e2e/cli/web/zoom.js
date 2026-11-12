@@ -1,5 +1,5 @@
 // Zoom from the canvas's corner, as Figma's: − and + step along the page's zooms about the middle of what's visible, the zoom says what it
-// is, its menu fits everything, goes to 100%, and works on a box being worked on without leaving it. A box is drawn larger or smaller
+// is, its menu fits everything and goes to 100%, and it isn't over Focus, which zooms its own picture. A box is drawn larger or smaller
 // alike, words and all (cl-890). 300 boxes panned at 70% and 11%, with it on the canvas, as see.js measures them.
 //   node zoom.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as see.js. Prints what it saw as JSON and exits 1 if anything failed.
@@ -7,7 +7,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectUrl, importFile, STEP_MS, boxOf, calcifer, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { projectUrl, importFile, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -60,15 +60,18 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     const hash = held.assets.find((row) => row.name === 'a_picture').sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
-    // Its boxes by the import API, and each one's place by the canvas's PATCH, as the page moves them (cl-803: both are project.db's).
-    let text = 'version: 4\nassets:\n';
+    // Its boxes by the assets API as the page makes them, each approved on the picture, whose own box goes; and each one's place by the
+    // canvas's PATCH, as the page moves them (cl-803: both are project.db's).
     const cards = {};
+    const json = { 'Content-Type': 'application/json' };
     for (let i = 0; i < COUNT; i++) {
-      text += `  n${i}:\n    approved: "${hash}"\n    tool: see-no-such-package/draw\n    instructions: box ${i}\n`;
+      const box = { name: `n${i}`, exact: true, tool: 'see-no-such-package/draw', kind: 'image', fields: { approved: hash, instructions: `box ${i}` } };
+      const answer = await api(`/v1/projects/${made.id}/assets`, { method: 'POST', headers: json, body: JSON.stringify(box) });
+      if (answer.name !== box.name) throw new Error(`box n${i}: ${JSON.stringify(answer)}`);
       cards[`n${i}`] = { x: (i % perRow) * 304, y: Math.floor(i / perRow) * 240, w: 240 };
     }
-    importYaml(made.path, text);
-    await api(`/v1/projects/${made.id}/canvas`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cards }) });
+    await api(`/v1/projects/${made.id}/assets/a_picture`, { method: 'DELETE' });
+    await api(`/v1/projects/${made.id}/canvas`, { method: 'PATCH', headers: json, body: JSON.stringify({ cards }) });
     await until('300 boxes read', async () => (await api(`/v1/projects/${made.id}`)).assets?.length, (n) => n === COUNT);
 
     const openTab = async (zoom, x) => {
@@ -216,22 +219,14 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     await shot(tab, 'zoom-box-scales');
     await tab.keyboard.press('Escape');
 
-    // A box worked on: + draws in further and it stays open; Zoom to fit draws back in on it; Esc in the menu shuts the menu, not the box.
+    // A box worked on is Focus, over the canvas (cl-893): the canvas's zoom is Wander's and isn't shown there (Focus zooms its own picture:
+    // web-focused, web-refocus), and nothing of it is pressed through Focus. Esc leaves it, and the zoom is back.
     await openBox(tab, 'n0');
-    const here = await view(tab);
-    const closer = await press('Zoom in');
-    check('here_plus', near(closer.zoom, ZOOMS.find((step) => step > here.zoom * 1.001)) && (await tab.locator('.card.here').count()) === 1, { here, closer });
+    check('here_has_no_canvas_zoom', !(await tab.locator('.zoom').isVisible()) && !(await tab.locator('.zoom-at').isVisible()) && (await tab.locator('.card.here').count()) === 1);
     await shot(tab, 'zoom-here');
-    await menu();
-    await tab.keyboard.press('Escape');
-    check('here_menu_escape', !(await tab.locator('.zoom-menu').count()) && (await tab.locator('.card.here').count()) === 1);
-    await menu();
-    await tab.click('.zoom-menu >> text=Zoom to fit');
-    await settled(tab);
-    const back = await view(tab);
-    check('here_fit_is_the_box', near(back.zoom, here.zoom) && (await tab.locator('.card.here').count()) === 1, { here, back });
     await closeBox(tab);
-    check('box_left', !(await tab.locator('.card.here').count()) && (await boxOf(tab, 'n0').count()) === 1);
+    const back = await view(tab);
+    check('box_left', !(await tab.locator('.card.here').count()) && (await boxOf(tab, 'n0').count()) === 1 && (await tab.locator('.zoom').isVisible()) && shows(back), back);
     await tab.close();
   } catch (error) {
     await lastLook();

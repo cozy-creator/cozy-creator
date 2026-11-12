@@ -227,7 +227,7 @@ pub struct FoundModel {
     pub private: bool,
     /// Who made it: the org it credits, or the parked org it mirrors into.
     pub author: Option<ModelAuthor>,
-    /// Its owner's recommended LoRA strength, when provided; not applied by a render automatically.
+    /// Its owner's recommended LoRA strength, when provided: what it runs at when given without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f64>,
     /// What its header says it is. None: it couldn't be read.
@@ -305,7 +305,7 @@ pub struct ModelDetail {
     /// The pinned upstream source.
     pub source: Option<String>,
     pub author: Option<ModelAuthor>,
-    /// Words a LoRA's prompt uses, and its recommended strength (a run's default stays 1.0).
+    /// Words a LoRA's prompt uses, and its recommended strength: what it runs at when given without one.
     pub trigger: Option<String>,
     pub strength: Option<f64>,
     /// Its labels, sorted: filled once from its source, then its owner's.
@@ -373,6 +373,74 @@ pub struct ModelCheckpoint {
     /// The releases naming it; none while private.
     pub releases: Vec<String>,
     pub created_at: String,
+}
+
+/// `GET /v1/models/{org}/{name}/headers?release=|checkpoint=&lane=&full=` (`cozy model show`): what each lane of a release, or
+/// one checkpoint, holds, read from its header alone, never a weight.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelHeaders {
+    pub model: String,
+    /// Its owner's label, else what its header verifies as.
+    pub family: Option<String>,
+    /// The release shown; none for a checkpoint in no release.
+    pub release: Option<String>,
+    pub visibility: Option<crate::model_ref::ReleaseVisibility>,
+    /// The newer release a run naming this one takes: the newest of its series (xs-183).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolves_to: Option<String>,
+    pub lanes: Vec<LaneHeader>,
+}
+
+/// One lane's checkpoint as its header says.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LaneHeader {
+    pub lane: String,
+    /// `sha256:<hex>` of its tree.
+    pub checkpoint: String,
+    /// `sha256:<hex>` of its header, and the header's bytes.
+    pub header: String,
+    pub header_bytes: u64,
+    /// What its header verifies as; none: no family's model.
+    pub family: Option<String>,
+    pub kind: Option<ModelContentKind>,
+    /// `model_index.json`'s class, `[library, version, name]`.
+    pub pipeline: Option<[String; 3]>,
+    pub components: Vec<ComponentHeader>,
+    /// What it records of where it came from, as written: `inherited`, `composed`, `added`, `provenance`, `family`, `adapter`.
+    pub records: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// One component of a checkpoint: its class, config, run data and tensors.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ComponentHeader {
+    pub name: String,
+    /// `[library, version, name]`; empty: unknown.
+    pub class: [String; 3],
+    /// Its config's file, when it is not `config.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_file: Option<String>,
+    /// Its config's keys, sorted; none: it has no config.
+    pub config_keys: Vec<String>,
+    /// The config itself, when asked for (`full`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Its run data (`tokenizer.json`, `processor/vocab.json`), by path under its folder, and each one's bytes.
+    pub assets: std::collections::BTreeMap<String, u64>,
+    pub tensors: usize,
+    /// A LoRA's modules and their α, when it holds factors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lora: Option<LoraModules>,
+}
+
+/// A LoRA component's modules, and which state their α.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoraModules {
+    /// Modules with an A and a B factor.
+    pub modules: usize,
+    /// Of them, those with an `.alpha` of their own.
+    pub alphas: usize,
+    /// Its config's `lora_alpha`: the α of every module without its own.
+    pub lora_alpha: Option<f64>,
 }
 
 /// `PATCH /v1/models/{org}/{name}`: the fields its owner sets, each absent one kept. An empty or `none` family
@@ -551,8 +619,8 @@ pub struct AfterRun {
     pub retired: Vec<Retired>,
 }
 
-/// A model's display metadata as set at the Hub: shown in the model browser, never applied (a
-/// run's LoRA strength stays 1.0).
+/// A model's display metadata as set at the Hub: shown in the model browser; a LoRA given without a
+/// strength runs at its recommended one.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Displayed {
@@ -653,6 +721,10 @@ pub struct ModelUpload {
     /// `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// Files added to the checkpoint, `<component>/<path>` → a held file's `sha256:<hex>`: each becomes that component's asset
+    /// (a component of none but these when the checkpoint has no such component).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub add: std::collections::BTreeMap<String, String>,
 }
 
 /// A Hub checkpoint recorded as a checkpoint of another model when the caller may read its whole closure: nothing uploaded.

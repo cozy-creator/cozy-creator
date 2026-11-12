@@ -3,7 +3,7 @@ import type { NodeProps, Viewport } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import { machinesQuery } from "../api/queries"
+import { runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
 import type { MainFile, Tool, ToolField } from "../api/calcifer"
@@ -16,14 +16,13 @@ import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
 import { fieldsOf, shapesOf, shapeWords, snapped } from "./controls"
 import { useDragScroll } from "./dragScroll"
-import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
+import { downloadable, Media, Preview, preload, Thumb, usePreview } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
-import { VideoScrub } from "./VideoScrub"
-import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
+import { bare, ContinueFrom, LeadIn, Segments } from "./Segments"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
-import { TimelineControl } from "./timeline/TimelineControl"
+import { VideoEditor } from "./timeline/VideoEditor"
 import { AddOns } from "./AddOns"
 import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
@@ -49,7 +48,11 @@ function kindOf(view: ElementView): string {
 
 /** How far a take being made is: its package installing or its weights arriving show as such, never as its own percentage. */
 function TakeProgress({ view, run }: { view: ElementView; run: number }) {
-  const mine = view.run?.number === run ? view.run : undefined
+  // Its own run, each tile (cl-945): the box follows only the one its frame is on.
+  const { client } = useConnection()
+  const framed = view.run?.number === run
+  const { data } = useQuery({ ...runQuery(client, run), enabled: !framed })
+  const mine = framed ? view.run : data
   const on = useWaitsOn(mine)
   if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
   const fraction = mine?.progress?.done_fraction
@@ -129,7 +132,7 @@ function nextTake(store: CanvasStore, view: ElementView, name: string, tools: Ma
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
   const writes = paints(view, tools)
-  const any = Boolean(asset.prefixes?.length) || Boolean(asset.sha256) || Boolean(asset.timeline) || making.length > 0 || Boolean(waiting) || Boolean(asset.failure)
+  const any = Boolean(asset.prefixes?.length) || Boolean(asset.sha256) || Boolean(asset.timeline) || takingOf(view).length > 0 || making.length > 0 || Boolean(waiting) || Boolean(asset.failure)
   const adds = (writes || (asset.kind === "video" && Boolean(asset.tool))) && any
   const write = () => {
     // Already on them, the caret goes back in.
@@ -143,7 +146,7 @@ function nextTake(store: CanvasStore, view: ElementView, name: string, tools: Ma
     if (writes) return store.writeNext(name)
     store.focusFit?.()
     store.focusing = name
-    store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watchRun: undefined, watchFrom: undefined })
+    store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watch: undefined })
   }
   const label = writes ? "Its next take" : asset.timeline ? "Its words" : "New video"
   return { adds, write, label, title: writes ? "New image" : "New video", tool: tools.get(asset.tool ?? "")?.label, on: Boolean(view.hereWords), word: writes || asset.kind === "video" }
@@ -198,16 +201,19 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
   // Rendered from its words, what's being made is what's looked at.
   const shown = onWords || watch ? null : shownOf(view)
   const versions = [...(asset.prefixes ?? [])].reverse()
-  const making = asset.making ?? []
-  const waiting = !making.length && (view.queued || view.asked !== undefined)
+  // Each take on its way by its id, from the click to its version (cl-945); a run no take names, and what's asked with no take named
+  // (Render all, before Calcifer lists it), as they come.
+  const pending = takingOf(view)
+  const making = (asset.making ?? []).filter((run) => !pending.some((take) => take.run === run))
+  const waiting = !pending.length && !making.length && (view.queued || view.asked !== undefined)
   // The newest take, once its tile's up, is made ready at the size it's looked at, before it's clicked.
   const { client } = useConnection()
   const newest = asset.prefixes?.at(-1)
   const next = nextTake(store, view, name, tools)
-  if (!next.adds && !versions.length && !view.joining && !making.length && !waiting) return null
+  if (!next.adds && !versions.length && !view.joining && !pending.length && !making.length && !waiting) return null
   const pick = (number: number) => {
     store.pickTake(name, number)
-    if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined, watchRun: undefined })
+    if (onWords || watch) store.patch(name, { hereWords: undefined, watch: undefined })
   }
   const row = (
     <div
@@ -220,7 +226,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       {next.adds && !focused && <NewTake next={next} />}
       {waiting && (
         <span className="take-at">
-          <button type="button" className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued" onClick={() => store.watchTake(name)}>
+          <button type="button" className="take making" title="Queued">
             …
           </button>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
@@ -228,12 +234,34 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
           </button>
         </span>
       )}
+      {pending.map((take) => {
+        // One that failed stays, red, its error a click away, until it's deleted (cl-954).
+        const failed = take.failure ? take.failure.message.replace(`${name}: `, "") : undefined
+        const state = failed !== undefined ? "failed" : take.run !== undefined ? "running" : "queued"
+        return (
+          <span key={take.id} className="take-at">
+            <button type="button" className={`take making ${state === "failed" ? "failed" : ""} ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} data-state={state} title={failed !== undefined ? `Didn't render: ${failed}` : take.run !== undefined ? `Run ${take.run}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
+              <span className={`state-dot ${state}`} role="img" aria-label={state === "failed" ? "Failed" : state === "running" ? "Rendering" : "Queued"} />
+              {failed !== undefined ? <span className="take-failed">Failed</span> : take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
+            </button>
+            {failed !== undefined ? (
+              <button type="button" className="take-off" aria-label="Delete this failed take" title="Delete" onClick={() => store.cancelTake(name, take)}>
+                <Icon name="trash" />
+              </button>
+            ) : (
+              <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
+                <Icon name="close" />
+              </button>
+            )}
+          </span>
+        )
+      })}
       {making.map((run) => (
         <span key={run} className="take-at">
-          <button type="button" className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`} onClick={() => store.watchTake(name, run)}>
+          <button type="button" className="take making" title={`Run ${run}`}>
             <TakeProgress view={view} run={run} />
           </button>
-          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(name, run)}>
+          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelTake(name, { id: "", run })}>
             <Icon name="close" />
           </button>
         </span>
@@ -248,6 +276,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
             aria-pressed={shown?.number === version.number}
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : "", asset.unseen?.includes(version.number) ? "not looked at yet" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
+            data-take-id={version.id || undefined}
             style={asset.kind === "image" ? { height: 100, width: Math.min(220, 100 * (version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5)), aspectRatio: "auto" } : undefined}
             onClick={() => pick(version.number)}
             onDoubleClick={() => store.toggleApproved(name, version.number)}
@@ -281,104 +310,6 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
     </div>
   ) : (
     row
-  )
-}
-
-/** The machines still held, by name: a take's latents on any other went with it. */
-function useHeld(): Set<string> | null {
-  const { client } = useConnection()
-  const { data } = useQuery(machinesQuery(client))
-  return data ? new Set(data.machines.filter((machine) => machine.state !== "ended" && machine.state !== "ending").map((machine) => machine.name)) : null
-}
-
-/**
- * Pick up from here: on one of its takes, or on another box's take let go on it. Scrub to a frame, and a render keeps that take up to where it can
- * really cut, and makes the rest again from its words, which stay as they are. The pickup goes with that one render, and is never written.
- */
-function PickUp({ view, name }: { view: ElementView; name: string }) {
-  const store = useCanvasStore()
-  const tools = useSignal(store.tools)
-  const held = useHeld()
-  const [beatsFrom, setBeatsFrom] = useState<number | null>(null)
-  const tool = tools.get(view.asset?.tool ?? "")
-  const other = view.pickingUp
-  const own = shownOf(view)
-  const file = other ? store.fileOf(other.take, name) : own
-  if (!makes(view) || !tool?.pickup || (view.hereWords && !other) || file?.field !== "video" || !file.duration_ms) return null
-  const number = other ? other.number : own?.number
-  if (number === undefined) return null
-  const fps = file.fps ?? FPS
-  const last = framesIn(file.duration_ms, fps)
-  const frame = Math.min(last, Math.round((view.scrub ?? 0) * fps))
-  const cut = landsOn(frame, last, tool.pickup)
-  const go = (to: number) => {
-    const at = Math.max(0, Math.min(last, to)) / fps
-    store.patch(name, { scrub: at })
-    if (!other) store.seek(name, at)
-  }
-  const says = cut === null ? `From ${timecode(tool.pickup.first, fps)} on` : cut !== frame ? `Lands on ${timecode(cut, fps)}` : ""
-  const source = other ? store.get(other.from)?.asset : view.asset
-  const latents = source?.prefixes?.find((version) => version.number === number)?.latents
-  const gone = latents && held && !held.has(latents) ? latents : null
-  // On the beats' clock: unset, the cut's own time on this box's take, and 0 on another's.
-  const beats = tool.fields.find((field) => field.type === "group" && field.list && field.members?.some((member) => member.total))
-  const fromDefault = other ? 0 : Math.round(((cut ?? 0) / fps) * 10) / 10
-  const take = `<${other ? other.from : name}.${number}>`
-  return (
-    <div className="from-here" style={{ "--kept": `${((cut ?? 0) / last) * 100}%` } as CSSProperties} role="group" aria-label="Pick up from here">
-      {other && (
-        <div className="row pickup-of">
-          <span className="muted">From {other.from}'s take {other.number}</span>
-          <span className="sp" />
-          <button type="button" className="iconb nodrag" aria-label="Not from that take" onClick={() => store.patch(name, { pickingUp: undefined, scrub: undefined })}>
-            <Icon name="close" />
-          </button>
-        </div>
-      )}
-      {other && (
-        <div className="pickup-frame" style={{ aspectRatio: file.width && file.height ? file.width / file.height : 16 / 9 }}>
-          <WalkedFrames sha256={file.sha256} cardWidth={360} at={frame / last} />
-        </div>
-      )}
-      <input className="nodrag nopan keeps" type="range" aria-label="Where to pick up" min={0} max={last} step={1} value={frame} onChange={(event) => go(Number(event.target.value))} />
-      <div className="row">
-        <button type="button" className="iconb nodrag" aria-label="A frame back" title="A frame back" disabled={frame <= 0} onClick={() => go(frame - 1)}>
-          ‹
-        </button>
-        <span className="tc-inline">{timecode(frame, fps)}</span>
-        <button type="button" className="iconb nodrag" aria-label="A frame on" title="A frame on" disabled={frame >= last} onClick={() => go(frame + 1)}>
-          ›
-        </button>
-        {says && <span className="muted cut-says">{says}</span>}
-        <span className="sp" />
-        <button
-          type="button"
-          className="run nodrag"
-          disabled={cut === null}
-          title={cut === null ? undefined : `Keep up to ${timecode(cut, fps)} and render the rest again`}
-          onClick={() => cut !== null && store.run(name, { pickup: { take, out_frame: cut, ...(beatsFrom === null ? {} : { beats_from: beatsFrom }) } })}
-        >
-          Pick up from here
-        </button>
-      </div>
-      {beats && (
-        <label className="slide beats-from">
-          <span className="ctl-name">{beats.label} from</span>
-          <input
-            className="field nodrag"
-            type="number"
-            aria-label={`${beats.label} from, in seconds`}
-            min={0}
-            step={0.1}
-            placeholder={String(fromDefault)}
-            value={beatsFrom ?? ""}
-            onChange={(event) => setBeatsFrom(event.target.value === "" ? null : Number(event.target.value))}
-          />
-          <span className="num">s</span>
-        </label>
-      )}
-      {gone && <div className="status ood">This take's latents went with {gone}: the join may show</div>}
-    </div>
   )
 }
 
@@ -679,13 +610,19 @@ function Under({ view, name, lite }: { view: ElementView; name: string; lite: bo
   const tool = asset.tool ? tools.get(asset.tool) : undefined
   // What makes it (Paul, 11-12: "I want to see what tools are attached"): once, here, as "MiniMax H3 · Shot".
   const named = asset.tool ? (tool ? toolName(tool) : asset.tool) : null
-  const line = !lite && (named || shape)
+  // A take that went on from another box's says which (cl-951).
+  const shown = shownOf(view)
+  const made = asset.prefixes?.find((version) => version.number === shown?.number)?.pickup
+  const of = made ? store.mentionOf(bare(made.take), name) : null
+  const source = of && of.name !== store.resolveName(name) ? of.name : null
+  const line = !lite && (named || shape || source)
   if (!line && !going) return null
   return (
     <div className="tile-under">
       {line && (
         <div className="tile-line">
           {named && <span className="node-tool" title={asset.tool!}>{named}</span>}
+          {source && <span className="continues-rest" title={`Continues ${made!.take}`}>from {source}</span>}
           <span className="sp" />
           {shape && <span className="ratio-rest">{shape}</span>}
         </div>
@@ -852,6 +789,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   // On the canvas a box is its name, its picture or its text, its state and an X. All else comes with a click, so 300 boxes cost little.
   const editing = here && (asset?.kind === "image" || (asset?.kind === "video" && !asset.timeline) ? Boolean(view.hereWords) : asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
   const looking = here && asset?.kind !== "image" && !view.hereWords && paints(view, tools)
+  // An Edit in Focus is a video editor: its cut playing in the frame, its timeline under it, its versions beside it (cl-957).
+  const cut = focused && Boolean(asset?.timeline)
   // Its fields show under it, Render first (cl-938).
   const fielded = here && Boolean(asset?.tool) && (asset?.kind !== "image" || editing) && !(asset?.kind === "video" && !asset.timeline && !editing) && !looking
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
@@ -864,12 +803,12 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const imageHeight = width / originalAspect
   const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
   const style: CSSProperties & Record<`--${string}`, string | number> = focused
-    ? { width: "100%", "--focus-footer-room": `${!fielded ? 0 : (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline ? 320 : 220}px` }
+    ? { width: "100%", "--focus-footer-room": `${!fielded || cut ? 0 : (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline ? 320 : 220}px` }
     : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
   return (
     <div
       ref={self}
-      className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${cut ? "edits" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
       style={style}
@@ -941,12 +880,11 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         )}
       </div>
       )}
-      {focused && !view.placing && <FocusActions view={view} name={name} />}
-      <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text" && !(asset?.timeline && editing)}>{asset?.timeline && editing ? (
-        <TimelineControl name={name} />
-      ) : (
+      {focused && !view.placing && !cut && <FocusActions view={view} name={name} />}
+      {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text"} under={focused && asset?.kind === "video" && !asset.timeline && !editing ? <Segments name={name} view={view} /> : undefined}>
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
+          {here && editing && view.continuing && <LeadIn name={name} view={view} />}
           {here && !focused && !view.hereWords && asset && shownVersion?.main && (
             <div
               className="take-out nodrag nopan"
@@ -958,9 +896,10 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           )}
           {asset && !view.placing && !lite && (!focused || view.hereWords) && <Corner name={name} view={view} width={width} focused={focused} />}
         </Media>
-      )}</FocusFrame>
+      </FocusFrame>}
       {rendering && <span className="render-wave" aria-hidden="true" />}
-      {focused && asset?.kind === "video" && !asset.timeline && !editing && <VideoScrub name={name} view={view} />}
+      {/* Watched, not written: orbit viewing turns on and off here too (xs-180), as in a take being written. */}
+      {focused && asset?.kind === "video" && !asset.timeline && !editing && <OrbitToggle view={view} name={name} />}
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {!here && !focused && <Under view={view} name={name} lite={lite} />}
@@ -971,13 +910,12 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           <Asking name={name} fit={view.asking.fit} />
         </div>
       )}
-      {here && asset && asset.kind !== "text" && !asset.timeline && <Takes view={view} name={name} width={width} side focused={focused} />}
-      {here && asset && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
+      {here && asset && asset.kind !== "text" && (!asset.timeline || cut) && <Takes view={view} name={name} width={width} side focused={focused} />}
+      {here && asset && !cut && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
             {(asset.kind !== "text" || asset.tool) && <>
-              {asset.timeline && <Takes view={view} name={name} width={width} />}
-              {asset.kind !== "image" && !asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
+              {editing && asset.kind === "video" && !asset.timeline && <ContinueFrom name={name} view={view} />}
               {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
@@ -1009,9 +947,11 @@ export function Card({ data }: NodeProps<ElementNode>) {
   const resting = useRef(view)
   if (focused !== data.name) resting.current = view
   if (focused === data.name && !entering) return <div className="focus-placeholder" style={{ width: view ? bodyWidth(view, data.width) : data.width, height: view ? heightFor(view, data.width) : 1 }} />
+  // While the canvas draws in on it, the box as it rested: the open box is Focus's alone.
+  const atRest = focused === data.name && entering && resting.current ? { ...resting.current, here: undefined, hereWords: undefined } : undefined
   return (
     <>
-      <CardBody name={data.name} width={data.width} snapshot={focused === data.name && entering ? resting.current : undefined} />
+      <CardBody name={data.name} width={data.width} snapshot={atRest} />
       <AddOns name={data.name} />
     </>
   )

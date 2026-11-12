@@ -16,7 +16,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
+const { projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, addBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -305,6 +305,8 @@ function audit({ floor, fitted = true }) {
 /** Where nothing is drawn, the pointer finds the canvas: no box, column, panel or wrapper takes it unseen. Each point of `around` (else the
  *  window) `step` pixels apart. Self-contained: it runs in the page. */
 function emptyHits({ around, step }) {
+  // Focus covers the canvas, and a press on its background leaves it (cl-893): no point of it is the canvas's.
+  if (document.querySelector('[data-focused-asset]')) return [];
   const alpha = (color) => {
     const m = color.match(/rgba?\(([^)]+)\)/);
     const parts = m ? m[1].split(/[ ,/]+/).filter(Boolean) : [];
@@ -554,39 +556,6 @@ async function drawnEdges(page, decoder, label) {
   return said;
 }
 
-/** A real pane point, with both ends of the existing drag inside the viewport. */
-function panPoint() {
-  const side = document.querySelector('.card.here > .here-side:not(:empty)')?.getBoundingClientRect() ?? document.querySelector('.card.here > .media')?.getBoundingClientRect();
-  const bare = (x, y) => x >= 80 && y >= 60 && x <= innerWidth - 20 && y <= innerHeight - 20 && document.elementFromPoint(x, y)?.classList.contains('react-flow__pane');
-  if (side) {
-    const y = Math.max(60, Math.min(innerHeight - 20, side.top + side.height * 0.8));
-    for (let x = side.right + 30; x <= innerWidth - 20; x += 20) if (bare(x, y)) return { x, y };
-    for (let x = side.left - 30; x >= 80; x -= 20) if (bare(x, y)) return { x, y };
-  }
-  for (let y = 60; y <= innerHeight - 20; y += 20) for (let x = 80; x <= innerWidth - 20; x += 20) if (bare(x, y)) return { x, y };
-  return null;
-}
-
-async function panCanvas(page) {
-  let from = await page.evaluate(panPoint);
-  const fitted = !from;
-  if (!from) {
-    await fitCanvas(page);
-    from = await page.evaluate(panPoint);
-  }
-  if (!from) return { from, fitted, reason: 'no in-viewport pane point after actual Zoom to fit' };
-  await page.mouse.move(from.x, from.y);
-  const hit = await page.evaluate(({ x, y }) => x >= 80 && y >= 60 && x <= innerWidth - 20 && y <= innerHeight - 20 && document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), from);
-  if (!hit) return { from: null, fitted, reason: 'the chosen pane point no longer hits the canvas before its drag' };
-  const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
-  const before = await viewport();
-  await page.mouse.down();
-  try { await page.mouse.move(from.x - 60, from.y - 40, { steps: 6 }); }
-  finally { await page.mouse.up(); }
-  await settled(page);
-  return { from, fitted, before, after: await viewport() };
-}
-
 /** Compare the outline references near each edge, and the original with the bare capture outside it. Runs in the decoder's page. */
 async function edgesOf({ shown, bare, black, white, clip, frame }) {
   const read = async (base64) => {
@@ -687,49 +656,23 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
   }
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   seen.ran = local;
-  importYaml(folder, `${yamlOf(folder).trimEnd()}
-  style:
-    text: Bright, hand-painted, cel-shaded, with soft light and long shadows across every surface, and the sea always in the distance.
-  still:
-    video: <clip>
-    at: 0.5
-    tool: cozy/frame
-  edit:
-    tool: cozy/edit
-    tracks:
-      - clips:
-          - <clip>
-          - <clip_b>
-  odd: {kind: widget}
-${local ? `  card:
-    tool: ${drawPy}/draw
-    instructions: <style> <hero_art> stands on the shore, with <clip> playing behind and a long line of words that runs past the frame's edge.
-  posed:
-    tool: ${drawPy}/draw
-    instructions: <hero_art>, posed.
-    lora: [{ref: hf://someone/wushu-style-lora, strength: 0.8}, {ref: hf://someone/ink-wash-with-a-long-name, strength: 0.6}]
-  shot:
-    tool: ${shotsPy}/shoot
-    summary: |
-      <hero_art> looks hard at <clip>.
-    beats:
-      - duration: 4
-        description: |
-          <wide_art> waits on the shore.
-      - duration: 3
-        description: |
-          It goes on, and on.
-  broken:
-    tool: ${shotsPy}/crash
-    plate: <clip>
-    crash: the fixture's own failure, said in full so it wraps
-  making:
-    tool: ${shotsPy}/scenes
-    plate: <clip>
-    summary: <hero_art> walks the shore, segment after segment, as the tide comes in and the light goes long across the sand.
-    segments: 600
-    each: 5
-` : ''}`);
+  // A tool Calcifer hasn't read yet is given the kind it makes. `kind` and `at` below `fields` are a field of that name: odd's own, and cozy/frame's
+  // time in its clip.
+  addBoxes(folder, [
+    { name: 'style', fields: { text: 'Bright, hand-painted, cel-shaded, with soft light and long shadows across every surface, and the sea always in the distance.' } },
+    { name: 'still', tool: 'cozy/frame', kind: 'image', fields: { video: '<clip>', at: 0.5 } },
+    { name: 'edit', tool: 'cozy/edit', fields: { tracks: [{ clips: ['<clip>', '<clip_b>'] }] } },
+    { name: 'odd', kind: 'image', fields: { kind: 'widget' } },
+    ...(local ? [
+      { name: 'card', tool: `${drawPy}/draw`, kind: 'image', fields: { instructions: "<style> <hero_art> stands on the shore, with <clip> playing behind and a long line of words that runs past the frame's edge." } },
+      // Its add-ons are hand-written, for a tool that loads no model: made with no tool, which nothing checks them against, and given it after.
+      { name: 'posed', kind: 'image', fields: { instructions: '<hero_art>, posed.', lora: [{ ref: 'hf://someone/wushu-style-lora', strength: 0.8 }, { ref: 'hf://someone/ink-wash-with-a-long-name', strength: 0.6 }] } },
+      { name: 'shot', tool: `${shotsPy}/shoot`, kind: 'video', fields: { summary: '<hero_art> looks hard at <clip>.', beats: [{ duration: 4, description: '<wide_art> waits on the shore.' }, { duration: 3, description: 'It goes on, and on.' }] } },
+      { name: 'broken', tool: `${shotsPy}/crash`, kind: 'video', fields: { plate: '<clip>', crash: "the fixture's own failure, said in full so it wraps" } },
+      { name: 'making', tool: `${shotsPy}/scenes`, kind: 'video', fields: { plate: '<clip>', summary: '<hero_art> walks the shore, segment after segment, as the tide comes in and the light goes long across the sand.', segments: 600, each: 5 } },
+    ] : []),
+  ]);
+  if (local) projectJson(folder, 'PATCH', '/assets/posed', { tool: `${drawPy}/draw` });
   names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken', 'making'] : [])];
   await placed();
   const render = async (asset, wait = true) => {
@@ -738,7 +681,7 @@ ${local ? `  card:
   };
   // Takes: the frame thrice, the Edit once, and where this computer runs, many of the picture tool's, the shot's two and a failure.
   for (const at of [0.2, 0.5, 0.8]) {
-    importYaml(folder, yamlOf(folder).replace(/(\n  still:\n    video: <clip>\n    at: )[\d.]+/, `$1${at}`));
+    projectJson(folder, 'PATCH', '/assets/still', { fields: { at } });
     await render('still');
   }
   await render('edit');
@@ -856,13 +799,14 @@ ${local ? `  card:
         const top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0;
         const viewport = document.querySelector('.react-flow__viewport');
         const transform = viewport ? getComputedStyle(viewport).transform : null;
-        const progress = media?.querySelector('.prog b');
+        // Its render's lines, under the picture at rest (cl-932): the machine and its time, then what it's doing.
+        const progress = media?.closest('.card')?.querySelector(':scope > .tile-under .prog .face-state b');
         const visibility = { opacityProperty: true, visibilityProperty: true };
         const rendered = Boolean(media?.checkVisibility?.(visibility));
         const inBounds = Boolean(rect && rect.width && rect.height && rect.left >= left && rect.top >= top && rect.right <= innerWidth && rect.bottom <= innerHeight);
         const progressVisible = Boolean(progress?.checkVisibility?.(visibility));
         // Its state line (cl-898): `Segment 3 of 600: Denoising - Step 2 / 5`.
-        const text = media?.querySelector('.prog .face-stage')?.innerText || (progress?.innerText ?? null);
+        const text = progress?.innerText ?? null;
         let reason = null;
         if (!media) reason = 'missing-media';
         else if (!rendered) reason = 'hidden-media';
@@ -983,13 +927,14 @@ ${local ? `  card:
     await look('note', true);
     await page.locator('.notes .note button', { hasText: 'Undo' }).first().click();
     await closeBox(page);
-    // Zoomed with a box open, by the wheel, the zoom control and the keys: what's under it stays one block with its picture and takes. Then a
-    // drag from beside its takes, where nothing's drawn, pans the canvas.
+    // Zoomed in Focus, by the wheel, its picture's − and + and the keys: Focus zooms its own picture (cl-893; the canvas's zoom is
+    // Wander's, hidden over Focus), and what's around it stays laid out; Shift+1 fits the picture again.
     for (const asset of [many, 'wide_art', 'tall_art']) {
       await openBox(page, asset);
       await settled(page);
+      const viewer = page.locator(`[data-focused-asset="${asset}"] .focus-viewer`);
       const wheel = async (dy) => {
-        const at = await page.locator(`.card.here[data-asset="${asset}"] > .media`).boundingBox();
+        const at = await viewer.boundingBox();
         await page.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
         await page.keyboard.down('Control');
         for (let i = 0; i < 3; i++) await page.mouse.wheel(0, dy);
@@ -998,8 +943,8 @@ ${local ? `  card:
       for (const [step, act] of [
         ['wheel-out', () => wheel(120)],
         ['wheel-in', () => wheel(-160)],
-        ['control-out', () => page.click('button[aria-label="Zoom out"]')],
-        ['control-in', () => page.click('button[aria-label="Zoom in"]')],
+        ['control-out', () => page.click('button[aria-label="Zoom out image"]')],
+        ['control-in', () => page.click('button[aria-label="Zoom in image"]')],
         ['key-out', () => page.keyboard.press('Control+Minus')],
         ['key-in', () => page.keyboard.press('Control+Equal')],
       ]) {
@@ -1007,12 +952,8 @@ ${local ? `  card:
         await settled(page);
         await look(`zoom-${asset}-${step}`, step.endsWith('out'), false);
       }
-      // Manual zoom may crop. A drag still needs a visible pane, and explicit fit gets its own unchanged chrome audit.
-      const panned = await panCanvas(page);
-      (seen.pan_targets ??= []).push({ size: size.name, asset, ...panned });
-      if (!panned.from) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'pan-target', at: `beside <${asset}>'s takes`, what: panned.reason });
-      else if (panned.after === panned.before) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'drag-no-pan', at: `beside <${asset}>'s takes`, what: `a drag from ${Math.round(panned.from.x)},${Math.round(panned.from.y)} left the canvas where it was` });
-      await fitCanvas(page);
+      await page.keyboard.press('Shift+1');
+      await settled(page);
       await look(`fit-${asset}`, true);
       await closeBox(page);
     }
@@ -1085,8 +1026,9 @@ ${local ? `  card:
     const many = names.includes('card') ? 'card' : 'still';
     await openBox(page, many);
     await edges(`open-${many}`);
+    // Open, a box is Focus: its keys zoom its picture, as the canvas's do in Wander (cl-893).
     for (const step of ['out', 'out-again']) {
-      await page.click('button[aria-label="Zoom out"]');
+      await page.keyboard.press('Control+Minus');
       await settled(page);
       await edges(`open-${many}-zoomed-${step}`);
     }

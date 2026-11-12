@@ -732,7 +732,9 @@ jobs:
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          # local-code's isolated Hub pins Runtime 0.45.0 / TensorFS 0.24.1: runtime_floor's machine moves there, held by nothing (cl-952).
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
+            ${{ matrix.shard == 'local-code' && '--software 0.45.0,0.24.1' || '' }} \
             --command .creator/e2e/isolated.sh -- cli \
             --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       # cozy's logs (Calcifer's too) however the suite ended: one the job's timeout ends never reaches its `logs` part (cl-837).

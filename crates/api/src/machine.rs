@@ -466,6 +466,8 @@ pub struct InputFile {
 /// component with tensors under every name. Of Hub checkpoints the machine holds only headers and
 /// trees: their components stay the Hub's.
 pub const BASE: &str = "base";
+/// A weights upload's choice `add:<component>/<path>`: a file it adds to the checkpoint as that component's asset.
+pub const ADD: &str = "add:";
 
 /// One model slot's choice, by name (th-245: the machine resolves it at the Hub). A Hub model is
 /// `repository` at `release` (empty: the newest) in `lane`, else in the lane the Hub picks for
@@ -510,7 +512,8 @@ pub struct Adapter {
     pub lane: String,
     /// `sha256:<hex>`, a commit of `model` by hash; else `model` at `release`, `lane`.
     pub manifest: String,
-    /// Canonical decimal; empty means 1.
+    /// Canonical decimal; empty means 1. Calcifer gives a LoRA it was given without a strength its
+    /// recommended one first.
     pub scale: String,
     /// A provider source (`civitai://<version>`, `hf://…`) made here and normalized at ingest,
     /// under these reviewed `profiles` (none: the one its headers select); never with `model`.
@@ -1097,8 +1100,14 @@ pub struct StuckProcess {
     pub command: String,
     /// The kernel function it sleeps in; empty when the kernel hides it.
     pub wchan: String,
-    /// When the machine found it stuck.
+    /// When it was killed.
     pub since_unix_ms: i64,
+    /// Its resident host memory then.
+    pub resident_bytes: u64,
+    /// The GPUs (by index) out of service while it holds their memory, nothing placed on them until it exits (cl-935).
+    pub gpus: Vec<u32>,
+    /// What the driver showed it holding on them.
+    pub gpu_bytes: u64,
 }
 
 /// A starting machine's step and a counter that advances as it moves.
@@ -1214,6 +1223,10 @@ pub struct Gpu {
     /// TensorD's page accounting of its memory manager on it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<GpuMemory>,
+    /// Why nothing is placed on it now (cl-935): its memory held by a process stuck in the kernel, or in use at the
+    /// machine's start by processes it doesn't run. Empty: in service.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub out_of_service: String,
 }
 
 /// A GPU's page accounting, as its memory manager holds it now.

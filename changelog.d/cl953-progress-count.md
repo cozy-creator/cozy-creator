@@ -1,0 +1,1 @@
+A render's two progress lines always show their numbers. On a narrow box the words give way with an ellipsis, while the count and rate ("Frame 3 / 12", "2GB / 7GB - 100 MBps") and the time ("3s / 2m 5s") never do. This applies on the canvas and in Focus.

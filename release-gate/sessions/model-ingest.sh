@@ -30,7 +30,9 @@
 #              the checkout's code, else the Hub's package. Outputs are in the session's artifact.
 #   version    the release (required unless held)    tags, family   set with `model edit` / `lora edit`
 #   hold       true: commits only, private, never published
-# tensord: true makes this session's cozy (a dev build: `cozy` = its run id) the pod's TensorD first. A Civitai source
+# tensord: true makes this session's cozy (a dev build: `cozy` = its run id) the pod's TensorD first; runtime: true
+# installs this session's RUNTIME_WHEEL (dispatched from rc/<x>, or runtime_ref) there too, for a package tree that
+# needs a Runtime no release has. A Civitai source
 # that needs an account reads CIVITAI_TOKEN, the release-gate secret pod-session.yaml gives Calcifer. A failed item
 # stays private and the next goes on; the session fails if any did.
 . "$(dirname "$0")/lib.sh"
@@ -39,8 +41,9 @@ FUNCTION=$(param function ask) SLOT=$(param slot model)
 REQUEST=$(param request '{"prompt": "First, what is 17 + 25? Give just the number. Then describe this picture in two sentences.", "max_tokens": 160, "temperature": 0.7, "top_p": 0.8, "presence_penalty": 1.5, "seed": 0}')
 EXPECT=$(param expect 42) ASSET=$(param asset images) IMG=$REF/seed.jpg GATE=$(param gate true)
 MIRRORS=$(param mirrors '')
+printf 'checkpoint  sha256:%064d\ncheckpoint  _/x@sha256:%064d\nrun 5 · x\nrun      17999\n' 1 7 > "$OUT/probe.txt"
+[ "$(made probe)" = "sha256:$(printf '%064d' 7)" ] && [ "$(runno probe)" = 17999 ] || fail "parsers"
 trees=("$PACKAGES"/*/)
-made() { awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
 lane_of() { model_details "$1" 2>/dev/null | jq -r --arg c "$2" '.checkpoints[]? | select(.checkpoint==$c) | .lane'; }
 # released <model> <release> <lane>: that release's checkpoint in that lane.
 released() {
@@ -145,6 +148,11 @@ if [ -n "$MIRRORS" ]; then
     step update machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod's TensorD"
     cozy machine show "$NAME" > "$OUT/show-update.txt" 2>&1; grep -E '^(version|runtime|tensorfs) ' "$OUT/show-update.txt" | tee -a "$R"
   fi
+  if [ "$(param runtime false)" = true ]; then
+    [ -n "${RUNTIME_WHEEL:-}" ] || fail "runtime: true, and this session has no RUNTIME_WHEEL (dispatch from rc/<x>, or runtime_ref)"
+    step runtime machine update "$NAME" --runtime "$RUNTIME_WHEEL" -y || fail "the pod's Runtime"
+    cozy machine show "$NAME" 2>&1 | grep -E '^runtime ' | tee -a "$R"
+  fi
   failed=()
   for ((i = 0; i < n; i++)); do mirror "$i" || failed+=("$(jq -r ".[$i].model" <<<"$MIRRORS")"); done
   [ "${#failed[@]}" = 0 ] || fail "not mirrored: ${failed[*]}; their commits stay private"
@@ -183,8 +191,6 @@ for p in $GIVEN; do
   if [ "$l" = bf16 ]; then BF16[$m]=$c; else LANE[$m/$l]=$c; fi
   say "$m $l $c (have)"
 done
-printf 'commit   _/x@sha256:%064d\nrun 5 · x\nrun      17999\n' 7 > "$OUT/probe.txt"
-[ "$(made probe)" = "sha256:$(printf '%064d' 7)" ] && [ "$(runno probe)" = 17999 ] || fail "parsers"
 quote 7200
 rent
 

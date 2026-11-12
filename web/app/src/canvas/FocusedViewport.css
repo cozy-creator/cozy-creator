@@ -71,6 +71,16 @@
   padding: 8px 14px;
   font-size: 19px;
 }
+/* Its × as tall as Back to canvas, its cross readable (cl-963). */
+.focus-heading > .iconb {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+}
+.focus-heading > .iconb .icon {
+  width: 24px;
+  height: 24px;
+}
 .focus-body {
   flex: 1;
   min-width: 0;
@@ -162,6 +172,18 @@
 }
 .focus-card .image-tool-name {
   font-size: 20px;
+}
+/* Its trash can a control of its own: 36 square, the can readable (cl-963). */
+.focus-card .image-tool > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+}
+.focus-card .image-tool .icon {
+  width: 20px;
+  height: 20px;
 }
 .focus-card .image-models {
   min-height: 40px;
@@ -260,35 +282,63 @@ body:has(.focus-viewport) .zoom {
   width: 26px;
   height: 26px;
 }
-/* A video in Focus: its scrubber and Pick up from here, under it (cl-933). */
-.focus-viewport .video-scrub {
+/* What's right under the frame, at its right edge: a video's Pick up from here (cl-950). */
+.focus-stack {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px 0 0;
+  align-items: center;
+  min-width: 0;
+  min-height: 0;
 }
-.focus-viewport .video-scrub input[type="range"] {
-  width: 100%;
-  accent-color: var(--ember);
+.focus-under {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  position: relative;
+  z-index: 8;
 }
-.focus-viewport .video-scrub .row {
+/* A take's segments under its player (cl-951): blocks by their frames, the one it's in marked, then Redo. */
+.segments {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
 }
-/* Small, a word's size, and under the player, never over it (Paul, 11-12). */
-.focus-viewport .video-scrub .pick-up {
-  flex: none;
-  padding: 2px 8px;
+.segment-blocks {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+  height: 28px;
+}
+.segment {
+  flex-basis: 0;
+  min-width: 18px;
   border: 1px solid var(--line);
-  border-radius: var(--round);
-  background: var(--card);
-  color: var(--ink);
-  font: 12px / 1.3 var(--sans);
+  border-radius: 4px;
+  background: var(--well);
+  color: var(--mute);
+  font-size: var(--body);
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
-.focus-viewport .video-scrub .pick-up:hover {
+.segment:hover {
   border-color: var(--line2);
+}
+.segment.here {
+  border: 2px solid var(--ember);
+  background: color-mix(in srgb, var(--ember) 40%, var(--card));
+  color: var(--ink);
+  font-weight: 600;
+}
+.segments .continues {
+  flex: none;
+  font-size: var(--body);
+  white-space: nowrap;
+}
+.redo-segment {
+  flex: none;
 }
 .image-tool-name {
   flex: 1;

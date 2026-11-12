@@ -1,5 +1,5 @@
 // See it, in a real browser on a real Calcifer (project-web-ui §4, §8; web-ui.md §2): a project as a live graph. Files from `cozy
-// import` and blocks of an export edited and imported (the import API) show with no reload: elements of every kind, with no edges, each placed once, left
+// import` and boxes another writer makes through the project API show with no reload: elements of every kind, with no edges, each placed once, left
 // to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. A video's poster isn't its black first frame; a rest
 // on its box, or on a take, plays its preview, made as it landed, which leaving or a pan stops; playing is Range with ?media=, at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
@@ -15,7 +15,7 @@ const { exec } = require('child_process');
 const { existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { homedir, tmpdir } = require('os');
 const { basename, join } = require('path');
-const { projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, importYaml, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, summary, until, watchBoxes, wav, yamlOf } = require('./page');
+const { projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, addBoxes, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, storedOf, summary, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -153,8 +153,6 @@ async function rest(page, handle) {
   const state = () => api(`/v1/projects/${id}`);
   const folder = (await state()).path;
   seen.project = { id, folder };
-  // The project as the YAML export API writes it; a hand's edit of it goes back by the import API (cl-803: its state is project.db).
-  const yaml = () => yamlOf(folder);
   await page.evaluate(() => { window.notReloaded = true; });
   const notReloaded = () => page.evaluate(() => window.notReloaded === true);
   const asset = async (name) => (await state()).assets.find((held) => held.name === name);
@@ -177,45 +175,22 @@ async function rest(page, handle) {
   const prefix = imported.hero_art.replace('sha256:', '').slice(0, 12);
   const olderPrefix = imported.older_art.replace('sha256:', '').slice(0, 12);
 
-  // An edit in an editor: a shot with beats, a cut, a frame, a character, what can't be made, and a warning.
+  // Another writer's boxes: a shot with beats, a cut, a frame, a character, what can't be made, and a warning. A tool no package makes, and
+  // Calcifer's frame, are given the kind they make.
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   const draw = join(__dirname, '..', 'project', 'draw.py');
-  importYaml(folder, `${yaml().trimEnd()}
-  shot:
-    summary: |
-      <hero> looks hard at <clip>.
-    tool: see-no-such-package/shoot
-    beats:
-      - duration: 4
-        description: |
-          <older> waits on the shore.
-      - duration: 3
-        description: |
-          It goes on.
-  picture:
-    video: <clip>
-    at: 0.5
-    tool: cozy/frame
-  edit:
-    tool: cozy/edit
-    tracks:
-      - clips:
-          - <clip>
-          - <clip_b>
-  odd: {approved: "${prefix}"}
-  hollow_thing:
-    instructions: Nothing makes this.
-  needs:
-    video: <hollow_thing>
-    tool: cozy/frame
-${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/draw\n` : ''}
-  hero:
-    approved: "${prefix}"
-    description: A hero of few words.
-  older:
-    approved: "${olderPrefix}"
-    description: The same hero, older.
-`);
+  // What a box reads is made before it, so each lands to the right of what it reads.
+  addBoxes(folder, [
+    { name: 'hero', kind: 'image', fields: { approved: prefix, description: 'A hero of few words.' } },
+    { name: 'older', kind: 'image', fields: { approved: olderPrefix, description: 'The same hero, older.' } },
+    { name: 'shot', tool: 'see-no-such-package/shoot', kind: 'image', fields: { summary: '<hero> looks hard at <clip>.', beats: [{ duration: 4, description: '<older> waits on the shore.' }, { duration: 3, description: 'It goes on.' }] } },
+    { name: 'picture', tool: 'cozy/frame', kind: 'image', fields: { video: '<clip>', at: 0.5 } },
+    { name: 'edit', tool: 'cozy/edit', fields: { tracks: [{ clips: ['<clip>', '<clip_b>'] }] } },
+    { name: 'odd', kind: 'image', fields: { approved: prefix } },
+    { name: 'hollow_thing', fields: { text: 'Nothing makes this.' } },
+    { name: 'needs', tool: 'cozy/frame', kind: 'image', fields: { video: '<hollow_thing>' } },
+    ...(local ? [{ name: 'card', tool: `${draw}/draw`, fields: { instructions: 'A still of one colour.' } }] : []),
+  ]);
   const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'dark_open', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'hero', 'older', ...(local ? ['card'] : [])];
 
   // Every name is placed once and its row written, with no reload.
@@ -240,15 +215,15 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('wire_warns_of_nothing_here', !read.warnings?.some((said) => said.name === 'hollow_thing'), read.warnings);
   check('wire_description', of('hero').fields?.description?.includes('few words'), of('hero').fields);
 
-  // Elements of every kind, each by what it is.
-  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', picture: 'frame', edit: 'edit' };
+  // Elements of every kind, each by what it is: a file is the container of its kind (Image, Audio, Video: cl-893, d49ac60ec).
+  const kinds = { hero_art: 'image', sea_sound: 'audio', clip: 'video', picture: 'frame', edit: 'edit' };
   for (const [name, kind] of Object.entries(kinds)) check(`kind_${name}`, (await tag(page, name)) === kind, await tag(page, name));
   await away(page);
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
   await open(page, 'shot');
   await until('its beats, each a text and a slider', () => element(page, 'shot').locator('.beat input[type=range]').evaluateAll((all) => all.map((input) => input.value).join()), (text) => text === '4,3');
-  // Nothing made yet is nothing wrong: its dot is plain, as is one out of date.
-  check('dot_plain_when_nothing_made', (await element(page, 'shot').locator('.dot.s-current').count()) === 1 && (await element(page, 'shot').locator('.dot.s-missing, .dot.s-ood').count()) === 0, await element(page, 'shot').locator('.dot').getAttribute('class'));
+  // Nothing made yet is nothing wrong: no state dot, as for one out of date (a dot is queued, running, unseen or failed: cl-932).
+  check('dot_plain_when_nothing_made', (await element(page, 'shot').locator('.state-dot').count()) === 0, await element(page, 'shot').locator('.state-dot').evaluateAll((dots) => dots.map((dot) => dot.className)));
   // Drawn in on one box, the canvas holds only what's near it: the rest is read at rest.
   await away(page);
   await until('hero_art measured', () => asset('hero_art'), (held) => held.alpha === true);
@@ -306,10 +281,10 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await (await renderOf(page, 'picture')).click();
   await until('the frame landed', () => asset('picture'), (held) => held.standing === 'current' && Math.max(0, ...(held.prefixes ?? []).map((version) => version.number)) > numberBefore);
   await until('its picture shows, unreloaded', () => picture.locator('.media img').evaluateAll((images) => images.filter((image) => image.naturalWidth > 0).length), (n) => n > 0);
-  await until('its dot', () => picture.locator('.dot.s-current').count(), (n) => n === 1).catch(async (error) => {
+  await until('no dot once done', () => picture.locator('.state-dot').count(), (n) => n === 0).catch(async (error) => {
     // Which of them is behind: the page, or what Calcifer says is still to do.
     const now = await state();
-    seen.at_its_dot = { dot: await picture.locator('.dot').getAttribute('class'), queue: now.queue, busy: now.busy, standing: (await asset('picture')).standing };
+    seen.at_its_dot = { dot: await picture.locator('.state-dot').evaluateAll((dots) => dots.map((dot) => dot.className)), queue: now.queue, busy: now.busy, standing: (await asset('picture')).standing };
     throw error;
   });
   check('a_button_selects_nothing', (await page.locator('.react-flow__node.selected').count()) === 0);
@@ -370,7 +345,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   // Render stays Render, and the box stays open, saying nothing at rest of what failed.
   await page.waitForTimeout(300);
   check('render_keeps_the_box', (await page.locator('.card.here[data-asset="needs"]').count()) === 1 && (await needs.locator('button[aria-label=Render]').innerText()).trim() === 'Render', await boxLog(page));
-  await until('its dot', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
+  await until('its dot', () => needs.locator('.state-dot.failed').count(), (n) => n === 1);
   check('failed_dot', true);
   check('no_line_at_rest', (await needs.locator('.status').count()) === 0, await needs.innerText());
   const told = projectJson(folder);
@@ -382,15 +357,15 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   await page.waitForSelector('.react-flow__node');
   await page.evaluate(() => { window.notReloaded = true; });
   await open(page, 'needs');
-  await until('still marked after a reload', () => needs.locator('.dot.s-failed').count(), (n) => n === 1);
+  await until('still marked after a reload', () => needs.locator('.state-dot.failed').count(), (n) => n === 1);
   check('failure_survives_reload', (await asset('needs')).failure?.message.includes('cannot render'), (await asset('needs')).failure);
   const afterReload = await cards();
   const moved = named.filter((name) => afterReload[name].x !== beforeReload[name].x || afterReload[name].y !== beforeReload[name].y);
   check('rows_stand_after_reload', moved.length === 0, moved.map((name) => ({ name, was: beforeReload[name], now: afterReload[name] })));
   // Its text changes: the old reason no longer stands, with no reload.
-  importYaml(folder, yaml().replace('video: <hollow_thing>', 'video: <clip>'));
+  projectJson(folder, 'PATCH', '/assets/needs', { fields: { video: '<clip>' } });
   await until('the reason gone', () => asset('needs'), (held) => !held.failure);
-  await until('and from the card', () => needs.locator('.dot.s-failed').count(), (n) => n === 0);
+  await until('and from the card', () => needs.locator('.state-dot.failed').count(), (n) => n === 0);
   check('failure_gone_when_text_changes', await notReloaded());
   await away(page);
   await page.keyboard.press('f');
@@ -444,8 +419,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     check('looking_is_only_this_page', (await asset('card')).version === made.version, (await asset('card')).version);
     // A double tap on it approves it, and again unapproves it.
     await card.locator('.take[aria-label$=" 1"]').dblclick();
-    // On one of card's own lines: hero has an `approved` of its own further down.
-    await until('pinned in the file', () => Promise.resolve(yaml()), (text) => /\n {2}card:\n(?: {4}.*\n)*? {4}approved: "?[0-9a-f]/.test(text));
+    await until('pinned in the file', () => Promise.resolve(storedOf(folder).card?.approved), (approved) => /^[0-9a-f]/.test(approved ?? ''));
     await open(page, 'card');
     await until('it shows approved', () => card.locator('.take.approved').count(), (n) => n === 1);
     check('approved_is_that_version', (await asset('card')).approved === made.prefixes[0].number, (await asset('card')).approved);
@@ -492,15 +466,19 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     const hash = (name) => held.assets.find((row) => row.name === name).sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
-    // Its boxes by the import API, and each one's place by the canvas's PATCH, as the page moves them.
-    let text = 'version: 4\nassets:\n';
+    // Its boxes by the project API, of the kind of the file each approves (no package makes their tool), and each one's place by the
+    // canvas's PATCH, as the page moves them.
     const placed = {};
     for (let i = 0; i < COUNT; i++) {
       const reads = [1 + (i % 7), perRow + (i % 3)].filter((back) => i - back >= 0).map((back) => `<n${i - back}>`);
-      text += `  n${i}:\n    ${i % 5 ? `approved: "${hash('a_picture')}"` : `approved: "${hash('a_video')}"`}\n    tool: see-no-such-package/draw\n    instructions: from ${reads.join(' and ') || 'nothing'}\n`;
+      const file = i % 5 ? 'a_picture' : 'a_video';
+      const box = { name: `n${i}`, exact: true, tool: 'see-no-such-package/draw', kind: file === 'a_picture' ? 'image' : 'video', fields: { approved: hash(file), instructions: `from ${reads.join(' and ') || 'nothing'}` } };
+      const madeBox = await api(`/v1/projects/${made.id}/assets`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(box) });
+      if (madeBox?.name !== box.name) throw new Error(`n${i}: ${JSON.stringify(madeBox)}`);
       placed[`n${i}`] = { x: (i % perRow) * 304, y: Math.floor(i / perRow) * 240, w: 240 };
     }
-    importYaml(big, text);
+    // The files' own boxes go: the 300 approve their files.
+    for (const name of ['a_picture', 'a_video']) await api(`/v1/projects/${made.id}/assets/${name}`, { method: 'DELETE' });
     await api(`/v1/projects/${made.id}/canvas`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cards: placed }) });
     const began = Date.now();
     const bigState = await api(`/v1/projects/${made.id}`);
@@ -575,7 +553,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
       const out = [];
       let labels = 0;
       for (const { node, at, name } of boxes) {
-        for (const label of node.querySelectorAll('.nm, .add-on:not(.away), .ratio-rest, .rest-waiting, .dot')) {
+        for (const label of node.querySelectorAll('.nm, .add-on:not(.away), .ratio-rest, .rest-waiting, .state-dot')) {
           const seen = label.getBoundingClientRect();
           if (!seen.width || !seen.height || getComputedStyle(label).visibility === 'hidden') continue;
           labels += 1;

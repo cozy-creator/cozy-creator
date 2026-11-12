@@ -33,4 +33,12 @@ h3_group() {
     [[ $n != *warm* ]] || jq -e '.building == 0' <<< "$sol" >/dev/null || ok=FAIL
     expect "$n-sparse" $ok "Sol calls summed over GPUs: $sol"
   fi
+  # A pair that copies peer to peer exchanges on the copy engine: under varena its buffer never mapped (symm.empty's
+  # MemPool, refused by the pluggable allocator), so NCCL carried every exchange on Runtime 0.45.0 (cr-268).
+  route=$(jq -c '[.calls[]?.measurements.execution.transport // empty | {route, mapped: .check.mapped, reason,
+    peer: ([.pairs[]?.peer] | length > 0 and all)}] | .[0] // empty' "$n.json" 2>/dev/null)
+  if [ -n "$route" ] && jq -e '.peer' <<< "$route" >/dev/null 2>&1; then
+    ok=PASS; jq -e '.route == "copy-engine" and .mapped == true' <<< "$route" >/dev/null || ok=FAIL
+    expect "$n-exchange" $ok "peer-capable pair: $route"
+  fi
 }

@@ -89,6 +89,8 @@ class Take(msgspec.Struct):
     latents: Latents
     given: File
     warnings: list[str]
+    #: Where each segment after the first starts, on its grid (se-130).
+    seams: list[int] = []
 
 
 def _seen(value: object) -> object:
@@ -114,7 +116,8 @@ def shot(payload: Everything, out: Outputs) -> Take:
         time.sleep(1.5)
         out.publish("video", _copy(source, out), label=f"Segment {index + 1} of {payload.segments}")
     given = msgspec.json.encode(_seen(payload))
-    return Take(_copy(source, out), cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(given, media_type="application/json"), [])  # a saved file fills a Latents field: the Runtime checks its kind
+    seams = [5 * index + 2 for index in range(1, payload.segments)]
+    return Take(_copy(source, out), cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(given, media_type="application/json"), [], seams)  # a saved file fills a Latents field: the Runtime checks its kind
 
 
 def _copy(video: VideoFile, out: Outputs) -> VideoFile:

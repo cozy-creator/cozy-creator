@@ -15,6 +15,7 @@ import type { ProjectsAsk } from "../panels/Projects"
 import { RunsLink } from "../panels/runs/RunsLink"
 import type { KnownProject } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
+import logo from "../ui/logo.png"
 import { Notes } from "../ui/NoteList"
 import { pressBeganOutside } from "../ui/press"
 import { useSignal } from "../ui/signal"
@@ -161,9 +162,9 @@ function ProjectTabs({ id, readable, children }: { id: string | null; readable: 
       </nav>
       <span className="ptabs-said" ref={beside}>
         {saidOfFile.length > 0 && (
-          <Link className="sum ood" to={to("yaml")} title={noHash(saidOfFile.join("\n"))}>
+          <span className="sum ood" title={noHash(saidOfFile.join("\n"))}>
             !
-          </Link>
+          </span>
         )}
         {children}
       </span>
@@ -240,11 +241,6 @@ function MainMenu({ id }: { id: string | null }) {
         {id && (
           <Link className="tb" to={to("files")}>
             Files
-          </Link>
-        )}
-        {id && (
-          <Link className="tb" to={to("yaml")}>
-            project.yaml
           </Link>
         )}
         {id && <Link className="tb" to={to("vault")}>Project encryption</Link>}
@@ -324,7 +320,7 @@ export function Shell() {
       image.removeAttribute("src")
     }
     const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-      (["project", "canvas", "yaml"].includes(String(queryKey[0])) && queryKey[1] === id) || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
+      (["project", "canvas"].includes(String(queryKey[0])) && queryKey[1] === id) || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
     void queries.cancelQueries({ predicate: privateData })
     queries.removeQueries({ predicate: privateData })
     notes.set([])
@@ -431,6 +427,7 @@ export function Shell() {
   return (
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
+        <Link className="brand" to="/" title="Cozy Creator" aria-label="Cozy Creator home"><img src={logo} alt="" /></Link>
         <span className="history-controls" ref={setHistory} />
         <ProjectTabs id={id} readable={readable}>
           <Connectivity />

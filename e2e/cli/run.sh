@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-trash|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-unused|web-ignored|web-closes|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
+#   e2e/cli/run.sh --out DIR [--shard NAME]: NAME is a case below, or web-<cell> / projectdb-<cell> for web/<cell>.js alone
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -26,16 +26,19 @@ parse "$@"
 . "$(dirname "$0")/rental.sh"
 . "$(dirname "$0")/fallback.sh"
 . "$(dirname "$0")/previews.sh"
+. "$(dirname "$0")/released.sh"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
+. "$(dirname "$0")/oldtakes.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
 user_services
 step status; fixture_calcifer | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
-[ "$SHARD" != commands ] || version_skew
+[ "$SHARD" != commands ] || { version_skew; busy_skew; }
 step candidates; candidates
+[ "$SHARD" != commands ] || { explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 }
 
@@ -290,14 +293,101 @@ cozy --json package uninstall local/one_script --on local > /dev/null || check "
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles slot_choices old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine slow_runs prepares completions calcifer_faults calcifer_restarts update remove" ;;
-  runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
-  executors) parts="second_executor lifetime kept_preparing update remove" ;;
+  '') parts="
+    uv_at_once
+    entrypoints
+    weightless
+    script_package
+    one_name_two_paths
+    image_ratio
+    describe
+    first_run
+    previews
+    second_executor
+    lifetime
+    kept_preparing
+    catalog
+    basics
+    yaml_requests
+    run_flags
+    run_follow
+    time_left
+    broken_answers
+    run_filters
+    run_playback
+    hub_away
+    lock_refresh
+    bound_runs
+    own_references
+    no_descriptions
+    orbit_angles
+    old_runtime
+    hostile_media
+    unseen
+    local_edits
+    path_manifest
+    rental_end
+    machine_show_runs
+    writes_once
+    project_stream
+    web_serves
+    page_resend
+    queued_download
+    machines
+    local_idle
+    machine_set
+    fall_back
+    coming_machine
+    slow_runs
+    prepares
+    completions
+    calcifer_faults
+    calcifer_restarts
+    update
+    remove
+  " ;;
+  runs) parts="
+    weightless
+    describe
+    first_run
+    previews
+    run_flags
+    run_playback
+    hub_away
+    lock_refresh
+    logs
+  " ;;
+  executors) parts="
+    second_executor
+    lifetime
+    kept_preparing
+    update
+    released_project
+    remove
+  " ;;
+  # A project the newest release made, read by the candidate (cl-930).
+  released) parts="update released_project logs" ;;
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;
   entrypoints) parts="entrypoints" ;;
-  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references no_descriptions orbit_angles slot_choices old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
+  commands) parts="
+    entrypoints
+    catalog
+    basics
+    yaml_requests
+    run_filters
+    bound_runs
+    own_references
+    no_descriptions
+    orbit_angles
+    old_runtime
+    hostile_media
+    machine_show_runs
+    writes_once
+    project_stream
+    logs
+  " ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves page_resend logs" ;;
   project-stream) parts="project_stream logs" ;;
@@ -326,12 +416,6 @@ case $SHARD in
   web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
   # A box's models and LoRAs, open (web/addons.js; at rest it has no chips, cl-932).
   web-addons) export DB_WEB=addons; parts="tools_read db_existing_web logs" ;;
-  # A mention its tool can't use, crossed out and never sent (cl-944).
-  web-unused) export DB_WEB=unused; parts="tools_read db_existing_web logs" ;;
-  # What the Runtime leaves out of a raw request, with a note (cl-944).
-  web-ignored) export DB_WEB=ignored; parts="tools_read db_existing_web logs" ;;
-  # Twenty projects closed once nothing reads them, and their memory back (web/closes.js).
-  web-closes) export DB_WEB=closes; parts="tools_read db_existing_web logs" ;;
   # The right-side panel closed by a click off it (cl-929).
   web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;
   # No New on an empty box (cl-925).
@@ -350,10 +434,17 @@ case $SHARD in
   web-toasts) export DB_WEB=toasts; parts="tools_read db_existing_web logs" ;;
   # A rendering box at rest, and new takes not looked at (cl-928).
   web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
-  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it.
-  web-tiles) export DB_WEB="tiles newtakes"; parts="tools_read db_existing_web logs" ;;
+  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it; an
+  # edit's backdrop with every picture it uses (cl-949).
+  web-tiles) export DB_WEB="tiles newtakes backdrop"; parts="tools_read db_existing_web logs" ;;
   # The take looked at in Focus is the one drawn when it finishes (cl-942).
   web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
+  # A take is one id from Render to its version, listed at once and never off, through a slow Calcifer and a reload (cl-945), with cl-942's.
+  web-takeids) export DB_WEB="takeids focusfinish"; parts="tools_read db_existing_web logs" ;;
+  # A take that fails stays in its column, red, its error to read and copy, through a reload, until its trash deletes it (cl-954).
+  web-failedtakes) export DB_WEB=failedtakes; parts="tools_read db_existing_web logs" ;;
+  # A project cozy 0.24.0 made keeps every take under this cozy, and a take asked by id lands as that version (cl-945).
+  old-takes) parts="old_takes logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
   web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
   # Files dropped: twenty pictures at once, each drawn once where and as it stays (cl-918), and Place's drop, chooser, rename and moves.
@@ -363,15 +454,45 @@ case $SHARD in
   web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
   web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
   web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
-  follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
+  follow) parts="
+    script_package
+    one_name_two_paths
+    image_ratio
+    run_follow
+    time_left
+    broken_answers
+    queued_download
+    machines
+    completions
+    calcifer_faults
+    calcifer_restarts
+    logs
+  " ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
-  # computer placed on (cl-894), a new take never changing what's approved (cl-908), one not looked at (cl-928), and the take looked at in
-  # Focus drawn when it finishes (cl-942).
-  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes focusfinish prepares logs" ;;
+  # computer placed on (cl-894), a new take never changing what's approved (cl-908), one not looked at (cl-928), the take looked at in
+  # Focus drawn when it finishes (cl-942), and a take one id from Render to its version, a 0.24.0 project's takes kept (cl-945), and a 0.24.0 project opened with nothing lost (cl-904).
+  projectdb) parts="
+    projectdb
+    statedb
+    local_idle
+    machine_set
+    fall_back
+    approvals
+    newtakes
+    focusfinish
+    takeids
+    failedtakes
+    old_takes
+    prepares
+    db_migrate
+    logs
+  " ;;
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
+  # A project 0.24.0 made, opened here (cl-904, schema 3).
+  projectdb-migrate) parts="db_migrate logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;
   projectdb-palette) parts="tools_read db_existing_web logs"; DB_WEB="nodes tools" ;;
@@ -390,11 +511,35 @@ case $SHARD in
   # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a child
   # result's Latents in another package's caller (cr-276), a host path refused; then a docker rental's end, signed out,
   # with a revoked key and signed in (cl-875).
-  local-code) parts="unseen local_edits hub_dependency hub_published child_latents path_manifest rental_end logs" ;;
+  local-code) parts="
+    uv_at_once
+    unseen
+    local_edits
+    hub_dependency
+    hub_published
+    held_prerelease
+    runtime_floor
+    child_latents
+    path_manifest
+    rental_end
+    logs
+  " ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
-  control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
+  control) parts="
+    machine_show_runs
+    writes_once
+    page_resend
+    hub_away
+    broken_answers
+    logs
+  " ;;
+  # Any other web-<cell> or projectdb-<cell> runs web/<cell>.js alone, so a new cell takes no line here. A list above is one
+  # cell a line: cells added by two changes never share a line.
+  web-* | projectdb-*)
+    [ -f "$(dirname "$0")/web/${SHARD#*-}.js" ] || { echo "no cli shard $SHARD" >&2; exit 2; }
+    export DB_WEB=${SHARD#*-}; parts="tools_read db_existing_web logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
 # macOS and Windows run what's theirs: the CLI, Calcifer, paths, the service and the page, on a Hub with only packages
@@ -403,8 +548,26 @@ if [ -z "$LOCAL" ]; then
   case $SHARD in
     entrypoints | projectvault) ;;
     web-layout-* | web-scale | web-canvas) parts="db_existing_web logs" ;;
-    web-core) parts="entrypoints refusals web_native completions homebrew calcifer_faults update remove" ;;
-    *) parts="entrypoints refusals web_serves completions homebrew calcifer_faults update remove" ;;
+    web-core) parts="
+      entrypoints
+      refusals
+      web_native
+      completions
+      homebrew
+      calcifer_faults
+      update
+      remove
+    " ;;
+    *) parts="
+      entrypoints
+      refusals
+      web_serves
+      completions
+      homebrew
+      calcifer_faults
+      update
+      remove
+    " ;;
   esac
 fi
 

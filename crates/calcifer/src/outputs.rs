@@ -203,7 +203,7 @@ impl Calcifer {
         self.spawn_task(async move { me.export_run(&id, &wake).await });
     }
 
-    /// A project's run that ended: what stays on its machine, in project.lock with who holds it.
+    /// A project's run that ended: what stays on its machine, in the project's lock with who holds it.
     fn note_stays(&self, id: &RunId) {
         let Ok(Some(row)) = self.store.run(id.as_str()) else { return };
         let (Some(project), Some(machine)) = (crate::project::of_landing(&row.out_dir), &row.machine) else { return };

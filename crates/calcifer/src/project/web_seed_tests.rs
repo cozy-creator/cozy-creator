@@ -8,7 +8,7 @@ use super::{
     db,
     folder::{Asset, File, Lock, Measured},
     graph::name_key,
-    written::Written,
+    written::{Boxed, Written},
 };
 
 #[derive(Deserialize)]
@@ -16,7 +16,8 @@ use super::{
 struct Seed {
     directory: PathBuf,
     receipt: PathBuf,
-    authored: String,
+    /// Each box in order, its fields as stored.
+    boxes: Vec<Boxed>,
     assets: BTreeMap<String, Asset>,
     makes: BTreeMap<String, String>,
     files: BTreeMap<String, File>,
@@ -36,21 +37,16 @@ fn seed_current_web_project() {
     let input = PathBuf::from(std::env::var_os("COZY_WEB_SEED").expect("seed manifest"));
     let seed: Seed = serde_json::from_slice(&fs::read(input).unwrap()).unwrap();
     let directory = fs::canonicalize(&seed.directory).unwrap();
-    for name in [
-        db::DB,
-        "project.db.new",
-        "project.vault.keys.json",
-        "project.yaml",
-        "project.lock",
-        "project.canvas.yaml",
-        ".measured.json",
-    ] {
+    for name in [db::DB, "project.db.new", "project.vault.keys.json"] {
         assert!(
             !directory.join(name).exists(),
             "seed requires fresh native storage, found {name}"
         );
     }
-    let written = Written::from_yaml(&seed.authored).unwrap();
+    let written = Written {
+        boxes: seed.boxes,
+        ..Written::default()
+    };
     assert_eq!(written.boxes.len(), seed.expected_assets);
     assert_eq!(seed.cards.len(), seed.expected_assets);
     assert_eq!(

@@ -1,0 +1,1 @@
+`cozy machine end` says one truth: "shut down" once the Hub says its provider holds no pod, or why it may still bill (rental id and rate) with the next command. A machine list read while an end settled no longer shows the machine as it was before the end began, which had made `end` report `end_failed … not ended` for pods that ended.

@@ -34,13 +34,15 @@ fn usage(code: &str, message: impl Into<String>) -> Refusal {
 struct Made {
     choice: ModelChoice,
     base: Option<ModelChoice>,
+    /// Files added to the checkpoint (`--add`): choice `add:<component>/<path>`, each an `object://` source.
+    adds: Vec<ModelChoice>,
     staged: Vec<StagedInput>,
     files: Vec<InputFile>,
 }
 
 impl From<(ModelChoice, Option<StagedInput>)> for Made {
     fn from((choice, staged): (ModelChoice, Option<StagedInput>)) -> Self {
-        Self { choice, base: None, staged: staged.into_iter().collect(), files: vec![] }
+        Self { choice, base: None, adds: vec![], staged: staged.into_iter().collect(), files: vec![] }
     }
 }
 
@@ -113,6 +115,7 @@ fn folder(path: &Path, digest: Digest) -> Result<Option<Made>, Refusal> {
     Ok(Some(Made {
         choice: ModelChoice { parameter: "model".into(), source: "input://model".into(), ..Default::default() },
         base: None,
+        adds: vec![],
         staged,
         files: vec![input],
     }))
@@ -155,7 +158,7 @@ fn warm(hub: &Origin, on: On, agreed: Option<Agreed>, target: String, made: Made
     let spec = v1::RunSpec {
         kind: v1::RunKind::Warm,
         lane,
-        models: std::iter::once(made.choice).chain(made.base).collect(),
+        models: std::iter::once(made.choice).chain(made.base).chain(made.adds).collect(),
         inputs: made.files,
         weights_destination: destination,
         ..Default::default()
@@ -236,6 +239,7 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
     let mirror = ask.mirror.clone().map(|page| Mirror { source: ask.source.clone(), page, to: destination.clone() });
     if let Ok(ModelRef::Checkpoint { model: from, checkpoint }) = ModelRef::parse(&ask.source)
         && ask.base.is_none()
+        && ask.add.is_empty()
     {
         let target = format!("{from}@{checkpoint} → {destination} ({lane})");
         let record = Record::read(api, hub, ask, from, checkpoint.to_string(), said, mirror).await?;
@@ -250,7 +254,7 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
     }
     let display = |offered| After::Display { model: destination.clone(), trigger: ask.trigger.clone(), strength: ask.strength, offered };
     if let Some(reference) = ask.source.strip_prefix("run:") {
-        if ask.base.is_some() {
+        if ask.base.is_some() || !ask.add.is_empty() {
             return Err(usage("model_base_invalid", "a run's weights output uploads as it is; upload a model source on a base"));
         }
         // It runs where the weights are, whatever `on` names.
@@ -287,6 +291,14 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
         formatted(&mut made.choice, format)?;
     }
     made.base = ask.base.as_deref().map(|raw| base(raw, &lane)).transpose()?;
+    // Each added file goes to the machine as an input, and its choice `add:<component>/<path>` names where it goes.
+    for (at, held) in &ask.add {
+        let (path, digest) = held_file(held)?;
+        let length = std::fs::metadata(&path).map_err(|e| usage("model_add_invalid", format!("--add {at}: {e}")))?.len();
+        let name = Path::new(at).file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
+        made.adds.push(ModelChoice { parameter: format!("{}{at}", v1::ADD), source: format!("object://{digest}/{}", escape(&name)), ..Default::default() });
+        made.staged.push(StagedInput { path, digest, length });
+    }
     let shown = ask.name.as_deref().unwrap_or(&ask.source);
     let target = match &ask.base {
         None => format!("{shown} → {destination} ({lane})"),

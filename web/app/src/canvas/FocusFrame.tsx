@@ -13,7 +13,14 @@ export const useFocusResize = () => useContext(ResizeContext)
 const UI = "button, input, select, textarea, a, video, audio, [contenteditable], [role=slider], .tl, .orbit"
 
 /** Image-space pan/zoom never changes the Wander camera. */
-export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabled: boolean; aspect: number; fitted?: boolean; children: ReactNode }) {
+/** What sits right under the frame (a video's segments and Redo): its row's height is kept out of the fit. */
+const UNDER = 44
+/** The image zoom's − and + at the viewer's bottom left, with their gap: what the row under the frame keeps clear of. */
+const ZOOM_ROOM = 104
+
+/** `zooms`: a picture can be zoomed and panned in it; a player that's its own control (an Edit's cut, cl-957) is only fitted. */
+export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under, children }: { enabled: boolean; aspect: number; fitted?: boolean; zooms?: boolean; under?: ReactNode; children: ReactNode }) {
+  const zoomable = fitted && zooms
   const store = useCanvasStore()
   const element = useRef<HTMLDivElement>(null)
   const [room, setRoom] = useState({ width: 0, height: 0 })
@@ -24,7 +31,8 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
   cameraNow.current = camera
   const dragging = useRef<{ id: number; x: number; y: number; from: Camera } | null>(null)
   const moved = useRef(false)
-  const fitWidth = fitted && room.width && room.height ? Math.min(room.width, room.height * aspect) : room.width
+  const roomHeight = Math.max(0, room.height - (under ? UNDER : 0))
+  const fitWidth = fitted && room.width && roomHeight ? Math.min(room.width, roomHeight * aspect) : room.width
   const fitHeight = fitted && fitWidth ? fitWidth / aspect : room.height
   const width = resize?.width ?? fitWidth
   const height = resize?.height ?? fitHeight
@@ -78,8 +86,8 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
   }, [enabled, width, height, room.width, room.height, bound])
   useLayoutEffect(() => {
     if (!enabled) return
-    const by = (direction: number) => { if (fitted) zoom(direction > 0 ? 1.25 : 0.8, true) }
-    const to = (scale: number) => { if (fitted) zoom(scale) }
+    const by = (direction: number) => { if (zoomable) zoom(direction > 0 ? 1.25 : 0.8, true) }
+    const to = (scale: number) => { if (zoomable) zoom(scale) }
     store.focusZoomBy = by
     store.focusZoomTo = to
     store.focusFit = reset
@@ -88,9 +96,9 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
       if (store.focusZoomTo === to) store.focusZoomTo = undefined
       if (store.focusFit === reset) store.focusFit = undefined
     }
-  }, [enabled, fitted, store, zoom, reset])
+  }, [enabled, zoomable, store, zoom, reset])
   useLayoutEffect(() => {
-    if (!enabled || !fitted || !element.current) return
+    if (!enabled || !zoomable || !element.current) return
     const held = element.current
     const wheel = (event: WheelEvent) => {
       if ((event.target as Element).closest(UI)) return
@@ -101,7 +109,7 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
     }
     held.addEventListener("wheel", wheel, { passive: false })
     return () => held.removeEventListener("wheel", wheel)
-  }, [enabled, fitted, zoom])
+  }, [enabled, zoomable, zoom])
   if (!enabled) return <>{children}</>
   const end = (event: PointerEvent<HTMLDivElement>) => {
     if (dragging.current?.id !== event.pointerId) return
@@ -112,7 +120,7 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
     if (moved.current) { event.preventDefault(); event.stopPropagation(); moved.current = false }
   }} onPointerDown={(event) => {
     moved.current = false
-    if (resizing.current || !fitted || camera.scale <= 1 || event.button !== 0 || (event.target as Element).closest(UI) || !(event.target as Element).closest(".focus-image-transform")) return
+    if (resizing.current || !zoomable || camera.scale <= 1 || event.button !== 0 || (event.target as Element).closest(UI) || !(event.target as Element).closest(".focus-image-transform")) return
     event.preventDefault()
     dragging.current = { id: event.pointerId, x: event.clientX, y: event.clientY, from: camera }
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -123,8 +131,11 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
       setCamera(bound({ ...start.from, x: start.from.x + event.clientX - start.x, y: start.from.y + event.clientY - start.y }))
     }
   }} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
-    <div className="focus-image-transform" style={{ width: width || "100%", height: height || "100%", transform: fitted ? `translate(${shown.x}px, ${shown.y}px) scale(${shown.scale})` : "none" }}>{children}</div>
-    {fitted && <div className="focus-image-zoom" role="toolbar" aria-label="Image zoom">
+    <div className="focus-stack">
+      <div className="focus-image-transform" style={{ width: width || "100%", height: height || "100%", transform: fitted ? `translate(${shown.x}px, ${shown.y}px) scale(${shown.scale})` : "none" }}>{children}</div>
+      {under && <div className="focus-under" style={{ width: width || "100%", paddingLeft: fitted ? Math.max(0, ZOOM_ROOM - (room.width - (width || room.width)) / 2) : 0 }}>{under}</div>}
+    </div>
+    {zoomable && <div className="focus-image-zoom" role="toolbar" aria-label="Image zoom">
       <button type="button" className="tb" aria-label="Zoom out image" disabled={camera.scale <= 1} onClick={() => zoom(0.8, true)}>−</button>
       <button type="button" className="tb" aria-label="Zoom in image" disabled={camera.scale >= 8} onClick={() => zoom(1.25, true)}>+</button>
     </div>}

@@ -213,28 +213,28 @@ def check(cozy: str, toml: str, tiers: set[str], logs: list[str], source: str = 
             have.add(h)
         elif mapped[h][0] in UNREQUIRED:
             absent.append(h)
-    hidden_problems = []
-    if source:
-        listed = {h.split()[-1] for h in hidden}
-        hidden_problems = [f"no test: hidden {n} (`hide = true` in {source}; list it in [hidden])" for n in sorted(hidden_in_source(source) - listed)]
-    problems = [f"no test: {i} (map it in e2e/coverage.toml)" for i in sorted(have - set(mapped))]
-    problems += [f"stale: {i} is in e2e/coverage.toml but not in this cozy" for i in sorted(set(mapped) - have - set(absent))]
-    problems += hidden_problems
+    listed = {h.split()[-1] for h in hidden}
     seen: set[str] = set()
     for log in logs:
         for words in calls(log):
             seen |= exercised(root, words)
     due = {i for i, (tier, _) in mapped.items() if tier in tiers and i in have}
-    if logs:
-        problems += [f"did not run: {i} ({mapped[i][0]}: {mapped[i][1]})" for i in sorted(due - seen)]
+    # Each kind of problem with every id it names, so the one failing line says exactly what to fix.
+    problems = [
+        ("no line in e2e/coverage.toml", sorted(have - set(mapped))),
+        ("in e2e/coverage.toml, not in this cozy", sorted(set(mapped) - have - set(absent))),
+        (f"`hide = true` in {source}, not in coverage.toml's [hidden]", sorted(hidden_in_source(source) - listed) if source else []),
+        ("its tier's run never called it", [f"{i} ({mapped[i][0]}: {mapped[i][1]})" for i in sorted(due - seen)] if logs else []),
+    ]
     untested = sorted((i, t, s) for i, (t, s) in mapped.items() if t in UNREQUIRED and (i in have or i in absent))
     print(f"{len(have)} commands and flags; {len(due)} due in tier(s) {','.join(sorted(tiers))}; "
           f"{len(due & seen)} exercised; {len(untested)} not automated")
     for i, tier, step in untested:
         print(f"  {tier}: {i}: {step}{' (not in this build)' if i in absent else ''}")
-    for p in problems:
-        print(f"::error::coverage: {p}")
-    return 1 if problems else 0
+    said = "; ".join(f"{what}: {', '.join(names)}" for what, names in problems if names)
+    if said:
+        print(f"::error::coverage: {said}")
+    return 1 if said else 0
 
 
 def main() -> int:

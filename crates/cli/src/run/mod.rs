@@ -83,7 +83,7 @@ struct RunArgs {
     /// Override a model slot. Use --describe to list slots.
     #[arg(long = "model", value_name = "SLOT=REF", value_parser = model_override)]
     models: Vec<String>,
-    /// Apply a LoRA using `[SLOT=]REF[,STRENGTH]`. Default strength is 1.
+    /// Apply a LoRA using `[SLOT=]REF[,STRENGTH]`. Without a strength, its recommended one, else 1.
     #[arg(long = "lora", value_name = "[SLOT=]REF[,STRENGTH]")]
     loras: Vec<String>,
     /// Show the function's inputs and outputs.
@@ -465,10 +465,15 @@ fn print_functions(ctx: &Context, target: &Target) {
     let (package, release) = (&target.package, &target.release);
     let from = (target.release_from != ReleaseFrom::Local).then(|| target.release_from.to_string());
     if ctx.json {
-        output::json(&serde_json::json!({
+        let mut document = serde_json::json!({
             "package": package, "release": release, "release_from": from, "summary": target.summary,
             "functions": target.functions,
-        }));
+        });
+        // With --full, its interface document: each function's model slots and the release each names by default.
+        if ctx.full {
+            document["interface"] = target.interface.clone();
+        }
+        output::json(&document);
         return;
     }
     let mut table = output::Table::new(ctx, ["FUNCTION", "DESCRIPTION"]);

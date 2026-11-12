@@ -16,6 +16,7 @@ mod coming;
 mod eta;
 mod events;
 mod files;
+mod floor;
 mod hub;
 mod kept;
 mod lanes;
@@ -467,7 +468,7 @@ impl Calcifer {
         self: &Arc<Self>,
         key: &str,
         digest: &str,
-        submit: SubmitRun,
+        mut submit: SubmitRun,
         batch: &str,
     ) -> Result<(Submitted, Option<RunId>), Error> {
         if submit
@@ -479,6 +480,14 @@ impl Calcifer {
             return Err(Error::Invalid(
                 "a stored submission cannot contain a TensorFS token; omit tensorfs options to use this computer's Hub sign-in at send time".into(),
             ));
+        }
+        // A LoRA given without a strength runs at its recommended one: here, the one place every run is recorded.
+        if let Some(machines) = self.machines() {
+            let spec = &mut submit.spec;
+            crate::hub::models::recommended(&machines.hubs, &submit.hub, &mut spec.models).await;
+            for item in spec.set.iter_mut().flat_map(|set| set.items.iter_mut()) {
+                crate::hub::models::recommended(&machines.hubs, &submit.hub, &mut item.models).await;
+            }
         }
         let mut named = None;
         if self.store.keyed(key)?.is_none()
@@ -1430,7 +1439,9 @@ impl Calcifer {
         } else { None };
         let link = private.as_ref().unwrap_or(link);
         if private.is_some() { link.probe_private().await?; }
-        let id = run.id.as_str();
+        // Its machine knows it by the id of this attempt (cl-935).
+        let sent = run.sent_id();
+        let id = sent.as_str();
         let mut canceled = false;
         let (state, stream) = match run.state {
             State::Settled => return Ok(()),
@@ -1474,7 +1485,7 @@ impl Calcifer {
             }
         };
         pause.reset();
-        match self.store.accept(id, machine, &state)? {
+        match self.store.accept(run.id.as_str(), machine, &state)? {
             Acceptance::Fresh(events) => {
                 // Accepted, it waits no more: its in-progress event says so.
                 lock(&self.live)
@@ -1559,7 +1570,7 @@ impl Calcifer {
             {
                 self.publish(&row.id, events);
             }
-            sent.push((own, v1::RunRequest { id: row.id.to_string(), spec }));
+            sent.push((own, v1::RunRequest { id: row.sent_id(), spec }));
         }
         let at = sent.iter().position(|(own, _)| *own).expect("its own run is sent");
         let mut runs: Vec<v1::RunRequest> = sent.into_iter().map(|(_, request)| request).collect();
@@ -1622,7 +1633,7 @@ impl Calcifer {
                             return Ok(()); // ended here: its machine was lost
                         }
                         if run.cancel_requested && !canceled {
-                            link.cancel(id.as_str()).await?;
+                            link.cancel(&run.sent_id()).await?;
                             canceled = true;
                         }
                         continue;

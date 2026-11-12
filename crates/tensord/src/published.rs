@@ -1520,26 +1520,13 @@ fn forward(source: &hub::Source, named: Named) -> (Named, Option<String>) {
             releases
         }
     };
-    match newest_fix(&named.release, &releases) {
+    match api::release::newest_fix(&named.release, releases.iter().map(String::as_str), false).map(str::to_owned) {
         Some(newer) => {
             let said = format!("{} resolves to {newer}, its newest fix", named.release);
             (Named { release: newer, ..named }, Some(said))
         }
         None => (named, None),
     }
-}
-
-/// The newest of `releases` in `release`'s series and after it, when one is.
-fn newest_fix(release: &str, releases: &[String]) -> Option<String> {
-    let version = |text: &str| pep440_rs::Version::from_str(text).ok();
-    let named = version(release)?;
-    let series = &named.release()[..named.release().len().saturating_sub(1).max(1)];
-    releases
-        .iter()
-        .filter_map(|text| Some((version(text)?, text)))
-        .filter(|(v, _)| v.release().starts_with(series) && *v > named && (named.is_pre() || !v.any_prerelease()))
-        .max_by(|(a, _), (b, _)| a.cmp(b))
-        .map(|(_, text)| text.clone())
 }
 
 /// A function's main model, the one a run's `--lane` names (owner, 10-22): its first slot
@@ -1847,11 +1834,12 @@ fn apply_adapters(
     let composed = crate::adapter::compose(store, &base, &selections)
         .map_err(|e| ("model_adapter_refused", e.to_string()))?;
     // The run's record names the base model and what each LoRA adapts (`Plan::models`).
-    let adapters = (choice.adapters.iter().zip(&selections).zip(&composed.adapted))
-        .map(|((adapter, selection), components)| crate::gpu_service::Applied {
+    let adapters = (choice.adapters.iter().zip(&selections).zip(&composed.adapted).zip(&composed.layers))
+        .map(|(((adapter, selection), components), layers)| crate::gpu_service::Applied {
             model: if adapter.source.is_empty() { adapter.model.clone() } else { adapter.source.clone() },
             strength: selection.strength,
             components: components.clone(),
+            layers: *layers,
         })
         .collect();
     let warnings = (choice.adapters.iter().zip(&composed.warnings))
