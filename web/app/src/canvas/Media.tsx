@@ -652,9 +652,12 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const shown = shownOf(view)
   const watch = watched(view)
   const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined)
-  const bufferedImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watchRun: undefined, watchFrom: undefined }) : null
+  // Drawn: only the take shown, as its takes and label say, once its file is here; never another in its place (cl-942). Its neighbours,
+  // or those of what showed before a take was asked for, stay decoded.
+  const nearImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watchRun: undefined, watchFrom: undefined }) : null
+  const drawnImage = asset?.kind === "image" && shown && !shown.absent ? shown : null
   // A dropped picture shows its own bytes for as long as it shows that file: no copy of it is asked for, so nothing takes its place.
-  const own = Boolean(preview && (!preview.sha256 || !bufferedImage || hexOf(bufferedImage.sha256) === preview.sha256))
+  const own = Boolean(preview && (!preview.sha256 || !nearImage || hexOf(nearImage.sha256) === preview.sha256))
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
@@ -676,7 +679,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const clips = asset?.timeline?.tracks[0]?.clips
   const firstClip = clips?.find((clip) => clip.sha256 && !clip.missing)?.sha256
   const imageVersions = (asset?.prefixes ?? []).filter((version) => version.main?.field === "image")
-  const imageAt = imageVersions.findIndex((version) => version.main?.sha256 === bufferedImage?.sha256)
+  const imageAt = imageVersions.findIndex((version) => version.main?.sha256 === nearImage?.sha256)
   const neighbors = [1, -1, 2, -2].flatMap((offset) => {
     const next = imageVersions[imageAt + offset]?.main
     return next && !next.absent ? [next.sha256] : []
@@ -708,7 +711,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           />
         )}
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-        {bufferedImage && field === "image" && !own && <BufferedImage sha256={bufferedImage.sha256} originalPath={bufferedImage.path} neighborPaths={neighborPaths} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {nearImage && field === "image" && !own && <BufferedImage sha256={drawnImage?.sha256 ?? null} originalPath={drawnImage?.path} neighborPaths={neighborPaths} neighbors={nearImage.absent || nearImage === drawnImage ? neighbors : [nearImage.sha256, ...neighbors]} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
