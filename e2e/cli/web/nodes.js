@@ -353,8 +353,8 @@ function replaceFile(at, text) {
   // A mention reads as it's written, in its brackets, its first letter up; the file keeps it as typed.
   const chipWords = await sheetText.locator('.chip').allInnerTexts();
   check('chips_read_as_written', chipWords.join() === '<Source-a>,<Source-b>', chipWords);
-  // Behind its words, faded, the pictures they mention, side by side in a 2×2.
-  const ghosts = await until('the pictures it mentions, behind', () => box('Sheet').locator('.in-frame .ghosts img').evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width)), (widths) => widths.length === 2 && widths.every((width) => width > 8), 5000).catch((why) => String(why));
+  // Behind its words, faded, the pictures they mention, as large as they can be (cl-949's Spread).
+  const ghosts = await until('the pictures it mentions, behind', () => box('Sheet').locator('.in-frame .backdrop .spread-picture img').evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width)), (widths) => widths.length === 2 && widths.every((width) => width > 8), 5000).catch((why) => String(why));
   check('mentions_ghosted_behind_its_words', Array.isArray(ghosts) && (await box('Sheet').locator('.mention-thumb').count()) === 0, ghosts);
   check('wire_reads_what_it_mentions', (await of('Sheet')).reads?.map((read) => read.name).sort().join() === 'source-a,source-b' && (await of('Sheet')).reads[0].at.includes('instructions'), (await of('Sheet')).reads);
   check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
