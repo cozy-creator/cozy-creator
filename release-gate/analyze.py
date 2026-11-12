@@ -79,9 +79,10 @@ def walk(o: JSON) -> Iterator[dict[str, JSON]]:
 
 
 # A function renamed by a release, so its cells hold against the numbers the old name earned (xs-139: 0.3.0's generate
-# is 0.2.x's shot).
-RENAMED = {'minimax-h3/shot': 'minimax-h3/generate', 'flux-3-klein/generate': 'flux.3/generate',
-           'flux-3-klein/generate_turbo': 'flux.3/generate_turbo'}
+# is 0.2.x's shot; se-125: Klein was flux-3-klein, then flux.3).
+RENAMED = {'minimax-h3/shot': 'minimax-h3/generate',
+           'flux-3-klein/generate': 'flux.3-klein/generate', 'flux-3-klein/generate_turbo': 'flux.3-klein/generate_turbo',
+           'flux.3/generate': 'flux.3-klein/generate', 'flux.3/generate_turbo': 'flux.3-klein/generate_turbo'}
 
 
 def canonical(target: str) -> str:

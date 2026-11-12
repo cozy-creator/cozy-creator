@@ -2,7 +2,7 @@
 # with a scenario prompt and its own seed. A cell that takes another's output (SeedVR2 H3's clip, BiRefNet Klein's image,
 # Qwen-Image's edits its render) falls back to the gate's reference when that one did not run. The describer reads the
 # checked-in ref/seed.jpg, so both arms of a comparison caption the same picture.
-PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3 qwen-image-2 anima birefnet qwen3.5 fibo-2 hidream-o1 moss-image qwen-image
+PRODUCTS=(minimax-h3 seedvr2 sdxl flux.3-klein qwen-image-2 anima birefnet qwen3.5 fibo-2 hidream-o1 moss-image qwen-image
   flux-2 ideogram-4 krea-2 hunyuan-image-3)
 # --first runs these packages before the rest, in its order: a clean standalone number before models stack.
 [ -z "$FIRST" ] || mapfile -t PRODUCTS < <(tr , '\n' <<< "$FIRST"; printf '%s\n' "${PRODUCTS[@]}" | grep -vxF -f <(tr , '\n' <<< "$FIRST"))
@@ -76,9 +76,9 @@ product_seedvr2() {
 }
 product_sdxl() { cell sdxl "$(pkg sdxl generate)" prompt="$SCENE, photo" seed:=$((R + 3)); }
 product_flux_3() {
-  cell klein "$(pkg flux.3 generate_turbo)" prompt="$CHAR" prompt_upsampling:=true seed:=$((R + 4))
+  cell klein "$(pkg flux.3-klein generate_turbo)" prompt="$CHAR" prompt_upsampling:=true seed:=$((R + 4))
   K=$(output klein 'png|webp|jpg')
-  refs klein-refs flux.3 generate_turbo $((R + 19))
+  refs klein-refs flux.3-klein generate_turbo $((R + 19))
 }
 product_qwen_image_2() {
   # 1 MP in both cells: 0.6.0 defaults to 2 MP (Paul's ruling) where 0.5.0 rendered 1024x1024; the comparison is like for like.
