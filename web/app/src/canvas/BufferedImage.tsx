@@ -32,10 +32,14 @@ function schedule(start: (done: () => void) => void, urgent: () => boolean): () 
   return done
 }
 
-interface Picture {
+interface Source {
   key: string
   sha: string
   width: number
+  path?: string
+}
+
+interface Picture extends Source {
   image: HTMLImageElement
   ready: boolean
   dead: boolean
@@ -45,6 +49,7 @@ interface Picture {
 
 interface Buffer {
   pictures: Map<string, Picture>
+  sources: Map<string, Source>
   queue: Picture[]
   selected: string
   wanted: string[]
@@ -57,12 +62,17 @@ export interface BufferedImageProps {
   /** Nearby versions, nearest first. The current image and at most four neighbors are held. */
   neighbors: string[]
   cardWidth: number
+  /** Original project-relative image path, used beyond the widest thumbnail. */
+  originalPath?: string
+  neighborPaths?: Record<string, string>
+  /** Optional actual on-screen width in CSS pixels; display density is applied here. */
+  displayWidth?: number
   onSize(aspect: number): void
   onShown(): void
 }
 
 /** Keep decoded DOM images nearby and swap only when the selected image is ready to paint. */
-export function BufferedImage({ sha256, neighbors, cardWidth, onSize, onShown }: BufferedImageProps) {
+export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neighborPaths, displayWidth, onSize, onShown }: BufferedImageProps) {
   const { client, bridge, privateViewEpoch, signedOut } = useConnection()
   const store = useCanvasStore()
   const project = store.projectId
@@ -71,10 +81,52 @@ export function BufferedImage({ sha256, neighbors, cardWidth, onSize, onShown }:
   const callbacks = useRef({ onSize, onShown })
   callbacks.current = { onSize, onShown }
   const [failed, setFailed] = useState(false)
-  const resolution = cardWidth >= 960 ? WIDTH : cardWidth > 512 ? 1024 : cardWidth > 256 ? 512 : 256
-  const selected = `${sha256}:${resolution}`
-  const wanted = [...new Set([sha256, ...neighbors])].slice(0, HELD).map((sha) => `${sha}:${resolution}`)
-  const windowKey = wanted.join(",")
+  const [resolution, setResolution] = useState(256)
+  const sources = [...new Set([sha256, ...neighbors])].slice(0, HELD).map((sha): Source => {
+    const path = sha === sha256 ? originalPath ?? neighborPaths?.[sha] : neighborPaths?.[sha]
+    const width = resolution === 0 && path ? 0 : resolution || WIDTH
+    const original = width === 0 ? path : undefined
+    return { key: JSON.stringify([sha, width, original]), sha, width, path: original }
+  })
+  const selected = sources[0].key
+  const wanted = sources.map((source) => source.key)
+  const windowKey = JSON.stringify(wanted)
+
+  useLayoutEffect(() => {
+    const element = host.current
+    if (!element) return
+    const focus = element.closest<HTMLElement>(".focus-image-transform")
+    let frame = 0
+    const measure = () => {
+      frame = 0
+      const actual = element.getBoundingClientRect().width
+      // Wander's signal is the upper zoom bound of its current bucket, so later zooms within that bucket stay sharp.
+      const width = displayWidth ?? (focus ? actual || cardWidth : Math.max(actual, cardWidth * store.sharpness.get()))
+      const density = (window.devicePixelRatio || 1) * (window.visualViewport?.scale ?? 1)
+      const pixels = Math.ceil(Math.max(1, width) * density)
+      element.dataset.requestedWidth = String(pixels)
+      const next = pixels > WIDTH ? 0 : pixels > 1024 ? WIDTH : pixels > 512 ? 1024 : pixels > 256 ? 512 : 256
+      setResolution((was) => was === next ? was : next)
+    }
+    const scheduleMeasure = () => { if (!frame) frame = requestAnimationFrame(measure) }
+    const resize = new ResizeObserver(scheduleMeasure)
+    resize.observe(element)
+    // Only the focused image needs a transform observer; Wander uses the shared sharpness signal.
+    const transform = focus ? new MutationObserver(scheduleMeasure) : null
+    if (focus) transform?.observe(focus, { attributes: true, attributeFilter: ["style", "class"] })
+    const unwatch = store.sharpness.subscribe(scheduleMeasure)
+    window.addEventListener("resize", scheduleMeasure)
+    window.visualViewport?.addEventListener("resize", scheduleMeasure)
+    measure()
+    return () => {
+      if (frame) cancelAnimationFrame(frame)
+      resize.disconnect()
+      transform?.disconnect()
+      unwatch()
+      window.removeEventListener("resize", scheduleMeasure)
+      window.visualViewport?.removeEventListener("resize", scheduleMeasure)
+    }
+  }, [store, project, cardWidth, displayWidth])
 
   const discard = (buffer: Buffer, picture: Picture) => {
     picture.dead = true
@@ -92,6 +144,8 @@ export function BufferedImage({ sha256, neighbors, cardWidth, onSize, onShown }:
     // Reuse the decoded element itself; changing a React img key or src could paint a blank frame.
     element.replaceChildren(picture.image)
     element.dataset.displayedSha = picture.sha
+    element.dataset.displayedResolution = picture.width === 0 ? "original" : String(picture.width)
+    element.dataset.displayedWidth = String(picture.image.naturalWidth)
     buffer.displayed = picture
     setFailed(false)
     const { naturalWidth: width, naturalHeight: height } = picture.image
@@ -108,7 +162,8 @@ export function BufferedImage({ sha256, neighbors, cardWidth, onSize, onShown }:
       picture.cancel = schedule((done) => {
         void (async () => {
           if (buffer.stopped || picture.dead) return
-          const url = await client.transport.src(client.thumb(project, picture.sha, picture.width))
+          const path = picture.path ? client.file(project, picture.path) : client.thumb(project, picture.sha, picture.width)
+          const url = await client.transport.src(path)
           if (buffer.stopped || picture.dead) return
           picture.image.src = url
           await picture.image.decode()
@@ -149,8 +204,9 @@ export function BufferedImage({ sha256, neighbors, cardWidth, onSize, onShown }:
       image.alt = ""
       image.draggable = false
       image.decoding = "async"
-      const separator = key.lastIndexOf(":")
-      const picture: Picture = { key, sha: key.slice(0, separator), width: Number(key.slice(separator + 1)), image, ready: false, dead: false, running: false }
+      const source = buffer.sources.get(key)
+      if (!source) continue
+      const picture: Picture = { ...source, image, ready: false, dead: false, running: false }
       buffer.pictures.set(key, picture)
       buffer.queue.push(picture)
     }
@@ -160,16 +216,21 @@ export function BufferedImage({ sha256, neighbors, cardWidth, onSize, onShown }:
   }
 
   useLayoutEffect(() => {
-    const buffer: Buffer = { pictures: new Map(), queue: [], selected, wanted: [], displayed: null, stopped: false }
+    const buffer: Buffer = { pictures: new Map(), sources: new Map(), queue: [], selected, wanted: [], displayed: null, stopped: false }
     held.current = buffer
     setFailed(false)
     const stop = () => {
       buffer.stopped = true
       for (const picture of buffer.pictures.values()) discard(buffer, picture)
       buffer.queue = []
+      buffer.sources.clear()
+      buffer.selected = ""
+      buffer.wanted = []
       buffer.displayed = null
       host.current?.replaceChildren()
       host.current?.removeAttribute("data-displayed-sha")
+      host.current?.removeAttribute("data-displayed-resolution")
+      host.current?.removeAttribute("data-displayed-width")
     }
     const epoch = project ? bridge.projectEpoch(project) : 0
     const unwatch = privateViewEpoch.subscribe(() => {
@@ -189,6 +250,7 @@ export function BufferedImage({ sha256, neighbors, cardWidth, onSize, onShown }:
     if (!buffer || buffer.stopped) return
     buffer.selected = selected
     buffer.wanted = wanted
+    buffer.sources = new Map(sources.map((source) => [source.key, source]))
     setFailed(false)
     refresh(buffer)
   }, [client, store, project, selected, windowKey])
