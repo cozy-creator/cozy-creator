@@ -829,13 +829,17 @@ impl Machines {
         lock(&self.project_activity).insert(project.to_owned(), vec![]);
         let (me, project) = (self.clone(), project.to_owned());
         self.spawn(async move {
-            me.project_frames(&project).await;
+            let listed = me.project_frames(&project).await;
+            // Asked again no sooner: one that can't be followed now isn't tried in a loop.
+            tokio::time::sleep(Duration::from_secs(1)).await;
             lock(&me.project_activity).remove(&project);
-            me.calcifer.machine_changed();
+            if listed { me.calcifer.machine_changed(); }
         });
     }
 
-    async fn project_frames(&self, project: &str) {
+    /// Whether it listed anything.
+    async fn project_frames(&self, project: &str) -> bool {
+        let mut listed = false;
         let working = || self.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0);
         while working() {
             let scoped = (|| {
@@ -844,17 +848,19 @@ impl Machines {
                 let scope = crate::private_io::scope_for_project(id, root).ok()?;
                 Some(self.calcifer.link("local").ok()??.with_private(scope))
             })();
-            let Some(link) = scoped else { return };
+            let Some(link) = scoped else { return listed };
             if let Ok(mut frames) = link.watch().await {
                 while let Some(Ok(frame)) = frames.next().await {
                     let quiet = frame.activity.is_empty();
+                    listed |= !quiet;
                     if let Some(held) = lock(&self.project_activity).get_mut(project) { *held = frame.activity; }
                     self.calcifer.machine_changed();
-                    if quiet && !working() { return; }
+                    if quiet && !working() { return listed; }
                 }
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
+        listed
     }
 
     /// Keeps one `Status` stream open to the machine while it has an endpoint and has not ended.
