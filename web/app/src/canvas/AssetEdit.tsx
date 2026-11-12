@@ -108,7 +108,7 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
       missing={view.asset?.missing ?? []}
       takes={field.type === "words" ? WORDS_ONLY : ((field.takes as Media[] | null) ?? undefined)}
       focus={focus}
-      thumbs={!framed && !references}
+      thumbs={!inFrame && !references}
       onDraft={bound.draft}
       onSave={bound.save}
       onSubmit={field.type === "prompt" ? () => store.run(name) : undefined}
