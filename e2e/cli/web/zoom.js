@@ -1,5 +1,5 @@
 // Zoom from the canvas's corner, as Figma's: − and + step along the page's zooms about the middle of what's visible, the zoom says what it
-// is, its menu fits everything, goes to 100%, and works on a box being worked on without leaving it. A box is drawn larger or smaller
+// is, its menu fits everything and goes to 100%, and it isn't over Focus, which zooms its own picture. A box is drawn larger or smaller
 // alike, words and all (cl-890). 300 boxes panned at 70% and 11%, with it on the canvas, as see.js measures them.
 //   node zoom.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as see.js. Prints what it saw as JSON and exits 1 if anything failed.
@@ -219,22 +219,14 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     await shot(tab, 'zoom-box-scales');
     await tab.keyboard.press('Escape');
 
-    // A box worked on: + draws in further and it stays open; Zoom to fit draws back in on it; Esc in the menu shuts the menu, not the box.
+    // A box worked on is Focus, over the canvas (cl-893): the canvas's zoom is Wander's and isn't shown there (Focus zooms its own picture:
+    // web-focused, web-refocus), and nothing of it is pressed through Focus. Esc leaves it, and the zoom is back.
     await openBox(tab, 'n0');
-    const here = await view(tab);
-    const closer = await press('Zoom in');
-    check('here_plus', near(closer.zoom, ZOOMS.find((step) => step > here.zoom * 1.001)) && (await tab.locator('.card.here').count()) === 1, { here, closer });
+    check('here_has_no_canvas_zoom', !(await tab.locator('.zoom').isVisible()) && !(await tab.locator('.zoom-at').isVisible()) && (await tab.locator('.card.here').count()) === 1);
     await shot(tab, 'zoom-here');
-    await menu();
-    await tab.keyboard.press('Escape');
-    check('here_menu_escape', !(await tab.locator('.zoom-menu').count()) && (await tab.locator('.card.here').count()) === 1);
-    await menu();
-    await tab.click('.zoom-menu >> text=Zoom to fit');
-    await settled(tab);
-    const back = await view(tab);
-    check('here_fit_is_the_box', near(back.zoom, here.zoom) && (await tab.locator('.card.here').count()) === 1, { here, back });
     await closeBox(tab);
-    check('box_left', !(await tab.locator('.card.here').count()) && (await boxOf(tab, 'n0').count()) === 1);
+    const back = await view(tab);
+    check('box_left', !(await tab.locator('.card.here').count()) && (await boxOf(tab, 'n0').count()) === 1 && (await tab.locator('.zoom').isVisible()) && shows(back), back);
     await tab.close();
   } catch (error) {
     await lastLook();

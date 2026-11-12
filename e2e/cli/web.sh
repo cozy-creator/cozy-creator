@@ -98,7 +98,7 @@ local no_hub=''
 [ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" http://127.0.0.1:9)
 NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
 jq -c '.seen.scale // empty' "$OUT/web-see.json" 2> /dev/null || true
-step "web-zoom: − the zoom + in the canvas's corner, its menu's fit and 100%, on a box worked on, drawn at the canvas's scale, and 300 boxes panned"
+step "web-zoom: − the zoom + in the canvas's corner, its menu's fit and 100%, none over Focus, drawn at the canvas's scale, and 300 boxes panned"
 web_proof zoom "$chrome" "$pw" ''
 jq -c '{pan_70: .seen.pan_70, pan_11: .seen.pan_11}' "$OUT/web-zoom.json" 2> /dev/null || true
 step "web-canvas: the background zoomed with the canvas, its farther layers less, and the dots over it and under the boxes, at 0.1 to 3 on each theme; a pan's and a zoom's frames"
@@ -156,7 +156,7 @@ step "web-empty: an empty box in Focus offers no New, and does once it has a tak
 web_proof empty "$chrome" "$pw" ''
 step "web-dismiss: a selection or a press from inside a surface let go outside keeps it open; pressed and let go outside, it closes"
 web_proof dismiss "$chrome" "$pw" ''
-step "web-legible: typed words over a busy picture are bold with a halo, on paper and on dark; every prompt is bold"
+step "web-legible: typed words over a busy picture are bold and plain on a panel-coloured surface, on paper and on dark; every prompt is bold"
 web_proof legible "$chrome" "$pw" ''
 step "web-beats: H3's Shot with three beats: six lines of words each, growing with them; a short length slider; no running total"
 web_proof beats "$chrome" "$pw" ''

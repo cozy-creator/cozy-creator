@@ -830,13 +830,14 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
         const top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0;
         const viewport = document.querySelector('.react-flow__viewport');
         const transform = viewport ? getComputedStyle(viewport).transform : null;
-        const progress = media?.querySelector('.prog b');
+        // Its render's lines, under the picture at rest (cl-932): the machine and its time, then what it's doing.
+        const progress = media?.closest('.card')?.querySelector(':scope > .tile-under .prog .face-state b');
         const visibility = { opacityProperty: true, visibilityProperty: true };
         const rendered = Boolean(media?.checkVisibility?.(visibility));
         const inBounds = Boolean(rect && rect.width && rect.height && rect.left >= left && rect.top >= top && rect.right <= innerWidth && rect.bottom <= innerHeight);
         const progressVisible = Boolean(progress?.checkVisibility?.(visibility));
         // Its state line (cl-898): `Segment 3 of 600: Denoising - Step 2 / 5`.
-        const text = media?.querySelector('.prog .face-stage')?.innerText || (progress?.innerText ?? null);
+        const text = progress?.innerText ?? null;
         let reason = null;
         if (!media) reason = 'missing-media';
         else if (!rendered) reason = 'hidden-media';

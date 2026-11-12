@@ -311,9 +311,13 @@ function Canvas({
   store.fitHere = () => {}
   store.enterFocus = (room) => {
     const travel = focusTravel.current
-    if (!travel || travel.started || store.inPlace !== travel.owner || !store.focusEntering.get() || room.width <= 0 || room.height <= 0) return
+    if (!travel || travel.started || store.inPlace !== travel.owner || !store.focusEntering.get()) return
     const pane = stage.current?.querySelector(".react-flow")?.getBoundingClientRect()
-    if (!pane) return
+    // No room to draw in on: Focus shows where it is, never held hidden.
+    if (!room || room.width <= 0 || room.height <= 0 || !pane) {
+      store.focusEntering.set(false)
+      return
+    }
     travel.started = true
     const token = transition.current
     const { body } = travel
@@ -327,6 +331,8 @@ function Canvas({
       if (transition.current === token && focusTravel.current === travel && store.inPlace === travel.owner) store.focusEntering.set(false)
     }
     void flow.setViewport(viewport, { duration: HERE_MS }).then(arrived, arrived)
+    // A move cut short (a wheel, a key, another move) never ends: Focus shows once its time is up all the same.
+    window.setTimeout(arrived, HERE_MS)
   }
   /** Focus one asset while preserving Wander's camera and palette state. */
   const writeHere = useCallback(
