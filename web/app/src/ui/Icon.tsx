@@ -2,6 +2,8 @@
 const STROKES = {
   menu: "M3 6h14M3 10h14M3 14h14",
   close: "M5.5 5.5l9 9M14.5 5.5l-9 9",
+  /** What deletes or discards, which Undo brings back; ✕ only closes (Paul, 11-12). */
+  trash: "M3.5 5.5h13M8 5.5V3.8h4v1.7M5.3 5.5l.8 11h7.8l.8-11M8.6 8.5v5.5M11.4 8.5v5.5",
   plus: "M10 4.5v11M4.5 10h11",
   minus: "M4.5 10h11",
   back: "M12 4.5L6.5 10l5.5 5.5",
@@ -28,7 +30,7 @@ export type IconName = keyof typeof STROKES | keyof typeof FILLS
 export function Icon({ name }: { name: IconName }) {
   const stroke = name in STROKES ? STROKES[name as keyof typeof STROKES] : null
   return (
-    <svg className="icon" viewBox="0 0 20 20" width="14" height="14" aria-hidden="true" fill={stroke ? "none" : "currentColor"} stroke={stroke ? "currentColor" : "none"} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg className="icon" data-icon={name} viewBox="0 0 20 20" width="14" height="14" aria-hidden="true" fill={stroke ? "none" : "currentColor"} stroke={stroke ? "currentColor" : "none"} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
       <path d={stroke ?? FILLS[name as keyof typeof FILLS]} />
     </svg>
   )

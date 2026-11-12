@@ -609,10 +609,10 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
         const status = progress?.[i]
         const statusWord = status?.state === "skipped" ? "Skipped" : kept[i] || status?.state === "kept" ? "Kept" : status?.state === "completed" ? "Complete" : status?.state === "in_progress" ? "Generating" : run !== undefined && progress ? "Queued" : null
         const handle = !kept[i] && rows.length - keptCount > 1 && <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>⋮⋮</span>
-        const remove = !kept[i] && rows.length > least && <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
+        const remove = !kept[i] && rows.length > least && <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} title={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
           bound.write(rows.filter((_, at) => at !== i))
           if (accordion) setExpanded((open) => open === null ? null : open === i ? Math.max(0, Math.min(i, rows.length - 2)) : open > i ? open - 1 : open)
-        }}><Icon name="close" /></button>
+        }}><Icon name="trash" /></button>
         const body = <div className="beat-body" inert={kept[i]}><Members name={name} group={field} bound={rowBound(i)} view={view} place={`${place}.${i}`} label={`${called} ${i + 1}`} /></div>
         const duration = timing ? value[timing.field] ?? timing.default : undefined
         const open = expanded === i
@@ -647,8 +647,8 @@ function BlockGroup({ name, field, bound, view, place, label }: Drawn) {
       <div className="group-head">
         <span className="ctl-name">{field.label}</span>
         {!field.required && (
-          <button type="button" className="iconb nodrag" aria-label={`Remove ${field.label.toLowerCase()}`} onClick={bound.unset}>
-            <Icon name="close" />
+          <button type="button" className="iconb nodrag" aria-label={`Remove ${field.label.toLowerCase()}`} title={`Remove ${field.label.toLowerCase()}`} onClick={bound.unset}>
+            <Icon name="trash" />
           </button>
         )}
       </div>

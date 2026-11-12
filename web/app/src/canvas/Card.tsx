@@ -170,7 +170,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             …
           </button>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
-            <Icon name="close" />
+            <Icon name="trash" />
           </button>
         </span>
       )}
@@ -210,7 +210,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             {asset.unseen?.includes(version.number) && <span className="take-unseen" role="img" aria-label="Not looked at yet" />}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
-            <Icon name="close" />
+            <Icon name="trash" />
           </button>
         </span>
       ))}
@@ -860,13 +860,13 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
             type="button"
             className="iconb nodrag"
             aria-label="Delete"
-            title="Delete"
+            title="Delete this box"
             onClick={() => {
               store.leaveHere()
               store.remove([name])
             }}
           >
-            <Icon name="close" />
+            <Icon name="trash" />
           </button>
         ) : view.placing ? (
           // Its × stays as it was dropped: past the point of no return, the moment Calcifer is being asked, it does nothing.
@@ -877,8 +877,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           view.draft === undefined &&
           (asset || view.landed) &&
           !lite && (
-            <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
-              <Icon name="close" />
+            <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete this box" onClick={() => store.remove([name])}>
+              <Icon name="trash" />
             </button>
           )
         )}

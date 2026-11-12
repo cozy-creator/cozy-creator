@@ -1,0 +1,113 @@
+// Deleting is a trash can; ✕ only closes (cl-939, Paul 11-12: "if you want a delete button it should probably be a trash can icon ... This can
+// be undone with the undo history"), in a real browser on a real Calcifer. A video with two takes, watched in Focus: its take's discard is a
+// trash can, discards the take, and Undo brings it back; Focus's close is ✕. On the canvas, a box's delete is a trash can.
+//   node trash.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
+// $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
+// if anything failed.
+const playwright = require(process.env.PLAYWRIGHT);
+const { mkdtempSync, writeFileSync } = require('fs');
+const { tmpdir } = require('os');
+const { join } = require('path');
+const { projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until, upload } = require('./page');
+
+const failures = [];
+const seen = {};
+noStall(seen, died);
+let during = 'the start';
+function check(name, ok, detail) {
+  seen[name] = ok ? true : (detail ?? false);
+  during = name;
+  if (!ok) failures.push(name);
+}
+async function died(why) {
+  failures.push(`${during}: ${why}`);
+  await lastLook();
+  console.log(JSON.stringify({ failures, seen }, null, 2));
+  process.exit(1);
+}
+
+(async () => {
+  const base = calcifer();
+  const browser = await launch(playwright);
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } });
+  const page = await context.newPage();
+  lookAt(page);
+  page.setDefaultTimeout(STEP_MS);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+  page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
+  const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+
+  await signIn(page);
+  await page.waitForSelector('.top');
+  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    return { status: answer.status, body: await answer.json().catch(() => null) };
+  }, { path, init, token: held?.token });
+
+  await page.goto(`${base}/projects`);
+  await page.fill('input[aria-label="New project\'s name"]', `web-trash-${Date.now()}`);
+  await page.getByLabel('Create without encryption', { exact: true }).check();
+  await page.click('form button[type=submit]');
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const id = (await projectFromPage(page)).id;
+  const at = `/v1/projects/${id}`;
+  const takes = async () => ((await api(at)).body?.assets?.find((row) => row.name === 'shot')?.prefixes ?? []).map((version) => version.number);
+  seen.project = { id, folder: (await api(at)).body.path };
+  const post = async (path, body) => {
+    const answer = await api(path, { method: 'POST', body: JSON.stringify(body) });
+    if (answer.status >= 300) throw new Error(`${path}: ${JSON.stringify(answer)}`);
+    return answer.body;
+  };
+
+  // A video with two takes: H3's Shot.
+  const tools = (await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? [];
+  const shotTool = tools.find((tool) => tool.id === 'minimax-h3/generate') ?? tools.find((tool) => tool.package === 'minimax-h3' && tool.makes === 'video');
+  if (!shotTool) throw new Error(`the Hub lists no H3 Shot: ${JSON.stringify(tools.map((tool) => tool.id))}`);
+  const folder = mkdtempSync(join(tmpdir(), 'web-trash-'));
+  writeFileSync(join(folder, 'take.mp4'), MP4);
+  await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 5 }] }, at: { x: 100, y: 100 } });
+  for (let n = 0; n < 2; n++) await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
+  await boxOf(page, 'shot').waitFor();
+  await until('two takes', takes, (numbers) => numbers.length === 2);
+  await fitCanvas(page);
+
+  // On the canvas, a box's delete is a trash can.
+  const canvasDelete = await boxOf(page, 'shot').locator('button[aria-label="Delete"] svg').first().getAttribute('data-icon').catch(() => null);
+  seen.canvas_delete = canvasDelete;
+  check('a_boxs_delete_is_a_trash_can', canvasDelete === 'trash', canvasDelete);
+
+  // Watched in Focus: the take's discard is a trash can; Focus's close is ✕.
+  await openBox(page, 'shot');
+  const focus = page.locator('.focus-viewport');
+  const close = await focus.locator('button[aria-label="Close focus"] svg').getAttribute('data-icon');
+  seen.focus_close = close;
+  check('focus_close_is_x', close === 'close', close);
+  const [first, second] = await takes();
+  const tile = focus.locator(`.take[data-take="${second}"]`).first();
+  await tile.hover();
+  const discard = focus.locator(`button[aria-label="Discard take ${second}"]`).first();
+  await discard.waitFor({ state: 'visible' });
+  const icon = await discard.locator('svg').getAttribute('data-icon');
+  const title = await discard.getAttribute('title');
+  seen.discard = { icon, title };
+  check('a_takes_discard_is_a_trash_can_saying_what_it_discards', icon === 'trash' && /Discard take/.test(title ?? ''), seen.discard);
+  await shot('focus-trash');
+  await discard.click();
+  const after = await until('the take discarded', takes, (numbers) => numbers.length === 1).catch(() => takes());
+  seen.after_discard = after;
+  check('it_discards_the_take', after.length === 1 && after[0] === first, after);
+
+  // Undo brings it back.
+  await page.locator('button[aria-label="Undo"]').first().click();
+  const back = await until('the take back', takes, (numbers) => numbers.length === 2).catch(() => takes());
+  seen.after_undo = back;
+  check('undo_brings_the_take_back', back.length === 2 && back.includes(second), back);
+  await closeBox(page);
+
+  check('no_page_errors', errors.length === 0, errors);
+  await browser.close();
+  console.log(JSON.stringify({ failures, seen }, null, 2));
+  process.exit(failures.length ? 1 : 0);
+})().catch((why) => died(why.stack ?? why));
