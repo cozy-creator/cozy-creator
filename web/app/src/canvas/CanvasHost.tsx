@@ -823,6 +823,9 @@ function Canvas({
   useLayoutEffect(() => store.far.set(band === 2), [store, band])
   const sharpness = useStore((state) => 2 ** Math.max(-2, Math.ceil(Math.log2(state.transform[2] || 1))))
   useLayoutEffect(() => store.sharpness.set(sharpness), [store, sharpness])
+  // A selected box's ring keeps its width on screen: the zoom in steps of two, so a zoom sets it only as it crosses one.
+  const unzoom = useStore((state) => 2 ** -Math.ceil(Math.log2(state.transform[2] || 1)))
+  useLayoutEffect(() => stage.current?.style.setProperty("--unzoom", String(unzoom)), [unzoom])
   const flowStore = useStoreApi<ElementNode, Edge>()
   // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
   useLayoutEffect(() => {

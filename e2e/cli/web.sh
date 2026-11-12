@@ -122,6 +122,8 @@ step "web-download: right click, Download: a box as hei.png, another take as hei
 web_proof download "$chrome" "$pw" ''
 step "web-menu: a box with a tool, right clicked: no Change the tool; its tool changes only by a drop from the palette"
 web_proof menu "$chrome" "$pw" ''
+step "web-selected: a selected box has a thick ring of its own colour with a glow, 3px or more on screen at zoom 0.25 and 1 on paper and dark, one and several; hover differs; the box-select rectangle shows"
+web_proof selected "$chrome" "$pw" ''
 step "web-star: Star from a box's menu: in project.db, nothing out of date, first in Files with a ★, kept by a reload, Undo and Redo, Unstar"
 web_proof star "$chrome" "$pw" ''
 step "web-select: a click selects a box and opens nothing, a double click opens it; Backspace or Delete deletes it, open or not, and Undo brings it back; Backspace in words edits only them"
