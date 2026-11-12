@@ -46,8 +46,8 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   // What project.db holds of the box's words, read past Calcifer.
   const inDb = () => rowsOf(folder, "SELECT f.value FROM fields f JOIN boxes b ON f.box = b.key WHERE b.name = 'words' AND f.field = 'text'").map(([value]) => JSON.parse(value))[0];
   const saving = (wanted) => until(`"${wanted}" in project.db`, () => Promise.resolve(inDb()), (value) => value === wanted).catch(() => {});
-  // An open box is in Focus, over the canvas.
-  const text = () => page.locator('.card.here[data-asset="words"] .mention-text').first();
+  // An open box is in Focus, over the canvas (after a reload its canvas card says `here` too; Focus is the later).
+  const text = () => page.locator('.card.here[data-asset="words"] .mention-text').last();
   const shown = async () => (await text().innerText()).trim();
   const pills = () => page.locator('.top .pill').allInnerTexts();
   const saved = () => until('all saved', pills, (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
@@ -169,7 +169,7 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   other.on('pageerror', (error) => errors.push(error.message));
   await other.goto(page.url());
   await openBox(other, 'words');
-  const otherText = () => other.locator('.card.here[data-asset="words"] .mention-text').first();
+  const otherText = () => other.locator('.card.here[data-asset="words"] .mention-text').last();
   await until('the other page reads it', async () => (await otherText().innerText()).trim(), (text) => text === 'Middle.');
   held = await holdWrites();
   await text().click();
