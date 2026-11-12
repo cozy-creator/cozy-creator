@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav, rowsOf, addBoxes, assetsOf, storedOf, fitCanvas, observeResizes } = require('./page');
+const { projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, openCanvas, png, launch, noStall, settled, until, wav, rowsOf, addBoxes, assetsOf, storedOf, fitCanvas, observeResizes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -349,8 +349,9 @@ async function placedInView(page, expected) {
     const lay = {};
     const left = Math.max(...Object.values(rows(folder)).map((row) => row.x)) + 1500;
     const put = (name, x, y, w) => { lay[name] = { x: left + x, y, w }; };
-    // Rows of the grid touch: a picture 300 wide (its name 32, the picture 169, its row 40) and the room it keeps under it, its tool and
-    // shape line twice and the rise of a box below's name, 92 (cl-932, 4ae6c085a: shown.ts heightFor and underOf).
+    // Rows of the grid meant to touch: a picture 300 wide (its name 32, the picture 169, its row 40) and the room it keeps under it, 92
+    // (shown.ts heightFor and underOf). That room has changed with the box three times; where the page keeps more, it gives way and the
+    // layout is the one it settles to (`laid`, below), which every drop and pull is judged against.
     const ROW = 32 + 169 + 40 + 92;
     for (const [i, j] of [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1], [0, 2], [1, 2], [2, 2]]) put(`grid_${i}_${j}`, 320 * i, ROW * j, 300);
     // The chain beside the grid and the rest under it, each clear of the one above as laid out (a 240 picture keeps 299, the crowded 360 one
@@ -375,13 +376,15 @@ async function placedInView(page, expected) {
     });
     // Each placed by the page as it arrives first: placed after its `at`, it would be put where the page found room (the page's read of where
     // things sit, then its write of a new one's place, can straddle another writer's).
-    await until('each placed', () => rows(folder), (now) => Object.keys(lay).every((name) => now[name]));
+    const placed = await until('each placed', () => rows(folder), (now) => Object.keys(lay).every((name) => now[name]));
     for (const [name, { x, y, w }] of Object.entries(lay)) at(name, x, y, w);
     rmSync(pictures, { recursive: true, force: true });
-    await until('laid out', () => rows(folder), (now) => Object.entries(lay).every(([name, row]) => now[name]?.x === row.x && now[name]?.y === row.y));
-    await page.mouse.click(1450, 860);
+    // Each written where it was put (or given way from it, below): moved off where the page first put it, unless that was already there.
+    await until('laid out', () => rows(folder), (now) => Object.entries(lay).every(([name, row]) => (now[name]?.x !== placed[name].x || now[name]?.y !== placed[name].y) || (placed[name].x === row.x && placed[name].y === row.y)));
+    const away = await openCanvas(page);
+    await page.mouse.click(away.x, away.y);
     await page.keyboard.press('f');
-    await page.waitForTimeout(800);
+    await settled(page);
     // A picture box's height at a width: its name, and the picture at 16:9.
     const tall = (w) => 32 + Math.round((w * 9) / 16);
     const middle = (row) => ({ x: row.x + row.w / 2, y: row.y + tall(row.w) / 2 });
@@ -420,32 +423,47 @@ async function placedInView(page, expected) {
       return { dropped: { ...before[name], x: Math.round(held.e), y: Math.round(held.f) }, now: after[name], moved: movedSince(before, after, name), lying: await lying() };
     };
     const stays = (one) => apart(one.now, one.dropped);
+    // The layout as the page settled it, nothing on another: each drop below is let go onto its target as it lies here.
+    const laid = await settledRows('the layout');
+    seen.given_way = Object.keys(lay).filter((name) => laid[name].x !== lay[name].x || laid[name].y !== lay[name].y);
+    check('laid_out_on_nothing', (await lying()).length === 0, await lying());
 
-    const free = await letGo('free', -300);
+    const free = await letGo('free', laid.beside.y - laid.free.y);
     seen.pushed = { ...free, by: stays(free) };
     check('a_box_let_go_on_another_stays', free.now.w === 240 && seen.pushed.by <= 1, seen.pushed);
     // `beside` lay 40 under its left side: it goes left, a gap clear, and nothing else moves.
     const pushedTo = rows(folder).beside;
-    check('what_it_lies_on_is_pushed_aside', Object.keys(free.moved).join() === 'beside' && pushedTo.y === lay.beside.y && pushedTo.x === free.now.x - 16 - 240, { moved: free.moved, beside: pushedTo, free: free.now });
+    check('what_it_lies_on_is_pushed_aside', Object.keys(free.moved).join() === 'beside' && pushedTo.y === laid.beside.y && pushedTo.x === free.now.x - 16 - 240, { moved: free.moved, beside: pushedTo, free: free.now });
     check('a_push_lies_on_nothing', free.lying.length === 0, free.lying);
 
-    const nudging = await letGo('nudging', -300);
+    const nudging = await letGo('nudging', laid.left.y - laid.nudging.y);
     seen.nudging = { ...nudging, by: stays(nudging) };
     const outward = rows(folder);
     check('small_pushes_absorb_a_drop', nudging.now.w === 240 && seen.nudging.by <= 1 && outward.left.x === nudging.now.x - 16 - 240 && outward.right.x === nudging.now.x + 240 + 16 && Object.keys(nudging.moved).sort().join() === 'left,right', seen.nudging);
     check('a_nudged_drop_lies_on_nothing', nudging.lying.length === 0, nudging.lying);
 
-    const crowded = await letGo('crowded', ROW + 3 - BELOW);
+    const crowded = await letGo('crowded', laid.grid_0_1.y + 3 - laid.crowded.y);
     seen.crowded = { ...crowded, by: stays(crowded) };
     check('a_crowded_drop_stays_where_it_was_let_go', crowded.now.w >= 360 * 0.8 && seen.crowded.by <= 3 && Object.keys(crowded.moved).length > 0, seen.crowded);
     check('a_crowded_drop_lies_on_nothing', crowded.lying.length === 0, crowded.lying);
 
-    const squeezed = await letGo('squeezed', -400);
+    const squeezed = await letGo('squeezed', laid.row_l0.y - laid.squeezed.y);
     seen.squeezed = { ...squeezed, by: stays(squeezed) };
     const pushedRows = Object.values(squeezed.moved).reduce((sum, by) => sum + by, 0);
     check('a_tight_gap_shrinks_it_a_little', squeezed.now.w < 240 && squeezed.now.w >= 240 * 0.8 && seen.squeezed.by <= 3 && pushedRows < 8 * 18, seen.squeezed);
     check('a_shrunk_drop_lies_on_nothing', squeezed.lying.length === 0, squeezed.lying);
 
+    // The chain in view at a zoom where a box has its corner (0.2 and up, CanvasHost's far band), whatever the whole layout fits at: the five
+    // selected, zoomed to (Shift+2), and let go of.
+    for (const [i, name] of CHAIN.entries()) {
+      const media = await element(page, name).locator('.media').first().boundingBox();
+      if (i) await page.keyboard.down('Shift');
+      await page.mouse.click(media.x + media.width / 2, media.y + media.height / 2);
+      if (i) await page.keyboard.up('Shift');
+    }
+    await page.keyboard.press('Shift+Digit2');
+    await settled(page);
+    await page.keyboard.press('Escape');
     // B pulled 100 wider by its corner, live: each after it goes right as little as keeps a gap of 16, or what it had if less.
     const before = rows(folder);
     const zoom = await zoomNow();

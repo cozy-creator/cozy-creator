@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
 const { mkdirSync, writeFileSync } = require('fs');
 const { dirname, join } = require('path');
-const { projectFromPage, projectAction, addBoxes, calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, until } = require('./page');
+const { projectFromPage, projectAction, addBoxes, calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, settled, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -293,16 +293,19 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   // Cancel, on the face of a box waiting its turn and of one rendering (Paul, 11-12): no question asked, it says Cancelling… until its run
   // ends, it's left as it was, and Undo renders it again. `after` waits for `slow`, whose steps are slow enough to be stopped.
   const held = async (asset) => (await api(`/v1/projects/${id}`)).assets.find((one) => one.name === asset);
-  const cancel = (asset) => page.locator(`.card[data-asset="${asset}"] .face-cancel`).evaluate((button) => button.click());
+  // Pressed as a person presses it: by its name, where it's drawn (a script's click() reaches a hidden or covered button too).
+  const cancel = (asset) => page.locator(`.card[data-asset="${asset}"]`).getByRole('button', { name: `Cancel ${asset}'s render`, exact: true }).first().click();
   const sayOf = (asset) => page.locator(`.card[data-asset="${asset}"] .run-face .face-state b`).first().textContent().catch(() => '');
   await projectAction(folder, 'render', 'slow', 'after', '--on', 'local', '--queue');
   // Its first line says what it waits for as Paul wrote it (cl-898, 3898a5d72): "Waiting for <slow>".
   const waited = await until('after waits its turn', () => sayOf('after'), (text) => /^Waiting for <slow>/.test(text ?? ''), 60_000).catch((why) => String(why));
   const rendering = await until('slow renders its steps', () => sayOf('slow'), (text) => /^Segment 1 of 2: Denoising/.test(text ?? ''), 120_000).catch((why) => String(why));
   seen.cancel = { waited, rendering };
+  check('a_box_waiting_its_turn_says_what_for', /^Waiting for <slow>/.test(waited), waited);
+  check('a_rendering_box_says_its_stage', /^Segment 1 of 2: Denoising/.test(rendering), rendering);
   // On the canvas: one box waiting its turn, one denoising, each its two lines (Paul's examples, 11-12).
   await page.keyboard.press('f');
-  await page.waitForTimeout(400);
+  await settled(page);
   await shot('face-canvas');
   // Open (focus), its progress is between its name and its picture, at normal size, and covers none of it (Paul, 11-12).
   await openBox(page, 'slow');
