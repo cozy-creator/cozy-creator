@@ -197,11 +197,11 @@ vae = {}
 tokenizer = { files = ["tokenizer_config.json", "tokenizer.json", "chat_template.jinja", "preprocessor_config.json", "processor_config.json"] }
 
 [[checkpoint]]
-reads = "flux-2 turbo_lora"
+reads = "flux-2 turbo_lora (0.9.0rc1 on: its factors' shapes from the stored tensors)"
 models = ["fal/flux-2-dev-turbo"]
 lora = true
 [checkpoint.components]
-model = { keys = ["r", "lora_alpha", "target_modules"] }
+transformer = { keys = ["lora_alpha", "target_modules"], tensors = true }
 
 [[checkpoint]]
 reads = "krea-2 model"
