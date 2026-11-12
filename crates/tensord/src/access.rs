@@ -414,7 +414,7 @@ impl Fetch {
             }
             let states = self.machine.fetching(&remote, &absent);
             let mut by_phase: Vec<(String, usize)> = vec![];
-            let (mut reached, mut length, mut moved, mut unanswered) = (0u64, 0u64, 0u64, 0);
+            let (mut reached, mut length, mut moved, mut unanswered, mut hedged) = (0u64, 0u64, 0u64, 0, 0);
             for (object, state) in absent.iter().zip(&states) {
                 let phase = state.map_or_else(|| "not yet with the downloader".to_owned(), |s| s.phase.to_string());
                 match by_phase.iter_mut().find(|(p, _)| *p == phase) {
@@ -425,6 +425,7 @@ impl Fetch {
                 length += object.length;
                 moved = moved.max(state.map_or(0, |s| s.moved_unix_ms));
                 unanswered = unanswered.max(state.map_or(0, |s| s.unanswered));
+                hedged += state.map_or(0, |s| s.hedged);
             }
             let phases: Vec<String> = by_phase.iter().map(|(p, n)| format!("{n} {p}")).collect();
             let last = if moved == 0 { String::new() } else { format!(", last moved {}", clock(moved)) };
@@ -432,7 +433,12 @@ impl Fetch {
                 0 => String::new(),
                 unanswered => format!(", {unanswered} attempts in a row moved nothing (of {})", tensorfs::fetch::ATTEMPTS),
             };
-            format!("{label}: {} of {} chunks to fetch, {} of their {} received ({}){last}{attempt}",
+            let hedges = match hedged {
+                0 => String::new(),
+                1 => ", 1 slow request asked again on another connection".to_owned(),
+                hedged => format!(", {hedged} slow requests asked again on another connection"),
+            };
+            format!("{label}: {} of {} chunks to fetch, {} of their {} received ({}){last}{attempt}{hedges}",
                 absent.len(), objects.len(), gib(reached), gib(length), phases.join(", "))
         }).collect();
         Some(each.join("; "))
