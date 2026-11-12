@@ -136,6 +136,8 @@ step "web-tools: a box drawn from its tool's fields by type, groups two deep, sl
 web_proof tools "$chrome" "$pw" ''
 step "web-segments: a shot rendered in segments plays all it has made so far, joined, with its sound, while the next renders; its take lands in its place playing on (cl-907)"
 web_proof segments "$chrome" "$pw" ''
+step "web-videotiles: every video box at rest plays its preview: an imported file, an Edit's cut, a tool's take and one picked up, an H3 take, one with no preview yet, one played in Focus (cl-964)"
+web_proof videotiles "$chrome" "$pw" ''
 step "web-when: a field that applies only while another has a value (When): cozy run says it's ignored and its function gets the default; in Focus it's dulled at once, kept, and back"
 web_proof when "$chrome" "$pw" ''
 step "web-kinds: a tool goes on a box of the kind it makes: a video tool refused on a picture; a video tool on a picture and an image tool on a video change nothing and say why at the bottom left; BiRefNet on it starts from <self.1>"

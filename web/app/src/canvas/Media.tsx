@@ -100,6 +100,9 @@ export function preload(client: Client, projectId: string | null, sha256: string
   })
 }
 
+/** How often a thumbnail that isn't there is asked again (1 s, 2 s, 4 s, 8 s, 16 s), as its file may still be arriving. */
+const THUMB_TRIES = 5
+
 /** Thumbnails come in these widths, so a file has few sizes in Calcifer's cache: as wide as it's drawn on screen, the canvas's zoom and the
  *  screen's density in, up to Calcifer's widest, which is never wider than the file. */
 function thumbWidth(cardWidth: number, zoom = 1): number {
@@ -143,7 +146,18 @@ export function Thumb({
   const projectId = store.projectId
   const zoom = useSignal(store.sharpness)
   const width = exact ? cardWidth : Math.max(thumbWidth(cardWidth, zoom), strip ? 0 : (widest.get(sha256) ?? 0))
-  const path = projectId ? client.thumb(projectId, sha256, width, strip, wave) : undefined
+  const base = projectId ? client.thumb(projectId, sha256, width, strip, wave) : undefined
+  // A file still on its way here has none yet (404 file_missing): asked again, later each time, before it says it has none.
+  const [tries, setTries] = useState<{ base?: string; n: number }>({ n: 0 })
+  const attempt = tries.base === base ? tries.n : 0
+  const path = base && attempt ? `${base}&try=${attempt}` : base
+  const retry = useRef<number | undefined>(undefined)
+  useEffect(() => () => clearTimeout(retry.current), [])
+  const failed = (at: string) => {
+    if (attempt >= THUMB_TRIES) return setFailedPath(at)
+    setImage(undefined)
+    retry.current = window.setTimeout(() => setTries({ base, n: attempt + 1 }), 1000 * 2 ** attempt)
+  }
   useEffect(() => {
     if (!path) return
     let live = true
@@ -156,7 +170,7 @@ export function Thumb({
       }, () => {
         if (!live) return
         leave()
-        setFailedPath(path)
+        failed(path)
       })
     }, now)
     return () => {
@@ -178,7 +192,7 @@ export function Thumb({
       onError={() => {
         if (image.path !== path || !image.live()) return
         image.complete()
-        setFailedPath(image.path)
+        failed(image.path)
       }}
       onLoad={(event) => {
         if (image.path !== path || !image.live()) return
@@ -233,8 +247,10 @@ export function usePreview(video: boolean) {
   }
 }
 
-/** Previews that can't play, by hash: a hover doesn't ask again. */
-const unpreviewable = new Set<string>()
+/** Previews that couldn't play, by hash, and until when a hover doesn't ask again: a file still arriving has one soon. */
+const unpreviewable = new Map<string, number>()
+const PREVIEW_TRIES = 4
+const PREVIEW_AGAIN_MS = 30_000
 
 /**
  * A video's preview over its poster: a few seconds from the poster's frame on, silent and looping, which Calcifer made once as the file
@@ -245,18 +261,22 @@ export function Preview({ sha256 }: { sha256: string }) {
   const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
   const [playing, setPlaying] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const element = useRef<HTMLVideoElement>(null)
+  const retry = useRef<number | undefined>(undefined)
+  useEffect(() => () => clearTimeout(retry.current), [])
   const projectId = store.projectId
   useEffect(() => {
-    if (!projectId || unpreviewable.has(sha256)) return
+    if (!projectId || (unpreviewable.get(sha256) ?? 0) > Date.now()) return
     let live = true
-    void client.transport.src(client.preview(projectId, sha256)).then((url) => {
+    const path = client.preview(projectId, sha256)
+    void client.transport.src(attempt ? `${path}&try=${attempt}` : path).then((url) => {
       if (live) setSrc(url)
     })
     return () => {
       live = false
     }
-  }, [client, projectId, sha256])
+  }, [client, projectId, sha256, attempt])
   // Its bytes and decoder go with it, not when it's collected.
   useEffect(() => {
     const el = element.current
@@ -281,8 +301,10 @@ export function Preview({ sha256 }: { sha256: string }) {
       onPlaying={() => setPlaying(true)}
       onError={(event) => {
         if (event.currentTarget.error?.code === MediaError.MEDIA_ERR_NETWORK) return
-        unpreviewable.add(sha256)
         setSrc(undefined)
+        // Made on its first ask, or its file still arriving: asked again while the pointer rests, then not for a while.
+        if (attempt + 1 < PREVIEW_TRIES) retry.current = window.setTimeout(() => setAttempt(attempt + 1), 1000 * 2 ** attempt)
+        else unpreviewable.set(sha256, Date.now() + PREVIEW_AGAIN_MS)
       }}
     />
   )
@@ -847,7 +869,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
             }}
           />
         )}
-        {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
+        {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.here ? view.scrub : undefined} previewing={previewing} />}
         {nearImage && field === "image" && !own && <BufferedImage sha256={drawnImage?.sha256 ?? null} originalPath={drawnImage?.path} neighborPaths={neighborPaths} neighbors={nearImage.absent || nearImage === drawnImage ? neighbors : [nearImage.sha256, ...neighbors]} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"}</span>}
