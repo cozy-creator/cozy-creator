@@ -32,13 +32,21 @@ function useHeld(): Set<string> | null {
 /** A take's mention without its brackets, as the store reads one. */
 export const bare = (take: string) => take.replace(/^<|>$/g, "")
 
+/** A video being made, nothing of it landed yet: in Focus it has a finished take's player from the first, filled in as what it makes so far
+ *  comes (Paul, 11-12), so the take lands in its place. */
+export const beingMade = (view: ElementView) =>
+  !shownOf(view) && view.asset?.kind === "video" && !view.asset.timeline && (view.asset.standing === "making" || Boolean(view.queued) || view.asked !== undefined || Boolean(view.glimpse))
+
 /** Under a video looked at in Focus: the one transport every video has (cl-965). */
 export function VideoTransport({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const shown = shownOf(view)
+  const fps = shown?.fps ?? FPS
+  const playback = store.playbackOf(name, fps)
+  const length = useSignal(playback.length)
+  if (beingMade(view)) return <Transport playback={playback} frames={length} fps={fps} />
   if (shown?.field !== "video" || !shown.duration_ms || orbitOf(shown)) return null
-  const fps = shown.fps ?? FPS
-  return <Transport playback={store.playbackOf(name, fps)} frames={framesIn(shown.duration_ms, fps)} fps={fps} />
+  return <Transport playback={playback} frames={framesIn(shown.duration_ms, fps)} fps={fps} />
 }
 
 /** Its track (Paul, 11-12; cl-965): the take's segments as spans on the time ruler every video has, the one the playhead is in marked,
@@ -52,6 +60,7 @@ export function Segments({ name, view }: { name: string; view: ElementView }) {
   const fps = shown?.fps ?? FPS
   const playback = store.playbackOf(name, fps)
   const frame = useSignal(playback.frame)
+  const length = useSignal(playback.length)
   const [room, setRoom] = useState(0)
   // Its width, measured whenever it's drawn: the track fits it.
   const watching = useRef<ResizeObserver | null>(null)
@@ -65,13 +74,15 @@ export function Segments({ name, view }: { name: string; view: ElementView }) {
     setRoom(held.clientWidth)
   }, [])
   if (!makes(view) && !view.asset) return null
-  if (shown?.field !== "video" || shown.number === undefined || orbitOf(shown)) return null
+  // Being made, what of it plays so far is one span, its seams said only once it lands.
+  const making = beingMade(view)
+  if (!making && (shown?.field !== "video" || shown.number === undefined || orbitOf(shown))) return null
   const pickup = tools.get(view.asset?.tool ?? "")?.pickup
   // What this take went on from: another box's take, or its own from a seam.
-  const made: Pickup | null | undefined = view.asset?.prefixes?.find((version) => version.number === shown.number)?.pickup
+  const made: Pickup | null | undefined = making ? null : view.asset?.prefixes?.find((version) => version.number === shown?.number)?.pickup
   const of = made ? store.mentionOf(bare(made.take), name) : null
   const own = of?.name === store.resolveName(name)
-  const last = shown.duration_ms ? framesIn(shown.duration_ms, fps) : 0
+  const last = making ? length : shown?.duration_ms ? framesIn(shown.duration_ms, fps) : 0
   const blocks = last ? segmentsOf(pickup && seams ? seams : [], last) : []
   const at = blocks.length ? Math.min(blocks.length - 1, segmentAt(frame, pickup && seams ? seams : [])) : 0
   const scale = last && room ? room / last : 0
@@ -82,7 +93,7 @@ export function Segments({ name, view }: { name: string; view: ElementView }) {
   }
   return (
     <div className="tl tl-take nodrag nopan nowheel" aria-label="Timeline">
-      <div className="tl-bar" role="toolbar" aria-label="Its segments">
+      <div className={`tl-bar ${pickup ? "redoes" : ""}`} role="toolbar" aria-label="Its segments">
         {made && of && (
           <span className="continues" title={made.take}>
             {own ? `Redone from ${cutClock(made.out_frame / fps)}` : `Continues <${of.name}.${of.number}> from ${cutClock(made.out_frame / fps)}`}

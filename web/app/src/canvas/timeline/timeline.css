@@ -20,6 +20,11 @@
 .focus-card.plays > .image-controls {
   grid-row: 3;
 }
+/* A tool that redoes from a seam: its take's bar is as tall with its Redo as without (its 40px, the padding and the line), so the player
+   above it never moves as the playhead crosses a seam, or as a take lands where its render played (Paul, 11-12). */
+.tl-take .tl-bar.redoes {
+  min-height: 53px;
+}
 .tl-take .tl-bar .continues {
   overflow: hidden;
   color: var(--mute);

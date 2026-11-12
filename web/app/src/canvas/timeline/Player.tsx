@@ -19,6 +19,8 @@ export interface Playback {
 export class VideoPlayback implements Playback {
   readonly frame = signal(0)
   readonly playing = signal(false)
+  /** How many frames the video it drives holds, once it's read them: what a render has made so far is only known so. */
+  readonly length = signal(0)
   /** Opens the player when there's nothing to drive yet. */
   start: () => void = () => {}
   private video: HTMLVideoElement | null = null
@@ -36,9 +38,11 @@ export class VideoPlayback implements Playback {
     cancelAnimationFrame(this.raf)
     if (!video) {
       this.playing.set(false)
+      this.length.set(0)
       return false
     }
     const read = () => this.frame.set(Math.round(video.currentTime * this.fps))
+    const measured = () => this.length.set(Number.isFinite(video.duration) ? Math.round(video.duration * this.fps) : 0)
     const tick = () => {
       read()
       this.raf = requestAnimationFrame(tick)
@@ -53,11 +57,12 @@ export class VideoPlayback implements Playback {
       cancelAnimationFrame(this.raf)
       read()
     }
-    const events: Array<[string, () => void]> = [["play", played], ["pause", stopped], ["ended", stopped], ["seeked", read], ["loadedmetadata", read]]
+    const events: Array<[string, () => void]> = [["play", played], ["pause", stopped], ["ended", stopped], ["seeked", read], ["loadedmetadata", read], ["durationchange", measured]]
     for (const [name, heard] of events) video.addEventListener(name, heard)
     this.off = () => {
       for (const [name, heard] of events) video.removeEventListener(name, heard)
     }
+    measured()
     const held = this.wanted
     this.wanted = null
     if (held !== null) {
