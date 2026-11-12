@@ -172,7 +172,8 @@ fn book(folder: &Folder) -> Arc<Book> {
     })
 }
 
-/// Who last changed `field` of box `name` (any of its fields with none), by an edit that stands: what a conflict names.
+/// Who last changed `field` of box `name` (any of its fields with none): by an edit, or by undoing one, whichever came last. What a
+/// conflict names.
 pub(super) fn last_by(folder: &Folder, name: &str, field: Option<&str>) -> Option<By> {
     let entries = book(folder).entries.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let key = name_key(name);
@@ -181,7 +182,8 @@ pub(super) fn last_by(folder: &Folder, name: &str, field: Option<&str>) -> Optio
         Change::Asset { name, .. } => name_key(name) == key,
         _ => false,
     };
-    entries.iter().rev().filter(|entry| entry.undone.is_none()).find(|entry| entry.changes.iter().any(touched)).map(|entry| entry.by.clone())
+    let when = |entry: &Entry| entry.undone.as_ref().map_or_else(|| (entry.at_ms, entry.by.clone()), |undone| (undone.at_ms, undone.by.clone()));
+    entries.iter().filter(|entry| entry.changes.iter().any(touched)).map(when).max_by_key(|(at, _)| *at).map(|(_, by)| by)
 }
 
 /// When the oldest edit the history keeps was made: no Undo reaches past it.

@@ -326,11 +326,14 @@ async fn read_file(ctx: &Context, project: &Project, file: &Path) -> Result<Map<
             let Some(written) = entry.get("file").and_then(Value::as_str).filter(|file| !file.starts_with("sha256:")) else { continue };
             let at = api::target::spelled(written, &base, &ctx.user_home);
             if sender.is_none() {
-                sender = Some(Sender::for_project(ctx, &project.id).await?);
+                sender = Some(Sender::for_project(ctx, &project.id).await?.quiet());
             }
             let digest = sender.as_ref().expect("a sender").file(&at).await?;
             entry.insert("file".to_owned(), json!(digest.to_string()));
         }
+    }
+    if let Some(sent) = sender.as_ref().and_then(Sender::said) {
+        output::say(ctx, &sent);
     }
     Ok(nodes)
 }
@@ -365,6 +368,8 @@ pub(crate) async fn apply(ctx: &Context, args: Apply) -> Result<ExitCode, Error>
         return Ok(ExitCode::from(1));
     }
     said(&applied);
+    // What stood is in the file once it's rewritten; on stdout, there.
+    kept(&applied, Some(if to_stdout { Path::new("stdout") } else { args.file.as_path() }));
     let mut lines = vec![];
     for did in ["created", "configured", "unchanged"] {
         let named: Vec<String> = applied.nodes.iter().filter(|outcome| outcome.did == did).map(|outcome| {
@@ -405,10 +410,16 @@ pub(crate) async fn diff(ctx: &Context, args: Diff) -> Result<ExitCode, Error> {
         return Ok(ExitCode::from(code));
     }
     said(&applied);
+    kept(&applied, None);
+    // A node made is its name and kind, then each field it sets, as kubectl diff shows an object made.
+    let made: Vec<&str> = applied.nodes.iter().filter(|outcome| outcome.did == "created").map(|outcome| outcome.name.as_str()).collect();
     for change in &applied.changes {
-        if change.before.is_null() && change.after.is_array() && !change.path.contains('.') {
-            let made: Vec<&str> = change.after.as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-            anstream::println!("+ {}{}", change.path, if made.is_empty() { String::new() } else { format!(" ({})", made.join(", ")) });
+        if made.contains(&change.path.as_str()) {
+            anstream::println!("+ {} ({})", change.path, change.after["kind"].as_str().unwrap_or_default());
+            continue;
+        }
+        if let Some((_, field)) = change.path.split_once('.').filter(|(name, _)| made.contains(name)) {
+            anstream::println!("  + {field}: {}", inline(&change.after));
             continue;
         }
         anstream::println!("{}", change.path);
@@ -475,6 +486,16 @@ fn conflict_next(applied: &Applied) -> Option<String> {
             Some(format!("set {} and apply, or apply --force-conflicts to keep {}", inline(&one.theirs), inline(&one.yours)))
         }
         _ => Some("settle each in the file and apply, or apply --force-conflicts to keep yours".to_owned()),
+    }
+}
+
+/// What the project changed since the file's rev that the file left as it was: it stands, said once, as nothing changes silently.
+fn kept(applied: &Applied, file: Option<&Path>) {
+    for kept in &applied.kept {
+        match file {
+            Some(file) => anstream::eprintln!("{}: {}; {} now shows it", kept.path, kept.message, file.display()),
+            None => anstream::eprintln!("{}: {}", kept.path, kept.message),
+        }
     }
 }
 
