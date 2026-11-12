@@ -385,3 +385,45 @@ mod tests {
         assert!(super::hand_on_exec(&read, 7).is_err());
     }
 }
+
+/// Two private inherited descriptors for Chromium's debugging protocol. Both child endpoints
+/// are first moved above fd 4, so installing 3/4 cannot clobber either source.
+#[cfg(target_os = "linux")]
+pub(super) fn private_browser_pipe(command: &mut Command) -> io::Result<(File, File)> {
+    fn pipe() -> io::Result<(File, File)> {
+        let mut fds = [-1; 2];
+        // SAFETY: pipe fills the two slots; each successful descriptor gets exactly one File owner.
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 { return Err(io::Error::last_os_error()); }
+        let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+        for file in [&read, &write] {
+            if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 { return Err(io::Error::last_os_error()); }
+        }
+        Ok((read, write))
+    }
+    fn above(file: File) -> io::Result<File> {
+        // SAFETY: fcntl duplicates this owned descriptor; the returned descriptor gets one owner.
+        let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 5) };
+        if fd == -1 { return Err(io::Error::last_os_error()); }
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+    let (child_read, parent_write) = pipe()?;
+    let (parent_read, child_write) = pipe()?;
+    let (child_read, child_write) = (above(child_read)?, above(child_write)?);
+    inherit_nothing(command);
+    let parent = std::process::id();
+    // SAFETY: only async-signal-safe descriptor/process syscalls runs in the child. Captured File owners keep the exact
+    // endpoints alive until spawn; dup2 clears CLOEXEC on 3/4, other descriptors retain it.
+    unsafe {
+        command.pre_exec(move || {
+            // A controller crash cannot leave its Chrome leader running with live authority.
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 || libc::getppid() as u32 != parent {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "private browser parent ended"));
+            }
+            if libc::dup2(child_read.as_raw_fd(), 3) == -1 || libc::dup2(child_write.as_raw_fd(), 4) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok((parent_write, parent_read))
+}

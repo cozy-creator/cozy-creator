@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 mod access;
+mod browser;
 mod api;
 mod authorized;
 mod eta;
