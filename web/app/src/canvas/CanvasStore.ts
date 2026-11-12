@@ -904,10 +904,10 @@ export class CanvasStore {
           if (this.hasRead && made && newest !== view.asset?.prefixes?.at(-1)?.number && made.run != null && view.asset?.making?.includes(made.run)) this.sayLater(asset.name, made.number, made.main?.sha256)
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
-          // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at. At rest, an approved box
-          // goes on showing what's approved, and what lands beside it is unseen (cl-928).
+          // The take it was rendered to look at landed, with nothing newer being made: open, it's the one looked at. At rest a box goes on
+          // showing what it showed (cl-936), what's approved staying and what lands beside it unseen (cl-928): its watch goes once nothing is on its way.
           const seen = watched({ ...view, asset })
-          if (!view.here && asset.pinned && (view.watchFrom !== undefined || view.watchRun !== undefined) && !asset.making?.length) Object.assign(change, { watchFrom: undefined, watchRun: undefined })
+          if (!view.here && (view.watchFrom !== undefined || view.watchRun !== undefined) && !asset.making?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined })
           else if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Bind a queued preview to its run and retain it through the gap between execution and the version landing.
           else if (seen?.run !== undefined) {

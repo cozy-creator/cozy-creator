@@ -724,7 +724,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {view.glimpse && !shown && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
       {full && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
-      {busy && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
+      {/* At rest it keeps what it showed and its size (cl-936): what's being made fades in over it, unless what it shows is approved. */}
+      {(busy || (!view.here && making && !asset?.pinned)) && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
       {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}

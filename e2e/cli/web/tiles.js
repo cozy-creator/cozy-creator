@@ -5,7 +5,8 @@
 //     Run progress - cancel button
 // An idle picture with Qwen's Image, an idle video with H3's Shot, a dropped picture with no tool, and a box rendering on this computer: their
 // rows and nothing else (no Edit, no Pick up from here, no chips), the render's lines under its picture with Cancel, at zoom 1 and 0.5, each
-// a screenshot. Open, Edit and Pick up from here are still there. Cancel on the tile stops its render.
+// a screenshot. Open, Edit and Pick up from here are still there. Cancel on the tile stops its render. A render's whole life, from Render to
+// its take landing, leaves the tile's size as it was (cl-936).
 //   node tiles.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so
 // nothing renders. Prints what it saw as JSON and exits 1 if anything failed.
@@ -112,7 +113,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
   writeFileSync(tool, TOOL);
 
   // A box this computer renders; a picture with Qwen's Image and a video with H3's Shot, each with a take; a picture with no tool.
-  importYaml(project, `version: 4\nassets:\n  slow:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n`);
+  importYaml(project, `version: 4\nassets:\n  slow:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n  again:\n    tool: ${tool}/draw\n    instructions: Another still.\n    pace: 0.3\n`);
   const tools = [...((await api(`/v1/tools?project=${id}&q=qwen`)).body?.tools ?? []), ...((await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? [])];
   const image = tools.find((one) => one.package === 'qwen-image-2' && one.makes === 'image');
   const video = tools.find((one) => one.id === 'minimax-h3/generate') ?? tools.find((one) => one.package === 'minimax-h3' && one.makes === 'video');
@@ -202,6 +203,41 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
     await boxOf(page, 'slow').locator('.tile-under .face-cancel').click();
     const stopped = await until('slow stopped', async () => ({ asset: (await api(at)).body.assets.find((one) => one.name === 'slow'), lines: (await tile('slow')).lines }), (now) => !now.asset?.making?.length && now.lines === null, 60_000).catch((why) => ({ why: String(why) }));
     check('cancel_on_the_tile', !stopped.why && !stopped.asset?.versions, stopped);
+  }
+
+  // A render's whole life leaves a tile's size as it was (cl-936): a box with a take, rendered again, sampled from the ask to the landing.
+  if (local) {
+    const versions = async () => (await api(at)).body.assets.find((one) => one.name === 'again')?.versions ?? 0;
+    await post(`${at}/runs`, { names: ['again'], on: ['local'] });
+    await until('again has a take', versions, (n) => n === 1, FIRST_RUN_MS);
+    await settled(page);
+    const size = () => boxOf(page, 'again').evaluate((node) => {
+      const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+      const [card, box] = [node.querySelector('.card').getBoundingClientRect(), node.getBoundingClientRect()];
+      return [card.width, card.height, box.width, box.height].map((n) => Math.round((n / zoom) * 10) / 10).join('x');
+    });
+    const before = await size();
+    await boxOf(page, 'again').evaluate((node) => {
+      const sizes = (window.againSizes = []);
+      const zoom = () => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+      const look = () => {
+        const card = node.querySelector('.card');
+        if (!card) return;
+        const [c, b] = [card.getBoundingClientRect(), node.getBoundingClientRect()];
+        const now = { size: [c.width, c.height, b.width, b.height].map((n) => Math.round((n / zoom()) * 10) / 10).join('x'), rendering: Boolean(card.querySelector('.tile-under .run-face')) };
+        if (JSON.stringify(sizes.at(-1)) !== JSON.stringify(now)) sizes.push(now);
+      };
+      new MutationObserver(look).observe(node, { subtree: true, childList: true, attributes: true, characterData: true });
+      new ResizeObserver(look).observe(node);
+      look();
+    });
+    await post(`${at}/runs`, { names: ['again'], on: ['local'] });
+    await until('again\'s second take', versions, (n) => n === 2, FIRST_RUN_MS);
+    await settled(page);
+    await page.waitForTimeout(1000);
+    const sizes = await page.evaluate(() => window.againSizes);
+    seen.render_sizes = { before, sizes };
+    check('render_leaves_its_size', sizes.some((now) => now.rendering) && sizes.every((now) => now.size === before) && (await size()) === before, { before, sizes });
   }
 
   // Open, what it can do is still there.

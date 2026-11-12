@@ -126,8 +126,13 @@ async function died(why) {
         outside: Boolean(wave && media && !media.contains(wave) && Math.abs(w.top - m.top) < 1.5 && Math.abs(w.bottom - m.bottom) < 1.5 && Math.abs(w.width - m.width) < 1.5),
         breathes: wave ? getComputedStyle(wave, '::before').animationName : '',
         shows: card.querySelector('.node-version-label')?.textContent ?? '',
-        line: card.querySelector('.media .run-face .face-machine')?.textContent ?? '',
-        meter: card.querySelector('.media .run-face .face-meter')?.getAttribute('aria-valuenow') ?? null,
+        line: card.querySelector('.run-face .face-machine')?.textContent ?? '',
+        meter: card.querySelector('.run-face .face-meter')?.getAttribute('aria-valuenow') ?? null,
+        size: (() => {
+          const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+          const [c, n] = [card.getBoundingClientRect(), card.closest('.react-flow__node').getBoundingClientRect()];
+          return [c.width, c.height, n.width, n.height].map((v) => Math.round((v / zoom) * 10) / 10).join('x');
+        })(),
       };
       if (JSON.stringify(said.at(-1)) !== JSON.stringify(now)) said.push(now);
     };
@@ -159,6 +164,11 @@ async function died(why) {
   await take(1).dblclick();
   await until('take 1 approved', asset, (row) => row.pinned && row.approved === 1);
   await leave();
+  const sized = await rest.evaluate((card) => {
+    const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+    const [c, n] = [card.getBoundingClientRect(), card.closest('.react-flow__node').getBoundingClientRect()];
+    return [c.width, c.height, n.width, n.height].map((v) => Math.round((v / zoom) * 10) / 10).join('x');
+  });
   const second = await render(2);
   seen.second_render = second.said;
   const kept = second.said.filter((now) => now.rendering);
@@ -167,6 +177,8 @@ async function died(why) {
   const metered = kept.filter((now) => now.meter !== null).map((now) => ({ ...now, meter: Number(now.meter) }));
   check('meter_of_the_whole_job', metered.length > 0 && metered.every((now, i) => now.meter >= 0 && now.meter <= 99 && (i === 0 || now.meter >= metered[i - 1].meter) && / - \d+[hms]( \d+[ms])? \/ \d+[hms]/.test(now.line)), kept);
   check('approved_take_still_shown', (await label()) === 'v1', await label());
+  // Its whole render, from the ask to the take landing beside it, leaves its size as it was (cl-936).
+  check('render_leaves_its_size', second.said.filter((now) => now.size).every((now) => now.size === sized), { sized, sizes: [...new Set(second.said.map((now) => now.size))] });
   check('new_take_unseen', second.row.approved === 1 && JSON.stringify(second.row.unseen) === '[2]', second.row);
   check('name_dot', (await until('a dot by its name', nameDots, (n) => n === 1, 15_000).catch(() => 0)) === 1);
   await shot('unseen');
