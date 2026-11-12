@@ -79,26 +79,13 @@
 .frame-sections .grip:active {
   cursor: grabbing;
 }
-/* Behind it, faded, each picture at the frame's full height, side by side; a new set fades in. */
+/* Behind it, faded, every picture it uses, as large as they can be (.spread, cl-949); a new set fades in. */
 .backdrop {
   position: absolute;
   inset: 0;
-  display: flex;
-  gap: 2px;
   opacity: .22;
   pointer-events: none;
   animation: backdrop-in 240ms ease both;
-}
-.backdrop-picture {
-  flex: 1 1 0;
-  min-width: 0;
-  height: 100%;
-}
-.backdrop-picture > img,
-.backdrop-picture > svg {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 @keyframes backdrop-in {
   from { opacity: 0; }
