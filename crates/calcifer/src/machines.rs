@@ -207,6 +207,11 @@ impl Machines {
             .and_then(|seen| seen.frame.clone())
     }
 
+    /// Its first GPU's name, as it last said: a run's record reads it, without its whole frame.
+    pub(crate) fn gpu(&self, name: &str) -> Option<String> {
+        lock(&self.seen).get(name).and_then(|seen| seen.frame.as_ref()?.gpus.first().map(|gpu| gpu.name.clone()))
+    }
+
     /// Stops every task where it stands, as if the process ended.
     pub(crate) fn close(&self) {
         lock(&self.tasks).abort_all();

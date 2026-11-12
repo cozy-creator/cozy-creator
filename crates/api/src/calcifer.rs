@@ -726,7 +726,7 @@ pub struct Progress {
     /// How far to trust `eta_s`, 0 to 1: higher with closer history and more of the run done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_confidence: Option<f64>,
-    /// What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
+    /// What `eta_s` stands on; `first_run` with none: nothing like it ran on any card this computer knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_basis: Option<EtaBasis>,
     /// The number of its newest preview of what it's making (`GET /v1/runs/{id}/preview`), from 1;
@@ -771,9 +771,11 @@ pub enum EtaBasis {
     Machine,
     /// Runs like it on other machines of this GPU, and its own steps.
     Gpu,
-    /// Its own steps alone: nothing like it ran here.
+    /// Runs like it on another card, scaled by the Hub's per-SKU speeds, and its own steps.
+    Card,
+    /// Its own steps alone: nothing like it ran anywhere this computer knows.
     Steps,
-    /// Nothing yet: no run like it here or on this GPU, and fewer than two of its own steps.
+    /// Nothing yet: no run like it on any card this computer knows, and no step of its own.
     FirstRun,
 }
 

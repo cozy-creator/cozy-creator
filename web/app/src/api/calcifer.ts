@@ -655,7 +655,7 @@ export type ErrorKind = "usage" | "validation" | "not_found" | "credential" | "f
 /**
  * What a time left stands on.
  */
-export type EtaBasis = "machine" | "gpu" | "steps" | "first_run";
+export type EtaBasis = "machine" | "gpu" | "card" | "steps" | "first_run";
 
 /**
  * A key for another computer: its file, which the client writes owner-only.
@@ -2013,7 +2013,7 @@ eta_s?: number | null,
  */
 eta_confidence?: number | null,
 /**
- * What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
+ * What `eta_s` stands on; `first_run` with none: nothing like it ran on any card this computer knows.
  */
 eta_basis?: EtaBasis | null,
 /**

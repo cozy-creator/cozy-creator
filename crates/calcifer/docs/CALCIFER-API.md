@@ -256,21 +256,27 @@ a spec.
 
 ### Time left
 
-Calcifer says how long a run has left, all of it, so the page, `cozy run`, `run watch`, `run ls` and a machine's activity show one
-number. `eta_s` is the seconds left, `eta_confidence` 0 to 1, and `eta_basis` what it stands on: `machine` (runs like it on this
-machine), `gpu` (on other machines of its GPU, by the name each run's record keeps as `gpu`), `steps` (its own steps alone), or
-`first_run` with no `eta_s` (nothing like it ran here, and it has fewer than two steps of its own).
+Calcifer says how long a run has left, all of it until its results are here, so the page, `cozy run`, `run watch`, `run ls` and a
+machine's activity show one number. `eta_s` is the seconds left, `eta_confidence` 0 to 1, and `eta_basis` what it stands on:
+`machine` (runs like it on this machine), `gpu` (on other machines of its GPU, by the name each run's record keeps as `gpu`), `card`
+(on another card, scaled by the Hub's per-SKU speeds for the function, cl-913's bar's third tier), `steps` (its own steps alone), or
+`first_run` with no `eta_s` (nothing like it ran on any card this computer knows, and no step of its own yet). A live run's record
+keeps its machine's GPU in `gpu` from the moment it has a machine.
 
 - **Prior.** The newest five completed runs of its target (any release) on its machine, else on its GPU, each split into its phases:
   its start and load (to its first stage), each stage its executor names (`encoding prompt`, `generating image`, `decoding image`, …), a
   stepping stage's first step and steady pace (the median of its steps after the first), and the tail to its end. Each phase is the
   median of theirs. With `megapixels` (or `width` and `height`) in its input, runs within 15% of that size, else all of them with their
-  steps and what follows scaled by megapixels. The Hub keeps no timings per SKU, so there's no third tier.
+  steps and what follows scaled by megapixels. With none of either, the card it ran on most, each phase times that card's Hub speed
+  over this one's (`card`).
 - **Live.** Before its execution starts, the prior's whole time, plus a download's bytes left at its rate. Then the prior for each phase
   not reached, what's left of the one it's in, and for a stepping stage its steps left at a pace blended from the prior's and its own:
   `(w·prior + n·own) / (w + n)`, where `own` is TensorD's `step_steady_ms` (the median of its last five steps after the first), `n` the
   steps it has after its first, and `w` 3 for this machine's history, 2 for its GPU's, halved when scaled. Its first step is never its
-  pace: with no prior and under two steps, it says `first_run`. A phase that overruns counts as done until its next starts.
+  pace once another step is in; with no prior, its first step's time is, until then. A phase that overruns counts as done until its
+  next starts. What its machine says before the prior's first stage (`importing <package>`, `starting the executor`, `loading …`) is
+  the prior's start and load. Its results come here once it ends: the newest five like runs' results' bytes (their median) at its
+  machine's last measured export rate are part of the time left until it ends, then its `arriving` is.
 - **Smooth.** It's said again each second as it counts down. A new estimate within 10% (or 2 s) of what was shown is shown as it is; a
   bigger one is eased to over about a second, never jumped to.
 - **Parts.** A run whose stages are in parts a scope counts (`Segment 2 of 3`): once a part has ended, each part left takes as long as

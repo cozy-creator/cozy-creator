@@ -763,7 +763,8 @@ cozy --json machine show local | J '.status.warm | all(.entrypoint != "remove_ba
 }
 
 # Calcifer's time left, on a weightless run whose stages and steps time it as a model's do (tool.py's `stepped`, its first step slow as a
-# warm-up is). Its first run here says `first_run`, with no number, until it has two steps of its own. With history, each report has a
+# warm-up is). Its first run here says `first_run`, with no number, until it has a step of its own: then that step's pace (`steps`,
+# cl-921). With history, each report has a
 # number from the first; at step 2 it is within 35% of what was left, and once three steps are in a step moves it at most 25% past its
 # countdown (and a second of rounding). Both are from replaying Paul's Qwen Turbo runs 171-208 through the estimator: 10 of 14 were within
 # 35% at step 2 (of the four past it, 181 and 208 spent 70 s encoding their prompt, and 195 and 196 ran on a Runtime half again as fast as
@@ -778,8 +779,10 @@ for turn in 1 2 3; do
   end=$(jq '.started_at_ms + .execution_ms' "$out.json")
   grep '^{' "$out.ndjson" | jq -c 'select(.type == "run.progress") | .progress' > "$out.progress"
   if [ "$turn" = 1 ] && [ "$had" = 0 ]; then
-    jq -se 'map(select((.completed // 0) < 2)) | length > 0 and all(.eta_s == null and .eta_basis == "first_run")' "$out.progress" > /dev/null \
-      || check "time left: a first run had a number before two steps of its own: $(head -c 600 "$out.progress")"
+    jq -se 'map(select((.completed // 0) < 1)) | length > 0 and all(.eta_s == null and .eta_basis == "first_run")' "$out.progress" > /dev/null \
+      || check "time left: a first run had a number before a step of its own: $(head -c 600 "$out.progress")"
+    jq -se 'map(select(.stage == "generating image" and (.completed // 0) >= 1)) | length > 0 and all(.eta_s != null and .eta_basis == "steps")' "$out.progress" > /dev/null \
+      || check "time left: a first run with a step of its own had no number: $(jq -sc 'map(select(.stage == "generating image")) | .[:3]' "$out.progress")"
     continue
   fi
   jq -se 'length > 0 and all(.eta_s != null and .eta_basis == "machine")' "$out.progress" > /dev/null \
