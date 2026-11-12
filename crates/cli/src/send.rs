@@ -76,6 +76,8 @@ pub(crate) struct Sender<'a> {
     ctx: &'a Context,
     calcifer: Client,
     project: Option<String>,
+    /// An explicit export (a model installed from a file): it may name a project's file, said once.
+    export: bool,
 }
 
 impl<'a> Sender<'a> {
@@ -84,6 +86,7 @@ impl<'a> Sender<'a> {
             ctx,
             calcifer: ctx.calcifer().await?,
             project: None,
+            export: false,
         })
     }
 
@@ -92,7 +95,25 @@ impl<'a> Sender<'a> {
             ctx,
             calcifer: ctx.calcifer().await?,
             project: Some(project.to_owned()),
+            export: false,
         })
+    }
+
+    /// What a person exports on purpose: a project's own file goes too, outside its protection, with a warning.
+    pub(crate) async fn export(ctx: &'a Context) -> Result<Self, Error> {
+        Ok(Self { export: true, ..Self::new(ctx).await? })
+    }
+
+    /// Whether `path` (a folder: with its files) is independent of any project, else refused, or for an export warned.
+    async fn independent(&self, path: &Path, tree: bool) -> Result<bool, Error> {
+        if self.project.is_some() { return Ok(false); }
+        let owned = project_input(self.ctx, path, tree).await?;
+        if owned && !self.export {
+            return Err(Error::new(Kind::Forbidden, "project_source_scope", "This input belongs to a Cozy project and cannot be staged as independent maintenance data")
+                .remedy("Use it in a project-scoped run, or explicitly export an independent copy first"));
+        }
+        if owned { crate::output::warn("this copy leaves its project's protection: what it makes is this machine's, outside the project"); }
+        Ok(!owned)
     }
 
     /// Maintenance may stage code only after every actual source path is proven outside a project.
@@ -109,10 +130,11 @@ impl<'a> Sender<'a> {
 
     /// The file at `path`, held by Calcifer: its digest.
     pub(crate) async fn file(&self, path: &Path) -> Result<Digest, Error> {
-        if self.project.is_none() { independent_input_scope(self.ctx, path, false).await?; }
+        // An exported project file keeps no global memo of its path.
+        let independent = self.independent(path, false).await?;
         let mut progress = Sending::new(self.ctx);
         progress.line.phase("Checking file");
-        let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
+        let (at, memo) = (path.to_owned(), (self.project.is_none() && independent).then(|| self.memo()));
         let digest = tokio::task::spawn_blocking(move || api::digests::of(memo.as_deref(), &at))
             .await
             .map_err(|e| Error::internal("digest", e.to_string()))??;
@@ -126,10 +148,10 @@ impl<'a> Sender<'a> {
 
     /// The folder at `root`, each file and then its tree document held by Calcifer: the document's digest.
     pub(crate) async fn tree(&self, root: &Path) -> Result<Digest, Error> {
-        if self.project.is_none() { independent_input_scope(self.ctx, root, true).await?; }
+        let independent = self.independent(root, true).await?;
         let mut progress = Sending::new(self.ctx);
         progress.line.phase("Checking folder");
-        let (at, memo) = (root.to_owned(), self.project.is_none().then(|| self.memo()));
+        let (at, memo) = (root.to_owned(), (self.project.is_none() && independent).then(|| self.memo()));
         let staged = tokio::task::spawn_blocking(move || api::stage::stage(&at, memo.as_deref()))
             .await
             .map_err(|e| Error::internal("stage", e.to_string()))??;
@@ -364,9 +386,9 @@ async fn source_scope(ctx: &Context, plan: &api::code::SourcePlan, scope: CodeSc
     Ok(())
 }
 
-/// An independent file/tree must not create a global digest memo or CAS copy from a project's
-/// own path (including an alias) or any resolved source. Tree enumeration itself hashes nothing.
-async fn independent_input_scope(ctx: &Context, path: &Path, tree: bool) -> Result<(), Error> {
+/// Whether a file/tree is a project's own (by its path, an alias or any resolved source): an
+/// independent one must not create a global digest memo or CAS copy from it. Tree enumeration hashes nothing.
+async fn project_input(ctx: &Context, path: &Path, tree: bool) -> Result<bool, Error> {
     let mut paths = vec![path.to_path_buf()];
     if tree {
         paths.extend(api::tree::walk(path, true)
@@ -385,13 +407,12 @@ async fn independent_input_scope(ctx: &Context, path: &Path, tree: bool) -> Resu
         let directory = directory.to_str().ok_or_else(|| Error::new(Kind::Usage, "project_path", "The source path is not UTF-8"))?;
         let route = crate::calcifer_client::path(&["v1", "projects", directory, "address"]);
         match client.get::<api::calcifer::project::Address>(&route).await {
-            Ok(_) => return Err(Error::new(Kind::Forbidden, "project_source_scope", "This input belongs to a Cozy project and cannot be staged as independent maintenance data")
-                .remedy("Use it in a project-scoped run, or explicitly export an independent copy first")),
+            Ok(_) => return Ok(true),
             Err(error) if error.code == "project_not_found" => {},
             Err(error) => return Err(error),
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// `raw`, when it is written as a path here: its file (a folder too, with `folders`) sent, `raw` its digest and `name` its name.
@@ -401,7 +422,8 @@ pub(crate) async fn held(ctx: &Context, raw: &mut String, name: &mut Option<Stri
     }
     let cwd = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     let path = spelled(raw, &cwd, &ctx.user_home);
-    let sender = Sender::new(ctx).await?;
+    // A model made from a file is an explicit export, a project's file too.
+    let sender = Sender::export(ctx).await?;
     let digest = match std::fs::metadata(&path) {
         Ok(meta) if meta.is_file() => sender.file(&path).await?,
         Ok(meta) if meta.is_dir() && folders => sender.tree(&path).await?,
