@@ -208,7 +208,9 @@ def main() -> int:
                 scanner.add(value)
             (view / "root-data.txt").write_text(marker)
             (view / "files").mkdir(exist_ok=True)
-            (view / "files/root-data.txt").write_text(marker)
+            # Project files are served only by content address (<sha256>.<ext>).
+            text_file = "files/" + sha(marker.encode()) + ".txt"
+            (view / text_file).write_text(marker)
             image = new_png(scanner, marker)
             digest = "sha256:" + sha(image)
             # The content hash itself is derived project data and must not become global custody.
@@ -217,7 +219,7 @@ def main() -> int:
             native.call("POST", base + "/assets", {"name": asset, "exact": True, "fields": {"text": marker}, "at": {"x": 0, "y": 0, "w": 320}})
             native.call("PUT", "/v1/project-files/" + digest + "?project=" + quote(opened["id"], safe=""), image)
             imported = native.call("POST", base + "/imports", {"source": digest, "name": picture_asset, "exact": True, "at": {"x": 400, "y": 0, "w": 320}})
-            projects.append({"folder": folder, "view": view, "id": opened["id"], "credential": credential, "marker": marker, "edit": edited, "asset": asset, "path": imported["path"], "digest": digest})
+            projects.append({"folder": folder, "view": view, "id": opened["id"], "credential": credential, "marker": marker, "edit": edited, "asset": asset, "path": imported["path"], "digest": digest, "text_file": text_file})
         a, b = projects
         if ready.get("native_execution") is True:
             phase = "managed_execution"
@@ -248,10 +250,15 @@ def main() -> int:
         for project in projects:
             phase = "headers"
             base = project_route(project["id"])
-            paths = [base + "/files/root-data.txt", base + "/" + project["path"], base + "/thumbs/" + project["digest"].removeprefix("sha256:") + "?w=128"]
+            paths = [base + "/" + project["text_file"], base + "/" + project["path"], base + "/thumbs/" + project["digest"].removeprefix("sha256:") + "?w=128"]
             for number, path in enumerate(paths):
                 observed = proof.exercise(project["id"], "media", path=path)
-                require(observed.get("authenticated") and observed.get("status") == 200 and observed.get("no_store"), "owned_no_store_200")
+                served = observed.get("authenticated") and observed.get("status") == 200 and observed.get("no_store")
+                if not served:
+                    status = observed.get("status")
+                    receipt.add("owned_media_failure", index=number, status=status if type(status) is int else -1,
+                                authenticated=observed.get("authenticated") is True, no_store=observed.get("no_store") is True)
+                require(served, "owned_no_store_200")
                 if number == 1:
                     ranged = proof.exercise(project["id"], "media", path=path, range=True)
                     conditional = proof.exercise(project["id"], "media", path=path, conditional=True)
