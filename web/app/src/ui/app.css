@@ -2320,6 +2320,11 @@ video.preview.on {
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
   display: none;
 }
+/* And what hangs under it, its tool, shape and a render's lines, drawn at the canvas's scale (7px on screen at 33%): its dot says it renders.
+   The room rows keep for them is the room its name rises into far out (CanvasStore's lifts, cl-885). */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card:not(.here) > .tile-under {
+  display: none;
+}
 
 /* Drawers, and what floats over the canvas keeps clear of the rest by: the tools' width, the zoom's height, an open drawer's width as drawn,
    and where what sits beside the tools starts. */

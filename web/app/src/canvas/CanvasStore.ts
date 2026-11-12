@@ -35,7 +35,7 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, farNameOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, sameStep, selectedOf, sentShape, type Shown, shownOf, stepOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor, type ZoomStep } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -362,6 +362,17 @@ export class CanvasStore {
   private dragging = new Set<string>()
   /** Where what's being dragged started, for a drop that isn't a move. */
   private dragFrom = new Map<string, { x: number; y: number }>()
+  /** The zoom the canvas last came to rest at, as far as what it draws goes. */
+  private zoomStep: ZoomStep = stepOf(1)
+  /**
+   * Far out, how much lower than its row each box is drawn (cl-885): its name, held at the body size on screen, takes more of the canvas than
+   * the room rows keep for it, so a box whose name would lie on the box above is drawn that much lower, and what's under it with it. Laid
+   * out again only as a zoom comes to rest on another step, or the boxes change. Rows never hear of it, so close in they're as they were;
+   * only a box let go is where it was let go, as it was drawn.
+   */
+  private lifts = new Map<string, number>()
+  private reflowing = false
+  private nameWidth?: (text: string, px: number) => number
   /** On its way out, until a read begun after when its delete was answered: one from before doesn't bring it back, and one from after says, as
    * another writer may have put it back. */
   private deleting = new Map<string, number>()
@@ -432,6 +443,7 @@ export class CanvasStore {
   /** A canvas drawn for it, the first or again: back on a project, its boxes are as it left them, whatever's still on its way to Calcifer. */
   attach(flow: Flow) {
     this.flow = flow
+    this.zoomStep = stepOf(flow.getViewport().zoom)
     if (this.state && this.rows) this.reconcile()
     // React Flow forgets what it's told as it mounts, which a project read already has in time for: what's held is told again once it's up.
     setTimeout(() => {
@@ -443,6 +455,7 @@ export class CanvasStore {
           ...[...this.ids].filter(([, id]) => !there.has(id)).flatMap(([name, id]) => (this.rows?.has(name) ? [this.node(name, this.rows.get(name)!, this.selected.has(name), id)] : [])),
         ]
       })
+      this.reflowSoon()
     })
   }
 
@@ -683,6 +696,11 @@ export class CanvasStore {
     return { x: at?.x ?? row.x, y: at?.y ?? row.y, w, h: heightFor(view, w) }
   }
 
+  /** How much lower than its row it's drawn, far out (cl-885). */
+  liftOf(name: string): number {
+    return this.lifts.get(this.resolveName(name)) ?? 0
+  }
+
   /** Node.position is the canonical anchor: its origin already accounts for the
    * displayed body's offset. A drag never writes the selected version's width. */
   private draggedRow(node: ElementNode): Card {
@@ -743,9 +761,10 @@ export class CanvasStore {
     if (!pose || !node) return
     this.surface.current = current
     this.surface.pose = pose
-    const { x, y, w: canonicalWidth } = pose
+    const { x, w: canonicalWidth } = pose
     const { x: left, y: top, w: width, h: height } = current.bounds
-    const origin: [number, number] = [(x - left) / width, (y - top) / height]
+    const origin: [number, number] = [(x - left) / width, (pose.y - top) / height]
+    const y = pose.y + this.liftOf(name)
     if (node.data.width === canonicalWidth && node.width === width && node.height === height && node.position.x === x && node.position.y === y && node.origin?.[0] === origin[0] && node.origin?.[1] === origin[1]) return
     // The card's frame and its React Flow envelope are one layout change, before size observers run.
     flushSync(() => this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: canonicalWidth }, position: { x, y }, width, height, origin, measured: { width, height } })))
@@ -777,12 +796,129 @@ export class CanvasStore {
       }
       const before = this.surface.pose
       if (before?.w !== pose.w || before.h !== pose.h) return this.measureSurface()
-      this.flow?.updateNode(id, { position: { x: pose.x, y: pose.y } })
+      this.flow?.updateNode(id, { position: { x: pose.x, y: pose.y + this.liftOf(name) } })
       return
     }
     const drawn = bodyBox(view, pose)
     const origin: [number, number] = [(pose.x - drawn.x) / drawn.w, (pose.y - drawn.y) / drawn.h]
-    this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: pose.w }, position: { x: pose.x, y: pose.y }, width: drawn.w, height: undefined, origin, measured: { width: drawn.w, height: drawn.h } }))
+    this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: pose.w }, position: { x: pose.x, y: pose.y + this.liftOf(name) }, width: drawn.w, height: undefined, origin, measured: { width: drawn.w, height: drawn.h } }))
+    // Where it is or how large changed what's under it.
+    this.reflowSoon()
+  }
+
+  // Far out, a name's room (cl-885)
+
+  /** The canvas came to rest at `zoom`, or is about to be moved there: laid out for it, if that's another step, each box gliding to it. */
+  settleZoom(zoom: number) {
+    const step = stepOf(zoom)
+    if (sameStep(step, this.zoomStep)) return
+    this.zoomStep = step
+    this.reflow(true)
+  }
+
+  /** Laid out again once this turn's changes are in. Close in, with nothing drawn lower, there's nothing to do. */
+  private reflowSoon() {
+    if (this.reflowing || (!this.zoomStep.band && !this.lifts.size)) return
+    this.reflowing = true
+    queueMicrotask(() => {
+      this.reflowing = false
+      this.reflow(false)
+    })
+  }
+
+  /** Each box drawn as low as its lift at the step it's at says. What a hand holds, by itself or by its corner, and all else with it, wait for it to let go. */
+  private reflow(glide: boolean) {
+    const flow = this.flow
+    if (!flow || this.dragging.size || this.pulling) return
+    const next = this.liftsAt(this.zoomStep)
+    const moved = new Map<string, string>()
+    for (const [name, id] of this.ids) if ((this.lifts.get(name) ?? 0) !== (next.get(name) ?? 0)) moved.set(id, name)
+    this.lifts = next
+    if (!moved.size) return
+    const surface = this.surface?.id
+    const ids = new Set([...moved.keys()].filter((id) => id !== surface))
+    let timer: ReturnType<typeof setTimeout> | undefined
+    if (glide) timer = setTimeout(() => flow.setNodes((nodes) => nodes.map((node) => (ids.has(node.id) && this.gliding.get(node.id) === timer ? { ...node, className: undefined } : node))), GLIDE_MS)
+    flow.setNodes((nodes) =>
+      nodes.map((node) => {
+        const name = ids.has(node.id) ? moved.get(node.id) : undefined
+        const pose = name && this.poseOf(name)
+        if (!pose) return node
+        if (timer) {
+          clearTimeout(this.gliding.get(node.id))
+          this.gliding.set(node.id, timer)
+        }
+        return { ...node, position: { x: pose.x, y: pose.y + (next.get(name) ?? 0) }, ...(timer ? { className: "glide" } : {}) }
+      }),
+    )
+    if (surface && moved.has(surface)) this.paintPose(moved.get(surface)!)
+  }
+
+  /**
+   * How much lower each box is drawn at `step`: close in, none. Far out, from the top down, a box whose name would come nearer a box wholly
+   * above it, as they're drawn, than its room says goes down as far as that takes, and so on down the line. Its name reaches right of its box
+   * as far as it's drawn, and it's measured as it's drawn, so a short name keeps the room rows give it and a name on two lines takes two.
+   */
+  private liftsAt(step: ZoomStep): Map<string, number> {
+    const lifts = new Map<string, number>()
+    if (!step.band) return lifts
+    const measure = this.measureName()
+    const boxes: { name: string; box: Box; rise: number; reach: number; clear: number }[] = []
+    for (const name of this.ids.keys()) {
+      const view = this.views.get(name)
+      const pose = this.poseOf(name)
+      if (!view || !pose) continue
+      const box = bodyBox(view, pose)
+      const far = farNameOf(view.placing ? this.shownName(name) : view.name, box.w, step, measure)
+      boxes.push({ name, box, rise: far.rise, reach: box.x + Math.max(box.w, far.reach), clear: far.clear })
+    }
+    boxes.sort((a, b) => a.box.y - b.box.y || (a.name < b.name ? -1 : 1))
+    for (const [at, { name, box, rise, reach, clear }] of boxes.entries()) {
+      let lift = 0
+      for (let i = 0; i < at; i++) {
+        const above = boxes[i].box
+        const bottom = above.y + above.h
+        if (bottom > box.y || above.x >= reach || above.x + above.w <= box.x) continue
+        lift = Math.max(lift, bottom + (lifts.get(boxes[i].name) ?? 0) + clear + rise - box.y)
+      }
+      if (lift > 0) lifts.set(name, Math.ceil(lift))
+    }
+    return lifts
+  }
+
+  /** What the boxes, or those whose nodes are `ids`, cover as they'd be drawn at `zoom`: what a fit landing there holds. */
+  boundsAt(zoom: number, ids?: Set<string>): Box | null {
+    const lifts = this.liftsAt(stepOf(zoom))
+    let [left, top, right, bottom] = [Infinity, Infinity, -Infinity, -Infinity]
+    for (const [name, id] of this.ids) {
+      const view = this.views.get(name)
+      const pose = this.poseOf(name)
+      if ((ids && !ids.has(id)) || !view || !pose) continue
+      const box = bodyBox(view, pose)
+      const y = box.y + (lifts.get(name) ?? 0)
+      ;[left, top, right, bottom] = [Math.min(left, box.x), Math.min(top, y), Math.max(right, box.x + box.w), Math.max(bottom, y + box.h)]
+    }
+    return left < right ? { x: left, y: top, w: right - left, h: bottom - top } : null
+  }
+
+  /** A name's width at a font size, in the font a box's name is drawn in (app.css's `.card .nm`). */
+  private measureName(): (text: string, px: number) => number {
+    if (this.nameWidth) return this.nameWidth
+    const context = document.createElement("canvas").getContext("2d")
+    const style = getComputedStyle(document.documentElement)
+    const font = `${style.getPropertyValue("--w-title").trim() || "700"} %spx ${style.getPropertyValue("--mono").trim() || "monospace"}`
+    const widths = new Map<string, number>()
+    return (this.nameWidth = (text, px) => {
+      const key = `${px} ${text}`
+      let width = widths.get(key)
+      if (width === undefined) {
+        if (context) context.font = font.replace("%s", String(px))
+        // Mono: with no canvas to measure in, its advance.
+        width = context ? context.measureText(text).width : text.length * px * 0.62
+        widths.set(key, width)
+      }
+      return width
+    })
   }
 
   // From Calcifer
@@ -1102,6 +1238,7 @@ export class CanvasStore {
     })
     this.flow?.addNodes(nodes)
     this.followAll()
+    this.reflowSoon()
   }
 
   private node(name: string, row: Card, selected = false, id = `e${++this.nextId}`): ElementNode {
@@ -1118,7 +1255,7 @@ export class CanvasStore {
     return {
       id,
       type: view.entity ? "entity" : "element",
-      position: { x: row.x, y: row.y },
+      position: { x: row.x, y: row.y + (this.lifts.get(name) ?? 0) },
       data: { name, width },
       width: drawn.w,
       origin: [(row.x - drawn.x) / drawn.w, (row.y - drawn.y) / drawn.h],
@@ -2035,9 +2172,11 @@ export class CanvasStore {
     }
     this.masks.delete(name)
     this.shapes.delete(name)
+    this.lifts.delete(name)
     if (this.moreOpen.delete(name)) this.onMore?.([...this.moreOpen])
     this.notify(name)
     if (id) this.flow?.setNodes((nodes) => nodes.filter((node) => node.id !== id))
+    this.reflowSoon()
   }
 
   /** The same node and view under a new name. `ours`: Calcifer doesn't know yet. */
@@ -2063,6 +2202,9 @@ export class CanvasStore {
     const shape = this.shapes.get(from)
     this.shapes.delete(from)
     if (shape) this.shapes.set(to, shape)
+    const lift = this.lifts.get(from)
+    this.lifts.delete(from)
+    if (lift) this.lifts.set(to, lift)
     if (this.moreOpen.delete(from)) {
       this.moreOpen.add(to)
       this.onMore?.([...this.moreOpen])
@@ -2079,6 +2221,8 @@ export class CanvasStore {
     if (this.focusedName.get() === from) this.focusedName.set(to)
     this.notify(to)
     this.flow?.updateNodeData(id, { name: to })
+    // A name of another length may take another line far out.
+    this.reflowSoon()
   }
 
   // A node's inputs
@@ -2888,7 +3032,7 @@ export class CanvasStore {
   dragStarted(nodes: ElementNode[]) {
     for (const node of nodes) {
       this.dragging.add(node.data.name)
-      this.dragFrom.set(node.data.name, { ...node.position })
+      this.dragFrom.set(node.data.name, { x: node.position.x, y: node.position.y - this.liftOf(node.data.name) })
     }
   }
 
@@ -2908,6 +3052,8 @@ export class CanvasStore {
       const name = node.data.name
       this.dragging.delete(name)
       this.dragFrom.delete(name)
+      // Held, it was where it's drawn: let go, that's its row.
+      this.lifts.delete(name)
       const view = this.views.get(name)
       if (!view) continue
       const row = this.draggedRow(node)
@@ -2918,6 +3064,7 @@ export class CanvasStore {
       field.add(name, this.giveWay(name, field, box, { tall: this.tallOf(name), pushes: this.pushable(held) }))
     }
     this.gesture = null
+    this.reflowSoon()
   }
 
   /** They were dropped into a box: each goes back where it started, and no move is saved. */
@@ -2930,6 +3077,7 @@ export class CanvasStore {
       this.dragFrom.delete(name)
       if (from && id) this.glide(name, from)
     }
+    this.reflowSoon()
   }
 
   /**
@@ -2975,6 +3123,7 @@ export class CanvasStore {
     this.gesture = null
     this.reshape(key)
     this.unsettle(key, true)
+    this.reflowSoon()
   }
 
   /** What the pull pushed aside and no longer does goes back where it is. */
