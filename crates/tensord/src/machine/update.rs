@@ -1157,7 +1157,7 @@ impl Updates {
     /// One that resolves none names `--tensorfs`.
     fn pair(&self, candidate: &Path, runtime: &Path) -> io::Result<()> {
         if let Ok(current) = existing_wheel(&self.paths.sdk(), "tensorfs") {
-            if self.compile(&[runtime.to_owned(), current.clone()])?.is_ok() {
+            if admits(runtime, &current) && self.compile(&[runtime.to_owned(), current.clone()])?.is_ok() {
                 return stage(candidate, &current, "tensorfs").map(drop);
             }
         }
@@ -1400,6 +1400,22 @@ fn build(path: &Path, sha256: &str) -> io::Result<String> {
 }
 
 /// `cozy_runtime-0.18.102-cp312-…whl` → ("cozy_runtime", "0.18.102").
+/// Whether the Runtime wheel `runtime`'s own requirement on TensorFS admits the TensorFS wheel `tensorfs`. One it refuses
+/// isn't asked of the index, which would wait minutes for a release it doesn't list yet (cl-952: 0.45.0's TensorFS under
+/// Runtime 0.45.2 waited 8 minutes). Unread: asked.
+fn admits(runtime: &Path, tensorfs: &Path) -> bool {
+    let read = || -> Option<bool> {
+        let (_, version) = wheel_name(tensorfs.file_name()?.to_str()?)?;
+        let (distribution, release) = wheel_name(runtime.file_name()?.to_str()?)?;
+        let mut archive = zip::ZipArchive::new(fs::File::open(runtime).ok()?).ok()?;
+        let mut metadata = String::new();
+        archive.by_name(&format!("{distribution}-{release}.dist-info/METADATA")).ok()?.read_to_string(&mut metadata).ok()?;
+        let requires = metadata.lines().filter_map(|line| line.strip_prefix("Requires-Dist:").map(str::trim));
+        Some(api::release::required(requires, "tensorfs")?.contains(&version.parse().ok()?))
+    };
+    read().unwrap_or(true)
+}
+
 fn wheel_name(file: &str) -> Option<(String, String)> {
     let stem = file.strip_suffix(".whl")?;
     let mut parts = stem.split('-');
