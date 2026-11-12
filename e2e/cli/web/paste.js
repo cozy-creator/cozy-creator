@@ -81,6 +81,14 @@ async function died(why) {
   // Open, the box is where it's worked on, on the canvas or over it (Focus).
   const here = () => page.locator('.card.here[data-asset="scene"]').first();
   const beat = (n) => here().locator(`.mention-text[data-field="beats.${n}.description"]`);
+  /** Beat `n` open to write in: beats shown one at a time (an accordion) open by their heading. */
+  const openBeat = async (n) => {
+    const toggle = here().locator(`.beat[data-beat-index="${n}"] .beat-toggle`);
+    if (!(await toggle.count()) || (await toggle.getAttribute('aria-expanded')) === 'true') return;
+    await toggle.click();
+    await until(`beat ${n + 1} open`, () => toggle.getAttribute('aria-expanded'), (open) => open === 'true');
+    await page.waitForTimeout(300);
+  };
   await beat(0).waitFor();
 
   const words = '<Azul_3> runs past <walk:48-120>,\nthen <cat:120deg> turns\n\nand <Azul_3.1> looks back at <nobody>.';
@@ -113,6 +121,7 @@ async function died(why) {
   const after = {};
   for (const [n, html] of [[0, null], [1, `<p><b>${words.replace(/</g, '&lt;').replace(/\n/g, '</p><p>')}</b></p>`]]) {
     const how = html ? 'rich' : 'plain';
+    await openBeat(n);
     await beat(n).click();
     await paste(beat(n), words, html);
     seen[`${how}_at_once`] = await chips(beat(n));
