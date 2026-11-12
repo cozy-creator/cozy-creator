@@ -310,6 +310,8 @@ case $SHARD in
   web-beats) export DB_WEB=beats; parts="tools_read db_existing_web logs" ;;
   # Pasted mentions (cl-902).
   web-paste) export DB_WEB=paste; parts="tools_read db_existing_web logs" ;;
+  # A toast when a render finishes, with View (cl-937).
+  web-donetoast) export DB_WEB=donetoast; parts="tools_read db_existing_web logs" ;;
   # A rendering box at rest, and new takes not looked at (cl-928).
   web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
