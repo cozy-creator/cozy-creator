@@ -21,7 +21,7 @@ import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { FPS, framesIn, timecode } from "./ranges"
-import { aspectOf, faceOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -478,7 +478,7 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
     flushSync(() => {
       const { x: dx, y: dy } = start.delta(start, { x: event.clientX, y: event.clientY })
       if (!control) {
-        const w = Math.min(WIDEST, Math.max(NARROWEST, start.w * Math.max(1 + dx / start.w, 1 + dy / start.h)))
+        const w = Math.min(WIDEST, Math.max(NARROWEST, start.w * Math.max(1 + dx / bodyWidth(view, start.w), 1 + dy / start.h)))
         pulled.current = { w, h: w / aspectOf(view) }
         return store.setWidth(name, w, false)
       }
@@ -527,7 +527,7 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
           event.currentTarget.setPointerCapture(event.pointerId)
           const zoom = flow.getZoom()
           const delta = store.surfaceOf(name)?.resizeDelta ?? ((a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (b.x - a.x) / zoom, y: (b.y - a.y) / zoom }))
-          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: pose.w / aspectOf(view), delta, owner: store.inPlace }
+          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), delta, owner: store.inPlace }
           if (store.inPlace) store.inPlace.pulled = true
         }}
         onPointerMove={moved}
@@ -707,13 +707,17 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   // Looking at a take, nothing of its tool: its warnings and state are the next take's too.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media") && !looking
+  const firstImage = versions.find((version) => version.number === 1)?.main ?? versions[0]?.main
+  const originalAspect = firstImage?.width && firstImage.height ? firstImage.width / firstImage.height : aspectOf(view)
+  const imageHeight = width / originalAspect
+  const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
   return (
     <div
       ref={self}
       className={`card ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === (view.asset.approved ?? view.asset.version) ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
-      style={{ width: here ? (store.surfaceOf(name)?.style.width ?? width) : width }}
+      style={{ width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` } as CSSProperties}
       onClick={buttonsOnly}
       onAnimationEnd={(event) => {
         if (event.target === event.currentTarget && view.landing) store.patch(name, { landing: undefined })
@@ -797,7 +801,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
-      {!lite && asset?.kind === "image" && !view.placing && <ImageVersions name={name} view={view} />}
+      {!lite && asset?.kind === "image" && !view.placing && <ImageVersions name={name} view={view} width={width} />}
       {!lite && asset && asset.kind !== "image" && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (

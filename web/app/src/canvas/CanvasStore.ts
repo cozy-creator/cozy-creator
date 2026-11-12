@@ -1273,16 +1273,29 @@ export class CanvasStore {
   /** Selects the node's persistent current image; ordinary references follow this version. */
   selectVersion(name: string, number: number) {
     const key = this.resolveName(name)
-    const asset = this.views.get(key)?.asset
+    const view = this.views.get(key)
+    const asset = view?.asset
     if (!asset || !numbersOf(asset).includes(number)) return
+    if (asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     void this.save(key)
-    this.pin(key, number, this.step(`Selected version ${number} of ${key}`, [key]))
+    const edit = this.step(`Selected version ${number} of ${key}`, [key])
+    this.patch(key, { viewed: undefined, watchRun: undefined, watchFrom: undefined })
+    this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select version", edit)
+    if (view?.hereWords && asset.tool) {
+      const field = this.promptOf(asset.tool)
+      const words = this.valueOf(key, field)
+      if (typeof words === "string") {
+        const next = words.replace(/<(self)\.\d+>/i, (_, self) => `<${self}.${number}>`)
+        if (next !== words) this.setDraft(key, field, next)
+      }
+    }
   }
 
   beginImageEdit(name: string) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset?.tool) return
+    if (view.asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     if (view.here) this.writeNext(key, true)
     else {
       this.writeOnOpen = key
@@ -1603,15 +1616,12 @@ export class CanvasStore {
     const number = Math.max(0, ...first.map((held) => held.number)) + 1
     const main = file.path === undefined ? undefined : { output: file.field, path: file.path, ...file }
     const prefixes = [...first, { number, prefix: file.sha256.slice(0, 12), main }]
-    const was = asset.pinned ? (asset.approved ?? 1) : undefined
-    const approves = merged !== undefined && was !== undefined
-    const stands = was !== undefined && !approves ? was : number
     const edit = merged ?? this.step(`Added ${what} to ${key}`, [key])
     let note = 0
-    this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: stands, ...(was !== undefined ? { approved: stands } : {}) }, (served, write) => this.client.addVersion(this.projectId!, served, source, write), "add to", edit, {
+    this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: number, pinned: true, approved: number }, (served, write) => this.client.addVersion(this.projectId!, served, source, write), "add to", edit, {
       done: (answer) => {
         if (answer.already) dismiss(note)
-        if (approves) this.pin(key, answer.number, edit)
+        this.patch(key, { asset: { ...this.get(key)!.asset!, version: answer.stands ?? answer.number, approved: answer.stands ?? answer.number, pinned: true } })
       },
       refused: () => dismiss(note),
     })

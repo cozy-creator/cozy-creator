@@ -2658,6 +2658,11 @@ a.tab:hover {
   flex: 1;
 }
 .image-controls {
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--image-control-width, 100%);
+  box-sizing: border-box;
   padding: 4px;
   background: var(--panel);
   border-top: 1px solid var(--line2);
@@ -2706,7 +2711,8 @@ a.tab:hover {
   flex: none;
 }
 .image-navigation output {
-  min-width: 3ch;
+  display: inline-block;
+  width: 7ch;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -2718,7 +2724,7 @@ a.tab:hover {
   border: 1px solid var(--line);
   border-radius: var(--round);
 }
-.media.image-asset .media-pixels > img {
+.media.image-asset .media-pixels img {
   object-fit: contain;
 }
 .media.image-editing .media-pixels {
@@ -2734,6 +2740,19 @@ a.tab:hover {
 }
 .image-history .take img {
   object-fit: contain;
+}
+.here-side.image-history {
+  left: calc(50% + var(--image-history-offset, 0px) + var(--here-gap) * var(--text, 1) * var(--here));
+  height: calc(var(--image-history-height, 200px) / (var(--text, 1) * var(--here)));
+}
+.media.image-editing {
+  overflow: visible;
+}
+.fixed-image-references {
+  inset: auto;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 .tool:active {
   cursor: grabbing;

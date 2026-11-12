@@ -33,7 +33,9 @@ function schedule(start: (done: () => void) => void, urgent: () => boolean): () 
 }
 
 interface Picture {
+  key: string
   sha: string
+  width: number
   image: HTMLImageElement
   ready: boolean
   dead: boolean
@@ -60,7 +62,7 @@ export interface BufferedImageProps {
 }
 
 /** Keep decoded DOM images nearby and swap only when the selected image is ready to paint. */
-export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedImageProps) {
+export function BufferedImage({ sha256, neighbors, cardWidth, onSize, onShown }: BufferedImageProps) {
   const { client, bridge, privateViewEpoch, signedOut } = useConnection()
   const store = useCanvasStore()
   const project = store.projectId
@@ -69,7 +71,9 @@ export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedIm
   const callbacks = useRef({ onSize, onShown })
   callbacks.current = { onSize, onShown }
   const [failed, setFailed] = useState(false)
-  const wanted = [...new Set([sha256, ...neighbors])].slice(0, HELD)
+  const resolution = cardWidth >= 960 ? WIDTH : cardWidth > 512 ? 1024 : cardWidth > 256 ? 512 : 256
+  const selected = `${sha256}:${resolution}`
+  const wanted = [...new Set([sha256, ...neighbors])].slice(0, HELD).map((sha) => `${sha}:${resolution}`)
   const windowKey = wanted.join(",")
 
   const discard = (buffer: Buffer, picture: Picture) => {
@@ -78,12 +82,12 @@ export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedIm
     picture.image.removeAttribute("src")
     picture.cancel?.()
     picture.image.remove()
-    buffer.pictures.delete(picture.sha)
+    buffer.pictures.delete(picture.key)
   }
 
   const reveal = (buffer: Buffer, picture: Picture) => {
     const element = host.current
-    if (!element || buffer.stopped || picture.dead || !picture.ready || picture.sha !== buffer.selected) return
+    if (!element || buffer.stopped || picture.dead || !picture.ready || picture.key !== buffer.selected) return
     if (buffer.displayed === picture && picture.image.parentElement === element) return
     // Reuse the decoded element itself; changing a React img key or src could paint a blank frame.
     element.replaceChildren(picture.image)
@@ -104,7 +108,7 @@ export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedIm
       picture.cancel = schedule((done) => {
         void (async () => {
           if (buffer.stopped || picture.dead) return
-          const url = await client.transport.src(client.thumb(project, picture.sha, WIDTH))
+          const url = await client.transport.src(client.thumb(project, picture.sha, picture.width))
           if (buffer.stopped || picture.dead) return
           picture.image.src = url
           await picture.image.decode()
@@ -113,12 +117,12 @@ export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedIm
           reveal(buffer, picture)
           refresh(buffer)
         })().catch(() => {
-          if (!buffer.stopped && !picture.dead && buffer.selected === picture.sha) setFailed(true)
+          if (!buffer.stopped && !picture.dead && buffer.selected === picture.key) setFailed(true)
         }).finally(() => {
           picture.running = false
           done()
         })
-      }, () => picture.sha === buffer.selected)
+      }, () => picture.key === buffer.selected)
     }
   }
 
@@ -128,15 +132,15 @@ export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedIm
     if (selected?.ready) reveal(buffer, selected)
     const keep = new Set(buffer.wanted)
     // A far jump keeps the previous picture while loading without growing the decoded-image budget.
-    if (buffer.displayed && !keep.has(buffer.displayed.sha)) {
-      keep.add(buffer.displayed.sha)
+    if (buffer.displayed && !keep.has(buffer.displayed.key)) {
+      keep.add(buffer.displayed.key)
       for (let i = buffer.wanted.length - 1; keep.size > HELD && i >= 0; i--) {
         if (buffer.wanted[i] !== buffer.selected) keep.delete(buffer.wanted[i])
       }
     }
-    for (const picture of buffer.pictures.values()) if (!keep.has(picture.sha)) discard(buffer, picture)
-    for (const sha of keep) {
-      const held = buffer.pictures.get(sha)
+    for (const picture of buffer.pictures.values()) if (!keep.has(picture.key)) discard(buffer, picture)
+    for (const key of keep) {
+      const held = buffer.pictures.get(key)
       if (held) {
         if (!held.ready && !held.running && !buffer.queue.includes(held)) buffer.queue.push(held)
         continue
@@ -145,17 +149,18 @@ export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedIm
       image.alt = ""
       image.draggable = false
       image.decoding = "async"
-      const picture: Picture = { sha, image, ready: false, dead: false, running: false }
-      buffer.pictures.set(sha, picture)
+      const separator = key.lastIndexOf(":")
+      const picture: Picture = { key, sha: key.slice(0, separator), width: Number(key.slice(separator + 1)), image, ready: false, dead: false, running: false }
+      buffer.pictures.set(key, picture)
       buffer.queue.push(picture)
     }
     buffer.queue = buffer.queue.filter((picture) => !picture.dead)
-    buffer.queue.sort((a, b) => Number(b.sha === buffer.selected) - Number(a.sha === buffer.selected))
+    buffer.queue.sort((a, b) => Number(b.key === buffer.selected) - Number(a.key === buffer.selected))
     pump(buffer)
   }
 
   useLayoutEffect(() => {
-    const buffer: Buffer = { pictures: new Map(), queue: [], selected: sha256, wanted: [], displayed: null, stopped: false }
+    const buffer: Buffer = { pictures: new Map(), queue: [], selected, wanted: [], displayed: null, stopped: false }
     held.current = buffer
     setFailed(false)
     const stop = () => {
@@ -182,11 +187,11 @@ export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedIm
   useLayoutEffect(() => {
     const buffer = held.current
     if (!buffer || buffer.stopped) return
-    buffer.selected = sha256
+    buffer.selected = selected
     buffer.wanted = wanted
     setFailed(false)
     refresh(buffer)
-  }, [client, store, project, sha256, windowKey])
+  }, [client, store, project, selected, windowKey])
 
   return <>
     <span ref={host} className="buffered-image" style={{ position: "absolute", inset: 0, display: "block", pointerEvents: "none" }} />

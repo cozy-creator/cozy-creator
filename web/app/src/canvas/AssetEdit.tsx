@@ -88,6 +88,7 @@ function Reset({ field, bound }: { field: ToolField; bound: Bound }) {
 
 /** Words, or a prompt: chips for what it mentions, and what a prompt can't send is marked, never sent. */
 function TextField({ name, field, bound, view, place, label, focus, named, block, framed }: Drawn) {
+  const store = useCanvasStore()
   const text = (
     <MentionText
       asset={name}
@@ -101,6 +102,7 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
       thumbs={!framed}
       onDraft={bound.draft}
       onSave={bound.save}
+      onSubmit={field.type === "prompt" ? () => store.run(name) : undefined}
     />
   )
   if (named)
@@ -622,6 +624,7 @@ export function TextAsset({ name, view }: { name: string; view: ElementView }) {
         focus={store.focusing === name}
         onDraft={(words) => store.setDraft(name, "text", words)}
         onSave={() => void store.save(name)}
+        onSubmit={() => void store.save(name)}
       />
       {view.conflict && <Conflict name={name} />}
     </div>

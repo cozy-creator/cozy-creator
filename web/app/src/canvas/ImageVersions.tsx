@@ -1,12 +1,14 @@
 import type { ElementView } from "./CanvasStore"
+import type { CSSProperties } from "react"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore } from "./context"
-import { shownOf, toolName } from "./shown"
+import { shownOf } from "./shown"
+import { modelLabel } from "./palette"
 import { numbersOf } from "./versions"
 
 /** One current image, its removable tool, and its retained numbered states. */
-export function ImageVersions({ name, view }: { name: string; view: ElementView }) {
+export function ImageVersions({ name, view, width }: { name: string; view: ElementView; width: number }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const asset = view.asset
@@ -15,9 +17,9 @@ export function ImageVersions({ name, view }: { name: string; view: ElementView 
   const current = shownOf(view)?.number ?? asset.version ?? numbers[0] ?? 0
   const at = numbers.indexOf(current)
   const tool = asset.tool ? tools.get(asset.tool) : undefined
-  const word = tool ? toolName(tool) : asset.tool
+  const word = tool ? modelLabel(tool) : asset.tool ? "Image tool" : undefined
   return (
-    <div className="image-controls nodrag nopan nowheel">
+    <div className="image-controls nodrag nopan nowheel" style={{ "--image-control-width": `${width}px` } as CSSProperties}>
       <div className="image-version-row">
         {word && <span className="image-tool">
           <button type="button" title={word} aria-label="Configure image tool" onClick={() => store.openHere(name)}>{word}</button>
