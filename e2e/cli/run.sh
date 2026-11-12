@@ -428,7 +428,7 @@ case $SHARD in
   # What a call may read on demand, on a cold machine (cl-966).
   ondemand) parts="ondemand_ahead logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
-  plan) parts="estimate_line logs" ;;
+  plan) parts="estimate_line plan_picks logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints

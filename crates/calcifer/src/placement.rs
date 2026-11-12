@@ -1,11 +1,11 @@
-//! Where a job goes (cl-816, Paul 11-07): its machine owns its GPU width, and Calcifer only sends it where it finishes soonest. Each
-//! machine a batch of jobs may go to is asked once for all of them (`POST /v1/estimate`), packed with its queue as if all were sent
-//! there now; each job goes to the soonest finish of those that can run it at all, on a tie one measured before one not and a rental
-//! before this computer (Paul, 11-05). Only a machine on this cozy's
-//! minor quotes (`Machines::current`). A quote reserves nothing: two clients that pick one machine are settled by its queue. This
-//! computer's `local`, which stops after 15 idle minutes, is asked as any: it starts to answer, and its times count from its answer, so its
-//! finish counts its start (cl-894). A rental on its way is quoted here as it will quote once it serves (`coming`, cl-915): a job may wait
-//! for one that finishes it sooner than any machine up now. A `new` run weighs a rental against them (`runs::instead_of_renting`).
+//! Where a job goes (cl-816, Paul 11-07): its machine owns its GPU width, and Calcifer only sends it where it finishes soonest. Calcifer
+//! quotes every machine itself (cl-967, Paul 11-12) from the Status it pushes (`Picture`), with the estimator the machine packs its own
+//! queue by (`api::estimate::quote`): the jobs a machine may take packed with its queue as if all were sent there now; each job goes to
+//! the soonest finish of those that can run it at all, on a tie one measured before one not and a rental before this computer (Paul,
+//! 11-05). Only a machine on this cozy's minor is quoted (`Machines::current`). A quote reserves nothing: two clients that pick one
+//! machine are settled by its queue. This computer's `local`, which stops after 15 idle minutes, starts to be quoted, so its finish counts
+//! its start (cl-894). A rental on its way is quoted as it will picture itself once it serves (`coming`, cl-915): a job may wait for one
+//! that finishes it sooner than any machine up now. A `new` run weighs a rental against them (`runs::instead_of_renting`).
 use std::sync::Arc;
 
 use api::{
@@ -87,40 +87,119 @@ impl Offer {
         }
     }
 
-    /// It, for a job that can't begin before `at`, when what it waits for ends: its preparation goes on meanwhile.
-    pub(crate) fn from(&self, at: i64) -> Offer {
-        let late = (at - self.start_at_ms).max(0);
-        Offer { start_at_ms: self.start_at_ms + late, finish_at_ms: self.finish_at_ms + late, ..self.clone() }
-    }
-
     /// What eta's clock takes of it once its run is sent.
     pub(crate) fn quoted(&self) -> crate::eta::Quoted {
         crate::eta::Quoted { start_at: self.start_at_ms as f64, finish_at: self.finish_at_ms as f64, basis: self.basis }
     }
 }
 
-/// Each job's offers, one from each of its machines that answered, in the order the jobs name them; and a line for each machine that
-/// didn't. Each machine is asked once, for every job that may go to it. `update`: work is going now, so a machine on another minor
-/// is updated to this one (its quote comes once it is); else it is only said.
-pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<Vec<Offer>>, Vec<String>) {
-    let mut machines: Vec<&On> = vec![];
+/// What Calcifer quotes a machine by: its last Status, or for one on its way the one it will push once it serves.
+#[derive(Clone, Debug)]
+pub(crate) struct Picture {
+    pub on: On,
+    /// Its machine's name, for its runs' history.
+    pub name: String,
+    pub frame: v1::StatusFrame,
+    /// When it should serve, for one on its way (cl-915); none for one that serves.
+    pub ready_at_ms: Option<i64>,
+    /// What waits there that its frame doesn't list yet, as jobs ahead of any asked: every run sent to one on its way.
+    pub ahead: Vec<v1::EstimateJob>,
+}
+
+/// The machines of `jobs`, each named once, in the order they name them.
+pub(crate) fn machines_of(jobs: &[Job]) -> Vec<On> {
+    let mut machines: Vec<On> = vec![];
     for on in jobs.iter().flat_map(|job| &job.on).filter(|on| matches!(on, On::Machine(_))) {
-        if !machines.contains(&on) {
-            machines.push(on);
+        if !machines.contains(on) {
+            machines.push(on.clone());
         }
     }
+    machines
+}
+
+/// Each of `machines` pictured, or why it can't be. `update`: work is going now, so a machine on another minor is updated to this
+/// one (it is pictured once it is); else it is only said.
+pub(crate) async fn pictures(api: &Arc<Api>, machines: &[On], update: bool, now: i64) -> Vec<Result<Picture, String>> {
+    futures_util::future::join_all(machines.iter().map(|on| async move {
+        // One on its way is pictured as it will be once it serves.
+        match on {
+            On::Machine(name) => match api.machines.coming(name, now) {
+                Some(coming) => Ok(crate::coming::picture(api, &coming).await),
+                None => picture(api, on, update).await,
+            },
+            _ => Err("it isn't rented yet".into()),
+        }
+    }))
+    .await
+}
+
+/// What a run of `job` takes on one GPU of `picture`'s kind, as runs like it took elsewhere: what it is timed by where none of it ran.
+pub(crate) async fn prior(api: &Arc<Api>, picture: &Picture, job: &Job) -> u64 {
+    match &picture.ready_at_ms {
+        Some(_) => match api.machines.coming(&picture.name, now_ms()) {
+            Some(coming) => crate::coming::card_time(api, &coming.hub, &coming.way, &job.target, &job.size).await.0 as u64,
+            None => 0,
+        },
+        None => api.calcifer.prior_ms(&job.target, &picture.name, &job.size),
+    }
+}
+
+/// `job` as the estimator asks it, with its `prior_ms` there.
+pub(crate) fn asked(job: &Job, prior_ms: u64) -> v1::EstimateJob {
+    v1::EstimateJob {
+        key: job.key.clone(),
+        function: job.function.clone(),
+        models: job.models.clone(),
+        size: job.size,
+        gpus: job.gpus,
+        gpu: job.gpu,
+        prior_ms,
+        after_ms: 0,
+    }
+}
+
+/// When `picture`'s machine would run each of `jobs` were they all sent there now, after its queue and what is ahead of it there; one on
+/// its way begins none before it serves. On this computer's clock.
+pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Vec<Offer> {
+    let ready = picture.ready_at_ms.map_or(0, |at| (at - now).max(0) as u64);
+    let asks: Vec<v1::EstimateJob> = (picture.ahead.iter().chain(jobs))
+        .map(|job| v1::EstimateJob { after_ms: job.after_ms.max(ready), ..job.clone() })
+        .collect();
+    let quotes = api::estimate::quote(&picture.frame, now, &asks);
+    let at = |ms: u64| now + ms as i64;
+    (quotes.into_iter().skip(picture.ahead.len()))
+        .map(|quote| Offer {
+            machine: picture.on.clone(),
+            fits: quote.fits,
+            refusal: quote.refusal,
+            width: quote.width,
+            start_at_ms: at(quote.start_ms),
+            finish_at_ms: at(quote.finish_ms),
+            prepare_ms: quote.prepare_ms,
+            queue_position: quote.queue_position,
+            basis: quote.basis,
+            ready_at_ms: picture.ready_at_ms,
+        })
+        .collect()
+}
+
+/// Each job's offers, one from each of its machines that could be pictured, in the order the jobs name them; and a line for each machine
+/// that couldn't. Each machine is quoted once, for every job that may go to it. `update`: as `pictures`.
+pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<Vec<Offer>>, Vec<String>) {
     let now = now_ms();
-    let asked = machines.into_iter().map(|on| async move {
+    let machines = machines_of(jobs);
+    let pictured = pictures(api, &machines, update, now).await;
+    let asked = machines.iter().zip(pictured).map(|(on, pictured)| async move {
         let mine: Vec<usize> = (0..jobs.len()).filter(|&at| jobs[at].on.contains(on)).collect();
-        let batch: Vec<&Job> = mine.iter().map(|&at| &jobs[at]).collect();
-        // One on its way is quoted as it will quote once it serves.
-        let coming = match on {
-            On::Machine(name) => api.machines.coming(name, now),
-            _ => None,
-        };
-        let answer = match coming {
-            Some(coming) => Ok(crate::coming::quotes(api, &coming, &batch, now).await),
-            None => quotes(api, on, &batch, update).await,
+        let answer = match pictured {
+            Ok(picture) => {
+                let mut asks = vec![];
+                for &at in &mine {
+                    asks.push(asked(&jobs[at], prior(api, &picture, &jobs[at]).await));
+                }
+                Ok(quote(&picture, &asks, now))
+            }
+            Err(why) => Err(why),
         };
         (on, mine, answer)
     });
@@ -176,8 +255,8 @@ pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result
     Err(Error::new(Kind::Unavailable, "machines_unavailable", said).remedy("bring one of them back, or name others with --on").next("cozy machine ls"))
 }
 
-/// What `on` says of `jobs`, in their order.
-async fn quotes(api: &Arc<Api>, on: &On, jobs: &[&Job], update: bool) -> Result<Vec<Offer>, String> {
+/// `on` as its last Status pictures it, read once if none came yet.
+async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, String> {
     let On::Machine(text) = on else { return Err("it isn't rented yet".into()) };
     let machines = &api.machines;
     // Stopped, it starts now: what that takes is in its finish, counted from its answer.
@@ -199,42 +278,7 @@ async fn quotes(api: &Arc<Api>, on: &On, jobs: &[&Job], update: bool) -> Result<
             Some(run) => return Err(format!("updating it to cozy {own} first (run {})", run.number)),
         }
     }
-    let prior = |job: &Job| api.calcifer.prior_ms(&job.target, &row.name, &job.size);
-    let request = v1::EstimateRequest {
-        jobs: (jobs.iter())
-            .map(|job| v1::EstimateJob {
-                key: job.key.clone(),
-                function: job.function.clone(),
-                models: job.models.clone(),
-                size: job.size,
-                gpus: job.gpus,
-                gpu: job.gpu,
-                prior_ms: prior(job),
-                after_ms: 0,
-            })
-            .collect(),
-    };
-    let answer = link.estimate(&request).await.map_err(|e| e.to_string())?;
-    let received = now_ms();
-    let at = |ms: u64| received + ms as i64;
-    jobs.iter()
-        .map(|job| {
-            let quote = answer.jobs.iter().find(|quote| quote.key == job.key).ok_or("it answered for other jobs than asked")?;
-            Ok(Offer {
-                machine: on.clone(),
-                fits: quote.fits,
-                refusal: quote.refusal.clone(),
-                width: quote.width,
-                start_at_ms: at(quote.start_ms),
-                finish_at_ms: at(quote.finish_ms),
-                prepare_ms: quote.prepare_ms,
-                queue_position: quote.queue_position,
-                basis: quote.basis,
-                ready_at_ms: None,
-            })
-        })
-        .collect::<Result<_, &str>>()
-        .map_err(str::to_owned)
+    Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![] })
 }
 
 /// An offer in a line of the log: `stand-c finishes in 480 s (measured)`, `pluto finishes in 390 s (none), ready in 210 s`,

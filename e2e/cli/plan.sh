@@ -47,3 +47,47 @@ bound=$((took / 5 > 15000 ? took / 5 : 15000))
 echo "estimate line: Qwen had $((left >> 20)) MiB to come; BiRefNet quoted to finish in ${quoted} ms ($(jq -c '.machines[0] | {prepare_ms, start_ms, basis}' "$OUT/line-quote.json")), finished in ${took} ms; off by ${off} ms (bound ${bound})"
 [ "${off#-}" -le "$bound" ] || check "estimate line: BiRefNet finished ${took} ms after its quote, which said ${quoted} ms: off by more than ${bound} ms"
 }
+
+# plan_machine <asset>: the machine its job on the board went to.
+plan_machine() { status "$P" | jq -r --arg a "$1" '[.board.jobs[]? | select(.asset == $a) | .machine // empty] | last // empty'; }
+
+# plan_picks (phase b): this computer's machine and a stand-in (another user's cozy on this runner) both ran the weighted tool, so its
+# time is measured on each; only stand-w still holds BiRefNet's weights it reads. A render that may go to either goes to stand-w, where
+# nothing downloads. With stand-w busy for longer than the download, the next goes to local. Each job's machine is the plan's, and it
+# finishes within 20% (or 15 s) of its quote.
+plan_picks() {
+step "plan (cl-967): a job goes where its weights are, and with that machine busy where it finishes sooner"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
+local P=$OUT/plan tool=$here/project/weighted.py/weighted wait=$here/project/waits.py/wait r=$RANDOM went
+cozy --json machine show local > "$OUT/set-local.json" || { check "plan: machine show local"; return; }
+stand_in stand-w || return
+cozy --json new --unencrypted "$P" > "$OUT/plan-new.json" 2>&1 || { check "plan: new: $(tail -c 300 "$OUT/plan-new.json")"; return; }
+jq -n --arg t "$tool" --arg w "$wait" --arg r "$r" '[
+  {name: "warm_w", tool: $t, kind: "image", fields: {instructions: "Weights onto stand-w, \($r).", seconds: 5}},
+  {name: "warm_l", tool: $t, kind: "image", fields: {instructions: "Its time on local, \($r).", seconds: 5}},
+  {name: "near", tool: $t, kind: "image", fields: {instructions: "Where its weights are, \($r).", seconds: 5}},
+  {name: "busy", tool: $w, kind: "image", fields: {instructions: "stand-w busy, \($r).", megapixels: 0.25, seconds: 300}},
+  {name: "away", tool: $t, kind: "image", fields: {instructions: "Where it finishes sooner, \($r).", seconds: 5}}]' | boxes_in "$P" || return
+coming_go warm_w '["stand-w"]'
+coming_done warm_w 900
+coming_go warm_l '["local"]'
+coming_done warm_l 900
+# Local's copy goes, and its executors with a restart: a job there downloads BiRefNet again.
+cozy --json model uninstall zhengpeng7/birefnet > "$OUT/plan-uninstall.json" 2>&1 || { check "plan: model uninstall: $(tail -c 300 "$OUT/plan-uninstall.json")"; return; }
+machine_stop || { check "plan: the local machine did not stop"; return; }
+machine_ready
+in_project "$P" --json machine use "local,stand-w" > "$OUT/plan-use.json" 2>&1 || { check "plan: machine use: $(tail -c 300 "$OUT/plan-use.json")"; return; }
+
+coming_go near '["local","stand-w"]'
+coming_done near 900
+went=$(plan_machine near)
+[ "$went" = stand-w ] || check "plan: near, whose weights only stand-w holds, went to ${went:-nowhere}"
+
+coming_go busy '["stand-w"]'
+for _ in $(seq 240); do status "$P" | J '.board.jobs[]? | select(.asset == "busy" and .state == "running")' && break; sleep 0.5; done
+coming_go away '["local","stand-w"]'
+coming_done away 900
+went=$(plan_machine away)
+[ "$went" = local ] || check "plan: away, with stand-w busy for 5 min, went to ${went:-nowhere}, not local"
+timeout 60 "$COZY" --json machine end stand-w --force -y > "$OUT/stand-w-end.json" 2>&1 || true
+}
