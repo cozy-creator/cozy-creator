@@ -654,6 +654,51 @@ assert kind=='blob' and data==open(sys.argv[2],'rb').read()
 STREAM_RESTART
 }
 
+# Opening a project changes nothing in it (cl-885; the coordinator, 11-12: "opening a project must never change its text"). A starter
+# project with a text box, tool boxes with takes whose words mention none of their own and one that does, and an imported picture with
+# takes: read, closed and read again, then opened afresh after Calcifer is killed. Its document's heads, every box's fields and place, and
+# its history read the same each time.
+db_opens() {
+step "project.db: a project read, closed and opened again after a restart changes nothing in it"
+local O=$OUT/opens c source name
+starter_project "$O" > /dev/null 2>&1 || { check "opens: project new"; return; }
+db_calcifer
+cp "$here/project/draw.py" "$O/"
+jq -n '[{name: "notes", fields: {text: "Keep the boat small."}},
+  {name: "drawn", tool: "./draw.py/draw", kind: "image", fields: {instructions: "A lighthouse at dusk, <shore> below."}},
+  {name: "again", tool: "./draw.py/draw", kind: "image", fields: {instructions: "<self.1> brighter, the sky clearing."}}]' \
+  | boxes_in "$O" || { check "opens: boxes"; return; }
+for c in red teal navy; do ffmpeg -v error -y -f lavfi -i "color=c=$c:size=320x180" -frames:v 1 "$O/$c.png"; done
+project_import "$O" "$O/red.png" shore > "$OUT/opens-import.txt" 2>&1 || { check "opens: import: $(tail -c 300 "$OUT/opens-import.txt")"; return; }
+for name in drawn again shore; do
+  for c in teal navy; do
+    source="sha256:$(sha "$O/$c.png")"
+    api --fail-with-body -X PUT --data-binary "@$O/$c.png" "http://$ADDR/v1/files/$source" > /dev/null || check "opens: upload $c"
+    project_api "$O" "/assets/$name/versions" -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/opens-version.txt" 2>&1 \
+      || check "opens: $name's take from $c: $(tail -c 300 "$OUT/opens-version.txt")"
+  done
+done
+# What it holds: its document's heads, each box's fields, where each sits, and its history.
+opens_read() {
+  status "$O" | jq -S '{heads: (.heads | sort), fields: ([.assets[] | {(.name): .fields}] | add)}' > "$OUT/opens-$1-state.json" \
+    && project_api "$O" /canvas | jq -S .cards > "$OUT/opens-$1-places.json" \
+    && project_api "$O" '/history?limit=500' | jq -S '[.entries[].id]' > "$OUT/opens-$1-history.json"
+}
+opens_read before || { check "opens: read it"; return; }
+for c in 1 2 3; do status "$O" > /dev/null || check "opens: read $c"; done
+opens_read again || { check "opens: read it again"; return; }
+kill9
+opens_read restarted || { check "opens: read it after a restart"; return; }
+db_calcifer
+local when part
+for when in again restarted; do
+  for part in state places history; do
+    cmp -s "$OUT/opens-before-$part.json" "$OUT/opens-$when-$part.json" \
+      || check "opens: its $part read otherwise $when: $(diff "$OUT/opens-before-$part.json" "$OUT/opens-$when-$part.json" | head -c 800)"
+  done
+done
+}
+
 # A project 0.24.0 made, opened by this cozy (cl-904's schema 3: its files, versions and runs leave the Automerge document for
 # project.db's rows on its first open). 0.24.0's own cozy makes it, in this one's place as its release installs it; then this
 # cozy goes back in its place, as an update puts it, and opens it: every take, file, word and history entry reads as 0.24.0
