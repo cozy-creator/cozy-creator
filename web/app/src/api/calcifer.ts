@@ -3189,20 +3189,12 @@ target: string, warnings?: Array<string>, };
 /**
  * POST /v1/projects/{id}/vault. Credentials are deliberately not Debug; neither the request nor its response is cached in history.
  */
-export type VaultAsk = { action: string, passphrase?: string | null, recovery_secret?: string | null, idle_timeout_s?: number | null, max_duration_s?: number | null,
-/**
- * Legacy removal flag. Verified source removal is now the default; false does not preserve it.
- */
-remove_plaintext: boolean,
-/**
- * Explicitly keep the original plaintext after a verified encrypt conversion. Not valid for rekey/decrypt.
- */
-preserve_plaintext?: boolean, };
+export type VaultAsk = { action: string, passphrase?: string | null, recovery_secret?: string | null, idle_timeout_s?: number | null, max_duration_s?: number | null, };
 
 /**
  * A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
  */
-export type VaultChanged = { vault: VaultStatus, recovery_secret?: string | null, preserved_source?: string | null,
+export type VaultChanged = { vault: VaultStatus, recovery_secret?: string | null,
 /**
  * The project's runs a lock canceled first, by number.
  */

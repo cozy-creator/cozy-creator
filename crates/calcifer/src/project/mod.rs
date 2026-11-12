@@ -315,6 +315,7 @@ impl Projects {
             }
         };
         drop(open);
+        if let Some(said) = copy_told(&project.root) { project.said.lock().expect("said lock").push(said); }
         project.require_view()?;
         if project.folder.lock()?.owes() {
             walk(api, &project);
@@ -350,8 +351,12 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
             return Err(Error::new(Kind::Usage, "project_path", said).remedy(format!("name {}", api::calcifer::project::NAMED_BY)));
         }
         vault::recover_conversion(path)?;
-        if let Some(root) = path.ancestors().find(|root| vault::encrypted(root)) { return Ok(root.to_owned()); }
-        return holding(path);
+        let root = match path.ancestors().find(|root| vault::encrypted(root)) {
+            Some(root) => root.to_owned(),
+            None => holding(path)?,
+        };
+        refuse_own_folder(&root)?;
+        return Ok(root);
     }
     Ok(known(api, text)?.path)
 }
@@ -368,6 +373,8 @@ fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     if !gone.is_empty() {
         store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
     }
+    // An earlier Calcifer may have opened one of its own folders: its row stays, unlisted and unopened.
+    here.retain(|entry| !own_folder(&entry.path));
     for entry in here.iter_mut().filter(|entry| entry.code.is_empty()) {
         // A locked project still has its canonical id. Do not mint a public
         // code until an opened view can recover the code stored in its DB.
@@ -663,16 +670,16 @@ fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<(String, 
 fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_code: Option<String>, keep: impl FnOnce(&str, &str, &str) -> Result<(), Error>) -> Result<(String, String, String), Error> {
     let store = api.calcifer.store();
     let logical = vault::logical(dir);
+    refuse_own_folder(&logical)?;
     let encrypted = vault::encrypted(&logical);
-    let copied = |id: &str| {
-        let elsewhere = store.known_project(id).ok().flatten().filter(|known| known.path != logical);
-        elsewhere.is_some_and(|known| {
-            if vault::encrypted(&known.path) {
-                project_vault::Keybag::load(&known.path.join(project_vault::KEYBAG_FILE))
-                    .is_ok_and(|keybag| keybag.info().project_id == id)
-            } else { kept_identity(&known.path).is_some_and(|(held, _)| held == id) }
-        })
-    };
+    // The project another folder in the index still holds by this id.
+    let original = |id: &str| store.known_project(id).ok().flatten().filter(|known| known.path != logical).filter(|known| {
+        if vault::encrypted(&known.path) {
+            project_vault::Keybag::load(&known.path.join(project_vault::KEYBAG_FILE))
+                .is_ok_and(|keybag| keybag.info().project_id == id)
+        } else { kept_identity(&known.path).is_some_and(|(held, _)| held == id) }
+    });
+    let copied = |id: &str| original(id).is_some();
     if encrypted {
         let keybag = project_vault::Keybag::load(&logical.join(project_vault::KEYBAG_FILE))
             .map_err(|_| Error::new(Kind::Conflict, "vault_identity", "the encrypted project keybag is unreadable"))?;
@@ -683,12 +690,19 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
             return Err(Error::new(Kind::Conflict, "vault_copy", "another folder still holds this encrypted project; open that project or move its folder instead"));
         }
     }
-    let (id, name) = match &kept {
-        Some((id, name)) if !copied(id) => (id.clone(), name.clone()),
-        Some((_, name)) => (fresh_id(), name.clone()),
+    let (id, name, copy_of) = match &kept {
+        Some((id, name)) => match original(id) {
+            None => (id.clone(), name.clone(), None),
+            Some(original) => (fresh_id(), name.clone(), Some(original)),
+        },
         None => return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no native CRDT project identity", dir.join(db::DB).display()))),
     };
     let name = unique_name(api, &id, dir, if name.is_empty() { folder_name(dir) } else { name })?;
+    if let Some(original) = copy_of {
+        let said = format!("{} is a copy of {} ({}), so it is a project of its own now: {name}", logical.display(), original.name, original.path.display());
+        tracing::info!("{said}");
+        COPIES.lock().expect("copies lock").insert(logical.clone(), said);
+    }
     let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and(kept_code);
     let code = reserve_code(store, &id, &name, &logical, kept_code.as_deref())?;
     if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
@@ -696,6 +710,24 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
     }
     vault::register_plain_root(&logical, &id)?;
     Ok((id, name, code))
+}
+
+/// What the first open of a folder found to be a copy tells, once: its new identity, and the project it was a copy of.
+static COPIES: std::sync::LazyLock<Mutex<HashMap<PathBuf, String>>> = std::sync::LazyLock::new(Mutex::default);
+
+fn copy_told(dir: &FsPath) -> Option<String> {
+    COPIES.lock().expect("copies lock").remove(&vault::logical(dir))
+}
+
+/// Calcifer's own folders beside a project, a conversion's stage and the original it moves aside, are never projects.
+pub(crate) fn own_folder(dir: &FsPath) -> bool {
+    dir.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".cozy-"))
+}
+
+fn refuse_own_folder(dir: &FsPath) -> Result<(), Error> {
+    if !own_folder(dir) { return Ok(()); }
+    Err(Error::new(Kind::Conflict, "project_own_folder", format!("{} is a folder Calcifer keeps while it converts a project's storage, not a project", dir.display()))
+        .remedy("open the project beside it"))
 }
 
 /// The index reserves the code atomically. If recording it in project.db fails, the next open
@@ -1156,6 +1188,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
         Some(path) => {
             // First use from separate CLI processes can reach this path together.
             let _creation = api.projects.made.lock().expect("made lock");
+            refuse_own_folder(path).map_err(Refusal)?;
             refuse_encrypted_parent(path).map_err(Refusal)?;
             if Folder::is_project(path) || vault::encrypted(path) {
                 let said = format!("{} is a project already", path.display());
@@ -1192,7 +1225,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
         false => None,
     };
     let (id, code, said) = match unread {
-        Some((id, code)) => (id, code, vec![]),
+        Some((id, code)) => (id, code, copy_told(&dir).into_iter().collect()),
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
@@ -3316,8 +3349,9 @@ impl Walk {
         let (source, inputs) = match &renderer.local {
             None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
             Some(path) => {
-                let scope = crate::private_io::of_path(&self.folder().dir)?;
-                let prepared = crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await?;
+                // A fetch-ahead run stages its files outside any project: a private project's code waits for the run that calls it.
+                if crate::private_io::of_path(&self.folder().dir)?.is_some() { return Ok(()); }
+                let prepared = self.host.ready(path, &placed, &hub).await?;
                 (v1::Source::Local(prepared.source), prepared.files)
             }
         };

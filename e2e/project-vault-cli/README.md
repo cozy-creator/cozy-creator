@@ -35,11 +35,9 @@ The fixture opens the intentionally decrypted folder with `cozy status` after
 the scan. It then compares the whole graph through the YAML endpoint and
 requires a distinct project identity while the original is locked.
 
-Conversion checks both omitted and legacy-false API removal flags, default CLI
-source deletion, and explicit `--preserve-plaintext` with verified original bytes
-and preservation across a controller restart. Conflicting source policies and
-unsupported links refuse before conversion. Synthetic preserved plaintext is
-deleted after its check; only booleans and command metadata reach the artifacts.
+Conversion always removes the unencrypted original and its stage, through the API
+and the CLI; no flag keeps a plaintext copy. Unsupported links refuse before
+conversion and leave no stage. Only booleans and command metadata reach the artifacts.
 
 The parallel cell checks two concurrent manual locks. The controller's separate
 qualification owns pending-unlock/lock ordering. Expiration checks a requested

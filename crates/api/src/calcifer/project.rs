@@ -1349,12 +1349,6 @@ pub struct VaultAsk {
     pub idle_timeout_s: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_duration_s: Option<u64>,
-    /// Legacy removal flag. Verified source removal is now the default; false does not preserve it.
-    #[serde(default)]
-    pub remove_plaintext: bool,
-    /// Explicitly keep the original plaintext after a verified encrypt conversion. Not valid for rekey/decrypt.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub preserve_plaintext: bool,
 }
 
 /// A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
@@ -1364,8 +1358,6 @@ pub struct VaultChanged {
     pub vault: VaultStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_secret: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preserved_source: Option<PathBuf>,
     /// The project's runs a lock canceled first, by number.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ended: Vec<u64>,
