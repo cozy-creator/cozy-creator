@@ -797,7 +797,7 @@ run: string, at_unix_ms: number,
 /**
  * Its readings were recorded ones a test replays (`machine.gpu_samples`), not this GPU's own.
  */
-replayed?: boolean, };
+replayed: boolean, };
 
 /**
  * `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.

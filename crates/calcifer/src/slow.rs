@@ -1,8 +1,9 @@
 //! A run far slower than its function is known to take on its card and lane says so, naming the likely cause (cl-913). What it's
 //! known to take, its bar: this machine's runs of it, else runs on other machines of its card, else runs on another card scaled by
-//! the Hub's per-SKU speeds; at its lane and size, never from a run itself slow or slowed (a hot GPU, a Runtime without its
-//! kernels). A run whose bar has stages is timed from its first one, so a cold start's load is no slowness. Far is 1.4× the bar and
-//! 20 s more: said once, as soon as its time so far is (`tick`), else at its end with what its record measured.
+//! the Hub's per-SKU speeds; at its lane and size (megapixels and steps as its time left reads them, and frames, tokens and media
+//! duration asked), never from a run itself slow or slowed (a hot GPU, a Runtime without its kernels). A run whose bar has stages is
+//! timed from its first one, so a cold start's load is no slowness. Far is 1.4× the bar and 20 s more: said once, as soon as its
+//! time so far is and a cause is known (`tick`), else at its end with what its record measured.
 use ::api::{
     calcifer::{EtaBasis, Kind, Status, Warning},
     machine as v1,
@@ -33,15 +34,65 @@ pub(crate) struct Bar {
     width: u32,
     /// What it stands on, in words.
     basis: String,
+    /// What its runs asked beyond megapixels and steps, each unit's median.
+    extent: Extent,
 }
 
 impl Bar {
-    /// What it allows a run timed from its first stage (`staged`), else from its start.
-    fn ms(&self, staged: bool) -> f64 {
+    /// What it allows a run asking `extent`, timed from its first stage (`staged`), else from its start: what follows its load
+    /// scales with what is asked.
+    fn ms(&self, staged: bool, extent: &Extent) -> f64 {
+        let scale = extent.ratio(&self.extent);
         match (staged, self.lead_ms) {
-            (true, Some(lead)) => self.total_ms - lead,
-            _ => self.total_ms,
+            (true, Some(lead)) => (self.total_ms - lead) * scale,
+            (false, Some(lead)) => lead + (self.total_ms - lead) * scale,
+            (_, None) => self.total_ms * scale,
         }
+    }
+}
+
+/// What a run asks beyond megapixels and steps, as its input says: `frames`, `tokens`, and its media's seconds (every `duration`
+/// in it, summed: a shot's beats).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Extent {
+    frames: Option<f64>,
+    tokens: Option<f64>,
+    duration: Option<f64>,
+}
+
+impl Extent {
+    fn of(input: &Map<String, Value>) -> Self {
+        fn durations(value: &Value) -> f64 {
+            match value {
+                Value::Object(map) => map.iter().map(|(key, value)| match (key.as_str(), value.as_f64()) {
+                    ("duration", Some(seconds)) => seconds.max(0.0),
+                    _ => durations(value),
+                }).sum(),
+                Value::Array(items) => items.iter().map(durations).sum(),
+                _ => 0.0,
+            }
+        }
+        let number = |key: &str| input.get(key).and_then(Value::as_f64).filter(|n| *n > 0.0);
+        let duration = durations(&Value::Object(input.clone()));
+        Extent { frames: number("frames"), tokens: number("tokens"), duration: (duration > 0.0).then_some(duration) }
+    }
+
+    /// Each unit's median of `extents`.
+    fn median(extents: &[Extent]) -> Self {
+        let of = |pick: fn(&Extent) -> Option<f64>| {
+            let mut values: Vec<f64> = extents.iter().filter_map(pick).collect();
+            values.sort_by(f64::total_cmp);
+            values.get(values.len() / 2).copied()
+        };
+        Extent { frames: of(|e| e.frames), tokens: of(|e| e.tokens), duration: of(|e| e.duration) }
+    }
+
+    /// How much more it asks than `other`: the product of each unit both know.
+    fn ratio(&self, other: &Extent) -> f64 {
+        [(self.frames, other.frames), (self.tokens, other.tokens), (self.duration, other.duration)]
+            .into_iter()
+            .filter_map(|(a, b)| Some(a? / b.filter(|b| *b > 0.0)?))
+            .product()
     }
 }
 
@@ -79,23 +130,25 @@ impl Calcifer {
         let (rows, ..) = self.store.runs(&filter).ok()?;
         let input = input(row);
         let (megapixels, steps) = (crate::megapixels(&input), input.get("steps").and_then(Value::as_u64));
-        let like: Vec<eta::Took> = (rows.iter())
+        let (like, extents): (Vec<eta::Took>, Vec<Extent>) = (rows.iter())
             .filter(|other| other.id != row.id && other.target.split('@').next() == Some(base) && other.spec.lane == row.spec.lane)
             .filter(|other| !other.warnings.iter().any(|warning| SLOWED.contains(&warning.code.as_str())))
             .filter_map(|other| {
                 let outcome = other.outcome.as_ref()?;
-                eta::Took::of(other.machine.as_deref()?, &outcome.gpu, other.started_at_ms?, outcome.execution_ms, outcome.measurements.as_ref()?.get(), None)
+                let took = eta::Took::of(other.machine.as_deref()?, &outcome.gpu, other.started_at_ms?, outcome.execution_ms, outcome.measurements.as_ref()?.get(), None)?;
+                Some((took, Extent::of(&input(other))))
             })
-            .collect();
+            .unzip();
+        let extent_of = |pick: &dyn Fn(&eta::Took) -> bool| Extent::median(&like.iter().zip(&extents).filter(|(took, _)| pick(took)).map(|(_, extent)| *extent).collect::<Vec<_>>());
         let gpu = self.gpu_of(machine);
         let card = fit::card(&gpu);
         // This machine's, else its card's on other machines.
         if let Some(prior) = eta::Prior::of(&like, machine, &gpu, megapixels) {
-            let (basis, of): (String, Vec<&eta::Took>) = match prior.basis {
-                EtaBasis::Machine => (format!("{machine}'s last {} runs", prior.runs), like.iter().filter(|took| took.machine == machine).collect()),
-                _ => (format!("{} runs on other {card} machines", prior.runs), like.iter().filter(|took| took.gpu == gpu).collect()),
+            let (basis, of, extent): (String, Vec<&eta::Took>, Extent) = match prior.basis {
+                EtaBasis::Machine => (format!("{machine}'s last {} runs", prior.runs), like.iter().filter(|took| took.machine == machine).collect(), extent_of(&|took| took.machine == machine)),
+                _ => (format!("{} runs on other {card} machines", prior.runs), like.iter().filter(|took| took.gpu == gpu).collect(), extent_of(&|took| took.gpu == gpu)),
             };
-            return Some(Self::barred(prior.with_steps(steps), steps, &of, basis, 1.0));
+            return Some(Self::barred(prior.with_steps(steps), steps, &of, basis, 1.0, extent));
         }
         // Another card's, scaled by the Hub's per-SKU speeds.
         let machines = self.machines()?;
@@ -112,13 +165,14 @@ impl Calcifer {
                 let prior = eta::Prior::of(&like, "", other, megapixels)?;
                 let of: Vec<&eta::Took> = like.iter().filter(|took| took.gpu == other).collect();
                 let basis = format!("{} runs on an {} scaled by the Hub's speeds", prior.runs, fit::card(other));
-                Some((prior.runs, Self::barred(prior.with_steps(steps), steps, &of, basis, speed / to)))
+                let extent = extent_of(&|took| took.gpu == other);
+                Some((prior.runs, Self::barred(prior.with_steps(steps), steps, &of, basis, speed / to, extent)))
             })
             .max_by_key(|(runs, _)| *runs)
             .map(|(_, bar)| bar)
     }
 
-    fn barred(prior: eta::Prior, steps: Option<u64>, of: &[&eta::Took], basis: String, scale: f64) -> Bar {
+    fn barred(prior: eta::Prior, steps: Option<u64>, of: &[&eta::Took], basis: String, scale: f64, extent: Extent) -> Bar {
         let mut widths: Vec<u32> = of.iter().map(|took| took.width).collect();
         widths.sort_unstable();
         Bar {
@@ -127,6 +181,7 @@ impl Calcifer {
             stages: prior.stages.iter().map(|stage| stage.name.clone()).collect(),
             width: widths.get(widths.len() / 2).copied().unwrap_or(1),
             basis,
+            extent,
         }
     }
 
@@ -166,14 +221,19 @@ impl Calcifer {
             _ => return,
         };
         let took = (store::now_ms() - since) as f64;
-        let Some(times) = far(took, bar.ms(staged)) else { return };
+        let allowed = bar.ms(staged, &Extent::of(&input(&row)));
+        let Some(times) = far(took, allowed) else { return };
+        // As it runs, only with a cause known: what its input doesn't say of its size, its end does.
         let machine = row.machine.clone().unwrap_or_default();
         let causes = self.causes(&row, &machine, None, width, &bar);
+        if causes.is_empty() {
+            return;
+        }
         let message = format!(
             "run {} has run {} so far, {times:.1}× the {} {} takes here ({}){}",
             row.number,
             minutes(took),
-            minutes(bar.ms(staged)),
+            minutes(allowed),
             row.target.split('@').next().unwrap_or_default(),
             bar.basis,
             likely(&causes)
@@ -196,14 +256,15 @@ impl Calcifer {
             (Some(took), Some(_)) if !took.stages.is_empty() => (true, took.total_ms() - took.lead_ms),
             _ => (false, outcome.execution_ms as f64),
         };
-        let Some(times) = far(took_ms, bar.ms(staged)) else { return };
+        let allowed = bar.ms(staged, &Extent::of(&input(&row)));
+        let Some(times) = far(took_ms, allowed) else { return };
         let width = lock(&self.live).get(id).map_or(0, |live| live.width);
         let causes = self.causes(&row, &machine, Some(outcome), width, &bar);
         let message = format!(
             "run {} took {}, {times:.1}× the {} {} takes here ({}){}",
             row.number,
             minutes(took_ms),
-            minutes(bar.ms(staged)),
+            minutes(allowed),
             row.target.split('@').next().unwrap_or_default(),
             bar.basis,
             likely(&causes)
