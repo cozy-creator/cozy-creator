@@ -124,6 +124,35 @@ async function died(why) {
     check(`left_by_${way}_the_canvas_is_where_it_was`, same(before, after), { before, after });
   }
 
+  // Left at once, while the canvas is still on its way in; by the browser's Back; and in again before it's back, then out.
+  const media = async (name) => {
+    const box = await boxOf(page, name).locator('.media').first().boundingBox();
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  };
+  let point = await media('one');
+  await page.mouse.dblclick(point.x, point.y);
+  await page.waitForTimeout(60);
+  await page.keyboard.press('Escape');
+  await left();
+  seen.at_once = await viewport();
+  check('left_at_once_the_canvas_is_where_it_was', same(before, seen.at_once), { before, after: seen.at_once });
+  await enter('one');
+  await page.goBack();
+  await left();
+  seen.browser_back = await viewport();
+  check('left_by_the_browsers_back_the_canvas_is_where_it_was', same(before, seen.browser_back), { before, after: seen.browser_back });
+  await enter('one');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(80);
+  point = await media('one');
+  await page.mouse.dblclick(point.x, point.y);
+  await focused('one').waitFor();
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Escape');
+  await left();
+  seen.in_again_on_the_way_back = await viewport();
+  check('in_again_on_the_way_back_the_canvas_is_where_it_was', same(before, seen.in_again_on_the_way_back), { before, after: seen.in_again_on_the_way_back });
+
   // Its picture zoomed in Focus first.
   await enter('one');
   for (let i = 0; i < 3; i++) await page.getByRole('button', { name: 'Zoom in image', exact: true }).click().catch(() => page.keyboard.press('Control+='));
