@@ -1,25 +1,35 @@
 //! Controller-owned tool storage and captured diagnostics stay inside the project.
 //! Their captured stdio and every writable tool cache belong to the project.
-use std::{collections::HashMap, fs::{self,File}, io, path::{Path,PathBuf}, process::{Command,Output,Stdio}, sync::{LazyLock,Mutex}, time::Duration};
+use std::{collections::HashMap, fs::{self,File}, io, path::{Path,PathBuf}, process::{Command,Output,Stdio}, sync::{Arc,LazyLock,Mutex,atomic::{AtomicBool,Ordering}}, time::Duration};
 
-static ACTIVE:LazyLock<Mutex<HashMap<PathBuf,usize>>>=LazyLock::new(Mutex::default);
+static ACTIVE:LazyLock<Mutex<HashMap<PathBuf,Vec<Arc<AtomicBool>>>>>=LazyLock::new(Mutex::default);
 pub(crate) fn active(root:&Path)->bool {
     let root=crate::project::vault::logical(root);
-    ACTIVE.lock().expect("private controller tools").get(&root).is_some_and(|count|*count>0)
+    ACTIVE.lock().expect("private controller tools").get(&root).is_some_and(|tools|!tools.is_empty())
 }
-struct Running {root:PathBuf, release:bool}
+pub(crate) fn cancel(root:&Path) {
+    let root=crate::project::vault::logical(root);
+    if let Some(tools)=ACTIVE.lock().expect("private controller tools").get(&root) {
+        for tool in tools {tool.store(true,Ordering::Release);}
+    }
+}
+struct Running {root:PathBuf, cancelled:Arc<AtomicBool>, release:bool}
 impl Running {
     fn new(root:&Path)->Self {
         let root=crate::project::vault::logical(root);
-        *ACTIVE.lock().expect("private controller tools").entry(root.clone()).or_default()+=1;
-        Self{root,release:true}
+        let cancelled=Arc::new(AtomicBool::new(false));
+        ACTIVE.lock().expect("private controller tools").entry(root.clone()).or_default().push(cancelled.clone());
+        Self{root,cancelled,release:true}
     }
 }
 impl Drop for Running {
     fn drop(&mut self) {
         if !self.release { return; }
         let mut active=ACTIVE.lock().expect("private controller tools");
-        if let Some(count)=active.get_mut(&self.root) { *count-=1; if *count==0 { active.remove(&self.root); } }
+        if let Some(tools)=active.get_mut(&self.root) {
+            tools.retain(|tool|!Arc::ptr_eq(tool,&self.cancelled));
+            if tools.is_empty() {active.remove(&self.root);}
+        }
     }
 }
 fn error(why:impl std::fmt::Display)->io::Error { io::Error::new(io::ErrorKind::PermissionDenied,format!("project tool custody unavailable: {why}")) }
@@ -76,6 +86,10 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     // The native helper suppresses requested cores and unrelated inherited FDs;
     // it makes no OS filesystem or arbitrary custom-Python sandbox claim.
     platform::private_exec::prepare_managed_child(&mut owned,Vec::new()).map_err(error)?;
+    if running.cancelled.load(Ordering::Acquire) {
+        process_scope.end().map_err(error)?;
+        return Err(io::Error::new(io::ErrorKind::Interrupted,"project tool cancelled for lock"));
+    }
     let mut tree=platform::process::spawn(owned).map_err(error)?;
     running.release=false;
     let birth=platform::process::Birth::of(tree.pid()).map_err(error)?;
@@ -86,6 +100,7 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
         for member in platform::process::group_members(&birth) {
             if let Some(exact)=platform::process::Exact::open(&member).map_err(error)? { followers.entry(member).or_insert(exact); }
         }
+        if running.cancelled.load(Ordering::Acquire) {break;}
         std::thread::sleep(Duration::from_millis(20));
     }
     for member in platform::process::group_members(&birth) {
@@ -107,7 +122,8 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
         return closed;
     }
     drop(tree); drop(stdout); drop(stderr); temporary.close()?;
+    let cancelled=running.cancelled.load(Ordering::Acquire);
     running.release=true;
     drop(running);
-    closed
+    if cancelled {Err(io::Error::new(io::ErrorKind::Interrupted,"project tool cancelled for lock"))} else {closed}
 }
