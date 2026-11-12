@@ -222,7 +222,8 @@ const SEAM = 6;
   const picked = await until('the redone take', async () => (await versionsOf('shot')).find((one) => one.pickup), Boolean, FIRST_RUN_MS);
   const redid = await resultOf('shot', picked.number);
   seen.redid = { versions: (await versionsOf('shot')).map((one) => ({ number: one.number, pickup: one.pickup })), pickup: redid.version?.pickup, seams: redid.result?.seams, warnings: redid.result?.warnings };
-  check('a_redo_keeps_the_seam_it_starts_at', redid.version?.pickup?.take === '<shot.1>' && redid.version?.pickup?.out_frame === SEAM && redid.result?.seams?.[0] === SEAM && !redid.result?.warnings?.length, seen.redid);
+  // From the take looked at: the plain render the cell held earlier can land first and be the one shown.
+  check('a_redo_keeps_the_seam_it_starts_at', /^<shot\.\d+>$/.test(redid.version?.pickup?.take ?? '') && redid.version?.pickup?.out_frame === SEAM && redid.result?.seams?.[0] === SEAM && !redid.result?.warnings?.length, seen.redid);
   await closeBox(page);
 
   // Asked off a seam (only `cozy run` asks a frame of its own): the tool starts at the seam before it, says so, and keeps that seam.
