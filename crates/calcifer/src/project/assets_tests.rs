@@ -310,12 +310,12 @@ async fn typed_nodes_fixture() {
         let mut graph = Graph::default();
         let background = folder::Ask { id: "background-image".into(), ..Default::default() };
         let jobs = graph.add(&background.id, &mut Now { reading: &mut reading, lock: &lock, ask: &background }, &walker::Asked {
-            takes: vec![Named { key: "image-next".into(), asset: original.name.clone(), approve: true }], ..Default::default()
+            takes: vec![Named { key: "image-next".into(), asset: original.name.clone(), approve: true, covers: false }], ..Default::default()
         });
         graph.go(jobs[0]);
         let video = folder::Ask { id: "named-video".into(), ..Default::default() };
         let jobs = graph.add(&video.id, &mut Now { reading: &mut reading, lock: &lock, ask: &video }, &walker::Asked {
-            takes: vec![Named { key: "video-next".into(), asset: reader.clone(), approve: true }], ..Default::default()
+            takes: vec![Named { key: "video-next".into(), asset: reader.clone(), approve: true, covers: false }], ..Default::default()
         });
         assert!(graph.jobs[jobs[0]].needs.is_empty(), "a selected image does not wait for a background generation");
         assert_eq!(graph.turn(jobs[0], &mut Now { reading: &mut reading, lock: &lock, ask: &video }), Turn::Go);

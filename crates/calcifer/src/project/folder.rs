@@ -654,6 +654,9 @@ pub(crate) struct Ask {
     /// Asked of `all`, with or without `--missing`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub whole: bool,
+    /// Not of `all`, with `outdated`: the pins it judges, by name key, those its names read and themselves.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub judges: BTreeSet<String>,
     /// What it sent or tried, made or failed, by name key: each is tried once.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub sent: BTreeSet<String>,
@@ -707,6 +710,9 @@ pub(crate) struct Take {
     /// Pick up from here: the take its new part goes on from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickup: Option<api::calcifer::project::Pickup>,
+    /// What it reads with no state renders first, a cut's too (`cozy render`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub covers: bool,
 }
 
 impl Lock {
