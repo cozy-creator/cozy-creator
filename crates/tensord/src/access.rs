@@ -542,7 +542,7 @@ impl Fetch {
                 .map(|o| o.length)
                 .sum();
             if let Some(name) = guessed.filter(|_| taken + absent > free) {
-                lined.held_back.push(format!("{name}'s weights ({}) aren't fetched ahead: {} free beside what comes first", gib(absent), gib(free.saturating_sub(taken))));
+                lined.held_back.push(format!("{name}: weights of {} aren't fetched ahead, {} free beside what comes first", gib(absent), gib(free.saturating_sub(taken))));
                 continue;
             }
             taken += absent;
