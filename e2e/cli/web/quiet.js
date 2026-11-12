@@ -102,6 +102,9 @@ const LOOK = (name) => {
   await openBox(page, NAME);
   await (await renderOf(page, NAME)).click();
   const focus = page.locator(`.card.here[data-asset="${NAME}"]`).first();
+  // A runner has no GPU: the box asks once, Rent a GPU or Run here anyway (cl-897); here, as a person on it would.
+  const anyway = page.locator('button:has-text("Run here anyway")').first();
+  if (await anyway.waitFor({ timeout: 15_000 }).then(() => true, () => false)) await anyway.click();
   const faced = await focus.locator('.run-face').first().waitFor({ timeout: 60_000 }).then(() => true, () => false);
   if (phases) await focus.screenshot({ path: join(phases, '00-focus.png') }).catch(() => {});
   seen.focus_face = faced;
