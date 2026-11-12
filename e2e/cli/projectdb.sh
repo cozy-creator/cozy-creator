@@ -82,6 +82,10 @@ approvals() { DB_WEB=approvals db_existing_web; }
 # A rendering box at rest breathes around its edge; a take landing beside an approved one is unseen until looked at (cl-928): web/newtakes.js.
 newtakes() { DB_WEB=newtakes db_existing_web; }
 
+# The take looked at in Focus is the one drawn when it finishes, with Focus left and opened again while it's made, and from the toast's View (cl-942):
+# web/focusfinish.js.
+focusfinish() { DB_WEB=focusfinish db_existing_web; }
+
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return
 [ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }

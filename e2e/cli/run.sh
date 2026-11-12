@@ -320,6 +320,8 @@ case $SHARD in
   web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
   # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it.
   web-tiles) export DB_WEB="tiles newtakes"; parts="tools_read db_existing_web logs" ;;
+  # The take looked at in Focus is the one drawn when it finishes (cl-942).
+  web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
   web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
   # Files dropped: twenty pictures at once, each drawn once where and as it stays (cl-918), and Place's drop, chooser, rename and moves.
@@ -331,8 +333,9 @@ case $SHARD in
   web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
-  # computer placed on (cl-894), a new take never changing what's approved (cl-908), and one not looked at (cl-928).
-  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes prepares logs" ;;
+  # computer placed on (cl-894), a new take never changing what's approved (cl-908), one not looked at (cl-928), and the take looked at in
+  # Focus drawn when it finishes (cl-942).
+  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes focusfinish prepares logs" ;;
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
