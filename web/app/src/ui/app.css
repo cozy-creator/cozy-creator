@@ -1037,6 +1037,8 @@ code {
 .focus-viewport > .run-face.above {
   position: relative;
   flex: none;
+  /* Its two lines, the second as tall as its Cancel: Render and New take are lifted by this (FocusedViewport.css). */
+  height: 56px;
   padding: 0 4px;
   font-size: 17px;
   text-shadow: var(--halo);

@@ -381,16 +381,21 @@ body:has(.focus-viewport) .zoom {
   .card.focus-card { grid-template-columns: minmax(0, 1fr) min(25vw, 150px); gap: 8px; }
   .focus-heading { gap: 8px; }
 }
-/* New and Render on the title row, above the frame's right edge, the same for every tool, never hidden while a take renders (Paul, 11-12).
-   Held to the window, not the card: a render's lines under the title push the card down, and they stay on the title row (cl-958). */
+/* New and Render on the title row, above the frame's right edge, the same for every tool, never hidden while a take renders (Paul, 11-12). */
 .focus-card > .focus-actions {
-  position: fixed;
-  top: 60px;
-  right: calc(20px + min(26vw, 280px) + 20px);
+  position: absolute;
+  top: -12px;
+  right: calc(min(26vw, 280px) + 20px);
   z-index: 4;
   display: flex;
   align-items: center;
   gap: 12px;
+  transform: translateY(-100%);
+}
+/* A render's lines under the title push the card down by their 56px and the gap after them; they stay on the title row (cl-958). Not
+   fixed to the window: the minifier makes the card's transform a translate, which would hold them to the card anyway. */
+.focus-viewport:has(> .run-face.above) .focus-card > .focus-actions {
+  top: calc(-12px - 56px - 12px);
 }
 .focus-actions .run {
   min-height: 44px;
@@ -425,6 +430,6 @@ body:has(.focus-viewport) .zoom {
   padding-right: 360px;
 }
 @media (max-width: 760px) {
-  .focus-card > .focus-actions { top: 58px; right: calc(6px + min(25vw, 150px) + 8px); }
+  .focus-card > .focus-actions { right: calc(min(25vw, 150px) + 8px); }
   .focus-viewport:has(.focus-actions) .focus-title { padding-right: 260px; }
 }
