@@ -33,7 +33,7 @@ release_synthetic_checks() (
     local status=$?
     step cleanup
     python3 "$E2E/delete-test-package.py" "$WHO/$pkg" > /dev/null || check "package fixture cleanup failed"
-    for model_name in "$model" "$model-copy" "$model-store" "$model-lora" "$model-h3-lora" "$model-kept"; do
+    for model_name in "$model" "$model-copy" "$model-store" "$model-lora" "$model-lora-added" "$model-h3-lora" "$model-kept"; do
       if model_details "$model_name" > /dev/null 2>&1; then
         cozy --json model delete "$model_name" -y > /dev/null || check "cleanup failed for $model_name"
       fi
@@ -203,6 +203,12 @@ if cozy --json lora delete "$model-lora@$lora_checkpoint" -y > "$OUT/referenced-
   check "a retained private release did not protect its checkpoint from deletion"
 fi
 cozy --json lora delete "$model-lora" -y > /dev/null || check "LoRA fixture cleanup failed"
+# A LoRA's upload adds a file as a model's does (xs-183, the shared upload handler): the upload names it.
+watched upload-lora-added lora upload "$OUT/tiny-lora.safetensors" "$model-lora-added" --lane f16 --source-format as-is \
+  --add extra/added.json="$OUT/added.json" --on "$ON" || check "lora upload --add failed"
+grep -q '"added":\["extra/added.json"\]' "$OUT/upload-lora-added.ndjson" 2> /dev/null \
+  || check "lora upload --add: the result does not name extra/added.json: $(tail -c 300 "$OUT/upload-lora-added.ndjson")"
+cozy --json lora delete "$model-lora-added" -y > /dev/null || check "LoRA --add fixture cleanup failed"
 # A step-distilled LoRA (xs-183: H3 Turbo, Regenerate-2K): kohya's lora_down/lora_up pairs and a per-step table it keeps beside
 # them is a LoRA, not a component of some model.
 uv run -q --no-project python -I - "$OUT/tiny-kept.safetensors" <<'PYKEPT'

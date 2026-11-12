@@ -305,13 +305,8 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
             shutdown_after_signal(stopping).await;
         });
     }
-    let app = api::router(api.clone()).into_make_service_with_connect_info::<SocketAddr>();
-    let server = tokio::spawn(
-        axum::serve(listener, app)
-            .with_graceful_shutdown(api.stopped())
-            .into_future(),
-    );
-
+    // The record before the first answer (cl-885): a client that reconnects across a restart with the last Calcifer's bearer is
+    // refused, and finds this one's record, never none. Served first, a record that was slow to land (a busy disk) ended a watch.
     let holder = Holder {
         address,
         token,
@@ -323,7 +318,6 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     record.push(b'\n');
     if let Err(e) = held.publish(&record) {
         api.stop();
-        let _ = server.await;
         machines.close();
         calcifer.close();
         return Err(failed(Error::new(
@@ -334,6 +328,12 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     let _ = std::fs::remove_file(home.calcifer().join(REFUSED));
     steps.done("record");
+    let app = api::router(api.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    let server = tokio::spawn(
+        axum::serve(listener, app)
+            .with_graceful_shutdown(api.stopped())
+            .into_future(),
+    );
     crate::browser::hosted_proof(api.clone());
     crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react"
 import { ApiError } from "../api/client"
 import { statusQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
@@ -59,10 +59,10 @@ export function useSignedIn(): boolean {
   return useQuery(statusQuery(client, status)).data.signed_in
 }
 
-/** The time, every `every` ms while `live`: what a countdown or a running clock reads. */
+/** The time, every `every` ms while `live`: what a countdown or a running clock reads. Read again before it's drawn as it goes live. */
 export function useNow(live = true, every = 1000): number {
   const [now, setNow] = useState(Date.now)
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!live) return
     setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), every)

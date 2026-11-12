@@ -25,7 +25,7 @@ use std::{
     fs::{self, File},
     io,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Condvar, Mutex, PoisonError},
     time::{Duration, SystemTime},
 };
 use platform::durable::{self, FileId};
@@ -892,10 +892,45 @@ pub(crate) struct Usage {
 }
 
 static USAGE: Mutex<Option<Usage>> = Mutex::new(None);
+/// The store's free bytes at the last measure.
+static MEASURED_FREE: Mutex<Option<u64>> = Mutex::new(None);
+/// The disk's free bytes moved this far from the last measure: what fills it is measured again.
+const USAGE_MOVED: u64 = 64 << 20;
+/// How many measures (or first sweeps) were asked for: each reclaim thread, the machine's and each project's, wakes.
+static ASKED: (Mutex<u64>, Condvar) = (Mutex::new(0), Condvar::new());
 
 /// The last measure of what fills the disk; none before the first.
 pub(crate) fn usage() -> Option<Usage> {
     *USAGE.lock().unwrap()
+}
+
+/// The store's free bytes as a reader (`machine show`) sees them now: moved `USAGE_MOVED` from the last measure, what
+/// fills the disk is measured again (`machine show` on a machine whose models landed since said what it held before them).
+pub(crate) fn seen_free(free: u64) {
+    if MEASURED_FREE.lock().unwrap().is_some_and(|measured| measured.abs_diff(free) >= USAGE_MOVED) {
+        ask();
+    }
+}
+
+/// Wakes every reclaim thread (`wait_asked`).
+pub(crate) fn ask() {
+    *ASKED.0.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+    ASKED.1.notify_all();
+}
+
+/// The asks so far: a reclaim thread's starting `seen`.
+pub(crate) fn asked() -> u64 {
+    *ASKED.0.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Waits until asked since `seen` (true) or `most` passes (false); forever with no `most`.
+pub(crate) fn wait_asked(seen: &mut u64, most: Option<Duration>) -> bool {
+    let asked = ASKED.0.lock().unwrap_or_else(PoisonError::into_inner);
+    let now = match most {
+        Some(most) => *ASKED.1.wait_timeout_while(asked, most, |asked| *asked == *seen).unwrap_or_else(PoisonError::into_inner).0,
+        None => *ASKED.1.wait_while(asked, |asked| *asked == *seen).unwrap_or_else(PoisonError::into_inner),
+    };
+    std::mem::replace(seen, now) != now
 }
 
 /// Measures what fills the disk: the TensorFS store at `store`; the package environments under
@@ -913,8 +948,10 @@ pub(crate) fn measure_usage(store: &Path, engine: &Path, uv_cache: Option<&Path>
     environments += envs.map(|env| own(&env.path())).sum::<u64>();
     let added = uv_cache.into_iter().flat_map(|cache| fs::read_dir(cache.join("archive-v0")).into_iter().flatten().flatten());
     environments += added.filter(|a| unlinked_since(&a.path()).is_some()).map(|a| du(&a.path(), &[])).sum::<u64>();
+    let free = measure(store).ok().map(|disk| disk.available);
     let usage = Usage { models: du(store, &[]), environments, runtime: du(engine, &skip), runs: du(&engine.join("execution"), &[]) };
     *USAGE.lock().unwrap() = Some(usage);
+    *MEASURED_FREE.lock().unwrap() = free;
 }
 
 /// The bytes only environment `dir` holds (`releasable`: neither its links into a uv cache nor

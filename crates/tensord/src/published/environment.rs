@@ -422,7 +422,7 @@ impl Publisher {
                 None => {
                     let meets = |version: &str| floor.meets(version);
                     let index = if unread.is_some() { "uv's index can't be read now" } else { "uv's index doesn't have it" };
-                    let found = pypi::prerelease(&floor.name, &meets, &wheels, &self.machine, &stop).map_err(|why| {
+                    let found = pypi::prerelease(&floor.name, &meets, &wheels, &self.machine, job.order, &stop).map_err(|why| {
                         let said = format!("{label} needs {requirement}: {index}, and a GitHub prerelease couldn't be fetched ({why})");
                         (if why.kind() == io::ErrorKind::NotConnected { super::UNREACHABLE } else { "runtime_floor_unread" }, said)
                     })?;

@@ -1167,6 +1167,11 @@ export class CanvasStore {
     }
   }
 
+  /** A model's Hub card, as Calcifer reads it. */
+  modelDetail(name: string) {
+    return this.client.model(name)
+  }
+
   /** What's on it changed, in one write: the room it takes changes with it. */
   putOn(name: string, fields: Record<string, unknown>) {
     void this.setFields(name, fields)
@@ -1183,12 +1188,15 @@ export class CanvasStore {
     const width = this.poseOf(key)?.w ?? widthFor(view)
     const height = heightFor(view, width)
     const shape = this.shapeOf(key, width, height)
-    if (this.shapes.get(key) === shape) return
+    const before = this.shapes.get(key)
+    if (before === shape) return
     this.shapes.set(key, shape)
     this.paintPose(key)
-    // Merely selecting another aspect must never rewrite the canvas row or move
-    // nearby nodes. Explicit moves and corner resizes still settle their geometry.
-    if (!(view.asset?.kind === "image" && !view.hereWords && shownOf(view))) this.unsettle(key, true)
+    // Looking at another version of a picture only widens it about its middle, its height being v1's: that moves nothing. A new height does,
+    // as any box's: a picture placed before it was measured (16:9 until then) pushes aside what it now lies on (cl-885).
+    const picture = view.asset?.kind === "image" && !view.hereWords && shownOf(view)
+    const resized = before?.slice(before.indexOf(":")) !== shape.slice(shape.indexOf(":"))
+    if (!picture || resized) this.unsettle(key, true)
   }
 
   // Keeping clear: no box lies on another
@@ -1938,13 +1946,17 @@ export class CanvasStore {
     this.over(key, { starred: on }, (served, write) => this.client.patchAsset(this.projectId!, served, { fields: { starred: on || null } }, write), on ? "star" : "unstar", edit)
   }
 
-  /** A double tap on a take: it's approved, or if it was, nothing is, and it's still the one looked at. */
+  /** A double tap on a take toggles it (Paul, 11-12): it's approved, or if it was, nothing is, and it's still the one looked at. A picture's
+   *  approval selects it as its box's picture (`selectVersion`). */
   toggleApproved(name: string, number: number) {
     const asset = this.get(name)?.asset
+    if (asset?.pinned && asset.approved === number) {
+      this.unpin(name)
+      this.view(name, number)
+      return
+    }
     if (asset?.kind === "image") return this.selectVersion(name, number)
-    if (!asset?.pinned || asset.approved !== number) return this.pin(name, number)
-    this.unpin(name)
-    this.view(name, number)
+    this.pin(name, number)
   }
 
   unpin(name: string) {

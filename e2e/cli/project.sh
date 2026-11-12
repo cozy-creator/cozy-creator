@@ -17,12 +17,20 @@ project_api() {
 }
 # project_upload <folder> <file>: the file into that project's own content store, as the page sends it; its sha256:.
 project_upload() {
-  local directory=$1 file=$2 source holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  local directory=$1 file=$2 source holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded address token said code
   cozy --json machine ls > /dev/null || return
   source="sha256:$(sha "$file")"
   encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
-  curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' \
-    --data-binary "@$file" "http://$(jq -r .address "$holder")/v1/project-files/$source?project=$encoded" > /dev/null || return
+  address=$(jq -r .address "$holder") token=$(jq -r .token "$holder") said=$(mktemp)
+  code=$(curl -sS -o "$said" -w '%{http_code}' -X PUT -H "Authorization: Bearer $token" -H 'cozy-project-storage: 3' \
+    --data-binary "@$file" "http://$address/v1/project-files/$source?project=$encoded") || { rm -f "$said"; return 1; }
+  # A Calcifer from before project storage (0.24.0, in a migration cell's place) has no such route: it holds files for any project.
+  if [ "$code" = 404 ] && jq -e '.error.code == "unknown_route"' "$said" > /dev/null 2>&1; then
+    curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $token" --data-binary "@$file" "http://$address/v1/files/$source" > /dev/null || { rm -f "$said"; return 1; }
+  elif [ "${code:0:1}" != 2 ]; then
+    cat "$said" >&2; rm -f "$said"; return 1
+  fi
+  rm -f "$said"
   echo "$source"
 }
 project_import() {

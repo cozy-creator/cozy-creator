@@ -136,9 +136,10 @@ case $suite:$shard in
   cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
+  cli:idle) needs='packages downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
-  cli:web-models) needs='packages loras' ;;
-  cli:) needs='packages birefnet downloads loras' ;;
+  cli:web-models) needs='packages loras vaes' ;;
+  cli:) needs='packages birefnet downloads loras vaes' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).
@@ -186,6 +187,13 @@ if [ "$suite" = cpu ]; then
     systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
   fi
+  # The binder installs on the candidates' Runtime and TensorFS, as every RC machine runs them with the RC's cozy (cl-952):
+  # with no pair of its own, a machine runs a lock's pair only in its own TensorFS series.
+  update=()
+  [ -z "$runtime" ] || update+=(--runtime "$runtime")
+  [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
+  [ ${#update[@]} -eq 0 ] || cozy --json machine update local "${update[@]}" -y > "$seed/machine-update.json" 2>&1 \
+    || { echo "the cpu suite's machine refused the candidates: $(tail -c 600 "$seed/machine-update.json")" >&2; exit 1; }
   (cd "$project" && cozy --json new --unencrypted > /dev/null)
   log "the cpu suite starts against its owned Hub with the installed candidate"
   exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project"
@@ -319,10 +327,26 @@ PYH3
       [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; exit 1; }
       cozy --json lora publish "$lora" 0.1.0 "$commit" -y > "$seed/publish-${lora##*/}.json" 2>&1 \
         || { echo "publishing $lora failed: $(tail -c 600 "$seed/publish-${lora##*/}.json")" >&2; exit 1; }
-      cozy --json lora edit "$lora" --family minimax-h3 > "$seed/edit-${lora##*/}.json" 2>&1 \
+      # Trigger words, as their Hub cards record them (cl-968).
+      case $lora in nrdx/*) trigger='bfs_swap, head swap' ;; *) trigger='vfx_edit' ;; esac
+      cozy --json lora edit "$lora" --family minimax-h3 --trigger "$trigger" > "$seed/edit-${lora##*/}.json" 2>&1 \
         || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; exit 1; }
     done
     log "published ${h3%@*}@${h3#*@} (a stand-in) and two LoRAs of family minimax-h3"
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" vaes "* ]]; then
+    # What Qwen Image's VAE slot lists (web-models, se-131): its default and a VAE of its family, tagged `vae` as the Hub's is.
+    random_weights "$seed/qwen-image-2.1.safetensors" 1
+    mirror "$seed/qwen-image-2.1.safetensors" qwen/qwen-image-2.1 bf16 0.1.0 https://huggingface.co/Qwen/Qwen-Image-2.1 --source-format as-is
+    mirror "$seed/qwen-image-2.1.safetensors" madebyollin/texture-fix-vae bf16 0.2.0 \
+      https://huggingface.co/madebyollin/texture-fix-vae-for-qwen-image-2.1 --source-format as-is
+    for model in qwen/qwen-image-2.1 madebyollin/texture-fix-vae; do
+      tags=(); [ "$model" = qwen/qwen-image-2.1 ] || tags=(--tag vae)
+      cozy --json model edit "$model" --family qwen-image-2 "${tags[@]}" > "$seed/edit-${model##*/}.json" 2>&1 \
+        || { echo "naming $model's family failed: $(tail -c 600 "$seed/edit-${model##*/}.json")" >&2; exit 1; }
+    done
+    log "published qwen/qwen-image-2.1@0.1.0 and madebyollin/texture-fix-vae@0.2.0 (stand-ins) of family qwen-image-2"
     rm -f "$seed"/*.safetensors
   fi
   cd "$start"

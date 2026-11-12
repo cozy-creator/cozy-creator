@@ -166,6 +166,18 @@ fn json<T: serde::Serialize>(value: &T) -> String {
 /// How long a write waits on another program's write lock before it's `file_held`.
 const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// A connection to `path` that waits `WAIT` on another's lock, as every one to a project.db does (cl-885: rusqlite's own 5 s wait
+/// refused a run while the project's last connection checkpointed its WAL as it closed).
+pub(crate) fn connect(path: &Path, read_only: bool) -> Result<Connection, Error> {
+    let flags = match read_only {
+        true => rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        false => rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE,
+    };
+    let conn = Connection::open_with_flags(path, flags).map_err(|error| sql(path, error))?;
+    conn.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
+    Ok(conn)
+}
+
 /// Whether another program holds the write lock this moment, asked with no wait: `conn` takes it, and lets it go at once.
 pub(crate) fn locked_elsewhere(conn: &Connection) -> bool {
     let busy = |e: rusqlite::Error| matches!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked));
@@ -179,15 +191,11 @@ pub(crate) fn locked_elsewhere(conn: &Connection) -> bool {
 
 /// Open an existing current-format project. Read-only validation precedes every writable pragma.
 pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
-    let checked = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
-        .map_err(|error| sql(path, error))?;
-    checked.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
+    let checked = connect(path, true)?;
     require_readable(&checked, path)?;
     drop(checked);
     migrate(path)?;
-    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE)
-        .map_err(|error| sql(path, error))?;
-    conn.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
+    let conn = connect(path, false)?;
     require_current(&conn, path)?;
     configure(&conn, path)?;
     Ok(conn)
@@ -215,8 +223,7 @@ fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
 fn migrate(path: &Path) -> Result<(), Error> {
     let e = |error| sql(path, error);
     let version = |conn: &Connection| conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0));
-    let checked = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(e)?;
-    checked.busy_timeout(WAIT).map_err(e)?;
+    let checked = connect(path, true)?;
     if !matches!(version(&checked).map_err(e)?, 2 | 3) {
         return Ok(());
     }
@@ -228,8 +235,7 @@ fn migrate(path: &Path) -> Result<(), Error> {
         std::fs::rename(&part, &kept).map_err(|error| err(path, error))?;
     }
     drop(checked);
-    let mut conn = Connection::open_with_flags(path, rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE).map_err(e)?;
-    conn.busy_timeout(WAIT).map_err(e)?;
+    let mut conn = connect(path, false)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     // Another process may have migrated it while this waited.
     if !matches!(version(&tx).map_err(e)?, 2 | 3) {
@@ -351,8 +357,7 @@ pub(crate) fn set_meta(conn: &Connection, at: &Path, key: &str, value: Option<&s
 
 /// How many of its transactions changed it, read alone: for a project nothing holds open.
 pub(crate) fn seq_at(path: &Path) -> Option<u64> {
-    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = Connection::open_with_flags(path, flags).ok()?;
+    let conn = connect(path, true).ok()?;
     conn.query_row("SELECT value FROM meta WHERE key = 'seq'", [], |r| r.get::<_, String>(0)).optional().ok().flatten()?.parse().ok()
 }
 
@@ -688,9 +693,7 @@ pub(super) fn create_with_key(path:&Path,stored:&Stored,ops:&[OpRow],asked:&[(St
             Error::new(Kind::Conflict, "project_db_exists", format!("{} already exists; preserve it and choose a fresh database path", path.display()))
         } else { err(path, error) }
     })?;
-    let mut conn = Connection::open_with_flags(path, rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE)
-        .map_err(|error| sql(path, error))?;
-    conn.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
+    let mut conn = connect(path, false)?;
     configure(&conn, path)?;
     initialize_current(&mut conn, path,key)?;
     let mut fresh = stored.clone();

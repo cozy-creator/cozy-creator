@@ -52,6 +52,7 @@ static PROJECTS: LazyLock<Projects> = LazyLock::new(|| {
         revs: Mutex::default(),
         owed: Mutex::default(),
         wake: Notify::new(),
+        listening: Notify::new(),
     }
 });
 
@@ -64,6 +65,8 @@ struct Projects {
     /// The projects to say something of, each by id: its folder, and whether it's to be said though neither file changed.
     owed: Mutex<BTreeMap<String, (PathBuf, bool)>>,
     wake: Notify,
+    /// Someone began listening: the looks begin.
+    listening: Notify,
 }
 
 fn cursor(sequence: u64) -> Option<ProjectEventCursor> {
@@ -117,10 +120,12 @@ pub(crate) fn tell(api: Arc<Api>) {
         let mut looks = tokio::time::interval(LOOK);
         looks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            looks.tick().await;
-            if PROJECTS.said.receiver_count() > 0 {
-                looking.projects.look();
+            // With no one listening there is no one to tell: nothing wakes until a stream subscribes.
+            while PROJECTS.said.receiver_count() == 0 {
+                PROJECTS.listening.notified().await;
             }
+            looks.tick().await;
+            looking.projects.look();
         }
     });
     tokio::spawn(async move {
@@ -232,6 +237,9 @@ async fn subscribe(api: Arc<Api>, scope: Scope) -> Watch {
     });
     let runs = api.calcifer.subscribe();
     let said = all.then(|| PROJECTS.said.subscribe());
+    if said.is_some() {
+        PROJECTS.listening.notify_one();
+    }
     let shown = if all {
         listed(&api.machines, &[]).await.unwrap_or_else(|e| {
             warn!("the events stream cannot list the machines: {}", e.message);

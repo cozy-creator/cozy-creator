@@ -22,7 +22,8 @@ use crate::{floor::FLOOR, machines::Machines};
 
 /// How long a read of the RC's prereleases stands.
 const FRESH: Duration = Duration::from_secs(60);
-/// How often the rentals are looked over, besides when one becomes ready.
+/// How often, while one is up, the rentals are looked over besides when one becomes ready: GitHub says nothing when the RC
+/// moves.
 const EVERY: Duration = Duration::from_secs(30);
 
 /// The open RC: the minor after this cozy's release (`0.24.0` → `0.25.0`); RCs are minor bumps.
@@ -247,18 +248,26 @@ impl Machines {
         }
     }
 
-    /// Looks over this dev home's rentals each [`EVERY`] and whenever one becomes ready: each idle one behind the RC moves.
+    /// Looks over this dev home's rentals whenever one becomes ready, and each [`EVERY`] while one is: each idle one behind
+    /// the RC moves. With none up, nothing wakes until one is.
     pub(crate) async fn follow_rcs(self: Arc<Self>) {
-        let mut every = tokio::time::interval(EVERY);
-        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            tokio::select! {
-                _ = every.tick() => {}
-                () = self.rc_ready.notified() => {}
-            }
-            let Ok(rows) = self.store().machines() else { continue };
-            for row in rows.iter().filter(|row| row.kind == MachineKind::Rental && row.state == MachineState::Ready) {
-                self.follow_rc(&row.name, false).await;
+            let up = match self.store().machines() {
+                Ok(rows) => {
+                    let ready: Vec<_> = rows.iter().filter(|row| row.kind == MachineKind::Rental && row.state == MachineState::Ready).collect();
+                    for row in &ready {
+                        self.follow_rc(&row.name, false).await;
+                    }
+                    !ready.is_empty()
+                }
+                Err(_) => true,
+            };
+            match up {
+                true => tokio::select! {
+                    () = tokio::time::sleep(EVERY) => {}
+                    () = self.rc_ready.notified() => {}
+                },
+                false => self.rc_ready.notified().await,
             }
         }
     }

@@ -720,7 +720,7 @@ still refuse with their relative path instead of silently importing outside data
 
 ## CLI verbs and their calls
 
-The CLI resolves the current directory to an existing project and sends its absolute path as the routes' `{id}`. `cozy new [directory]` creates an encrypted project by default through `POST /v1/projects`; `--unencrypted` explicitly opts out. `cozy open`, function execution and `cozy status` require an existing project. Metadata-only `cozy run --describe` does not create a project or require a new passphrase. API clients can also use a project name or id. The browser provides asset import, editing, rendering, export and history through the project endpoints described above; `cozy box` makes, sets and renders boxes through the same calls.
+The CLI resolves the current directory to an existing project and sends its absolute path as the routes' `{id}`. `cozy new [directory]` creates an encrypted project by default through `POST /v1/projects`; `--unencrypted` explicitly opts out. `cozy open`, function execution and `cozy status` require an existing project. Metadata-only `cozy run --describe` does not create a project or require a new passphrase. API clients can also use a project name or id. The browser provides asset import, editing, rendering, export and history through the project endpoints described above.
 
 | Verb | Calls |
 |---|---|
@@ -733,10 +733,6 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy run ls` | `GET /v1/runs`; live: `GET /v1/events`, then `GET /v1/runs` |
 | `cozy run watch <run> [-o DIR] [--previews DIR]` | `GET /v1/runs/{id}?detail=full`, `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` (a folder's tree, then `?member=`); `--previews DIR`, `GET /v1/runs/{id}/preview` each second while it runs |
 | `cozy run cancel <run>` | `GET /v1/runs/{id}`, `POST /v1/runs/{id}/cancel` |
-| `cozy box add <name> [FILE] [--tool T] [--input F] [field=value]` | a file: `HEAD`/`PUT /v1/project-files/sha256:<hex>`, `POST /v1/projects/{id}/imports`, then with a tool or fields `PATCH /v1/projects/{id}/assets/{name}`; else `POST /v1/projects/{id}/assets` |
-| `cozy box set <name> [--input F] [field=value]` | `PATCH /v1/projects/{id}/assets/{name}` |
-| `cozy box render <name>… [--on M] [-n N] [--redo S [--take N]] [--continue <box.N>]` | `--redo`: `GET /v1/projects/{id}/assets/{name}`, `GET /v1/projects/{id}/runs/{run}` (its `result.seams`); `--continue`: `GET …/assets/{box}`, `GET /v1/tools?project=` (its tool's `pickup`); then `GET /v1/events`, `PUT /v1/events/{stream}` (the project shown), `POST /v1/projects/{id}/runs`, followed until the board's `ended` names its ask; each take `GET …/assets/{name}`, `GET /v1/projects/{id}/runs/{run}` |
-| `cozy box ls [name]` | `GET /v1/projects/{id}`; a box: `GET /v1/projects/{id}/assets/{name}`, `GET /v1/projects/{id}/runs/{run}` per take |
 | `cozy login <email>` | `GET /v1/account`; `POST /v1/account/codes` (`sign_in`), `POST /v1/account/codes/{id}`; `PUT /v1/account/name` while unnamed |
 | `cozy login --export FILE` | `POST /v1/account/codes` (`export`), `POST /v1/account/codes/{id}`; the CLI writes the file |
 | `cozy login --key FILE` | `PUT /v1/account/key`; `PUT /v1/account/name` while unnamed |

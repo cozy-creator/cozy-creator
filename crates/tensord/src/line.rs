@@ -4,13 +4,9 @@
 use std::{
     collections::BTreeMap,
     sync::{Condvar, LazyLock, Mutex, MutexGuard, PoisonError},
-    time::Duration,
 };
 
 use crate::stop::Stop;
-
-/// How often a wait looks at its stop.
-const TICK: Duration = Duration::from_millis(100);
 
 pub(crate) static INSTALLS: LazyLock<Line> = LazyLock::new(Line::default);
 
@@ -52,6 +48,11 @@ impl Line {
         let key = (order, state.arrivals);
         state.waiting.insert(key, caller.to_owned());
         let mut shown: Option<String> = None;
+        // A turn given up or the stop wakes the wait.
+        let _woken = stop.map(|stop| stop.on_cancel(move || {
+            drop(self.state());
+            self.moved.notify_all();
+        }));
         loop {
             if state.holder.is_none() && state.waiting.keys().next() == Some(&key) {
                 state.waiting.remove(&key);
@@ -90,7 +91,7 @@ impl Line {
                 state = self.state();
                 continue;
             }
-            state = self.moved.wait_timeout(state, TICK).unwrap_or_else(PoisonError::into_inner).0;
+            state = self.moved.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
     }
 }

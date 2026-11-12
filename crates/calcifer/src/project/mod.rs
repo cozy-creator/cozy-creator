@@ -665,8 +665,7 @@ pub(crate) fn identity(dir: &FsPath) -> (String, String) {
 }
 
 fn kept_identity(dir: &FsPath) -> Option<(String, String)> {
-    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    db::identity(&rusqlite::Connection::open_with_flags(dir.join(db::DB), flags).ok()?)
+    db::identity(&db::connect(&dir.join(db::DB), true).ok()?)
 }
 
 /// Best-effort event correlation for a path without a loaded identity. This is never persisted

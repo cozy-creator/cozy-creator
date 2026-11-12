@@ -112,23 +112,6 @@ cozy status
 
 Use the browser for asset import, creation, field edits, rendering, approval, history and undo. The browser and other API clients use the project endpoints described in `CALCIFER-API.md`, and edits appear in connected views.
 
-`cozy box` makes and renders boxes from the command line with the page's own calls, so an open canvas shows each at once:
-
-```sh
-cozy box add mara ./mara.png                               # a dropped file
-cozy box add shot --tool minimax-h3/generate --input shot.yaml summary='<mara> crosses the bridge.'
-cozy box render shot                                       # Render, followed until its take lands
-cozy box render shot --redo 2                              # Redo segment 2 of its newest take (--take N for another)
-cozy box add after --tool minimax-h3/generate summary='She turns back.'
-cozy box render after --continue shot.1                    # Continue from the end of shot's take 1
-cozy box add big --tool minimax-h3/upscale video='<shot.1>' resolution=1080p
-cozy box set shot seed=7                                   # its controls; field= clears one
-cozy box ls shot                                           # its takes: run, file, pickup, seams
-```
-
-A `<name>` in a field mentions that box, as on the page: a picture is a reference, and `<name.N>` gives a slot that take with its
-latents. `--redo N` keeps the segments before N, picking up at the seam the take's run said; the box renders as it stands now.
-
 ## Queueing
 
 A project has one walker, and each render adds to it. The browser follows the work while it runs.

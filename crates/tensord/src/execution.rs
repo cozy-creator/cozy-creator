@@ -801,6 +801,7 @@ impl Engine {
         self.activity_changed.notify_all();
         drop(epoch);
         if let Some(parent) = self.machine_activity.get().and_then(Weak::upgrade) { parent.notify_activity(); }
+        crate::activity::status_changed();
     }
 
     /// Whether a managed attempt of root `root` (the root or a call of it) still runs its thread.

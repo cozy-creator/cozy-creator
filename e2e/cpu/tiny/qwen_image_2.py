@@ -2,7 +2,8 @@
 Qwen3-VL's processor, the 16x RGBA VAE in F32) at a few channels, and Qwen's two prompt enhancers (Qwen3.5 VLMs, as-is
 uploads, each with its `system_prompt.txt`) at 32 wide. The DiT has 2 blocks; Alibaba PAI's Fun Acc overlay builds at the
 release geometry (`model.py` SITES: 4096 wide, 32 blocks), so the executor takes the tiny DiT's (PATCH), and carries its
-`pdd_config.json`. The abliterated text encoder and both enhancers are bound to these same tiny weights."""
+`pdd_config.json`. The abliterated text encoder and both enhancers are bound to these same tiny weights. A second VAE,
+other weights of the same shape, stands in for madebyollin's in the `vae` slot (se-131)."""
 
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from tiny import _shared
 
 MODEL, ENCODER = "qwen/qwen-image-2.1@0.1.0", "atomicchat/qwen-image-2.1-text-encoder-abliterated@0.1.0"
 ENHANCERS = ("pottokao/qwen-image-2.1-pe-t2i-abliterated@0.1.0", "darrellbest/qwen-image-2.1-pe-i2i-abliterated@0.1.0")
+VAE = "madebyollin/texture-fix-vae@0.2.0"
 #: 0.1.1 carries `pdd_config.json` (xs-183); qwen-image-2 before 0.10.0rc2 names 0.1.0.
 FUN_ACC = ("alibaba-pai/qwen-image-2.1-fun-acc@0.1.0", "alibaba-pai/qwen-image-2.1-fun-acc@0.1.1")
 #: Fun Acc's `pdd_config.json`: the 4-step grid, already shifted, and its terminal 0.
@@ -58,11 +60,15 @@ SITES, PROJ_OUT = _sites()
 PATCH: dict[str, object] = {"qwen_image_2.model:SITES": SITES, "qwen_image_2.model:PROJ_OUT": PROJ_OUT}
 
 
+def _vae() -> torch.nn.Module:
+    return module(AutoencoderKLQwenImage21(base_dim=8, decoder_base_dim=8, z_dim=Z, num_res_blocks=1))
+
+
 def _image(out: Path) -> None:
     _shared.qwen_processor(out / "processor")
     save(module(Qwen3VLForConditionalGeneration(_shared.qwen3_vl(2, TEXT_WIDTH))).to(torch.bfloat16), out / "text_encoder")
     save(_dit().to(torch.bfloat16), out / "transformer")
-    save(module(AutoencoderKLQwenImage21(base_dim=8, decoder_base_dim=8, z_dim=Z, num_res_blocks=1)), out / "vae")
+    save(_vae(), out / "vae")
     save(FlowMatchEulerDiscreteScheduler(use_dynamic_shifting=True, base_shift=0.5, max_shift=0.9, base_image_seq_len=256,
                                          max_image_seq_len=8192, shift_terminal=0.02, time_shift_type="exponential"),
          out / "scheduler")
@@ -71,6 +77,13 @@ def _image(out: Path) -> None:
         "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
         "text_encoder": ["transformers", "Qwen3VLForConditionalGeneration"],
         "transformer": ["diffusers", "QwenImage21Transformer2DModel"], "vae": ["diffusers", "AutoencoderKLQwenImage21"]}))
+
+
+def _other_vae(out: Path) -> None:
+    """A VAE alone, as a pipeline of only its `vae`."""
+    save(_vae(), out / "vae")
+    (out / "model_index.json").write_text(json.dumps({
+        "_class_name": "QwenImage21Pipeline", "_diffusers_version": "0.41.0", "vae": ["diffusers", "AutoencoderKLQwenImage21"]}))
 
 
 def _enhancer(out: Path) -> None:
@@ -102,8 +115,10 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     torch.manual_seed(1)
     _enhancer(root / "enhancer")
     fun_acc = _fun_acc(store)
+    torch.manual_seed(3)
+    _other_vae(root / "texture-fix")
     return {MODEL: root / "qwen-image-2.1", ENCODER: root / "qwen-image-2.1", ENHANCERS[0]: root / "enhancer",
-            ENHANCERS[1]: root / "enhancer", **dict.fromkeys(FUN_ACC, fun_acc)}
+            ENHANCERS[1]: root / "enhancer", **dict.fromkeys(FUN_ACC, fun_acc), VAE: root / "texture-fix"}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:
@@ -132,5 +147,8 @@ CELLS: list[Cell] = [
      "files": {"prompt.references.0.file": _FOX}},
     {"entry": "image", "name": "turbo", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7,
                                                    "megapixels": 1}},
+    # The `vae` slot bound to another VAE: the same latents as `image/turbo`, another decoder's picture (se-131).
+    {"entry": "image", "name": "vae", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
+     "models": {"image.models.vae": VAE}},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]

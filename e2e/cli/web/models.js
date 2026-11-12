@@ -4,7 +4,9 @@
 // or Advanced; no fine-tune or LoRA rows of its own; beneath it its tool with Models & LoRAs beside it, the picker listing H3's Base Model once
 // (its segments' slots as one, written `base_model`), a LoRA picked there set on the box; its tool named once, "<Package> · <Tool>", under its media, nothing of it
 // beside the title. Qwen's Image has the same component beneath it, and its Models & LoRAs opens the same picker. Screenshots of each.
-// The isolated Hub holds H3's default model (a stand-in) and an H3 LoRA of its family (e2e/isolated.sh, `loras`).
+// Its VAE slot offers the VAEs of its family and its Model slot none of them; a VAE picked is the box's `vae` (se-131).
+// The isolated Hub holds H3's default model (a stand-in) and an H3 LoRA of its family (e2e/isolated.sh, `loras`), and Qwen's
+// default model and a VAE of its family (stand-ins, `vaes`).
 //   node models.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -248,6 +250,64 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await page.waitForTimeout(300);
   await shot('lora-strength-light');
   await page.setViewportSize({ width: 1600, height: 1100 });
+  // cl-968: a LoRA added with trigger words puts them after the box's prompt once; any prompt of the box that says them draws them in a token
+  // colour, typed or appended; its row beneath the box shows them and puts one at the caret; removed, the words stay and the colour goes.
+  const lit = (field) => page.evaluate((field) => {
+    const held = [...document.querySelectorAll(`.card.here[data-asset="scene"] [data-field="${field}"]`)];
+    const marks = globalThis.CSS?.highlights?.get('lora-trigger');
+    return marks ? [...marks].filter((range) => held.some((el) => el.contains(range.startContainer))).map((range) => range.toString()) : [];
+  }, field);
+  const loraRef = (await fieldsOf('scene')).models?.base_model?.lora?.[0]?.ref ?? '';
+  const words = String((await api(`/v1/models/${loraRef.split('@')[0]}`)).body?.trigger ?? '').split(',').map((word) => word.trim()).filter(Boolean);
+  const times = (text, word) => String(text ?? '').toLowerCase().split(word.toLowerCase()).length - 1;
+  const added = await fieldsOf('scene');
+  seen.triggers = { lora: loraRef, words, summary: added.summary };
+  check('a_lora_added_puts_its_trigger_after_the_prompt_once', words.length > 0 && words.every((word) => times(added.summary, word) === 1) && String(added.summary).startsWith('A harbour at dusk.'), seen.triggers);
+  const litSummary = await until('the trigger drawn in the summary', () => lit('summary'), (marks) => words.every((word) => marks.some((mark) => mark.toLowerCase() === word.toLowerCase()))).catch(() => lit('summary'));
+  check('the_appended_trigger_is_drawn', words.every((word) => litSummary.some((mark) => mark.toLowerCase() === word.toLowerCase())), litSummary);
+  // Typed in another prompt of the box.
+  const music = scene.locator('[data-field="music"]').first();
+  await music.click();
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.type(`${words[0]} under a slow drum`);
+  await scene.locator('[data-field="summary"]').first().click();
+  const typed = await until('the typed trigger stored', () => fieldsOf('scene'), (fields) => times(fields.music, words[0]) === 1).catch(() => fieldsOf('scene'));
+  const litMusic = await until('the typed trigger drawn', () => lit('music'), (marks) => marks.some((mark) => mark.toLowerCase() === words[0].toLowerCase())).catch(() => lit('music'));
+  check('a_trigger_typed_in_another_prompt_is_drawn', times(typed.music, words[0]) === 1 && litMusic.length >= 1, { music: typed.music, litMusic });
+  // Its row beneath the box shows its triggers; one clicked goes at the caret of the prompt last typed in.
+  const row = models.locator('.active-models .lora-triggers').first();
+  seen.trigger_row = await row.allInnerTexts().catch(() => []);
+  const soundscape = scene.locator('[data-field="soundscape"]').first();
+  await soundscape.click();
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.type('Wind,');
+  await row.locator('.lora-trigger').first().click();
+  const inserted = await until('a clicked trigger at the caret', () => fieldsOf('scene'), (fields) => times(fields.soundscape, words[0]) === 1).catch(() => fieldsOf('scene'));
+  check('its_row_shows_its_triggers_and_one_goes_at_the_caret', words.every((word) => seen.trigger_row.join(' ').includes(word) || words.length > 4) && /^Wind,\s*/.test(String(inserted.soundscape)) && times(inserted.soundscape, words[0]) === 1, { row: seen.trigger_row, soundscape: inserted.soundscape });
+  // Shown at 1440×900 and 1920×1080, light and dark (Paul's UI rule).
+  for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+    await page.setViewportSize({ width, height });
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme === 'dark');
+      await page.waitForTimeout(300);
+      await shot(`triggers-${width}x${height}-${theme}`);
+    }
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.setViewportSize({ width: 1600, height: 1100 });
+  // The LoRA removed: its words stay as written, no longer drawn.
+  await button.click();
+  await picker.waitFor();
+  await picker.locator('[data-model-slot]', { hasText: /^Base Model$/ }).click();
+  await picker.getByRole('button', { name: 'LoRAs', exact: true }).click();
+  await picker.locator('.model-picker-adapters button[aria-label^="Remove "]').first().click();
+  const removed = await until('the LoRA removed', () => fieldsOf('scene'), (fields) => !(fields.models?.base_model?.lora?.length)).catch(() => fieldsOf('scene'));
+  await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
+  await picker.waitFor({ state: 'detached' });
+  const unlit = await until('no trigger drawn', async () => [...await lit('summary'), ...await lit('music'), ...await lit('soundscape')], (marks) => marks.length === 0).catch(() => lit('summary'));
+  seen.trigger_removed = { summary: removed.summary, music: removed.music, unlit };
+  check('the_lora_removed_its_words_stay_undrawn', !(removed.models?.base_model?.lora?.length) && words.every((word) => times(removed.summary, word) === 1) && times(removed.music, words[0]) === 1 && unlit.length === 0, seen.trigger_removed);
+
   // Calcifer refuses a box naming one slot twice with two models, in one line (cl-960).
   const twice = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: shotTool.id, kind: 'video', name: 'twice', exact: true, at: { x: 80, y: 900 },
     fields: { summary: 'Twice.', beats: [{ description: 'Boats.', duration: 5 }], models: { base_model: { ref: 'sexgod1979/pinkcherry' }, [bases[0].slot.includes('.models.') ? bases[0].slot : 'ref2va_segment.models.base_model']: { ref: 'tenstrip/eros-max' } } } }) });
@@ -268,6 +328,28 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   seen.shapes = { h3: h3Shape, image: imageShape };
   check('an_image_opens_the_same_picker', JSON.stringify(h3Shape) === JSON.stringify(imageShape) && (await picker.locator('[data-model-slot]').count()) >= 1 && (await picker.locator('[data-model-slot]').count()) <= imageSlots, { h3Shape, imageShape, imageSlots });
   await shot('image-picker');
+  // Qwen's VAE: its own slot, offering its default and the VAE of its family, not its fine-tunes; the Model slot offers no VAE.
+  const vae = 'madebyollin/texture-fix-vae';
+  // A slot's page, once its list holds what `listed` says it should.
+  const slotOpen = async (label, listed) => {
+    await picker.locator('button[data-model-slot]', { hasText: new RegExp(`^${label}$`) }).click();
+    return until(`${label} lists its choices`, () => radios.allInnerTexts(), listed).catch(() => radios.allInnerTexts());
+  };
+  const back = () => picker.getByRole('button', { name: 'Back to model slots', exact: true }).click();
+  seen.image_slots = await picker.locator('button[data-model-slot]').allInnerTexts();
+  const vaes = await slotOpen('VAE', (said) => said.some((one) => /Texture Fix VAE/.test(one)));
+  seen.vae_choices = vaes;
+  check('the_vae_slot_offers_its_familys_vaes', vaes.length === 2 && /Qwen Image 2\.1/.test(vaes[0]) && /madebyollin \/ Texture Fix VAE/.test(vaes[1]), vaes);
+  await shot('qwen-vae');
+  await radios.filter({ hasText: 'Texture Fix VAE' }).first().click();
+  const picked = await until('the VAE on the box', () => fieldsOf('still'), (fields) => fields.models?.vae?.ref === vae).catch(() => fieldsOf('still'));
+  seen.vae_models = picked.models;
+  check('a_vae_picked_is_the_boxs_vae', picked.models?.vae?.ref === vae && Object.keys(picked.models).length === 1, picked.models);
+  await shot('qwen-vae-picked');
+  await back();
+  const modelChoices = await slotOpen('Model', (said) => said.length >= 1);
+  seen.model_choices = modelChoices;
+  check('the_model_slot_offers_no_vae', modelChoices.length >= 1 && !modelChoices.some((one) => /Texture Fix VAE/.test(one)), modelChoices);
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   await closeBox(page);
 

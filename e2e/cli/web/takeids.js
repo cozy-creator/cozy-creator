@@ -152,6 +152,8 @@ const RECORD = () => {
     return { first, off: off.slice(0, 4), landed: log.some((look) => look.landed.includes(take)) };
   };
   const versionOf = (row, take) => row.prefixes.find((version) => version.id === take);
+  // The page hears a take landed after Calcifer says so: its log is read once its column lists it landed (as long as the viewer may take).
+  const heard = (take) => until(`${take} listed landed`, now, (look) => look.landed.includes(take), 20_000).catch(() => null);
 
   await record();
   await openBox(page, 'card');
@@ -162,6 +164,7 @@ const RECORD = () => {
   const a = await press();
   check('a_listed_in_the_next_frame', Boolean(a.take), a.pressed);
   const two = await landed(2);
+  await heard(a.take);
   const logA = await logFrom(a.from);
   const steadyA = steady(logA, a.take);
   const versionA = versionOf(two, a.take);
@@ -205,6 +208,7 @@ const RECORD = () => {
   await page.unroute(slowAsk);
   await page.unroute(slowRead);
   const three = await landed(3);
+  await heard(b.take);
   const logB = await logFrom(b.from);
   const steadyB = steady(logB, b.take);
   seen.b = { take: b.take, steady: steadyB };

@@ -8,6 +8,18 @@ use std::{
 
 use api::machine as v1;
 
+/// What Status shows may have changed: something began (engine activity, an operation, an update). A Status stream with
+/// nothing going waits on this (`api::machine_status`).
+static STATUS: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::Sender::new(0));
+
+pub(crate) fn status_changed() {
+    STATUS.send_modify(|n| *n = n.wrapping_add(1));
+}
+
+pub(crate) fn status_changes() -> tokio::sync::watch::Receiver<u64> {
+    STATUS.subscribe()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Download,
@@ -78,6 +90,8 @@ pub(crate) fn wait(kind: Kind, subject: &str, run: &str) -> Waiting {
         operation.runs.clear();
     }
     *operation.runs.entry(run.to_owned()).or_default() += 1;
+    drop(listed);
+    status_changed();
     Waiting { id, run: run.to_owned() }
 }
 

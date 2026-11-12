@@ -11,7 +11,7 @@ import { useCanvasStore } from "./context"
 import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
-import { useSignal } from "../ui/signal"
+import { tabShown, useSignal } from "../ui/signal"
 import { aspectOf, faceOf, failureOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
 import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
@@ -545,7 +545,8 @@ interface Way {
   rendering?: boolean
 }
 
-/** How often a rendering box asks its run's machine for a preview while none comes: the machine makes them only while asked. */
+/** How often a rendering box asks its run's machine for a preview while none comes: the machine makes them only while asked, and this tab
+ *  asks only while it's in view. */
 const PREVIEW_ASK_MS = 8000
 
 /** What its run is making, faded under how far it's got (cr-282): the newest picture its machine made of the latents. Asked for as
@@ -559,20 +560,22 @@ function LatentPreview({ view, number }: { view: ElementView; number: number }) 
   const { data } = useQuery({ ...runQuery(client, project ?? "", number), enabled: Boolean(project && later) })
   const run = later ? data : view.run
   const running = run?.status === "in_progress" && run.machine_state !== "queued"
+  const inView = useSignal(tabShown)
+  const asking = running && inView
   const newest = run?.progress?.preview ?? 0
   const [ask, setAsk] = useState(0)
   const [shown, setShown] = useState<{ url: string; tag: string }>()
   const held = useRef<{ url: string; tag: string }>(undefined)
   useEffect(() => {
-    if (running) setAsk((n) => n + 1)
-  }, [running, newest])
+    if (asking) setAsk((n) => n + 1)
+  }, [asking, newest])
   useEffect(() => {
-    if (!running) return
+    if (!asking) return
     const timer = setInterval(() => setAsk((n) => n + 1), PREVIEW_ASK_MS)
     return () => clearInterval(timer)
-  }, [running])
+  }, [asking])
   useEffect(() => {
-    if (!project || !running || !ask) return
+    if (!project || !asking || !ask) return
     const epoch = mediaEpoch.get(project) ?? 0
     const asked = new AbortController()
     const tag = held.current?.tag
@@ -588,7 +591,7 @@ function LatentPreview({ view, number }: { view: ElementView; number: number }) 
       setShown(picture)
     })().catch(() => {})
     return () => asked.abort()
-  }, [client, store, project, number, running, ask])
+  }, [client, store, project, number, asking, ask])
   useEffect(() => {
     setShown(undefined)
     return () => {

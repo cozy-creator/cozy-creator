@@ -7,6 +7,7 @@ import { NSFW, isNsfw, useShowNsfw } from "../ui/Tags"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { loraNote } from "./loraNotes"
+import { appended, promptOf, triggersOf } from "./triggers"
 import "./ModelPicker.css"
 
 type Entry = Record<string, unknown>
@@ -17,7 +18,8 @@ type PickerModel = FoundModel & { description?: string | null }
 const entryOf = (value: unknown): Entry => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Entry : {}
 const adaptersOf = (value: unknown): unknown[] => Array.isArray(value) ? value : []
 const identityOf = (ref: string) => ref.split("@")[0]
-const title = (value: string) => value.split(/[-_]+/).filter(Boolean).map((part) => part.toLowerCase() === "lora" ? "LoRA" : !/[aeiou]/i.test(part) ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1)).join(" ")
+const SPELLED = new Map([["lora", "LoRA"], ["vae", "VAE"]])
+const title = (value: string) => value.split(/[-_]+/).filter(Boolean).map((part) => SPELLED.get(part.toLowerCase()) ?? (!/[aeiou]/i.test(part) ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1))).join(" ")
 const slotName = (slot: PickerSlot, qwen: boolean, slots: PickerSlot[]) => qwen && slot.slot === "rewriter" ? "Prompt-Enhancer I2I" : qwen && slot.slot === "expander" ? "Prompt-Enhancer T2I"
   : slots.filter((held) => held.param === slot.param).length > 1 ? `${title(slot.param)} (${title(slot.slot.split(".models.")[0])})` : title(slot.param)
 const modelName = (ref: string) => title(identityOf(ref).split("/").filter(Boolean).at(-1)?.replace(/\.safetensors$/, "") ?? ref)
@@ -42,18 +44,22 @@ export function slotsOf(tool: Tool | undefined): PickerSlot[] {
 }
 // By the Hub's family label and role, as the Hub lists them: a model slot, base or component, takes a model of its default's family.
 const compatible = (model: FoundModel | ModelDetail | undefined, family: string | null | undefined, kind: Kind | undefined) => Boolean(kind && family && model?.family === family && model?.role === (kind === "lora" ? "lora" : "model"))
+// A slot for one part of a model takes the models of its family the Hub tags as that part, and every other slot none of them.
+const PARTS = new Map([["text_encoder", "text-encoder"], ["vae", "vae"]])
+const tagsOf = (model: FoundModel | ModelDetail | undefined) => model?.tags?.map((tag) => tag.toLowerCase().replace(/_/g, "-")) ?? []
+const partFits = (model: FoundModel | ModelDetail | undefined, slot: PickerSlot) => {
+  const part = PARTS.get(slot.param)
+  return part ? tagsOf(model).includes(part) : !tagsOf(model).some((tag) => [...PARTS.values()].includes(tag))
+}
 const adapterFits = (model: FoundModel | ModelDetail, slot: PickerSlot) => {
   if (!compatible(model, slot.family, "lora") || identityOf(model.model) === "alibaba-pai/qwen-image-2.1-fun-acc") return false
-  const encoder = model.tags?.some((tag) => tag.toLowerCase().replace(/_/g, "-") === "text-encoder") ?? false
-  return slot.slot === "text_encoder" ? encoder : !encoder
+  // A VAE takes no LoRA.
+  return slot.param !== "vae" && partFits(model, slot)
 }
-const fitsSlot = (model: FoundModel | ModelDetail | undefined, ref: string, slot: PickerSlot, kind: Kind | undefined, funAcc: boolean) => {
+export const fitsSlot = (model: FoundModel | ModelDetail | undefined, ref: string, slot: PickerSlot, kind: Kind | undefined, funAcc: boolean) => {
   if (funAcc && slot.slot === "model" && identityOf(ref) === "qwen/qwen-image-2.1-turbo") return false
   if (ref === slot.default) return true
-  if (!compatible(model, slot.family, kind)) return false
-  const tags = model?.tags?.map((tag) => tag.toLowerCase().replace(/_/g, "-")) ?? []
-  if (slot.slot === "text_encoder") return tags.includes("text-encoder")
-  return !tags.includes("text-encoder") && !tags.includes("vae")
+  return compatible(model, slot.family, kind) && partFits(model, slot)
 }
 
 /** One modal edits every model slot without changing the node's tool or creating work. */
@@ -74,7 +80,7 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   const helper = imageEdit ? "rewriter" : "expander"
   const slots = slotsOf(tool).filter((slot) => !qwen || (slot.slot !== "expander" && slot.slot !== "rewriter") || slot.slot === helper)
   if (qwen) {
-    const order = [helper, "model", "text_encoder", "turbo_lora"]
+    const order = [helper, "model", "text_encoder", "vae", "turbo_lora"]
     const at = (slot: PickerSlot) => order.includes(slot.slot) ? order.indexOf(slot.slot) : order.length
     slots.sort((a, b) => at(a) - at(b))
   }
@@ -154,7 +160,7 @@ const covers = (key: string, slot: PickerSlot) => key !== slot.slot && (slot.slo
 export const chooseModel = (store: ReturnType<typeof useCanvasStore>, name: string, slot: PickerSlot, ref: string) => changeSlot(store, name, slot, (held) => ({ ...held, ref }))
 
 /** A slot holds one model (Paul, 11-12): writing it drops any model another key holds for the same slot; LoRAs stay. */
-function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot: PickerSlot, change: (held: Entry) => Entry) {
+function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot: PickerSlot, change: (held: Entry) => Entry, also: Entry = {}) {
   const models = { ...entryOf(store.valueOf(name, "models")) }
   const kept = (entry: Entry) => Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== undefined && value !== null && !(Array.isArray(value) && !value.length)))
   const next = kept(change(entryOf(models[slot.slot])))
@@ -165,7 +171,15 @@ function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot
     if (Object.keys(kept(rest)).length) models[key] = kept(rest)
     else delete models[key]
   }
-  store.putOn(name, { models: Object.keys(models).length ? models : null })
+  store.putOn(name, { models: Object.keys(models).length ? models : null, ...also })
+}
+
+/** Box `name`'s prompt with `trigger`'s words it doesn't say yet after it (cl-968, Paul 11-12), as fields to write; none when it says them. */
+export function withTrigger(store: ReturnType<typeof useCanvasStore>, name: string, trigger: string | null | undefined): Entry {
+  const field = promptOf(store.tools.get().get(store.get(name)?.asset?.tool ?? ""))
+  const said = field ? store.valueOf(name, field) : undefined
+  const text = field && appended(typeof said === "string" ? said : "", triggersOf(trigger))
+  return field && text ? { [field]: text } : {}
 }
 
 function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: string; slot: PickerSlot; restricted: boolean; funAcc: boolean; showNsfw: boolean; legacy: unknown[] }) {
@@ -211,9 +225,13 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
     return rest
   })
   // Without a strength it runs at its recommended one, which Calcifer reads from its card.
-  const addLora = (model: PickerModel) => {
+  // Added, its trigger words go after the box's prompt, in the same step (cl-968).
+  const addLora = async (model: PickerModel) => {
     const adapter = { ref: model.model }
-    changeSlot(store, name, slot, (held) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model)) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }))
+    const on = (held: Entry) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model))
+    if (on(entryOf(entryOf(store.valueOf(name, "models"))[slot.slot]))) return
+    const trigger = await client.model(model.model).then((detail) => detail.trigger, () => null)
+    changeSlot(store, name, slot, (held) => on(held) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }), withTrigger(store, name, trigger))
   }
   return <section className="model-picker-slot" data-model-slot={slot.slot}>
     {!restricted && <div className="model-picker-tabs" role="group" aria-label={`Choices for ${slot.slot}`}>
@@ -246,7 +264,7 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
       {legacy.length > 0 && <div className="model-picker-legacy"><h4>Existing LoRAs</h4><AdapterList name={name} slot={null} families={slot.family ? [slot.family] : []} adapters={legacy} /></div>}
       <h4>Available LoRAs</h4>
       <ul className="model-picker-choices" aria-label={`Add LoRA for ${slot.slot}`}>
-        {availableLoras.map((model) => <li key={model.model}><button type="button" className="model-picker-lora-option" onClick={() => addLora(model)}><span><span>{modelChoiceLabel(model.model)}</span><small className="model-picker-lora-description" title={descriptionOf(model)}>{descriptionOf(model)}</small></span></button></li>)}
+        {availableLoras.map((model) => <li key={model.model}><button type="button" className="model-picker-lora-option" onClick={() => void addLora(model)}><span><span>{modelChoiceLabel(model.model)}</span><small className="model-picker-lora-description" title={descriptionOf(model)}>{descriptionOf(model)}</small></span></button></li>)}
       </ul>
       {!availableLoras.length && !isPending && <p className="muted model-picker-empty">No compatible LoRAs found.</p>}
     </>}

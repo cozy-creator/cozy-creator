@@ -115,8 +115,6 @@ cozy new garden
 cd garden
 cozy open                                  # edit assets in the browser
 cozy status                                # project health and warnings
-cozy box add shot --tool minimax-h3/generate summary='A lighthouse at dusk.'
-cozy box render shot                       # what Render does, from the command line
 ```
 
 The project model and every command: [PROJECT.md](crates/calcifer/docs/PROJECT.md).

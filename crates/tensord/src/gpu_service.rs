@@ -870,8 +870,8 @@ pub(crate) struct Pool {
     host: Option<Arc<memory::Host>>,
     /// Held while the pool lives: the thread blocked on measurement events ends with it.
     _events: Option<memory::Reacting>,
-    /// Idle executors watched for their exit (none where it cannot watch).
-    exits: Option<Exits>,
+    /// Idle executors watched for their exit, once the pool is built (none where it cannot watch).
+    exits: std::sync::OnceLock<Exits>,
     /// Memoized Model methods' results, shared by every run on this machine.
     memo: Arc<crate::memo::Memo>,
     private_memos: Mutex<BTreeMap<(String, u64), Arc<crate::memo::Memo>>>,
@@ -1077,10 +1077,9 @@ impl Pool {
         let host = memory::Host::watch(config.host.mode, gpus, running.clone(), &notes);
         let launcher = crate::child_launcher::ChildLauncher::new()?;
         let memo = Arc::new(crate::memo::Memo::open(root.join("stage-memo"))?);
-        Ok(Arc::new_cyclic(|pool: &Weak<Self>| {
+        let pool = Arc::new_cyclic(|pool: &Weak<Self>| {
             let gpus = devices.iter().filter_map(|d| d.memory.clone()).map(memory::Source::Gpu);
             let sources: Vec<memory::Source> = gpus.chain(host.clone().map(memory::Source::Host)).collect();
-            let pool = pool.clone();
             let observations = pool.clone();
             let woke = move |woke| match (observations.upgrade(), woke) {
                 (Some(pool), memory::Woke::Gpu) => pool.memory_changed(),
@@ -1093,32 +1092,8 @@ impl Pool {
                     .map_err(|error| tracing::warn!("memory: no memory observation events: {error}"))
                     .ok(),
             };
-            #[cfg(target_os = "linux")]
-            for (index, table) in devices.iter().enumerate().filter_map(|(index, d)| Some((index, d.ledger.clone()?))) {
-                let pool = pool.clone();
-                let watching = std::thread::Builder::new().name(format!("gpu-ledger-{index}"))
-                    .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_on(index, askers))));
-                if let Err(error) = watching {
-                    tracing::warn!("GPU {index}'s idle executors end only with the machine: {error}");
-                }
-            }
-            #[cfg(target_os = "linux")]
-            match varena_ledger::Table::open_host() {
-                Ok(table) => {
-                    let pool = pool.clone();
-                    let watching = std::thread::Builder::new().name("host-ledger".into())
-                        .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_for_host(askers))));
-                    if let Err(error) = watching {
-                        tracing::warn!("idle executors end for host memory only by the host rule: {error}");
-                    }
-                }
-                Err(error) => tracing::warn!("no host ledger: idle executors end for host memory only by the host rule: {error}"),
-            }
-            let exits = Exits::watch(pool.clone())
-                .map_err(|error| tracing::warn!("executor exits are not watched: {error}"))
-                .ok();
             Self {
-                exits,
+                exits: std::sync::OnceLock::new(),
                 launcher,
                 root: root.to_path_buf(),
                 serving: Arc::default(),
@@ -1151,7 +1126,40 @@ impl Pool {
                 lost: Mutex::default(),
                 foreign: Mutex::default(),
             }
-        }))
+        });
+        // Started once the pool is built: inside `new_cyclic` its first upgrade found no pool and it
+        // ended, so an idle executor that exited stayed a zombie until the next call (cl-885).
+        match Exits::watch(Arc::downgrade(&pool)) {
+            Ok(exits) => drop(pool.exits.set(exits)),
+            Err(error) => tracing::warn!("executor exits are not watched: {error}"),
+        }
+        #[cfg(target_os = "linux")]
+        pool.supervise_ledgers();
+        Ok(pool)
+    }
+    /// Each GPU's ledger and the host's supervised: an asker no peer could help gets an idle executor ended. Started once the
+    /// pool is built, as `Exits` is: a supervisor whose first upgrade finds no pool takes it for the pool's end and stops.
+    #[cfg(target_os = "linux")]
+    fn supervise_ledgers(self: &Arc<Self>) {
+        for (index, table) in self.devices.iter().enumerate().filter_map(|(index, d)| Some((index, d.ledger.clone()?))) {
+            let pool = Arc::downgrade(self);
+            let watching = std::thread::Builder::new().name(format!("gpu-ledger-{index}"))
+                .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_on(index, askers))));
+            if let Err(error) = watching {
+                tracing::warn!("GPU {index}'s idle executors end only with the machine: {error}");
+            }
+        }
+        match varena_ledger::Table::open_host() {
+            Ok(table) => {
+                let pool = Arc::downgrade(self);
+                let watching = std::thread::Builder::new().name("host-ledger".into())
+                    .spawn(move || table.supervise(|askers| pool.upgrade().map(|pool| pool.end_idle_for_host(askers))));
+                if let Err(error) = watching {
+                    tracing::warn!("idle executors end for host memory only by the host rule: {error}");
+                }
+            }
+            Err(error) => tracing::warn!("no host ledger: idle executors end for host memory only by the host rule: {error}"),
+        }
     }
     fn selected_store(&self) -> io::Result<Arc<Store>> {
         match crate::private_io::current() { Some(scope) => crate::private_io::store(&scope), None => Ok(self.store.clone()) }
@@ -1433,7 +1441,7 @@ impl Pool {
     /// A stalled disk is named on the log of every run in progress (`disk`).
     pub(crate) fn watch_disks(self: &Arc<Self>) {
         let pool = Arc::downgrade(self);
-        let watching = crate::disk::watch(move |stalls| {
+        let watching = crate::disk::watch(self.running.clone(), move |stalls| {
             let Some(pool) = pool.upgrade() else { return false };
             stalls.iter().for_each(|stall| pool.disk_stalled(stall));
             true
@@ -2083,7 +2091,7 @@ impl Pool {
             if !killed && !self.stopped.load(Ordering::Acquire) {
                 idle.push(session);
                 drop(idle);
-                self.exits.iter().for_each(Exits::changed);
+                self.exits.get().into_iter().for_each(Exits::changed);
                 return Ok(Disposition::Cached);
             }
             drop(idle);
@@ -2124,7 +2132,7 @@ impl Pool {
             drop(levels);
             sessions.insert(key, session);
             drop(sessions);
-            self.exits.iter().for_each(Exits::changed);
+            self.exits.get().into_iter().for_each(Exits::changed);
             return Ok(Disposition::Cached);
         }
     }
@@ -2213,13 +2221,18 @@ impl Pool {
         if crate::private_io::current().is_some() || crate::private_io::is_private_path(&held.record.python) { return None; }
         self.prespawn(held.clone());
         let parent = self.zygotes.lock().unwrap().get(&parent_app(held))?.clone();
-        // Package code runs here, and may not end: the install's cancel still does.
+        // Package code runs here, and may not end: the install's cancel still does, and wakes the wait.
+        let woken = parent.clone();
+        let _woken = stop.on_cancel(move || {
+            drop(woken.state.lock());
+            woken.changed.notify_all();
+        });
         let mut state = parent.state.lock().unwrap();
         while matches!(*state, ZygoteState::Starting) {
             if stop.is_cancelled() {
                 return None;
             }
-            state = parent.changed.wait_timeout(state, std::time::Duration::from_millis(250)).unwrap().0;
+            state = parent.changed.wait(state).unwrap();
         }
         let ZygoteState::Failed(reason) = &*state else { return None };
         let reason = reason.clone();
@@ -4017,7 +4030,7 @@ impl Pool {
         let mut call = call;
         call.package = measured.clone();
         let dispatched = Dispatched::new(gpus, id, &engine.resource_id(id), &measured, &shape, self.running.clone());
-        self.running.lock().unwrap().insert(engine.resource_id(id), call);
+        self.running.start(engine.resource_id(id), call);
         let spool = engine.staging(id)?;
         let spool_owner = crate::execution::Spool(spool.clone());
         let input_store = engine.store_for(id)?;

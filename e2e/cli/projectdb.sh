@@ -5,6 +5,7 @@
 #   db_crdt         the native CRDT: stable identities, old-schema refusal, projection damage, replica merges, append and restart
 #   db_latency      write latency at a project with 500 takes (it runs on the cozy before project.db too: --shard projectdb-latency)
 #   db_migrate      a project 0.24.0 made opens here with nothing lost: its takes, files and words, ids and history (schema 4)
+#   db_waits        project.db held by another program while a `cozy run` begins: waited out within Calcifer's wait and past it
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -101,14 +102,16 @@ db_latency
 
 # Boxes deleted under 0.24 at the first 0.25 open (cl-919): 0.24 set a deleted box aside with no time and kept its files, and its Undo
 # (the last 200 edits) brought it back with them. 0.25 dates such a delete at its first open: the files stay, Undo brings the box back,
-# and once the window ends (config.toml's calcifer.undo_seconds, cut for the cell) the box left deleted loses its files. Two pictures are
-# imported and deleted, then project.db is written as 0.24 left it, with Calcifer stopped: each set-aside row without `deleted_ms` or
-# `held`, an imported picture's file on record as a `run 0, deleted` row.
+# and once the window ends (config.toml's calcifer.undo_seconds, cut for the cell) the box left deleted loses its files. 0.24.0's own
+# cozy, in this one's place, imports two pictures and deletes them as its page does; then this cozy goes back in its place, its Calcifer
+# started with the short window, and opens the project for the first time (schema 4 with it).
 db_deleted_024() {
 step "project.db: boxes deleted under 0.24 keep their files for the undo window from the first 0.25 open; Undo brings one back"
-local lock=$HOME/.cozy/calcifer/calcifer.lock.holder undo=40 a b entry name
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder undo=40 a b entry old made=0
 DB024=$OUT/db-deleted-024
-run_project "$DB024" > "$OUT/db-024-new.log" 2>&1 || { check "0.24 deletes: create: $(tail -c 300 "$OUT/db-024-new.log")"; return; }
+old=$(cozy_0240) || { check "0.24 deletes: 0.24.0's archive"; return; }
+cp "$COZY" "$OUT/cozy-now"
+in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "0.24 deletes: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$OUT/cozy-now"; return; }
 python3 - "$OUT/db-024-kept.png" "$OUT/db-024-gone.png" <<'PNG'
 import struct, sys, zlib
 def png(path, rgb):
@@ -118,57 +121,63 @@ def png(path, rgb):
 png(sys.argv[1], (200, 40, 40)); png(sys.argv[2], (40, 40, 200))
 PNG
 a=$(sha "$OUT/db-024-kept.png") b=$(sha "$OUT/db-024-gone.png")
-for name in kept gone; do
-  project_import "$DB024" "$OUT/db-024-$name.png" "${name}_024" > "$OUT/db-024-$name-import.json" || { check "0.24 deletes: import $name: $(cat "$OUT/db-024-$name-import.json")"; return; }
-done
-held_024 "$a" && held_024 "$b" || { check "0.24 deletes: the imports aren't in files/"; return; }
-for name in kept gone; do project_api "$DB024" "/assets/${name}_024" -X DELETE > /dev/null || { check "0.24 deletes: delete $name"; return; }; done
-project_api "$DB024" /history > "$OUT/db-024-history.json" || { check "0.24 deletes: history"; return; }
-entry=$(jq -r '[.entries[] | select((.names // []) | index("kept_024"))][0].id // empty' "$OUT/db-024-history.json")
-[ -n "$entry" ] || { check "0.24 deletes: no history entry deletes kept_024: $(jq -c '[.entries[] | {id, words, names}]' "$OUT/db-024-history.json")"; return; }
-# Stopped, project.db as 0.24 left it; started with a short window, the project not opened since.
-web_undo_window "$lock" "$undo" db_024_written
-[ "$(cat "$OUT/db-024-written.txt" 2> /dev/null)" = 2 ] || check "0.24 deletes: project.db not written as 0.24's: $(cat "$OUT/db-024-written.txt" "$OUT/db-024-written.err" 2> /dev/null)"
+db_024_made || made=$?
+web_undo_window "$lock" "$undo" db_024_back
+db_calcifer
+[ "$made" = 0 ] || { web_undo_window "$lock" ''; return; }
+[ "$(cozy --version)" = "$("$OUT/cozy-now" --version)" ] || { check "0.24 deletes: this cozy back in its place: $(cozy --version)"; web_undo_window "$lock" ''; return; }
 project_api "$DB024" '' > /dev/null || check "0.24 deletes: first open"
 sleep 5
 held_024 "$a" || check "0.24 deletes: the first 0.25 open deleted kept_024's file"
 held_024 "$b" || check "0.24 deletes: the first 0.25 open deleted gone_024's file"
-[ "$(sql "$DB024" "SELECT record FROM lock_assets WHERE key LIKE '%#%'" | jq -s '[.[] | .[0] | fromjson | select(.deleted_ms == null)] | length')" = 0 ] \
-  || check "0.24 deletes: a set-aside row has no time after the first open"
+sql "$DB024" "SELECT record FROM lock_assets WHERE key LIKE '%#%'" | jq -se '[.[] | .[0] | fromjson] | length >= 2 and all(.deleted_ms != null)' > /dev/null \
+  || check "0.24 deletes: not both boxes set aside, each with a time, after the first open: $(sql "$DB024" "SELECT key, record FROM lock_assets WHERE key LIKE '%#%'" | head -c 400)"
 [ "$(sql1 "$DB024" "SELECT count(*) FROM run_files WHERE run = 0 AND output = 'deleted'")" = 0 ] || check "0.24 deletes: 0.24's deleted rows are still on record"
-project_history_step "$DB024" undo "$entry" > "$OUT/db-024-undo.json" || check "0.24 deletes: Undo of kept_024: $(tail -c 300 "$OUT/db-024-undo.json")"
-J '.assets | any(.name == "kept_024")' <<< "$(status "$DB024")" || check "0.24 deletes: Undo didn't bring kept_024 back: $(status "$DB024" | jq -c '[.assets[].name]')"
-held_024 "$a" || check "0.24 deletes: kept_024 came back without its file"
+project_api "$DB024" /history > "$OUT/db-024-history.json" || check "0.24 deletes: history"
+entry=$(jq -r '[.entries[] | select((.names // []) | index("kept_024"))][0].id // empty' "$OUT/db-024-history.json")
+if [ -z "$entry" ]; then
+  check "0.24 deletes: no history entry deletes kept_024: $(jq -c '[.entries[] | {id, words, names}]' "$OUT/db-024-history.json")"
+else
+  project_history_step "$DB024" undo "$entry" > "$OUT/db-024-undo.json" || check "0.24 deletes: Undo of kept_024: $(tail -c 300 "$OUT/db-024-undo.json")"
+  J '.assets | any(.name == "kept_024")' <<< "$(status "$DB024")" || check "0.24 deletes: Undo didn't bring kept_024 back: $(status "$DB024" | jq -c '[.assets[].name]')"
+  held_024 "$a" || check "0.24 deletes: kept_024 came back without its file"
+fi
 for _ in $(seq 1 $((undo + 60))); do held_024 "$b" || break; sleep 1; done
 ! held_024 "$b" || check "0.24 deletes: gone_024's file is still in files/ $((undo + 60)) s after the first open"
-held_024 "$a" || check "0.24 deletes: the purge took kept_024's file, which a box holds again"
+[ -z "$entry" ] || held_024 "$a" || check "0.24 deletes: the purge took kept_024's file, which a box holds again"
 web_undo_window "$lock" ''
 }
 # held_024 <hex>: a file of that sha256 is in the cell's project's files/.
 held_024() { find "$DB024/files" -type f -exec sha256sum {} + 2> /dev/null | grep -q "^$1 "; }
-# project.db as 0.24 wrote a delete (Calcifer stopped): no time on a set-aside row (one holding no version's file isn't one, as 0.24 never
-# set those aside), and an imported picture's file as a deleted run row.
-db_024_written() {
-python3 - "$DB024/project.db" > "$OUT/db-024-written.txt" 2> "$OUT/db-024-written.err" <<'SQL'
-import json, sqlite3, sys
-db = sqlite3.connect(sys.argv[1])
-written = 0
-with db:
-    last = db.execute("SELECT COALESCE(MAX(ord), 0) FROM run_files").fetchone()[0]
-    for key, record in db.execute("SELECT key, record FROM lock_assets WHERE key LIKE '%#%'").fetchall():
-        row = json.loads(record)
-        held = row.pop("held", None)
-        row.pop("deleted_ms", None)
-        if [f for v in row.get("versions", []) + row.get("discarded", []) for f in (v.get("files") or {}).values()]:
-            db.execute("UPDATE lock_assets SET record = ? WHERE key = ?", (json.dumps(row), key))
-        else:
-            db.execute("DELETE FROM lock_assets WHERE key = ?", (key,))
-        if held:
-            last += 1
-            db.execute("INSERT INTO run_files (ord, run, function, output, sha256) VALUES (?, 0, '', 'deleted', ?)", (last, held))
-        written += 1
-print(written)
-SQL
+# Under 0.24.0: the project, its two pictures imported and held, then each deleted as its page deletes a box.
+db_024_made() {
+  local name
+  run_project "$DB024" > "$OUT/db-024-new.log" 2>&1 || { check "0.24 deletes: 0.24.0 made no project: $(tail -c 300 "$OUT/db-024-new.log")"; return 1; }
+  for name in kept gone; do
+    project_import "$DB024" "$OUT/db-024-$name.png" "${name}_024" > "$OUT/db-024-$name-import.json" \
+      || { check "0.24 deletes: 0.24.0's import of $name: $(cat "$OUT/db-024-$name-import.json")"; return 1; }
+  done
+  held_024 "$a" && held_024 "$b" || { check "0.24 deletes: 0.24.0's imports aren't in files/"; return 1; }
+  for name in kept gone; do
+    project_api "$DB024" "/assets/${name}_024" -X DELETE > "$OUT/db-024-delete.txt" 2>&1 || { check "0.24 deletes: 0.24.0's delete of $name: $(tail -c 300 "$OUT/db-024-delete.txt")"; return 1; }
+  done
+  held_024 "$a" && held_024 "$b" || { check "0.24 deletes: 0.24.0 deleted a deleted box's file"; return 1; }
+  [ "$(sql1 "$DB024" 'PRAGMA user_version')" = 2 ] || { check "0.24 deletes: 0.24.0 made schema $(sql1 "$DB024" 'PRAGMA user_version'), not 2"; return 1; }
+}
+# This cozy back in its place, as an update puts it, while no Calcifer runs (web_undo_window's restart).
+db_024_back() { cp "$OUT/cozy-now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY"; }
+# cozy_0240: the path of 0.24.0's cozy, from its release archive, fetched once.
+cozy_0240() {
+  local was=$OUT/cozy-0.24.0 arch old
+  old=$(find "$was" -type f -name cozy -print -quit 2> /dev/null)
+  if [ -z "$old" ]; then
+    arch=$(uname -m); [ "$arch" != arm64 ] || arch=aarch64
+    mkdir -p "$was"
+    curl -fsSL --retry 3 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/v0.24.0/cozy-$arch-unknown-linux-gnu.tar.gz" \
+      | tar -xz -C "$was" || return 1
+    old=$(find "$was" -type f -name cozy -print -quit)
+  fi
+  [ -n "$old" ] && echo "$old"
 }
 
 db_first_open() {
@@ -215,6 +224,60 @@ for file in project.yaml project.lock project.canvas.yaml project.db.new; do
   fi
   [ "$(sha "$old/$file")" = "$digest" ] && [ ! -e "$old/.cozy-legacy-v1" ] && [ ! -e "$old/$file.v2" ] && [ ! -e "$old/$file.v3" ] && [ ! -e "$old/project.db.v1" ] \
     || check "$file was changed, imported or backed up: $(ls -A "$old" | tr '\n' ' ')"
+done
+}
+
+# Another program holds project.db, with the exclusive lock SQLite's last connection takes to checkpoint the WAL as it closes, once
+# Calcifer has let the project go, and a `cozy run` begins meanwhile (cl-885). Held 7 s, within Calcifer's 10 s wait: the run waits it out
+# (schema 3's check of an opening project.db waited rusqlite's own 5 s, so the laptop's second run said "project.db is open in another
+# program" while Calcifer's own close checkpointed on a busy disk). Held 20 s, past it: Calcifer says so, and the CLI asks again and says
+# what's in the way, as the page waits out a held project.db, until it's let go.
+db_waits() {
+step "project.db held by another program while a cozy run begins: waited out within Calcifer's wait and past it (cl-885)"
+local P=$OUT/db-waits hold holder began let_go
+cozy --json new --unencrypted "$P" > "$OUT/db-waits-new.json" 2>&1 || { check "db waits: new: $(tail -c 300 "$OUT/db-waits-new.json")"; return; }
+in_project "$P" --json run minimax-h3-tools/echo text=first > "$OUT/db-waits-1.ndjson" 2> "$OUT/db-waits-1.err" \
+  || { check "db waits: first run: $(tail -c 300 "$OUT/db-waits-1.ndjson") $(tail -c 300 "$OUT/db-waits-1.err")"; return; }
+for hold in 7 20; do
+# Taken once no connection of Calcifer's is open, and proven exclusive.
+python3 - "$P/project.db" "$hold" > "$OUT/db-waits-hold-$hold.txt" 2>&1 <<'HOLD' &
+import sqlite3, sys, time
+path, hold = sys.argv[1], float(sys.argv[2])
+deadline = time.time() + 120
+while True:
+    db = sqlite3.connect(path, timeout=0, isolation_level=None)
+    try:
+        db.execute("PRAGMA locking_mode=EXCLUSIVE")
+        db.execute("SELECT count(*) FROM meta").fetchall()
+        break
+    except sqlite3.OperationalError:
+        db.close()
+        if time.time() > deadline:
+            sys.exit(print("never held: Calcifer kept project.db open 120 s after the run"))
+        time.sleep(0.2)
+try:
+    sqlite3.connect(path, timeout=0).execute("PRAGMA user_version").fetchall()
+    sys.exit(print("shared: another connection read it"))
+except sqlite3.OperationalError:
+    print("held", flush=True)
+time.sleep(hold)
+db.close()
+print(f"released {time.time():.3f}", flush=True)
+HOLD
+holder=$!
+for _ in $(seq 1300); do grep -qE '^(held|never|shared)' "$OUT/db-waits-hold-$hold.txt" && break; sleep 0.1; done
+grep -qx held "$OUT/db-waits-hold-$hold.txt" || { check "db waits $hold s: no hold: $(cat "$OUT/db-waits-hold-$hold.txt")"; wait "$holder" || true; return; }
+began=$(python3 -c 'import time; print(f"{time.time():.3f}")')
+in_project "$P" --json run minimax-h3-tools/echo "text=held $hold" > "$OUT/db-waits-$hold.ndjson" 2> "$OUT/db-waits-$hold.err" \
+  || check "db waits: a run begun while project.db was held $hold s: $(tail -c 300 "$OUT/db-waits-$hold.ndjson") $(tail -c 300 "$OUT/db-waits-$hold.err")"
+wait "$holder" || true
+let_go=$(sed -n 's/^released //p' "$OUT/db-waits-hold-$hold.txt")
+[ -n "$let_go" ] && python3 -c 'import sys; sys.exit(float(sys.argv[1]) >= float(sys.argv[2]))' "$began" "$let_go" \
+  || check "db waits $hold s: the hold ended before the run began: $(cat "$OUT/db-waits-hold-$hold.txt"), run at $began"
+J -s 'any(.[]; .type == "run.completed" and .run.status == "completed")' "$OUT/db-waits-$hold.ndjson" \
+  || check "db waits: the run begun in a $hold s hold didn't complete: $(tail -c 300 "$OUT/db-waits-$hold.ndjson")"
+[ "$hold" -lt 10 ] || grep -q 'project.db is open in another program' "$OUT/db-waits-$hold.err" \
+  || check "db waits: held $hold s, the CLI didn't say what it waited for: $(tail -c 300 "$OUT/db-waits-$hold.err")"
 done
 }
 
@@ -590,12 +653,8 @@ STREAM_RESTART
 # read it, each take with the id it had, and Undo reaches past the upgrade.
 db_migrate() {
 step "project.db: a project 0.24.0 made opens here with nothing lost"
-local M=$OUT/migrate was=$OUT/cozy-0.24.0 now=$OUT/cozy-now old arch c source
-arch=$(uname -m); [ "$arch" != arm64 ] || arch=aarch64
-mkdir -p "$was"
-curl -fsSL --retry 3 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/v0.24.0/cozy-$arch-unknown-linux-gnu.tar.gz" \
-  | tar -xz -C "$was" || { check "migrate: 0.24.0's archive"; return; }
-old=$(find "$was" -type f -name cozy -print -quit)
+local M=$OUT/migrate now=$OUT/cozy-now old c source
+old=$(cozy_0240) || { check "migrate: 0.24.0's archive"; return; }
 cp "$COZY" "$now"
 in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "migrate: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
 echo "migrate: Calcifer $(api "http://$ADDR/v1/status" | jq -r .version) makes it"

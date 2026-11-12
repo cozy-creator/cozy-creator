@@ -2,7 +2,8 @@
 seconds from the ask. From the runs' records (runs.json, run-<n>.json), the board every 5 s (board.ndjson) and the pod's TensorD log:
 each install turn (`install line: …`, by package), and each object's start and landing (`fetching`, `landed`) with its order, whose
 class says whose it is: a run's own (`next`, the picture's the first), a fetch ahead's (`ahead`), a guess (`guess`), or a started run's
-call (the video's segment). Prints the timeline as JSON, end to end against the longest single chain; each check that failed on
+call (the video's segment); at order 0, a started call's emergency (cl-966: a read of a model not here, `emergency: …`). The picture's
+stages are its run's own measures. Prints the timeline as JSON, end to end against the longest single chain; each check that failed on
 stderr, and exit 1 when one did.
 
     prepare-ahead.py <out> <ask unix ms> <picture's package> <video's package>
@@ -25,6 +26,7 @@ out, ask, picture_tool, video_tool = Path(sys.argv[1]), int(sys.argv[2]), sys.ar
 LOGGED = re.compile(r"^(\S+)\s+INFO\s+\S+: (fetching|landed) (.*)$")
 TURNS = re.compile(r"^(\S+)\s+INFO\s+\S+: install line: (.*?)\s+run=\"?([^\s\"]+)\"?(.*)$")
 CLASSES = ("run", "ahead", "guess")
+EMERGENCY = re.compile(r"^(\S+)\s+INFO\s+\S+: emergency: (.+?) is (read now|here)\b(.*)$")
 EARLY = 60_000  # what the log says from before the ask: the update's own
 
 
@@ -98,11 +100,16 @@ class Download(Span):
 
 objects: dict[Key, Objects] = {}
 turns: dict[str, Turn] = {}
+# Each emergency (its model, when asked, when here, its rate) and the objects fetched at its order.
+emergencies: list[Row] = []
+urgent: list[tuple[int, str, int]] = []
 log = out / "tensord.log"
 for line in log.read_text(errors="replace").splitlines() if log.exists() else []:
     if found := LOGGED.match(line):
         at, fields = ms(found[1]), dict(re.findall(r"(\w+)=(\S+)", found[3]))
         order = int(fields.get("priority", "0"))
+        if order == 0 and at >= ask:
+            urgent.append((at, found[2], int(fields.get("bytes", "0"))))
         if at < ask - EARLY or order == 0 or order == (1 << 64) - 1:
             continue
         kind, job = CLASSES[min((order - 1) >> 62, 2)], ((order - 1) >> 32) & ((1 << 30) - 1)
@@ -111,6 +118,14 @@ for line in log.read_text(errors="replace").splitlines() if log.exists() else []
             seen.fetching.append(at)
         else:
             seen.landed.append((at, int(fields.get("bytes", "0"))))
+    elif found := EMERGENCY.match(line):
+        at, fields = ms(found[1]), dict(re.findall(r"(\w+)=(\S+)", found[4]))
+        if at < ask:
+            continue
+        if found[3] == "read now":
+            emergencies.append({"model": found[2], "asked_ms": at, "bytes": int(fields.get("bytes", "0"))})
+        elif mine := next((e for e in reversed(emergencies) if e["model"] == found[2] and "here_ms" not in e), None):
+            mine["here_ms"], mine["mb_s"] = at, round(float(fields.get("mb_s", "0")), 1)
     elif found := TURNS.match(line):
         at, said, run = ms(found[1]), found[2], found[3]
         if at < ask - EARLY:
@@ -147,6 +162,12 @@ def package(target: Json) -> str:
     and its function, at a release), or `qwen-image-2/image`."""
     parts = (text(target).split() or [""])[-1].split("@")[0].split("/")
     return parts[-2] if len(parts) >= 2 else parts[0]
+
+
+def stages(record: Row) -> dict[str, Json]:
+    """A run's own stage times, s (its record's `report.measured`)."""
+    measured = [row(stage) for m in items(row(record.get("report")).get("measured")) for stage in items(row(m).get("stages"))]
+    return {text(stage.get("name")): round(float(cast(float, stage.get("ms") or 0)) / 1000, 1) for stage in measured}
 
 
 def one(kind: str, tool: str) -> Row:
@@ -202,6 +223,15 @@ timeline: dict[str, Json] = {
         "video_sent_to_first_call": waited, "video_ahead_download": round(ahead_took, 1),
     },
     "install_turns": {run: {"what": t.what, "start": since(t.start), "end": since(t.end), "said": cast(Json, t.said)} for run, t in turns.items()},
+    "picture_stages": cast(Json, stages(picture)),
+    # Each emergency: while it came, how many other objects started (none: the link was its) and whether the rest went on after.
+    "emergencies": [{"model": e["model"], "asked": since(num(e["asked_ms"])), "here": since(num(e.get("here_ms"))), "bytes": e["bytes"],
+                     "mb_s": e.get("mb_s"), "others_started_during": sum(1 for seen in objects.values() for at in seen.fetching
+                                                                          if cast(int, e["asked_ms"]) < at < cast(int, e.get("here_ms") or 0)),
+                     "others_after": any(at > cast(int, e.get("here_ms") or 1 << 62) for seen in objects.values() for at in seen.fetching)}
+                    for e in emergencies],
+    "emergency_objects": len([u for u in urgent if u[1] == "landed"]),
+    "guesses_by_job": {str(job): download([(kind, job)]).seconds() for kind, job in objects if kind == "guess"},
 }
 failed: list[str] = []
 
@@ -216,7 +246,8 @@ if a_download.start and p_gpu.end:
     check(a_download.start < p_gpu.end, "the video's weights didn't start coming while the picture rendered")
 starts = objects[("run", own[0])].fetching if own else []
 if starts:
-    between = [at for k, seen in objects.items() if k[0] in ("ahead", "guess") for at in seen.fetching if min(starts) + 2000 < at < max(starts)]
+    # The video's: its fetch ahead's and guesses, never the picture's own on-demand guesses (its job's, cl-966).
+    between = [at for k, seen in objects.items() if k[0] in ("ahead", "guess") and k[1] != own[0] for at in seen.fetching if min(starts) + 2000 < at < max(starts)]
     check(not between, f"{len(between)} of the video's objects started while the picture's were starting: the download line is in job order")
 if waited is not None and ahead_took:
     check(waited < ahead_took / 2, "the video's run waited about as long as its download takes: nothing was saved")

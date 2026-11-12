@@ -842,13 +842,13 @@ impl Runs {
             let sha256 = tensorfs::sha256::hex(&header.digest);
             let held = crate::storage::held(publisher.store(), &sha256)
                 .map_err(|_| refused("checkpoint_absent", format!("this machine holds no checkpoint sha256:{sha256}: run what made it on this machine, or name a model of the Hub's")))?;
-            publisher.held_for(&self.service, hub_access().ok(), &held).map_err(|(code, message)| refused(code, message))?;
+            publisher.held_for(&self.service, hub_access().ok(), &held, self.order(id, spec, 0)).map_err(|(code, message)| refused(code, message))?;
             let row = json!({"parameter": choice.parameter, "checkpoint": format!("sha256:{sha256}")});
             (held, None, row)
         } else if let Some(named) = if destination.is_empty() { None } else { held_tree(publisher.store(), choice)? } {
             // A Hub commit held here is the request's to publish only as the Hub serves it to its account.
             let named = match named.tree.is_some() && !named.model.starts_with("local/") {
-                true => publisher.checkpoint(&self.service, hub_access()?, named).map_err(|(code, message)| refused(code, message))?,
+                true => publisher.checkpoint(&self.service, hub_access()?, named, self.order(id, spec, 0)).map_err(|(code, message)| refused(code, message))?,
                 false => named,
             };
             let header = named.header().map_err(|(code, message)| refused(code, message))?.clone();

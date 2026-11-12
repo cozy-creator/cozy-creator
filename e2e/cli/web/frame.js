@@ -87,7 +87,7 @@ async function died(why) {
   await post(`${at}/assets/again/versions`, { source: await upload(held?.token, join(folder, 'take.mp4'), id) });
   await post(`${at}/assets`, { tool: imageTool.id, kind: 'image', name: 'still', exact: true, fields: { instructions: '<amy> in a red coat.' }, at: { x: 1300, y: 100 } });
   // A shot this computer renders itself (`project/shots.py`), with a take: what Render and Cmd/Ctrl+Enter start.
-  await post(`${at}/assets`, { tool: `${SHOTS}/shot`, kind: 'video', name: 'local', exact: true, fields: { summary: 'A walk by the sea.', beats: [{ description: 'Waves.', duration: 2 }] }, at: { x: 100, y: 1000 } });
+  await post(`${at}/assets`, { tool: `${SHOTS}/shoot`, kind: 'video', name: 'local', exact: true, fields: { summary: 'A walk by the sea.', beats: [{ description: 'Waves.', duration: 2 }] }, at: { x: 100, y: 1000 } });
   await post(`${at}/assets/local/versions`, { source: await upload(held?.token, join(folder, 'take.mp4'), id) });
   for (const name of ['amy', 'boat', 'scene', 'again', 'still', 'local']) await boxOf(page, name).waitFor();
   await fitCanvas(page);
@@ -105,8 +105,8 @@ async function died(why) {
       sections: [...(media?.querySelectorAll('.in-frame .frame-sections .beat-toggle') ?? [])].map((toggle) => ({ head: toggle.querySelector('b')?.textContent, open: toggle.getAttribute('aria-expanded') === 'true' })),
       summary_removable: Boolean(media?.querySelector('.frame-first [aria-label^="Remove"]')),
       in_frame: { summary: Boolean(media?.querySelector('.in-frame [data-field="summary"]')), beats: Boolean(media?.querySelector('.in-frame .beats-edit[data-field="beats"]')) },
-      behind: [...(media?.querySelectorAll('.backdrop .backdrop-picture') ?? [])].map((el) => el.dataset.mention),
-      full_height: [...(media?.querySelectorAll('.backdrop .backdrop-picture') ?? [])].every((el) => Math.abs(el.getBoundingClientRect().height - frame.height) < 2),
+      behind: [...(media?.querySelectorAll('.backdrop .spread-picture') ?? [])].map((el) => el.dataset.picture),
+      full_height: [...(media?.querySelectorAll('.backdrop .spread-picture') ?? [])].every((el) => Math.abs(el.getBoundingClientRect().height - frame.height) < 2),
       ratio: frame ? frame.width / frame.height : null,
       order: Boolean(frame && tool && run && models) && run.bottom <= frame.top + 1 && tool.top >= frame.bottom - 1 && Math.abs(models.top + models.height / 2 - (tool.top + tool.height / 2)) < models.height && fields.every((rect) => rect.top >= Math.max(tool.bottom, models.bottom) - 1),
       render: run ? { top: Math.round(run.top), right: Math.round(run.right) } : null,
@@ -229,7 +229,7 @@ async function died(why) {
   await card('still').locator('.in-frame .mention-text[data-field="instructions"]').waitFor();
   const still = await card('still').evaluate((node) => ({
     sections: node.querySelectorAll('.in-frame .frame-sections').length,
-    behind: [...node.querySelectorAll('.media .backdrop .backdrop-picture')].map((el) => el.dataset.mention),
+    behind: [...node.querySelectorAll('.media .backdrop .spread-picture')].map((el) => el.dataset.picture),
     tool: node.querySelector(':scope > .image-controls .image-tool-name')?.textContent ?? null,
   }));
   seen.still = still;
