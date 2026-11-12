@@ -362,8 +362,6 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
   const stopRef = useRef<() => void>(() => {})
   const wanted = useRef<number | null>(from ?? null)
   const asked = useRef(seek?.ask ?? 0)
-  // Scrubbed, it holds the frame it was taken to, playing only when played.
-  const still = useRef(false)
 
   useEffect(() => () => stopRef.current(), [])
   // Asked to play at once: once it's there, so React's second mount in development doesn't stop it.
@@ -390,11 +388,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
     if (!seek || seek.ask === asked.current) return
     asked.current = seek.ask
     wanted.current = seek.at
-    still.current = Boolean(seek.still)
-    if (element.current) {
-      element.current.currentTime = seek.at
-      if (still.current) element.current.pause()
-    }
+    if (element.current) element.current.currentTime = seek.at
     setState((now) => (now === "idle" ? "waiting" : now))
   }, [seek])
 
@@ -428,7 +422,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
         setState("playing")
         if (wanted.current !== null) el.currentTime = wanted.current
         wanted.current = null
-        if (!still.current) el.play().catch(() => {})
+        el.play().catch(() => {})
       })
       .catch((error: unknown) => {
         if (!waiting.signal.aborted) failed(error instanceof Error ? error.message : String(error))
