@@ -44,6 +44,18 @@ export function stateWords(machine: Machine, now: number): string {
   }
 }
 
+/** What makes its runs slow now (cl-913): a GPU throttled for heat, a Runtime without its kernels. Red wherever it shows. */
+export function slowWords(machine: Machine): string[] {
+  const status = machine.status
+  if (!status || machine.state === "ended") return []
+  const heat = (status.heat ?? []).map(
+    (hot) =>
+      `GPU ${hot.gpu} ran throttled for heat ${Math.round(hot.share * 100)}% of its last run (${hot.temperature_max_c} °C, ${hot.sm_mhz_mean} of ${hot.sm_mhz_limit} MHz)${hot.replayed ? " (replayed readings)" : ""}`,
+  )
+  const kernels = status.runtime_kernels ? [`Its Runtime ${status.runtime} serves no native kernels: ${status.runtime_kernels}`] : []
+  return [...heat, ...kernels]
+}
+
 export const stateClass = (machine: Machine) =>
   machine.offline || machine.end_failed
     ? "s-bad"

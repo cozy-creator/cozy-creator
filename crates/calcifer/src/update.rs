@@ -234,6 +234,11 @@ impl Machines {
                 }
                 Component::File(build) => (build, "dev"),
             };
+            // The pure Runtime wheel carries no kernels: a machine whose GPUs run them is refused it (cl-913).
+            if member == "runtime" && path.name.ends_with("-none-any.whl") && m.status.as_ref().is_some_and(MachineStatus::takes_runtime_kernels) {
+                let commit = path.name.split_once("+dev.g").map(|(_, rest)| rest.chars().take_while(char::is_ascii_hexdigit).collect::<String>());
+                return Err(wire::kernel_less_runtime(&m.name, &format!("{}, the pure wheel,", path.name), commit.as_deref().filter(|c| !c.is_empty())));
+            }
             let (file, input, version) = measured(path, distribution)?;
             if built == "dev" {
                 named.push(format!("{member} {} (dev)", version.as_deref().unwrap_or(&file)));

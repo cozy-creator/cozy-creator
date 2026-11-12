@@ -128,7 +128,7 @@ impl Took {
         Some(Took { machine: machine.into(), gpu: gpu.into(), megapixels, width: measured.execution.degree.max(1), lead_ms, stages, tail_ms })
     }
 
-    fn total_ms(&self) -> f64 {
+    pub(crate) fn total_ms(&self) -> f64 {
         self.lead_ms + self.stages.iter().map(|stage| stage.ms).sum::<f64>() + self.tail_ms
     }
 

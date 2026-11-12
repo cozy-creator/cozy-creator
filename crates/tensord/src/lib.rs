@@ -43,6 +43,7 @@ mod published;
 mod reclaim;
 mod runs;
 pub mod serve;
+mod slowed;
 mod queue;
 mod service;
 mod stop;

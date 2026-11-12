@@ -774,6 +774,32 @@ memory_limit_bytes?: number,
 display?: boolean, };
 
 /**
+ * A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
+ * readings measured, until a later loaded run there runs cool.
+ */
+export type GpuHeat = { gpu: number,
+/**
+ * The share of its busy readings under a heat limit, 0 to 1.
+ */
+share: number,
+/**
+ * Its busy time those readings cover.
+ */
+busy_ms: number, sm_mhz_mean: number, sm_mhz_limit: number, temperature_max_c: number,
+/**
+ * The driver's limits it saw (`hw_thermal`, `sw_thermal`, `hw_slowdown`, `power_cap`, ...).
+ */
+throttles: Array<string>,
+/**
+ * The run it was measured in, by this machine's id.
+ */
+run: string, at_unix_ms: number,
+/**
+ * Its readings were recorded ones a test replays (`machine.gpu_samples`), not this GPU's own.
+ */
+replayed?: boolean, };
+
+/**
  * `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.
  */
 export type HeldFile = { digest: Digest, length: number, media_type: string, };
@@ -1292,7 +1318,15 @@ stuck?: Array<StuckProcess>,
 /**
  * What it does for this controller's runs besides their own work, each once however many wait on it.
  */
-activity?: Array<Operation>, };
+activity?: Array<Operation>,
+/**
+ * Its GPUs held back for heat most of their last loaded run: the machine is hot, and its runs slow (cl-913).
+ */
+heat?: Array<GpuHeat>,
+/**
+ * Why its Runtime serves its GPUs none of its native kernels; empty: it does.
+ */
+runtime_kernels?: string, };
 
 /**
  * `POST /v1/machines/{name}/update` (with an `Idempotency-Key`): the machine's Runtime, TensorFS

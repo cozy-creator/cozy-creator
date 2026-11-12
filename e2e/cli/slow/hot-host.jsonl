@@ -1,0 +1,200 @@
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 86, "power_w": 300}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 68, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 345, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["hw_slowdown", "sw_thermal", "power_cap"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 69, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 70, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 69, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["hw_slowdown", "sw_thermal", "power_cap"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": [], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 70, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["hw_slowdown", "sw_thermal", "power_cap"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 86, "power_w": 300}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["hw_slowdown", "sw_thermal", "power_cap"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 69, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 345, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["hw_slowdown", "sw_thermal", "power_cap"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 68, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1095, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 69, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["hw_slowdown", "sw_thermal", "power_cap"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1065, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 70, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal", "power_cap"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1350, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 340}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1050, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 88, "power_w": 342}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1755, "reasons": [], "temperature_c": 68, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1035, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1335, "reasons": ["power_cap"], "temperature_c": 69, "power_w": 347}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["sw_thermal", "hw_thermal"], "temperature_c": 88, "power_w": 330}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1290, "reasons": ["power_cap"], "temperature_c": 70, "power_w": 353}
+{"gpu": 0, "used_bytes": 84917878784, "sm_mhz_limit": 1755, "sm_mhz": 1080, "reasons": ["hw_slowdown", "sw_thermal"], "temperature_c": 89, "power_w": 355}
+{"gpu": 1, "used_bytes": 76742000640, "sm_mhz_limit": 1755, "sm_mhz": 1380, "reasons": ["power_cap"], "temperature_c": 68, "power_w": 353}

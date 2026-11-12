@@ -150,6 +150,8 @@ pub struct WorkerSpeedReport {
     pub download: Option<WorkerDownload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu: Option<WorkerProbe>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_heat: Option<WorkerGpuHeat>,
 }
 
 /// One transfer into the machine, all its streams together.
@@ -163,6 +165,14 @@ pub struct WorkerDownload {
 #[derive(Debug, Serialize)]
 pub struct WorkerProbe {
     pub probe: String,
+    pub seconds: f64,
+}
+
+/// A loaded run's heat (cl-913): the share of its busy time a GPU was held back for heat (thermal or hardware slowdown), the
+/// most of its GPUs', and that busy time.
+#[derive(Debug, Serialize)]
+pub struct WorkerGpuHeat {
+    pub share: f32,
     pub seconds: f64,
 }
 
