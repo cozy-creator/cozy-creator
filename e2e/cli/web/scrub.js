@@ -118,6 +118,8 @@ const SHAPED = join(__dirname, '..', 'project', 'shaped.py');
   await openBox(page, 'shot');
   await renderHere();
   await until('its take', async () => (await row('shot'))?.versions, (n) => n >= 1, FIRST_RUN_MS);
+  // Its length, which Calcifer measures once the file is here, as nodes.js waits for its Clip's.
+  await until('its length measured', () => row('shot'), (held) => held?.prefixes?.[0]?.main?.duration_ms > 0, FIRST_RUN_MS);
   const made = await resultOf('shot', 1);
   seen.take = { runs: made.version?.runs, seams: made.result?.seams };
   check('its_run_says_its_seams', JSON.stringify(made.result?.seams) === '[39,73]', made.result);
@@ -130,7 +132,7 @@ const SHAPED = join(__dirname, '..', 'project', 'shaped.py');
   // What the page reads them from: the take's run, its file, and the tool's pickup.
   const asset = await row('shot');
   const listed = ((await api(`/v1/tools?project=${id}&q=shaped`)).body?.tools ?? []).find((tool) => tool.id === asset?.tool);
-  seen.reads = { tool: asset?.tool, pickup: listed?.pickup, listed: Boolean(listed), prefixes: asset?.prefixes?.map((one) => ({ number: one.number, run: one.run, main: one.main && { field: one.main.field, duration_ms: one.main.duration_ms, fps: one.main.fps } })) };
+  seen.reads = { tool: asset?.tool, pickup: listed?.pickup, listed: Boolean(listed), prefixes: asset?.prefixes?.map((one) => ({ number: one.number, run: one.run, main: one.main && { field: one.main.field, duration_ms: one.main.duration_ms, fps: one.main.fps, width: one.main.width } })) };
   await segments.waitFor().catch(async (why) => { seen.under = await focus.locator('.focus-under').innerHTML().catch(() => null); throw why; });
   const blocks = segments.locator('.segment');
   const widths = await blocks.evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width));
@@ -234,6 +236,7 @@ const SHAPED = join(__dirname, '..', 'project', 'shaped.py');
   seen.continued = continued;
   check('it_continues_from_the_end', continued.pickup?.take === '<shot.1>' && continued.pickup?.out_frame === 107 && continued.pickup?.beats_from === 0, continued.pickup);
   await until('its take', async () => (await row('next'))?.versions, (n) => n >= 1, FIRST_RUN_MS);
+  await until('its length measured', () => row('next'), (held) => held?.prefixes?.[0]?.main?.duration_ms > 0, FIRST_RUN_MS);
   const recorded = (await versionsOf('next'))[0]?.pickup;
   check('its_take_records_its_source', recorded?.take === '<shot.1>' && recorded?.out_frame === 107, recorded);
   await focus.locator('.take[aria-label="take 1"]').click().catch(() => {});

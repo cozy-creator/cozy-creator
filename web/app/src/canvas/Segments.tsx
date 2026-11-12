@@ -40,7 +40,7 @@ export function Segments({ name, view }: { name: string; view: ElementView }) {
   const shown = shownOf(view)
   const seams = useSeams(shown?.run)
   const pickup = tools.get(view.asset?.tool ?? "")?.pickup
-  if (!makes(view) || shown?.field !== "video" || !shown.duration_ms || shown.number === undefined || orbitOf(shown)) return null
+  if (!makes(view) || shown?.field !== "video" || shown.number === undefined || orbitOf(shown)) return null
   // What this take went on from: another box's take, or its own from a seam.
   const made: Pickup | null | undefined = view.asset?.prefixes?.find((version) => version.number === shown.number)?.pickup
   const of = made ? store.mentionOf(bare(made.take), name) : null
@@ -50,7 +50,8 @@ export function Segments({ name, view }: { name: string; view: ElementView }) {
       {own ? `Redone from ${cutClock(made.out_frame / (shown.fps ?? FPS))}` : `Continues <${of.name}.${of.number}> from ${cutClock(made.out_frame / (shown.fps ?? FPS))}`}
     </span>
   ) : null
-  if (!pickup || !seams) return from
+  // Its blocks wait for its length, which Calcifer measures once the file is here.
+  if (!pickup || !seams || !shown.duration_ms) return from
   const fps = shown.fps ?? FPS
   const last = framesIn(shown.duration_ms, fps)
   const blocks = segmentsOf(seams, last)
