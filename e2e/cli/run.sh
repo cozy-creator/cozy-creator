@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-quiet|web-toasts|web-palette|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -323,8 +323,6 @@ case $SHARD in
   web-dismiss) export DB_WEB=dismiss; parts="tools_read db_existing_web logs" ;;
   # Typed words over a picture (cl-901).
   web-legible) export DB_WEB=legible; parts="tools_read db_existing_web logs" ;;
-  # A run whose fallbacks the Runtime recovered from lands quietly on its box (cl-921, cozy-runtime #2145).
-  web-quiet) export DB_WEB=quiet; parts="tools_read db_existing_web logs" ;;
   # A Shot's beats laid out (cl-903).
   web-beats) export DB_WEB=beats; parts="tools_read db_existing_web logs" ;;
   # Pasted mentions (cl-902).
