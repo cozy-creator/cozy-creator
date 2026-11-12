@@ -285,15 +285,15 @@ def remove_public(path: Path) -> None:
         path.unlink()
 
 
-def reset_public_bootstrap(native: Native, provenance: dict) -> None:
+def reset_public_bootstrap(native: Native, provenance: dict, pinned: list[str]) -> None:
     # Explicit coordinator approval is limited to this fresh, zero-project public
     # bootstrap. Never call this after generating a canary or creating a project.
     projects = call(native, "GET", "/v1/projects?limit=0", preflight=False)
     check(projects.get("projects") == [], "public_reset_empty")
     with read_db(CALCIFER / "state.db") as source:
         rows = source.execute("SELECT id,target,kind,state,out_dir FROM runs").fetchall()
-        check({row[0] for row in rows} == set(provenance["public_maintenance_run_ids"]), "public_reset_runs", runs=len(rows))
-        check(all(row[1] in {"cozy/package_publish", "cozy/package_lock"} and row[2] == "here" and row[3] == "settled" for row in rows), "public_reset_maintenance")
+        check({row[0] for row in rows} == set(provenance["public_maintenance_run_ids"]) | set(pinned), "public_reset_runs", runs=len(rows), pinned=len(pinned))
+        check(all(row[3] == "settled" and (row[0] in pinned or row[1] in {"cozy/package_publish", "cozy/package_lock"} and row[2] == "here") for row in rows), "public_reset_maintenance")
         check(source.execute("SELECT count(*) FROM projects").fetchone()[0] == 0, "public_reset_projects")
     stop(native, old=True)
     check(schema() == 7, "schema_v7")
@@ -699,7 +699,7 @@ def interrupted_import(native: Native, project: Path, reference: str, identifier
         blocker.rollback()
         blocker.close()
     with read_db(state) as connection:
-        retained = connection.execute("SELECT count(*) FROM legacy_project_runs").fetchone()[0]
+        retained = connection.execute("SELECT count(*) FROM legacy_project_runs WHERE id IN (" + ",".join("?" * len(identifiers)) + ")", identifiers).fetchone()[0]
     check(retained == len(identifiers), "import_crash_source_retained", runs=retained)
     command(INSTALLED, "doctor")
     return {"runs_before": before[0], "receipts_before": before[1]}
@@ -783,14 +783,19 @@ def qualify(args, receipt: Receipt) -> None:
     old = Native(args.old)
     checkpoint(receipt, "public_bootstrap")
     provenance = publish_old(args.old, work)
-    checkpoint(receipt, "public_reset")
-    reset_public_bootstrap(old, provenance)
-    receipt.add("old_public_bootstrap", passed=True, old_binary_sha256=digest(args.old), source_sha256=provenance["source_sha256"])
-
     # A released 0.24 machine takes the newest Runtime PyPI resolves; Runtime 0.46 needs TensorFS 0.25,
-    # another release line. Hold the old cohort to its own line (last pair this subject passed with).
+    # another release line. Hold the old cohort to its own line (last pair this subject passed with),
+    # within the public bootstrap whose maintenance runs the reset removes.
     checkpoint(receipt, "old_subject_pin")
+    def state_runs() -> set[str]:
+        with read_db(CALCIFER / "state.db") as connection:
+            return {row[0] for row in connection.execute("SELECT id FROM runs")}
+    unpinned = state_runs()
     command(args.old, "machine", "update", "local", "--runtime", "0.45.1", "--tensorfs", "0.24.2", "-y")
+    pinned = sorted(state_runs() - unpinned)
+    checkpoint(receipt, "public_reset")
+    reset_public_bootstrap(old, provenance, pinned)
+    receipt.add("old_public_bootstrap", passed=True, old_binary_sha256=digest(args.old), source_sha256=provenance["source_sha256"])
 
     # No reset is legal after this point. Every following byte is real old
     # application data and must be migrated or explicitly remain pending.
