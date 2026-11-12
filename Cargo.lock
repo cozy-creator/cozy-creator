@@ -96,6 +96,7 @@ dependencies = [
  "hex",
  "httpdate",
  "idna_adapter",
+ "pep440_rs",
  "percent-encoding",
  "platform",
  "reqwest",

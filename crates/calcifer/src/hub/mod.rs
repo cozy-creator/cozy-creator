@@ -5,6 +5,7 @@ mod account;
 pub(crate) mod after;
 pub(crate) mod author;
 pub(crate) mod checkpoints;
+pub(crate) mod headers;
 pub(crate) mod jobs;
 mod models;
 mod orgs;
@@ -41,6 +42,7 @@ pub(crate) fn routes() -> Router<Arc<Api>> {
         .route("/v1/models", get(models::search))
         .route("/v1/families", get(models::families))
         .route("/v1/models/{org}/{name}", get(models::info).patch(models::edit).delete(models::delete))
+        .route("/v1/models/{org}/{name}/headers", get(headers::show))
         .route("/v1/models/{org}/{name}/releases", post(models::release))
         .route("/v1/models/{org}/{name}/releases/{version}", delete(models::delete_release))
         .route("/v1/models/{org}/{name}/releases/{version}/unpublish", post(models::unpublish))

@@ -236,6 +236,47 @@ jobs:
           path: ${{ runner.temp }}/hub-fixture
           retention-days: 14
 
+  # Suite checkpoints (xs-183): every published checkpoint's headers against what its tool reads. No rental, signed out.
+  checkpoints:
+    needs: select
+    if: ${{ contains(format(',{0},', inputs.suites), ',checkpoints,') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read  # a dev-build cozy
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COZY_HUB_URL: ${{ inputs.hub == 'isolated' && vars.COZY_TEST_HUB_URL || '' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ github.repository == 'cozy-creator/cozy-creator' && github.sha || 'master' }}
+          path: creator
+      - env:
+          COZY: ${{ inputs.cozy }}
+        run: |
+          set -euo pipefail
+          if [ "$COZY" = released ]; then
+            curl -LsSf https://tensorhub.com/install.sh | sh
+          elif [[ "$COZY" == v* ]]; then
+            curl -LsSf "https://github.com/cozy-creator/cozy-creator/releases/download/$COZY/cozy-installer.sh" | sh
+          else
+            gh run download "$COZY" -R cozy-creator/cozy-creator -p 'cozy-*' -D dev
+            mkdir -p "$HOME/.cozy/bin" && install -m 0755 dev/cozy-*/cozy-linux-x86_64 "$HOME/.cozy/bin/cozy"
+          fi
+          mkdir -p "$RUNNER_TEMP/checkpoints"
+          python3 -I creator/release-gate/suites/checkpoints/walk.py --cli "$HOME/.cozy/bin/cozy" --out "$RUNNER_TEMP/checkpoints" \
+            | tee "$RUNNER_TEMP/checkpoints/walk.log"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkpoints
+          path: ${{ runner.temp }}/checkpoints
+          if-no-files-found: ignore
+          retention-days: 30
+
   gate:
     needs: select
     if: ${{ needs.select.outputs.matrix != '[]' }}

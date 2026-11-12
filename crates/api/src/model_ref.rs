@@ -127,6 +127,19 @@ pub fn lane(value: &str) -> Result<String, String> {
     label("--lane", value).map_err(|e| e.message)
 }
 
+/// The release a run naming `release` takes (xs-183): the newest of `releases` in its series and after it, when one is, as
+/// cargo's `^` and PEP 440's `~=` read a version. The series is its prefix (`0.1` of `0.1.0`); a prerelease is taken only for one.
+pub fn newest_fix<'a>(release: &str, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let version = |text: &str| text.parse::<pep440_rs::Version>().ok();
+    let named = version(release)?;
+    let series = &named.release()[..named.release().len().saturating_sub(1).max(1)];
+    (releases.into_iter())
+        .filter_map(|text| Some((version(text)?, text)))
+        .filter(|(v, _)| v.release().starts_with(series) && *v > named && (named.is_pre() || !v.any_prerelease()))
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, text)| text)
+}
+
 /// A checkpoint id: `sha256:` and 64 lowercase hex digits.
 pub fn checkpoint(value: &str) -> Result<String, Error> {
     match value.strip_prefix("sha256:") {
