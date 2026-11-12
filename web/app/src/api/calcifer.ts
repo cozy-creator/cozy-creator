@@ -1724,7 +1724,12 @@ trained_on?: string | null, trigger?: string | null, strength?: number | null,
 /**
  * `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
  */
-base?: string | null, };
+base?: string | null,
+/**
+ * Files added to the checkpoint, `<component>/<path>` → a held file's `sha256:<hex>`: each becomes that component's asset
+ * (a component of none but these when the checkpoint has no such component).
+ */
+add?: { [key in string]: string }, };
 
 /**
  * Bytes moved and, when they took time, their rate and its share of the measured ceiling.
