@@ -246,6 +246,7 @@ a spec.
 - `POST /v1/runs/{id}/cancel`: `202`, or `200` when it had ended.
 - `GET /v1/runs/{id}/play?output=&expires=` (`expires`: `90s`, `30m`, `24h`, `7d`, default `1h`): `Play {address, fingerprint, token, url, expires_s}`: how a browser plays that output straight from its machine, and `url`, the hosted player's link. `400 play_expires_invalid`, `400 play_output_invalid`.
 - `GET /v1/runs/{id}/outputs/{name}` (`?index=` an item of a list): an output's bytes, where its `url` says. A folder's is its tree document (`application/vnd.cozy.tree-manifest`), and `?member=<path>` one file of it: a client fetches what it asks for and holds each to its digest (`cozy run -o`, `cozy run watch -o`). An output names no path of Calcifer's. An item with `stays`, an output its function's result declares `Latents`, stays on its machine: no `url`, nothing waits for it, and this answers `409 output_on_its_machine`.
+- `GET /v1/runs/{id}/preview`: a running run's newest preview of what it's making (cr-282), from its machine: a small WebP (animated for a video), `ETag: "p<n>"` and the step it shows in `Cozy-Preview-Step`; `304` for an `If-None-Match` it still is, `204` while there is none (not placed yet, ended, or its machine makes none). Its progress's `preview` is the newest's number. Each ask keeps its machine making them for 30 s: a run no client asks about makes none.
 
 ### Time left
 
@@ -679,10 +680,10 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy open [--port PORT]` | current directory, `GET /v1/projects/{id}?assets=false` for its id; then `GET /`, `POST /v1/session-codes` |
 | `cozy status` | project health, warnings and suggested actions from `GET /v1/projects/{id}` |
 | any verb, Calcifer of another version | `POST /v1/down`, then the installed cozy's Calcifer started |
-| `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` |
+| `cozy run <target> [inputs] [flags]` | `HEAD`/`PUT /v1/files/sha256:<hex>` for each file and folder it names, and local code's tree, `POST /v1/run-quotes` (`--on new`), `POST /v1/runs` (again after a `preparing` install), then `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}`; `--previews DIR`, `GET /v1/runs/{id}/preview` each second while it runs |
 | `cozy run <target> --describe`, `cozy run <package>` | local code's tree `PUT`, `GET /v1/targets` (`tree`, `at`) |
 | `cozy run ls` | `GET /v1/runs`; live: `GET /v1/events`, then `GET /v1/runs` |
-| `cozy run watch <run> [-o DIR]` | `GET /v1/runs/{id}?detail=full`, `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` (a folder's tree, then `?member=`) |
+| `cozy run watch <run> [-o DIR] [--previews DIR]` | `GET /v1/runs/{id}?detail=full`, `GET /v1/runs/{id}/events`; `-o DIR`, each output `GET /v1/runs/{id}/outputs/{name}` (a folder's tree, then `?member=`); `--previews DIR`, `GET /v1/runs/{id}/preview` each second while it runs |
 | `cozy run cancel <run>` | `GET /v1/runs/{id}`, `POST /v1/runs/{id}/cancel` |
 | `cozy login <email>` | `GET /v1/account`; `POST /v1/account/codes` (`sign_in`), `POST /v1/account/codes/{id}`; `PUT /v1/account/name` while unnamed |
 | `cozy login --export FILE` | `POST /v1/account/codes` (`export`), `POST /v1/account/codes/{id}`; the CLI writes the file |
