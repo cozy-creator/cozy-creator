@@ -47,6 +47,11 @@ async function containmentProof(input) {
         for (const type of ['mousedown', 'click', 'dblclick']) document.addEventListener(type, (event) => { seen[type] = true; seen[`${type}_in_node`] ||= Boolean(seen.node?.contains(event.target)); }, true);
       }
       Object.assign(globalThis.__cozyProofClicks, { node, mousedown: false, click: false, dblclick: false, mousedown_in_node: false, click_in_node: false, dblclick_in_node: false });
+      if (x === null) {
+        // No press point: is the box's node still unmeasured (hidden), and is the page drawing at all?
+        const frame = await new Promise((done) => { const late = setTimeout(() => done(false), 500); requestAnimationFrame(() => { clearTimeout(late); done(true); }); });
+        Object.assign(cover, { node_hidden: Boolean(node) && getComputedStyle(node).visibility === 'hidden', visible: document.visibilityState === 'visible', has_focus: document.hasFocus(), animation_frame: frame });
+      }
       return { found: x !== null, x, y, hit_target: Boolean(hit && target.contains(hit)), hit_node: Boolean(hit && node?.contains(hit)), ...cover };
     }
     case 'focus': {
