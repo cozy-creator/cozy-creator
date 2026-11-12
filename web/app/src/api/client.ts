@@ -762,11 +762,14 @@ export class Client {
 
   // Models
 
-  /** The Hub's models: of `family` only when it's said, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
-  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; noTag?: string } = {}): Promise<ModelSearch> {
+  /** The Hub's models: of `family` only when it's said, only those a tool's slot loads when `fits` (`<tool>:<slot>`, judged by their
+   *  headers; `project` finds local code) is, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
+  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; fits?: string; project?: string; noTag?: string } = {}): Promise<ModelSearch> {
     const asked = new URLSearchParams({ limit: String(limit) })
     if (q) asked.set("q", q)
     if (only.family) asked.set("family", only.family)
+    if (only.fits) asked.set("fits", only.fits)
+    if (only.fits && only.project) asked.set("project", only.project)
     if (only.noTag) asked.set("no_tag", only.noTag)
     return this.json(`/v1/models?${asked}`, { signal })
   }

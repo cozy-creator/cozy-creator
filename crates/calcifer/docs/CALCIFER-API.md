@@ -480,7 +480,10 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   model is: a text encoder, a VAE, an upsampler), absent if it couldn't be read. Its `family` is its owner's label, else
   what its header verifies as; `family_from` says which (`owner`, or `weights` when its header verifies
   as it). `family=` lists every model the Hub labels so, page by page (`limit` of them), and the others
-  (up to 1000 read) whose header alone says it.
+  (up to 1000 read) whose header alone says it. `fits=<tool>:<slot>` (`project=` finds local code) lists the models (up to 1000
+  read) that slot loads, judged by headers against its default, never by family (cl-943): in the components its function
+  fetches, the same classes, every module at the default's shapes (any size for an LM's token loop, `phase: decode`), and run
+  data of every kind. `cozy run` and a box's model choices are refused `model_choice_unloadable` by the same check.
 - `GET /v1/models/{org}/{name}?release=`: `ModelDetail`, its releases (the one named) and, to its
   org's members, every commit; `family`, `family_from`, `weights_family` (what its header verifies as),
   `kind` and `tags` as above.

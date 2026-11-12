@@ -436,9 +436,7 @@ pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<
     tool::tools_of(&found.package, "", &interface).into_iter().find(|held| held.function == function).map(|held| held.fields)
 }
 
-/// A node's model selections use the same slot/reference/adapter binder as a run.
-/// Known catalog incompatibilities refuse the write; unclassified files still
-/// receive the native loader's validation when they are actually used.
+/// A box's model choices, bound as a run binds them, refused where their slot can't load them (`checkpoints::check_choices`).
 pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fields: &Map<String, Value>) -> Result<(), Error> {
     let hub = api.machines.hubs.default_origin();
     let Ok(found) = runs::target::describe(api, &hub, target, None, Some(dir), &runs::default_on(api)).await else { return Ok(()) };
@@ -451,23 +449,27 @@ pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fi
     choices.take(&mut document)?;
     let choices = choices.into_choices();
     choices::wire(&choices)?;
-    let Some(mut tool) = tool::tools_of(&found.package, "", &interface).into_iter().find(|tool| tool.function == function) else {
-        return Ok(());
+    crate::hub::checkpoints::check_choices(api, &hub, target, &crate::hub::checkpoints::slots_of(&interface, callable), &choices).await
+}
+
+/// The slots `key` names in `tool`'s function, read as a run of it is (`checkpoints::slots_named`), each with the default a choice
+/// for it is judged by: what `cozy model ls --fits <tool>:<key>` and the page's Models & LoRAs offer for. `dir` finds local code.
+pub(crate) async fn slots_for(api: &Arc<Api>, hub: &str, tool: &str, key: &str, dir: Option<&Path>) -> Result<Vec<api::interface::Slot>, Error> {
+    let found = runs::target::describe(api, hub, tool, None, dir, &runs::default_on(api)).await?;
+    let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;
+    let function = found.function.as_deref().or(target::only_function(&interface));
+    let Some(callable) = function.and_then(|function| interface.callables.iter().find(|callable| callable.name == function)) else {
+        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: name one of its functions")).next(format!("cozy run {tool}")));
     };
-    crate::hub::checkpoints::families(api, &hub, std::slice::from_mut(&mut tool)).await;
-    let origin = Origin::parse(&hub)?;
-    for choice in choices {
-        let Some(slot) = tool.models.iter().find(|slot| slot.slot == choice.slot) else { continue };
-        let mut family = slot.family.clone();
-        if let Some(reference) = choice.reference.as_deref() {
-            let found = crate::hub::checkpoints::check_choice(api, &origin, &slot.slot, reference, family.as_deref(), slot.kind).await?;
-            family = family.or(found);
-        }
-        for adapter in choice.adapters {
-            crate::hub::checkpoints::check_choice(api, &origin, &slot.slot, &adapter.reference, family.as_deref(), Some(api::model_ref::ModelKind::Lora)).await?;
-        }
+    let slots: Vec<api::interface::Slot> = crate::hub::checkpoints::slots_named(&interface, callable, key).into_iter().cloned().collect();
+    if slots.is_empty() {
+        let keys: Vec<&str> = crate::hub::checkpoints::slots_of(&interface, callable).into_iter().map(|(key, _)| key).collect();
+        return Err(Error::new(Kind::Usage, "model_slot_unknown", format!("{tool} has no model slot {key:?}")).remedy(format!("its slots: {}", keys.join(", "))));
     }
-    Ok(())
+    if slots.iter().any(|slot| slot.default.is_none()) {
+        return Err(Error::new(Kind::Usage, "model_slot_no_default", format!("{tool}'s {key} names no default model to judge a choice by")));
+    }
+    Ok(slots)
 }
 
 /// What `tool` makes, `image`, `video` or `audio`, as its function's output says, and what a new box of it is called, read as a run of it

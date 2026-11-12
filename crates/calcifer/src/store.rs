@@ -574,6 +574,7 @@ impl Store {
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;
         crate::state::project_purges(&writer)?;
+        crate::state::header_parts(&writer)?;
         private(path);
         let reader = Connection::open(path)?;
         reader.pragma_update(None, "query_only", "ON")?;
