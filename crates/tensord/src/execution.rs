@@ -59,6 +59,7 @@ pub(crate) struct Engine {
     /// Runtime-only keys into the ONE machine allocation table. Never written to any journal.
     scheduler: Mutex<HashMap<u64, u64>>,
     project: Option<api::machine::LocalPrivateStorage>,
+    machine_activity: OnceLock<Weak<Engine>>,
 }
 
 /// One run's preparation, registered while it lasts: its cancel stops `stop`, which ends the
@@ -190,9 +191,14 @@ impl Engine {
             faults: Mutex::new(HashMap::new()),
             scheduler: Mutex::default(),
             project: crate::private_io::current(),
+            machine_activity: OnceLock::new(),
         }))
     }
 
+    pub(crate) fn bind_machine_activity(&self, parent: &Arc<Engine>) {
+        let _ = self.machine_activity.set(Arc::downgrade(parent));
+        parent.notify_activity();
+    }
     pub(crate) fn scheduler_root(&self, root: u64) -> u64 {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         *self.scheduler.lock().unwrap().entry(root).or_insert_with(|| NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
@@ -611,7 +617,10 @@ impl Engine {
     }
     /// See `Journal::jobs`.
     pub(crate) fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
-        self.journal.lock().unwrap().jobs(since)
+        let (working, ended) = self.journal.lock().unwrap().jobs(since)?;
+        if self.project.is_some() { return Ok((working, ended)); }
+        let (private_working, private_ended) = crate::private_io::machine_jobs(since)?;
+        Ok((working || private_working, ended.max(private_ended)))
     }
     /// Whether this machine run supervises `id`.
     pub(crate) fn owns(&self, id: &str) -> bool {
@@ -690,6 +699,8 @@ impl Engine {
         let mut epoch = self.activity.lock().unwrap();
         *epoch = epoch.saturating_add(1); // never wrap or reuse a wake cursor
         self.activity_changed.notify_all();
+        drop(epoch);
+        if let Some(parent) = self.machine_activity.get().and_then(Weak::upgrade) { parent.notify_activity(); }
     }
 
     /// Whether a managed attempt of root `root` (the root or a call of it) still runs its thread.

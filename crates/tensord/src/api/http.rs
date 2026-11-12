@@ -99,8 +99,9 @@ async fn legacy_private_request() -> Response {
 async fn project_request(State(m): State<Machine>, Path((project, rest)): Path<(String, String)>, request: Request<Body>) -> Response {
     // No private body is read while the stronger storage/security contract is being prepared.
     // This explicit refusal is removed only when the native backend and project-owned engine qualify.
-    if let Err(error) = crate::private_io::require_project_execution() {
+    if rest != "close" { if let Err(error) = crate::private_io::require_project_execution() {
         return Refusal::from(Error::conflict("project_execution_unavailable", error.to_string())).into_response();
+    }
     }
     private_request(State(m), Path((project, rest)), request).await
 }
@@ -139,6 +140,8 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     let ordinary = m.runs.clone();
     let selected = descriptor.clone();
     let selected = tokio::task::spawn_blocking(move || {
+        if ordinary.service.engine.with_journal(|journal| journal.contains_private_project(&selected.project_id))? { return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "project_storage_migration_required")); }
+        crate::private_io::bind_process_namespace(&selected, ordinary.publisher.process_namespace())?;
         crate::private_io::within(Some(selected.clone()), || crate::private_io::probe_native(&selected))?;
         let python = ordinary.publisher.probe_project_sdk()?;
         crate::private_io::within(Some(selected.clone()), || {
@@ -148,6 +151,7 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     }).await;
     let runs = match selected {
         Ok(Ok(runs)) => runs,
+        Ok(Err(error)) if error.to_string() == "project_storage_migration_required" => return Refusal::from(Error::conflict("project_storage_migration_required", "Legacy project history remains in the ordinary worker journal; migrate and compact it before protected execution.")).into_response(),
         _ => return Refusal::from(Error::conflict("project_execution_unavailable", "This worker cannot install the protected project execution policy.")).into_response(),
     };
     let m = Machine { identity: m.identity, runs };
@@ -190,7 +194,8 @@ async fn close_private(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     caller.machine()?;
     let descriptor = crate::private_io::current().ok_or_else(|| Error::forbidden("private_storage_scope", "no private workspace was selected"))?;
     let actor = actor_id(caller.actor);
-    m.call(move |_| {
+    m.call(move |runs| {
+        if runs.service.engine.with_journal(|journal| journal.contains_private_project(&descriptor.project_id)).map_err(|_| Error::conflict("project_storage_migration_required", "Legacy worker custody could not be verified."))? { return Err(Error::conflict("project_storage_migration_required", "Legacy project history remains in the ordinary journal; migrate and compact it before sealing.")); }
         crate::private_io::close(&descriptor, &actor).map_err(|_| Error::conflict("private_storage_busy", "Project execution, native handles or output custody are still active."))
     }).await?;
     Ok(StatusCode::NO_CONTENT.into_response())

@@ -487,7 +487,7 @@ impl Codec {
         #[cfg(unix)]
         platform::process::keep_open(&mut command, hold.into_iter().collect());
         let mut private_io = crate::private_io::command_io(&mut command, true, true, false)?;
-        let process_scope = crate::private_io::current().map(|_| platform::contain::Scope::create("project-codec").map(Arc::new)).transpose()?;
+        let process_scope = crate::private_io::current().map(|_| crate::private_io::new_process_scope()).transpose()?;
         crate::private_io::apply_native(&mut command, private_io.as_mut(), process_scope.as_ref())?;
         let mut child = command.spawn()?;
         drop(command);

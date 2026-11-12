@@ -546,7 +546,8 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
     }
     let (store, fetch, began) = (fetch.store().clone(), Arc::downgrade(fetch), std::time::Instant::now());
     let began_ms = crate::machine::lifecycle::now_ms() as u64;
-    let started = std::thread::Builder::new().name("weights-meter".into()).spawn(move || {
+    let private = crate::private_io::current();
+    let started = std::thread::Builder::new().name("weights-meter".into()).spawn(move || crate::private_io::within(private, || {
         let (mut last, mut said, mut shown) = (None, String::new(), None::<String>);
         // What its run waits on, as this machine lists it (`activity`), by repository.
         let caller = engine.caller_id(&id);
@@ -600,7 +601,7 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
             }
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
-    });
+    }));
     if let Err(error) = started {
         tracing::warn!("its weights' progress: {error}");
     }

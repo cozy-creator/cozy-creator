@@ -58,7 +58,7 @@ pub(crate) struct Service {
     queue: Mutex<crate::queue::Queue>,
     /// While it holds (an update activating), no new root run starts: queued runs are journaled
     /// and start after the restart.
-    held: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>,
+    held: Arc<std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>>,
 }
 
 const SWEEP_EVERY: std::time::Duration = crate::reclaim::IDLE;
@@ -81,12 +81,14 @@ fn holds_gpus(birth: &Birth, before: u64) -> bool {
 }
 impl Service {
     pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>) -> io::Result<Arc<Self>> {
-        Self::open_in(root, generations, parallelism, store, None, None)
+        Self::open_in(root, generations, parallelism, store, None, None, Arc::default())
     }
     pub(crate) fn open_project(root: &Path, store: Arc<crate::storage::Store>, parent: &Arc<Service>, scope: api::machine::LocalPrivateStorage) -> io::Result<Arc<Self>> {
-        Self::open_in(root, &root.join("generations"), parent.parallelism, store, parent.pool(), Some(scope))
+        let service = Self::open_in(root, &root.join("generations"), parent.parallelism, store, parent.pool(), Some(scope), parent.held.clone())?;
+        service.engine.bind_machine_activity(&parent.engine);
+        Ok(service)
     }
-    fn open_in(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>, shared: Option<Arc<Pool>>, project_scope: Option<api::machine::LocalPrivateStorage>) -> io::Result<Arc<Self>> {
+    fn open_in(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>, shared: Option<Arc<Pool>>, project_scope: Option<api::machine::LocalPrivateStorage>, held: Arc<std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>>) -> io::Result<Arc<Self>> {
         if parallelism == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -150,7 +152,7 @@ impl Service {
             startup_gpu_births: Mutex::new(startup_gpu_births),
             started_ticks,
             queue: Default::default(),
-            held: Default::default(),
+            held,
         });
         service.engine.reconcile()?;
         // Its first sweep is the reclaim thread's (`reclaim_loop`): a long one never delays serving.
