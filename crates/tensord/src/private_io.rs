@@ -95,7 +95,7 @@ pub(crate) fn migrate_execution_bindings(scope: &LocalPrivateStorage, ordinary: 
             let generations=runs.service.engine.retired_migration_generations(&ordinary.service.engine)?;
             within(None,|| -> io::Result<()> {
                 ordinary.objects.sweep()?;
-                if let Some(pool)=ordinary.service.gpu() {
+                if let Some(pool)=ordinary.service.pool() {
                     pool.drop_members(&verified.actor,&generations);
                     for generation in &generations {pool.end_generation(generation);}
                 }
