@@ -10,11 +10,30 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import TypedDict
+
+
+class Entry(TypedDict, total=False):
+    """One entry of the map: `match`, `says`, its `phase`, what a count under it `counts`, whether it is a `scope`."""
+
+    match: str
+    says: str
+    phase: str
+    counts: str
+    scope: bool
+
+
+class Progress(TypedDict, total=False):
+    """A `run.progress` event's progress, as far as this reads it."""
+
+    stage: str
+    at_ms: int
+    bytes_total: int
 
 MAP = Path(__file__).resolve().parents[2] / "web/app/src/panels/runs/stages.json"
 
 
-def compiled(path: Path) -> list[tuple[dict, list[str], re.Pattern[str]]]:
+def compiled(path: Path) -> list[tuple[Entry, list[str], re.Pattern[str]]]:
     """Each entry's `match` as a pattern: literal text, `{name}` any text, `{#name}` digits; the whole part, any case."""
     out = []
     for entry in json.loads(path.read_text())["stages"]:
@@ -30,13 +49,15 @@ def compiled(path: Path) -> list[tuple[dict, list[str], re.Pattern[str]]]:
     return out
 
 
-def said(entries, part: str) -> dict | None:
+def said(entries: list[tuple[Entry, list[str], re.Pattern[str]]], part: str) -> Entry | None:
     """The first entry `part` matches, its words filled; none: the map doesn't know it."""
     for entry, names, pattern in entries:
         found = pattern.match(part.strip())
         if found:
             words = re.sub(r"\{(\w+)\}", lambda m: found.group(names.index(m.group(1)) + 1) if m.group(1) in names else m.group(0), entry["says"])
-            return {**entry, "says": words}
+            filled = entry.copy()
+            filled["says"] = words
+            return filled
     return None
 
 
@@ -45,7 +66,7 @@ def main() -> int:
     entries = compiled(Path(sys.argv[2]) if len(sys.argv) > 2 else MAP)
     problems = [f"stages.json: {e['match']!r} counts steps outside the work" for e, _, _ in entries if e.get("counts") == "step" and e.get("phase") != "working"]
     seen: list[tuple[int, str]] = []
-    progress: list[dict] = []
+    progress: list[Progress] = []
     for line in run.read_text().splitlines():
         if not line.startswith("{"):
             continue
@@ -67,7 +88,7 @@ def main() -> int:
                 problems.append(f"{part!r} (of {stage!r}) is not in stages.json")
         last = known[-1] if known else None
         phase = last.get("phase") if last else None
-        phases.append((at, phase, " · ".join((entry or {}).get("says", part) for part, entry in zip(parts, known))))
+        phases.append((at, phase, " · ".join(str(entry["says"]) if entry else part for part, entry in zip(parts, known))))
     installs = [stage for _, stage in seen if re.search(r"^installing .+ on this machine", stage.rsplit(" / ", 1)[-1])]
     if installs and not any(re.search(r": .+ \(\d+ of \d+\)$", stage) for stage in installs):
         problems.append(f"an install that never said its steps in words: {installs}")
