@@ -19,7 +19,7 @@ import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
-import { bare, ContinueFrom, LeadIn, Segments } from "./Segments"
+import { bare, ContinueFrom, LeadIn, Segments, VideoTransport } from "./Segments"
 import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { VideoEditor } from "./timeline/VideoEditor"
@@ -791,6 +791,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const looking = here && asset?.kind !== "image" && !view.hereWords && paints(view, tools)
   // An Edit in Focus is a video editor: its cut playing in the frame, its timeline under it, its versions beside it (cl-957).
   const cut = focused && Boolean(asset?.timeline)
+  // Any other video in Focus plays on the same transport and track, its segments on it (cl-965).
+  const plays = focused && asset?.kind === "video" && !asset.timeline && !editing
   // Its fields show under it, Render first (cl-938).
   const fielded = here && Boolean(asset?.tool) && (asset?.kind !== "image" || editing) && !(asset?.kind === "video" && !asset.timeline && !editing) && !looking
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
@@ -808,7 +810,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   return (
     <div
       ref={self}
-      className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${cut ? "edits" : ""}`}
+      className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${cut ? "edits" : ""} ${plays ? "plays" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
       style={style}
@@ -881,7 +883,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       </div>
       )}
       {focused && !view.placing && !cut && <FocusActions view={view} name={name} />}
-      {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text"} under={focused && asset?.kind === "video" && !asset.timeline && !editing ? <Segments name={name} view={view} /> : undefined}>
+      {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text"} zooms={!plays} under={plays ? <VideoTransport name={name} view={view} /> : undefined}>
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && editing && view.continuing && <LeadIn name={name} view={view} />}
@@ -897,6 +899,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           {asset && !view.placing && !lite && (!focused || view.hereWords) && <Corner name={name} view={view} width={width} focused={focused} />}
         </Media>
       </FocusFrame>}
+      {plays && <Segments name={name} view={view} />}
       {rendering && <span className="render-wave" aria-hidden="true" />}
       {/* Watched, not written: orbit viewing turns on and off here too (xs-180), as in a take being written. */}
       {focused && asset?.kind === "video" && !asset.timeline && !editing && <OrbitToggle view={view} name={name} />}

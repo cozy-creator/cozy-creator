@@ -9,6 +9,41 @@
 .focus-card.edits > .image-controls {
   grid-row: 3;
 }
+/* Any other video in Focus (cl-965): the same transport and track, its segments on it, Redo above them. */
+.card.focus-card.plays {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+.focus-card.plays > .tl {
+  grid-column: 1;
+  grid-row: 2;
+}
+.focus-card.plays > .image-controls {
+  grid-row: 3;
+}
+.tl-take .tl-bar .continues {
+  overflow: hidden;
+  color: var(--mute);
+  font-size: var(--body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tl-spans {
+  height: 56px;
+}
+.tl-span {
+  height: 56px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  color: var(--ink);
+  font: 600 var(--body) / 1 var(--mono);
+  cursor: pointer;
+  animation: none;
+}
+.tl-span.on {
+  background: color-mix(in srgb, var(--ember) 30%, var(--card2));
+}
 
 /* The player: the cut filling the frame, center-cropped as its film is. */
 .focus-image-transform > .tl-player {

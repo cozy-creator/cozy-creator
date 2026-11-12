@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import type { CSSProperties } from "react"
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from "react"
 import type { Pickup } from "../api/calcifer"
 import { machinesQuery, runResultQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
@@ -11,6 +11,7 @@ import { orbitOf } from "./Orbit"
 import { cutClock, FPS, framesIn, pickupAt, segmentAt, segmentsOf, segmentWords } from "./ranges"
 import { makes, type Shown, shownOf } from "./shown"
 import { rowsIn } from "./text"
+import { Playhead, Ruler, Transport } from "./timeline/Player"
 
 /** Where each of a take's segments after the first starts, in frames: `seams` in the result of the run that made it (se-130). None
  *  for a take its tool didn't say them of. */
@@ -31,65 +32,99 @@ function useHeld(): Set<string> | null {
 /** A take's mention without its brackets, as the store reads one. */
 export const bare = (take: string) => take.replace(/^<|>$/g, "")
 
-/** Under a video looked at in Focus (Paul, 11-12): its take's segments as blocks, the one the player is in marked, and Redo from there.
- *  Only whole segments are redone, each continuing from the frames before it, so every later one goes again too. Segment 1 offers no
- *  redo: that's a new take. A take its tool said no seams of shows none. */
+/** Under a video looked at in Focus: the one transport every video has (cl-965). */
+export function VideoTransport({ name, view }: { name: string; view: ElementView }) {
+  const store = useCanvasStore()
+  const shown = shownOf(view)
+  if (shown?.field !== "video" || !shown.duration_ms || orbitOf(shown)) return null
+  const fps = shown.fps ?? FPS
+  return <Transport playback={store.playbackOf(name, fps)} frames={framesIn(shown.duration_ms, fps)} fps={fps} />
+}
+
+/** Its track (Paul, 11-12; cl-965): the take's segments as spans on the time ruler every video has, the one the playhead is in marked,
+ *  and Redo from there. Only whole segments are redone, each continuing from the frames before it, so every later one goes again too.
+ *  Segment 1 offers no redo: that's a new take. A take its tool said no seams of is one span. Above it, what the take went on from. */
 export function Segments({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const shown = shownOf(view)
   const seams = useSeams(shown?.run)
+  const fps = shown?.fps ?? FPS
+  const playback = store.playbackOf(name, fps)
+  const frame = useSignal(playback.frame)
+  const [room, setRoom] = useState(0)
+  // Its width, measured whenever it's drawn: the track fits it.
+  const watching = useRef<ResizeObserver | null>(null)
+  const scroller = useCallback((held: HTMLDivElement | null) => {
+    watching.current?.disconnect()
+    watching.current = null
+    if (!held) return
+    const watch = new ResizeObserver(() => setRoom(held.clientWidth))
+    watch.observe(held)
+    watching.current = watch
+    setRoom(held.clientWidth)
+  }, [])
+  if (!makes(view) && !view.asset) return null
+  if (shown?.field !== "video" || shown.number === undefined || orbitOf(shown)) return null
   const pickup = tools.get(view.asset?.tool ?? "")?.pickup
-  if (!makes(view) || shown?.field !== "video" || shown.number === undefined || orbitOf(shown)) return null
   // What this take went on from: another box's take, or its own from a seam.
   const made: Pickup | null | undefined = view.asset?.prefixes?.find((version) => version.number === shown.number)?.pickup
   const of = made ? store.mentionOf(bare(made.take), name) : null
   const own = of?.name === store.resolveName(name)
-  const from = made && of ? (
-    <span className="continues muted" title={made.take}>
-      {own ? `Redone from ${cutClock(made.out_frame / (shown.fps ?? FPS))}` : `Continues <${of.name}.${of.number}> from ${cutClock(made.out_frame / (shown.fps ?? FPS))}`}
-    </span>
-  ) : null
-  // Its blocks wait for its length, which Calcifer measures once the file is here.
-  if (!pickup || !seams || !shown.duration_ms) return from
-  const fps = shown.fps ?? FPS
-  const last = framesIn(shown.duration_ms, fps)
-  const blocks = segmentsOf(seams, last)
-  const at = Math.min(blocks.length - 1, segmentAt(Math.round((view.scrub ?? 0) * fps), seams))
-  const go = (frame: number) => {
-    store.patch(name, { scrub: frame / fps })
-    store.seek(name, frame / fps)
+  const last = shown.duration_ms ? framesIn(shown.duration_ms, fps) : 0
+  const blocks = last ? segmentsOf(pickup && seams ? seams : [], last) : []
+  const at = blocks.length ? Math.min(blocks.length - 1, segmentAt(frame, pickup && seams ? seams : [])) : 0
+  const scale = last && room ? room / last : 0
+  const scrub = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!scale || event.button !== 0 || (event.target as Element).closest("button")) return
+    const box = event.currentTarget.getBoundingClientRect()
+    playback.seek(Math.round(Math.max(0, Math.min(last - 1, (event.clientX - box.left) / scale))))
   }
-  const kept = segmentWords(1, at)
   return (
-    <div className="segments" role="group" aria-label="Segments">
-      {from}
-      <div className="segment-blocks">
-        {blocks.map(([start, end], i) => (
+    <div className="tl tl-take nodrag nopan nowheel" aria-label="Timeline">
+      <div className="tl-bar" role="toolbar" aria-label="Its segments">
+        {made && of && (
+          <span className="continues" title={made.take}>
+            {own ? `Redone from ${cutClock(made.out_frame / fps)}` : `Continues <${of.name}.${of.number}> from ${cutClock(made.out_frame / fps)}`}
+          </span>
+        )}
+        <span className="sp" />
+        {pickup && seams && at > 0 && (
           <button
-            key={start}
             type="button"
-            className={`segment nodrag nopan ${i === at ? "here" : ""}`}
-            style={{ flexGrow: end - start }}
-            aria-pressed={i === at}
-            aria-label={`Segment ${i + 1}, ${cutClock(start / fps)} to ${cutClock(end / fps)}`}
-            title={`Segment ${i + 1}: ${cutClock(start / fps)} to ${cutClock(end / fps)}`}
-            onClick={() => go(start)}
+            className="tb redo-segment"
+            title={`Pick up from ${cutClock(blocks[at][0] / fps)}: keep ${segmentWords(1, at)} as ${at > 1 ? "they are" : "it is"} and render the rest again`}
+            onClick={() => void store.beginVideoPickup(name, blocks[at][0])}
           >
-            {i + 1}
+            Redo {segmentWords(at + 1, blocks.length)}
           </button>
-        ))}
+        )}
       </div>
-      {at > 0 && (
-        <button
-          type="button"
-          className="tb redo-segment nodrag nopan"
-          title={`Pick up from ${cutClock(blocks[at][0] / fps)}: keep ${kept} as ${at > 1 ? "they are" : "it is"} and render the rest again`}
-          onClick={() => void store.beginVideoPickup(name, blocks[at][0])}
-        >
-          Redo {segmentWords(at + 1, blocks.length)}
-        </button>
-      )}
+      <div ref={scroller} className="tl-scroll">
+        <div className="tl-track" style={{ width: room }}>
+          <div className="tl-rail" onPointerDown={scrub}>
+            {scale > 0 && <Ruler frames={last} scale={scale} width={room} fps={fps} from={0} to={room} />}
+          </div>
+          <div className="tl-clips tl-spans" onPointerDown={scrub}>
+            {scale > 0 &&
+              blocks.map(([start, end], i) => (
+                <button
+                  key={start}
+                  type="button"
+                  className={`tl-clip tl-span segment ${i === at ? "on here" : ""}`}
+                  style={{ width: (end - start) * scale, transform: `translateX(${start * scale}px)` }}
+                  aria-pressed={i === at}
+                  aria-label={`Segment ${i + 1}, ${cutClock(start / fps)} to ${cutClock(end / fps)}`}
+                  title={`Segment ${i + 1}: ${cutClock(start / fps)} to ${cutClock(end / fps)}`}
+                  onClick={() => playback.seek(start)}
+                >
+                  {blocks.length > 1 ? i + 1 : ""}
+                </button>
+              ))}
+          </div>
+          {scale > 0 && <Playhead playback={playback} scale={scale} />}
+        </div>
+      </div>
     </div>
   )
 }

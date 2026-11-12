@@ -133,7 +133,7 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
   }} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
     <div className="focus-stack">
       <div className="focus-image-transform" style={{ width: width || "100%", height: height || "100%", transform: fitted ? `translate(${shown.x}px, ${shown.y}px) scale(${shown.scale})` : "none" }}>{children}</div>
-      {under && <div className="focus-under" style={{ width: width || "100%", paddingLeft: fitted ? Math.max(0, ZOOM_ROOM - (room.width - (width || room.width)) / 2) : 0 }}>{under}</div>}
+      {under && <div className="focus-under" style={{ width: width || "100%", paddingLeft: zoomable ? Math.max(0, ZOOM_ROOM - (room.width - (width || room.width)) / 2) : 0 }}>{under}</div>}
     </div>
     {zoomable && <div className="focus-image-zoom" role="toolbar" aria-label="Image zoom">
       <button type="button" className="tb" aria-label="Zoom out image" disabled={camera.scale <= 1} onClick={() => zoom(0.8, true)}>−</button>

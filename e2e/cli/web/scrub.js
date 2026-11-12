@@ -135,7 +135,7 @@ const SEAM = 6;
 
   // In Focus, right under the player: its take's segments as blocks, sized by their frames. One scrubber, the player's own.
   await openBox(page, 'shot');
-  const segments = focus.locator('.focus-under .segments');
+  const segments = focus.locator('.tl-take');
   await lookAtTake(1);
   // What the page reads them from: the take's run, its file, and the tool's pickup.
   const asset = await row('shot');
@@ -146,7 +146,8 @@ const SEAM = 6;
   const widths = await blocks.evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width));
   seen.blocks = { said: await blocks.allInnerTexts(), widths };
   check('its_segments_are_blocks', JSON.stringify(seen.blocks.said) === '["1","2"]' && widths[1] > widths[0], seen.blocks);
-  check('one_scrubber_the_players_own', (await focus.locator('.video-scrub, input[type=range]').count()) === 0, await focus.locator('input[type=range]').count());
+  // One transport and track, as every video in Focus has (cl-965): one scrubber, and no controls of the browser's own.
+  check('one_transport_under_the_player', (await focus.locator('.focus-under .tl-transport').count()) === 1 && (await focus.locator('input[type=range]').count()) === 1, await focus.locator('input[type=range]').count());
 
   // The one the player is in is marked; in segment 1 there's no Redo, a new take is.
   const play = focus.locator('button[aria-label="Play"]').first();
@@ -154,6 +155,7 @@ const SEAM = 6;
   const video = focus.locator('video').first();
   await video.waitFor({ state: 'attached' });
   await until('it plays', () => video.evaluate((element) => element.readyState >= 2), Boolean);
+  check('no_controls_of_its_own', (await video.getAttribute('controls')) === null, await video.getAttribute('controls'));
   const marked = () => segments.locator('.segment.here').innerText().catch(() => '');
   const redo = segments.locator('button.redo-segment');
   const put = async (seconds) => video.evaluate((element, seconds) => { element.pause(); element.currentTime = seconds; }, seconds);
@@ -171,10 +173,11 @@ const SEAM = 6;
   await video.evaluate((element) => element.pause());
   check('a_block_chooses_its_segment', seen.chosen === 'Redo segment 2' && (await marked()) === '2', { redo: seen.chosen, marked: await marked() });
   const player = await focus.locator('.focus-image-transform > .media').first().boundingBox();
-  const row2 = await segments.boundingBox();
+  const transport = await focus.locator('.focus-under .tl-transport').boundingBox();
+  const track = await segments.boundingBox();
   const button = await redo.boundingBox();
-  seen.placed = { player, row: row2, button };
-  check('right_under_the_player', Math.abs(row2.y - (player.y + player.height)) <= 2 && Math.abs(button.x + button.width - (player.x + player.width)) <= 2, seen.placed);
+  seen.placed = { player, transport, track, button };
+  check('the_transport_right_under_the_player_its_track_under_that', Math.abs(transport.y - (player.y + player.height)) <= 4 && track.y >= transport.y + transport.height - 2 && Math.abs(button.x + button.width - (track.x + track.width)) <= 16, seen.placed);
   check('redo_is_a_readable_button', button.height >= 28, button);
   const sizes = await segments.evaluate((row) => ({ block: getComputedStyle(row.querySelector('.segment')).fontSize, body: getComputedStyle(document.querySelector('.focus-card') ?? document.body).fontSize, height: row.querySelector('.segment').getBoundingClientRect().height }));
   seen.sizes = sizes;
@@ -251,7 +254,7 @@ const SEAM = 6;
   const recorded = (await versionsOf('next'))[0]?.pickup;
   check('its_take_records_its_source', recorded?.take === '<shot.1>' && recorded?.out_frame === last, recorded);
   await focus.locator('.take[aria-label="take 1"]').click().catch(() => {});
-  const says = focus.locator('.focus-under .continues');
+  const says = focus.locator('.tl-take .continues');
   seen.source_said = await until('its source said', () => says.innerText().catch(() => ''), (text) => text.startsWith('Continues')).catch(() => says.innerText().catch(() => ''));
   check('focus_shows_its_source', seen.source_said === `Continues <shot.1> from ${clock(last / fps)}`, seen.source_said);
   await looks('continued-focus');
