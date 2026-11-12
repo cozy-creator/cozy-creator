@@ -25,7 +25,7 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::OwnedRwLockReadGuard;
 
-use crate::{api::{Api, IdempotencyKey, Refusal, parse}, project::vault};
+use crate::{api::{Api, IdempotencyKey, Refusal, parse}, hub::jobs::Job, project::vault};
 
 pub(crate) mod bind;
 pub(crate) mod clip;
@@ -72,6 +72,13 @@ pub(crate) async fn quote(
 
 /// What `ask` would rent.
 pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
+    let ask = match crate::hub::jobs::is(&ask.target) {
+        true => match Box::pin(crate::hub::jobs::quote(api, ask)).await? {
+            Job::Done(quote) => return Ok(quote),
+            Job::Call(call) => *call,
+        },
+        false => ask,
+    };
     let _access = project_access(api, ask.project.as_deref()).await?;
     let scope = match ask.project.as_deref() {
         Some(project) => {
@@ -84,9 +91,6 @@ pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<Run
 }
 
 async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuote>, Error> {
-    if crate::hub::jobs::is(&ask.target) {
-        return crate::hub::jobs::quote(api, ask).await;
-    }
     let bound = match &ask.code {
         // Local code rents with its install, which the call then follows to its machine.
         Some(code) => {
@@ -238,10 +242,15 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
 /// answers the run that makes it ready (`preparing`): its client follows that, then asks again.
 /// The files it's given join its project, so asking it again still finds them once what held them is gone.
 pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Result<Submitted, Error> {
+    // A job that plans a call (a quantization) goes on as that call, here.
+    let ask = match crate::hub::jobs::is(&ask.target) {
+        true => match Box::pin(crate::hub::jobs::request(api, key, &digest(&ask), ask)).await? {
+            Job::Done(submitted) => return Ok(submitted),
+            Job::Call(call) => *call,
+        },
+        false => ask,
+    };
     let digest = digest(&ask);
-    if crate::hub::jobs::is(&ask.target) {
-        return crate::hub::jobs::request(api, key, &digest, ask).await;
-    }
     let calcifer = &api.calcifer;
     if let Some((row, recorded)) = calcifer.store().recorded(key).map_err(store)? {
         if recorded != digest {
