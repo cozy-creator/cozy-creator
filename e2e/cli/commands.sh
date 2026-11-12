@@ -486,8 +486,8 @@ for i in 0 1 2; do
   code=0; wait "${pids[$i]}" || code=$?
   [ "$code" = 0 ] || check "uv at once: run $((i + 1)) of 3 exited $code: $(tail -c 300 "$at/$(echo a b words.py | cut -d' ' -f$((i + 1))).err")"
 done
-! grep -l uv_unavailable "$at"/*.err "$at"/*.ndjson 2> /dev/null || check "uv at once: refused uv_unavailable: $(grep -h -o '[^"]*uv_unavailable[^"]*' "$at"/* | head -1)"
-[ -x "$fetched/uv" ] || check "uv at once: Calcifer never fetched uv into $fetched"
+! grep -l uv_unavailable "$at"/*.err "$at"/*.ndjson 2> /dev/null || check "uv at once: refused uv_unavailable: $(grep -h -o '[^"]*uv_unavailable[^"]*' "$at"/*.err "$at"/*.ndjson | head -1)"
+compgen -G "$fetched/*/uv" > /dev/null || check "uv at once: Calcifer never fetched uv into $fetched"
 }
 
 local_edits() {
