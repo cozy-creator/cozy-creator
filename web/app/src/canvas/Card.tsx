@@ -457,7 +457,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
   const from = useRef<{ x: number; y: number; w: number; h: number; pixels?: { w: number; h: number }; inverse: number; owner: CanvasStore["inPlace"] } | null>(null)
   const pulled = useRef<{ w: number; h: number; shape?: string } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
-  const label = nearest ?? override ?? (dynamic ? "Auto" : defaultShape)
+  const label = nearest ?? override ?? (dynamic ? autoWords(view) : defaultShape)
   // Pulled, it snaps to the nearest ratio its tool makes: its own list, else the usual ones within its bounds; never an arbitrary A:B (Paul, 11-12).
   const shapeFor = (width: number, height: number) => {
     const allowed = ratios.length ? ratios : control ? shapesOf(control) : []
@@ -525,7 +525,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
     <>
       {badge && <span className="ratio-rest" data-output-aspect={label} title="Output aspect ratio">
         {label}
-        {hasOverride && <button type="button" className="ratio-clear nodrag nopan" aria-label={dynamic ? "Auto aspect ratio" : `Reset aspect ratio to ${defaultShape}`} title={dynamic ? "Use the reference image's aspect ratio" : `Reset to ${defaultShape}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); resetShape() }}><Icon name="close" /></button>}
+        {hasOverride && <button type="button" className="ratio-clear nodrag nopan" aria-label={dynamic ? "Auto aspect ratio" : `Reset aspect ratio to ${defaultShape}`} title={dynamic ? "Back to Auto" : `Reset to ${defaultShape}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); resetShape() }}><Icon name="close" /></button>}
       </span>}
       {nearest && !badge && (
         <div className="ratio-live">
@@ -561,6 +561,9 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
   )
 }
 
+/** Auto, as what it makes: `Auto · 9:16 from first frame` (se-128). */
+const autoWords = (view: ElementView) => (view.auto ? `Auto · ${shapeWords(view.auto)}${view.autoFrom ? ` from ${view.autoFrom}` : ""}` : "Auto")
+
 /** What a shape field makes with none set, past Auto: its default, else its first ratio, else 1:1. */
 function shapeFallback(field: ToolField): string {
   const fixedRatio = field.ratios?.find((ratio): ratio is string => typeof ratio === "string" && ratioOf(ratio) !== undefined)
@@ -575,7 +578,7 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   if (!field || view.shape) return null
   const held = store.valueOf(name, field.field)
   const fallback = shapeFallback(field)
-  if (typeof held !== "string" || !ratioOf(held)) return <span className="ratio-rest">{field.auto ? "Auto" : fallback}</span>
+  if (typeof held !== "string" || !ratioOf(held)) return <span className="ratio-rest">{field.auto ? autoWords(view) : fallback}</span>
   return (
     <span className="ratio-rest">
       {held}
@@ -599,7 +602,7 @@ function useShapeSaid(view: ElementView, name: string): string | null {
   const shown = shownOf(view)
   if (shown?.width && shown.height) return shapeWords(shown.width / shown.height)
   if (!field) return null
-  return field.auto ? "Auto" : shapeFallback(field)
+  return field.auto ? autoWords(view) : shapeFallback(field)
 }
 
 /** Under a box at rest, as Paul drew it (cl-932, 11-12): its tool and its shape; then, while it renders, cl-898's two lines with Cancel and

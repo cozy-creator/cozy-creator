@@ -191,7 +191,7 @@ function linesOf(text, name) {
     const shapeField = toolWire?.fields.find((field) => field.type === 'shape');
     const fixedRatios = (shapeField?.ratios ?? []).filter((ratio) => typeof ratio === 'string');
     const expectedShape = shapeField?.auto && fixedRatios.length !== 1 ? 'Auto' : fixedRatios.length === 1 ? fixedRatios[0] : typeof shapeField?.default === 'string' ? shapeField.default : fixedRatios[0] ?? '1:1';
-    check('a_dropped_image_tool_can_enter_edit_mode_explicitly', caretIn === true && shapeSaid === expectedShape && (await page.locator('.nm-field').count()) === 0, { caretIn, shapeSaid, expectedShape });
+    check('a_dropped_image_tool_can_enter_edit_mode_explicitly', caretIn === true && (shapeSaid === expectedShape || (expectedShape === 'Auto' && Boolean(shapeSaid?.startsWith('Auto · ')))) && (await page.locator('.nm-field').count()) === 0, { caretIn, shapeSaid, expectedShape });
   } else seen.dropped_kind = kind;
   seen.tool_dragged = made.name;
   const word = (name) => name?.replace(/_\d+$/, '');

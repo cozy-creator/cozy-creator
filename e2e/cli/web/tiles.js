@@ -71,7 +71,7 @@ async function died(why) {
 
 /** A tool as the page names it (shown.ts toolName). */
 const named = (tool) => (tool.package_title && tool.package_title !== tool.label ? `${tool.package_title} · ${tool.label}` : tool.label);
-const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
+const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
 
 (async () => {
   const base = calcifer();
