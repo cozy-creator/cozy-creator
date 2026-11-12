@@ -162,7 +162,10 @@ function Slot({ name, slot, restricted, showNsfw, legacy }: { name: string; slot
   const alternatives = restricted ? [] : found.filter((model) => compatible(model, slot.family, kind) && model.model !== identityOf(selected))
   const adapters = adaptersOf(held.lora)
   const availableLoras = kind ? found.filter((model) => compatible(model, slot.family, "lora") && !adapters.some((adapter) => identityOf(String(entryOf(adapter).ref ?? "")) === model.model)) : []
-  const clearBase = () => changeSlot(store, name, slot.slot, ({ ref: _, ...rest }) => rest)
+  const clearBase = () => changeSlot(store, name, slot.slot, ({ ref: _, ...rest }) => {
+    if (restricted) delete rest.lora
+    return rest
+  })
   return <section className="model-picker-slot" data-model-slot={slot.slot}>
     <div className="model-picker-model-row">
       <label className="model-picker-field">
@@ -177,8 +180,8 @@ function Slot({ name, slot, restricted, showNsfw, legacy }: { name: string; slot
       {(selected || malformed) && <button type="button" className="tb model-picker-reset" title={slot.default ? "Use tool default" : "Remove base model"} onClick={clearBase}>{slot.default ? "Reset" : "Remove"}</button>}
     </div>
     {restricted ? <>
-      <p className="muted">No other verified Turbo LoRAs are available.</p>
-      {adapters.length > 0 && <button type="button" className="tb model-picker-reset" onClick={() => changeSlot(store, name, slot.slot, ({ lora: _, ...rest }) => rest)}>Remove unsupported LoRAs</button>}
+      <p className="muted">Only the default Turbo LoRA is verified.</p>
+      {adapters.length > 0 && <button type="button" className="tb model-picker-reset" onClick={clearBase}>Reset Turbo LoRA</button>}
     </> : <>
     <input type="search" className="field model-picker-search" aria-label={`Search models for ${slot.slot}`} placeholder="Find a model or LoRA" value={typed} disabled={!slot.family} onChange={(event) => { setTyped(event.target.value); setLimit(50) }} />
     {!slot.family && <p className="muted">Compatible choices aren't available for this slot.</p>}
