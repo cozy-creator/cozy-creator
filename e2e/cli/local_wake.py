@@ -115,7 +115,10 @@ class Proof:
         self.root = Path(text(configured)).resolve() if configured else self.home / "machine"
         if not self.root.is_relative_to(self.home.resolve()):
             raise ValueError("the fixture machine root must belong to this fresh runner's Cozy home")
-        self.log = self.home / "calcifer/calcifer.log"
+        # Calcifer's closed health log names each start of this computer's machine (`starting … pid=`).
+        self.log = self.home / "calcifer/health.log"
+        if not self.log.is_file():
+            raise ValueError("Calcifer keeps no health log to read its machine starts from")
         self.start_log = self.root / "var/lib/cozy/machine/start.log"
         self.ready = self.root / "var/lib/cozy/tensord/api-ready.json"
         self.failures: list[Json] = []

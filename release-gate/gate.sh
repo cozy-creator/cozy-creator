@@ -144,6 +144,8 @@ end_it() {
     save_machine_logs
     "$CLI" --json machine show "$M" >machine-end.json 2>/dev/null
     if "$CLI" logs --help >/dev/null 2>&1; then "$CLI" logs calcifer; else "$CLI" machine logs local calcifer -n 0; fi >calcifer.log 2>&1
+    # Every run this gate's Calcifer made, by id (its health log names none).
+    "$CLI" --json run ls --all --limit 0 >runs.json 2>/dev/null || rm -f runs.json
   fi
   [ -z "$ON" ] || { M=; return; }
   [ -n "$RID" ] || return
