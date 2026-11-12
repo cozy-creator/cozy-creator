@@ -318,6 +318,8 @@ case $SHARD in
   web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
   # Files dropped: twenty pictures at once, each drawn once where and as it stays (cl-918), and Place's drop, chooser, rename and moves.
   web-dropped) export DB_WEB="dropped place"; parts="tools_read db_existing_web logs" ;;
+  # A deleted box gone from the project, its files after the undo window (cl-919): its own runner, as it waits out the window twice.
+  web-deleted) export DB_WEB=deleted; parts="tools_read db_existing_web logs" ;;
   web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
   web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
   web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
