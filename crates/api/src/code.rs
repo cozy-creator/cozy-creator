@@ -106,7 +106,7 @@ pub fn stage(path: &Path, memo: Option<&Path>) -> Result<Staged, Error> {
 }
 
 /// The files a package's source is, relative to `root`, sorted: what publication and local code send.
-/// Common credential names, keys, weights, bytecode and symlinks stay out and are said in `left`.
+/// Cozy-owned project storage, credentials, keys, weights, bytecode and symlinks stay out and are said in `left`.
 /// This is a filename filter, not secret detection; other runtime resources remain included.
 pub fn source_files(root: &Path, left: &mut Vec<String>) -> Result<Vec<PathBuf>, Error> {
     let mut files = vec![];
@@ -120,16 +120,38 @@ fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>, left: &mut Vec<String
     const SKIP_AT_ROOT: &str = ".venv venv node_modules .idea .vscode build dist";
     const SECRET_DIRS: &str = ".aws .ssh .direnv credentials secrets";
     const SECRET_FILES: &str = ".netrc .npmrc .pypirc .envrc credentials.json service-account.json id_ed25519";
+    const PROJECT_DIRS: &str = ".cozy .vault-machine .vault-calcifer .vault-inputs .vault-journal project.vault.data";
+    const PROJECT_FILES: &str = ".vault-local-execution.json .cozy-apfs-v1 project.vault.keys.json project.vault.journal-pending";
     const REFUSED: &str = ".pyc .pyo .pem .key .p12 .pfx .jks .pickle .pkl .pt .ckpt .safetensors .onnx .gguf";
     let listed = |list: &str, name: &str| list.split(' ').any(|item| item == name);
     let unreadable = |e: std::io::Error| refuse("project_unreadable", e);
-    for entry in fs::read_dir(root.join(rel)).map_err(unreadable)? {
+    let directory = root.join(rel);
+    let project = directory.join("project.db").is_file()
+        || directory.join("project.vault.keys.json").is_file()
+        || directory.join(crate::machine::LOCAL_PRIVATE_MARKER).is_file()
+        || (directory.join("project.yaml").is_file() && directory.join("project.lock").is_file());
+    for entry in fs::read_dir(&directory).map_err(unreadable)? {
         let entry = entry.map_err(unreadable)?;
         let name = entry.file_name().to_string_lossy().to_lowercase();
         let path = rel.join(entry.file_name());
         let kind = entry.file_type().map_err(unreadable)?;
         if kind.is_symlink() {
             left.push(format!("{} (a symlink)", path.display()));
+            continue;
+        }
+        let project_storage = if kind.is_dir() {
+            listed(PROJECT_DIRS, &name)
+                || name.starts_with(".cozy-vault-stage-")
+                || name.starts_with(".cozy-project-source-")
+        } else {
+            listed(PROJECT_FILES, &name)
+                || name == "project.db" || name.starts_with("project.db-") || name.starts_with("project.db.")
+                || (name.starts_with(".cozy-vault-") && name.ends_with(".transaction.json"))
+                || (project && (name == "project.yaml" || name == "project.lock"
+                    || name.starts_with("project.yaml.v") || name.starts_with("project.lock.v")))
+        };
+        if project_storage {
+            left.push(format!("{} (project storage)", path.display()));
             continue;
         }
         if kind.is_dir() {
