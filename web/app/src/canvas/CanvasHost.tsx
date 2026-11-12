@@ -10,7 +10,7 @@ import {
   useStoreApi,
   type Viewport,
 } from "@xyflow/react"
-import { type ChangeEvent, type DragEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type ChangeEvent, type CSSProperties, type DragEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
@@ -910,9 +910,9 @@ function Canvas({
   // A selected box's ring keeps its width on screen: the zoom in steps of two, so a zoom sets it only as it crosses one.
   const unzoom = useStore((state) => 2 ** -Math.ceil(Math.log2(state.transform[2] || 1)))
   useLayoutEffect(() => stage.current?.style.setProperty("--unzoom", String(unzoom)), [unzoom])
-  // Far out a box's name keeps its size on screen (cl-958): the zoom's inverse in quarter steps, so it's set only as a zoom crosses one.
+  // Far out a box's name keeps its size on screen (cl-958): the zoom's inverse in quarter steps, so it's set only as a zoom crosses one. On
+  // the boxes' layer, not the stage: a custom property changed over the sheet restyles it whole, and it's painted again (cl-895).
   const nameZoom = useStore((state) => 2 ** Math.max(0, Math.ceil(-Math.log2(state.transform[2] || 1) * 4) / 4))
-  useLayoutEffect(() => stage.current?.style.setProperty("--name-zoom", String(nameZoom)), [nameZoom])
   const flowStore = useStoreApi<ElementNode, Edge>()
   // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
   useLayoutEffect(() => {
@@ -995,6 +995,7 @@ function Canvas({
       >
         <Sheet />
         <ReactFlow<ElementNode, Edge>
+          style={{ "--name-zoom": String(nameZoom) } as CSSProperties}
           defaultNodes={[]}
           nodeTypes={nodeTypes}
           defaultViewport={saved ?? undefined}
