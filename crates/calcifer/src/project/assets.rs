@@ -303,16 +303,17 @@ fn authored_versions(project: &Project, doc: &Doc, lock: &folder::Lock, stand: &
     for reading in walker.readings.values_mut() {
         if found.len() == wanted.len() { break }
         let Some(at) = reading.doc.find(&doc.assets[i].name) else { continue };
-        let source = &reading.doc.assets[at];
-        if source.reads.iter().map(|read| read.asset).chain(source.inlined.iter().copied())
-            .any(|read| doc.find(&reading.doc.assets[read].name).is_none()) {
-            // A cached document from before a rename cannot author resolvable
-            // references now. Prefer an unknown snapshot to obsolete names.
-            continue;
-        }
         reading.ensure(at, lock);
         if let Some(key) = reading.done[at].inputs.as_ref().filter(|key| wanted.contains(key.as_str())) {
-            found.entry(key.clone()).or_insert_with(|| reading.doc.authoring_fields(at));
+            found.entry(key.clone()).or_insert_with(|| {
+                let mut fields = reading.doc.authoring_fields(at);
+                for (from, to) in &lock.walk.renames {
+                    if doc.find(from).is_none() && doc.find(to).is_some() {
+                        fields.values_mut().for_each(|value| super::written::mentions_renamed(value, &|name| super::graph::mention_moved(name, from, to)));
+                    }
+                }
+                fields
+            });
         }
     }
     found
