@@ -892,9 +892,11 @@ export class CanvasStore {
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) Object.assign(change, { slid: newest, glimpse: undefined })
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
-          // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at.
+          // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at. At rest, an approved box
+          // goes on showing what's approved, and what lands beside it is unseen (cl-928).
           const seen = watched({ ...view, asset })
-          if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
+          if (!view.here && asset.pinned && (view.watchFrom !== undefined || view.watchRun !== undefined) && !asset.making?.length) Object.assign(change, { watchFrom: undefined, watchRun: undefined })
+          else if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Bind a queued preview to its run and retain it through the gap between execution and the version landing.
           else if (seen?.run !== undefined) {
             const status = this.runs.get(seen.run)?.status
@@ -1771,6 +1773,13 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const edit = this.step(`Unapproved ${key}`, [key])
     this.over(key, { pinned: false, approved: undefined }, (served, write) => this.client.unpin(this.projectId!, served, write), "unapprove", edit)
+  }
+
+  /** Take `number` of `name` was looked at: its dot goes, in this person's own state, never the project's (cl-928). */
+  markSeen(name: string, number: number) {
+    const asset = this.get(name)?.asset
+    if (!asset?.unseen?.includes(number)) return
+    this.over(name, { unseen: asset.unseen.filter((held) => held !== number) }, (served, write) => this.client.seen(this.projectId!, served, number, write).then(() => ({})), `mark ${asset.noun} ${number} seen on`, undefined)
   }
 
   /** Stops one of its runs, gone from the box at once, and its others go on. */

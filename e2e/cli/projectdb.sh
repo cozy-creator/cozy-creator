@@ -78,6 +78,9 @@ done
 # A new take never changes what's approved (cl-908): the page's double tap, its Render, a mention's real run (web/approvals.js).
 approvals() { DB_WEB=approvals db_existing_web; }
 
+# A rendering box at rest breathes around its edge; a take landing beside an approved one is unseen until looked at (cl-928): web/newtakes.js.
+newtakes() { DB_WEB=newtakes db_existing_web; }
+
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return
 [ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }

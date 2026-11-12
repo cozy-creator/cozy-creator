@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
+import { useRef } from "react"
 import type { Machine, Operation, Run } from "../api/calcifer"
 import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
@@ -127,6 +128,17 @@ export function faceOf(seen: Seen): Face {
   return face("work", run.machine_state === "preparing" ? "Preparing" : "Starting")
 }
 
+/** How far the whole job is, by line 1's numbers: what's passed of what it has taken and has left. None until there's an estimate; it
+ *  never goes back while it's the same run. */
+function useWhole(run: Run | undefined, since: number | undefined, left: number | undefined): number | undefined {
+  const held = useRef<{ run: number; fraction: number } | null>(null)
+  if (!run || since === undefined || left === undefined) return undefined
+  const fraction = Math.min(0.99, since / Math.max(1, since + left))
+  const was = held.current?.run === run.number ? held.current.fraction : 0
+  held.current = { run: run.number, fraction: Math.max(was, fraction) }
+  return held.current.fraction
+}
+
 /** A render on its way, two plain lines (Paul, 11-12): its machine and time, then what it's doing with how far and how fast; Cancel
  *  beside them. On the canvas at its box's text size; in Focus, between its name and its picture, the same two lines. */
 export function RunFace({ view, name, number, above = false }: { view: ElementView; name: string; number?: number; full?: boolean; above?: boolean }) {
@@ -154,6 +166,9 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const left = run ? leftOf(run) : undefined
   const time = since !== undefined && left != null ? ` - ${short(since)} / ${short(since + left)}` : ""
   const cancel = !["canceling", "failed", "result"].includes(face.phase)
+  // At rest, a meter of the whole job along its box's bottom edge, only for a true fraction (cl-928); Focus has the lines alone.
+  const whole = useWhole(run, since, left ?? undefined)
+  const meter = !above && !["canceling", "failed"].includes(face.phase) ? whole : undefined
   return (
     <div className={`prog run-face ${above ? "above" : "lines"} ${face.phase}`} data-phase={face.phase}>
       <p className="face-machine">{`${face.machine}${time}`}</p>
@@ -174,6 +189,11 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
           </button>
         )}
       </p>
+      {meter !== undefined && (
+        <span className="face-meter" role="progressbar" aria-label="The whole job" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(meter * 100)}>
+          <i style={{ transform: `scaleX(${meter})` }} />
+        </span>
+      )}
     </div>
   )
 }

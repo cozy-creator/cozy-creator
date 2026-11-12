@@ -65,6 +65,12 @@ function dotOf(view: ElementView): string {
   return DOTS[asset?.standing ?? "current"] ?? "s-missing"
 }
 
+/** Takes that landed beside an approved one and haven't been looked at (cl-928): a green dot left of its name. */
+function UnseenDot({ count, noun }: { count: number; noun: string }) {
+  const said = `${count} new ${noun}${count === 1 ? "" : "s"} you haven't looked at`
+  return <span className="unseen-dot" role="img" aria-label={said} title={said} />
+}
+
 /** A button on a card does its one thing, and a field takes the click: neither selects it. */
 export function buttonsOnly(event: MouseEvent) {
   if ((event.target as Element).closest("button, input, select, .mention-text")) event.stopPropagation()
@@ -198,7 +204,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             className={`take ${shown?.number === version.number ? "on" : ""} ${asset.pinned && version.number === asset.approved ? "approved" : ""} ${view.slid === version.number ? "fresh" : ""}`}
             aria-label={`${asset.noun} ${version.number}`}
             aria-pressed={shown?.number === version.number}
-            title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
+            title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : "", asset.unseen?.includes(version.number) ? "not looked at yet" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
             style={asset.kind === "image" ? { height: 100, width: Math.min(220, 100 * (version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5)), aspectRatio: "auto" } : undefined}
             onClick={() => pick(version.number)}
@@ -213,6 +219,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             {version.main && !version.main.absent ? (
               <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />
             ) : null}
+            {asset.unseen?.includes(version.number) && <span className="unseen-dot take-unseen" role="img" aria-label="Not looked at yet" />}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
@@ -718,6 +725,12 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       if (width) card.style.setProperty("width", width, priority)
     }
   }, [here, focused, name, store, flow, owner])
+  // What it shows has been looked at: its dot goes (cl-928).
+  const showing = view ? shownOf(view)?.number : undefined
+  const unseen = view?.asset?.unseen
+  useEffect(() => {
+    if (showing !== undefined && unseen?.includes(showing)) store.markSeen(name, showing)
+  }, [store, name, showing, unseen])
   if (!view) return null
 
   const asset = view.asset
@@ -736,6 +749,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   // Looking at a take, nothing of its tool: its warnings and state are the next take's too.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media") && !looking
+  // At rest, a render on its way breathes around its edge (cl-928): its face says how far, in it.
+  const rendering = !here && !focused && Boolean(asset?.standing === "making" || view.queued || view.asked !== undefined)
   const firstImage = versions.find((version) => version.number === 1)?.main ?? versions[0]?.main
   const originalAspect = firstImage?.width && firstImage.height ? firstImage.width / firstImage.height : aspectOf(view)
   const imageHeight = width / originalAspect
@@ -746,7 +761,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   return (
     <div
       ref={self}
-      className={`card ${focused ? "focus-card" : ""} ${parameterTool ? "focus-parameter-tool focus-new-video" : ""} ${hasFocusMedia ? "has-focus-media" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${focused ? "focus-card" : ""} ${parameterTool ? "focus-parameter-tool focus-new-video" : ""} ${hasFocusMedia ? "has-focus-media" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
       style={style}
@@ -757,6 +772,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
     >
       {!focused && (
       <div className="head">
+        {view.draft === undefined && unseen?.length ? <UnseenDot count={unseen.length} noun={asset?.noun ?? "take"} /> : null}
         {view.draft !== undefined ? (
           <NameField name={name} draft={view.draft} onCancel={cancel} />
         ) : (
@@ -829,6 +845,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           {asset && !view.placing && !lite && (!focused || view.hereWords) && <Corner name={name} view={view} width={width} focused={focused} />}
         </Media>
       )}</FocusFrame>
+      {rendering && <span className="render-wave" aria-hidden="true" />}
       {here && !lite && asset && (asset.kind === "image" || (asset.kind === "video" && !asset.timeline && !editing)) && !view.placing && <ImageVersions name={name} view={view} width={width} />}
       {!lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}

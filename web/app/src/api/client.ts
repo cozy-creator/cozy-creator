@@ -537,6 +537,12 @@ export class Client {
     return this.write("PATCH", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { metadata }, undefined, write)
   }
 
+  /** This person looked at it: it leaves the box's `unseen`, in Calcifer's own state, never the project's (cl-928). No key: it's no edit
+   *  of the project, and saying it twice is saying it once. */
+  async seen(id: string, name: string, number: number, write: Write = {}): Promise<void> {
+    await this.send(`${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}/seen`, { method: "POST" }, { once: write.once })
+  }
+
   /** The project's history, newest first. */
   history(id: string, limit: number): Promise<History> {
     return this.json(`${project(id)}/history?limit=${limit}`)

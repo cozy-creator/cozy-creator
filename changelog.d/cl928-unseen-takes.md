@@ -1,0 +1,3 @@
+New takes you haven't looked at have a green dot. A take that lands on a box with an approved one leaves the box showing the approved take, with a green dot left of its name and on the new take in its list when open; looking at the take clears both. Each person has their own (`state.db`, never the project), and a reload keeps them. `Asset.unseen` lists them and `POST /v1/projects/{id}/assets/{name}/versions/{number}/seen` clears one.
+
+A box rendering on the canvas breathes around its edge, outside it, and once there's an estimate a thin meter of the whole job runs along its bottom edge, the same numbers as its first line.
