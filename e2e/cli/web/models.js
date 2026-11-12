@@ -44,6 +44,17 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+  /** The theme set as a person sets it, by the menu's Dark or Paper (Shell.tsx ThemeSwitch): the canvas on its dark sheet, not paper in dark
+   *  colours (se-132). Clicked in the page, as no press outside closes what's open. */
+  const theme = async (dark) => {
+    const set = await page.evaluate((dark) => {
+      const now = () => (document.documentElement.dataset.theme === 'dark') === dark;
+      if (!now()) [...document.querySelectorAll('.main-menu nav button')].find((button) => button.textContent.trim() === (dark ? 'Dark' : 'Paper'))?.click();
+      return now();
+    }, dark);
+    if (!set) throw new Error(`the menu set no ${dark ? 'dark' : 'paper'} theme`);
+    await page.waitForTimeout(300);
+  };
   // What Calcifer refused, and why: a write the page keeps as a draft says so only in a note.
   const refused = [];
   page.on('response', (answer) => {
@@ -242,14 +253,12 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(300);
   await shot('one-model-light');
-  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
-  await page.waitForTimeout(300);
+  await theme(true);
   await shot('one-model-dark');
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   await picker.waitFor({ state: 'detached' });
   await shot('lora-strength-dark');
-  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
-  await page.waitForTimeout(300);
+  await theme(false);
   await shot('lora-strength-light');
   await page.setViewportSize({ width: 1600, height: 1100 });
   // cl-968: a LoRA added with trigger words puts them after the box's prompt once; any prompt of the box that says them draws them in a token
@@ -295,13 +304,12 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   // Shown at 1440×900 and 1920×1080, light and dark (Paul's UI rule).
   for (const [width, height] of [[1440, 900], [1920, 1080]]) {
     await page.setViewportSize({ width, height });
-    for (const theme of ['light', 'dark']) {
-      await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme === 'dark');
-      await page.waitForTimeout(300);
-      await shot(`triggers-${width}x${height}-${theme}`);
+    for (const look of ['light', 'dark']) {
+      await theme(look === 'dark');
+      await shot(`triggers-${width}x${height}-${look}`);
     }
   }
-  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await theme(false);
   await page.setViewportSize({ width: 1600, height: 1100 });
   // The LoRA removed: its words stay as written, no longer drawn.
   await button.click();
@@ -420,16 +428,19 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
       const chips = await until('<still> struck through', chipsOf, (now) => now.some((chip) => chip.mention === 'still' && chip.unused)).catch(chipsOf);
       seen.sdxl_picture = { left, chips };
       check('a_picture_in_sdxls_words_is_crossed_out', left.some((one) => one.mention === 'still' && one.at === 'instructions' && /can't use images$/.test(one.why)) && chips.some((chip) => chip.mention === 'still' && chip.unused && chip.struck), seen.sdxl_picture);
+      // And it sets no shape: Auto is SDXL's own, not "from <still>".
+      const shapeOf = () => page.locator('.card.here[data-asset="sdxl"] [data-output-aspect]').first().getAttribute('data-output-aspect').catch(() => null);
+      seen.sdxl_shape = await until('the shape from no crossed-out picture', shapeOf, (label) => label === 'Auto · 1:1').catch(shapeOf);
+      check('a_crossed_out_picture_sets_no_shape', seen.sdxl_shape === 'Auto · 1:1', seen.sdxl_shape);
     }
     for (const [width, height] of [[1440, 900], [1920, 1080]]) {
       await page.setViewportSize({ width, height });
-      for (const theme of ['light', 'dark']) {
-        await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme === 'dark');
-        await page.waitForTimeout(300);
-        await shot(`prompt-${box.name}-${width}x${height}-${theme}`);
+      for (const look of ['light', 'dark']) {
+        await theme(look === 'dark');
+        await shot(`prompt-${box.name}-${width}x${height}-${look}`);
       }
     }
-    await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+    await theme(false);
     await page.setViewportSize({ width: 1600, height: 1100 });
     await closeBox(page);
   }
@@ -456,13 +467,16 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   seen.negative_first = { order: reordered.at(-1), instructions: negFields.instructions, negative_prompt: negFields.negative_prompt };
   check('a_negative_prompt_written_first_never_takes_the_trigger', /^negative_prompt:words,/.test(String(reordered.at(-1))) && negFields.instructions === 'A quiet pier, ink_wash' && !negFields.negative_prompt, seen.negative_first);
   await openBox(page, 'sdxl_neg');
-  for (const theme of ['light', 'dark']) {
+  // Its frame holds its main text, the same rule as the trigger's: `instructions`, not the negative prompt written first.
+  const framed = await page.locator('.card.here[data-asset="sdxl_neg"] .in-frame [data-field]').evaluateAll((els) => els.map((el) => el.dataset.field));
+  seen.negative_first_frame = framed;
+  check('a_negative_prompt_written_first_is_not_the_frames_text', framed.includes('instructions') && !framed.includes('negative_prompt'), framed);
+  for (const look of ['light', 'dark']) {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme === 'dark');
-    await page.waitForTimeout(300);
-    await shot(`prompt-negative-first-1440x900-${theme}`);
+    await theme(look === 'dark');
+    await shot(`prompt-negative-first-1440x900-${look}`);
   }
-  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await theme(false);
   await page.setViewportSize({ width: 1600, height: 1100 });
   await closeBox(page);
   await page.unroute(/\/v1\/tools\?/);

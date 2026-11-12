@@ -31,12 +31,23 @@ function fromFields(fields: Record<string, unknown>): ToolField[] {
     if (typeof value === "string") return [{ field, type: "words", label: fieldWords(field) }]
     return []
   })
-  // What says the most is its prompt, whatever the alphabet makes of the fields; other words are only words.
-  const said = (field: ToolField) => (field.type === "words" ? String(fields[field.field]).length : -1)
+  // What says the most is its prompt, whatever the alphabet makes of the fields, unless it's a negative prompt; other words are only words.
+  const said = (field: ToolField) => (field.type === "words" && !negative(field) ? String(fields[field.field]).length : -1)
   const [first] = [...held].sort((a, b) => said(b) - said(a))
   if (first?.type === "words") return [{ ...first, type: "prompt" }, ...held.filter((field) => field !== first)]
   if (!held.some((field) => field.type === "group")) return [{ field: "instructions", type: "prompt", label: "Instructions" }, ...held]
   return held
+}
+
+// Nothing marks a negative prompt yet (the SDK's `NegativePrompt` is plain text), so its name stands in for the mark.
+const NEGATIVE = /^neg(ative)?(_|$)/i
+const negative = (field: ToolField) => NEGATIVE.test(field.field)
+
+/** A box's main text, where it's written and a LoRA's triggers go: its first prompt, else its first words (SDXL's and Ideogram 4's `str`);
+ *  never a negative prompt. */
+export function mainText(fields: ToolField[]): ToolField | undefined {
+  const own = fields.filter((field) => !negative(field))
+  return own.find((field) => field.type === "prompt") ?? own.find((field) => field.type === "words")
 }
 
 /** The platform's words on any box, whatever made it: no tool asks for them. */
