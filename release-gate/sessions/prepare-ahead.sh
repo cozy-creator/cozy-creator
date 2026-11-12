@@ -41,7 +41,9 @@ tail -4 "$OUT/render.txt" | cut -c1-300 | sed 's/^/    /' >> "$R"
 for n in $(jq -r --argjson a "$ASK" '.runs[]? | select(.created_at_ms >= $a - 60000) | .number' "$OUT/runs.json"); do
   (cd "$RUN_PROJECT" && cozy run watch "$n" --once --json --full) > "$OUT/run-$n.json" 2>&1
 done
-cozy machine logs "$NAME" --since 2h > "$OUT/tensord.log" 2>&1 || say "the pod's TensorD log wasn't read"
+# The whole log since the rental began (the default is its last 200 lines), and the transfer log beside it.
+cozy machine logs "$NAME" --lines 0 --since 2h > "$OUT/tensord.log" 2>&1 || say "the pod's TensorD log wasn't read"
+cozy machine logs "$NAME" tensorfs --lines 0 --since 2h > "$OUT/tensorfs.log" 2>&1 || true
 cozy machine show "$NAME" --json > "$OUT/show-after.json" 2>&1
 tail -n 20000 "$HOME/.cozy/calcifer/calcifer.log" > "$OUT/calcifer.log" 2> /dev/null || true
 for a in pier walk; do run_page asset "$a" > "$OUT/asset-$a.json" 2>&1; done
