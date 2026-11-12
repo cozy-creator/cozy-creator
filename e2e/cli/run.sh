@@ -36,11 +36,11 @@ if [ "$SHARD" = containment ] || [ "$SHARD" = containment-web ]; then
   step candidates; candidates
   systemctl --user stop cozy-calcifer.service
   mkdir -p "$OUT/containment"
-  python3 - "$HOME/.cozy/bin/cozy" "$OUT/containment/ready.json" "$SHARD" <<'PY'
+  python3 - "$HOME/.cozy/bin/cozy" "$OUT/containment/ready.json" "$SHARD" "${CAND_RT:-}" "${CAND_TFS:-}" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 binary, ready = map(Path, sys.argv[1:3])
-ready.write_text(json.dumps({"ready": True, "native_execution": sys.argv[3] == "containment", "development_web": True, "sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest()}))
+ready.write_text(json.dumps({"ready": True, "native_execution": sys.argv[3] == "containment", "remote_cpu": sys.argv[3] == "containment-web", "runtime": sys.argv[4], "tensorfs": sys.argv[5], "development_web": True, "sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest()}))
 PY
   exec xvfb-run -a uv run --no-project "$here/containment/run.py" \
     --ready-file "$OUT/containment/ready.json" --out "$OUT/containment"

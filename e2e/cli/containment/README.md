@@ -1,5 +1,14 @@
 # Hosted project containment qualification
 
+The web shard also runs one fixed-public CPU request on a fresh Unix user's real
+default-home worker. It binds that worker to loopback before authorizing the public
+controller key, pins its TLS fingerprint, and explicitly selects it with `--on`.
+Origin-project input bytes, output bytes and canonical run/log rows are checked
+again after the exact remote processes retire. The remote invocation must contain
+neither local private storage nor the origin mount path/proof token. Its ordinary
+external working copy is preserved. All inspection output stays in RAM; no scan
+exclusion, alternate Cozy home, rental, raw log or payload artifact is added.
+
 This fixture is prepared for an isolated Linux hosted runner. Do not dispatch it until the
 coordinator supplies the composed candidate and explicitly marks it ready. No part of this
 fixture launches a browser or reads a real user's home on the development workstation.

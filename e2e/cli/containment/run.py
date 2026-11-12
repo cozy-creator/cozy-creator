@@ -28,6 +28,7 @@ from common import Failure, Native, Proof, Receipt, alive, birth, kill_exact, pr
 from scan import Scanner, tmpfs
 from native_execution import qualify as qualify_native
 from development import Development
+from remote_cpu import qualify as qualify_remote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from test_hub import require_test_hub
@@ -164,6 +165,9 @@ def main() -> int:
             imported = native.call("POST", base + "/imports", {"source": digest, "name": picture_asset, "exact": True, "at": {"x": 400, "y": 0, "w": 320}})
             projects.append({"folder": folder, "view": view, "id": opened["id"], "credential": credential, "marker": marker, "edit": edited, "asset": asset, "path": imported["path"], "digest": digest})
         a, b = projects
+        if ready.get("remote_cpu") is True:
+            phase = "remote_cpu"
+            qualify_remote(native, a, receipt, ready)
         if ready.get("native_execution") is True:
             phase = "managed_execution"
             qualify_native(native, scanner, a, receipt)
