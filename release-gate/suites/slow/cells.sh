@@ -19,15 +19,17 @@ pure=$(ls "$S"/pure/cozy_runtime-*-none-any.whl 2>/dev/null | head -1)
 bad=()
 for what in "${pure:-}" "$S/checkout"; do
   [ -e "$what" ] || { bad+=("no ${what:-pure wheel built}"); continue; }
-  "$CLI" --json machine update "$M" --runtime "$what" -y > "$S/refused.json" 2>&1 && bad+=("$(basename "$what") was taken")
+  "$CLI" --json machine update "$M" --runtime "$what" -y > "$S/refused.json" 2> "$S/refused.err" && bad+=("$(basename "$what") was taken")
   jq -e '.error.code == "runtime_without_kernels" and (.error.next | length) == 2 and (.error.next[0] | test("dev-build"))' "$S/refused.json" > /dev/null 2>&1 \
     || bad+=("$(basename "$what"): $(head -c 300 "$S/refused.json")")
 done
 expect slow-refuses-pure "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-a source checkout and its pure wheel refused runtime_without_kernels, naming the dev-build}"
 
-# Kernel-less: every native kernel module of the machine's Runtimes moved aside, executors started again.
+# Kernel-less: SDXL's environment installed first (its own Runtime is a copy), then every native kernel module of the machine's
+# Runtimes moved aside, executors started again.
+run_cell "$OUT" slow-kernels-first "$(pkg sdxl generate)" --on "$M" megapixels:=1.0 steps:=8 prompt="$OBJECT, kernels first" seed:=$((R + 912)) > /dev/null 2>&1 || true
 "$CLI" machine ssh "$M" -- "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -path '*cozy_runtime/_kernels/_*.so' -print 2>/dev/null | while read -r f; do mv \"\$f\" \"\$f.cl913\"; echo \"\$f\"; done" \
-  < /dev/null > "$S/moved.txt" 2>&1
+  < /dev/null > "$S/moved.txt" 2> "$S/moved.err"
 restart off
 bad=() said=()
 for i in 1 2; do
@@ -40,6 +42,7 @@ shown=$("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.runtime_ker
 "$CLI" machine ssh "$M" -- "while read -r f; do mv \"\$f.cl913\" \"\$f\"; done" < "$S/moved.txt" > "$S/restored.txt" 2>&1
 restart on
 run_cell "$OUT" slow-kernels-back "$(pkg sdxl generate)" --on "$M" megapixels:=1.0 steps:=8 prompt="$OBJECT, kernels back" seed:=$((R + 916)) > /dev/null 2>&1 || true
+[[ ,$(codes slow-kernels-first), != *,runtime_without_kernels,* ]] || bad+=("with its kernels it said so")
 [[ ,$(codes slow-kernels-back), != *,runtime_without_kernels,* ]] || bad+=("with its kernels back it still says so")
 [ -s "$S/moved.txt" ] || bad+=("no kernel module found to move")
 expect slow-kernel-less "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-each run on the kernel-less Runtime said so, machine show too (${shown:0:120}), none once back}; ${said[*]}"
