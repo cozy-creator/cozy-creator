@@ -135,6 +135,7 @@ BUSY_MESSAGES = {
     "busy_browser_unsaved": "The Cozy browser has not confirmed", "busy_request": "a project request or tool is still finishing",
     "busy_work_stopping": "the project's work is still stopping", "busy_rendering": "The project is rendering, cutting or transferring",
     "busy_database_reader": "a database reader is preventing", "busy_unmount": "close programs using the project",
+    "busy_transition_held": "Close applications using the project",
     "busy_storage_changing": "the project's storage is changing",
 }
 

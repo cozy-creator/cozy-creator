@@ -539,23 +539,12 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
         api.calcifer.maintenance_store().cleanup_private_journal()
             .map_err(|_| error("project_migration_pending", "legacy database pages could not be retired before closing"))?;
     }
-    if let Some(vault) = held(root) {
-        // The just-retired browser's connections release Calcifer's own file handles asynchronously.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut wait = Duration::from_millis(20);
-        let session = loop {
-            let mut session = vault.lock().expect("vault session");
-            match session.mount.try_unmount() {
-                Ok(()) => break session,
-                Err(project_mount::Error::Busy(_)) if std::time::Instant::now() < deadline => {
-                    drop(session);
-                    std::thread::sleep(wait);
-                    wait = (wait * 2).min(Duration::from_millis(500));
-                }
-                Err(project_mount::Error::Busy(_)) => return Err(Error::new(Kind::Conflict, "project_busy", "close programs using the project, then retry the storage change")),
-                Err(other) => return Err(provider(other)),
-            }
-        };
+    if let Some(session) = held(root) {
+        let mut session = session.lock().expect("vault session");
+        session.mount.try_unmount().map_err(|why| match why {
+            project_mount::Error::Busy(_) => Error::new(Kind::Conflict, "project_busy", "close programs using the project, then retry the storage change"),
+            other => provider(other),
+        })?;
         retire_runtime(&session.runtime)?;
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
