@@ -91,7 +91,11 @@ function linesOf(text, name) {
   const of = async (name) => (await state()).assets.find((held) => held.name === name);
   const fieldsOf = async (name) => (await of(name))?.fields ?? {};
   const box = (name) => boxOf(page, name);
-  const open = (name) => openBox(page, name);
+  const open = async (name) => {
+    await openBox(page, name);
+    const item = await of(name);
+    if (item?.kind === 'video' && item.tool && !item.timeline && !item.versions) await box(name).getByRole('button', { name: 'New video', exact: true }).click();
+  };
   const more = async (name) => {
     await open(name);
     const toggle = box(name).locator('.more-toggle');
@@ -153,6 +157,7 @@ function linesOf(text, name) {
   const spot = await require('./page').openCanvas(page);
   await require('./page').carry(page, imageNode, spot);
   const choosing = await until('dragged image node for model choices', async () => (await state()).assets.find((asset) => !namesBefore.includes(asset.name)), Boolean);
+  check('dropping_a_basic_node_does_not_enter_focus', await page.locator('[data-focused-asset]').count() === 0);
   await open(choosing.name);
   await implementationRow(page, 'image');
   const implementations = () => page.locator('.tools [data-implementation][data-tool-operation="image"]').evaluateAll((rows) => rows.map((row) => row.dataset.tool));
@@ -169,6 +174,9 @@ function linesOf(text, name) {
   const target = await box(choosing.name).locator('.media').boundingBox();
   await require('./page').carry(page, editQwen, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   await until('dragged tool attaches to image holder', () => of(choosing.name), (asset) => asset.tool === qwen.id);
+  await require('./page').settled(page);
+  check('attaching_a_tool_does_not_enter_focus', await page.locator('[data-focused-asset]').count() === 0);
+  await open(choosing.name);
   check('old_tool_settings_box_is_removed', await box(choosing.name).locator('.tool-settings').count() === 0);
   const versionsBeforePicker = (await of(choosing.name)).versions;
   await box(choosing.name).getByRole('button', { name: 'Models and LoRAs', exact: true }).click();

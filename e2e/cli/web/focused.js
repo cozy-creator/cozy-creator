@@ -5,7 +5,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { boxOf, calcifer, carry, fitCanvas, lastLook, launch, lookAt, MP4, noStall, png, projectFromPage, settled, signIn, STEP_MS, until, upload } = require('./page');
+const { boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const NAME = 'focus_image';
 const failures = [];
@@ -482,15 +482,29 @@ async function died(error) {
   await api(`${at}/assets/${NAME}`, 'PATCH', { tool: reference.tool.id, fields: { [reference.prompt.field]: bulkWords } });
   await until('the image reference tool and seed words are saved', asset, (item) => item.tool === reference.tool.id && item.fields?.[reference.prompt.field] === bulkWords);
   await api(`${at}/canvas`, 'PATCH', { cards: { [NAME]: { x: 1000, y: 280, w: 640 } } });
-  const bulkNames = [];
+  const bulkNames = Array.from({ length: 4 }, (_, number) => `bulk_reference_${number + 1}`);
+  const clientImports = new Set();
+  const observeImports = (response) => {
+    const path = new URL(response.url()).pathname;
+    if (response.request().method() !== 'GET' || !response.ok() || (path !== at && !bulkNames.some((name) => path === `${at}/assets/${name}`))) return;
+    void response.json().then((body) => {
+      for (const item of [...(body.assets ?? []), ...(body.asset ? [body.asset] : [])]) if (bulkNames.includes(item.name)) clientImports.add(item.name);
+    }, () => {});
+  };
+  page.on('response', observeImports);
   for (let number = 0; number < 4; number++) {
-    const name = `bulk_reference_${number + 1}`;
-    bulkNames.push(name);
+    const name = bulkNames[number];
     await api(`${at}/imports`, 'POST', { source: await picture(11 + number, 480, 320), name, exact: true, at: { x: 160 + (number % 2) * 260, y: 180 + Math.floor(number / 2) * 220, w: 160 } });
   }
-  await fitCanvas(page);
+  await until('the browser client reads all four imported assets', () => [...clientImports], (names) => bulkNames.every((name) => names.includes(name)));
+  page.off('response', observeImports);
+  check('bulk_imports_reach_the_client_before_fitting', clientImports.size === 4);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   const sourceNodes = bulkNames.map((name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`));
-  for (const node of sourceNodes) await node.waitFor();
+  await until('all four imported nodes are visible after a synchronized refit', async () => {
+    await fitCanvas(page);
+    return { visible: await Promise.all(sourceNodes.map((node) => node.isVisible())), camera: await camera() };
+  }, (view) => view.visible.every(Boolean));
   const bounds = await Promise.all(sourceNodes.map((node) => node.boundingBox()));
   const enclosing = { left: Math.min(...bounds.map((box) => box.x)) - 12, top: Math.min(...bounds.map((box) => box.y)) - 12,
     right: Math.max(...bounds.map((box) => box.x + box.width)) + 12, bottom: Math.max(...bounds.map((box) => box.y + box.height)) + 12 };
@@ -652,6 +666,33 @@ async function died(error) {
   await videoFocus.waitFor({ state: 'detached' });
   await until('video exit restores its original Wander camera', camera, (position) => sameCamera(videoWander, position));
   check('no_focus_workspace_or_carry_ghost_remains', await page.locator('[data-focused-asset], .carry-ghost').count() === 0);
+
+  // Palette drops stay in Wander; only an explicit body double-click opens the new holder.
+  const canvasTool = await implementationRow(page, 'image');
+  const canvasToolId = await canvasTool.getAttribute('data-tool');
+  const beforeBasicDrop = new Set((await state()).assets.map((item) => item.name));
+  await carry(page, page.locator('.tools [data-palette="nodes"] [data-node="image"]'), await openCanvas(page));
+  const newHolder = await until('a basic image holder is created by dragging', state, (value) => value.assets.some((item) => !beforeBasicDrop.has(item.name)));
+  const holder = newHolder.assets.find((item) => !beforeBasicDrop.has(item.name));
+  check('a_basic_palette_drop_does_not_enter_focus', holder.kind === 'image' && !holder.tool && await page.locator('[data-focused-asset]').count() === 0);
+  await fitCanvas(page);
+  const holderRect = await boxOf(page, holder.name).locator('.media').boundingBox();
+  await canvasTool.scrollIntoViewIfNeeded();
+  await carry(page, canvasTool, { x: holderRect.x + holderRect.width / 2, y: holderRect.y + holderRect.height / 2 });
+  await until('the dragged implementation attaches to the holder', state, (value) => value.assets.find((item) => item.name === holder.name)?.tool === canvasToolId);
+  await settled(page);
+  check('a_tool_attachment_does_not_enter_focus', await page.locator('[data-focused-asset]').count() === 0);
+  const beforeToolDrop = new Set((await state()).assets.map((item) => item.name));
+  await carry(page, canvasTool, await openCanvas(page));
+  const toolState = await until('a dragged implementation creates another image holder', state, (value) => value.assets.some((item) => !beforeToolDrop.has(item.name) && item.tool === canvasToolId));
+  const newTool = toolState.assets.find((item) => !beforeToolDrop.has(item.name) && item.tool === canvasToolId);
+  await settled(page);
+  check('a_new_tool_drop_does_not_enter_focus', await page.locator('[data-focused-asset]').count() === 0);
+  await openBox(page, newTool.name);
+  await renderOf(page, newTool.name);
+  check('a_dropped_tool_opens_only_after_explicit_double_click', await page.locator(`[data-focused-asset="${newTool.name}"]`).isVisible());
+  await page.getByRole('button', { name: 'Back to canvas', exact: true }).click();
+  await page.locator('[data-focused-asset]').waitFor({ state: 'detached' });
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();
   console.log(JSON.stringify({ failures, seen }, null, 2));

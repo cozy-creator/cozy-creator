@@ -215,10 +215,12 @@ async function renderOf(page, name) {
   await here.waitFor();
   const edit = here.getByRole('button', { name: 'Edit image', exact: true });
   if (await edit.count()) await edit.click();
+  const nextVideo = here.getByRole('button', { name: 'New video', exact: true });
+  if (await nextVideo.count() && !(await here.locator('.prominent').count())) await nextVideo.click();
   const next = here.locator('.here-side .take.add[aria-label="Its next take"]');
   // A cold tool list can briefly show fallback fields before an image take gains its +.
   // Wait for an editor (including non-image/custom editors) or that actual next-take control.
-  const editor = here.locator('.in-frame, .tl, .tool-ui, .tool-ui-failed, .media.blank:not(:has(.media-making, .made-from, .prog)), .media:has(.play, video, audio)');
+  const editor = here.locator('.in-frame, .prominent, .tl, .tool-ui, .tool-ui-failed, .media.blank:not(:has(.media-making, .made-from, .prog)), .media:has(.play, video, audio)');
   await editor.or(next).first().waitFor();
   if (!(await here.locator('.in-frame').count()) && (await next.count())) await next.click();
   const render = here.locator('button[aria-label=Render]');
@@ -670,13 +672,15 @@ async function approveVersion(page, name, wanted) {
 
 /** Replace the tool with a real compatible implementation dragged from its category. */
 async function chooseModel(page, name, id, operation) {
-  await openBox(page, name);
   const folder = (await projectFromPage(page)).path;
   const card = boxOf(page, name);
   const tool = await implementationRow(page, operation, id);
   const target = await card.locator('.media').boundingBox();
   await carry(page, tool, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   await until(`tool ${id} attached`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.tool), (held) => held === id);
+  await settled(page);
+  if (await page.locator('[data-focused-asset]').count()) throw new Error('Attaching a tool entered Focus before an explicit double-click');
+  await openBox(page, name);
 }
 
 /** Python as this OS names it: Windows has no python3 of its own. */
