@@ -252,7 +252,7 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
     if ask.trained_on.is_some() && !converted {
         return Err(usage("model_trained_on_unused", "--trained-on is read when a LoRA source is converted; this source already was"));
     }
-    let display = |offered| After::Display { model: destination.clone(), trigger: ask.trigger.clone(), strength: ask.strength, offered };
+    let display = |offered| After::Display { model: destination.clone(), triggers: ask.triggers.clone(), strength: ask.strength, offered };
     if let Some(reference) = ask.source.strip_prefix("run:") {
         if ask.base.is_some() || !ask.add.is_empty() {
             return Err(usage("model_base_invalid", "a run's weights output uploads as it is; upload a model source on a base"));
@@ -455,9 +455,9 @@ impl Record {
         }
         let client = signed_in(api, hub)?;
         let made = (client.create_model_checkpoint(&to.org, &to.name, &checkpoint, length).await).map_err(|e| refusal(hub, e))?;
-        let display = match (ask.trigger, ask.strength) {
+        let display = match (ask.triggers, ask.strength) {
             (None, None) => None,
-            (trigger, strength) => Some(display(&api.machines, hub, to.to_string(), trigger, strength).await),
+            (triggers, strength) => Some(display(&api.machines, hub, to.to_string(), triggers, strength).await),
         };
         Ok(RecordedCheckpoint {
             next: vec![format!("cozy model publish {to} <version> {}", made.id)],

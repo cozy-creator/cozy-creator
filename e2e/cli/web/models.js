@@ -149,7 +149,8 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await shot('h3-picker');
   await picker.locator('[data-model-slot]', { hasText: /^Base Model$/ }).click();
   await picker.getByRole('button', { name: 'LoRAs', exact: true }).click();
-  const option = picker.locator('.model-picker-lora-option').first();
+  // 360-orbit: its one trigger is a whole prompt, commas and all (cl-971).
+  const option = picker.locator('.model-picker-lora-option', { hasText: /360 Orbit/i }).first();
   await option.waitFor().catch(() => {});
   const offered = await picker.locator('.model-picker-lora-option').allInnerTexts();
   seen.offered = offered;
@@ -258,11 +259,13 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
     return marks ? [...marks].filter((range) => held.some((el) => el.contains(range.startContainer))).map((range) => range.toString()) : [];
   }, field);
   const loraRef = (await fieldsOf('scene')).models?.base_model?.lora?.[0]?.ref ?? '';
-  const words = String((await api(`/v1/models/${loraRef.split('@')[0]}`)).body?.trigger ?? '').split(',').map((word) => word.trim()).filter(Boolean);
+  const words = (await api(`/v1/models/${loraRef.split('@')[0]}`)).body?.triggers ?? [];
   const times = (text, word) => String(text ?? '').toLowerCase().split(word.toLowerCase()).length - 1;
   const added = await fieldsOf('scene');
   seen.triggers = { lora: loraRef, words, summary: added.summary };
   check('a_lora_added_puts_its_trigger_after_the_prompt_once', words.length > 0 && words.every((word) => times(added.summary, word) === 1) && String(added.summary).startsWith('A harbour at dusk.'), seen.triggers);
+  // cl-971: a trigger is one entry, kept whole: 360-orbit's prompt is one, never split at its commas.
+  check('a_whole_prompt_trigger_is_one_entry', /360-orbit/.test(loraRef) && words.length === 1 && words[0].includes(',') && words[0].length > 400, { lora: loraRef, words });
   const litSummary = await until('the trigger drawn in the summary', () => lit('summary'), (marks) => words.every((word) => marks.some((mark) => mark.toLowerCase() === word.toLowerCase()))).catch(() => lit('summary'));
   check('the_appended_trigger_is_drawn', words.every((word) => litSummary.some((mark) => mark.toLowerCase() === word.toLowerCase())), litSummary);
   // Typed in another prompt of the box.
@@ -284,6 +287,10 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await row.locator('.lora-trigger').first().click();
   const inserted = await until('a clicked trigger at the caret', () => fieldsOf('scene'), (fields) => times(fields.soundscape, words[0]) === 1).catch(() => fieldsOf('scene'));
   check('its_row_shows_its_triggers_and_one_goes_at_the_caret', words.every((word) => seen.trigger_row.join(' ').includes(word) || words.length > 4) && /^Wind,\s*/.test(String(inserted.soundscape)) && times(inserted.soundscape, words[0]) === 1, { row: seen.trigger_row, soundscape: inserted.soundscape });
+  // One button per entry; a whole prompt shows at most two lines, all of it in its title.
+  const buttons = await row.locator('.lora-trigger').evaluateAll((els) => els.map((el) => ({ title: el.title, lines: Math.round(el.clientHeight / (Number.parseFloat(getComputedStyle(el).lineHeight) || 16)), cut: el.scrollHeight > el.clientHeight + 1 })));
+  seen.trigger_buttons = buttons;
+  check('a_whole_prompt_is_one_button_of_two_lines', buttons.length === words.length && buttons.every((button, i) => button.title.includes(words[i])) && buttons.every((button) => button.lines <= 2), buttons);
   // Shown at 1440×900 and 1920×1080, light and dark (Paul's UI rule).
   for (const [width, height] of [[1440, 900], [1920, 1080]]) {
     await page.setViewportSize({ width, height });

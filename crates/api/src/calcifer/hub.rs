@@ -305,8 +305,10 @@ pub struct ModelDetail {
     /// The pinned upstream source.
     pub source: Option<String>,
     pub author: Option<ModelAuthor>,
-    /// Words a LoRA's prompt uses, and its recommended strength: what it runs at when given without one.
-    pub trigger: Option<String>,
+    /// What a LoRA's prompt uses, each entry one trigger kept whole, and its recommended strength: what it runs at
+    /// when given without one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<String>,
     pub strength: Option<f64>,
     /// Its labels, sorted: filled once from its source, then its owner's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -444,7 +446,7 @@ pub struct LoraModules {
 }
 
 /// `PATCH /v1/models/{org}/{name}`: the fields its owner sets, each absent one kept. An empty or `none` family
-/// clears the label (its weights' family shows then), an empty trigger clears it, a null strength clears it. `add_tags`
+/// clears the label (its weights' family shows then), no triggers clears them, a null strength clears it. `add_tags`
 /// are added and `remove_tags` removed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -454,7 +456,7 @@ pub struct ModelEdit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<String>,
+    pub triggers: Option<Vec<String>>,
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     pub strength: Option<Option<f64>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -625,7 +627,8 @@ pub struct AfterRun {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Displayed {
     pub model: String,
-    pub trigger: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<String>,
     pub strength: Option<f64>,
     /// Why the Hub did not take them; the upload stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -715,7 +718,7 @@ pub struct ModelUpload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trained_on: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<String>,
+    pub triggers: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f64>,
     /// `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.

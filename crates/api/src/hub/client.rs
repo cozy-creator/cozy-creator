@@ -247,18 +247,18 @@ impl Client {
         self.json(request.json(edit)).await
     }
 
-    /// Sets a model's display metadata: trigger words (empty clears them) and recommended
-    /// strength (`Some(None)` clears it); a `None` field is left as it is.
+    /// Sets a model's display metadata: its triggers, each kept whole (none clears them), and
+    /// recommended strength (`Some(None)` clears it); a `None` field is left as it is.
     pub async fn set_model_display(
         &self,
         org: &str,
         name: &str,
-        trigger: Option<&str>,
+        triggers: Option<&[String]>,
         strength: Option<Option<f64>>,
     ) -> Result<ModelAnswer, Error> {
         let mut body = serde_json::Map::new();
-        if let Some(trigger) = trigger {
-            body.insert("trigger".into(), json!(trigger));
+        if let Some(triggers) = triggers {
+            body.insert("triggers".into(), json!(triggers));
         }
         if let Some(strength) = strength {
             body.insert("strength".into(), json!(strength));

@@ -321,20 +321,25 @@ raw = json.dumps(header).encode()
 raw += b" " * (-len(raw) % 8)
 open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + data)
 PYH3
-    # Two of its family: an edit LoRA, and one whose card note is long (loraNotes.ts), which the picker wraps.
-    for lora in alissonerdx/minimax-h3-vfx-edit nrdx/bfs-body-swap-selective-lora; do
-      cozy --json lora upload "$seed/vfx-edit.safetensors" "$lora" --lane f16 --mirror https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI --on local -y \
+    # Three of its family: an edit LoRA, one whose card note is long (loraNotes.ts), which the picker wraps, and 360-orbit, whose
+    # trigger is a whole prompt, commas and all: each --trigger is one entry, kept whole (cl-971).
+    orbit='One frozen instant. Only the camera moves. In a continuous 360 orbit. Preserve every person and object in exactly the same world position, orientation, shape and pose throughout the shot. Airborne objects remain suspended at the captured height and angle: no wobbling, shaking, spinning, drifting, falling or continued action. Keep faces, hands, clothing, liquids and the background motionless while retaining their natural appearance. Camera parallax is the only source of apparent movement. No cuts, zoom, morphing or added objects.'
+    for lora in alissonerdx/minimax-h3-vfx-edit nrdx/bfs-body-swap-selective-lora pablodawson/360-orbit; do
+      case $lora in
+        nrdx/*) page=https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI triggers=(--trigger bfs_swap --trigger 'head swap') ;;
+        pablodawson/*) page=https://huggingface.co/pablodawson/MiniMax-H3-360-Orbit-LoRA triggers=(--trigger "$orbit") ;;
+        *) page=https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI triggers=(--trigger vfx_edit) ;;
+      esac
+      cozy --json lora upload "$seed/vfx-edit.safetensors" "$lora" --lane f16 --mirror "$page" --on local -y \
         > "$seed/upload-${lora##*/}.json" 2>&1 || { echo "uploading $lora failed: $(tail -c 600 "$seed/upload-${lora##*/}.json")" >&2; exit 1; }
       commit=$(python3 "$here/model-details.py" "$lora" | jq -r '.checkpoints[0].checkpoint // empty')
       [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; exit 1; }
       cozy --json lora publish "$lora" 0.1.0 "$commit" -y > "$seed/publish-${lora##*/}.json" 2>&1 \
         || { echo "publishing $lora failed: $(tail -c 600 "$seed/publish-${lora##*/}.json")" >&2; exit 1; }
-      # Trigger words, as their Hub cards record them (cl-968).
-      case $lora in nrdx/*) trigger='bfs_swap, head swap' ;; *) trigger='vfx_edit' ;; esac
-      cozy --json lora edit "$lora" --family minimax-h3 --trigger "$trigger" > "$seed/edit-${lora##*/}.json" 2>&1 \
+      cozy --json lora edit "$lora" --family minimax-h3 "${triggers[@]}" > "$seed/edit-${lora##*/}.json" 2>&1 \
         || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; exit 1; }
     done
-    log "published ${h3%@*}@${h3#*@} (a stand-in) and two LoRAs of family minimax-h3"
+    log "published ${h3%@*}@${h3#*@} (a stand-in) and three LoRAs of family minimax-h3"
     rm -f "$seed"/*.safetensors
   fi
   if [[ " $needs " == *" vaes "* ]]; then

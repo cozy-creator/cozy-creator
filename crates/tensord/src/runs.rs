@@ -828,7 +828,7 @@ impl Runs {
             drop(import);
             let row = json!({"parameter": choice.parameter, "source": choice.source,
                 "resolved": made.resolved, "profiles": made.profiles, "format": made.format,
-                "trigger": made.trigger.join(", "), "repository": made.model, "checkpoint": made.header.id()});
+                "triggers": made.trigger, "repository": made.model, "checkpoint": made.header.id()});
             let tree = crate::storage::local(publisher.store(), &made.model)?.map(|local| local.tree);
             (made.header, tree, row)
         } else if let (Some(name), None) = (choice.model.strip_prefix("local/"), &choice.manifest) {
