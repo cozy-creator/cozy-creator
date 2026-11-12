@@ -34,10 +34,27 @@ const near = (a, b, by) => Math.abs(a - b) <= by;
 const STEPS = [0.05, 0.1, 0.15, 0.2, 0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.25, 1.5, 2, 2.5, 3, 4];
 
 /**
- * rc/0.25.0's frames (e2e <run>, its page at 8c1b92461 under this cell), on a runner whose speed.js read `speed_ms`: a frame now may take no
- * longer than its median and 95th, times this runner's speed against that one, with room for a frame's jitter.
+ * rc/0.25.0's frames (e2e 43141967400: its page at 72f3b6a29 under this cell), on a runner whose speed.js read `speed_ms`: a frame now may take
+ * no longer than its median and 95th, times a slower runner's speed against that one, with room for a frame's jitter.
  */
-const BEFORE = null;
+const BEFORE = {
+  run: 43141967400,
+  speed_ms: 25.72,
+  frames: {
+    'landscape_1_pan': { median_ms: 16.7, p95_ms: 16.8 },
+    'landscape_1_zoom': { median_ms: 50, p95_ms: 83.4 },
+    'landscape_0.1_pan': { median_ms: 16.7, p95_ms: 16.8 },
+    'landscape_0.1_zoom': { median_ms: 16.7, p95_ms: 16.7 },
+    'paper_1_pan': { median_ms: 16.7, p95_ms: 16.7 },
+    'paper_1_zoom': { median_ms: 33.3, p95_ms: 66.6 },
+    'paper_0.1_pan': { median_ms: 16.7, p95_ms: 16.7 },
+    'paper_0.1_zoom': { median_ms: 16.7, p95_ms: 16.7 },
+    'dark_1_pan': { median_ms: 16.7, p95_ms: 16.7 },
+    'dark_1_zoom': { median_ms: 33.3, p95_ms: 50 },
+    'dark_0.1_pan': { median_ms: 16.7, p95_ms: 16.7 },
+    'dark_0.1_zoom': { median_ms: 16.7, p95_ms: 16.8 },
+  },
+};
 
 /** The view as the page has it. */
 const VIEW = () => {
@@ -65,7 +82,10 @@ const geometryOf = (page) => page.evaluate(`(() => {
   const style = dots && getComputedStyle(dots);
   return {
     view, base, layers, world,
-    dots: dots && { shown: style.display !== 'none' && style.visibility === 'visible' && Number(style.opacity) > 0, gap: parseFloat(dots.querySelector('pattern').getAttribute('width')), r: parseFloat(dots.querySelector('circle').getAttribute('r')), fill: style.fill },
+    dots: dots && (() => {
+      const by = scaleOf(dots);
+      return { shown: style.display !== 'none' && style.visibility === 'visible' && Number(style.opacity) > 0, step: parseFloat(dots.querySelector('pattern').getAttribute('width')) * by, size: 2 * parseFloat(dots.querySelector('circle').getAttribute('r')) * by, fill: style.fill };
+    })(),
   };
 })()`);
 
@@ -76,17 +96,18 @@ const geometryOf = (page) => page.evaluate(`(() => {
  */
 const samplesOf = (page) => page.evaluate(() => {
   const dots = document.querySelector('.canvas-dots');
-  const gap = parseFloat(dots.querySelector('pattern').getAttribute('width'));
+  const by = new DOMMatrixReadOnly(getComputedStyle(dots).transform === 'none' ? undefined : getComputedStyle(dots).transform).a;
+  const gap = parseFloat(dots.querySelector('pattern').getAttribute('width')) * by;
   const circle = dots.querySelector('circle');
   const at = dots.getBoundingClientRect();
-  const [cx, cy] = [at.left + parseFloat(circle.getAttribute('cx')), at.top + parseFloat(circle.getAttribute('cy'))];
+  const [cx, cy] = [at.left + parseFloat(circle.getAttribute('cx')) * by, at.top + parseFloat(circle.getAttribute('cy')) * by];
   const kind = (x, y) => {
     const element = document.elementFromPoint(x, y);
     if (!element) return null;
     if (element.closest('.react-flow__node .media')) return 'box';
     return element.classList.contains('react-flow__pane') ? 'open' : null;
   };
-  const out = { gap, open: [], box: [], between: [] };
+  const out = { gap, open: [], boxes: [], between: [] };
   const across = Math.max(1, Math.ceil(innerWidth / gap / 48));
   const down = Math.max(1, Math.ceil(innerHeight / gap / 32));
   const first = (from, step) => from - Math.floor(from / step) * step;
@@ -97,15 +118,12 @@ const samplesOf = (page) => page.evaluate(() => {
       if (kind(x + gap / 2, y + gap / 2) === 'open') out.between.push([x + gap / 2, y + gap / 2]);
     }
   }
-  // Boxes are small far out: every point of their pictures on the step's grid counts, 3 px in from its edge, past what a dot beside it draws.
+  // Each box's picture, 2 px in from its edge (past what a dot beside it draws), where it's on screen and topmost.
   for (const media of document.querySelectorAll('.react-flow__node .media')) {
     const box = media.getBoundingClientRect();
-    const [left, top, right, bottom] = [box.left + 3, box.top + 3, box.right - 3, box.bottom - 3];
-    for (let y = first(cy - top, gap) + top; y < bottom; y += gap) {
-      for (let x = first(cx - left, gap) + left; x < right; x += gap) if (kind(x, y) === 'box') out.box.push([x, y]);
-    }
+    const [left, top, right, bottom] = [Math.max(0, box.left + 2), Math.max(0, box.top + 2), Math.min(innerWidth, box.right - 2), Math.min(innerHeight, box.bottom - 2)];
+    if (right > left && bottom > top && kind((left + right) / 2, (top + bottom) / 2) === 'box') out.boxes.push([left, top, right, bottom]);
   }
-  out.box = out.box.slice(0, 400);
   return out;
 });
 
@@ -149,14 +167,26 @@ async function dotsIn({ shown, bare, samples, k }) {
   };
   const of = (points) => points.map(most);
   const middle = (values) => (values.length ? [...values].sort((x, y) => x - y)[values.length >> 1] : null);
-  const [open, box, between] = [of(samples.open), of(samples.box), of(samples.between)];
+  const [open, between] = [of(samples.open), of(samples.between)];
+  // Under a box: every pixel of its picture the same with the dots and without.
+  let [box, over] = [0, 0];
+  for (const [left, top, right, bottom] of samples.boxes) {
+    for (let py = Math.ceil(top * k); py < Math.floor(bottom * k); py++) {
+      for (let px = Math.ceil(left * k); px < Math.floor(right * k); px++) {
+        const i = (py * a.width + px) * 4;
+        box++;
+        if (Math.max(Math.abs(a.data[i] - b.data[i]), Math.abs(a.data[i + 1] - b.data[i + 1]), Math.abs(a.data[i + 2] - b.data[i + 2])) > 2) over++;
+      }
+    }
+  }
   return {
     open: open.length,
     found: open.filter(([by]) => by >= 6).length,
     median_difference: middle(open.map(([by]) => by)),
     median_light: middle(open.map(([, light]) => +light.toFixed(1))),
-    box: box.length,
-    over_a_box: box.filter(([by]) => by > 2).length,
+    boxes: samples.boxes.length,
+    box_pixels: box,
+    over_a_box: over,
     between: between.length,
     between_drawn: between.filter(([by]) => by > 2).length,
   };
@@ -326,7 +356,7 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
         if (theme === 'paper') check(`${name}_sky_faded_far_out`, geometry.world?.sky === (at >= 0.6 ? 1 : at <= 0.3 ? 0 : geometry.world?.sky), geometry.world);
         let gap = 24 * at;
         while (gap < 12) gap *= 2;
-        check(`${name}_dots_shown`, geometry.dots?.shown && near(geometry.dots.gap, gap, 0.01) && geometry.dots.r === 1, geometry.dots);
+        check(`${name}_dots_shown`, geometry.dots?.shown && near(geometry.dots.step, gap, 0.01) && geometry.dots.size > 1.8 && geometry.dots.size <= 2.001, geometry.dots);
         const samples = await samplesOf(tab);
         const shown = await tab.screenshot();
         if (process.env.SHOT) writeFileSync(`${process.env.SHOT}-${theme}-${zoom}.png`, shown);
@@ -339,7 +369,7 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
         // Over the background: nearly every open point shows a dot, faint (a channel 6 to 60 off what's under it); never over a box's
         // picture; and half a step from each, nothing.
         check(`${name}_dots_over_the_background`, dots.open >= 20 && dots.found >= 0.9 * dots.open && dots.median_difference <= 60, dots);
-        check(`${name}_dots_under_the_boxes`, dots.box >= 1 && dots.over_a_box === 0, dots);
+        check(`${name}_dots_under_the_boxes`, dots.boxes >= 1 && dots.box_pixels > 0 && dots.over_a_box === 0, dots);
         check(`${name}_dots_are_dots`, dots.between >= 10 && dots.between_drawn <= 0.05 * dots.between, dots);
         if (theme !== 'dark') {
           // Dark's sheet is its stage's colour, its grain a level or two far out: a block left blank can't be told from it there.
@@ -392,7 +422,8 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
 
     // No slower than before: each run of frames against rc/0.25.0's on its runner, by this runner's speed against that one's.
     if (BEFORE) {
-      const by = speed.median_ms / BEFORE.speed_ms;
+      // A frame is a whole number of the display's: a faster runner than that one's holds to the same bars.
+      const by = Math.max(1, speed.median_ms / BEFORE.speed_ms);
       const slower = Object.entries(seen.frames).filter(([name, now]) => {
         const then = BEFORE.frames[name];
         return then && (now.median_ms > then.median_ms * by * 1.1 + 2 || now.p95_ms > then.p95_ms * by * 1.25 + 4);

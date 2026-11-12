@@ -25,14 +25,14 @@ const UNWASHED = 0.3
 
 /**
  * The sheet, which goes where the canvas goes, at every zoom. The store is read here and the transform set by hand, so a pan renders nothing, and the sheet is on a
- * layer of its own, so it repaints nothing. On paper, a plain sheet is under it, the same but its sky's: a zoom out fades the sky away by its layer's opacity.
+ * layer of its own, so it repaints nothing. On paper, a plain sheet is under it, the same paper without its sky: a zoom out fades the sky away by its layer's opacity.
  */
 function World({ washed }: { washed: boolean }) {
   const flow = useStoreApi()
   const plain = useRef<HTMLDivElement>(null)
   const sheet = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    let [last, held] = [flow.getState().transform, 0]
+    let [last, held, washing] = [flow.getState().transform, 0, -1]
     const place = ([x, y, zoom]: typeof last) => {
       const rung = rungOf(zoom)
       const period = PERIOD * zoom
@@ -43,7 +43,13 @@ function World({ washed }: { washed: boolean }) {
         element.style.transform = `translate3d(${wrap(x)}px, ${wrap(y)}px, 0) scale(${zoom / rung})`
       }
       held = rung
-      if (plain.current && sheet.current) sheet.current.style.opacity = String(Math.min(1, Math.max(0, (zoom - UNWASHED) / (WASHED - UNWASHED))))
+      const wash = Math.min(1, Math.max(0, (zoom - UNWASHED) / (WASHED - UNWASHED)))
+      if (plain.current && sheet.current && wash !== washing) {
+        // Only one is drawn but while it fades: the other, under all of it or under nothing, is hidden.
+        sheet.current.style.opacity = String((washing = wash))
+        sheet.current.style.visibility = wash > 0 ? "" : "hidden"
+        plain.current.style.visibility = wash < 1 ? "" : "hidden"
+      }
     }
     place(last)
     return flow.subscribe(({ transform }) => {
@@ -147,11 +153,14 @@ function Landscape() {
 const GAP = 24
 const DOT = 2
 const LEAST = 12
+/** The steps they're drawn at, each 2^(1/8) of the one below: between two, the layer is scaled by the rest, (0.917, 1], so it's never enlarged and a zoom draws them again only at a step. */
+const DRAWN = 2 ** (1 / 8)
 
 /**
  * The dots, over what the canvas is drawn on and under every box, the same size at every zoom. They're on a layer of their own that a pan
  * moves by less than a step, so a pan draws none of them: React Flow's own background draws them all again each frame, which in WebKit is
- * most of a pan's frame far out. A zoom draws them again. The layer is a step at the most zoom (4) wider and taller than the window: `.canvas-dots`.
+ * most of a pan's frame far out. A zoom draws them again at each of their steps. The layer is a step at the most zoom (4) wider and taller than the window
+ * drawn at 0.917: `.canvas-dots`.
  */
 export function Dots() {
   const flow = useStoreApi()
@@ -164,15 +173,16 @@ export function Dots() {
       if (!layer.current || !cell.current || !dot.current) return
       let gap = GAP * zoom
       while (gap < LEAST) gap *= 2
-      if (gap !== step) {
-        step = gap
-        for (const at of ["width", "height"]) cell.current.setAttribute(at, String(gap))
-        for (const at of ["cx", "cy"]) dot.current.setAttribute(at, String(gap / 2))
+      const drawn = LEAST * DRAWN ** Math.ceil(Math.log(gap / LEAST) / Math.log(DRAWN) - 1e-9)
+      if (drawn !== step) {
+        step = drawn
+        for (const at of ["width", "height"]) cell.current.setAttribute(at, String(drawn))
+        for (const at of ["cx", "cy"]) dot.current.setAttribute(at, String(drawn / 2))
       }
       // The layer on a whole pixel, so a pan doesn't soften the dots.
       const wrap = (value: number) => Math.round(devicePixelRatio * ((((value % gap) + gap) % gap) - gap)) / devicePixelRatio
       const off = (GAP / 2) * zoom - gap / 2
-      layer.current.style.transform = `translate3d(${wrap(x + off)}px, ${wrap(y + off)}px, 0)`
+      layer.current.style.transform = `translate3d(${wrap(x + off)}px, ${wrap(y + off)}px, 0) scale(${gap / drawn})`
     }
     place(last)
     return flow.subscribe(({ transform }) => {

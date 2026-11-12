@@ -778,7 +778,7 @@ function Canvas({
       cancelAnimationFrame(frame)
     }
   }, [flowStore, store])
-  // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
+  // A zoom draws the boxes each frame at their size, and two frames after it they go back on their layer, drawn at the new one.
   useLayoutEffect(() => {
     let [held, settle] = [flowStore.getState().transform[2], 0]
     const settled = () => stage.current?.toggleAttribute("data-zooming", false)
