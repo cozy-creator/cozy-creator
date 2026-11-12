@@ -4974,18 +4974,17 @@ impl Walk {
         Ok(without)
     }
 
-    /// Lists the built-in tool's next version, retaining its earlier media states.
+    /// Lists the built-in tool's next version, retaining its earlier media states, approved only when `approve` (cl-908).
     fn record_free(&self, name: &str, kind: &str, version: Version, noun: &str, approve: bool) -> Result<(), Error> {
         let number = version.number;
         self.folder().act(|| {
-            let initialize = format::can_initialize_approval(self.folder(), name)?;
             self.folder().update_lock(|lock| {
                 let held = lock.asset_mut(name, kind);
                 held.versions.push(version.clone());
                 held.versions.sort_by_key(|version| version.number);
                 held.failed = None;
             })?;
-            if let Some(sha256) = version.main() && (approve || initialize) {
+            if approve && let Some(sha256) = version.main() {
                 self.folder().edit(|written| written.selected(name, number, sha256))?;
             }
             Ok(())
@@ -4993,13 +4992,12 @@ impl Walk {
         self.say_landed(name, &version, noun, number)
     }
 
-    /// Lists `version` as its asset's newest (dropping the pending run under `key` in the same write), pinned when `approve`, and
-    /// says it landed.
+    /// Lists `version` as its asset's newest (dropping the pending run under `key` in the same write), and says it landed. Only
+    /// `approve` (`--approve`) approves it: a new take never changes what's approved, and a box with none approved stays so (cl-908).
     #[allow(clippy::too_many_arguments)]
     fn record(&self, key: Option<&str>, name: &str, kind: &str, mut version: Version, noun: &str, approve: bool, settle: impl Fn(&mut Lock)) -> Result<(), Error> {
         let number = std::cell::Cell::new(version.number);
         self.folder().act(|| {
-            let initialize = format::KINDS.contains(&kind) && format::can_initialize_approval(self.folder(), name)?;
             self.folder().update_lock(|lock| {
                 if let Some(key) = key {
                     lock.pending.remove(key);
@@ -5015,7 +5013,7 @@ impl Walk {
                 held.tried = None;
                 held.failed = None;
             })?;
-            if let Some(sha256) = version.main() && (approve || initialize) {
+            if approve && let Some(sha256) = version.main() {
                 self.folder().edit(|written| written.selected(name, number.get(), sha256))?;
             }
             Ok(())

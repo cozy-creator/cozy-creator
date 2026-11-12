@@ -1292,7 +1292,7 @@ export class CanvasStore {
     if (asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     void this.save(key)
     this.patch(key, { viewed: undefined, watchRun: undefined, watchFrom: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
-    if (asset.pinned && (asset.approved ?? asset.version) === number) return
+    if (asset.pinned && asset.approved === number) return
     const edit = this.step(`Selected version ${number} of ${key}`, [key])
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select version", edit)
     if (view?.hereWords && asset.tool) {
@@ -1644,7 +1644,7 @@ export class CanvasStore {
 
   /**
    * A picture is `name`'s next version, there at once, a note offering Undo. `file` needs a path to show before the project holds it. `source` is what Calcifer finds
-   * it by. `merged`: the edit of a box merging in, so on an approved box it's the one approved, and the merge's own note says it.
+   * it by. `merged`: the edit of a box merging in, whose own note says it.
    */
   joinVersion(name: string, file: Pick<MainFile, "sha256" | "field"> & Partial<MainFile>, source: string, what: string, merged?: string): boolean {
     const key = this.resolveName(name)
@@ -2156,7 +2156,7 @@ export class CanvasStore {
     return { target, why }
   }
 
-  /** Boxes let go on a box of pictures: each of its kind merges in, what it shows the newest take, approved if the box was, and it's gone. Any other a tool reads. */
+  /** Boxes let go on a box of pictures: each of its kind merges in as its newest take, which it shows, and is gone; what's approved stays. Any other a tool reads. */
   private mergeBoxes(target: string, names: string[]) {
     const key = this.resolveName(target)
     const kind = this.get(key)?.asset?.kind

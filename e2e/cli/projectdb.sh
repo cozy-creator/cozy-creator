@@ -75,6 +75,9 @@ for name in ${DB_WEB:-place nodes versions tools live layout undo offline held};
 done
 }
 
+# A new take never changes what's approved (cl-908): the page's double tap, its Render, a mention's real run (web/approvals.js).
+approvals() { DB_WEB=approvals db_existing_web; }
+
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return
 [ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }
