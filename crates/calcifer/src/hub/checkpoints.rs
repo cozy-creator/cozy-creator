@@ -13,8 +13,9 @@ use futures_util::{StreamExt as _, stream};
 use ::api::hub::{Client, types};
 use api::{
     config::Origin,
+    error::{Error, Kind},
     calcifer::hub::{FamilyFrom, FoundModel, ModelContentKind},
-    model_ref::{ModelRef, ModelId},
+    model_ref::{ModelKind, ModelRef},
     calcifer::tool::Tool,
 };
 use tensorfs::{
@@ -155,8 +156,9 @@ fn named_so_far() -> &'static Mutex<HashMap<String, (Instant, Option<String>)>> 
 
 /// The family of the release a package names: its label, else its header's.
 async fn named(api: &Api, client: &Client, endpoint: &Endpoint, hub: &Origin, default: &str) -> Option<String> {
-    let (model_id, release): (ModelId, Option<String>) = match ModelRef::parse(default).ok()? {
-        ModelRef::Hub { model: model_id, release } => (model_id, release),
+    let reference = ModelRef::parse(default).ok()?;
+    let model_id = match &reference {
+        ModelRef::Hub { model, .. } | ModelRef::Checkpoint { model, .. } => model,
         _ => return None,
     };
     let card = (client.get_model(&model_id.org, &model_id.name).await).inspect_err(|why| tracing::debug!("{default}: {why}")).ok()?;
@@ -164,16 +166,54 @@ async fn named(api: &Api, client: &Client, endpoint: &Endpoint, hub: &Origin, de
     if let Some(label) = card.model.family.clone().filter(|label| !label.is_empty()) {
         return Some(label);
     }
-    let header = match release {
-        Some(release) => card.releases.iter().find(|held| held.version == release)?.lanes.values().next().map(|lane| &lane.header),
-        None => header_of(&card),
-    };
-    read(api, endpoint, hub, header?).await?.family
+    read(api, endpoint, hub, reference_header(&card, &reference)?).await?.family
 }
 
-/// Each tool says the family of the model it runs.
+fn reference_header<'a>(card: &'a types::ModelCard, reference: &ModelRef) -> Option<&'a types::ObjectRef> {
+    match reference {
+        ModelRef::Hub { release: Some(release), .. } => card.releases.iter().find(|held| held.version == *release)?.lanes.values().next().map(|lane| &lane.header),
+        ModelRef::Hub { release: None, .. } => header_of(card),
+        ModelRef::Checkpoint { checkpoint, .. } => card.checkpoints.iter().find(|held| held.id == checkpoint.as_str()).map(|held| &held.header)
+            .or_else(|| card.releases.iter().flat_map(|release| release.lanes.values()).find(|lane| lane.checkpoint == checkpoint.as_str()).map(|lane| &lane.header)),
+        _ => None,
+    }
+}
+
+/// Refuse a known kind/family mismatch before a model choice is written. Missing
+/// metadata is not treated as compatibility; the native loader remains authoritative.
+pub(crate) async fn check_choice(api: &Api, hub: &Origin, slot: &str, reference: &str, expected_family: Option<&str>, lora: bool) -> Result<Option<String>, Error> {
+    let parsed = ModelRef::parse(reference)?;
+    let model = match &parsed {
+        ModelRef::Hub { model, .. } | ModelRef::Checkpoint { model, .. } => model,
+        _ => return Ok(None),
+    };
+    let Ok(client) = reader(api, hub) else { return Ok(None) };
+    let Ok(card) = client.get_model(&model.org, &model.name).await else { return Ok(None) };
+    let facts = match reference_header(&card, &parsed) {
+        Some(header) => match distribution(&client, hub).await {
+            Ok(endpoint) => read(api, &endpoint, hub, header).await,
+            Err(_) => kept(api, &key(hub, header)),
+        },
+        None => None,
+    };
+    save(api);
+    let known_kind = facts.as_ref().map(|facts| if facts.lora { ModelKind::Lora } else { ModelKind::Base })
+        .or(card.model.kind).or_else(|| card.model.role.as_deref().and_then(ModelKind::from_role));
+    let wanted = if lora { ModelKind::Lora } else { ModelKind::Base };
+    if known_kind.is_some_and(|kind| kind != wanted) {
+        let expected = if lora { "a LoRA" } else { "base weights" };
+        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{slot} needs {expected}; {reference} is a different model kind")));
+    }
+    let (family, _) = family(card.model.family.clone(), facts.as_ref().and_then(|facts| facts.family.as_deref()));
+    if let Some((expected, actual)) = expected_family.zip(family.as_deref()).filter(|(expected, actual)| !expected.eq_ignore_ascii_case(actual)) {
+        return Err(Error::new(Kind::Validation, "model_choice_family", format!("{slot} uses {expected}; {reference} is for {actual}")));
+    }
+    Ok(family)
+}
+
+/// Each declared slot says the family of its default model.
 pub(crate) async fn families(api: &Api, hub: &str, tools: &mut [Tool]) {
-    let defaults: BTreeSet<String> = tools.iter().filter_map(|tool| tool.model.as_ref()?.default.clone()).collect();
+    let defaults: BTreeSet<String> = tools.iter().flat_map(|tool| tool.models.iter().chain(tool.model.iter())).filter_map(|model| model.default.clone()).collect();
     let Ok(origin) = Origin::parse(hub) else { return };
     let fresh = |default: &String| {
         let held = named_so_far().lock().expect("named lock");
@@ -198,7 +238,7 @@ pub(crate) async fn families(api: &Api, hub: &str, tools: &mut [Tool]) {
         }
     }
     for tool in tools {
-        if let Some(model) = &mut tool.model {
+        for model in tool.models.iter_mut().chain(tool.model.iter_mut()) {
             model.family = model.default.as_ref().and_then(|default| found.get(default)?.clone());
         }
     }

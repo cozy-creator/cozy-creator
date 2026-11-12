@@ -2969,7 +2969,11 @@ pickup?: Snap | null,
 /**
  * What a checkpoint dropped on its box goes on: the one model its function runs.
  */
-model?: ToolModel | null, };
+model?: ToolModel | null,
+/**
+ * Every declared model slot, including the full paths of slots in child calls.
+ */
+models?: Array<ToolModel>, };
 
 /**
  * One thing a box asks for: a field of its tool's struct.
@@ -3090,7 +3094,15 @@ default?: string | null,
 /**
  * That checkpoint's family, as its header says.
  */
-family?: string | null, };
+family?: string | null,
+/**
+ * The model class declared by the package; absent when an older interface did not name it.
+ */
+class?: string | null,
+/**
+ * This slot reads raw weights rather than constructing a model.
+ */
+weights?: boolean, };
 
 /**
  * `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.

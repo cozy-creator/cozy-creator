@@ -73,8 +73,6 @@ export interface ElementView {
   name: string
   /** The operation chosen on this page; a model can support both image creation and editing. */
   operation?: Operation
-  /** The optional versions strip beside an image; closed until its counter is clicked. */
-  imageHistory?: boolean
   asset?: Asset
   entity?: Entity
   /** An entity's: how the assets it links stand, the worst of them. */
@@ -561,7 +559,7 @@ export class CanvasStore {
     const number = shownOf(view)?.number
     const self = `<${SELF}.${number}>`
     const first = mentionsIn(words)[0]
-    const next = /^\s*(<self\.\d+>\s*)?$/i.test(words) ? `${self} ` : !lead ? words : first && isSelf(versionOf(first)?.name ?? "") ? words.replace(`<${first}>`, self) : `${self} ${words}`
+    const next = asset.kind === "image" && number !== undefined ? `${self} ` : /^\s*(<self\.\d+>\s*)?$/i.test(words) ? `${self} ` : !lead ? words : first && isSelf(versionOf(first)?.name ?? "") ? words.replace(`<${first}>`, self) : `${self} ${words}`
     if (number !== undefined && next !== words) this.setDraft(name, field, next)
     this.focusing = name
     this.patch(name, { hereWords: true })
@@ -1278,6 +1276,7 @@ export class CanvasStore {
     if (!asset || !numbersOf(asset).includes(number)) return
     if (asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     void this.save(key)
+    if (asset.version === number) return
     const edit = this.step(`Selected version ${number} of ${key}`, [key])
     this.patch(key, { viewed: undefined, watchRun: undefined, watchFrom: undefined })
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select version", edit)
@@ -1716,6 +1715,7 @@ export class CanvasStore {
   /** A double tap on a take: it's approved, or if it was, nothing is, and it's still the one looked at. */
   toggleApproved(name: string, number: number) {
     const asset = this.get(name)?.asset
+    if (asset?.kind === "image") return this.selectVersion(name, number)
     if (!asset?.pinned || asset.approved !== number) return this.pin(name, number)
     this.unpin(name)
     this.view(name, number)

@@ -17,6 +17,7 @@ use futures_util::{StreamExt as _, stream};
 use ::api::hub::cards;
 use api::{
     calcifer::On,
+    choices::{self, Choices},
     config::Origin,
     error::{Error, Kind},
     interface::Interface,
@@ -24,6 +25,7 @@ use api::{
     calcifer::tool::{self, BrowsedPackage, Browsed, Tool, ToolList, ToolListChange, Tools},
 };
 use serde::Deserialize;
+use serde_json::{Map, Value};
 use tensorfs::format::newest_by;
 
 use crate::{
@@ -290,6 +292,40 @@ pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<
     let interface = Interface::parse(&found.interface).ok()?;
     let function = found.function.as_deref().or(target::only_function(&interface))?.to_owned();
     tool::tools_of(&found.package, "", &interface).into_iter().find(|held| held.function == function).map(|held| held.fields)
+}
+
+/// A node's model selections use the same slot/reference/adapter binder as a run.
+/// Known catalog incompatibilities refuse the write; unclassified files still
+/// receive the native loader's validation when they are actually used.
+pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fields: &Map<String, Value>) -> Result<(), Error> {
+    let hub = api.machines.hubs.default_origin();
+    let Ok(found) = runs::target::describe(api, &hub, target, None, Some(dir), &runs::default_on(api)).await else { return Ok(()) };
+    let Ok(interface) = Interface::parse(&found.interface) else { return Ok(()) };
+    let Some(function) = found.function.as_deref().or(target::only_function(&interface)) else { return Ok(()) };
+    let Some(callable) = interface.callables.iter().find(|callable| callable.name == function) else { return Ok(()) };
+    let mut document: Map<String, Value> = ["models", "lora"].into_iter()
+        .filter_map(|field| fields.get(field).filter(|value| !value.is_null()).map(|value| (field.to_owned(), value.clone()))).collect();
+    let mut choices = Choices::new(target, function, &callable.models, interface.call_slots(callable));
+    choices.take(&mut document)?;
+    let choices = choices.into_choices();
+    choices::wire(&choices)?;
+    let Some(mut tool) = tool::tools_of(&found.package, "", &interface).into_iter().find(|tool| tool.function == function) else {
+        return Ok(());
+    };
+    crate::hub::checkpoints::families(api, &hub, std::slice::from_mut(&mut tool)).await;
+    let origin = Origin::parse(&hub)?;
+    for choice in choices {
+        let Some(slot) = tool.models.iter().find(|slot| slot.slot == choice.slot) else { continue };
+        let mut family = slot.family.clone();
+        if let Some(reference) = choice.reference.as_deref() {
+            let found = crate::hub::checkpoints::check_choice(api, &origin, &slot.slot, reference, family.as_deref(), false).await?;
+            family = family.or(found);
+        }
+        for adapter in choice.adapters {
+            crate::hub::checkpoints::check_choice(api, &origin, &slot.slot, &adapter.reference, family.as_deref(), true).await?;
+        }
+    }
+    Ok(())
 }
 
 /// What `tool` makes, `image`, `video` or `audio`, as its function's output says, and what a new box of it is called, read as a run of it
