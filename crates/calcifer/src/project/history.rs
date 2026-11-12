@@ -740,11 +740,15 @@ const LAPSED: &str = ": lapsed";
 
 /// The first change of `entry` that isn't as it should be before going `way`, and what it finds instead.
 fn moved<'a>(project: &Project, entry: &'a Entry, way: Way) -> Option<(&'a Change, String)> {
-    entry.changes.iter().find_map(|change| Some((change, moved_one(project, change, way)?)))
+    // A box the step puts back isn't there before it: an import's redo brings back its box, then its take (cc3c1606d).
+    let back = |name: &str| {
+        entry.changes.iter().any(|change| matches!(change, Change::Asset { name: held, before, after } if name_key(held) == name_key(name) && found(way, before, after).is_none() && wanted(way, before, after).is_some()))
+    };
+    entry.changes.iter().find_map(|change| Some((change, moved_one(project, change, way, &back)?)))
 }
 
-/// What `change` should find there before going `way`, and what it finds instead, if it isn't so.
-fn moved_one(project: &Project, change: &Change, way: Way) -> Option<String> {
+/// What `change` should find there before going `way`, and what it finds instead, if it isn't so. `back`: whether the step puts that box back.
+fn moved_one(project: &Project, change: &Change, way: Way, back: &dyn Fn(&str) -> bool) -> Option<String> {
     let folder = &project.folder;
     let written = folder.written().ok()?;
     match change {
@@ -771,7 +775,8 @@ fn moved_one(project: &Project, change: &Change, way: Way) -> Option<String> {
         Change::Card { .. } => None,
         Change::Take { name, number, noun, before, after } => {
             if written.get(name).is_none() {
-                return Some(format!("{name} is gone"));
+                // Put back by the same step, its takes come back with it, as its delete set them aside.
+                return (!back(name)).then(|| format!("{name} is gone"));
             }
             let now = folder.lock().ok().map_or(Took::Absent, |lock| took(&lock, name, *number));
             let wanted = *found(way, before, after);
