@@ -205,8 +205,10 @@ class Worker:
         key, fingerprint = primary.get("controller_key"), remote.get("fingerprint")
         require(isinstance(key, str) and isinstance(fingerprint, str), "fixture_failure")
         authorized = json.loads(self.call("authorize", [str(self.binary), "--json", "machine", "authorize", key], user=True))
-        reach = authorized.get("machine", {}).get("reach")
-        require(isinstance(reach, str) and urlsplit(reach).hostname in {"127.0.0.1", "::1", "localhost"}, "fixture_failure")
+        # `reach` is where other computers add it, none on loopback (tensord serve.rs `reach`); this
+        # loopback stand-in is added at its pinned `address`, `host:port` as `reach` would be.
+        reach = authorized.get("machine", {}).get("address")
+        require(isinstance(reach, str) and urlsplit("//" + reach).hostname in {"127.0.0.1", "::1", "localhost"}, "fixture_failure")
         self.stage("add")
         self.native.document("machine", "add", self.name, reach, "--fingerprint", fingerprint)
         updates = []
