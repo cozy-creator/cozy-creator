@@ -179,9 +179,10 @@ function replaceFile(at, text) {
   check('model_picker_uses_global_nsfw_setting', await picker.getByLabel(/Show NSFW/).count() === 0);
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   check('model_picker_keeps_tool_identity_and_versions', (await of(choosing.name)).tool === qwen.id && (await of(choosing.name)).versions === versionsBeforePicker);
-  const configured = await listed();
-  check('model_configuration_keeps_category_structure', JSON.stringify(configured) === JSON.stringify(atRest), { atRest, configured });
+  // Focus puts the palette away (CanvasHost `setShut(true)`); left, it's back as it was.
   await closeBox(page);
+  const configured = await until('the palette back', listed, (rows) => rows.length > 0, 10_000).catch(() => listed());
+  check('model_configuration_keeps_category_structure', JSON.stringify(configured) === JSON.stringify(atRest), { atRest, configured });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
   await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);
   // The rest stand beside it, in reach while it's worked on.
