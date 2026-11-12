@@ -1,6 +1,6 @@
 // Place, in a real browser (web-ui.md §1): a PNG, an MP4 and a WAV dropped together; one chosen from the selector; one renamed; a
 // move read back from project.db's rows; a reload that restores everything. Also: Esc cancels, a file that isn't media gets one line
-// and the others land, the same file twice is two elements and one file, the hash shows nowhere but the yaml pane, the page's CSP holds.
+// and the others land, the same file twice is two elements and one file, the hash shows nowhere on the page, the page's CSP holds.
 //   node place.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // Last, where a box is let go or pulled to wins, and what it comes onto is pushed aside, down the line (Paul, 11-06).
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser (Google Chrome, which plays H.264); $COZY: the CLI, to check the
@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav, rowsOf, yamlOf, importYaml, fitCanvas, observeResizes } = require('./page');
+const { projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav, rowsOf, addBoxes, assetsOf, storedOf, fitCanvas, observeResizes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -22,7 +22,8 @@ function check(name, ok, detail) {
 const names = (page) => page.evaluate(() => [...document.querySelectorAll('.react-flow__node .nm, .react-flow__node .nm-field')]
   .map((el) => el.value ?? el.textContent).sort());
 const element = boxOf;
-const yaml = (folder) => yamlOf(folder);
+/** Every box's fields as project.db stores them, as one text. */
+const stored = (folder) => JSON.stringify(storedOf(folder));
 /** The intentional denial owns a blank page under the server's actual policy. App errors stay on the app page. */
 async function policyEvalProbe(context, base) {
   const native = await context.request.get(base);
@@ -66,9 +67,11 @@ const FIELD = { png: 'image', jpg: 'image', mp4: 'video', wav: 'audio' };
 const constants = (folder) => {
   const found = {};
   const files = readdirSync(folder).includes('files') ? readdirSync(join(folder, 'files')) : [];
-  // A box that only approves a file, as the export writes it.
-  for (const m of yaml(folder).matchAll(/^ {2}(\S+):\n {4}approved:\s*"?(\w+)"?\n(?! {4})/gm)) {
-    found[m[1]] = { field: FIELD[files.find((name) => name.startsWith(m[2]))?.split('.').pop()], hash: m[2] };
+  // A box that only approves a file.
+  for (const [name, fields] of Object.entries(storedOf(folder))) {
+    if (Object.keys(fields).join() !== 'approved') continue;
+    const hash = String(fields.approved);
+    found[name] = { field: FIELD[files.find((file) => file.startsWith(hash))?.split('.').pop()], hash };
   }
   return found;
 };
@@ -147,9 +150,9 @@ async function placedInView(page, expected) {
   }, id);
   const folder = state.path;
   seen.project = { id, folder };
-  // An export a person wrote, imported: its words and `|` must outlast the page. Its comments go: the project holds values (cl-803).
-  const written = '# Mine.\nassets:\n  coast:\n    # A note.\n    description: |\n      A volcanic coast,\n      under a bright sky.\n';
-  importYaml(folder, written);
+  // A box another writer made: its words must outlast the page.
+  const coast = 'A volcanic coast,\nunder a bright sky.';
+  addBoxes(folder, [{ name: 'coast', kind: 'image', fields: { description: coast } }]);
 
   // A PNG, an MP4 and a WAV dropped together: each there at once under its stem, nothing focused.
   const pngBytes = png(60);
@@ -158,12 +161,12 @@ async function placedInView(page, expected) {
     { name: 'Clash Take.mp4', type: 'video/mp4', bytes: MP4 },
     { name: 'Sea.Sound.wav', type: 'audio/wav', bytes: wav() },
   ], 500, 300);
-  // The asset in the file above can show before or after these. A picture is placed once it's decoded, all of a drop together (cl-918).
+  // The coast box can show before or after these. A picture is placed once it's decoded, all of a drop together (cl-918).
   const atOnce = await until('three placed', async () => (await names(page)).filter((name) => name !== 'coast'), (now) => now.length === 3, 3000).catch(async () => (await names(page)).filter((name) => name !== 'coast'));
   check('three_appear_at_once', atOnce.length === 3, atOnce);
   check('none_focused', await page.evaluate(() => document.activeElement?.tagName !== 'INPUT'));
   check('stems_are_names', JSON.stringify(atOnce) === JSON.stringify(['clash_take', 'kyogre_art_1', 'sea_sound']), atOnce);
-  await until('three constants in project.yaml', () => Object.keys(constants(folder)).length, (n) => n === 3);
+  await until('three constants in project.db', () => Object.keys(constants(folder)).length, (n) => n === 3);
   const three = constants(folder);
   check('constants_by_kind', three.kyogre_art_1?.field === 'image' && three.clash_take?.field === 'video' && three.sea_sound?.field === 'audio', three);
   // An import writes the constant, then the row, so the last row can come a moment after the third constant.
@@ -201,19 +204,19 @@ async function placedInView(page, expected) {
   await page.waitForSelector('.nm-field');
   await page.keyboard.type('ocean');
   await page.keyboard.press('Enter');
-  await until('renamed in project.yaml', () => constants(folder), (all) => all.ocean && !all.sea_sound);
+  await until('renamed in project.db', () => constants(folder), (all) => all.ocean && !all.sea_sound);
   await closeBox(page);
   check('renamed_row_moved', Boolean((await until('renamed row', () => rows(folder), (all) => all.ocean)).ocean));
   check('rename_shown', (await names(page)).includes('ocean'), await names(page));
 
   // Esc cancels an import: nothing in the project.
-  const before = yaml(folder);
+  const before = stored(folder);
   await drop(page, [{ name: 'Never.png', type: 'image/png', bytes: png(200) }], 300, 600);
   await page.waitForSelector('.nm-field');
   await page.keyboard.press('Escape');
   await until('Esc removed it', () => names(page), (all) => !all.includes('never'));
   await new Promise((done) => setTimeout(done, 1000));
-  check('esc_leaves_nothing', yaml(folder) === before);
+  check('esc_leaves_nothing', stored(folder) === before);
 
   // A file that isn't media gets one line; the one beside it lands. The same file twice is two elements and one file.
   const filesBefore = readdirSync(join(folder, 'files')).length;
@@ -234,7 +237,7 @@ async function placedInView(page, expected) {
   const box = await element(page, 'clash_take').locator('.nm').boundingBox();
   const was = rows(folder).clash_take;
   const zoom = await page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
-  const yamlBeforeMove = yaml(folder);
+  const storedBeforeMove = stored(folder);
   // Somewhere clear, the nearest at least 120 off: let go on another box, it would stay there a little smaller and push that aside.
   const { dx, dy } = await page.evaluate((name) => {
     const rects = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.nm')?.textContent, rect: node.getBoundingClientRect() }));
@@ -259,7 +262,7 @@ async function placedInView(page, expected) {
   await page.mouse.up();
   const row = (await until('the moved row', () => rows(folder), (now) => now.clash_take && (now.clash_take.x !== was.x || now.clash_take.y !== was.y))).clash_take;
   check('move_in_canvas_file', Math.abs(row.x - was.x - dx / zoom) <= 3 && Math.abs(row.y - was.y - dy / zoom) <= 3, { was, row, zoom, dx, dy });
-  check('move_touches_no_input', yaml(folder) === yamlBeforeMove);
+  check('move_touches_no_input', stored(folder) === storedBeforeMove);
 
   // A drag on the empty canvas moves it and selects nothing; with Shift it selects instead.
   const empty = await page.evaluate(() => {
@@ -292,30 +295,19 @@ async function placedInView(page, expected) {
   await page.keyboard.up('Shift');
   check('shift_draws_a_selection', drawing === 1 && (await viewport()) === moved);
 
-  // The hash shows nowhere but the raw yaml pane.
+  // The hash shows nowhere on the page.
   const hashes = Object.values(constants(folder)).map((constant) => constant.hash);
   const shown = await page.evaluate(() => document.body.innerText + [...document.querySelectorAll('[title],[aria-label]')].map((el) => el.title + el.ariaLabel).join(' '));
   check('hash_not_shown', hashes.every((hash) => !shown.includes(hash)));
 
-  // A drawer is a route and loses nothing: same viewport, and the yaml there holds the hash.
   const viewportNow = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
-  const viewportShut = await viewportNow();
-  await page.click('.main-menu summary');
-  await page.click('.main-menu a:has-text("project.yaml")');
-  await page.waitForSelector('.drawer pre.yaml');
-  await until('yaml in the pane', () => page.textContent('pre.yaml'), (text) => text.includes('Hero_Shot_v2'));
-  check('drawer_keeps_viewport', (await viewportNow()) === viewportShut);
-  check('yaml_pane_is_the_file', (await page.textContent('pre.yaml')) === yaml(folder));
-  await page.click('.drawer a[aria-label=Close]');
 
   // Reload restores everything: names, positions, viewport, thumbnails.
   const namesBefore = await names(page);
-  // By name, each element with a file has its picture back, whatever was up before. The file's coast is an element with none.
+  // By name, each element with a file has its picture back, whatever was up before. The coast is an element with none.
   const withFiles = Object.keys(constants(folder)).sort();
   const picturesUp = () => page.evaluate(() => [...document.querySelectorAll('.react-flow__node')].filter((node) => [...node.querySelectorAll('.media img')].some((img) => img.naturalWidth > 0)).map((node) => node.querySelector('.nm')?.textContent).sort());
   check('elements_are_its_files_and_its_words', JSON.stringify(namesBefore) === JSON.stringify([...withFiles, 'coast'].sort()), { namesBefore, withFiles });
-  // Its text was written with no version line, so that's the one thing said of the file, and the top bar says it.
-  check('warning_is_the_missing_version', ((await page.getAttribute('.top .sum.ood', 'title')) ?? '').includes('version: 4'), await page.getAttribute('.top .sum.ood', 'title'));
   const places = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.nm')?.textContent, getComputedStyle(node).transform]).sort()));
   const placesBefore = await places();
   await new Promise((done) => setTimeout(done, 300));
@@ -327,7 +319,7 @@ async function placedInView(page, expected) {
   check('reload_viewport', (await viewportNow()) === viewportBefore, { before: viewportBefore, after: await viewportNow() });
   if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-reloaded.png` });
 
-  check('text_kept', /\n  coast:\n    description: \|\n      A volcanic coast,\n      under a bright sky\.\n/.test(yaml(folder)), yaml(folder));
+  check('text_kept', assetsOf(folder).find((asset) => asset.name === 'coast')?.fields.description === coast, assetsOf(folder).find((asset) => asset.name === 'coast'));
 
   // Where a box is put wins (Paul, 11-06: "the placement position of the new object should be primary, and then other objects should move around it
   // to make room, although the new object can also of course shrink in size if needed slightly"; "Resizing it will push the other surrounding objects

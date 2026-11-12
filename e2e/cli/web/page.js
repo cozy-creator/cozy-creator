@@ -517,7 +517,7 @@ async function projectAction(folder, action, ...args) {
     const text = await response.text();
     if (!response.ok) throw new Error(`${method} ${suffix}: ${response.status} ${text}`);
     if (!text) return null;
-    return suffix === '/yaml' && method === 'GET' ? text : JSON.parse(text);
+    return JSON.parse(text);
   };
   const fieldsOf = (terms) => Object.fromEntries(terms.map((term) => {
     const at = term.indexOf('=');
@@ -537,7 +537,6 @@ async function projectAction(folder, action, ...args) {
   let value;
   switch (action) {
     case 'status': value = await request('GET', args[0] ? `/assets/${encodeURIComponent(args[0])}` : ''); break;
-    case 'export': value = await request('GET', '/yaml'); break;
     case 'add': {
       const [tool, name, ...terms] = args;
       const fields = fieldsOf(terms);
@@ -557,14 +556,7 @@ async function projectAction(folder, action, ...args) {
     }
     case 'import': {
       const [source, name, , description] = args;
-      if (/\.ya?ml$/i.test(source)) {
-        const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
-        const response = await fetch(`http://${holder.address}${path}/yaml`, {
-          method: 'PUT', headers: { Authorization: `Bearer ${holder.token}` }, body: readFileSync(source),
-        });
-        if (!response.ok) throw new Error(`PUT /yaml: ${response.status} ${await response.text()}`);
-        value = null;
-      } else if (/^(sha256:)?[0-9a-f]{6,64}$/i.test(source)) value = await request('POST', '/imports', { source, name, description, exact: true });
+      if (/^(sha256:)?[0-9a-f]{6,64}$/i.test(source)) value = await request('POST', '/imports', { source, name, description, exact: true });
       else {
         const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
         const sourceHash = await upload(holder.token, source);
@@ -617,14 +609,25 @@ async function newProject(folder) {
   return opened;
 }
 
-/** The project in `folder` as YAML (cl-803: its state is project.db, and this is its export), through its export endpoint. */
-function yamlOf(folder) {
-  return apiText('GET', projectPath(folder, '/yaml'));
+/** `boxes` made in `folder`'s project in order, each a `POST /assets` body ({name, tool, kind, fields, at}) exactly named, as the page makes
+ * them. An empty tool needs `fields.text` or a `kind`. */
+function addBoxes(folder, boxes) {
+  return boxes.map((box) => projectJson(folder, 'POST', '/assets', { tool: '', exact: true, ...box }));
 }
 
-/** `text` as the project in `folder`, as a hand's edit of its export: its YAML endpoint, one edit. */
-function importYaml(folder, text) {
-  apiText('PUT', projectPath(folder, '/yaml'), text, 'application/yaml');
+/** Each box of `folder`'s project as `GET /v1/projects/{id}` answers it: name, tool, flat fields, approved, versions, … */
+function assetsOf(folder) {
+  return projectJson(folder).assets;
+}
+
+/** Each box's fields as project.db stores them, raw (an `approved` hash prefix, `tracks`), read only: {name: {field: value}}, in order. */
+function storedOf(folder) {
+  const stored = {};
+  for (const [name, field, value] of rowsOf(folder, 'SELECT b.name, f.field, f.value FROM boxes b LEFT JOIN fields f ON f.box = b.key ORDER BY b.ord, f.ord')) {
+    stored[name] ??= {};
+    if (field !== null) stored[name][field] = JSON.parse(value);
+  }
+  return stored;
 }
 
 /** Rows of `folder`'s project.db for `query`, read only, each an array. */
@@ -687,4 +690,4 @@ async function chooseModel(page, name, id, operation) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { addBoxes, assetsOf, storedOf, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };

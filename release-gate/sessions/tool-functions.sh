@@ -1,7 +1,7 @@
 # tool-functions (cl-774, "A tool is a function"): each tool from dropping it to accepting its output, on one rental driven from a
 # runner, the way the page does it (e2e/page.py): POST assets {tool, fields}, render, approve. What e2e's weightless `shaped.py` can't
-# show goes here: frames, a plate, a take, several pictures and a silent shot on the real models, and a file as the upgrade writes it,
-# text asset and all. Packages are local code from a packages_refs checkout named `pk` (minimax-h3 0.10 and on); the session's cozy
+# show goes here: frames, a plate, a take, several pictures and a silent shot on the real models, and boxes like lab's, a text box
+# and all. Packages are local code from a packages_refs checkout named `pk` (minimax-h3 0.10 and on); the session's cozy
 # carries its TensorD to the pod, and `runtime` the Runtime. A completed run is no pass: each output is measured, its frames kept for
 # a person to judge in $OUT/frames, and each call's input is checked against what crossed its mentions. One rental (a 4090). params:
 #   runtime     the Runtime wheel, https://…#sha256=<hex> (default: the session's RUNTIME_WHEEL, from rc/<x>)
@@ -147,27 +147,16 @@ J --arg t "$PK/minimax-h3/generate" '.tools[] | select(.id == $t) | .fields[] | 
 J --arg t "$PK/minimax-h3/generate" '.tools[] | select(.id == $t) | [.fields[] | .field][:4] == ["summary", "beats", "soundscape", "music"]' "$OUT/tools.json" || fail "h3's box: $(jq -c --arg t "$PK/minimax-h3/generate" '.tools[] | select(.id == $t) | .fields | map(.field)' "$OUT/tools.json")"
 J --arg t "$PK/qwen-image-2/image" '.tools[] | select(.id == $t) | .fields[] | select(.field == "megapixels") | .type == "choice" and .options == [1, 2, 4]' "$OUT/tools.json" || fail "the megapixels field"
 
-say "a file like lab, as the upgrade writes it"
-run_page yaml > "$OUT/lab.yaml" 2> "$OUT/lab-export.err" || fail "the project as YAML: $(tail -3 "$OUT/lab-export.err")"
-cat >> "$OUT/lab.yaml" <<YAML
-  lab_sheet:
-    tool: $PK/qwen-image-2/image
-    instructions: This is an RGBA image with transparency. A bronze clockwork automaton, waist up, from <art>, shown from the front on one sheet, with no text. The image has alpha channel and the background is transparent.
-    aspect_ratio: "3:2"
-    megapixels: 1
-    asset_type: character
-  video_style:
-    text: High-quality Unreal Engine graphics, realistic and detailed.
-  lab_shot:
-    tool: $PK/minimax-h3/generate
-    aspect_ratio: "16:9"
-    summary: <video_style> <lab_sheet> walks through a workshop at dusk.
-    soundscape: Quiet gears.
-    beats:
-      - duration: 5
-        description: The camera follows <lab_sheet> as it crosses the workshop.
-YAML
-run_page yaml "$OUT/lab.yaml" > "$OUT/lab-read.txt" 2>&1 || fail "lab's file: $(tail -3 "$OUT/lab-read.txt")"
+say "boxes like lab's: a sheet with a field no tool reads, a text box, and a shot of them"
+jq -n --arg pk "$PK" '[
+  {name: "lab_sheet", tool: "\($pk)/qwen-image-2/image", kind: "image", fields: {
+    instructions: "This is an RGBA image with transparency. A bronze clockwork automaton, waist up, from <art>, shown from the front on one sheet, with no text. The image has alpha channel and the background is transparent.",
+    aspect_ratio: "3:2", megapixels: 1, asset_type: "character"}},
+  {name: "video_style", fields: {text: "High-quality Unreal Engine graphics, realistic and detailed."}},
+  {name: "lab_shot", tool: "\($pk)/minimax-h3/generate", kind: "video", fields: {aspect_ratio: "16:9",
+    summary: "<video_style> <lab_sheet> walks through a workshop at dusk.", soundscape: "Quiet gears.",
+    beats: [{duration: 5, description: "The camera follows <lab_sheet> as it crosses the workshop."}]}}
+]' | run_page boxes > "$OUT/lab-boxes.txt" 2>&1 || fail "lab's boxes: $(tail -3 "$OUT/lab-boxes.txt")"
 render lab_shot --wait lab_sheet,lab_shot || fail "lab's shape: $(tail -c 500 "$OUT/render-lab_shot.txt")"
 J '(.target | test("/image(@|$)")) and .input.aspect_ratio == "3:2" and .input.megapixels == 1' <<< "$(call lab_sheet)" || fail "the image's call: $(call lab_sheet)"
 J '(.target | test("/generate(@|$)")) and .input.beats[0].duration == 5 and (.input.summary.text | contains("High-quality Unreal"))' <<< "$(call lab_shot)" || fail "the shot's call: $(call lab_shot)"
@@ -194,5 +183,4 @@ J '(.target | test("/edit(@|$)")) and (.input.plate | startswith("sha256:")) and
 vid=$(file_of plated video); keep_frames plated "$vid"; say "plated: $(size "$vid"), $(seconds "$vid") s"
 
 (cd "$RUN_PROJECT" && cozy --json --full status) > "$OUT/status.json"
-run_page yaml > "$OUT/project.yaml"
 say "PASS: each tool from drop to accept; judge $OUT/frames"

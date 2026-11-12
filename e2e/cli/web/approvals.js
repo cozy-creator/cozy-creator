@@ -6,7 +6,7 @@
 // no run. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { join } = require('path');
-const { calcifer, importYaml, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, yamlOf, STEP_MS } = require('./page');
+const { addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, storedOf, until, STEP_MS } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const failures = [];
@@ -63,15 +63,10 @@ async function died(why) {
   }
 
   const fixtures = join(__dirname, '..', 'project');
-  importYaml(folder, `version: 4
-assets:
-  card:
-    tool: ${join(fixtures, 'draw.py')}/draw
-    instructions: A still of one colour.
-  copied:
-    tool: ${join(fixtures, 'copied.py')}/copy
-    image: <card>
-`);
+  addBoxes(folder, [
+    { name: 'card', tool: `${join(fixtures, 'draw.py')}/draw`, fields: { instructions: 'A still of one colour.' } },
+    { name: 'copied', tool: `${join(fixtures, 'copied.py')}/copy`, fields: { image: '<card>' } },
+  ]);
   const card = page.locator('.card.here[data-asset="card"]');
   const take = (number) => card.locator(`.take[data-take="${number}"]`);
   const render = async (count) => {
@@ -87,7 +82,7 @@ assets:
   await openBox(page, 'card');
   await take(1).waitFor();
   check('first_take_not_shown_approved', (await card.locator('.take.approved').count()) === 0 && (await page.locator('.card.showing-approved').count()) === 0);
-  check('first_take_no_approved_line', !/\n {2}card:\n(?: {4}.*\n)*? {4}approved:/.test(yamlOf(folder)), yamlOf(folder));
+  check('first_take_no_approved_line', storedOf(folder).card?.approved === undefined, storedOf(folder).card);
   await shot('first');
 
   // A double tap approves take 1.
@@ -104,7 +99,7 @@ assets:
   await openBox(page, 'card');
   await take(2).waitFor();
   check('page_shows_take_1_approved', (await card.locator('.take.approved').count()) === 1 && (await card.locator('.take.approved[data-take="1"]').count()) === 1);
-  check('approved_line_is_take_1', new RegExp(`\\n {2}card:\\n(?: {4}.*\\n)*? {4}approved: "?${take1.replace('sha256:', '').slice(0, 12)}`).test(yamlOf(folder)), yamlOf(folder));
+  check('approved_line_is_take_1', String(storedOf(folder).card?.approved ?? '').startsWith(take1.replace('sha256:', '').slice(0, 12)), storedOf(folder).card);
   await shot('second');
 
   // What mentions it reads take 1: a real run of `copied` (image: <card>) is sent take 1's file, and isn't approved itself.

@@ -19,7 +19,7 @@ package_details() { python3 "$RUN_PACKAGE_DETAILS" "$1"; }
 # run_project <dir>: <dir> made a project unless it is one, for this script's runs wherever the script goes.
 run_project() {
   mkdir -p "$1" || return 1
-  if [ -f "$1/project.db" ] || [ -f "$1/project.yaml" ] || [ -f "$1/project.vault.keys.json" ]; then
+  if [ -f "$1/project.db" ] || [ -f "$1/project.vault.keys.json" ]; then
     (cd "$1" && "$RUN_CLI" --json status > /dev/null) || return 1
   else
     # This helper also runs released CLI binaries without --unencrypted. The existing API
@@ -44,8 +44,8 @@ PY
   RUN_PROJECT=$(cd "$1" && pwd)
 }
 
-# run_page <verb> <args…>: what the page asks of this script's project that no CLI verb does (e2e/page.py: import, add, yaml, render,
-# approve, asset, board, tools).
+# run_page <verb> <args…>: what the page asks of this script's project that no CLI verb does (e2e/page.py: import, add, boxes, set,
+# rename, render, approve, asset, board, tools).
 run_page() { local verb=$1; shift; python3 "$RUN_PAGE" "$verb" "$RUN_PROJECT" "$@"; }
 # run_box <name> <file> <description>: the file a described box of this script's project; prints its name, for a function to read by
 # mention (`video=<name>`) with its description. The CLI attaches a file but can't describe it.
