@@ -334,7 +334,7 @@ pub(crate) fn socket_path(root: &Path, name: &str) -> io::Result<PathBuf> {
     let natural = root.join(name);
     #[cfg(unix)]
     if natural.as_os_str().len() > 100 {
-        if crate::private_io::is_private_path(root) { return Err(io::Error::new(io::ErrorKind::Unsupported, "project path is too long for protected local IPC")); }
+        if crate::private_io::is_protected_path(root) { return Err(io::Error::new(io::ErrorKind::Unsupported, "project path is too long for protected local IPC")); }
         use std::os::unix::fs::MetadataExt;
         let dir = PathBuf::from(format!("/tmp/cozy-{}", crate::launch_identity::euid()));
         platform::durable::private_dir(&dir)?;
