@@ -220,6 +220,9 @@ class Native:
             digest = metadata.get("browser_startup_sha256")
             if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
                 facts["browser_startup_sha256"] = digest
+            setup = metadata.get("browser_startup_diagnostic")
+            if isinstance(setup, str) and len(setup.encode()) <= 4096 and all(ord(ch) >= 32 or ch in "\n\t" for ch in setup):
+                facts["browser_startup_diagnostic"] = setup
         return facts
 
     def command(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None, success: bool = True) -> bytes:

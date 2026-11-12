@@ -108,7 +108,7 @@ impl Live {
         #[cfg(target_os = "linux")]
         if let Some(capture) = &self.startup {
             let mut facts = error.0.metadata.take().and_then(|value| value.as_object().cloned()).unwrap_or_default();
-            facts.extend(capture.facts());
+            facts.extend(capture.facts(self.profile.path()));
             facts.insert("browser_process_exited".into(), json!(self.birth.ended().unwrap_or(false)));
             error.0.metadata = Some(Value::Object(facts));
         }
