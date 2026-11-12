@@ -127,17 +127,19 @@ class Bridge {
     }
     const began = nextProjectOrder()
     try {
-      const [rows, said] = await Promise.all([
-        Promise.all(names.map((name) => this.client.asset(id, name).then(({ asset }) => asset, (error) => {
+      const [read, said] = await Promise.all([
+        Promise.all(names.map((name) => this.client.asset(id, name).then(({ asset, heads }) => ({ asset, heads }), (error) => {
           if (error instanceof ApiError && error.status === 404) return null
           throw error
         }))),
         head ? this.client.projectHead(id) : undefined,
       ])
+      const rows = read.map((row) => row?.asset ?? null)
+      const heads = Object.fromEntries(read.flatMap((row) => (row?.heads?.length ? [[row.asset.name, row.heads]] : [])))
       if (this.privateBlocked.has(id) || (this.privacyEpoch.get(id) ?? 0) !== epoch) return
       const asked = rows.flatMap((row) => row ?? [])
       const left = [...gone, ...names.filter((_, at) => !rows[at])]
-      if (asked.length || left.length || said) this.queries.setQueryData<Project>(key, (state) => state && { ...withAssets(state, asked, left, said), began })
+      if (asked.length || left.length || said) this.queries.setQueryData<Project>(key, (state) => state && { ...withAssets(state, asked, left, said, heads), began })
     } catch {
       // Whatever kept it from reading those, the next says why, of all of it.
       held.whole = true

@@ -21,8 +21,9 @@ function kept<T extends { name: string }>(before: T[], after: T[]): T[] {
   })
 }
 
-/** A state with these assets as they now are, these gone, and with `head`, all that's now said of the project besides them: what it no longer says isn't in it. */
-export function withAssets(state: Project, rows: Asset[], gone: Iterable<string>, head?: Project): Project {
+/** A state with these assets as they now are, each read at `heads`, these gone, and with `head`, all that's now said of the project besides them: what it no
+ *  longer says isn't in it. */
+export function withAssets(state: Project, rows: Asset[], gone: Iterable<string>, head?: Project, heads?: Record<string, string[]>): Project {
   const fresh = new Map(rows.map((row) => [row.name, row]))
   const left = new Set(gone)
   const assets = state.assets.flatMap((row) => {
@@ -33,7 +34,7 @@ export function withAssets(state: Project, rows: Asset[], gone: Iterable<string>
   })
   assets.push(...fresh.values())
   // A head/asset delta cannot claim that every cached asset covers its newer position.
-  return { ...(head ?? state), assets, covered: state.covered }
+  return { ...(head ?? state), assets, covered: state.covered, heads: state.heads, headsOf: { ...state.headsOf, ...heads } }
 }
 
 const openingWarningsKey = (id: string) => ["project-opening-warnings", id]

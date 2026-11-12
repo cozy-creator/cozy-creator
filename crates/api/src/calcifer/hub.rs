@@ -375,6 +375,74 @@ pub struct ModelCheckpoint {
     pub created_at: String,
 }
 
+/// `GET /v1/models/{org}/{name}/headers?release=|checkpoint=&lane=&full=` (`cozy model show`): what each lane of a release, or
+/// one checkpoint, holds, read from its header alone, never a weight.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelHeaders {
+    pub model: String,
+    /// Its owner's label, else what its header verifies as.
+    pub family: Option<String>,
+    /// The release shown; none for a checkpoint in no release.
+    pub release: Option<String>,
+    pub visibility: Option<crate::model_ref::ReleaseVisibility>,
+    /// The newer release a run naming this one takes: the newest of its series (xs-183).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolves_to: Option<String>,
+    pub lanes: Vec<LaneHeader>,
+}
+
+/// One lane's checkpoint as its header says.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LaneHeader {
+    pub lane: String,
+    /// `sha256:<hex>` of its tree.
+    pub checkpoint: String,
+    /// `sha256:<hex>` of its header, and the header's bytes.
+    pub header: String,
+    pub header_bytes: u64,
+    /// What its header verifies as; none: no family's model.
+    pub family: Option<String>,
+    pub kind: Option<ModelContentKind>,
+    /// `model_index.json`'s class, `[library, version, name]`.
+    pub pipeline: Option<[String; 3]>,
+    pub components: Vec<ComponentHeader>,
+    /// What it records of where it came from, as written: `inherited`, `composed`, `added`, `provenance`, `family`, `adapter`.
+    pub records: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// One component of a checkpoint: its class, config, run data and tensors.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ComponentHeader {
+    pub name: String,
+    /// `[library, version, name]`; empty: unknown.
+    pub class: [String; 3],
+    /// Its config's file, when it is not `config.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_file: Option<String>,
+    /// Its config's keys, sorted; none: it has no config.
+    pub config_keys: Vec<String>,
+    /// The config itself, when asked for (`full`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Its run data (`tokenizer.json`, `processor/vocab.json`), by path under its folder, and each one's bytes.
+    pub assets: std::collections::BTreeMap<String, u64>,
+    pub tensors: usize,
+    /// A LoRA's modules and their α, when it holds factors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lora: Option<LoraModules>,
+}
+
+/// A LoRA component's modules, and which state their α.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LoraModules {
+    /// Modules with an A and a B factor.
+    pub modules: usize,
+    /// Of them, those with an `.alpha` of their own.
+    pub alphas: usize,
+    /// Its config's `lora_alpha`: the α of every module without its own.
+    pub lora_alpha: Option<f64>,
+}
+
 /// `PATCH /v1/models/{org}/{name}`: the fields its owner sets, each absent one kept. An empty or `none` family
 /// clears the label (its weights' family shows then), an empty trigger clears it, a null strength clears it. `add_tags`
 /// are added and `remove_tags` removed.

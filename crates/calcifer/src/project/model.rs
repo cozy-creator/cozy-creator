@@ -107,10 +107,10 @@ pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Mod
 fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Result<Model, Error> {
     let folder = &project.folder;
     let lock = folder.lock()?;
-    let (doc, etags, ids) = folder.reading_boxes(|written| {
+    let (doc, etags, ids, heads) = folder.reading_document(|written, heads| {
         let etags: HashMap<String, String> = written.boxes.iter().map(|held| (name_key(&held.name), held.etag())).collect();
         let ids: HashMap<String, String> = written.boxes.iter().map(|held| (name_key(&held.name), unseen::id_of(held))).collect();
-        Doc::of(folder, written, &lock).map(|doc| (doc, etags, ids))
+        Doc::of(folder, written, &lock).map(|doc| (doc, etags, ids, heads))
     })??;
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
@@ -146,7 +146,7 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let next = next_steps(&orphans, absent, !missing.is_empty() || !stale.is_empty());
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
-    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![], machines: vec![] };
+    let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), path: folder.dir.clone(), assets: vec![], heads, queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![], machines: vec![] };
     Ok(Model { rev, heard, doc, lock, head, rows, stand, ids })
 }
 
@@ -199,6 +199,11 @@ impl Model {
     }
 
     /// Asset `i` of the doc, as it stands this moment.
+    /// The project document's heads it was read at.
+    pub(super) fn heads(&self) -> Vec<String> {
+        self.head.heads.clone()
+    }
+
     pub(super) fn row(&self, project: &Project, i: usize) -> Row {
         let mut row = self.rows[i].clone();
         let making = making_now(&project.folder.walk_now().unwrap_or_default());

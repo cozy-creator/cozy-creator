@@ -1,0 +1,41 @@
+{
+ "note": "Four published Anima LoRAs: Sagging Breasts and gpt-image-2 style (sd-scripts networks.lora_anima, kohya's lora_unet_ native names), Anima Turbo (diffusion_model. native names, the LLM adapter too) and Highres/Aesthetic Boost (diffusion_model., adaLN modulation too); anima.lora maps them",
+ "members": [
+  {
+   "source": "civitai://3052892",
+   "member": "sagging-anima-v4.1.safetensors",
+   "header_file": "sagging-anima-v4.1.safetensors.header",
+   "header_sha256": "287ccf26c50152fc1c13c41c65da4151e686c6e323060999f5b9e2c8582d057f",
+   "header_bytes": 163512,
+   "full_length": 7045240,
+   "declared_source_sha256": "83e41e6eb611f401696047925fea73e605911fb15b45c41316db5aaa5ece5d38"
+  },
+  {
+   "source": "civitai://2979642",
+   "member": "anima-turbo-lora-v0.2.safetensors",
+   "header_file": "anima-turbo-lora-v0.2.safetensors.header",
+   "header_sha256": "78bcc312fd8e391002ad121cbe2ae141f7351bddcda05499032c2e90093e525c",
+   "header_bytes": 135896,
+   "full_length": 148902616,
+   "declared_source_sha256": "1b55e40bdb1d0e5a78cb498f245fccfdaae97823265db957d2aabdcf4cd3caf1"
+  },
+  {
+   "source": "civitai://2855073",
+   "member": "anima-highres-aesthetic-boost.safetensors",
+   "header_file": "anima-highres-aesthetic-boost.safetensors.header",
+   "header_sha256": "f52c7f269d742c2dfedd5fc3f69f0b05ebcd78dc9f80031e64bfd078d15b6108",
+   "header_bytes": 119072,
+   "full_length": 138662176,
+   "declared_source_sha256": "db5b2dcc4e1afa215058b7a85fb9377124c2e9aabd48c25e595af7199207c299"
+  },
+  {
+   "source": "civitai://2998634",
+   "member": "gpt-image-2_anima-base1_v1-1.safetensors",
+   "header_file": "gpt-image-2_anima-base1_v1-1.safetensors.header",
+   "header_sha256": "9ad40a6c559b7c03df64088a6ba4ee53de9b567d5ca200cf7898d12e75cbf4ee",
+   "header_bytes": 99096,
+   "full_length": 23037256,
+   "declared_source_sha256": "6ecff93984c1b084950f4535ff71293299dc1ee2225d267b79e5186fc7d38a99"
+  }
+ ]
+}
