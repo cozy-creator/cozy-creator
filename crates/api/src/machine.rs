@@ -466,6 +466,8 @@ pub struct InputFile {
 /// component with tensors under every name. Of Hub checkpoints the machine holds only headers and
 /// trees: their components stay the Hub's.
 pub const BASE: &str = "base";
+/// A weights upload's choice `add:<component>/<path>`: a file it adds to the checkpoint as that component's asset.
+pub const ADD: &str = "add:";
 
 /// One model slot's choice, by name (th-245: the machine resolves it at the Hub). A Hub model is
 /// `repository` at `release` (empty: the newest) in `lane`, else in the lane the Hub picks for
