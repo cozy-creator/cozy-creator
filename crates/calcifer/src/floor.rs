@@ -75,7 +75,7 @@ pub(crate) async fn released() -> Result<Arc<Vec<Released>>, Error> {
         let failed = |e: reqwest::Error| Error::new(Kind::Unavailable, "release_unreachable", format!("PyPI's cozy-runtime releases: {e}"));
         let answer = http()?.get("https://pypi.org/pypi/cozy-runtime/json").send().await.and_then(reqwest::Response::error_for_status).map_err(failed)?;
         let project: Project = answer.json().await.map_err(failed)?;
-        let released = (project.releases.into_iter())
+        let released: Vec<Released> = (project.releases.into_iter())
             .filter(|(version, files)| !files.is_empty() && files.iter().all(|file| !file.yanked) && !api::release::prerelease(version))
             .map(|(version, files)| {
                 let pure = files.iter().find(|file| file.filename.ends_with("-py3-none-any.whl")).map(|file| (file.url.clone(), file.digests.sha256.clone()));

@@ -319,7 +319,7 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
         }
     };
     let (asked, from, said) = match (release, held) {
-        (Some(release), Some(held)) => (vec![release.to_owned()], ReleaseFrom::Asked, None),
+        (Some(release), Some(_)) => (vec![release.to_owned()], ReleaseFrom::Asked, None),
         (Some(release), None) => return Ok(Found { card: card_of(api, hub, package, release).await?, from: ReleaseFrom::Asked, moved: None, upgrade: None }),
         (None, Some(held)) => match unversioned(api, hub, package, held).await? {
             Ok(installed) => return Ok(Found { card: card_of(api, hub, package, &installed).await?, from: ReleaseFrom::Installed, moved: None, upgrade: None }),
