@@ -569,7 +569,8 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const field = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "shape")
   if (!field || view.shape) return null
   const held = store.valueOf(name, field.field)
-  const fallback = typeof field.default === "string" && ratioOf(field.default) ? field.default : field.ratios?.[0] ?? "1:1"
+  const preset = typeof field.default === "string" && ratioOf(field.default) ? field.default : undefined
+  const fallback = String(preset ?? field.ratios?.[0] ?? "1:1")
   if (typeof held !== "string" || !ratioOf(held)) return <span className="ratio-rest">{field.auto ? "Auto" : fallback}</span>
   return (
     <span className="ratio-rest">
