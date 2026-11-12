@@ -197,6 +197,15 @@ fn internal_models(installation: &Installation) -> Result<Vec<String>, Refused> 
         .collect())
 }
 
+/// What `plan`'s on-demand slots read (`Plan::possible`), as one guess.
+fn on_demand(plan: &Plan) -> Vec<(String, crate::access::Selected)> {
+    let possible = plan.possible();
+    match possible.is_empty() {
+        true => vec![],
+        false => vec![("its on-demand models".into(), possible)],
+    }
+}
+
 /// What the checkpoints and components of `each` all share. No components names a whole checkpoint.
 fn shared_of(each: &[Vec<(String, Vec<String>)>]) -> Vec<(String, Vec<String>)> {
     let holds = |list: &[(String, Vec<String>)], header: &str, component: Option<&str>| {
@@ -1005,6 +1014,7 @@ impl Runs {
                     Ok(()) => crate::access::meter(self.service.engine.clone(), id.to_string(), &fetch),
                     Err(error) => crate::private_io::warning(&self.service.engine, id, format_args!("weights early fetch: {error}")),
                 }
+                self.guess_on_demand(id, &fetch, plan);
                 fetch
             });
             if plan.is_none() && spec.parent.is_empty() && internal_models(&installation).is_ok_and(|internal| !internal.is_empty()) {
@@ -1087,7 +1097,7 @@ impl Runs {
             // costs bytes, never room, as nothing is evicted for it. An on-demand model comes when a stage reads it (cl-804).
             let reads = match plan {
                 _ if install_only => crate::access::Reads::default(),
-                Some(plan) => crate::access::Reads { sure: plan.upfront(), guesses: vec![] },
+                Some(plan) => crate::access::Reads { sure: plan.upfront(), guesses: on_demand(&plan) },
                 None => {
                     let observer: Report = observe.clone();
                     let chosen = (spec.models.as_slice(), spec.lane.as_str());
@@ -1234,6 +1244,26 @@ impl Runs {
                 }
             }
         })
+    }
+
+    /// Run `id`'s on-demand models as a guess, behind every run's sure needs (Paul, 11-12, over cl-804's "never ahead"): a
+    /// stage that reads one finds it here, and the run never waits on one. One that doesn't fit beside what comes first isn't.
+    fn guess_on_demand(&self, id: &str, fetch: &Arc<crate::access::Fetch>, plan: &Plan) {
+        let reads = crate::access::Reads { sure: vec![], guesses: on_demand(plan) };
+        if reads.guesses.is_empty() {
+            return;
+        }
+        let wanted = (|| -> io::Result<()> {
+            let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
+            let lined = fetch.lined(&reads, &|_| u64::MAX, &|rank| self.order_guess(id, rank), free)?;
+            for note in &lined.held_back {
+                crate::private_io::warning(&self.service.engine, id, format_args!("{note}"));
+            }
+            fetch.hint(lined, &self.service.engine.caller_id(id))
+        })();
+        if let Err(error) = wanted {
+            crate::private_io::warning(&self.service.engine, id, format_args!("its on-demand models aren't fetched ahead: {error}"));
+        }
     }
 
     /// A guess of run `id`'s (`priority::guess`), `rank` within it: behind every run's sure needs, in job order.

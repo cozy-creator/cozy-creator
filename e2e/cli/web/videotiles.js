@@ -106,8 +106,11 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   // Laid out apart, all in view.
   const places = Object.fromEntries(names.map((name, i) => [name, { x: 80 + (i % 3) * 460, y: 80 + Math.floor(i / 3) * 360 }]));
   await api(`${at}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: places }) });
-  for (const name of names) await boxOf(page, name).waitFor();
-  await fitCanvas(page);
+  // The canvas draws only the boxes in view: fitted to them first (again, until the page has their new places), then each is there.
+  await until('each box in view', async () => {
+    await fitCanvas(page);
+    return (await Promise.all(names.map((name) => boxOf(page, name).isVisible()))).every(Boolean);
+  }, Boolean);
 
   // A box whose take was played in Focus: its playhead is the open box's (Pick up from here), not what its tile shows at rest.
   await openBox(page, 'h3');

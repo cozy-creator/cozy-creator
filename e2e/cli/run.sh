@@ -16,6 +16,7 @@ parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
 . "$(dirname "$0")/lines.sh"
+. "$(dirname "$0")/ondemand.sh"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
@@ -476,6 +477,8 @@ case $SHARD in
   lines) parts="machine_lines logs" ;;
   # An idle Calcifer and TensorD, CPU time and wakeups (xs-189): by dispatch, as it measures for minutes.
   idle) parts="idle_cost logs" ;;
+  # What a call may read on demand, on a cold machine (cl-966).
+  ondemand) parts="ondemand_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints

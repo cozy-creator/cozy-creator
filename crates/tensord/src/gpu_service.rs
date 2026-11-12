@@ -327,6 +327,10 @@ impl Plan {
     pub(crate) fn upfront(&self) -> Vec<(String, Vec<String>)> {
         merged(self.slots.iter().filter(|slot| !slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
+    /// What its on-demand slots read once a stage asks: guessed ahead, never waited on (Paul, 11-12).
+    pub(crate) fn possible(&self) -> Vec<(String, Vec<String>)> {
+        merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
+    }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
     /// asked for by name (`cozy machine warm`), so its first call waits on no download (cl-790).
     pub(crate) fn read(&self) -> Vec<(String, Vec<String>)> {
