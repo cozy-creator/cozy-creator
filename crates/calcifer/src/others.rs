@@ -119,6 +119,7 @@ fn of(row: &MachineRow, state: &v1::RunState) -> Run {
         settled_at_ms: None,
         waiting: None,
         progress: None,
+        video_progress: None,
         queue_position: None,
         warnings: vec![],
         adjustments: vec![],

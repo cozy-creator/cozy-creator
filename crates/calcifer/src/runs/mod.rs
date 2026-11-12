@@ -33,6 +33,7 @@ pub(crate) mod files;
 pub(crate) mod report;
 pub(crate) mod spec;
 pub(crate) mod target;
+pub(crate) mod video_progress;
 
 use bind::Terms;
 use target::Resolved;

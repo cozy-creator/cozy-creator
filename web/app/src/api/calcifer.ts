@@ -2537,6 +2537,10 @@ waiting?: string | null,
  */
 progress?: Progress | null,
 /**
+ * With `?detail=full`: verified video segment frame ranges and published completion, when available.
+ */
+video_progress?: VideoProgress | null,
+/**
  * A run waiting for its turn: its place in its machine's line (1 is next: only the work
  * running is ahead of it), or among the runs waiting for a machine to be chosen.
  */
@@ -3369,6 +3373,29 @@ without?: Array<string>,
  * An Edit's: the clips that made this version, which an edit can carry on from.
  */
 timeline?: TimelineNow | null, };
+
+/**
+ * A video's verified segment plan and the completed prefix, in absolute shot frames.
+ */
+export type VideoProgress = { fps: number,
+/**
+ * Frames kept from an earlier video; no computation is claimed for them in this run.
+ */
+resumed_at: number,
+/**
+ * End of the published completed prefix, including the frames kept before this run.
+ */
+completed_frames: number, segments: Array<VideoSegmentProgress>, };
+
+/**
+ * One actual generated segment; a segment may overlap several authored beats.
+ */
+export type VideoSegmentProgress = { from_frame: number, to_frame: number, status: VideoSegmentStatus, };
+
+/**
+ * Completed means this segment's output was published, not an estimated elapsed share.
+ */
+export type VideoSegmentStatus = "pending" | "in_progress" | "completed";
 
 /**
  * One member of this controller's warm set on the machine.
