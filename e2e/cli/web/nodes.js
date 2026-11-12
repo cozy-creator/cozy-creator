@@ -412,11 +412,13 @@ function linesOf(text, name) {
   check('description_data_is_preserved', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
   check('a_description_makes_it_no_tool', !(await of('source-a')).tool && (await of('source-a')).sha256?.startsWith('sha256:'), await of('source-a'));
 
-  // A click opens a picture's box at once, with no wait for a second (Paul, 11-06, as Figma does).
+  // A click selects a picture's box and opens nothing; a double click opens it at once (Paul, 11-12).
   await away();
   const pressed = await box('source-a').locator('.media').boundingBox();
   await page.mouse.click(pressed.x + pressed.width / 2, pressed.y + pressed.height / 2);
-  check('a_click_opens_at_once', await page.evaluate(() => Boolean(document.querySelector('.card.here[data-asset="source-a"]'))));
+  check('a_click_selects_only', await page.evaluate(() => !document.querySelector('.card.here') && document.querySelector('.react-flow__node.selected .card')?.dataset.asset === 'source-a'));
+  await page.mouse.dblclick(pressed.x + pressed.width / 2, pressed.y + pressed.height / 2);
+  check('a_double_click_opens_at_once', await page.evaluate(() => Boolean(document.querySelector('.card.here[data-asset="source-a"]'))));
   await away();
 
   // A box from what it holds, for a tool no list knows: what says the most is its prompt, whatever the alphabet says of `style` and `summary`, its beats shown, and what else it holds behind More, with no line of names beside it. Each writes one field and moves nothing else.
@@ -875,7 +877,7 @@ function linesOf(text, name) {
 
     // A deleted asset's versions come back with it.
     const takes = await versions('Other');
-    // Only Shift selects: a click opens.
+    // Shift adds to what's selected.
     await away();
     await box('Other').locator('.nm').click({ modifiers: ['Shift'] });
     await page.keyboard.press('Delete');

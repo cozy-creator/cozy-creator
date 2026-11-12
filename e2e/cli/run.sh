@@ -300,6 +300,7 @@ case $SHARD in
   projectdb-web) parts="tools_read db_existing_web logs" ;;
   projectdb-palette) parts="tools_read db_existing_web logs"; DB_WEB="nodes tools" ;;
   projectdb-focus) parts="tools_read db_existing_web logs"; DB_WEB=focused ;;
+  projectdb-select) parts="tools_read db_existing_web logs"; DB_WEB=select ;;
   projectdb-cancel) parts="db_cancel_undo logs" ;;
   projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
   projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;

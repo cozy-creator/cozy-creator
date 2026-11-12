@@ -710,16 +710,12 @@ function Canvas({
         }
         flow.setNodes((nodes) => nodes.map((node) => (node.selected ? { ...node, selected: false } : node)))
       } else if (event.key === "Delete" || (event.key === "Backspace" && !command)) {
-        const take = here ? store.lookingAt(here) : undefined
-        if (here && take !== undefined) {
-          event.preventDefault()
-          return store.discardTake(here, take)
-        }
-        const names = flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
-        if (names.length) {
-          event.preventDefault()
-          store.remove(names)
-        }
+        // What's selected goes, with Undo; open, the box itself. A take goes by its own ✕ or menu.
+        const names = here ? [here] : flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
+        if (!names.length) return
+        event.preventDefault()
+        if (here) leaveHere()
+        store.remove(names)
       } else if (command && event.key.toLowerCase() === "a") {
         event.preventDefault()
         flow.setNodes((nodes) => nodes.map((node) => ({ ...node, selected: true })))
@@ -777,6 +773,14 @@ function Canvas({
   }, [active, store, client, flow, placer, visibleCentre])
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
+  // A click selects a box, and only it (Shift, Ctrl or Cmd add to what's selected); a double click or tap opens it (Paul, 11-12).
+  const nodeClicked = useCallback(
+    (event: ReactMouseEvent, node: ElementNode) => {
+      if (event.shiftKey || event.metaKey || event.ctrlKey) return
+      flow.setNodes((nodes) => nodes.map((held) => (Boolean(held.selected) === (held.id === node.id) ? held : { ...held, selected: held.id === node.id })))
+    },
+    [flow],
+  )
   const focusNode = useCallback(
     (name: string) => {
       const view = store.get(name)
@@ -923,6 +927,7 @@ function Canvas({
           attributionPosition="bottom-left"
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
+          onNodeClick={nodeClicked}
           onNodeDoubleClick={nodeDoubleClicked}
           onPaneClick={paneClicked}
           onNodeContextMenu={nodeMenu}
