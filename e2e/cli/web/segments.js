@@ -144,8 +144,9 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   const take = await until('the take', state, (now) => now.assets.find((held) => held.name === 'shot')?.prefixes?.length === 1, RUN_MS);
   seen.take = take.assets.find((held) => held.name === 'shot').prefixes[0].main;
   const live = box.locator('video.live');
-  // First seen playing: from where the glimpse was, some seconds in, not from its start.
-  const after = await until('the take playing on', () => live.evaluate((el) => ({ at: el.currentTime, paused: el.paused, duration: el.duration })).catch(() => null), (now) => now && !now.paused && now.at > 0, 30_000).catch((error) => error.message);
+  // First seen playing: from where the glimpse was, some seconds in, not from its start. Read once it knows its file: told to play before
+  // that, a video says the time it's to start at and no length (43244714071: {at: 12.17, duration: null}, its take at 0:12 / 0:30).
+  const after = await until('the take playing on', () => live.evaluate((el) => ({ at: el.currentTime, paused: el.paused, duration: el.duration, ready: el.readyState })).catch(() => null), (now) => now && !now.paused && now.at > 0 && now.ready >= 1, 30_000).catch((error) => error.message);
   seen.take_playing = after;
   check('the_take_plays_on_from_where_it_was', typeof after === 'object' && after.at >= 4 && near(after.duration, 30, 1), after);
   check('no_glimpse_once_it_lands', (await box.locator('.glimpse').count()) === 0);
