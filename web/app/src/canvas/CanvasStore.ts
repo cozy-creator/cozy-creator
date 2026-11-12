@@ -4,6 +4,7 @@ import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, lost, type OutboxPort } from "../api/outbox"
 import { nextProjectOrder } from "../api/projectOrder"
 import type {
+  Ahead,
   ToolField as BoxField,
   Fit,
   Imported,
@@ -279,6 +280,8 @@ export class CanvasStore {
   readonly tools = signal<Map<string, Tool>>(new Map())
   /** Names came or went: a text shows a name as a chip or as words by it. */
   readonly names = signal(0)
+  /** What machines fetch ahead for this project's boxes waiting their turn, by run: each box shows its own (cl-905). */
+  readonly ahead = signal<Map<number, Ahead>>(new Map())
   /** The menu open, and where: a box's, or with `number` its take's. */
   readonly menu = signal<{ name: string; x: number; y: number; number?: number } | null>(null)
   /** The box whose file is being looked at large, over everything. */
@@ -755,6 +758,8 @@ export class CanvasStore {
   applyState(state: Project) {
     this.state = state
     this.began = state.began ?? 0
+    const ahead = state.board?.ahead ?? []
+    if (ahead.length || this.ahead.get().size) this.ahead.set(new Map(ahead.map((row) => [row.run, row])))
     if (this.rows && this.flow) this.reconcile()
   }
 
@@ -1814,6 +1819,19 @@ export class CanvasStore {
         say(`Couldn't cancel ${name}`, error)
       },
     })
+  }
+
+  /** A fetch ahead's row as it changed (`ahead.updated`). */
+  applyAhead(row: Ahead) {
+    this.ahead.set(new Map([...this.ahead.get(), [row.run, row]]))
+  }
+
+  /** What's being prepared for box `name` while it waits for its turn: the newest fetch ahead that names it. */
+  preparing(name: string): Ahead | undefined {
+    const key = nameKey(name)
+    let newest: Ahead | undefined
+    for (const row of this.ahead.get().values()) if (row.names?.some((held) => nameKey(held) === key) && (!newest || row.run > newest.run)) newest = row
+    return newest
   }
 
   /** The box run `number` makes, where this project has it. */

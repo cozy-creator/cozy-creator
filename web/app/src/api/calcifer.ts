@@ -71,9 +71,17 @@ function: string, machine: string,
  */
 run: number,
 /**
+ * The boxes it prepares for: each shows it as its own preparation while it waits.
+ */
+names?: Array<string>,
+/**
  * `installing it`, `downloading its weights`, …; none once it ended.
  */
-stage?: string | null, done: number, total: number,
+stage?: string | null,
+/**
+ * What it waits for on its machine, as the machine says: its place in a line there.
+ */
+waiting?: string | null, done: number, total: number,
 /**
  * It's all there.
  */

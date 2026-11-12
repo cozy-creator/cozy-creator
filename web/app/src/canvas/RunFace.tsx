@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { useRef } from "react"
-import type { Machine, Operation, Run } from "../api/calcifer"
+import type { Ahead, Machine, Operation, Run } from "../api/calcifer"
 import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useNow } from "../panels/common"
@@ -80,8 +80,10 @@ export interface Seen {
   on?: Operation
   /** Its package installing before its run is sent. */
   installing?: Operation
-  /** The box it waits for. */
+  /** The box it waits for: that one's render is that box's to show, not this one's (cl-905). */
   waits?: string
+  /** What its machine prepares for it meanwhile: its code and weights, fetched ahead. */
+  preparing?: Ahead
   /** The boxes ahead of it in its project's line. */
   ahead?: string[]
   canceling: boolean
@@ -90,16 +92,17 @@ export interface Seen {
 
 /** Its two lines' words, by what is known of it: the most specific first. */
 export function faceOf(seen: Seen): Face {
-  const { view, run, machine, on, installing, waits, ahead } = seen
+  const { view, run, machine, on, installing, waits, ahead, preparing } = seen
   const rented = machine?.kind === "rental" && machine.state === "booting"
   const card = machine?.rental?.accelerator || machine?.rental?.sku?.toUpperCase()
   const where = run?.machine ? (rented && card ? `${run.machine} (renting ${card})` : run.machine) : "Choosing a machine"
   const face = (phase: string, state: string, on = where): Face => ({ phase, machine: on, state })
   if (seen.canceling || run?.cancel_requested) return face("canceling", "Cancelling…")
   if (run?.status === "failed") return face("failed", `Failed: ${run.reason?.message ?? "its run failed"}`)
-  if (waits && !on) return face("queued", `Waiting for <${waits}>`)
+  if (waits && !on) return prepared(`Waiting for <${waits}>`, preparing)
   if (!run) {
     if (installing) return face("install", `Installing ${packageWords(installing.subject)}`, "Choosing a machine")
+    if (view.queued && (preparing?.stage || preparing?.ready)) return prepared(`Queued: Position ${(ahead?.length ?? 0) + 1}`, preparing)
     if (view.queued) return face("queued", `Queued: Position ${(ahead?.length ?? 0) + 1}`, "Choosing a machine")
     return face("queued", "Queued", "Choosing a machine")
   }
@@ -139,6 +142,19 @@ function useWhole(run: Run | undefined, since: number | undefined, left: number 
   return held.current.fraction
 }
 
+/** A box waiting its turn, by what its machine prepares for it meanwhile (cl-905): its own install and download, on the machine it will
+ *  run on, never another box's render. */
+function prepared(state: string, row?: Ahead): Face {
+  if (!row) return { phase: "queued", machine: "Choosing a machine", state }
+  if (row.held_back) return { phase: "queued", machine: row.machine, state: `${state} - Not prepared: ${row.held_back}` }
+  if (row.ready) return { phase: "queued", machine: row.machine, state: `${state} - Ready` }
+  if (!row.stage) return { phase: "queued", machine: "Choosing a machine", state }
+  const counted = row.total > 0
+  const phase = counted || /download/i.test(row.stage) ? "download" : /install/i.test(row.stage) ? "install" : "queued"
+  const parts = [state, `Preparing: ${row.stage}`, counted ? moving(row.done, row.total) : "", row.waiting ? sentence(row.waiting) : ""]
+  return { phase, machine: row.machine, state: parts.filter(Boolean).join(" - ") }
+}
+
 /** A render on its way, two plain lines (Paul, 11-12): its machine and time, then what it's doing with how far and how fast; Cancel
  *  beside them. On the canvas at its box's text size; in Focus, between its name and its picture, the same two lines. */
 export function RunFace({ view, name, number, above = false }: { view: ElementView; name: string; number?: number; full?: boolean; above?: boolean }) {
@@ -160,8 +176,9 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const installsOf = asset?.tool ? tools.get(asset.tool) : undefined
   const installing = useInstalling(run || waits ? undefined : installsOf && (installsOf.installs ?? installsOf.package))
   useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
+  useSignal(store.ahead)
   const now = useNow(true)
-  const face = faceOf({ view, run, machine, on, installing, waits: waits && !on ? waits : undefined, ahead: store.aheadOf(name), canceling: Boolean(view.canceling), boxOf: (n) => store.boxOfRun(n) })
+  const face = faceOf({ view, run, machine, on, installing, waits: waits && !on ? waits : undefined, ahead: store.aheadOf(name), preparing: store.preparing(name), canceling: Boolean(view.canceling), boxOf: (n) => store.boxOfRun(n) })
   const since = run ? (now - run.created_at_ms) / 1000 : undefined
   const left = run ? leftOf(run) : undefined
   const time = since !== undefined && left != null ? ` - ${short(since)} / ${short(since + left)}` : ""

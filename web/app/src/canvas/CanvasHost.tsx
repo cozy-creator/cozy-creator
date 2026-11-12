@@ -125,6 +125,7 @@ function ProjectSync({ id }: { id: string }) {
     const unsubscribe = stream.subscribe((event) => {
       if (event.type === "canvas" && event.id === id) store.applyRows(event.cards, event.seq)
       if (event.type === "history" && event.id === id) store.history.read()
+      if (event.type === "ahead.updated" && event.project === id) store.applyAhead(event.ahead)
       if (event.type === "resync" || event.type === "hello") {
         store.fellBehind()
         readHistory()
