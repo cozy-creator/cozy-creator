@@ -488,7 +488,10 @@ function replaceFile(at, text) {
     await shot('picked-up');
   }
 
-  check('sidebar_still_only_nodes_and_tools', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .browse, .tools .box-shelf-head, .tools .tool-off, .tools input').count() === 0);
+  // Read at rest: Focus puts the palette away.
+  await closeBox(page);
+  const sidebar = { heads: await until('the palette back', () => page.locator('.tools h4').allTextContents(), (heads) => heads.length > 0, 10_000).catch(() => page.locator('.tools h4').allTextContents()), extra: await page.locator('.tools .browse, .tools .box-shelf-head, .tools .tool-off, .tools input').count() };
+  check('sidebar_still_only_nodes_and_tools', JSON.stringify(sidebar.heads) === JSON.stringify(['Nodes', 'Tools']) && sidebar.extra === 0, sidebar);
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   check('nothing_refused', refused.filter((refusal) => refusal.url.includes('/v1/projects/')).length === 0, refused);
   check('no_page_errors', errors.length === 0, errors);
