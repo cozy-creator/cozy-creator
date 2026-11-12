@@ -77,6 +77,8 @@ def _documents(body: bytes) -> list[dict]:
 # messages, tracebacks, source lines, stdout/stderr and request/response bodies never do.
 _KNOWN_CODES = (
     "project_execution_unavailable", "project_worker_unavailable", "project_migration_pending",
+    "project_execution_migrate_failed", "project_execution_namespace_failed", "project_execution_native_failed",
+    "project_execution_activation_failed", "project_execution_setup_stopped",
     "project_storage_migration_pending", "private_storage_unavailable", "project_transport_unsupported",
     "project_busy", "project_tool_retirement_pending", "run_failed", "usage", "target_relative",
     "target_not_found", "input_invalid", "input_unreadable", "source_scope_required",

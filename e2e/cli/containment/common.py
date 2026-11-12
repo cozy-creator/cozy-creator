@@ -206,7 +206,11 @@ class Native:
                 facts["browser_protocol_code"] = protocol
             for field in ("browser_startup_unreadable", "browser_startup_bounded", "browser_startup_no_sandbox", "browser_startup_no_display",
                           "browser_startup_permission_denied", "browser_startup_invalid_descriptor", "browser_startup_no_space",
-                          "browser_startup_namespace", "browser_startup_crashpad", "browser_process_exited", "browser_exit_before_retirement", "browser_startup_retired"):
+                          "browser_startup_namespace", "browser_startup_crashpad", "browser_startup_fatal", "browser_startup_devtools_pipe",
+                          "browser_startup_zygote", "browser_startup_logging", "browser_startup_profile", "browser_startup_allocator",
+                          "browser_startup_ozone_display", "browser_startup_dbus", "browser_startup_user_namespace", "browser_startup_icu",
+                          "browser_startup_ptrace", "browser_startup_shared_memory", "browser_startup_invalid_flag",
+                          "browser_process_exited", "browser_exit_before_retirement", "browser_startup_retired"):
                 if isinstance(metadata.get(field), bool):
                     facts[field] = metadata[field]
             for field in ("browser_startup_bytes", "browser_exit_code", "browser_exit_signal"):

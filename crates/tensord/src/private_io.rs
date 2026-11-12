@@ -31,7 +31,6 @@ struct Verified {
     roots: Mutex<crate::storage::Roots>,
     execution: Mutex<Option<Arc<ProjectExecution>>>,
     sealed: std::sync::atomic::AtomicBool,
-    transport_prepared: std::sync::atomic::AtomicBool,
     activated: std::sync::atomic::AtomicBool,
     process_scopes: Mutex<Vec<Arc<platform::contain::Scope>>>,
     process_namespace: Mutex<Option<String>>,
@@ -278,7 +277,6 @@ pub(crate) fn register(
             roots: Mutex::default(),
             execution: Mutex::default(),
             sealed: std::sync::atomic::AtomicBool::new(false),
-            transport_prepared: std::sync::atomic::AtomicBool::new(false),
             activated: std::sync::atomic::AtomicBool::new(false),
             process_scopes: Mutex::default(),
             process_namespace: Mutex::default(),
@@ -664,26 +662,4 @@ pub(crate) fn probe_runtime(python: &std::path::Path) -> io::Result<()> {
     if !platform::private_exec::project_scope_quiescent(&process_scope)? { return Err(io::Error::new(io::ErrorKind::ResourceBusy, "Runtime probe descendants remain")); }
     if !status.success() { return Err(io::Error::new(io::ErrorKind::Unsupported, "project_transport_unsupported: selected Runtime refused the inherited transport probe")); }
     transport_capabilities(&bytes)
-}
-
-/// A real protected no-payload executor must complete the inherited-channel challenge before
-/// the namespace reports readiness. No project invocation or source is sent by this probe.
-pub(crate) fn probe_transport(scope: &LocalPrivateStorage, ordinary: &crate::published::Publisher, python: &std::path::Path) -> io::Result<()> {
-    let verified = verified_scope(scope)?;
-    if verified.transport_prepared.load(std::sync::atomic::Ordering::Acquire) { return Ok(()); }
-    let root = root(scope)?;
-    let probe_root = root.join("probes").join(crate::uuid::simple());
-    let mut seal = crate::launch_identity::Seal::prepare(&root, &crate::uuid::simple(), "project-probe", "")?;
-    seal.tensorfs_home = Some(store(scope)?.root().to_owned());
-    let config = crate::device_executor::ExecutorConfig { private: true, python: python.to_owned(), root: probe_root,
-        socket: PathBuf::new(), environment: std::collections::BTreeMap::new(), seal, generation_hold: None,
-        cgroup_namespace: Some(ordinary.process_namespace().to_owned()) };
-    let launcher = crate::child_launcher::ChildLauncher::new()?;
-    let executor = crate::device_executor::DeviceExecutor::spawn_owned(config, &launcher, |_, _| Ok(()))?;
-    executor.terminate()?;
-    for process_scope in verified.process_scopes.lock().unwrap().iter() {
-        if !platform::private_exec::project_scope_quiescent(process_scope)? { return Err(io::Error::new(io::ErrorKind::ResourceBusy, "protected transport probe has a live descendant")); }
-    }
-    verified.transport_prepared.store(true, std::sync::atomic::Ordering::Release);
-    Ok(())
 }

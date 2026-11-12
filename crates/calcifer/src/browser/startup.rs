@@ -36,7 +36,20 @@ impl Capture {
             ("browser_startup_invalid_descriptor", &["Invalid file descriptor", "Bad file descriptor", "Remote debugging pipe file descriptors are not open"] as &[&str]),
             ("browser_startup_no_space", &["No space left on device"] as &[&str]),
             ("browser_startup_namespace", &["Failed to move to new namespace", "Failed to unshare"] as &[&str]),
-            ("browser_startup_crashpad", &["chrome_crashpad_handler: --database is required"] as &[&str]),
+            ("browser_startup_crashpad", &["crashpad", "Crashpad", "crash_reporter"] as &[&str]),
+            ("browser_startup_fatal", &["FATAL:", "Check failed:", "CHECK failed"] as &[&str]),
+            ("browser_startup_devtools_pipe", &["devtools_pipe_handler", "remote_debugging_pipe", "Remote debugging pipe"] as &[&str]),
+            ("browser_startup_zygote", &["zygote", "Zygote"] as &[&str]),
+            ("browser_startup_logging", &["logging.cc", "logging.h"] as &[&str]),
+            ("browser_startup_profile", &["ProcessSingleton", "process_singleton", "SingletonLock", "profile_manager"] as &[&str]),
+            ("browser_startup_allocator", &["malloc()", "tcmalloc", "PartitionAlloc", "double free", "corrupted"] as &[&str]),
+            ("browser_startup_ozone_display", &["ozone_platform", "OzonePlatform", "x11", "xcb", "Xlib:"] as &[&str]),
+            ("browser_startup_dbus", &["dbus", "Failed to connect to the bus"] as &[&str]),
+            ("browser_startup_user_namespace", &["user namespace", "User namespace", "setuid_sandbox", "sandbox_linux.cc"] as &[&str]),
+            ("browser_startup_icu", &["ICU", "icu_util"] as &[&str]),
+            ("browser_startup_ptrace", &["ptrace", "PR_SET_DUMPABLE"] as &[&str]),
+            ("browser_startup_shared_memory", &["shared_memory", "/dev/shm"] as &[&str]),
+            ("browser_startup_invalid_flag", &["unknown flag", "unrecognized flag", "Invalid command line"] as &[&str]),
         ] {
             facts.insert(name.into(), json!(literals.iter().any(|literal| bytes.windows(literal.len()).any(|window| window == literal.as_bytes()))));
         }

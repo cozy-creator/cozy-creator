@@ -12,6 +12,8 @@ Project ownership is explicit before any submission or storage write. A locked, 
 
 Choosing a remote machine or renting one retains the existing remote processing flow and creates a working copy on that machine. Local canonical history, staged inputs, downloaded outputs and local caches remain project-owned. The local mounted path and proof token are never sent to the remote worker. Provider storage and erasure are outside this local containment guarantee; no protected remote workspace is implied.
 
+Local worker health verifies project identity, migrated journal/object storage and process ownership. Each actual private executor verifies its selected Runtime's inherited transport, exact process identity, seal and nonce before Start/Invoke. Storage health does not create a separate public SDK environment or launch an unrelated dry-run executor.
+
 ## Required storage and lifecycle
 
 - Keep the complete controller journal in the existing `project.db`, alongside project state. Private worker journals, objects, code, temporary files and caches must use the verified project view. No public/global journal receives a private row or pointer.

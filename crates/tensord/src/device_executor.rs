@@ -794,7 +794,9 @@ impl DeviceExecutor {
             .stdout(File::create(config.root.join("stdout.log"))?)
             .stderr(File::create(config.root.join("stderr.log"))?);
         if config.private { command.current_dir(&config.root); }
+        if config.private { crate::private_io::apply_native(&mut command, private_io.as_mut(), scope.as_ref())?; }
         // Its generation and kernel namespace stay held while it lives, past this machine's death.
+        // Keep these reviewed native locks after managed-child descriptor cleanup.
         crate::launch_identity::inherit(
             &mut command,
             &[
@@ -802,7 +804,6 @@ impl DeviceExecutor {
                 config.seal.kernel_hold.as_ref(),
             ],
         );
-        if config.private { crate::private_io::apply_native(&mut command, private_io.as_mut(), scope.as_ref())?; }
         let child = match launcher {
             Some(launcher) => launcher.spawn(command)?,
             None => command.spawn()?,

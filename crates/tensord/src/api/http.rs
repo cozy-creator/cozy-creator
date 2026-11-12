@@ -190,20 +190,42 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     let selected = descriptor.clone();
     let logs = m.identity.logs.clone();
     let selected = tokio::task::spawn_blocking(move || {
-        let runs = crate::private_io::within(Some(selected.clone()), || crate::private_io::migrate_execution(&selected, &ordinary, &logs))?;
-        crate::private_io::bind_process_namespace(&selected, ordinary.publisher.process_namespace())?;
-        crate::private_io::within(Some(selected.clone()), || crate::private_io::probe_native(&selected))?;
-        let python = ordinary.publisher.probe_project_sdk()?;
+        let runs = crate::private_io::within(Some(selected.clone()), || crate::private_io::migrate_execution(&selected, &ordinary, &logs))
+            .map_err(|error| ("project_execution_migrate_failed", error))?;
+        crate::private_io::bind_process_namespace(&selected, ordinary.publisher.process_namespace())
+            .map_err(|error| ("project_execution_namespace_failed", error))?;
+        crate::private_io::within(Some(selected.clone()), || crate::private_io::probe_native(&selected))
+            .map_err(|error| ("project_execution_native_failed", error))?;
         crate::private_io::within(Some(selected.clone()), || {
-            crate::private_io::probe_transport(&selected, &ordinary.publisher, &python)?;
-            crate::private_io::activate_execution(&selected, &runs)?;
-            Ok::<_, std::io::Error>(runs)
+            // Storage health does not install an unrelated public SDK or start a dry-run
+            // executor. Each actual private executor verifies its selected Runtime and
+            // inherited-channel challenge before receiving Start/Invoke.
+            crate::private_io::activate_execution(&selected, &runs)
+                .map_err(|error| ("project_execution_activation_failed", error))?;
+            Ok::<_, (&'static str, std::io::Error)>(runs)
         })
     }).await;
     let runs = match selected {
         Ok(Ok(runs)) => runs,
-        Ok(Err(error)) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::ResourceBusy) => return Refusal::from(project_migration_error(error)).into_response(),
-        _ => return Refusal::from(Error::conflict("project_execution_unavailable", "This worker cannot install the protected project execution policy.")).into_response(),
+        Ok(Err((_, error))) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::ResourceBusy) => return Refusal::from(project_migration_error(error)).into_response(),
+        Ok(Err((stage, error))) => {
+            let message = match stage {
+                "project_execution_migrate_failed" => "The worker could not finish this project's storage update.",
+                "project_execution_activation_failed" => "The worker could not activate this project's execution journal.",
+                _ => "The worker could not prepare this project's managed process.",
+            };
+            let mut failure = Error::conflict(stage, message);
+            failure.cause = Some(match error.kind() {
+                std::io::ErrorKind::NotFound => "not_found", std::io::ErrorKind::PermissionDenied => "permission_denied",
+                std::io::ErrorKind::Unsupported => "unsupported", std::io::ErrorKind::InvalidData => "invalid_data",
+                std::io::ErrorKind::InvalidInput => "invalid_input", std::io::ErrorKind::BrokenPipe => "broken_pipe",
+                std::io::ErrorKind::ConnectionRefused => "connection_refused", _ => "other",
+            }.into());
+            failure.metadata = Some(serde_json::json!({ "native_os_error": error.raw_os_error(),
+                "transport_unsupported": error.to_string().starts_with("project_transport_unsupported:") }));
+            return Refusal::from(failure).into_response();
+        }
+        Err(_) => return Refusal::from(Error::conflict("project_execution_setup_stopped", "Project execution setup stopped before it was ready.")).into_response(),
     };
     let m = Machine { identity: m.identity, runs };
     if rest == "health" && request.method() == axum::http::Method::GET {
