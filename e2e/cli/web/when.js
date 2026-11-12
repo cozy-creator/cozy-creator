@@ -124,16 +124,20 @@ async function died(why) {
   await page.locator('.card.here [aria-label="Creativity"] [role=radio]').first().click({ force: true }).catch(() => {});
   check('a_press_changes_nothing', (await fieldsOf()).creativity === 'wild', await fieldsOf());
 
-  // Rendered now, the box's function gets Creativity's default, said nowhere: the box shows why.
-  const last = (await runs())[0]?.number ?? 0;
-  await page.locator('.card.here button[aria-label=Render]').first().click();
-  const rendered = await until('the render', async () => (await runs()).find((run) => run.number > last), Boolean, FIRST_RUN_MS);
-  check('the_render_got_the_default', (await given(rendered.number)) === 'creativity=balanced temporal_overlap=0', await given(rendered.number));
-
+  // Turned on again, it's back as it was; off again, dulled again.
   await switchOf.click();
   const back = await until('Creativity back', () => control('Creativity'), (now) => now?.why === null);
   check('creativity_back_with_upsampling_on', !back.disabled && back.checked === 'wild', back);
   await shot('back');
+  await switchOf.click();
+  await until('Creativity dulled again', () => control('Creativity'), (now) => now?.why === 'Only with Prompt upsampling on');
+
+  // Rendered now, the box's function gets Creativity's default, said nowhere: the box shows why. A take shows the box's
+  // picture, not its fields, so this is last.
+  const last = (await runs())[0]?.number ?? 0;
+  await page.locator('.card.here button[aria-label=Render]').first().click();
+  const rendered = await until('the render', async () => (await runs()).find((run) => run.number > last), Boolean, FIRST_RUN_MS);
+  check('the_render_got_the_default', (await given(rendered.number)) === 'creativity=balanced temporal_overlap=0', await given(rendered.number));
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();
   console.log(JSON.stringify({ failures, seen }, null, 2));

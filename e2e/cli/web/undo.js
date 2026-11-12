@@ -122,9 +122,10 @@ function check(name, ok, detail) {
   for (const name of ['shot', 'red', 'green', 'spare', 'words', 'tooled']) await box(name).waitFor();
   await page.keyboard.press('f');
   await settled(page);
+  // Leftmost but for the logo (22f0e4579): Undo is the next thing after it, before the tabs.
   check('undo_redo_in_the_top_bar_left', await page.evaluate(() => {
-    const [undo, tabs] = [document.querySelector('.top .history [aria-label=Undo]'), document.querySelector('.top .ptabs')];
-    return Boolean(undo && tabs && undo.getBoundingClientRect().right <= tabs.getBoundingClientRect().left && undo.getBoundingClientRect().left < 40);
+    const [brand, undo, tabs] = ['.top > .brand', '.top .history [aria-label=Undo]', '.top .ptabs'].map((selector) => document.querySelector(selector)?.getBoundingClientRect());
+    return Boolean(brand && undo && tabs && brand.left < 40 && undo.left >= brand.right && undo.left - brand.right <= 16 && undo.right <= tabs.left);
   }));
   await shot('top-bar');
 
