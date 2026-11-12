@@ -49,7 +49,8 @@ CONTEXT: dict = {}
 ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_failed",
     "settled_http_status", "journal_run_present", "output_http_status", "output_digest_present",
     "output_digest_matches", "old_subject_output_marker", "old_subject_log_marker", "old_subject_numbers",
-    "worker_owner_pem", "worker_owner_pkcs8", "worker_owner_algorithm", "worker_owner_public_key"})
+    "worker_owner_pem", "worker_owner_pkcs8", "worker_owner_algorithm", "worker_owner_public_key",
+    "calcifer_replacement_birth", "calcifer_replacement_status"})
 
 
 def check(ok: object, case: str, **counts: int | bool) -> None:
@@ -108,7 +109,8 @@ def exception_failure(error: BaseException) -> dict:
                (OSError, "io"), (KeyError, "key"), (TypeError, "type"),
                (ValueError, "value"), (KeyboardInterrupt, "interrupted"))
     return {"class": next((name for kind, name in classes if isinstance(error, kind)), "unclassified"),
-            "code_sha256": sha(error.code.encode()) if isinstance(error, Failure) else None}
+            "code_sha256": sha(error.code.encode()) if isinstance(error, Failure) else None,
+            "errno": error.errno if isinstance(error, OSError) and type(error.errno) is int else None}
 
 
 def digest(path: Path) -> str:
@@ -448,13 +450,29 @@ def crash_before_controller_receipt(native: Native, project: Path, bindings: lis
     with read_db(project / "project.db") as connection:
         require(connection.execute("SELECT count(*) FROM runs WHERE custody='legacy_pending'").fetchone()[0] >= len(bindings), "fixture_failure")
     checkpoint(receipt, "calcifer_crash")
+    CONTEXT["crash_stage"] = "holder_read"
     holder = native.holder()
+    CONTEXT["crash_stage"] = "birth_read"
     exact = birth(holder["pid"])
+    CONTEXT["crash_stage"] = "signal_exact_birth"
     kill_exact(exact)
+    CONTEXT["crash_stage"] = "wait_exact_birth_ended"
     until(lambda: alive(exact), lambda value: not value, "fixture_failure", 90)
-    exclusive_free(CALCIFER / "calcifer.lock")
+    # Restart=on-failure may already have installed a fresh holder. An unheld
+    # lock is not required: prove the killed Birth ended and its replacement is
+    # a different live daemon with positive protocol-3 authority instead.
     checkpoint(receipt, "calcifer_restart")
+    CONTEXT["crash_stage"] = "doctor_recovery"
     command(INSTALLED, "doctor")
+    CONTEXT["crash_stage"] = "replacement_holder"
+    replacement = birth(native.holder()["pid"])
+    check(replacement != exact and alive(replacement), "calcifer_replacement_birth",
+          different=replacement != exact, live=alive(replacement))
+    CONTEXT["crash_stage"] = "replacement_capability"
+    # Native.raw positively binds version, token and actual daemon Birth on this
+    # global status read; it does not read/acknowledge the project receipt.
+    response = native.raw("GET", "/v1/status")
+    check(response.status == 200, "calcifer_replacement_status", status=response.status)
 
 
 def output_bytes(native: Native, run: dict, *, old: bool) -> list[bytes]:
