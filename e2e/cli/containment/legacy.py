@@ -36,6 +36,7 @@ INSTALLED = COZY / "bin/cozy"
 PHASES = frozenset({
     "startup", "public_bootstrap", "public_reset", "old_subject_create",
     "old_subject_success", "old_subject_failure", "old_subject_retry",
+    "old_subject_verify_outputs", "old_subject_verify_logs", "old_subject_verify_numbers",
     "old_subject_snapshot", "old_subject_stop", "candidate_install",
     "candidate_update", "candidate_doctor", "wrong_binding", "native_adoption",
     "calcifer_crash", "calcifer_restart", "rehistory", "encrypt", "lock_scan",
@@ -45,6 +46,25 @@ ERROR_KINDS = frozenset({"usage", "validation", "not_found", "credential", "forb
                          "conflict", "capacity", "unavailable", "internal"})
 # Attached to the receipt in main; command bodies and exception messages never enter it.
 CONTEXT: dict = {}
+ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_failed",
+    "settled_http_status", "journal_run_present", "output_http_status", "output_digest_present",
+    "output_digest_matches", "old_subject_output_marker", "old_subject_log_marker", "old_subject_numbers"})
+
+
+def check(ok: object, case: str, **counts: int | bool) -> None:
+    require(case in ASSERTIONS and all(type(value) in {int, bool} for value in counts.values()), "receipt_schema")
+    CONTEXT["assertion"] = {"case": case, "passed": bool(ok), **counts}
+    require(ok, "fixture_failure")
+
+
+def run_shape(run: dict) -> dict:
+    items = run.get("output", [])
+    return {"has_id": bool(run.get("id")), "has_number": isinstance(run.get("number"), int),
+            "completed": run.get("status") == "completed", "failed": run.get("status") == "failed",
+            "canceled": run.get("status") == "canceled", "queued": run.get("status") == "queued",
+            "in_progress": run.get("status") == "in_progress", "outputs_is_list": isinstance(items, list),
+            "outputs": len(items) if isinstance(items, list) else 0,
+            "output_urls": sum(isinstance(item, dict) and bool(item.get("url")) for item in items) if isinstance(items, list) else 0}
 
 
 def checkpoint(receipt: Receipt, phase: str) -> None:
@@ -215,20 +235,41 @@ def reset_public_bootstrap(native: Native, provenance: dict) -> None:
 
 def terminal(stdout: bytes, status: str) -> dict:
     values = []
+    shape = {"lines": 0, "invalid_json": 0, "objects": 0, "nested_runs": 0, "root_runs": 0,
+             "has_id": 0, "completed": 0, "failed": 0, "canceled": 0, "matching": 0,
+             "expect_failed": status == "failed"}
     for line in stdout.splitlines():
-        value = json.loads(line)
+        shape["lines"] += 1
+        try:
+            value = json.loads(line)
+        except ValueError:
+            shape["invalid_json"] += 1
+            continue
         if isinstance(value, dict):
+            shape["objects"] += 1
             run = value.get("run", value)
-            if isinstance(run, dict) and run.get("status") == status and run.get("id"):
-                values.append(run)
-    require(bool(values), "fixture_failure")
+            if isinstance(run, dict):
+                shape["nested_runs" if "run" in value else "root_runs"] += 1
+                shape["has_id"] += bool(run.get("id"))
+                for name in ("completed", "failed", "canceled"):
+                    shape[name] += run.get("status") == name
+                if run.get("status") == status and run.get("id"):
+                    values.append(run)
+    shape["matching"] = len(values)
+    CONTEXT["terminal"] = shape
+    check(shape["invalid_json"] == 0, "terminal_json_lines", invalid=shape["invalid_json"])
+    check(bool(values), "terminal_failed" if status == "failed" else "terminal_completed", matches=len(values))
     return values[-1]
 
 
 def settled(native: Native, identifier: str, *, old: bool, reference: str) -> dict:
     path = "/v1/runs/" + quote(identifier, safe="") if old else project_route(reference, "/runs/" + quote(identifier, safe=""))
     def read():
-        return native.call("GET", path + "?detail=full", preflight=not old)
+        response = native.raw("GET", path + "?detail=full", preflight=not old)
+        check(200 <= response.status < 300, "settled_http_status", status=response.status)
+        run = response.json()
+        CONTEXT["settled"] = run_shape(run)
+        return run
     return until(read, lambda run: run.get("status") in {"completed", "failed", "canceled"}
                  and all(item.get("url") or item.get("export_error") or item.get("stays") or item.get("checkpoint") for item in run.get("output", [])), "fixture_failure", 1200)
 
@@ -238,7 +279,7 @@ def journal(path: Path, identifiers: list[str]) -> dict:
     with read_db(path) as connection:
         for identifier in identifiers:
             row = connection.execute("SELECT number,idempotency_key,digest,cursor,seq,state_seq,inputs FROM runs WHERE id=?", (identifier,)).fetchone()
-            require(row is not None, "fixture_failure")
+            check(row is not None, "journal_run_present", rows=int(row is not None))
             logs = connection.execute("SELECT seq,at_ms,level,text FROM run_logs WHERE run=? ORDER BY seq", (identifier,)).fetchall()
             outputs = connection.execute("SELECT name,idx,rev,digest,length,exported_rev FROM outputs WHERE run=? ORDER BY name,idx", (identifier,)).fetchall()
             answer[identifier] = {"row": row, "logs": logs, "outputs": outputs}
@@ -387,8 +428,13 @@ def output_bytes(native: Native, run: dict, *, old: bool) -> list[bytes]:
     for item in run.get("output", []):
         if item.get("url") and not item.get("stays"):
             response = native.raw("GET", item["url"], preflight=not old)
-            require(response.status == 200, "fixture_failure")
-            require("sha256:" + sha(response.body) == item.get("sha256"), "fixture_failure")
+            check(response.status == 200, "output_http_status", status=response.status)
+            # v0.24 intentionally omits OutputItem.sha256 for a failed run's
+            # incomplete output. Its finished revision still advertises the
+            # canonical digest in this authenticated HTTP response.
+            expected = item.get("sha256") or response.headers.get("x-cozy-digest")
+            check(isinstance(expected, str), "output_digest_present", advertised=bool(item.get("sha256")), header=bool(response.headers.get("x-cozy-digest")), incomplete=item.get("status") == "incomplete")
+            check("sha256:" + sha(response.body) == expected, "output_digest_matches", advertised=bool(item.get("sha256")))
             bodies.append(response.body)
     return bodies
 
@@ -473,10 +519,15 @@ def qualify(args, receipt: Receipt) -> None:
         run = settled(old, run["id"], old=True, reference=reference)
         run["bodies"] = output_bytes(old, run, old=True)
         results[run["id"]] = run
-    require(any(marker in body for run in results.values() for body in run["bodies"]), "fixture_failure")
+    checkpoint(receipt, "old_subject_verify_outputs")
+    marker_bodies = sum(marker in body for run in results.values() for body in run["bodies"])
+    check(marker_bodies > 0, "old_subject_output_marker", runs=len(results), bodies=sum(len(run["bodies"]) for run in results.values()), marker_bodies=marker_bodies)
     baseline = journal(CALCIFER / "state.db", list(results))
-    require(any(marker in log[3].encode() for value in baseline.values() for log in value["logs"]), "fixture_failure")
-    require(all(value["row"][0] > 0 for value in baseline.values()), "fixture_failure")
+    checkpoint(receipt, "old_subject_verify_logs")
+    marker_logs = sum(marker in log[3].encode() for value in baseline.values() for log in value["logs"])
+    check(marker_logs > 0, "old_subject_log_marker", logs=sum(len(value["logs"]) for value in baseline.values()), marker_logs=marker_logs)
+    checkpoint(receipt, "old_subject_verify_numbers")
+    check(all(value["row"][0] > 0 for value in baseline.values()), "old_subject_numbers", runs=len(baseline))
     # Keep a known real old HTTP request/key too, so a byte-identical retry after
     # move can establish old digest compatibility without reconstructing a CLI ask.
     checkpoint(receipt, "old_subject_retry")
