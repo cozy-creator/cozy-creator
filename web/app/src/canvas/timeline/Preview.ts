@@ -26,7 +26,7 @@ export class Preview {
   readonly failed = signal<string | null>(null)
   private client: Client
   private projectId: string | null
-  private layout: Layout = { placed: [], frames: 0, width: 0 }
+  private layout: Layout = { placed: [], frames: 0, scale: 1, width: 0 }
   private fps = 24
   private video: HTMLVideoElement | null = null
   private holder: HTMLElement | null = null

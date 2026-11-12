@@ -467,7 +467,7 @@ case $SHARD in
   " ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
   # computer placed on (cl-894), a new take never changing what's approved (cl-908), one not looked at (cl-928), the take looked at in
-  # Focus drawn when it finishes (cl-942), and a take one id from Render to its version, a 0.24.0 project's takes kept (cl-945).
+  # Focus drawn when it finishes (cl-942), and a take one id from Render to its version, a 0.24.0 project's takes kept (cl-945), and a 0.24.0 project opened with nothing lost (cl-904).
   projectdb) parts="
     projectdb
     statedb
@@ -480,12 +480,15 @@ case $SHARD in
     takeids
     old_takes
     prepares
+    db_migrate
     logs
   " ;;
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
+  # A project 0.24.0 made, opened here (cl-904, schema 3).
+  projectdb-migrate) parts="db_migrate logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;
   projectdb-palette) parts="tools_read db_existing_web logs"; DB_WEB="nodes tools" ;;

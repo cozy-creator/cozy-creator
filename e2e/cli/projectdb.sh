@@ -4,6 +4,7 @@
 #   db_crash        Calcifer killed (kill -9) amid writes of a box, its row and its push-aside: each whole or absent; a resend is done once
 #   db_crdt         the native CRDT: stable identities, old-schema refusal, projection damage, replica merges, append and restart
 #   db_latency      write latency at a project with 500 takes (it runs on the cozy before project.db too: --shard projectdb-latency)
+#   db_migrate      a project 0.24.0 made opens here with nothing lost: its takes, files and words, ids and history (schema 3)
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -328,7 +329,7 @@ step "project CRDT: canonical state, stable identities, old-schema refusal and n
 local P=$OUT/crdt-project V=$OUT/crdt-v1 before after source
 cozy --json new --unencrypted "$P" > "$OUT/crdt-new.json" 2> "$OUT/crdt-new.err" || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.err")"; return; }
 J '.created == true and (.id | length > 0)' "$OUT/crdt-new.json" || check "CRDT: new did not create a project"
-[ "$(sql1 "$P" 'PRAGMA user_version')" = 2 ] || { check "CRDT: project.db is not schema 2"; return; }
+[ "$(sql1 "$P" 'PRAGMA user_version')" = 3 ] || { check "CRDT: project.db is not schema 3"; return; }
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_document WHERE format = 1 AND length(snapshot) > 0')" = 1 ] || check "CRDT: no native snapshot"
 boxes_in "$P" <<'JSON' || { check "CRDT: seed the editable graph"; return; }
 [{"name": "kyogre", "tool": "qwen-image-2/image", "kind": "image", "fields": {"instructions": "A whale."}},
@@ -376,7 +377,7 @@ project_api "$P" /history > "$OUT/crdt-cache-history.json" || check "CRDT: histo
 # not another daemon or a substitute project storage implementation.
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- "$OUT/crdt-before.am" "$OUT/crdt-renamed.am" > "$OUT/crdt-native.json" 2> "$OUT/crdt-native.err" \
   || check "CRDT: native format/replica proof: $(tail -c 400 "$OUT/crdt-native.err")"
-J '.passed and .native_replicas == 3 and .original_versions == 2 and .same_number_versions_preserved == 2 and (.prompt_alternatives == ["dawn","dusk","noon"])' "$OUT/crdt-native.json" \
+J '.passed and .native_replicas == 3 and .no_files_versions_runs and (.prompt_alternatives == ["dawn","dusk","noon"])' "$OUT/crdt-native.json" \
   || check "CRDT: native merge report: $(cat "$OUT/crdt-native.json")"
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --history-fixture "$OUT/crdt-renamed.am" "$OUT/crdt-history-merged.am" > "$OUT/crdt-history-fixture.json" 2> "$OUT/crdt-history-fixture.err" \
   || { check "CRDT: history merge fixture: $(tail -c 300 "$OUT/crdt-history-fixture.err")"; return; }
@@ -578,4 +579,129 @@ with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
     data,kind=db.execute('SELECT snapshot,typeof(snapshot) FROM crdt_document WHERE id=1').fetchone()
 assert kind=='blob' and data==open(sys.argv[2],'rb').read()
 STREAM_RESTART
+}
+
+# A project 0.24.0 made, opened by this cozy (cl-904's schema 3: its files, versions and runs leave the Automerge document for
+# project.db's rows on its first open). 0.24.0's own cozy makes it, in this one's place as its release installs it; then this
+# cozy goes back in its place, as an update puts it, and opens it: every take, file, word and history entry reads as 0.24.0
+# read it, each take with the id it had, and Undo reaches past the upgrade.
+db_migrate() {
+step "project.db: a project 0.24.0 made opens here with nothing lost"
+local M=$OUT/migrate was=$OUT/cozy-0.24.0 now=$OUT/cozy-now old arch c source
+arch=$(uname -m); [ "$arch" != arm64 ] || arch=aarch64
+mkdir -p "$was"
+curl -fsSL --retry 3 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/v0.24.0/cozy-$arch-unknown-linux-gnu.tar.gz" \
+  | tar -xz -C "$was" || { check "migrate: 0.24.0's archive"; return; }
+old=$(find "$was" -type f -name cozy -print -quit)
+cp "$COZY" "$now"
+in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "migrate: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
+echo "migrate: Calcifer $(api "http://$ADDR/v1/status" | jq -r .version) makes it"
+mkdir -p "$M"; cp "$here/project/draw.py" "$M/"
+# As its page makes boxes (cl-930). A tool box named, with its kind, is made with no machine to read the tool.
+jq -n '[{name: "notes", fields: {text: "Notes 0.24.0 wrote."}}, {name: "drawn", tool: "./draw.py/draw", kind: "image", fields: {instructions: "A still."}}]' \
+  | boxes_in "$M" || { check "migrate: 0.24.0 made no boxes"; in_cozy "$now"; return; }
+for c in red teal navy olive; do ffmpeg -v error -y -f lavfi -i "color=c=$c:size=832x480" -frames:v 1 "$M/$c.png"; done
+project_import "$M" "$M/red.png" take > "$OUT/migrate-import.txt" 2>&1 || check "migrate: import take: $(tail -c 300 "$OUT/migrate-import.txt")"
+for c in teal navy; do
+  source="sha256:$(sha "$M/$c.png")"
+  api --fail-with-body -X PUT --data-binary "@$M/$c.png" "http://$ADDR/v1/files/$source" > /dev/null || check "migrate: upload $c"
+  project_api "$M" /assets/take/versions -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/migrate-version.txt" 2>&1 \
+    || check "migrate: take from $c: $(tail -c 300 "$OUT/migrate-version.txt")"
+done
+project_api "$M" /approve -X POST -H 'Content-Type: application/json' -d '{"name": "take", "version": "2"}' > /dev/null || check "migrate: approve take 2"
+project_api "$M" /assets/take/versions/3 -X DELETE > /dev/null || check "migrate: discard take 3"
+project_api "$M" /assets/drawn -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"instructions": "A <take.2> in teal, as 0.24.0 had it."}}' > /dev/null || check "migrate: drawn's words"
+project_import "$M" "$M/olive.png" olive > "$OUT/migrate-import.txt" 2>&1 || check "migrate: import olive: $(tail -c 300 "$OUT/migrate-import.txt")"
+project_api "$M" /assets/notes -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"text": "Notes 0.24.0 wrote, then changed."}}' > /dev/null || check "migrate: notes' words"
+[ "$(sql1 "$M" 'PRAGMA user_version')" = 2 ] || check "migrate: 0.24.0 made schema $(sql1 "$M" 'PRAGMA user_version'), not 2"
+# 0.24.0's CLI has no export, history or delete: its Calcifer's routes, as its page asks, read and write alike on both.
+migrate_read "$M" 0240 || check "migrate: what 0.24.0 holds of it"
+local was_0240; was_0240=$(dump_of "$M/project.db")
+# A copy of it whose project.db refuses a take's row, as a migration that fails part-way would meet: below.
+local F=$OUT/migrate-fails was_dump
+mkdir -p "$F" && cp -a "$M/." "$F/" && rm -f "$F"/project.db*
+python3 - "$M/project.db" "$F/project.db" <<'PY' || check "migrate: a copy that fails part-way"
+import sqlite3, sys
+with sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True) as source, sqlite3.connect(sys.argv[2]) as copy:
+    source.backup(copy)
+    copy.execute("CREATE TRIGGER e2e_refused BEFORE INSERT ON versions BEGIN SELECT RAISE(ABORT, 'e2e: a row refused'); END")
+PY
+
+in_cozy "$now" || { check "migrate: this cozy back in its place"; return; }
+in_project "$M" --json status > "$OUT/migrate-open.json" 2> "$OUT/migrate-open.err" || { check "migrate: this cozy opening it: $(tail -c 300 "$OUT/migrate-open.err")"; return; }
+[ "$(sql1 "$M" 'PRAGMA user_version')" = 3 ] || check "migrate: project.db is schema $(sql1 "$M" 'PRAGMA user_version') after its first open here, not 3"
+# The project as 0.24.0 left it, kept beside it once.
+local kept=$M/project.db.pre-schema3 kept_at
+[ -f "$kept" ] && [ "$(dump_of "$kept")" = "$was_0240" ] || check "migrate: no copy of it as 0.24.0 left it: $([ -f "$kept" ] && dump_of "$kept") (was $was_0240)"
+kept_at=$(stat -c %Y.%s "$kept" 2> /dev/null)
+cozy machine logs local calcifer --lines 5000 2> /dev/null | grep -q "project.db before schema 3 kept at .*/migrate/project.db.pre-schema3" \
+  || check "migrate: Calcifer's log doesn't say where the copy is"
+migrate_read "$M" now || check "migrate: what this cozy holds of it"
+local part
+for part in facts rows history; do
+  cmp -s "$OUT/migrate-0240-$part" "$OUT/migrate-now-$part" || check "migrate: its $part read otherwise here: $(diff "$OUT/migrate-0240-$part" "$OUT/migrate-now-$part" | head -c 800)"
+done
+[ "$(sql1 "$M" "SELECT count(*) FROM versions WHERE coalesce(json_extract(record, '\$.id'), '') = ''")" = 0 ] || check "migrate: a take has no id"
+for f in $(status "$M" | jq -r '.assets[].name' | while read -r name; do held "$M" "$name" | jq -r '.versions[].files[].path // empty'; done); do
+  [ -f "$M/$f" ] || check "migrate: $f is gone"
+done
+# Undo reaches what 0.24.0 did: notes' words back, then changed again. (A box 0.24.0 deleted is cl-919's, dated at the first open.)
+local words='.asset.fields.text'
+project_api "$M" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: undo notes' words: $(tail -c 300 "$OUT/migrate-undo.txt")"
+[ "$(held "$M" notes | jq -r "$words")" = "Notes 0.24.0 wrote." ] || check "migrate: notes undone say '$(held "$M" notes | jq -r "$words")'"
+project_api "$M" /history/redo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: redo notes' words: $(tail -c 300 "$OUT/migrate-undo.txt")"
+[ "$(held "$M" notes | jq -r "$words")" = "Notes 0.24.0 wrote, then changed." ] || check "migrate: notes redone say '$(held "$M" notes | jq -r "$words")'"
+# A take after it: number 4 (3 is discarded), its own id, all four there across Calcifer killed.
+source="sha256:$(sha "$M/olive.png")"
+project_api "$M" /assets/take/versions -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/migrate-version.txt" 2>&1 \
+  || check "migrate: a take after: $(tail -c 300 "$OUT/migrate-version.txt")"
+kill9
+J '[.versions[].number] == [1, 2, 4] and .discarded == [3] and .asset.approved == 2' <<< "$(held "$M" take)" \
+  || check "migrate: take after a new take and a kill: $(held "$M" take | jq -c '{versions: [.versions[].number], discarded, approved: .asset.approved}')"
+[ "$(sql "$M" "SELECT json_extract(record, '\$.id') FROM versions WHERE key = 'take'" | sort -u | wc -l)" = 4 ] || check "migrate: take's four versions have not four ids"
+# A migration that fails part-way, past its rows' deletes, leaves the project as it was: one transaction. Let be, it migrates.
+was_dump=$(dump_of "$F/project.db")
+if in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1; then check "migrate: a migration refused part-way opened the project"; fi
+[ "$(dump_of "$F/project.db")" = "$was_dump" ] || check "migrate: a migration refused part-way changed project.db ($was_dump, now $(dump_of "$F/project.db")): $(tail -c 300 "$OUT/migrate-fails.json")"
+db_sql "$F" "DROP TRIGGER e2e_refused"
+in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1 || check "migrate: let be, the copy didn't open: $(tail -c 300 "$OUT/migrate-fails.json")"
+[ "$(sql1 "$F" 'PRAGMA user_version')" = 3 ] || check "migrate: let be, the copy is schema $(sql1 "$F" 'PRAGMA user_version')"
+migrate_facts "$F" | cmp -s - "$OUT/migrate-0240-facts" || check "migrate: let be, the copy reads otherwise: $(migrate_facts "$F" | diff "$OUT/migrate-0240-facts" - | head -c 600)"
+[ "$(stat -c %Y.%s "$kept" 2> /dev/null)" = "$kept_at" ] || check "migrate: the copy kept beside it was written again"
+[ "$(dump_of "$F/project.db.pre-schema3")" = "$was_dump" ] || check "migrate: the refused copy's own kept copy isn't it as it was"
+echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.name): [.versions[].number]}) | add' "$OUT/migrate-now-facts")"
+}
+# in_cozy <file>: that cozy in this one's place, as an update puts it, and its Calcifer the one serving: the last stopped as a
+# service manager stops one, and started by the next verb.
+in_cozy() {
+  local lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid
+  pid=$(jq -r .pid < "$lock" 2> /dev/null) || pid=''
+  [ -z "$pid" ] || { kill -TERM "$pid" 2> /dev/null; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done; }
+  cp "$1" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer
+}
+# migrate_facts <project>: each box's words, takes (number, approved, files by hash) and discarded, as the API reads them.
+migrate_facts() {
+  local name
+  status "$1" | jq -r '.assets[].name' | sort | while read -r name; do
+    held "$1" "$name" | jq -c --arg n "$name" '{name: $n, fields: .asset.fields, approved: .asset.approved, versions: [.versions[] | {number, files: (.files | map_values(.sha256))}], discarded: (.discarded // [])}'
+  done
+}
+# migrate_read <project> <tag>: what it holds, to $OUT/migrate-<tag>-{facts,rows,history} (0.25 has no YAML export, cl-930).
+migrate_read() {
+  migrate_facts "$1" > "$OUT/migrate-$2-facts" && migrate_rows "$1" > "$OUT/migrate-$2-rows" \
+    && project_api "$1" /history | jq -c '[.entries[] | {words, undone: (.undone != null)}]' > "$OUT/migrate-$2-history"
+}
+# dump_of <project.db>: its schema version and the hash of all it holds (read; a WAL copy no one has open needs its -shm made).
+dump_of() {
+  python3 - "$1" <<'PY'
+import hashlib, sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+held = hashlib.sha256("\n".join(conn.iterdump()).encode()).hexdigest()
+print(conn.execute("PRAGMA user_version").fetchone()[0], held)
+PY
+}
+# migrate_rows <project>: project.db's rows of takes, boxes' records and files, sorted.
+migrate_rows() {
+  local q
+  for q in "SELECT key, number, discarded, record FROM versions" "SELECT key, record FROM lock_assets" "SELECT sha256, record FROM lock_files"; do sql "$1" "$q" | sort; done
 }

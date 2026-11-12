@@ -128,14 +128,16 @@ PY
 
 case $suite:$shard in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake) needs='' ;;
-  cli:runs | cli:commands | cli:local-code) needs='packages birefnet' ;;
+  cli:runs | cli:local-code) needs='packages birefnet' ;;
+  # commands shows a LoRA's modules (lora show, xs-183).
+  cli:commands) needs='packages birefnet loras' ;;
   # web-localfit's heavy tool paints its edit base with BiRefNet (a take is one since cl-909); only Linux's web-core runs it.
   cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras' ;;
-  cli:) needs='packages birefnet downloads' ;;
+  cli:) needs='packages birefnet downloads loras' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).

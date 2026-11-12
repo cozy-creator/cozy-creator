@@ -45,6 +45,9 @@ enum Group {
     Records(Arc<Records>),
 }
 
+/// What a project from before kept here and project.db's rows now keep alone: its files, versions, runs and what tools make.
+const OUTSIDE: [&str; 5] = ["assets", "files", "runs", "reserved", "makes"];
+
 fn record_namespace(key: &str) -> bool {
     matches!(key, "boxes" | "assets" | "files" | "canvas" | "history" | "runs")
 }
@@ -388,32 +391,8 @@ impl Document {
         Ok(rows)
     }
 
-    pub(super) fn into_stored(self) -> Result<Stored, Error> {
-        let head = ordered(
-            root_value(&self.projection, "head_order"),
-            root_value(&self.projection, "head").and_then(Value::as_object),
-        )
-        .into_iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-        let mut boxes = Vec::new();
-        for (id, record) in record_entries(&self.projection, "boxes").filter(|(_, record)| present(record)) {
-            let ordered = ordered(record.get("field_order"), object(record, "fields"))
-                .into_iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect();
-            boxes.push((
-                record["order"].as_u64().unwrap_or_default(),
-                Boxed {
-                    id: id.clone(),
-                    name: text(record, "name"),
-                    fields: ordered,
-                    at: None,
-                },
-            ));
-        }
-        boxes.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
-        let written = Written { head, boxes: boxes.into_iter().map(|(_, held)| held).collect() };
+    /// What a project from before kept here of its files, versions and runs: project.db's rows take it once (`db::migrate`).
+    pub(super) fn legacy_lock(&self) -> Result<Lock, Error> {
         let mut lock = Lock::default();
         for (id, record) in record_entries(&self.projection, "assets").filter(|(_, record)| present(record)) {
             let mut held: Asset = decode(&record["record"])?;
@@ -449,6 +428,35 @@ impl Document {
         }
         runs.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
         lock.runs = runs.into_iter().map(|(_, run)| run).collect();
+        Ok(lock)
+    }
+
+    pub(super) fn into_stored(self) -> Result<Stored, Error> {
+        let head = ordered(
+            root_value(&self.projection, "head_order"),
+            root_value(&self.projection, "head").and_then(Value::as_object),
+        )
+        .into_iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+        let mut boxes = Vec::new();
+        for (id, record) in record_entries(&self.projection, "boxes").filter(|(_, record)| present(record)) {
+            let ordered = ordered(record.get("field_order"), object(record, "fields"))
+                .into_iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            boxes.push((
+                record["order"].as_u64().unwrap_or_default(),
+                Boxed {
+                    id: id.clone(),
+                    name: text(record, "name"),
+                    fields: ordered,
+                    at: None,
+                },
+            ));
+        }
+        boxes.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
+        let written = Written { head, boxes: boxes.into_iter().map(|(_, held)| held).collect() };
         let mut canvas = BTreeMap::new();
         for (_, record) in record_entries(&self.projection, "canvas").filter(|(_, record)| present(record)) {
             let row: CardRow = decode(&record["record"])?;
@@ -456,7 +464,6 @@ impl Document {
         }
         Ok(Stored {
             written: Arc::new(written),
-            lock: Arc::new(lock),
             canvas: Arc::new(canvas),
             crdt: Some(Arc::new(self)),
             ..Default::default()
@@ -632,30 +639,6 @@ pub(super) fn value(stored: &Stored, ops: &[OpRow], previous: &Value, identity: 
     for (index, held) in stored.written.boxes.iter().enumerate() {
         boxes.insert(held.id.clone(), json!({ "present": true, "name": held.name, "order": index, "fields": map_of(&held.fields), "field_order": keys_of(&held.fields) }));
     }
-    let mut assets = tombstoned(previous, "assets");
-    for (key, held) in &stored.lock.assets {
-        let mut versions = tombstoned(assets.get(&held.id).unwrap_or(&Value::Null), "versions");
-        for (discarded, version) in held
-            .versions
-            .iter()
-            .map(|version| (false, version))
-            .chain(held.discarded.iter().map(|version| (true, version)))
-        {
-            versions.insert(
-                version.id.clone(),
-                json!({ "present": true, "discarded": discarded, "record": version }),
-            );
-        }
-        let metadata = Asset {
-            versions: vec![],
-            discarded: vec![],
-            ..held.clone()
-        };
-        assets.insert(
-            held.id.clone(),
-            json!({ "present": true, "key": key, "record": metadata, "versions": versions }),
-        );
-    }
     let identities: BTreeMap<_, _> = stored
         .written
         .boxes
@@ -686,19 +669,8 @@ pub(super) fn value(stored: &Stored, ops: &[OpRow], previous: &Value, identity: 
         record["uid"] = id.clone().into();
         history.insert(id, json!({ "present": true, "record": record }));
     }
-    let mut runs = tombstoned(previous, "runs");
-    for (index, row) in stored.lock.runs.iter().enumerate() {
-        runs.insert(row.id.clone(), json!({ "present": true, "order": index, "record": row }));
-    }
-    let files: Map<String, Value> = stored
-        .lock
-        .files
-        .iter()
-        .filter(|(_, file)| file.row)
-        .map(|(hash, file)| (hash.clone(), encoded(file)))
-        .collect();
     let (id, name) = identity.unwrap_or_else(|| (super::new_key(), String::new()));
-    json!({ "schema": FORMAT, "identity": { "id": id, "name": name }, "head": map_of(&stored.written.head), "head_order": keys_of(&stored.written.head), "boxes": boxes, "assets": assets, "files": files, "canvas": canvas, "history": history, "runs": runs, "reserved": stored.lock.reserved, "makes": stored.lock.makes })
+    json!({ "schema": FORMAT, "identity": { "id": id, "name": name }, "head": map_of(&stored.written.head), "head_order": keys_of(&stored.written.head), "boxes": boxes, "canvas": canvas, "history": history })
 }
 
 /// Share untouched roots and keep the encoded value of each unchanged record.
@@ -720,57 +692,10 @@ fn changed_projection(before: &Stored, after: &Stored, ops: &[OpRow], previous: 
             }
         }
     }
-    if !Arc::ptr_eq(&before.lock, &after.lock) {
-        let old: BTreeMap<_, _> = before.lock.assets.iter().map(|(key, held)| (held.id.as_str(), (key, held))).collect();
-        let assets = records_mut(&mut next, "assets");
-        retire_records(assets, after.lock.assets.values().map(|held| held.id.as_str()));
-        for (key, held) in &after.lock.assets {
-            if old.get(held.id.as_str()).is_some_and(|(old_key, old)| *old_key == key && *old == held)
-                && assets.get(&held.id).is_some_and(|row| present(row)) { continue; }
-            let row = Arc::make_mut(assets.entry(held.id.clone()).or_insert_with(|| Arc::new(json!({}))));
-            let old_versions: BTreeMap<_, _> = old.get(held.id.as_str()).into_iter().flat_map(|(_, held)|
-                held.versions.iter().map(|version| (version.id.as_str(), (false, version)))
-                    .chain(held.discarded.iter().map(|version| (version.id.as_str(), (true, version))))).collect();
-            let versions = records(row, "versions");
-            retire(versions, held.versions.iter().chain(&held.discarded).map(|version| version.id.as_str()));
-            for (discarded, version) in held.versions.iter().map(|v| (false, v)).chain(held.discarded.iter().map(|v| (true, v))) {
-                if old_versions.get(version.id.as_str()).is_some_and(|(was_discarded, old)| *was_discarded == discarded && *old == version)
-                    && versions.get(&version.id).is_some_and(present) { continue; }
-                versions.insert(version.id.clone(), json!({"present":true,"discarded":discarded,"record":version}));
-            }
-            let metadata = Asset { versions:vec![], discarded:vec![], ..held.clone() };
-            row["present"] = true.into();
-            row["key"] = key.clone().into();
-            row["record"] = encoded(&metadata);
-        }
-        let runs = records_mut(&mut next, "runs");
-        retire_records(runs, after.lock.runs.iter().map(|row| row.id.as_str()));
-        let old: BTreeMap<_, _> = before.lock.runs.iter().map(|row| (row.id.as_str(), row)).collect();
-        for (index, row) in after.lock.runs.iter().enumerate() {
-            let unchanged = old.get(row.id.as_str()).is_some_and(|old| *old == row)
-                && runs.get(&row.id).is_some_and(|row| present(row));
-            if !unchanged {
-                runs.insert(row.id.clone(), Arc::new(json!({"present":true,"order":index,"record":row})));
-            }
-        }
-        if before.lock.files != after.lock.files {
-            let old = root_records(&next, "files");
-            let files: Records = after.lock.files.iter().filter(|(_, file)| file.row).map(|(hash, file)| {
-                let record = encoded(file);
-                let value = old.and_then(|rows| rows.get(hash)).filter(|old| old.as_ref() == &record)
-                    .cloned().unwrap_or_else(|| Arc::new(record));
-                (hash.clone(), value)
-            }).collect();
-            if old != Some(&files) {
-                next.insert("files".into(), Group::Records(Arc::new(files)));
-            }
-        }
-        if before.lock.reserved != after.lock.reserved {
-            set_value(&mut next, "reserved", encoded(&after.lock.reserved));
-        }
-        if before.lock.makes != after.lock.makes {
-            set_value(&mut next, "makes", encoded(&after.lock.makes));
-        }
+    // Files, versions and runs are rows of project.db, never node state (cl-904, Paul 11-12): what a project from before held of
+    // them here goes.
+    for key in OUTSIDE {
+        next.remove(key);
     }
     let identities = |stored: &Stored| -> BTreeMap<String, String> {
         stored.written.boxes.iter().map(|held| (name_key(&held.name), held.id.clone()))
@@ -817,7 +742,6 @@ fn changed_projection(before: &Stored, after: &Stored, ops: &[OpRow], previous: 
     // A peer can leave equal display orders even when this edit changed another
     // branch. Check every live order and copy only records needing normalization.
     normalize_orders(&mut next, "boxes", after.written.boxes.iter().map(|held| &held.id));
-    normalize_orders(&mut next, "runs", after.lock.runs.iter().map(|row| &row.id));
     let (id, name) = identity.unwrap_or_else(|| (super::new_key(), String::new()));
     set_value(&mut next, "schema", FORMAT.into());
     set_value(&mut next, "identity", json!({"id":id,"name":name}));
@@ -838,18 +762,6 @@ fn retire_records<'a>(records: &mut Records, live: impl Iterator<Item = &'a str>
     let live: BTreeSet<_> = live.collect();
     for (_, row) in records.iter_mut().filter(|(id, row)| !live.contains(id.as_str()) && present(row)) {
         Arc::make_mut(row)["present"] = false.into();
-    }
-}
-
-fn records<'a>(value: &'a mut Value, field: &str) -> &'a mut Map<String, Value> {
-    if !value[field].is_object() { value[field] = json!({}); }
-    value[field].as_object_mut().expect("logical records")
-}
-
-fn retire<'a>(records: &mut Map<String, Value>, live: impl Iterator<Item=&'a str>) {
-    let live: BTreeSet<_> = live.collect();
-    for (_, value) in records.iter_mut().filter(|(id, _)| !live.contains(id.as_str())) {
-        value["present"] = false.into();
     }
 }
 
