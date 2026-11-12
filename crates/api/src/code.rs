@@ -152,7 +152,7 @@ fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>, left: &mut Vec<String
     const SKIP_AT_ROOT: &str = ".venv venv node_modules .idea .vscode build dist";
     const SECRET_DIRS: &str = ".aws .ssh .direnv credentials secrets";
     const SECRET_FILES: &str = ".netrc .npmrc .pypirc .envrc credentials.json service-account.json id_ed25519";
-    const PROJECT_DIRS: &str = ".cozy .vault-machine .vault-calcifer .vault-inputs .vault-journal project.vault.data";
+    const PROJECT_DIRS: &str = ".cozy .vault-machine .vault-calcifer .vault-inputs .vault-journal .vault-runtime project.vault.data";
     const PROJECT_FILES: &str = ".vault-local-execution.json .cozy-apfs-v1 project.vault.keys.json project.vault.journal-pending";
     const REFUSED: &str = ".pyc .pyo .pem .key .p12 .pfx .jks .pickle .pkl .pt .ckpt .safetensors .onnx .gguf";
     let listed = |list: &str, name: &str| list.split(' ').any(|item| item == name);

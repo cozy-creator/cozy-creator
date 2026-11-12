@@ -4009,6 +4009,7 @@ name = "tensord"
 version = "0.24.0"
 dependencies = [
  "api",
+ "automerge",
  "aws-lc-rs",
  "axum",
  "base64",
