@@ -74,21 +74,6 @@ current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$
 quote "$(param need_s 3600)"
 rent
 
-if [ -n "$FREE_GIB" ]; then
-  # A package can't hold it: the Runtime refuses one that starts a process. A root shell starts vram.py, which waits
-  # for its holding to stand and says '<pid> <held> <free> <total> <others>' (bytes).
-  hold=$(cat <<EOS
-echo $(base64 -w0 "$VRAM") | base64 -d > /var/tmp/ab-vram.py && rm -f /var/tmp/ab-vram.ready
-setsid nohup python3 /var/tmp/ab-vram.py $(awk -v g="$FREE_GIB" 'BEGIN { printf "%d", g * 1073741824 }') /var/tmp/ab-vram.ready > /var/tmp/ab-vram.out 2>&1 < /dev/null &
-i=0; while [ ! -s /var/tmp/ab-vram.ready ] && kill -0 \$! 2> /dev/null && [ \$i -lt 240 ]; do sleep 0.5; i=\$((i + 1)); done
-cat /var/tmp/ab-vram.ready 2> /dev/null || tail -c 300 /var/tmp/ab-vram.out
-EOS
-)
-  cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$hold") | base64 -d | sh" > "$OUT/hold.txt" 2>&1
-  read -r _ held free _ < <(tail -1 "$OUT/hold.txt")
-  [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "no holder: $(head -c 300 "$OUT/hold.txt")"
-  say "holder: $((held >> 20)) MiB held, $((free >> 20)) MiB left free ($(cat "$OUT/hold.txt"))"
-fi
 
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
 ( while :; do
@@ -120,6 +105,28 @@ weights() { jq -r '[.calls[]? | select(.measurements.memory.stats.varena? != nul
   + ([$v.stats.moved | to_entries[] | select(.key != "bake") | "\(.key) \((.value.bytes // 0) / 1e8 | floor / 10)/\(.value.fills // 0)/\((.value.ns // 0) / 1e8 | floor / 10)s"] | join(" "))
   + ", read ahead \($t.read_ahead // "-") \(($t.read_ahead_bytes // 0) / 1e8 | floor / 10) GB refused \($t.read_ahead_refused // "-"), persisted \($t.persisted // "-") "
   + "\(($t.persisted_bytes // 0) / 1e8 | floor / 10) GB skipped \($t.persist_skipped // "-") failed \($t.persist_failed // "-")"] | join("; ")' "$OUT/$1.json" 2>/dev/null; }
+# hold <cell> <on|off>: suites/bench/vram.py from a root shell takes all of GPU 0 but FREE_GIB, or ends. A package can't
+# hold it (the Runtime refuses one that starts a process), and TensorD takes a GPU out of service that another program
+# holds memory on when it starts, so the holder ends before each update's restart and starts again after it.
+hold() {
+  local script
+  if [ "$2" = off ]; then
+    script='[ -s /var/tmp/ab-vram.ready ] && kill "$(cut -d" " -f1 /var/tmp/ab-vram.ready)"; rm -f /var/tmp/ab-vram.ready; sleep 2'
+  else
+    script=$(cat <<EOS
+echo $(base64 -w0 "$VRAM") | base64 -d > /var/tmp/ab-vram.py && rm -f /var/tmp/ab-vram.ready
+setsid nohup python3 /var/tmp/ab-vram.py $(awk -v g="$FREE_GIB" 'BEGIN { printf "%d", g * 1073741824 }') /var/tmp/ab-vram.ready > /var/tmp/ab-vram.out 2>&1 < /dev/null &
+i=0; while [ ! -s /var/tmp/ab-vram.ready ] && kill -0 \$! 2> /dev/null && [ \$i -lt 240 ]; do sleep 0.5; i=\$((i + 1)); done
+cat /var/tmp/ab-vram.ready 2> /dev/null || tail -c 300 /var/tmp/ab-vram.out
+EOS
+)
+  fi
+  cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$script") | base64 -d | sh" > "$OUT/hold-$1-$2.txt" 2>&1
+  [ "$2" = on ] || return 0
+  read -r _ held free _ < <(tail -1 "$OUT/hold-$1-$2.txt")
+  [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "$1: no holder: $(head -c 300 "$OUT/hold-$1-$2.txt")"
+  say "$1: holder $((held >> 20)) MiB held, $((free >> 20)) MiB left free"
+}
 fails=0
 declare -A MADE=()
 for k in "${names[@]}"; do
@@ -133,10 +140,12 @@ for k in "${names[@]}"; do
     args[$i]=$a
   done
   if [ -n "${UPDATE[$k]:-}" ]; then
+    [ -z "$FREE_GIB" ] || [ "$k" = "${names[0]}" ] || hold "$k" off
     # shellcheck disable=SC2086 # the update's flags and wheel paths (no spaces)
     step "update-$k" machine update "$NAME" ${UPDATE[$k]} -y || fail "$k: the update"
     say "$k: pod Runtime $(cozy machine show "$NAME" --json | jq -r .status.runtime), TensorFS $(cozy machine show "$NAME" --json | jq -r .status.tensorfs)"
   fi
+  [ -z "$FREE_GIB" ] || { [ -z "${UPDATE[$k]:-}" ] && [ "$k" != "${names[0]}" ]; } || hold "$k" on
   mapfile -t downloads < <(jq -c '.download // [] | .[]' <<<"$c")
   for i in "${!downloads[@]}"; do
     mapfile -t dl < <(jq -r '.[]' <<<"${downloads[$i]}")
