@@ -29,8 +29,9 @@ const shell = (command) => new Promise((done, fail) => exec(command, { shell: 'b
 
 // What each first-party package offers, by the operation the palette puts it under: the packages repo's `@app.tool`s.
 const OFFERS = {
-  image: ['anima', 'fibo-2', 'flux-2', 'flux.3', 'hidream-o1', 'hunyuan-image-3', 'ideogram-4', 'krea-2', 'minimax-h3', 'moss-image', 'qwen-image', 'qwen-image-2', 'sdxl'].map((p) => `${p}/image`),
+  image: [...['anima', 'fibo-2', 'flux-2', 'flux.3', 'hidream-o1', 'hunyuan-image-3', 'ideogram-4', 'krea-2', 'moss-image', 'qwen-image', 'qwen-image-2', 'sdxl'].map((p) => `${p}/image`), 'p-h3-image/generate'],
   edit_image: ['birefnet/remove_background'],
+  upscale_image: ['seedvr2/upscale_image'],
   video: ['minimax-h3/generate', 'orbit/orbit'],
   edit_video: ['minimax-h3/edit'],
   upscale_video: ['minimax-h3/upscale', 'relayvsr/upscale', 'seedvr2/upscale'],
@@ -109,7 +110,7 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   await shot('upscale-video');
 
   // A Hub image model dragged out is a box of it, read as a run of it would be; nothing is installed to list it.
-  const image = wanted.image.at(-1);
+  const image = wanted.image.find((tool) => tool.startsWith('sdxl/')) ?? wanted.image[0];
   const names = async () => (await state()).assets.map((row) => row.name);
   const before = await names();
   const imageRow = await implementationRow(page, 'image', image);
