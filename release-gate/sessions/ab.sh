@@ -119,6 +119,7 @@ hold() {
     script='[ -s /var/tmp/ab-vram.ready ] && kill "$(cut -d" " -f1 /var/tmp/ab-vram.ready)"; rm -f /var/tmp/ab-vram.ready; sleep 2'
   else
     script=$(cat <<EOS
+[ -s /var/tmp/ab-vram.ready ] && kill -0 "\$(cut -d' ' -f1 /var/tmp/ab-vram.ready)" 2> /dev/null && { cat /var/tmp/ab-vram.ready; exit 0; }
 echo $(base64 -w0 "$VRAM") | base64 -d > /var/tmp/ab-vram.py && rm -f /var/tmp/ab-vram.ready
 setsid nohup python3 /var/tmp/ab-vram.py $(awk -v g="$FREE_GIB" 'BEGIN { printf "%d", g * 1073741824 }') /var/tmp/ab-vram.ready > /var/tmp/ab-vram.out 2>&1 < /dev/null &
 i=0; while [ ! -s /var/tmp/ab-vram.ready ] && kill -0 \$! 2> /dev/null && [ \$i -lt 240 ]; do sleep 0.5; i=\$((i + 1)); done
@@ -126,9 +127,17 @@ cat /var/tmp/ab-vram.ready 2> /dev/null || tail -c 300 /var/tmp/ab-vram.out
 EOS
 )
   fi
-  cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$script") | base64 -d | sh" > "$OUT/hold-$1-$2.txt" 2>&1
-  [ "$2" = on ] || return 0
-  read -r _ held free _ < <(tail -1 "$OUT/hold-$1-$2.txt")
+  # Right after an update's restart the pod's ssh can answer nothing (pod-session 43325104295): try again, and an `on`
+  # that did start its holder says so the next time instead of starting another.
+  local try held='' free=''
+  for try in 1 2 3 4 5 6; do
+    cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$script") | base64 -d | sh" > "$OUT/hold-$1-$2.txt" 2>&1; local code=$?
+    if [ "$2" = off ]; then [ "$code" = 0 ] && return 0; else
+      read -r _ held free _ < <(tail -1 "$OUT/hold-$1-$2.txt"); [[ ${held:-x} =~ ^[0-9]+$ ]] && break
+    fi
+    say "$1: holder $2, try $try: exit $code $(head -c 200 "$OUT/hold-$1-$2.txt")"; sleep 10
+  done
+  [ "$2" = on ] || fail "$1: the holder did not end"
   [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "$1: no holder: $(head -c 300 "$OUT/hold-$1-$2.txt")"
   say "$1: holder $((held >> 20)) MiB held, $((free >> 20)) MiB left free"
 }
