@@ -324,7 +324,8 @@ impl Binder<'_> {
                 .find_map(|kind| row.get(kind).and_then(Value::as_str).map(|text| (kind, text)))
                 .ok_or_else(shape)?;
             let Some((path, digest)) = self.terms.file(text).await? else {
-                return Err(usage("reference_file_missing", format!("references: {name}'s {kind}, {text}, is no file sent with this run or held here")));
+                return Err(usage("reference_file_missing", format!("references: {name}'s {kind}, {text}, is no file sent with this run or held here"))
+                    .remedy("a relative path in an --input file starts at that file's folder, one on the command line at the working directory"));
             };
             own.push((crate::project::Inline { name: name.to_owned(), kind: kind.to_owned(), file: digest.to_string() }, path));
         }

@@ -270,6 +270,40 @@ fi
 (cd "$dir" && in_project "$RUN_PROJECT" --json run "$here/project/mentions.py/mentions" 'instructions=<Nobody> waves' --on local) > "$OUT/own-refs-nothing.json" 2>&1 || code=$?
 [ "$code" != 0 ] && grep -q input_missing "$OUT/own-refs-nothing.json" && grep -q 'cozy open' "$OUT/own-refs-nothing.json" \
   || check "own references: <Nobody> was not refused with the command that makes it a box (exit $code): $(tail -c 300 "$OUT/own-refs-nothing.json")"
+# xs-191: a relative path in an --input file starts at that file's folder, the run's working directory being the project:
+# in/run.yaml names amy.png beside it. One written from elsewhere (se-131's inputs/edit.json named inputs/meadow-ref.jpg)
+# is refused saying where a relative path starts.
+mkdir -p "$dir/in"; cp "$dir/amy.png" "$dir/in/amy.png"
+printf 'instructions: "<Amy> waves"\nreferences:\n  - name: Amy\n    image: amy.png\n' > "$dir/in/run.yaml"
+if cell own-refs-input "$here/project/mentions.py/mentions" --input "$dir/in/run.yaml"; then
+  grep -qE '"keys": *\[ *"Amy" *\]' "$OUT/own-refs-input.ndjson" && grep -qE '"widths": *\[ *48 *\]' "$OUT/own-refs-input.ndjson" \
+    || check "own references: in/run.yaml's amy.png, beside it, did not send its picture: $(grep -oE '"(text|keys|widths)": *("[^"]*"|\[[^]]*\])' "$OUT/own-refs-input.ndjson" | head -3 | paste -sd' ')"
+fi
+printf 'instructions: "<Amy> waves"\nreferences:\n  - name: Amy\n    image: in/amy.png\n' > "$dir/in/elsewhere.yaml"
+code=0; in_project "$RUN_PROJECT" --json run "$here/project/mentions.py/mentions" --input "$dir/in/elsewhere.yaml" --on local > "$OUT/own-refs-elsewhere.json" 2>&1 || code=$?
+[ "$code" != 0 ] && grep -q reference_file_missing "$OUT/own-refs-elsewhere.json" && grep -q "starts at that file's folder" "$OUT/own-refs-elsewhere.json" \
+  || check "own references: in/elsewhere.yaml's in/amy.png (in/in/amy.png) wasn't refused saying where it starts (exit $code): $(tail -c 300 "$OUT/own-refs-elsewhere.json")"
+}
+
+# xs-191: a lane fits on the components its slot reads, not its whole checkpoint (madebyollin/texture-fix-vae@0.2.0 is
+# Qwen-Image-2.1 with its VAE replaced; its `vae` slot warned that 30.8 GiB doesn't fit for 1.35 GB). TensorD asks the Hub
+# with its GPUs, their free bytes and the slot's components; a CPU runner has no GPUs to send, so the cell asks it the same
+# way. isolated.sh's fitting/vae is an 8 MiB `model` and a 1 MiB `vae`: with 4 MiB free the whole checkpoint doesn't fit,
+# its `vae` does, and its `model` still doesn't.
+lane_fit() {
+step "a lane fits on the components its slot reads, not its whole checkpoint (xs-191)"
+[ -n "${E2E_FIT:-}" ] || { check "lane fit: isolated.sh published no fitting/vae"; return; }
+local ask="${COZY_HUB_URL:?}/v1/models/$E2E_FIT/resolve?release=0.1.0&gpus=8.6&free_vram=$((4 << 20))" part
+for part in whole vae model; do
+  curl -fsS "$ask$([ "$part" = whole ] || echo "&components=$part")" > "$OUT/fit-$part.json" 2>&1 \
+    || { check "lane fit: resolving $E2E_FIT for its $part failed: $(head -c 300 "$OUT/fit-$part.json")"; return; }
+done
+J '.reasons | any(startswith("no lane of fitting/vae@0.1.0 fits"))' "$OUT/fit-whole.json" \
+  || check "lane fit: the whole 9 MiB checkpoint wasn't told it doesn't fit 4 MiB: $(jq -c .reasons "$OUT/fit-whole.json")"
+J '.reasons == []' "$OUT/fit-vae.json" \
+  || check "lane fit: its 1 MiB vae was told it doesn't fit 4 MiB: $(jq -c .reasons "$OUT/fit-vae.json")"
+J '.reasons | any(startswith("no lane of fitting/vae@0.1.0'"'"'s model fits"))' "$OUT/fit-model.json" \
+  || check "lane fit: its 8 MiB model wasn't told it doesn't fit 4 MiB: $(jq -c .reasons "$OUT/fit-model.json")"
 }
 
 # cl-900: descriptions are off for now (tools §9). A described picture's mention reaches its function with an empty description, and the
@@ -686,6 +720,27 @@ cozy --json machine update local -y > "$OUT/floor-unhold.json" 2>&1 \
   || { check "runtime floor: cozy machine update local (its Hub's pin) failed: $(tail -c 300 "$OUT/floor-unhold.json")"; return; }
 machine_ready
 jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "runtime floor: off its hold, local runs $(jq -r .status.runtime "$OUT/machine.json"), not its Hub's pinned 0.45.0"
+# xs-191: an RC build named by hand is a pin too. se-131's aishela, given the RC's TensorFS and cozy by version (each said
+# `(RC)`), was moved off them as the RC moved; held, local refuses e2e-floor 0.2.0 as above, and nothing named lets it go.
+local rc tfs
+rc=$(cozy --version | awk '{split($2, v, "."); print v[1] "." v[2] + 1 ".0"}')
+tfs=$(curl -fsSL "https://github.com/cozy-creator/cozy-creator/releases/download/rc-$rc/SHA256SUMS" 2> /dev/null \
+  | sed -n 's/.*  tensorfs-\(.*\)-cp311-abi3-manylinux_2_28_x86_64\.whl$/\1/p' | head -1) || tfs=
+if [ -n "$tfs" ]; then
+  cozy --json machine update local --tensorfs "$tfs" -y > "$OUT/floor-rc-pin.json" 2>&1 \
+    || { check "runtime floor: local refused the RC's TensorFS $tfs: $(tail -c 300 "$OUT/floor-rc-pin.json")"; return; }
+  machine_ready
+  code=0
+  in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=rc-pin --on local > "$OUT/floor-rc-pin.ndjson" 2> "$OUT/floor-rc-pin.err" || code=$?
+  [ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-rc-pin.ndjson" "$OUT/floor-rc-pin.err" \
+    || check "runtime floor: given the RC's TensorFS $tfs by hand, local wasn't held: exit $code $(tail -c 300 "$OUT/floor-rc-pin.ndjson") $(tail -c 300 "$OUT/floor-rc-pin.err")"
+  cozy --json machine update local -y > "$OUT/floor-rc-unpin.json" 2>&1 \
+    || { check "runtime floor: cozy machine update local failed after the RC pin: $(tail -c 300 "$OUT/floor-rc-unpin.json")"; return; }
+  machine_ready
+  jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "runtime floor: after the RC pin, local runs $(jq -r .status.runtime "$OUT/machine.json"), not 0.45.0"
+else
+  echo "runtime floor: rc-$rc holds no TensorFS for linux x86_64: an RC pin isn't asked here"
+fi
 in_project "$RUN_PROJECT" run "$E2E_FLOOR/relay" text=upgrade --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
   || check "runtime floor: the unversioned e2e-floor run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
 grep -q "upgrading local.s Runtime 0.45.0 → 0.45.[1-9][0-9]* for .*e2e-floor 0.2.0" "$OUT/floor-upgrade.err" \
