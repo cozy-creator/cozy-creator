@@ -15,8 +15,9 @@
 //!   with the next (cl-905); a job's own parts follow one another with the link full. A task nothing
 //!   wants stops (cl-686).
 //! - **Giving way.** Places go to the most urgent waiting range first. Every place taken, a range in flight gives
-//!   its place up at its next bytes to one waiting at an earlier job's order (or 0: what a running call reads now),
-//!   and asks again from the byte it reached (cl-966).
+//!   its place up at its next bytes to one waiting at an earlier job's order, and asks again from the byte it reached.
+//!   While an object at order 0 is under way (an emergency: what a running call reads now), every other request gives
+//!   way at its next bytes and nothing else starts, so it has the whole link; then the rest go on (cl-966).
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every byte
 //!   enters the store's admission, which hashes it: wrong bytes are never admitted. A process sharing
 //!   the store that is fetching an object is waited for, not raced (tfs-142).
@@ -229,6 +230,8 @@ struct Queue {
     tasks: HashMap<String, Arc<Task>>,
     heap: BinaryHeap<Reverse<(u64, u64, String)>>,
     seq: u64,
+    /// Its tasks at order 0 (emergencies).
+    urgent: usize,
 }
 
 impl Queue {
@@ -236,6 +239,9 @@ impl Queue {
     fn remove(&mut self, task: &Arc<Task>) {
         if self.tasks.get(&task.object.sha256).is_some_and(|t| Arc::ptr_eq(t, task)) {
             self.tasks.remove(&task.object.sha256);
+            if task.priority.load(Ordering::Acquire) == 0 {
+                self.urgent -= 1;
+            }
         }
     }
 
@@ -257,8 +263,10 @@ pub(crate) struct Shared {
     pub volume: Option<VolumeOrigin>,
     queue: Mutex<Queue>,
     queued: Notify,
-    /// A task's order moved earlier (`want`): what waits for a place at its old one asks again.
+    /// A task's order moved earlier (`want`), or the last emergency ended: what waits for a place asks again.
     moved: Notify,
+    /// `Queue::urgent`, read without the queue's lock.
+    urgent: AtomicUsize,
     closed: AtomicBool,
     closing: Notify,
     /// Requests in flight, across every object, as many as the ramp allows (`Pace`).
@@ -657,6 +665,7 @@ impl Shared {
             queue: Mutex::default(),
             queued: Notify::new(),
             moved: Notify::new(),
+            urgent: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
             closing: Notify::new(),
             slots: Slots::new(START.min(requests.max(1))),
@@ -798,8 +807,10 @@ impl Shared {
     /// Each free place with nothing waiting takes the back half of the in-flight range with the most
     /// left, while that half is at least `STEAL`; the range's own request stops where the half begins.
     fn steal(&self) {
+        // During an emergency, only its ranges.
+        let before = self.held(1).then_some(1);
         while let Some(slot) = self.slots.idle() {
-            if self.take_half(slot, None).is_some() {
+            if self.take_half(slot, before).is_some() {
                 return;
             }
         }
@@ -810,8 +821,10 @@ impl Shared {
     /// slot back when there is none.
     fn take_half(&self, slot: Slot, before: Option<u64>) -> Option<Slot> {
         let flights = lock(&self.flights).clone();
+        // Order 1 names the emergencies' (order 0), which share job 0 with what is next to them.
+        let earlier = |order: u64, before: u64| if before == 1 { order == 0 } else { job(order) < job(before) };
         let urgent = |flight: &&Arc<Flight>| {
-            before.is_none_or(|before| flight.taken.as_ref().is_some_and(|(task, _)| job(task.priority.load(Ordering::Acquire)) < job(before)))
+            before.is_none_or(|before| flight.taken.as_ref().is_some_and(|(task, _)| earlier(task.priority.load(Ordering::Acquire), before)))
         };
         let most = flights.iter().filter(urgent).max_by_key(|flight| {
             let span = lock(&flight.span);
@@ -853,7 +866,7 @@ impl Shared {
             }
             let rate = front.saturating_sub(judged.seen) as f64 / took.as_secs_f64();
             (judged.seen, judged.since) = (front, Instant::now());
-            if flight.stopped() || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
+            if flight.stopped() || self.held(task.priority.load(Ordering::Acquire)) || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
                 continue;
             }
             if sent >= HEDGES_AT_ONCE {
@@ -909,6 +922,10 @@ impl Shared {
                 task.waiters.fetch_add(1, Ordering::AcqRel);
                 if priority < task.priority.load(Ordering::Acquire) {
                     task.priority.store(priority, Ordering::Release);
+                    if priority == 0 {
+                        queue.urgent += 1;
+                        self.urgent.store(queue.urgent, Ordering::Release);
+                    }
                     if !task.started.load(Ordering::Acquire) {
                         queue.seq += 1;
                         let seq = queue.seq;
@@ -945,6 +962,10 @@ impl Shared {
                 let seq = queue.seq;
                 queue.heap.push(Reverse((priority, seq, object.sha256.clone())));
                 queue.tasks.insert(object.sha256.clone(), Arc::clone(&task));
+                if priority == 0 {
+                    queue.urgent += 1;
+                    self.urgent.store(queue.urgent, Ordering::Release);
+                }
                 self.busy_one();
                 self.queued.notify_one();
                 task
@@ -956,23 +977,40 @@ impl Shared {
     /// The order of the most urgent task nobody has started that someone still wants, which stays in line.
     fn next(&self) -> Option<u64> {
         let mut queue = lock(&self.queue);
+        let mut next = None;
         while let Some(Reverse((priority, _, sha256))) = queue.heap.peek().cloned() {
             if let Some(task) = queue.tasks.get(&sha256).cloned() {
                 if !task.started.load(Ordering::Acquire) && task.priority.load(Ordering::Acquire) == priority {
                     if !queue.unwanted(&task) {
-                        return Some(priority);
+                        next = Some(priority);
+                        break;
                     }
                     self.unbusy();
                 }
             }
             queue.heap.pop();
         }
-        None
+        self.calmed(&queue);
+        next
+    }
+
+    /// `queue`'s emergencies, as read without its lock; the last one ended, what waits for one wakes.
+    fn calmed(&self, queue: &Queue) {
+        if self.urgent.swap(queue.urgent, Ordering::AcqRel) > 0 && queue.urgent == 0 {
+            self.moved.notify_waiters();
+            self.queued.notify_waiters();
+        }
+    }
+
+    /// Whether a request at `order` waits: it isn't one, and an emergency (order 0) is under way.
+    fn held(&self, order: u64) -> bool {
+        order != 0 && self.urgent.load(Ordering::Acquire) > 0
     }
 
     /// The most urgent task nobody has started that someone still wants.
     fn pop(&self) -> Option<Arc<Task>> {
         let mut queue = lock(&self.queue);
+        let mut popped = None;
         while let Some(Reverse((priority, _, sha256))) = queue.heap.pop() {
             let Some(task) = queue.tasks.get(&sha256).cloned() else {
                 continue;
@@ -986,9 +1024,11 @@ impl Shared {
             }
             task.started.store(true, Ordering::Release);
             task.enter(Phase::Starting);
-            return Some(task);
+            popped = Some(task);
+            break;
         }
-        None
+        self.calmed(&queue);
+        popped
     }
 
     /// `object`'s task as its waiters see it; None when none is open (landed, failed or unwanted).
@@ -1006,14 +1046,21 @@ impl Shared {
     }
 
     fn finish(&self, task: &Arc<Task>, outcome: Result<Tier>) {
-        lock(&self.queue).remove(task);
+        {
+            let mut queue = lock(&self.queue);
+            queue.remove(task);
+            self.calmed(&queue);
+        }
         task.done.send_replace(Some(outcome));
         self.unbusy();
     }
 
     /// Whether nothing wants `task` any more; then it has left the queue (`Queue::unwanted`).
     fn unwanted(&self, task: &Arc<Task>) -> bool {
-        lock(&self.queue).unwanted(task)
+        let mut queue = lock(&self.queue);
+        let unwanted = queue.unwanted(task);
+        self.calmed(&queue);
+        unwanted
     }
 
     /// Resolves once nothing wants `task`.
@@ -1027,12 +1074,20 @@ impl Shared {
     pub(crate) async fn dispatch(self: Arc<Self>) {
         loop {
             // A place at the order of what is next, asked again as something more urgent comes.
+            // During an emergency, nothing else starts.
             let permit = loop {
                 let notified = self.queued.notified();
                 tokio::pin!(notified);
                 notified.as_mut().enable();
+                let next = self.next();
+                if next.is_some_and(|next| self.held(next)) {
+                    tokio::select! {
+                        () = notified => continue,
+                        () = self.closed() => return,
+                    }
+                }
                 tokio::select! {
-                    slot = self.slots.take(self.next().unwrap_or(u64::MAX)) => break slot,
+                    slot = self.slots.take(next.unwrap_or(u64::MAX)) => break slot,
                     () = notified => {}
                     () = self.closed() => return,
                 }
@@ -1245,6 +1300,11 @@ impl Shared {
             tokio::pin!(moved);
             moved.as_mut().enable();
             let order = task.priority.load(Ordering::Acquire);
+            if self.held(order) {
+                asked = None;
+                moved.await;
+                continue;
+            }
             if asked.as_ref().is_none_or(|(at, _)| *at != order) {
                 asked = Some((order, Box::pin(self.slots.take(order))));
             }
@@ -1404,7 +1464,8 @@ impl Shared {
                     if !part.push(task, &data).await? {
                         break;
                     }
-                    if self.slots.outranked(task.priority.load(Ordering::Acquire)) {
+                    let order = task.priority.load(Ordering::Acquire);
+                    if self.held(order) || self.slots.outranked(order) {
                         return Err(Failed::GaveWay);
                     }
                 }
