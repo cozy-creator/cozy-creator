@@ -118,7 +118,7 @@ step "web-star: Star from a box's menu: in project.db, nothing out of date, firs
 web_proof star "$chrome" "$pw" ''
 step "web-tools: a box drawn from its tool's fields by type, groups two deep, slots refusing what doesn't fit, a video's range, previews, Pick up from here"
 web_proof tools "$chrome" "$pw" ''
-step "web-kinds: a tool goes on a box of the kind it makes: a video tool refused on a picture, and let go on it a new video box beside it that mentions it; BiRefNet on it starts from <self.1>"
+step "web-kinds: a tool goes on a box of the kind it makes: a video tool refused on a picture; a video tool on a picture and an image tool on a video change nothing and say why at the bottom left; BiRefNet on it starts from <self.1>"
 web_proof kinds "$chrome" "$pw" ''
 step "web-palette: every tool the Hub lists under what it makes, one dragged out and one onto a video box, one taken off and back, and with no Hub said so"
 NO_HUB=$no_hub web_proof palette "$chrome" "$pw" "$restart"

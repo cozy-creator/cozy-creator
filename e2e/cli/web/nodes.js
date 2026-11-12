@@ -227,7 +227,7 @@ function linesOf(text, name) {
   for (const kind of ['image', 'audio', 'text']) {
     const name = blanks[kind].name;
     await toolOnto(videoTool, name);
-    await until('incompatible drop explained', () => page.locator('.notes, .note-list, [role=status]').allInnerTexts(), (notes) => notes.some((text) => text.includes(name) && (text.includes("can't go on") || text.includes('node'))));
+    await until('incompatible drop explained', () => page.locator('.notes, .note-list, [role=status]').allInnerTexts(), (notes) => notes.some((text) => text.includes('makes video: drop it on a video box')));
     const now = await of(name);
     check(`video_rejected_by_${kind}_without_extra_node`, now.tool === blank(kind).tool && now.kind === blank(kind).kind && JSON.stringify((await state()).assets.map((held) => held.name).sort()) === JSON.stringify(allBefore), now);
   }
