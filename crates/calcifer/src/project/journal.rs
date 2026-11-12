@@ -108,7 +108,11 @@ impl Projects {
     }
 
     pub(super) fn transition_store<'a>(&self, api: &Arc<Api>, named: &str, transition: &'a vault::ProjectTransition) -> Result<SealingStore<'a>, Error> {
-        let project = self.open_now(named).map(Ok).unwrap_or_else(|| self.get(api, named).map_err(|error| error.0))?;
+        // The held transition validates the view itself. Ordinary viewing (`open_now`)
+        // refuses while this same owner converts the storage, so it cannot be used here.
+        let open = self.open.lock().expect("projects lock").get(named).and_then(Weak::upgrade)
+            .filter(|project| transition.validate(project).is_ok());
+        let project = match open { Some(project) => project, None => self.get(api, named).map_err(|error| error.0)? };
         transition.validate(&project)?;
         Ok(SealingStore { project, controller: Arc::downgrade(&api.calcifer), transition })
     }

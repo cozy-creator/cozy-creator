@@ -731,7 +731,11 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
                 finish_conversion(root)?;
             }
             let id = project_id(root).ok_or_else(|| error("vault_identity", "the unlocked project has no verified identity"))?;
+            // Open it at this root first: a moved folder is gone from the index by its old path.
+            let opened = api.projects.open(api, root)?;
+            if opened.id != id { return Err(error("vault_identity", "the unlocked project does not match its keybag")); }
             let store = api.projects.transition_store(api, &id, transition)?;
+            drop(opened);
             progress.admit_receipt(&store)?;
             if api.calcifer.maintenance_store().migration_required().map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))? {
                 progress.phase("updating_project_storage");

@@ -348,6 +348,35 @@ mod linux {
                 retirement.truncate_log(&logs, &name);
             }
         }
+        // The same log stream also reaches Calcifer's stdout/stderr sink for this worker, and
+        // each ended executor's root keeps what its runs printed (kept a day for diagnosis).
+        let mut sinks = vec![];
+        if let Some(state) = machine_logs.parent().and_then(|state| retirement.root(state)) {
+            sinks.push((state, &["start.log"][..]));
+        }
+        if let Some(gpu) = retirement.root(&engine_root.join("gpu")) {
+            for (name, kind) in retirement.list(&gpu) {
+                let executor = name.len() == 32 && name.as_bytes().iter().all(u8::is_ascii_hexdigit);
+                if executor && kind == FileType::Directory {
+                    if let Some(root) = retirement.root(&gpu.path.join(&name)) {
+                        sinks.push((root, &["stdout.log", "stderr.log", "codec.stderr.log"][..]));
+                    }
+                }
+            }
+        }
+        for (root, names) in sinks {
+            for name in names {
+                let name = OsStr::new(name);
+                match rustix::fs::statat(&root.fd, name, AtFlags::SYMLINK_NOFOLLOW) {
+                    Ok(found) if FileType::from_raw_mode(found.st_mode) == FileType::RegularFile => {
+                        retirement.truncate_log(&root, name)
+                    }
+                    Ok(_) => retirement.pending("unsafe_machine_log_entry", &root.path.join(name)),
+                    Err(rustix::io::Errno::NOENT) => (),
+                    Err(_) => retirement.pending("unreadable_diagnostic_entry", &root.path.join(name)),
+                }
+            }
+        }
         if let Some(peaks) = retirement.root(&engine_root.join("gpu/peaks")) {
             for (name, kind) in retirement.list(&peaks) {
                 if !peak_name(&name) || kind != FileType::RegularFile {
