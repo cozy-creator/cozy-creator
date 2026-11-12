@@ -342,11 +342,20 @@ impl Jobs {
     pub(crate) fn upcoming(&self, id: &str, key: &str, row: Ahead) {
         let Ok(id) = RunId::try_from(id.to_owned()) else { return };
         let mut held = self.held.lock().expect("jobs lock");
-        match held.ahead.iter_mut().find(|(run, ..)| *run == id) {
-            Some((.., was)) if *was == row => return,
-            Some((.., was)) => *was = row.clone(),
-            None => held.ahead.push((id, String::new(), key.to_owned(), row.clone())),
-        }
+        // Each row its own number, as the page keys them, the newest the greatest.
+        let next = held.ahead.iter().map(|(.., row)| row.run).max().unwrap_or(0) + 1;
+        let row = match held.ahead.iter_mut().find(|(run, ..)| *run == id) {
+            Some((.., was)) if Ahead { run: was.run, ..row.clone() } == *was => return,
+            Some((.., was)) => {
+                *was = Ahead { run: was.run, ..row };
+                was.clone()
+            }
+            None => {
+                let row = Ahead { run: next, ..row };
+                held.ahead.push((id, String::new(), key.to_owned(), row.clone()));
+                row
+            }
+        };
         crate::events::ahead_updated(&self.project, &row);
         self.publish(&mut held);
     }
