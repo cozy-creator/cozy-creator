@@ -1,7 +1,7 @@
 // Undo and redo (Paul, 11-06): "an undo / redo history button ... helpful if I do something destructive and dumb by mistake". The project keeps
 // the history, whoever edits it: on a real Calcifer, each of a delete, a merge, a tool taken off, words typed, a move, approve and unapprove and
-// a take discarded is undone (Ctrl+Z, the top bar's Undo, a note's Undo) and redone (Ctrl+Shift+Z), shown at once and checked in project.yaml,
-// its canvas rows and takes in project.db after each. The API client's edit is undone from the page, the page's from the API; an undo a later edit would
+// a take discarded is undone (Ctrl+Z, the top bar's Undo, a note's Undo) and redone (Ctrl+Shift+Z), shown at once and checked in project.db's
+// boxes, canvas rows and takes after each. The API client's edit is undone from the page, the page's from the API; an undo a later edit would
 // clobber is refused, saying which; and with Calcifer stopped, an edit and its undo wait, land in order when it's back, and the history is there
 // after a restart, for Redo.
 //   node undo.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
@@ -12,7 +12,7 @@ const { execSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectAction, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, until, rowsOf, upload, yamlOf } = require('./page');
+const { projectFromPage, projectAction, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, storedOf, until, rowsOf, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -48,11 +48,10 @@ function check(name, ok, detail) {
   const asset = async (name) => (await api(at)).body.assets.find((row) => row.name === name);
   const folder = (await api(at)).body.path;
   seen.project = { id, folder };
-  const yaml = () => yamlOf(folder);
-  // What the project holds, asset by asset, whatever order its lines are in: one put back goes at the end.
-  const held = () => yaml().split(/\n(?=  \S)/).map((block) => block.trimEnd()).sort().join('\n')
-  // An asset's own lines in project.yaml: none, it isn't there.
-  const lines = (name) => yaml().match(new RegExp(`^  ${name}:.*(?:\n(?:    .*|\\s*$))*`, 'm'))?.[0].trimEnd() ?? null;
+  // What the project holds, box by box, whatever their order: one put back goes at the end.
+  const held = () => JSON.stringify(Object.entries(storedOf(folder)).sort(([a], [b]) => a.localeCompare(b)));
+  // A box's fields as project.db stores them: none, it isn't there.
+  const lines = (name) => storedOf(folder)[name] ?? null;
   const row = (name) => {
     const [held] = rowsOf(folder, `SELECT x, y FROM canvas WHERE name = '${name}'`);
     return held ? `${Math.round(held[0])},${Math.round(held[1])}` : null;
@@ -77,7 +76,7 @@ function check(name, ok, detail) {
     await away();
     await page.keyboard.press('ControlOrMeta+Shift+z');
   };
-  /** Each check of a step: what the file says, waited for until it says so, else what it says. */
+  /** Each check of a step: what project.db says, waited for until it says so, else what it says. */
   const says = async (name, read, wanted) => {
     let last;
     try {
@@ -136,7 +135,7 @@ function check(name, ok, detail) {
   await says('delete_written', () => lines('spare'), (held) => held === null);
   await undo();
   check('delete_undone_at_once', (await box('spare').count()) === 1);
-  await says('delete_undone_in_the_file', () => lines('spare'), (held) => held?.includes('approved:'));
+  await says('delete_undone_in_the_file', () => lines('spare'), (held) => held?.approved !== undefined);
   await says('delete_undone_its_row', () => row('spare'), (held) => held === '1280,120');
   await redo();
   check('delete_redone_at_once', (await box('spare').count()) === 0);
@@ -208,14 +207,14 @@ function check(name, ok, detail) {
   // at rest at once, and off again.
   await openBox(page, 'tooled');
   await box('tooled').getByRole('button', { name: 'Remove image tool', exact: true }).click();
-  await says('tool_off_written', () => lines('tooled'), (held) => held && !held.includes('tool:'));
+  await says('tool_off_written', () => lines('tooled'), (held) => held && held.tool === undefined);
   await undo();
   check('tool_back_at_once', (await box('tooled').locator('.node-tool').count()) === 1);
-  await says('tool_undone_in_the_file', () => lines('tooled'), (held) => held?.includes('tool: undo-e2e/still') && held.includes('instructions: a lighthouse'));
+  await says('tool_undone_in_the_file', () => lines('tooled'), (held) => held?.tool === 'undo-e2e/still' && held.instructions?.includes('a lighthouse'));
   await redo();
-  await says('tool_redone', () => lines('tooled'), (held) => held && !held.includes('tool:'));
+  await says('tool_redone', () => lines('tooled'), (held) => held && held.tool === undefined);
   await undo();
-  await says('tool_back', () => lines('tooled'), (held) => held?.includes('tool: undo-e2e/still'));
+  await says('tool_back', () => lines('tooled'), (held) => held?.tool === 'undo-e2e/still');
 
   // Words typed: one entry for all of it. Ctrl+Z in the words is theirs; outside them it's the project's.
   await openBox(page, 'words');
@@ -224,7 +223,7 @@ function check(name, ok, detail) {
   await page.keyboard.press('ControlOrMeta+a');
   await page.keyboard.type('a stormy harbour');
   await closeBox(page);
-  await says('words_written', () => lines('words'), (held) => held?.includes('a stormy harbour'));
+  await says('words_written', () => lines('words'), (held) => held?.text?.includes('a stormy harbour'));
   const entries = (await history()).entries.length;
   await openBox(page, 'words');
   await text.click();
@@ -235,10 +234,10 @@ function check(name, ok, detail) {
   check('ctrl_z_in_words_is_theirs', (await history()).entries.length === entries && !(await history()).entries.some((entry) => entry.undone && entry.words.startsWith('Set text')), (await history()).entries.slice(0, 3));
   await closeBox(page);
   await undo();
-  await says('words_undone', () => lines('words'), (held) => held?.includes('a quiet harbour'));
+  await says('words_undone', () => lines('words'), (held) => held?.text?.includes('a quiet harbour'));
   await says('words_undone_shown', () => box('words').innerText(), (said) => said.includes('a quiet harbour'));
   await redo();
-  await says('words_redone', () => lines('words'), (held) => held?.includes('a stormy harbour'));
+  await says('words_redone', () => lines('words'), (held) => held?.text?.includes('a stormy harbour'));
 
   // A move: back where it was, and where it went.
   const was = row('red');
@@ -252,7 +251,7 @@ function check(name, ok, detail) {
   await says('move_redone', () => row('red'), (held) => held === moved);
 
   // Approve and unapprove, on an open box's takes.
-  const approvedLine = () => lines('shot')?.match(/approved: (\S+)/)?.[1] ?? null;
+  const approvedLine = () => lines('shot')?.approved ?? null;
   const first = approvedLine();
   const shotRow = await asset('shot');
   const other = shotRow.approved === 2 ? 1 : 2;
@@ -288,11 +287,11 @@ function check(name, ok, detail) {
 
   // The API client's edit, undone from the page's Undo button, which says whose it is.
   await edit('set', 'words', 'text=the cli was here');
-  await says('cli_edit_written', () => lines('words'), (held) => held?.includes('the cli was here'));
+  await says('cli_edit_written', () => lines('words'), (held) => held?.text?.includes('the cli was here'));
   const button = page.locator('.top .history [aria-label=Undo]');
   await says('undo_says_the_api', () => button.getAttribute('title'), (said) => said?.includes('by the API'));
   await button.click();
-  await says('cli_edit_undone_from_the_page', () => lines('words'), (held) => held?.includes('a stormy harbour'));
+  await says('cli_edit_undone_from_the_page', () => lines('words'), (held) => held?.text?.includes('a stormy harbour'));
 
   // The page's edit, undone from the API.
   await away();
@@ -304,7 +303,7 @@ function check(name, ok, detail) {
   check('page_edit_undone_from_the_api', undid.entries.some((entry) => entry.words === 'Deleted spare') && (await until('back', () => Promise.resolve(lines('spare')), Boolean).then(() => true, () => false)), undid);
   check('and_shown', await box('spare').waitFor({ timeout: 5000 }).then(() => true, () => false));
 
-  // An undo a later edit would clobber is refused, naming that edit, and the file stays as the later edit left it.
+  // An undo a later edit would clobber is refused, naming that edit, and the project stays as the later edit left it.
   await away();
   await pointAt(page, box('spare').locator('.nm'));
   await box('spare').locator('.head [aria-label=Delete]').click();
@@ -315,7 +314,7 @@ function check(name, ok, detail) {
   const refused = await until('refused', notes, (lines) => lines.some((line) => /Couldn't undo/.test(line))).catch(() => null);
   seen.refused = refused?.find((line) => /Couldn't undo/.test(line));
   check('conflicting_undo_refused', Boolean(seen.refused?.includes('spare is in the project again') && seen.refused.includes('Added spare')), refused);
-  check('nothing_clobbered', (await asset('spare'))?.sha256 === theirs.sha256 && (lines('spare') ?? '').includes(theirs.sha256.slice(7, 19)), lines('spare'));
+  check('nothing_clobbered', (await asset('spare'))?.sha256 === theirs.sha256 && String(lines('spare')?.approved ?? '').startsWith(theirs.sha256.slice(7, 19)), lines('spare'));
 
   // Calcifer stopped: a delete and its undo, both shown at once and waiting; started again, both land in order, and the history keeps them.
   const before = held();
@@ -333,7 +332,7 @@ function check(name, ok, detail) {
   await until('all saved', pills, (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
   const landed = await until('the delete and its undo', history, (held) => held.entries.some((entry) => entry.words === 'Deleted red' && entry.undone)).catch(history);
   check('offline_landed_in_order', landed.entries?.some((entry) => entry.words === 'Deleted red' && entry.undone) && Boolean(lines('red')), landed.entries?.slice(0, 3));
-  check('offline_file_as_before', held() === before, yaml());
+  check('offline_file_as_before', held() === before, storedOf(folder));
   execSync(process.env.STOP, { shell: 'bash', stdio: 'ignore' });
   execSync(process.env.START, { shell: 'bash', stdio: 'ignore' });
   const kept = await edit('history', '-n', '3');
@@ -350,10 +349,10 @@ function check(name, ok, detail) {
   await page.locator('.top .history [aria-label="Undo"]').click();
   await says('toolbar_undo_removes_spare', () => lines('spare'), (spare) => spare === null);
   await page.locator('.top .history [aria-label="Redo"]').click();
-  await says('toolbar_redo_restores_spare', () => lines('spare') ?? '', (spare) => spare.includes(theirs.sha256.slice(7, 19)));
+  await says('toolbar_redo_restores_spare', () => lines('spare')?.approved ?? '', (spare) => String(spare).startsWith(theirs.sha256.slice(7, 19)));
   await page.locator('.top .history [aria-label="Redo"]').click();
   await says('toolbar_redo_deletes_red', () => lines('red'), (red) => red === null);
-  check('history_in_project_db', rowsOf(folder, 'SELECT count(*) FROM ops')[0][0] > 0 && !existsSync(join(folder, '.history.json')) && !/history|undone/.test(yaml()));
+  check('history_in_project_db', rowsOf(folder, 'SELECT count(*) FROM ops')[0][0] > 0 && !existsSync(join(folder, '.history.json')) && !/history|undone/.test(JSON.stringify(storedOf(folder))));
   check('no_page_errors', errors.length === 0, errors);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();

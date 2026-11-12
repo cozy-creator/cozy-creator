@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, openBox, closeBox, settled, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
+const { projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, openBox, closeBox, settled, until, addBoxes, upload, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'orbit.py');
 const FRAMES = 48;
@@ -70,7 +70,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const clips = mkdtempSync(join(tmpdir(), 'web-orbit-'));
   writeFileSync(join(clips, 'plain.mp4'), MP4);
   await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(clips, 'plain.mp4')), name: 'plain', exact: true, at: { x: 700, y: 100 } }) });
-  importYaml(folder, `${yamlOf(folder).trimEnd()}\n  spin:\n    tool: ${fixture}/turn\n    frames: ${FRAMES}\n`);
+  addBoxes(folder, [{ name: 'spin', tool: `${fixture}/turn`, kind: 'video', fields: { frames: FRAMES } }]);
   await until('spin placed', async () => (await api(`${at}/canvas`)).body?.cards?.spin, Boolean);
   await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['spin'], on: ['local'] }), headers: { 'Idempotency-Key': `orbit-${Date.now()}` } });
   // Its file here and measured, as a take landed is once its bytes come.

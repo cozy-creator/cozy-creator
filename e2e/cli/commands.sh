@@ -330,7 +330,7 @@ refuses h3 tenstrip/eros-max "lacks its text encoder's processor"
 refuses h3 qwen/qwen3.6-27b "is another model"
 before=$(cozy --json run ls --limit 0 | jq '.runs | length')
 in_project "$RUN_PROJECT" --json run qwen-image-2/image instructions=fox --model rewriter=qwen/qwen3.6-35b-a3b > "$OUT/run-unloadable.json" 2>&1 || code=$?
-{ [ "$code" != 0 ] && J '.error.code == "model_choice_unloadable" and (.error.message | test("Qwen3_5MoeForConditionalGeneration"))' "$OUT/run-unloadable.json" \
+{ [ "$code" != 0 ] && J '.error.code == "model_choice_unloadable" and (.error.message | test("Qwen3_5MoeForConditionalGeneration")) and .error.next == ["cozy model ls --fits qwen-image-2/image:rewriter"]' "$OUT/run-unloadable.json" \
   && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
   || check "run --model rewriter=<another class>: exit $code, not refused model_choice_unloadable before any run: $(tail -c 400 "$OUT/run-unloadable.json")"
 }

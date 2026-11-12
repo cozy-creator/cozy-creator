@@ -16,7 +16,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, importYaml, yamlOf } = require('./page');
+const { projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, fitCanvas, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, addBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -687,49 +687,23 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
   }
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   seen.ran = local;
-  importYaml(folder, `${yamlOf(folder).trimEnd()}
-  style:
-    text: Bright, hand-painted, cel-shaded, with soft light and long shadows across every surface, and the sea always in the distance.
-  still:
-    video: <clip>
-    at: 0.5
-    tool: cozy/frame
-  edit:
-    tool: cozy/edit
-    tracks:
-      - clips:
-          - <clip>
-          - <clip_b>
-  odd: {kind: widget}
-${local ? `  card:
-    tool: ${drawPy}/draw
-    instructions: <style> <hero_art> stands on the shore, with <clip> playing behind and a long line of words that runs past the frame's edge.
-  posed:
-    tool: ${drawPy}/draw
-    instructions: <hero_art>, posed.
-    lora: [{ref: hf://someone/wushu-style-lora, strength: 0.8}, {ref: hf://someone/ink-wash-with-a-long-name, strength: 0.6}]
-  shot:
-    tool: ${shotsPy}/shoot
-    summary: |
-      <hero_art> looks hard at <clip>.
-    beats:
-      - duration: 4
-        description: |
-          <wide_art> waits on the shore.
-      - duration: 3
-        description: |
-          It goes on, and on.
-  broken:
-    tool: ${shotsPy}/crash
-    plate: <clip>
-    crash: the fixture's own failure, said in full so it wraps
-  making:
-    tool: ${shotsPy}/scenes
-    plate: <clip>
-    summary: <hero_art> walks the shore, segment after segment, as the tide comes in and the light goes long across the sand.
-    segments: 600
-    each: 5
-` : ''}`);
+  // A tool Calcifer hasn't read yet is given the kind it makes. `kind` and `at` below `fields` are a field of that name: odd's own, and cozy/frame's
+  // time in its clip.
+  addBoxes(folder, [
+    { name: 'style', fields: { text: 'Bright, hand-painted, cel-shaded, with soft light and long shadows across every surface, and the sea always in the distance.' } },
+    { name: 'still', tool: 'cozy/frame', kind: 'image', fields: { video: '<clip>', at: 0.5 } },
+    { name: 'edit', tool: 'cozy/edit', fields: { tracks: [{ clips: ['<clip>', '<clip_b>'] }] } },
+    { name: 'odd', kind: 'image', fields: { kind: 'widget' } },
+    ...(local ? [
+      { name: 'card', tool: `${drawPy}/draw`, kind: 'image', fields: { instructions: "<style> <hero_art> stands on the shore, with <clip> playing behind and a long line of words that runs past the frame's edge." } },
+      // Its add-ons are hand-written, for a tool that loads no model: made with no tool, which nothing checks them against, and given it after.
+      { name: 'posed', kind: 'image', fields: { instructions: '<hero_art>, posed.', lora: [{ ref: 'hf://someone/wushu-style-lora', strength: 0.8 }, { ref: 'hf://someone/ink-wash-with-a-long-name', strength: 0.6 }] } },
+      { name: 'shot', tool: `${shotsPy}/shoot`, kind: 'video', fields: { summary: '<hero_art> looks hard at <clip>.', beats: [{ duration: 4, description: '<wide_art> waits on the shore.' }, { duration: 3, description: 'It goes on, and on.' }] } },
+      { name: 'broken', tool: `${shotsPy}/crash`, kind: 'video', fields: { plate: '<clip>', crash: "the fixture's own failure, said in full so it wraps" } },
+      { name: 'making', tool: `${shotsPy}/scenes`, kind: 'video', fields: { plate: '<clip>', summary: '<hero_art> walks the shore, segment after segment, as the tide comes in and the light goes long across the sand.', segments: 600, each: 5 } },
+    ] : []),
+  ]);
+  if (local) projectJson(folder, 'PATCH', '/assets/posed', { tool: `${drawPy}/draw` });
   names = ['hero_art', 'wide_art', 'tall_art', LONG, 'sea_sound', 'clip', 'clip_b', 'style', 'still', 'edit', 'odd', ...(local ? ['card', 'posed', 'shot', 'broken', 'making'] : [])];
   await placed();
   const render = async (asset, wait = true) => {
@@ -738,7 +712,7 @@ ${local ? `  card:
   };
   // Takes: the frame thrice, the Edit once, and where this computer runs, many of the picture tool's, the shot's two and a failure.
   for (const at of [0.2, 0.5, 0.8]) {
-    importYaml(folder, yamlOf(folder).replace(/(\n  still:\n    video: <clip>\n    at: )[\d.]+/, `$1${at}`));
+    projectJson(folder, 'PATCH', '/assets/still', { fields: { at } });
     await render('still');
   }
   await render('edit');

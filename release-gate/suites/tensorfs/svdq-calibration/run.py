@@ -81,7 +81,7 @@ def main() -> None:
     # A run belongs to a project.
     # cozy 0.24 (xs-174): `cozy new <dir>` makes the project (a project.db), and a run belongs to the project it runs in.
     # cozy 0.24.0's projects are plain and it has no --unencrypted; later ones encrypt unless told not to.
-    if not any((args.out / "project" / name).is_file() for name in ("project.db", "project.yaml")):
+    if not (args.out / "project" / "project.db").is_file():
         plain = ["--unencrypted"] if "--unencrypted" in subprocess.run(["cozy", "new", "--help"], capture_output=True, text=True).stdout else []
         subprocess.run(["cozy", "new", *plain, str(args.out / "project")], check=True, stdout=subprocess.DEVNULL)
 

@@ -17,7 +17,7 @@ class Refused(Exception):
         self.payload = payload
 
 
-def request(path: str, method: str = "GET", body: dict[str, object] | bytes | None = None, *,
+def request(path: str, method: str = "GET", body: dict[str, object] | None = None, *,
             edit: str | None = None) -> str:
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     address = urlsplit(f"http://{holder['address']}")
@@ -27,14 +27,13 @@ def request(path: str, method: str = "GET", body: dict[str, object] | bytes | No
         headers["Idempotency-Key"] = uuid4().hex
     if edit:
         headers["Cozy-Edit"] = edit
-    if isinstance(body, dict):
-        body = json.dumps(body).encode()
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
-    elif body is not None:
-        headers["Content-Type"] = "application/yaml"
     connection = HTTPConnection(address.hostname, address.port, timeout=40)
     try:
-        connection.request(method, path, body, headers)
+        connection.request(method, path, data, headers)
         response = connection.getresponse()
         payload = response.read().decode()
     finally:

@@ -7,7 +7,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectUrl, importFile, STEP_MS, boxOf, calcifer, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { projectUrl, importFile, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -60,15 +60,18 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     const hash = held.assets.find((row) => row.name === 'a_picture').sha256.replace('sha256:', '').slice(0, 12);
     const COUNT = 300;
     const perRow = Math.ceil(Math.sqrt(COUNT));
-    // Its boxes by the import API, and each one's place by the canvas's PATCH, as the page moves them (cl-803: both are project.db's).
-    let text = 'version: 4\nassets:\n';
+    // Its boxes by the assets API as the page makes them, each approved on the picture, whose own box goes; and each one's place by the
+    // canvas's PATCH, as the page moves them (cl-803: both are project.db's).
     const cards = {};
+    const json = { 'Content-Type': 'application/json' };
     for (let i = 0; i < COUNT; i++) {
-      text += `  n${i}:\n    approved: "${hash}"\n    tool: see-no-such-package/draw\n    instructions: box ${i}\n`;
+      const box = { name: `n${i}`, exact: true, tool: 'see-no-such-package/draw', kind: 'image', fields: { approved: hash, instructions: `box ${i}` } };
+      const answer = await api(`/v1/projects/${made.id}/assets`, { method: 'POST', headers: json, body: JSON.stringify(box) });
+      if (answer.name !== box.name) throw new Error(`box n${i}: ${JSON.stringify(answer)}`);
       cards[`n${i}`] = { x: (i % perRow) * 304, y: Math.floor(i / perRow) * 240, w: 240 };
     }
-    importYaml(made.path, text);
-    await api(`/v1/projects/${made.id}/canvas`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cards }) });
+    await api(`/v1/projects/${made.id}/assets/a_picture`, { method: 'DELETE' });
+    await api(`/v1/projects/${made.id}/canvas`, { method: 'PATCH', headers: json, body: JSON.stringify({ cards }) });
     await until('300 boxes read', async () => (await api(`/v1/projects/${made.id}`)).assets?.length, (n) => n === COUNT);
 
     const openTab = async (zoom, x) => {

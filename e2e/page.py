@@ -2,8 +2,10 @@
 no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr and exits 1.
     page.py import <project> <file> [--name N] [--description D]    the file as a box, as a drop on the canvas
     page.py add <project> <name> --tool T [--fields JSON]           a tool's box, as a drop on the canvas (`<name>` exactly)
-    page.py yaml <project> [file]                                    project.yaml (format 4) read into the project; no file:
-                                                                     the project as YAML
+    page.py boxes <project> [file]                                   a JSON array of boxes (file, else stdin), each a POST
+                                                                     /assets body {name, tool, kind, fields, at}, made in order
+    page.py set <project> <name> [--fields JSON] [--tool T]          a box's fields set (null clears one), as the page edits it
+    page.py rename <project> <from> <to>                             a box renamed, and every mention of it
     page.py render <project> --on M[,M]|auto [--n N] [--approve] [--pickup '<take>' FRAME] [--wait A,B] [--queue] [--missing] <name>...
                                                                      a render, followed until each name's (or --wait's) new
                                                                      versions land: one JSON line each, exit 1 on a failure.
@@ -129,9 +131,18 @@ def main() -> int:
     one.add_argument("name")
     one.add_argument("--tool", required=True)
     one.add_argument("--fields", default="{}")
-    one = verbs.add_parser("yaml")
+    one = verbs.add_parser("boxes")
     one.add_argument("project")
     one.add_argument("file", nargs="?")
+    one = verbs.add_parser("set")
+    one.add_argument("project")
+    one.add_argument("name")
+    one.add_argument("--fields", default="{}")
+    one.add_argument("--tool")
+    one = verbs.add_parser("rename")
+    one.add_argument("project")
+    one.add_argument("source", metavar="from")
+    one.add_argument("to")
     one = verbs.add_parser("render")
     one.add_argument("project")
     one.add_argument("--on", required=True)
@@ -163,11 +174,14 @@ def main() -> int:
     elif args.verb == "add":
         drop: Json = {"tool": args.tool, "name": args.name, "exact": True, "fields": json.loads(args.fields)}
         print(json.dumps(call("POST", project(args.project) + "/assets", json.dumps(drop).encode())))
-    elif args.verb == "yaml" and args.file:
-        print(json.dumps(call("PUT", project(args.project) + "/yaml", Path(args.file).read_bytes(), "application/yaml")))
-    elif args.verb == "yaml":
-        with OPENER.open(urllib.request.Request(BASE + project(args.project) + "/yaml", headers=AUTH), timeout=60) as response:
-            sys.stdout.write(response.read().decode())
+    elif args.verb == "boxes":
+        for box in json.loads(Path(args.file).read_text() if args.file else sys.stdin.read()):
+            print(json.dumps(call("POST", project(args.project) + "/assets", json.dumps({"tool": "", "exact": True} | box).encode())), flush=True)
+    elif args.verb == "set":
+        patch: Json = {"fields": json.loads(args.fields)} | ({"tool": args.tool} if args.tool is not None else {})
+        print(json.dumps(call("PATCH", project(args.project) + "/assets/" + urllib.parse.quote(args.name, safe=""), json.dumps(patch).encode())))
+    elif args.verb == "rename":
+        print(json.dumps(call("POST", project(args.project) + "/rename", json.dumps({"from": args.source, "to": args.to}).encode())))
     elif args.verb == "render":
         return render(args)
     elif args.verb == "approve":

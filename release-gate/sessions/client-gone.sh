@@ -153,19 +153,11 @@ part_g() {
 
 part_b() {
   say "$TAG b: a reader, with what it reads on a slow line"
-  write /home/client/b.yaml <<YAML
-version: 4
-assets:
-  still:
-    tool: ./art.py/make
-    side: 4000
-    seconds: 2
-    prompt: noise $RANDOM
-  shot:
-    tool: ./art.py/make
-    prompt: reads <still> $RANDOM
-YAML
-  page yaml /home/client/b.yaml > "$OUT/b-$TAG-yaml.txt" 2>&1 || wrong "b: project.yaml: $(tail -3 "$OUT/b-$TAG-yaml.txt")"
+  jq -n --arg n "$RANDOM" --arg m "$RANDOM" '[
+    {name: "still", tool: "./art.py/make", kind: "image", fields: {side: 4000, seconds: 2, prompt: "noise \($n)"}},
+    {name: "shot", tool: "./art.py/make", kind: "image", fields: {prompt: "reads <still> \($m)"}}
+  ]' | write /home/client/b.json
+  page boxes /home/client/b.json > "$OUT/b-$TAG-boxes.txt" 2>&1 || wrong "b: its boxes: $(tail -3 "$OUT/b-$TAG-boxes.txt")"
   line "up 1000000"
   page render --on box --queue still shot > "$OUT/b-$TAG.txt" 2>&1 || wrong "b: render: $(tail -3 "$OUT/b-$TAG.txt")"
   local t=0 got still shot
@@ -192,17 +184,11 @@ YAML
 
 part_c() {
   say "$TAG c: a render asked with no network here"
-  write /home/client/c.yaml <<YAML
-version: 4
-assets:
-  first:
-    tool: ./art.py/make
-    prompt: noise $RANDOM
-  second:
-    tool: ./art.py/make
-    prompt: more noise $RANDOM
-YAML
-  page yaml /home/client/c.yaml > "$OUT/c-$TAG-yaml.txt" 2>&1 || wrong "c: project.yaml: $(tail -3 "$OUT/c-$TAG-yaml.txt")"
+  jq -n --arg n "$RANDOM" --arg m "$RANDOM" '[
+    {name: "first", tool: "./art.py/make", kind: "image", fields: {prompt: "noise \($n)"}},
+    {name: "second", tool: "./art.py/make", kind: "image", fields: {prompt: "more noise \($m)"}}
+  ]' | write /home/client/c.json
+  page boxes /home/client/c.json > "$OUT/c-$TAG-boxes.txt" 2>&1 || wrong "c: its boxes: $(tail -3 "$OUT/c-$TAG-boxes.txt")"
   line down
   sh 'printf "nameserver 127.0.0.9\n" > /etc/resolv.conf; ! getent hosts tensorhub.com' || fail "c: the resolver did not break"
   page render --on box --queue first second > "$OUT/c-$TAG.txt" 2>&1 || say "$TAG c: asked: $(tail -2 "$OUT/c-$TAG.txt" | cut -c1-200)"
@@ -229,26 +215,15 @@ YAML
 
 part_v() {
   say "$TAG v: a cut and a frame of a clip still on its way"
-  write /home/client/v.yaml <<YAML
-version: 4
-assets:
-  clip:
-    tool: ./art.py/film
-    seconds: 10
-    prompt: noise $RANDOM
-  edit:
-    tool: cozy/edit
-    tracks:
-      - clips:
-          - <clip>
-  aframe:
-    tool: cozy/frame
-    video: <clip>
-    at: 1
-YAML
-  page yaml /home/client/v.yaml > "$OUT/v-$TAG-yaml.txt" 2>&1 || wrong "v: project.yaml: $(tail -3 "$OUT/v-$TAG-yaml.txt")"
+  jq -n --arg n "$RANDOM" '[
+    {name: "clip", tool: "./art.py/film", kind: "video", fields: {seconds: 10, prompt: "noise \($n)"}},
+    {name: "edit", tool: "cozy/edit", fields: {tracks: [{clips: ["<clip>"]}]}},
+    {name: "aframe", tool: "cozy/frame", kind: "image", fields: {video: "<clip>", at: 1}}
+  ]' | write /home/client/v.json
+  page boxes /home/client/v.json > "$OUT/v-$TAG-boxes.txt" 2>&1 || wrong "v: its boxes: $(tail -3 "$OUT/v-$TAG-boxes.txt")"
   line "up 1000000"
-  page render --on box --queue all > "$OUT/v-$TAG.txt" 2>&1 || wrong "v: render: $(tail -3 "$OUT/v-$TAG.txt" | cut -c1-200)"
+  # By name: the parts before left their boxes in this project.
+  page render --on box --queue clip edit aframe > "$OUT/v-$TAG.txt" 2>&1 || wrong "v: render: $(tail -3 "$OUT/v-$TAG.txt" | cut -c1-200)"
   local t=0 got
   while [ $t -lt 900 ]; do
     got=$(page asset clip edit aframe)
@@ -271,17 +246,11 @@ YAML
 
 part_m() {
   say "$TAG m: ffmpeg this computer doesn't have, its download going nowhere"
-  write /home/client/m.yaml <<YAML
-version: 4
-assets:
-  firstm:
-    tool: ./art.py/make
-    prompt: noise $RANDOM
-  secondm:
-    tool: ./art.py/make
-    prompt: reads <firstm> $RANDOM
-YAML
-  page yaml /home/client/m.yaml > "$OUT/m-$TAG-yaml.txt" 2>&1 || wrong "m: project.yaml: $(tail -3 "$OUT/m-$TAG-yaml.txt")"
+  jq -n --arg n "$RANDOM" --arg m "$RANDOM" '[
+    {name: "firstm", tool: "./art.py/make", kind: "image", fields: {prompt: "noise \($n)"}},
+    {name: "secondm", tool: "./art.py/make", kind: "image", fields: {prompt: "reads <firstm> \($m)"}}
+  ]' | write /home/client/m.json
+  page boxes /home/client/m.json > "$OUT/m-$TAG-boxes.txt" 2>&1 || wrong "m: its boxes: $(tail -3 "$OUT/m-$TAG-boxes.txt")"
   # A Calcifer that finds no ffmpeg on its path (started by a CLI with none on its own), and a host that takes its connect and never answers.
   sh "kill -9 $(holder_pid)"
   sh 'nohup python3 /root/hole.py > /dev/null 2>&1 < /dev/null & echo $! > /tmp/hole.pid; echo "127.0.0.1 ffmpeg.martin-riedl.de" >> /etc/hosts'
@@ -338,15 +307,8 @@ part_s() {
 
 part_l() {
   say "$TAG l: a file that never comes"
-  write /home/client/l.yaml <<YAML
-version: 4
-assets:
-  lost:
-    tool: ./art.py/make
-    side: 4000
-    prompt: noise $RANDOM
-YAML
-  page yaml /home/client/l.yaml > "$OUT/l-$TAG-yaml.txt" 2>&1 || wrong "l: project.yaml: $(tail -3 "$OUT/l-$TAG-yaml.txt")"
+  jq -n --arg n "$RANDOM" '[{name: "lost", tool: "./art.py/make", kind: "image", fields: {side: 4000, prompt: "noise \($n)"}}]' | write /home/client/l.json
+  page boxes /home/client/l.json > "$OUT/l-$TAG-boxes.txt" 2>&1 || wrong "l: its boxes: $(tail -3 "$OUT/l-$TAG-boxes.txt")"
   line "up 200000"
   page render --on box --queue lost > "$OUT/l-$TAG.txt" 2>&1 || wrong "l: render: $(tail -3 "$OUT/l-$TAG.txt" | cut -c1-200)"
   local t=0 got

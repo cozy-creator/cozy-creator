@@ -115,7 +115,7 @@ local on_hub=''
 [ -n "${WEB_ALONE:-}" ] || on_hub=$(web_restart "$lock" @HUB@)
 HUB_RESTART=$on_hub web_proof localfit "$chrome" "$pw" "$restart"
 jq -c '{line: .seen.line, placed: .seen.placed}' "$OUT/web-localfit.json" 2> /dev/null || true
-step "web-addons: model and adapter parameters, no chips at rest, listed open, strength and removal behind More, a hand's file kept"
+step "web-addons: model and adapter parameters, no chips at rest, listed open, strength and removal behind More"
 web_proof addons "$chrome" "$pw" ''
 jq -c '.seen.skipped // empty' "$OUT/web-addons.json" 2> /dev/null || true
 step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture joining one, a version deleted with Undo, reclaim, a rename during a real render, takes approved by a double tap, a merge, a box's shape, Render while it makes"
@@ -168,7 +168,7 @@ step "web-timeline: real clips and a still in an Edit, trims and a reorder, rend
 # Real clips, made and counted by the ffmpeg Calcifer fetched for itself for thumbnails: one on a runner's PATH would keep it from fetching.
 local own; own=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1)
 PATH=${own:+$(dirname "$own"):}$PATH web_proof timeline "$chrome" "$pw" ''
-step "web-live: the real CLI and a hand's saves on an open canvas: each within a second, what's typed kept, 200 edits, the stream fallen behind"
+step "web-live: the real CLI and another writer's saves on an open canvas: each within a second, what's typed kept, 200 edits, the stream fallen behind"
 web_proof live "$chrome" "$pw" ''
 jq -c '{times: .seen.times_ms, burst: .seen.burst, behind: .seen.behind}' "$OUT/web-live.json" 2> /dev/null || true
 step "web-previews: a rendering box shows what its run is making, faded under how far it's got, and its take replaces it"
@@ -231,10 +231,8 @@ web_scale_said() {
 web_held() {
   local T=$OUT/web-held id
   step "web-held: a save past project.db held by another program: said, kept, and saved when it's let go"
-  # A new project, its boxes by `cozy import` (cl-803: a project is project.db, and YAML its import).
-  starter_project "$T" > "$OUT/web-held-new.txt" 2>&1 || { check "web-held: project new: $(tail -c 300 "$OUT/web-held-new.txt")"; return; }
-  printf 'version: 4\nassets:\n  stays:\n    tool: cozy/edit\n  goes:\n    tool: cozy/edit\n' > "$OUT/web-held.yaml"
-  project_api "$T" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/web-held.yaml" > "$OUT/web-held-import.txt" 2>&1 || { check "web-held: import: $(tail -c 300 "$OUT/web-held-import.txt")"; return; }
+  # A new project of two boxes.
+  jq -n '[{name: "stays", tool: "cozy/edit"}, {name: "goes", tool: "cozy/edit"}]' | boxes_in "$T" || return
   id=$(status "$T" | jq -r '.id // empty')
   [ -n "$id" ] || { check "web-held: the project has no id"; return; }
   HELD_FOLDER=$(web_path "$T") HELD_ID=$id web_proof held "$1" "$2" ''

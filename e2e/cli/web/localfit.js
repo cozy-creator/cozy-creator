@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const http = require('http');
 const { exec, execFileSync } = require('child_process');
 const { join } = require('path');
-const { projectFromPage, boxOf, calcifer, closeBox, importYaml, launch, lastLook, lookAt, noStall, openBox, renderOf, signIn, STEP_MS, until, watchBoxes, yamlOf } = require('./page');
+const { projectFromPage, addBoxes, boxOf, calcifer, closeBox, launch, lastLook, lookAt, noStall, openBox, renderOf, signIn, STEP_MS, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -151,7 +151,7 @@ function provider(upstream) {
   // knows no tool; the install a run makes on this machine's Runtime takes its place, as tools.js primes its fixture.
   execFileSync(COZY, ['--json', 'run', `${heavy}/heavy`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
   const primed = (await runsOf('heavy')).length;
-  importYaml(folder, `version: 4\nassets:\n  heavy:\n    tool: ${heavy}/heavy\n    instructions: a lantern in fog\n`);
+  addBoxes(folder, [{ name: 'heavy', tool: `${heavy}/heavy`, kind: 'image', fields: { instructions: 'a lantern in fog' } }]);
   await box('heavy').waitFor();
 
   // 1. The first Render asks, on the box, and nothing renders.
@@ -191,7 +191,7 @@ function provider(upstream) {
 
   // 6. Qwen Image from the Hub, as 0.22's tool list drops it. Rent a <card> opens Rent with the card the Hub places it on, and renders nothing.
   // Only if it asks: a runner can't hold its weights.
-  importYaml(folder, `${yamlOf(folder).trimEnd()}\n  kite:\n    tool: qwen-image-2/image\n    instructions: a red kite over dunes\n`);
+  addBoxes(folder, [{ name: 'kite', tool: 'qwen-image-2/image', kind: 'image', fields: { instructions: 'a red kite over dunes' } }]);
   // Drawn in on heavy, the canvas draws only what's near it: back out, and all of it in view.
   await closeBox(page);
   await page.keyboard.press('f');

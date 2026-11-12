@@ -1,12 +1,12 @@
 // Existing model and adapter parameters on real nodes: project API assignment; at rest no chips (cl-932), open their list; removal and strength in
 // Models & LoRAs, the one picker (cl-934).
 // The sidebar's checkpoint explorer and contextual picker are retired; this file records those removed UI flows explicitly instead of recreating them.
-// Current authoring import/export preserves words and `|`; model names come from `GET /v1/models` and `GET /v1/tools`.
+// A box's words outlast its model edits; model names come from `GET /v1/models` and `GET /v1/tools`.
 //   node addons.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $RENDER: a machine with a GPU, on which a box with a LoRA and a fine-tune
 // really renders, and what its run was asked and applied is read back. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFromPage, projectUrl, calcifer, signIn, boxOf, closeBox, STEP_MS, importYaml, lastLook, launch, lookAt, noStall, openBox, renderOf, settled, until, yamlOf } = require('./page');
+const { addBoxes, assetsOf, projectFromPage, projectUrl, calcifer, signIn, boxOf, closeBox, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, settled, storedOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -59,8 +59,9 @@ async function died(why) {
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
-  // The project as `cozy export` writes it (cl-803: its state is project.db).
-  const yaml = () => yamlOf(folder);
+  // Every box's fields as project.db stores them (cl-803), as one text.
+  const stored = () => JSON.stringify(storedOf(folder));
+  const fieldsOf = (name) => assetsOf(folder).find((asset) => asset.name === name)?.fields ?? {};
   const box = (name) => boxOf(page, name);
 
   const tools = (await api('/v1/tools')).body.tools.filter((tool) => tool.model?.family);
@@ -83,39 +84,18 @@ async function died(why) {
   const [fineA, fineB] = fines(mine.model.family);
   const word = (model) => model.model.split('/').pop();
 
-  // A hand's file, imported: its words and `|` outlast all of this, and its comments go at the import (cl-803), as web-nodes reads it.
-  const words = ['    instructions: |', '      A small boat,', '      on still water.'];
-  importYaml(folder, `# Mine, and kept.
-version: 4
-
-assets:
-  # What other makes.
-  boat:
-    tool: ${(other ?? mine).id}
-    instructions: |
-      A small boat,
-      on still water.
-  shot:
-    tool: ${mine.id}
-    instructions: A wave.
-  hand:
-    tool: ${mine.id}
-    instructions: Written by hand.
-    # Its look.
-    lora:
-      - {ref: ${loraC.model}, strength: 0.7}
-    models:
-      ${mine.model.slot}: {ref: ${fineB.model}}
-  flowed:
-    tool: ${mine.id}
-    instructions: One line.
-    lora: [{ref: hf://someone/wushu, strength: 0.8}]  # As a person writes it.
-  words:
-    text: Words alone.
-`);
+  // Boxes another writer made, with their models: the boat's words outlast all of this.
+  const words = 'A small boat,\non still water.';
+  addBoxes(folder, [
+    { name: 'boat', tool: (other ?? mine).id, fields: { instructions: words } },
+    { name: 'shot', tool: mine.id, fields: { instructions: 'A wave.' } },
+    { name: 'hand', tool: mine.id, fields: { instructions: 'Written by hand.', lora: [{ ref: loraC.model, strength: 0.7 }], models: { [mine.model.slot]: { ref: fineB.model } } } },
+    { name: 'flowed', tool: mine.id, fields: { instructions: 'One line.', lora: [{ ref: 'hf://someone/wushu', strength: 0.8 }] } },
+    { name: 'words', fields: { text: 'Words alone.' } },
+  ]);
   await box('hand').waitFor();
   await box('shot').waitFor();
-  const kept = () => words.filter((line) => !yaml().includes(line));
+  const kept = () => (fieldsOf('boat').instructions === words ? [] : [fieldsOf('boat').instructions]);
   // At rest a box has no chips (cl-932, Paul 11-12): its tool and shape under it, nothing else. Open, its models and LoRAs are listed
   // (ModelConfig, each by its ref), and taken off or made stronger in Models & LoRAs (cl-934).
   const here = (name) => page.locator(`.card.here[data-asset="${name}"]`);
@@ -199,16 +179,17 @@ assets:
   await openLoras('shot');
   await adapter(loraB).locator('button[title="Remove LoRA"]').click();
   await until('one LoRA left', () => refs('shot'), (now) => !now.includes(loraB.model), 2000);
-  check('x_before_the_write', yaml().includes(loraB.model));
+  check('x_before_the_write', stored().includes(loraB.model));
   again();
   await page.unroute(`**/v1/projects/${id}/assets/shot`);
-  await until('it off the file', () => Promise.resolve(yaml()), (text) => !text.includes(loraB.model));
+  await until('it off the file', () => Promise.resolve(stored()), (text) => !text.includes(loraB.model));
 
   // Its strength, there too.
   const strength = adapter(loraA).locator('input[aria-label^="Strength of"]');
   await strength.fill('1.2');
   await strength.press('Enter');
-  await until('its strength in the file', () => Promise.resolve(yaml()), (text) => /strength: 1\.2/.test(text.split(`ref: ${loraA.model}`)[1] ?? ''));
+  const loraOf = (fields, ref) => [...(fields.lora ?? []), ...Object.values(fields.models ?? {}).flatMap((model) => model?.lora ?? [])].find((one) => one.ref === ref);
+  await until('its strength in the file', () => Promise.resolve(loraOf(fieldsOf('shot'), loraA.model)?.strength), (strength) => String(strength).startsWith('1.2'));
   await shut();
   await closeBox(page);
 
@@ -216,19 +197,19 @@ assets:
   await opened('hand', async () => {
     await openLoras('hand');
     await adapter(loraC).locator('button[title="Remove LoRA"]').click();
-    await until('off the file', () => Promise.resolve(yaml()), (text) => !text.includes(loraC.model));
+    await until('off the file', () => Promise.resolve(stored()), (text) => !text.includes(loraC.model));
     await shut();
   });
-  check('hand_written_rest_stays', yaml().includes(`${mine.model.slot}: {ref: ${fineB.model}}`) || yaml().split('hand:')[1].includes(fineB.model), yaml());
+  check('hand_written_rest_stays', JSON.stringify(storedOf(folder).hand ?? {}).includes(fineB.model), storedOf(folder).hand);
   check('words_outlast_it', kept().length === 0, kept());
 
   await opened('flowed', async () => {
     await openLoras('flowed');
     await adapter({ model: 'hf://someone/wushu' }).locator('button[title="Remove LoRA"]').click();
-    await until('off the one line', () => Promise.resolve(yaml()), (text) => !text.includes('wushu'));
+    await until('off the one line', () => Promise.resolve(stored()), (text) => !text.includes('wushu'));
     await shut();
   });
-  check('one_line_goes', yaml().includes('instructions: One line.'), yaml());
+  check('one_line_goes', storedOf(folder).flowed?.instructions === 'One line.', storedOf(folder).flowed);
 
   // No chips at any zoom (cl-932).
   const pane = page.locator('.react-flow__pane');
@@ -264,13 +245,13 @@ assets:
     const [lora] = loras(still.model.family);
     const fine = fines(still.model.family).find((model) => !still.model.default?.startsWith(`${model.model}@`));
     seen.render = { tool: still.id, local: Boolean(still.local), lora: lora.model, fine: fine.model };
-    importYaml(folder, `${yaml().trimEnd()}\n  still:\n    tool: ${still.id}\n    instructions: A red boat on still water, ink on paper.\n`);
+    addBoxes(folder, [{ name: 'still', tool: still.id, fields: { instructions: 'A red boat on still water, ink on paper.' } }]);
     await box('still').waitFor();
     await page.keyboard.press('f');
     await page.waitForTimeout(500);
     const assigned = await api(`/v1/projects/${id}/assets/still`, { method: 'PATCH', body: JSON.stringify({ fields: { lora: [{ ref: lora.model, strength: 1 }], models: { [still.model.slot]: { ref: fine.model } } } }) });
     check('render_model_parameters_accepted', assigned.status === 200, assigned);
-    await until('both on it', () => Promise.resolve(yaml().split('still:')[1]), (text) => text.includes(lora.model) && text.includes(fine.model));
+    await until('both on it', () => Promise.resolve(JSON.stringify(storedOf(folder).still ?? {})), (text) => text.includes(lora.model) && text.includes(fine.model));
     await shot('both-on');
 
     const runs = async () => (await Promise.all(['in_progress', 'queued'].map((status) => api(`/v1/runs?status=${status}&limit=100`)))).flatMap((answer) => answer.body?.runs ?? []).filter((run) => run.machine === process.env.RENDER || !run.machine);

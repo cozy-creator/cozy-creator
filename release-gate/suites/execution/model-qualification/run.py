@@ -511,8 +511,8 @@ def main() -> None:
         report["resumed_from"] = str(archive)
     # A run belongs to a project.
     project = output / "project"
-    if not (project / "project.yaml").is_file():
-        subprocess.run([cozy, "project", "new", str(project)], check=True, stdout=subprocess.DEVNULL)
+    if not (project / "project.db").is_file():
+        subprocess.run([cozy, "new", "--unencrypted", str(project)], check=True, stdout=subprocess.DEVNULL)
     try:
         before = cast(Machine, read_snapshot(  # machine show
             cozy, output, "machine-before", ["machine", "show", args.machine]

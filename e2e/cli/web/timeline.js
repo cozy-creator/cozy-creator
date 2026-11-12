@@ -11,7 +11,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, rmSync, statSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { implementationRow, projectFromPage, projectJson, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, settled, fitCanvas, until, watchBoxes, pointAt, yamlOf } = require('./page');
+const { implementationRow, projectFromPage, projectJson, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, drop, lastLook, lookAt, noStall, openBox, openCanvas, settled, fitCanvas, until, watchBoxes, pointAt, storedOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -161,7 +161,9 @@ function plate(path, color, seconds, hz) {
   const whole = JSON.stringify([3 * FPS, 2 * FPS, 3 * FPS]);
   const start = await until('its clips measured', clips, (now) => JSON.stringify(now.map((clip) => clip.frames)) === whole).catch(() => clips());
   check('whole_takes', JSON.stringify(start.map((clip) => clip.frames)) === whole, start);
-  await until('the file holds them', () => Promise.resolve(yamlOf(folder)), (text) => /<title>[\s\S]*<red>[\s\S]*<blue>/.test(text));
+  // Its tracks as project.db stores them.
+  const tracks = () => Promise.resolve(JSON.stringify(storedOf(folder)[timelineName]?.tracks ?? null));
+  await until('the project holds them', tracks, (text) => /<title>[\s\S]*<red>[\s\S]*<blue>/.test(text));
   check('a_filmstrip_each', await until('its frames', () => page.locator('.tl-clip img').count(), (n) => n >= 3));
   await away();
   check('at_rest_its_first_clip', await until('its first clip\'s picture', () => card(timelineName).locator('.media img').count(), (n) => n === 1));
@@ -199,7 +201,7 @@ function plate(path, color, seconds, hz) {
   await pull('blue', 'in', 40);
   // A press holds it open wherever the pointer goes: this one lets go well off the box.
   check('a_press_holds_it_open', /^\d\d:\d\d:\d\d:\d\d, \d+ f$/.test(await pull('title', 'out', -60, 300)));
-  await until('three trims saved', () => Promise.resolve(yamlOf(folder)), (text) => (text.match(/\b(frames|in|out):/g) ?? []).length >= 3);
+  await until('three trims saved', tracks, (text) => (text.match(/"(frames|in|out)":/g) ?? []).length >= 3);
   // Reorder: blue goes first.
   const first = await strip();
   const body = await page.locator('.tl-clip[data-name="blue"]').boundingBox();
