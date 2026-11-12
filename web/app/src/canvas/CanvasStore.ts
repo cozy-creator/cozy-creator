@@ -570,7 +570,7 @@ export class CanvasStore {
       if (!of?.asset || of.asset.kind !== "image" || this.refusalOf(name, mention) || seen.has(mention)) return []
       seen.add(mention)
       const file = read?.number !== undefined ? of.asset.prefixes?.find((held) => held.number === read.number)?.main : selectedOf(of)
-      if (file && !file.absent && file.field === "image") return [{ mention, sha256: file.sha256 }]
+      if (file && !file.absent && file.field === "image") return [{ mention, sha256: file.sha256, shape: file.width && file.height ? file.width / file.height : undefined }]
       // Nothing of it yet: its frame, at the shape it will be, and whether it's being made.
       return [{ mention, shape: sentShape(of) ?? 1, making: read?.number === undefined && !file && Boolean(of.asset.making?.length || of.queued || of.asked !== undefined) }]
     })
