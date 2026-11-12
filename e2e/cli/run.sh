@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -279,6 +279,8 @@ case $SHARD in
   web-palette) export DB_WEB=palette; parts="tools_read db_existing_web logs" ;;
   # The tool beside a box's name (cl-927).
   web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
+  # The right-side panel closed by a click off it (cl-929).
+  web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;
   # A press from inside never dismisses (cl-923).
   web-dismiss) export DB_WEB=dismiss; parts="tools_read db_existing_web logs" ;;
   # Typed words over a picture (cl-901).
