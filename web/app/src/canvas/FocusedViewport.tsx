@@ -34,8 +34,16 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
     })
     return () => cancelAnimationFrame(frame)
   }, [entering, shown, name, store])
+  // Hidden while it enters, nothing in it can take the caret: once it shows, a box being written gives it to its first words, at their end.
+  // Its prompts are contenteditable="plaintext-only" (MentionText), not "true".
   useEffect(() => {
-    if (!entering && store.get(name)?.hereWords) element.current?.querySelector<HTMLElement>(".focus-body [contenteditable=true], .focus-body textarea")?.focus({ preventScroll: true })
+    if (entering || !store.get(name)?.hereWords) return
+    const words = element.current?.querySelector<HTMLElement>(".focus-body [contenteditable]:not([contenteditable=false]), .focus-body textarea")
+    if (!words) return
+    words.focus({ preventScroll: true })
+    if (!words.isContentEditable) return
+    window.getSelection()?.selectAllChildren(words)
+    window.getSelection()?.collapseToEnd()
   }, [entering, name, store])
   useEffect(() => {
     const held = element.current
