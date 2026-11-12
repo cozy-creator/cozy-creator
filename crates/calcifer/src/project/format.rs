@@ -628,6 +628,15 @@ impl Doc {
         inputs
     }
 
+    /// Editable inputs from this frozen document, before binding or text-asset expansion.
+    pub(crate) fn authoring_fields(&self, i: usize) -> Map<String, Value> {
+        let asset = &self.assets[i];
+        let mut fields = asset.written.clone().unwrap_or_else(|| self.inputs_of(i));
+        fields.values_mut().for_each(end_trimmed);
+        fields.extend(asset.made.iter().map(|(field, value)| (field.clone(), value.clone())));
+        fields
+    }
+
     /// What asset `i` says, flat, by each control's `field`: its inputs, defaults too, and the platform's words. An edit's tracks are the wire's `timeline`.
     pub(crate) fn flat_fields(&self, i: usize) -> Map<String, Value> {
         let asset = &self.assets[i];

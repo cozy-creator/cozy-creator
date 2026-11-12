@@ -130,6 +130,80 @@
   padding: 10px 20px;
   font-size: 20px;
 }
+/* A video's Summary and beat prompts carry only their own image references. */
+.video-reference-field {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--round);
+  background: var(--field);
+}
+.video-reference-field .ghosts {
+  opacity: .2;
+}
+.video-reference-field .ghosts img {
+  object-fit: contain;
+}
+.video-reference-field .mention-text {
+  position: relative;
+  z-index: 1;
+  border: 0;
+  background: transparent;
+  font-weight: 700;
+  color: var(--ink);
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .video-reference-field .mention-text {
+  min-height: 160px;
+  padding: 16px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat.can-go .video-reference-field .mention-text {
+  padding-right: 44px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat {
+  transition: opacity 160ms ease, transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat.moving {
+  opacity: .55;
+  transform: scale(1.015) rotate(-.25deg);
+  box-shadow: 0 8px 18px var(--shadow);
+  z-index: 2;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat.landing {
+  background: var(--tint);
+  box-shadow: 0 -4px 0 var(--ember), 0 0 0 1px var(--ember);
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .grip:active {
+  cursor: grabbing;
+}
+.beat.beat-accordion,
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat.beat-accordion {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+}
+.beat-heading { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+.beat-toggle { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; border: 0; background: none; padding: 6px 0; color: var(--ink); text-align: left; cursor: pointer; }
+.beat-toggle b { flex: 1; }
+.beat-toggle > span { color: var(--mute); font: var(--small) var(--mono); }
+.beat-toggle > .beat-status { font-family: var(--sans); }
+.beat-kept .beat-body { opacity: .6; }
+.beat-toggle > .icon { transition: transform 180ms ease; }
+.beat-toggle[aria-expanded="true"] > .icon { transform: rotate(90deg); }
+.beat-panel { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 180ms ease; }
+.beat-panel[data-open] { grid-template-rows: 1fr; }
+.beat-panel > .beat-body { min-height: 0; overflow: hidden; }
+.beat-panel > .beat-body > * { margin-inline: 12px; }
+.beat-panel > .beat-body > :last-child { margin-bottom: 12px; }
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat-heading .grip { padding-top: 0; }
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat-heading > .iconb { position: static; width: 28px; height: 28px; }
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat-accordion.can-go .video-reference-field .mention-text { padding-right: 16px; }
+@media (prefers-reduced-motion: reduce) {
+  .focus-viewport .focus-card.focus-parameter-tool .prominent .beat { transition: none; }
+  .beat-panel, .beat-toggle > .icon { transition: none; }
+}
 @media (max-width: 1050px) {
   .focus-viewport .focus-card.focus-parameter-tool.has-focus-media {
     grid-template-columns: minmax(0, 1fr) min(20vw, 180px);

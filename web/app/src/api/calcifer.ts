@@ -3287,7 +3287,11 @@ execution_ms?: number | null,
 /**
  * The words it was made from.
  */
-text?: string | null, };
+text?: string | null,
+/**
+ * Its saved editable inputs, before prompt binding, including model choices; absent when unknown.
+ */
+fields?: { [key in string]: JsonValue } | null, };
 
 /**
  * `DELETE /v1/projects/{id}/assets/{name}/versions/{number}` and `POST …/versions`: a version discarded, or joined.

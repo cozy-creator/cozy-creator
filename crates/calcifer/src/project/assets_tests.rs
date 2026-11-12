@@ -183,8 +183,14 @@ async fn typed_nodes_fixture() {
     assert!(!doc.assets[at].own.contains(format::SELECTED_VERSION));
     drop(lock);
     let landing = super::super::Walk::new(&api, &series);
+    let original_fields = serde_json::from_value(json!({
+        "summary":"The original summary",
+        "beats":[{"description":"The original beat","duration":12}],
+        "models":{"model":{"ref":"author/model@1"}}
+    })).unwrap();
     landing.record(None, &original.name, "image", folder::Version {
         files: folder::Files::from([("image".to_owned(), hash.clone())]),
+        fields: Some(original_fields),
         tool: Some("fixture/image".to_owned()), ..Default::default()
     }, "version", false, |_| {}).unwrap();
     let doc = Doc::load(&series.folder).unwrap();
@@ -226,6 +232,32 @@ async fn typed_nodes_fixture() {
     // A current image remains renderable, while a reader's completed selected
     // input is independent of another generation of that image.
     edit(&api, &series.id, &original.name, json!({"tool":"fixture/image","fields":{"instructions":"edit the current image"}})).await;
+    let Json(history) = read(State(api.clone()), Path((series.id.clone(), original.name.clone())), Query(Asked { call: false })).await.unwrap();
+    let original_request = history.versions.iter().find(|version| version.number == 2).unwrap().fields.as_ref().unwrap();
+    assert_eq!(original_request.get("summary"), Some(&json!("The original summary")));
+    assert_eq!(original_request.get("beats"), Some(&json!([{"description":"The original beat","duration":12}])));
+    let conn = db::open(&directory.join(db::DB)).unwrap();
+    let stored = db::load(&conn, &directory.join(db::DB)).unwrap();
+    assert_eq!(stored.lock.asset(&original.name).unwrap().version(2).unwrap().fields.as_ref(), Some(original_request));
+    assert!(history.versions.iter().find(|version| version.number == 1).unwrap().fields.is_none(), "an import has no historical authoring request");
+    let source_prompt = format!("Keep <{}.1> exactly", original.name);
+    edit(&api, &series.id, &original.name, json!({"fields":{"summary":source_prompt}})).await;
+    let doc = Doc::load(&series.folder).unwrap();
+    let lock = series.folder.lock().unwrap();
+    let source_at = doc.find(&original.name).unwrap();
+    let authored = doc.authoring_fields(source_at);
+    let callable: api::interface::Callable = serde_json::from_value(json!({
+        "name":"image", "request":{"fields":[{"name":"summary","type":{"prompt":["image"]}}]}
+    })).unwrap();
+    let bound = super::super::binder::bind(&super::super::binder::Call {
+        name: &original.name, tool: "fixture/image", package: "fixture", callable: &callable,
+        fields: &authored, reserved: &[], doc: &doc, own: Some(source_at), lock: &lock,
+        stand: &doc.stand(&lock), gone: &BTreeSet::new(), pickup: None, inline: &[],
+    }).unwrap();
+    assert_eq!(authored.get("summary"), Some(&json!(source_prompt)));
+    assert_eq!(bound.payload["summary"]["text"], json!(source_prompt));
+    assert!(bound.payload["summary"]["references"].is_array(), "binding genuinely produces a structured Prompt");
+    drop(lock);
     let reader = make(&api, &series.id, json!({"name":"reader","tool":"fixture/video","kind":"video","fields":{"summary":format!("<{}>", original.name)}})).await;
     {
         use super::super::{AskedText, Graph, Named, Now, Turn, walker};

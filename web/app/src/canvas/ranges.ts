@@ -2,8 +2,16 @@
 // version, and `<walk:48->` to its end. An orbit by angle (Paul, 11-11): `<cat:120deg>` the frame at 120° as a picture, `<cat:90deg-180deg>`
 // that part of the turn as a clip. `:` is no name character, so the rest of a mention is what it names.
 
+import type { Snap } from "../api/calcifer"
+
 /** A video's frames a second when its file doesn't say. */
 export const FPS = 24
+
+/** A continuation starts only on the tool's supported frame grid. */
+export function pickupAt(frame: number, last: number, snap: Snap | undefined): number | null {
+  if (!snap) return Math.min(frame, last)
+  return frame < snap.first ? null : Math.min(last, Math.max(snap.first, snap.offset + Math.round((frame - snap.offset) / snap.every) * snap.every))
+}
 
 export interface Ranged {
   base: string

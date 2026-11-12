@@ -96,7 +96,7 @@ export function whyNot(found: FoundModel, name: string, view: ElementView | unde
 /** The box under a point, its add-ons being part of it. */
 export function boxAt(store: CanvasStore, x: number, y: number): string | null {
   for (const element of document.elementsFromPoint(x, y)) {
-    const card = element.closest(".react-flow__node")?.querySelector<HTMLElement>(".card[data-asset]")
+    const card = element.closest<HTMLElement>(".card[data-asset]") ?? element.closest(".react-flow__node")?.querySelector<HTMLElement>(".card[data-asset]")
     if (card) return store.resolveName(card.dataset.asset ?? "")
   }
   return null

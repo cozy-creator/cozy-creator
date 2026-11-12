@@ -13,15 +13,15 @@ export function ImageVersions({ name, view, width }: { name: string; view: Eleme
   const tools = useSignal(store.tools)
   const [modelsOpen, setModelsOpen] = useState(false)
   const asset = view.asset
-  if (!asset || asset.kind !== "image") return null
+  if (!asset || (asset.kind !== "image" && asset.kind !== "video")) return null
   const tool = asset.tool ? tools.get(asset.tool) : undefined
-  const word = tool ? modelLabel(tool) : asset.tool ? "Image tool" : undefined
+  const word = tool ? modelLabel(tool) : asset.tool ? `${asset.kind === "video" ? "Video" : "Image"} tool` : undefined
   return (
     <div className="image-controls nodrag nopan nowheel" style={{ "--image-control-width": `${width}px` } as CSSProperties}>
       <div className="image-version-row">
         {word && <span className="image-tool">
           <span className="image-tool-name">{word}</span>
-          <button type="button" title="Remove tool" aria-label="Remove image tool" onClick={() => store.takeToolOff(name)}><Icon name="close" /></button>
+          <button type="button" title="Remove tool" aria-label={`Remove ${asset.kind} tool`} onClick={() => store.takeToolOff(name)}><Icon name="close" /></button>
         </span>}
         {asset.tool && <button type="button" className="image-models" aria-label="Models and LoRAs" onClick={() => setModelsOpen(true)}>Models &amp; LoRAs</button>}
       </div>
