@@ -113,7 +113,7 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await button.waitFor();
   const placed = await scene.evaluate((card) => {
     const pick = card.querySelector('.edit-foot .models-loras button[aria-label="Models and LoRAs"]');
-    const controls = [...card.querySelectorAll('.edit-shown [data-field], .edit-shown [aria-label], .run')];
+    const controls = [...card.querySelectorAll('.edit-shown [data-field], .edit-shown [aria-label], .edit-parameters [aria-label], .run')];
     const box = pick.getBoundingClientRect();
     return {
       buttons: card.querySelectorAll('button[aria-label="Models and LoRAs"]').length,
