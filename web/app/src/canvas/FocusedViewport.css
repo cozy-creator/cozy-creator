@@ -153,17 +153,24 @@
   height: 100%;
   overflow: auto;
 }
+/* A picture's −/+ in its frame's bottom right, on a panel so they read over any picture (cl-958); over the Edit button when it has one. */
 .focus-image-zoom {
   position: absolute;
-  left: 12px;
+  right: 12px;
   bottom: 12px;
   display: flex;
   align-items: center;
   gap: 4px;
-  z-index: 8;
+  padding: 4px;
+  border-radius: var(--round2);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  z-index: 10;
 }
-/* Words being written in the frame are no picture to zoom. */
-.focus-viewer:has(.in-frame) .focus-image-zoom {
+.focus-stack:has(.image-edit-action) > .focus-image-zoom {
+  bottom: 60px;
+}
+/* Only while a picture is looked at: never over words being written, a take being made, a video or a sound. */
+.focus-stack:is(:has(.in-frame), :has(.making), :has(video), :has(audio), :has(> .focus-under)) > .focus-image-zoom {
   display: none;
 }
 .focus-image-zoom .tb {
@@ -316,6 +323,7 @@ body:has(.focus-viewport) .zoom {
 }
 /* What's right under the frame, at its right edge: a video's Pick up from here (cl-950). */
 .focus-stack {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
