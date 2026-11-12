@@ -711,21 +711,21 @@ jobs:
       # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
       - if: matrix.shard == 'commands' || matrix.shard == 'web' || startsWith(matrix.shard, 'web-') || matrix.shard == 'local-code' || matrix.shard == 'control' || matrix.shard == 'projectvault' || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
         uses: AnimMouse/setup-ffmpeg@v1
-      - if: matrix.shard == 'containment'
+      - if: startsWith(matrix.shard, 'containment')
         uses: actions/setup-node@v4
         with:
           node-version: 24
-      - if: matrix.shard == 'containment'
+      - if: startsWith(matrix.shard, 'containment')
         uses: pnpm/setup@v1
         with:
           package-json-file: .creator/web/app/package.json
           install: false
       - name: Install source dependencies for the actual HMR fixture
-        if: matrix.shard == 'containment'
+        if: startsWith(matrix.shard, 'containment')
         working-directory: .creator/web/app
         run: pnpm install --frozen-lockfile
       - name: Install the optional project-encryption filesystem driver
-        if: matrix.shard == 'projectvault' || matrix.shard == 'containment'
+        if: matrix.shard == 'projectvault' || startsWith(matrix.shard, 'containment')
         run: bash .creator/e2e/cli/install-vault-driver.sh
       - uses: actions/download-artifact@v4
         with:
@@ -748,19 +748,19 @@ jobs:
             --command .creator/e2e/isolated.sh -- cli \
             --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES ${PINS:+--pins "$PINS"} $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       # cozy's logs (Calcifer's too) however the suite ended: one the job's timeout ends never reaches its `logs` part (cl-837).
-      - if: always() && matrix.shard != 'containment'
+      - if: always() && !startsWith(matrix.shard, 'containment')
         run: mkdir -p "$RUNNER_TEMP/e2e/cozy-logs" && cd ~/.cozy && find . -name '*.log' -size -20M | tar -cf - -T - | tar -xf - -C "$RUNNER_TEMP/e2e/cozy-logs" || true
-      - if: always() && matrix.shard != 'containment'
+      - if: always() && !startsWith(matrix.shard, 'containment')
         uses: ./.creator/e2e/publish
         with:
           name: e2e-cli-linux-${{ matrix.shard }}
           path: ${{ runner.temp }}/e2e
           retention-days: 14
 
-      - if: always() && matrix.shard == 'containment'
+      - if: always() && startsWith(matrix.shard, 'containment')
         uses: actions/upload-artifact@v4
         with:
-          name: project-containment-receipt
+          name: project-${{ matrix.shard }}-receipt
           path: ${{ runner.temp }}/e2e/containment/receipt.json
           if-no-files-found: warn
           retention-days: 14

@@ -26,17 +26,17 @@ parse "$@"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
-if [ "$SHARD" = containment ]; then
+if [ "$SHARD" = containment ] || [ "$SHARD" = containment-web ]; then
   user_services
   step install; install_cozy
   step candidates; candidates
   systemctl --user stop cozy-calcifer.service
   mkdir -p "$OUT/containment"
-  python3 - "$HOME/.cozy/bin/cozy" "$OUT/containment/ready.json" <<'PY'
+  python3 - "$HOME/.cozy/bin/cozy" "$OUT/containment/ready.json" "$SHARD" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
-binary, ready = map(Path, sys.argv[1:])
-ready.write_text(json.dumps({"ready": True, "native_execution": True, "development_web": True, "allow_host_core_pattern_change": True, "sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest()}))
+binary, ready = map(Path, sys.argv[1:3])
+ready.write_text(json.dumps({"ready": True, "native_execution": sys.argv[3] == "containment", "development_web": True, "allow_host_core_pattern_change": True, "sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest()}))
 PY
   exec xvfb-run -a uv run --no-project "$here/containment/run.py" \
     --ready-file "$OUT/containment/ready.json" --out "$OUT/containment"

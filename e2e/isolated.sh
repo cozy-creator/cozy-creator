@@ -97,7 +97,7 @@ PY
 }
 
 case $suite:$shard in
-  cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment) needs='' ;;
+  cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web) needs='' ;;
   cli:runs | cli:commands | cli:local-code) needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:web-palette) needs='packages catalog' ;;

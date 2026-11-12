@@ -125,7 +125,7 @@ def main() -> int:
     projects: list[dict] = []
     phase = "start"
     try:
-        if ready.get("native_execution") is True:
+        if ready.get("allow_host_core_pattern_change") is True:
             core = CorePattern(ready)
             core.set(b"core")
         if ready.get("development_web") is True:
