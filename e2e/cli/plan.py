@@ -9,8 +9,20 @@ import urllib.error
 import urllib.request
 import uuid
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from warm import upload  # noqa: E402
+def upload(base: str, headers: dict[str, str], digest: str, data: bytes) -> None:
+    """The file into Calcifer's store, as the page sends one (`PUT /v1/files/<digest>`), unless it holds it."""
+    url = base + "/v1/files/" + digest
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers, method="HEAD")):
+            return
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+    call = urllib.request.Request(url, data=data, method="PUT", headers={
+        **headers, "Content-Type": "application/octet-stream", "Content-Length": str(len(data)),
+    })
+    with urllib.request.urlopen(call):
+        pass
 
 
 def main() -> int:
@@ -24,7 +36,8 @@ def main() -> int:
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     base = "http://" + holder["address"]
     headers = {"Authorization": "Bearer " + holder["token"]}
-    files, paths = [], {}
+    files: list[dict[str, str]] = []
+    paths: dict[str, dict[str, str]] = {}
     for attached in args.file:
         name, _, written = attached.partition("=")
         data = Path(written).read_bytes()
