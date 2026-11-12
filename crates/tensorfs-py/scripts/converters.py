@@ -1161,7 +1161,7 @@ def anima_lora(single: Table[TableRow]) -> Table[LoraRow]:
     (`AnimaTextConditioner`). Its LoRAs keep the native names `anima.single_file` renames (`blocks.N.self_attn.q_proj`,
     `llm_adapter.blocks.N.self_attn.q_proj`): ComfyUI's, AI-Toolkit's and diffusion-pipe's under `diffusion_model.`,
     kohya's flattened under `lora_unet_` (sd-scripts' `networks.lora_anima`); Diffusers' names as `dit_lora` reads them."""
-    rows = {c["name"]: [cast(tuple[str, str], r) for r in c["rows"] if len(r) == 2] for c in single["components"]}
+    rows = {c["name"]: [r for r in c["rows"] if len(r) == 2] for c in single["components"]}
     renamed = {t.removesuffix(".weight"): s.removesuffix(".weight") for t, s in rows["transformer"] if t.endswith(".weight")}
     census = family_linears("anima")
     native: list[LoraRow] = [(d, renamed[d], {"io": list(io)}) for d, io in census.items()]
