@@ -256,7 +256,9 @@ Hub's record of the rental (`released` or `failed`, with an end time, only once 
   - `straggler` (on the gate's host, where a client may dial): `tfs download` of BiRefNet clean and through
     `straggler.py`, which drips its first objects as a slow storage GET does. A straggler must be re-asked, not
     waited out, and a crawling object, each ask of which moves 64 KiB and drips, read as parallel ranges (each at
-    most 1.5x clean + 20 s, the crawling ones 2x clean + 60 s).
+    most 1.5x clean + 20 s, the crawling ones 2x clean + 60 s). A small ask that drips 16 KiB every 25 s after half its
+    body, under the 30 s stall (`straggler-drip`, tfs-149: run 47820's last ~1 MB took 15 min), must be hedged on
+    another connection and land within clean + 20 s.
   - `lora-alpha` (on the gate's host): `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no
     `.alpha` tensors whose kohya metadata says `ss_network_alpha` 420 at rank 4. Its committed `lora_alpha` must be `r`, a scale of 1, as kohya's and ComfyUI's
     loaders apply it; metadata alpha scaled the Mystic XXX LoRAs 26x into colour noise (10-29).

@@ -13,7 +13,9 @@
 #                    commit holds one while the next run claims it (straggler-held; gate 41991226171: the fetch fell back
 #                    to a temp it could not read back): it must land. Then with one small ask's socket held silent
 #                    after half its body (straggler-silent; run 32321 sat 16 min on its last two chunks): it must land
-#                    within 60 s, asked again. Then new random weights from origin.py through a 40 MB/s link, every
+#                    within 60 s, asked again. Then with one small ask dripping 16 KiB every 25 s after half its body, under
+#                    the 30 s stall (straggler-drip; run 47820's last ~1 MB crawled 15 min, tfs-149): a hedge on another
+#                    connection must land it within 20 s of the clean download. Then new random weights from origin.py through a 40 MB/s link, every
 #                    storage ask answered 503 for 8 s once the ramp has settled (straggler-burst; R2 sent 13 near run
 #                    32321's end, which left one request held by nothing to start): it must land
 #   lora-alpha       on this host: `tfs import --converter h3.lora` of an H3 LoRA in ComfyUI's spelling with no `.alpha`
@@ -287,6 +289,7 @@ PY
   tfs_straggler straggler-held 0
   kill "$held"
   tfs_straggler straggler-silent 0 --silent
+  tfs_straggler straggler-drip 0 --drip
   tfs_burst straggler-burst
 fi
 if tfs_case lora-alpha; then tfs_lora_alpha; fi
