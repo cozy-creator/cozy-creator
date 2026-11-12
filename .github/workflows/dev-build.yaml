@@ -21,6 +21,11 @@ on:
         description: "Cargo features of the cozy and tensord builds"
         type: string
         default: ''
+      profile:
+        description: "cozy and tensord's Cargo profile: release, or dev (opt-level 0, as scripts/dev-local.sh builds a dev home's; cl-974)"
+        type: choice
+        options: [release, dev]
+        default: release
       runner:
         description: A standard runner, free on this public repo
         type: choice
@@ -54,6 +59,9 @@ on:
       features:
         type: string
         default: ''
+      profile:
+        type: string
+        default: release
       runner:
         type: string
         default: ubuntu-latest
@@ -101,7 +109,7 @@ jobs:
         with:
           cache-on-failure: true
           workspaces: . -> target/manylinux
-          save-if: ${{ contains(inputs.build, 'cozy') }}
+          save-if: ${{ contains(inputs.build, 'cozy') && inputs.profile != 'dev' }}
       # The page the dev cozy's Calcifer embeds, built here: the container below mounts the checkout read-only. A ref
       # from before web/app has none.
       - uses: actions/setup-node@v4
@@ -123,8 +131,10 @@ jobs:
         env:
           BUILD: ${{ inputs.build }}
           FEATURES: ${{ inputs.features }}
+          PROFILE: ${{ inputs.profile }}
         run: |
-          sha=$(git rev-parse HEAD) arch=$(uname -m) target=$PWD/target/manylinux bins=()
+          sha=$(git rev-parse HEAD) arch=$(uname -m) target=$PWD/target/manylinux bins=() out=release
+          [ "$PROFILE" != dev ] || out=debug
           [[ $BUILD != *cozy* ]] || bins+=(--bin cozy)
           [[ $BUILD != *tensord* ]] || bins+=(--bin tensord)
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
@@ -135,19 +145,19 @@ jobs:
                cargo update -w --offline ;;
           esac
           rm -rf "$target/rustup" && mkdir -p "$target" dist/cozy dist/tensord
-          docker run --rm -e CARGO_BUILD_JOBS="$(nproc)" --user "$(id -u):$(id -g)" -e HOME=/tmp -e RUSTUP_HOME=/target/rustup -e COZY_COMMIT="$sha" -e FEATURES \
+          docker run --rm -e CARGO_BUILD_JOBS="$(nproc)" --user "$(id -u):$(id -g)" -e HOME=/tmp -e RUSTUP_HOME=/target/rustup -e COZY_COMMIT="$sha" -e FEATURES -e PROFILE -e CARGO_PROFILE_DEV_DEBUG=0 \
             -v "$HOME/.cargo/registry:/cargo/registry" -v "$HOME/.cargo/git:/cargo/git" -v "$PWD:/src:ro" -v "$target:/target" -w /src \
             "quay.io/pypa/manylinux_2_28_$arch:2026.10.03-1" \
-            sh -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain 1.99.1 >&2 && PATH=/tmp/.cargo/bin:$PATH CARGO_HOME=/cargo cargo build --release --locked --offline --target-dir /target -p cozy -p tensord --features "$FEATURES" "$@"' sh "${bins[@]}"
+            sh -c 'curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain 1.99.1 >&2 && PATH=/tmp/.cargo/bin:$PATH CARGO_HOME=/cargo cargo build --profile "$PROFILE" --locked --offline --target-dir /target -p cozy -p tensord --features "$FEATURES" "$@"' sh "${bins[@]}"
           rm -rf "$target/rustup" && git checkout -- Cargo.toml Cargo.lock
           if [[ $BUILD == *cozy* ]]; then
-            install -m 0755 "$target/release/cozy" "dist/cozy/cozy-linux-$arch"
+            install -m 0755 "$target/$out/cozy" "dist/cozy/cozy-linux-$arch"
             (cd dist/cozy && sha256sum "cozy-linux-$arch" > "cozy-linux-$arch.sha256")
             said=$("dist/cozy/cozy-linux-$arch" --version)
             case $said in *"+dev.g${sha:0:8}" | *"-dev+g${sha:0:8}") echo "$said" ;; *) echo "::error::the dev cozy says $said"; exit 1 ;; esac
           fi
           if [[ $BUILD == *tensord* ]]; then
-            install -m 0755 "$target/release/tensord" "dist/tensord/tensord-linux-$arch"
+            install -m 0755 "$target/$out/tensord" "dist/tensord/tensord-linux-$arch"
             "dist/tensord/tensord-linux-$arch" version --json
           fi
       - if: contains(inputs.build, 'cozy')
