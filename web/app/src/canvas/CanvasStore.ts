@@ -1356,7 +1356,7 @@ export class CanvasStore {
     }
     // From an image tool's words, the box looks at the take being made, and its + goes back to them. Not before it goes: what it waits
     // for or asks first is said under its words.
-    if (asset.kind === "image") this.watchTake(key)
+    if (asset.kind === "image" || asset.kind === "video") this.watchTake(key)
     this.patch(key, { waiting: undefined, asking: undefined, scrub: undefined, pickingUp: undefined, glimpse: undefined, asked: NOT_YET })
     const id = this.ids.get(key)
     const settle = (asked?: number) => this.patchId(id, { asked })
