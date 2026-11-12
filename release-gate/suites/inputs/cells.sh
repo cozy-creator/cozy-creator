@@ -53,59 +53,62 @@ $(run_get "$OUT" ph3-46479-released '.status + " " + (.reason.code // "") + " " 
   "$CLI" machine update "$M" --runtime "$RWF" -y > inputs-candidate.log 2>&1 ||
     { expect inputs-candidate FAIL "the candidate did not go back on: $(tail -c 300 inputs-candidate.log)"; return 0; }
 fi
-run_inputs() {  # run_inputs <suffix>: every cell, each named with <suffix>
-  local x=$1
+run_inputs() {  # run_inputs <suffix> <seed offset>: every cell, named with <suffix>, its seed past the other passes
+  local x=$1 o=$2
   pictures p 1 2
-  cell "ph3-46479$x" "$(pkg minimax-h3 image)" references:="$PICS" seed:=$((R + 900)) instructions="$PH3_46479"
+  cell "ph3-46479$x" "$(pkg minimax-h3 image)" references:="$PICS" seed:=$((R + 900 + o)) instructions="$PH3_46479"
   fits "ph3-46479$x"
-  cell "ph3-t2i-max$x" "$(pkg minimax-h3 image)" instructions="$(words $LONG)" megapixels:=16 prompt_upsampling:=true seed:=$((R + 901))
+  cell "ph3-t2i-max$x" "$(pkg minimax-h3 image)" instructions="$(words $LONG)" megapixels:=16 prompt_upsampling:=true seed:=$((R + 901 + o))
   fits "ph3-t2i-max$x"
-  cell "ph3-t2i-noup$x" "$(pkg minimax-h3 image)" instructions="$(words $LONG)" megapixels:=16 prompt_upsampling:=false seed:=$((R + 902))
+  cell "ph3-t2i-noup$x" "$(pkg minimax-h3 image)" instructions="$(words $LONG)" megapixels:=16 prompt_upsampling:=false seed:=$((R + 902 + o))
   fits "ph3-t2i-noup$x"
   pictures e 8 8
   cell "ph3-edit-max$x" "$(pkg minimax-h3 image)" references:="$PICS" instructions="$MENTIONS$(words $LONG "$MENTIONS")" \
-    megapixels:=16 prompt_upsampling:=true seed:=$((R + 903))
+    megapixels:=16 prompt_upsampling:=true seed:=$((R + 903 + o))
   fits "ph3-edit-max$x"
   cell "ph3-edit-noup$x" "$(pkg minimax-h3 image)" references:="$PICS" instructions="$MENTIONS$(words $LONG "$MENTIONS")" \
-    megapixels:=16 prompt_upsampling:=false seed:=$((R + 904))
+    megapixels:=16 prompt_upsampling:=false seed:=$((R + 904 + o))
   fits "ph3-edit-noup$x"
   pictures k 10 4
   cell "klein-max$x" "$(pkg flux.3 generate_turbo)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
-    megapixels:=4 prompt_upsampling:=true seed:=$((R + 905))
+    megapixels:=4 prompt_upsampling:=true seed:=$((R + 905 + o))
   fits "klein-max$x"
   cell "qwen2-max$x" "$(pkg qwen-image-2 generate)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
-    megapixels:=4 prompt_upsampling:=true seed:=$((R + 906))
+    megapixels:=4 prompt_upsampling:=true seed:=$((R + 906 + o))
   fits "qwen2-max$x"
   cell "flux2-max$x" "$(pkg flux-2 generate_turbo)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
-    megapixels:=4 prompt_upsampling:=true seed:=$((R + 907))
+    megapixels:=4 prompt_upsampling:=true seed:=$((R + 907 + o))
   fits "flux2-max$x"
-  cell "qwen-image-max$x" "$(pkg qwen-image generate)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
-    megapixels:=2 seed:=$((R + 908))
+  # Its edit's text rotary table ended at 4,051 rows for 22,526 tokens (se-119): a prompt it reads.
+  cell "qwen-image-max$x" "$(pkg qwen-image generate)" references:="$PICS" prompt="$MENTIONS$(words 8000 "$MENTIONS")" \
+    megapixels:=2 seed:=$((R + 908 + o))
   fits "qwen-image-max$x"
   pictures f 4 1
   cell "fibo-max$x" "$(pkg fibo-2 generate)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
-    megapixels:=1 prompt_upsampling:=true seed:=$((R + 909))
+    megapixels:=1 prompt_upsampling:=true seed:=$((R + 909 + o))
   fits "fibo-max$x"
-  cell "ideogram-max$x" "$(pkg ideogram-4 generate)" prompt="$(words $LONG)" prompt_upsampling:=true seed:=$((R + 910))
+  cell "ideogram-max$x" "$(pkg ideogram-4 generate)" prompt="$(words $LONG)" prompt_upsampling:=true seed:=$((R + 910 + o))
   fits "ideogram-max$x"
   pictures d 16 2
   # The describer's images bind by kind, as positional files.
-  cell "describer-max$x" "$(pkg qwen3.5 ask)" prompt="$(words $LONG)" max_tokens:=16384 $(jq -r '.[].image' <<< "$PICS")
+  cell "describer-max$x" "$(pkg qwen3.5 ask)" prompt="$(words $LONG)" max_tokens:=16384 seed:=$((R + 912 + o)) \
+    $(jq -r '.[].image' <<< "$PICS")
   fits "describer-max$x"
-  cell "h3-max$x" "$(pkg minimax-h3 generate)" prompt="$(words $LONG)" duration_s:=15 seed:=$((R + 911))
+  # H3 calls its segments with the prompt inline, at most 48 KiB (cr-281): its longest that runs.
+  cell "h3-max$x" "$(pkg minimax-h3 generate)" prompt="$(words 40000)" duration_s:=15 seed:=$((R + 911 + o))
   fits "h3-max$x"
 }
-run_inputs ""
-# The capped pass: the LM-heavy cells --only names (all four when it names none), on a card over 12 GB.
+run_inputs "" 0
+# The capped pass: the LM-heavy cells --only names (all four when it names none), on a card over 20 GB.
 GIB=$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+' || true)
 INPUTS_ONLY=$ONLY INPUTS_CAP=,
 for c in ph3-edit-max klein-max qwen2-max describer-max; do
   [ -n "$ONLY" ] && [[ $ONLY != *",$c,"* && $ONLY != *",$c-cap8,"* ]] || INPUTS_CAP+="$c-cap8,"
 done
-if [ "${GIB:-0}" -gt 12 ] && [ "$INPUTS_CAP" != , ]; then
+if [ "${GIB:-0}" -gt 20 ] && [ "$INPUTS_CAP" != , ]; then
   "$CLI" machine update "$M" --gpu-memory-limit 8GiB -y > inputs-cap8.log 2>&1 || log "inputs: no 8 GiB cap: $(tail -c 300 inputs-cap8.log)"
   ONLY=$INPUTS_CAP
-  run_inputs -cap8
+  run_inputs -cap8 50
   "$CLI" machine update "$M" --gpu-memory-limit off -y > inputs-uncap.log 2>&1 || log "inputs: cap not lifted: $(tail -c 300 inputs-uncap.log)"
 fi
 ONLY=$INPUTS_ONLY
