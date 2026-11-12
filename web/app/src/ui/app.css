@@ -1333,6 +1333,7 @@ video.preview.on {
 }
 .lead-in-words b {
   overflow: hidden;
+  font-size: var(--body);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1355,12 +1356,15 @@ video.preview.on {
 .lead-in-gone {
   flex: none;
   color: var(--warn, var(--ember));
-  font-size: var(--tiny);
+  font-size: var(--body);
 }
+/* A take that went on from another box's, on its tile: as its tool's name is. */
 .continues-rest {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: var(--mute);
-  font-size: var(--tiny);
+  font: calc(var(--t-body) * var(--ui)) / 1.25 var(--sans);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

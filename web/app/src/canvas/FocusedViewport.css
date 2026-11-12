@@ -319,7 +319,8 @@ body:has(.focus-viewport) .zoom {
   border-radius: 4px;
   background: var(--well);
   color: var(--mute);
-  font: var(--tiny) var(--mono);
+  font-size: var(--body);
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
 .segment:hover {
@@ -332,7 +333,7 @@ body:has(.focus-viewport) .zoom {
 }
 .segments .continues {
   flex: none;
-  font-size: var(--tiny);
+  font-size: var(--body);
   white-space: nowrap;
 }
 .redo-segment {

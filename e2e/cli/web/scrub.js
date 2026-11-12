@@ -45,6 +45,21 @@ const SHAPED = join(__dirname, '..', 'project', 'shaped.py');
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|status of 5\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+  // Each changed view as Paul sees it (11-12: look at your own UI): 1440×900 and 1920×1080, paper and dark.
+  const looks = async (name) => {
+    if (!process.env.SHOT) return;
+    for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+      await page.setViewportSize({ width, height });
+      for (const theme of ['paper', 'dark']) {
+        await page.evaluate((theme) => { if (theme === 'dark') document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme);
+        await page.waitForTimeout(500);
+        await page.screenshot({ path: `${process.env.SHOT}-${name}-${width}x${height}-${theme}.png` });
+      }
+    }
+    await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.waitForTimeout(300);
+  };
 
   await signIn(page);
   await page.waitForSelector('.top');
@@ -112,7 +127,11 @@ const SHAPED = join(__dirname, '..', 'project', 'shaped.py');
   await openBox(page, 'shot');
   const segments = focus.locator('.focus-under .segments');
   await lookAtTake(1);
-  await segments.waitFor();
+  // What the page reads them from: the take's run, its file, and the tool's pickup.
+  const asset = await row('shot');
+  const listed = ((await api(`/v1/tools?project=${id}&q=shaped`)).body?.tools ?? []).find((tool) => tool.id === asset?.tool);
+  seen.reads = { tool: asset?.tool, pickup: listed?.pickup, listed: Boolean(listed), prefixes: asset?.prefixes?.map((one) => ({ number: one.number, run: one.run, main: one.main && { field: one.main.field, duration_ms: one.main.duration_ms, fps: one.main.fps } })) };
+  await segments.waitFor().catch(async (why) => { seen.under = await focus.locator('.focus-under').innerHTML().catch(() => null); throw why; });
   const blocks = segments.locator('.segment');
   const widths = await blocks.evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width));
   seen.blocks = { said: await blocks.allInnerTexts(), widths };
@@ -145,7 +164,10 @@ const SHAPED = join(__dirname, '..', 'project', 'shaped.py');
   seen.placed = { player, row: row2, button };
   check('right_under_the_player', Math.abs(row2.y - (player.y + player.height)) <= 2 && Math.abs(button.x + button.width - (player.x + player.width)) <= 2, seen.placed);
   check('redo_is_a_readable_button', button.height >= 28, button);
-  await shot('segments');
+  const sizes = await segments.evaluate((row) => ({ block: getComputedStyle(row.querySelector('.segment')).fontSize, body: getComputedStyle(document.querySelector('.focus-card') ?? document.body).fontSize, height: row.querySelector('.segment').getBoundingClientRect().height }));
+  seen.sizes = sizes;
+  check('its_blocks_are_readable', parseFloat(sizes.block) >= parseFloat(sizes.body) && sizes.height >= 28, sizes);
+  await looks('segments');
 
   // Redo: the draft says what's kept and what's made again, and nothing renders until Render, which keeps segment 1: out_frame 39.
   const asked = () => page.waitForRequest((request) => request.method() === 'POST' && /\/v1\/projects\/[^/]+\/runs$/.test(new URL(request.url()).pathname), { timeout: STEP_MS });
@@ -157,7 +179,7 @@ const SHAPED = join(__dirname, '..', 'project', 'shaped.py');
   seen.lead_in = await until('what it keeps', words, (text) => text === 'Keeps segment 1 of <shot.1> · redoes 2–3').catch(words);
   check('the_draft_says_what_it_keeps_and_redoes', seen.lead_in === 'Keeps segment 1 of <shot.1> · redoes 2–3', seen.lead_in);
   check('redo_starts_no_render', (await row('shot')).versions === 1 && !(await row('shot')).making?.length, await row('shot'));
-  await shot('redo-draft');
+  await looks('redo-draft');
   const render = async () => {
     const request = asked();
     await focus.locator('button[aria-label=Render]').first().click();
@@ -202,11 +224,12 @@ const SHAPED = join(__dirname, '..', 'project', 'shaped.py');
   await openBox(page, 'next');
   const from = focus.locator('.continue-from select');
   await from.waitFor();
+  await looks('continue-choice');
   await from.selectOption({ label: '<shot.1>' });
   await leadIn.waitFor();
   seen.continues = await until('what it continues', words, (text) => text.startsWith('Continues')).catch(words);
   check('it_says_it_continues_that_video', seen.continues === `Continues <shot.1> from its end · ${clock(107 / 24)}`, seen.continues);
-  await shot('continue-draft');
+  await looks('continue-draft');
   const continued = await render();
   seen.continued = continued;
   check('it_continues_from_the_end', continued.pickup?.take === '<shot.1>' && continued.pickup?.out_frame === 107 && continued.pickup?.beats_from === 0, continued.pickup);
@@ -217,11 +240,12 @@ const SHAPED = join(__dirname, '..', 'project', 'shaped.py');
   const says = focus.locator('.focus-under .continues');
   seen.source_said = await until('its source said', () => says.innerText().catch(() => ''), (text) => text.startsWith('Continues')).catch(() => says.innerText().catch(() => ''));
   check('focus_shows_its_source', seen.source_said === `Continues <shot.1> from ${clock(107 / 24)}`, seen.source_said);
+  await looks('continued-focus');
   await closeBox(page);
   const tile = boxOf(page, 'next').locator('.continues-rest');
   seen.tile_said = await tile.innerText().catch(() => '');
   check('its_tile_shows_its_source', seen.tile_said === 'from shot', seen.tile_said);
-  await shot('continued');
+  await looks('continued-tile');
 
   // An empty picture and an empty video with no tool ask nothing.
   for (const name of ['blank_pic', 'blank_clip']) {
