@@ -1,0 +1,1 @@
+Every box on its way has a Cancel by its progress, in every phase (waiting its turn, renting, installing, downloading, rendering), open or at rest: it cancels its render as `cozy run cancel` does, says Cancelling… until the run ends, asks no question, and offers Undo, which renders it again.

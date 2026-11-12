@@ -1,7 +1,7 @@
 // A tool goes on a box of the kind it makes (cl-881, Paul 11-11: "Tools are attached to their output type of node, not to their input type of
 // node"; tools §9), in a real browser on a real Calcifer. Calcifer refuses a video tool on a picture, naming what it makes, before the project has
-// read the tool; the palette's Video let go on the picture makes a new video box beside it that mentions the picture, which stays as it was;
-// BiRefNet on the picture starts from `<self.1>`.
+// read the tool. Let go on a box of another kind (the palette's Video on a picture, its Image on a video), a tool changes nothing and makes no
+// box, and a note at the bottom left says why (cl-899). BiRefNet on the picture starts from `<self.1>`.
 //   node kinds.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, png, until, upload } = require('./page');
+const { implementationRow, projectFromPage, calcifer, carry, signIn, MP4, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, png, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -71,17 +71,15 @@ async function died(why) {
     await page.keyboard.press('Escape');
     await page.locator('.card.here').waitFor({ state: 'detached' });
   };
-  /** Where `tool` reads a picture, as tools §9 says: its first required picture slot, else its first prompt. */
-  const readsIn = (tool) => (tool.fields.find((field) => field.required && field.type === 'slot' && field.accept === 'image') ?? tool.fields.find((field) => field.type === 'prompt'))?.field;
+
+  // A clip, a video box of its own.
+  writeFileSync(join(pictures, 'clip.mp4'), MP4);
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(pictures, 'clip.mp4')), name: 'clip', exact: true, at: { x: 700, y: 100 } }) });
+  await box('clip').waitFor();
 
   // The palette's Video, as Orbit is a video tool: its model is the first the palette has (H3's, a default).
-  const row = page.locator('.tools [data-palette="tools"] .tool[data-operation="video"]');
-  await row.waitFor();
-  const videoId = await row.getAttribute('data-tool');
-  const listed = (await api(`/v1/tools?project=${id}&palette=true`)).body?.tools ?? [];
-  const video = listed.find((tool) => tool.id === videoId);
-  seen.video_tool = { id: videoId, reads: video && readsIn(video), makes: video?.makes };
-  if (!video || !readsIn(video)) throw new Error(`the palette's Video (${videoId}) reads no picture: ${JSON.stringify(video?.fields?.map((field) => field.field))}`);
+  const videoId = await (await implementationRow(page, 'video')).getAttribute('data-tool');
+  seen.video_tool = videoId;
 
   // Calcifer refuses it on the picture, naming what it makes, before this project has read the tool: nothing has made a box of it.
   const refused = await api(`${at}/assets/pic`, { method: 'PATCH', body: JSON.stringify({ tool: videoId }) });
@@ -89,30 +87,34 @@ async function died(why) {
   check('calcifer_refuses_another_kind', refused.status === 400 && refused.body?.error?.code === 'asset_tool_kind' && refused.body.error.metadata?.makes === 'video' && refused.body.error.message.includes('video'), seen.refused);
   check('still_a_picture', !(await asset('pic'))?.tool && (await asset('pic'))?.kind === 'image', await asset('pic'));
 
-  // Let go on the picture, it's a new video box beside it that mentions it, and the picture stays as it was.
-  await leave();
-  await fitCanvas(page);
-  await box('pic').waitFor();
-  await row.scrollIntoViewIfNeeded();
-  const before = (await state()).assets.map((held) => held.name);
-  const from = await row.boundingBox();
-  await page.mouse.move(from.x + 20, from.y + 8);
-  await page.mouse.down();
-  await page.mouse.move(from.x + 40, from.y + 20, { steps: 4 });
-  const to = await box('pic').locator('.card').boundingBox();
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 });
-  await page.mouse.up();
-  const made = await until('a box of it', async () => (await state()).assets.find((held) => !before.includes(held.name)), Boolean).catch(() => null);
-  seen.made = made && { name: made.name, kind: made.kind, tool: made.tool, fields: made.fields };
-  check('a_video_tool_on_a_picture_makes_a_video_box', made?.tool === videoId && made.kind === 'video' && made.fields?.node_kind === 'video', seen.made);
-  check('the_new_box_mentions_the_picture', made?.fields?.[readsIn(video)] === '<pic>', { reads: readsIn(video), fields: made?.fields });
-  check('it_shows', made ? await box(made.name).waitFor().then(() => true, (why) => String(why)) === true : false);
-  const cards = (await api(`${at}/canvas`)).body?.cards ?? {};
-  seen.cards = { pic: cards.pic, made: made && cards[made.name] };
-  check('it_is_beside_the_picture', Boolean(made && cards[made.name] && cards.pic && cards[made.name].x >= cards.pic.x + (cards.pic.w ?? 0)), seen.cards);
-  const picture = await asset('pic');
-  check('the_picture_stays_as_it_was', !picture?.tool && picture?.kind === 'image', picture);
-  await shot('video-beside');
+  // Let go on a box of another kind, a tool changes nothing and makes no box: a note at the bottom left says why (cl-899).
+  const notes = page.locator('.notes .note .line');
+  const dropOnto = async (operation, name, says, tag) => {
+    await leave();
+    await fitCanvas(page);
+    await box(name).waitFor();
+    const row = await implementationRow(page, operation);
+    const tool = await row.getAttribute('data-tool');
+    const before = (await state()).assets;
+    const was = before.find((held) => held.name === name);
+    const to = await box(name).locator('.card').boundingBox();
+    await carry(page, row, { x: to.x + to.width / 2, y: to.y + to.height / 2 });
+    const note = await until(`${tag}: the note`, () => notes.allInnerTexts(), (lines) => lines.some((line) => line.includes(says)), 10_000).catch(() => null);
+    const where = await notes.filter({ hasText: says }).first().boundingBox().catch(() => null);
+    const view = page.viewportSize();
+    await page.waitForTimeout(500);
+    const after = (await state()).assets;
+    const now = after.find((held) => held.name === name);
+    const same = (row) => row && JSON.stringify({ tool: row.tool ?? null, kind: row.kind, fields: row.fields, versions: row.versions, sha256: row.sha256 });
+    seen[tag] = { tool, note, where, was: same(was), now: same(now), names: after.map((held) => held.name) };
+    check(`${tag}_says_why`, Boolean(note), seen[tag]);
+    check(`${tag}_note_at_the_bottom_left`, Boolean(where && where.x < view.width / 2 && where.y + where.height > view.height * 0.6), { where, view });
+    check(`${tag}_leaves_the_box_as_it_was`, Boolean(was) && same(was) === same(now), seen[tag]);
+    check(`${tag}_makes_no_box`, after.length === before.length, seen[tag].names);
+    await shot(tag);
+  };
+  await dropOnto('video', 'pic', 'makes video: drop it on a video box', 'video_tool_on_a_picture');
+  await dropOnto('image', 'clip', 'makes images: drop it on an image box', 'image_tool_on_a_video');
 
   // An image tool on the picture starts from it: BiRefNet's picture slot is `<self.1>` (tools §9).
   const searched = (await api(`/v1/tools?project=${id}&q=birefnet`)).body?.tools ?? [];

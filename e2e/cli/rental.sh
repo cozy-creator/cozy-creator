@@ -59,12 +59,30 @@ wait "$pid" 2> /dev/null || true
 [ -n "$rental" ] || { check "rental_end: machine rent cpu: no rental accepted: $(tail -c 400 "$OUT/rental-rent.ndjson") $(tail -c 300 "$OUT/rental-rent.err")"; cozy --json logout > /dev/null 2>&1 || true; return; }
 echo "rented $rental"
 
-step "a rental is named when it's ordered (cl-888)"
-# A word, not `rent-…`, from its order on: as accepted, in `machine ls` while it boots, and once its Hub has placed it.
-name=$(jq -r 'select(.type? == "rental.accepted") | .name // empty' "$OUT/rental-rent.ndjson" 2> /dev/null | tail -1 || true)
-[[ $name =~ ^[a-z][a-z0-9-]*$ && $name != rent-* ]] || check "rental_end: ordered as '${name:-nothing}', not a name"
-named_in_ls() { cozy --json machine ls 2> /dev/null | J --arg r "$rental" --arg n "$name" '[.machines[] | select(.rental_id == $r)] | length == 1 and .[0].name == $n'; }
-named_in_ls || check "rental_end: machine ls doesn't list $rental as $name: $(cozy --json machine ls 2> /dev/null | jq -c --arg r "$rental" '[.machines[] | select(.rental_id == $r) | {name, state}]')"
+step "a rental says what it rents until its Hub names its host, then the host's word (cl-888, Paul 11-12)"
+# One host, one name: the Hub names a pod by its host once it's placed there, and until then the rental is "Renting a CPU…",
+# never its `rent-…` handle, on `machine ls` (and the page, which reads the same record). Its word is the Hub's own record
+# of it (`machine ls --history`).
+said=$(jq -r 'select(.type? == "rental.accepted") | .placeholder // empty' "$OUT/rental-rent.ndjson" 2> /dev/null | tail -1 || true)
+[ "$said" = "Renting a CPU…" ] || check "rental_end: accepted, it says '${said:-nothing}', not what it rents: $(grep rental.accepted "$OUT/rental-rent.ndjson" | tail -c 300)"
+shown='' word='' handles=''
+for _ in $(seq 120); do
+  cozy machine ls > "$OUT/rental-ls.txt" 2> /dev/null || true
+  cozy --json machine ls > "$OUT/rental-ls.json" 2> /dev/null || true
+  ! grep -q 'rent-[0-9a-f]' "$OUT/rental-ls.txt" || handles=$(grep 'rent-' "$OUT/rental-ls.txt" | head -2)
+  now=$(jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r) | .placeholder // .name' "$OUT/rental-ls.json" 2> /dev/null || true)
+  # The JSON keeps its handle as its name, which its placeholder stands in for until its Hub names the host.
+  [[ $now != rent-* ]] || handles="machine ls --json: $now with no placeholder"
+  [[ " $shown " == *" ${now// /_} "* ]] || shown+=" ${now// /_}"
+  word=$(jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' "$OUT/rental-ls.json" 2> /dev/null || true)
+  [ -n "$word" ] && grep -qE "^ *$word " "$OUT/rental-ls.txt" && break
+  sleep 0.5
+done
+echo "rental_end: $rental was shown as:$shown"
+[ -z "$handles" ] || check "rental_end: machine ls showed a rent- handle: $handles"
+[ -n "$word" ] && [[ $word != rent-* ]] || check "rental_end: its Hub never named $rental's host in a minute; shown as:$shown"
+hub=$(cozy --json machine ls --history 2> /dev/null | jq -r --arg r "$rental" '.rentals[] | select(.rental_id == $r) | .name' || true)
+[ -n "$word" ] && [ "$hub" = "$word" ] || check "rental_end: machine ls calls $rental '${word:-nothing}', its Hub records '${hub:-nothing}'"
 
 step "machine ssh: rented with the default key, not ready yet"
 # Its Hub's word names the key at once; its SSH address comes once it is ready.
@@ -80,14 +98,6 @@ if J '.rental.ssh == null' "$OUT/rental-show-ssh.json"; then
 else
   echo "it was ready before machine ssh was asked: $(jq -r .rental.ssh "$OUT/rental-show-ssh.json")"
 fi
-
-# Up to a minute more for its Hub to place it on a host, which named it again before (pluto, 11-11): the name stays.
-for _ in $(seq 60); do
-  cozy --json machine show "$rental" > "$OUT/rental-show-named.json" 2> /dev/null && J '.state == "ready"' "$OUT/rental-show-named.json" && break
-  sleep 1
-done
-J --arg n "$name" '.name == $n' "$OUT/rental-show-named.json" && named_in_ls \
-  || check "rental_end: $rental didn't keep its name $name: $(jq -c '{name, state}' "$OUT/rental-show-named.json" 2> /dev/null)"
 
 # end_refused <case> <words>: `machine end` exits non-zero, `end_failed` naming why (<words>), and the rental is still
 # listed and not ended, its end failure shown.

@@ -15,8 +15,6 @@ PY
 }
 state1() { state "$1" | head -1 | jq -r '.[0] // empty'; }
 digest() { printf %s "$1" | sha256sum | cut -c1-64; }
-# The tools Your list starts with.
-DEFAULT_TOOLS='["_/qwen-image-2","_/minimax-h3","_/sdxl"]'
 
 statedb() {
 state_crash
@@ -58,8 +56,9 @@ done < <(state "SELECT id, path FROM projects WHERE path LIKE '$S/%'" | jq -r '"
 while read -r id path; do
   [ "$(state1 "SELECT path FROM projects WHERE id = '$id'")" = "$path" ] || lost+=("project $id")
 done < <(jq -r '"\(.id) \(.path)"' "$S/opened")
+# Taking tools off adds no package: your list starts empty (cl-896).
 rows=$(state 'SELECT package FROM tool_list ORDER BY ord' | jq -sc 'map(.[0])')
-[ "$rows" = "$DEFAULT_TOOLS" ] || torn+=("your list's packages $rows")
+[ "$rows" = '[]' ] || torn+=("your list's packages $rows")
 while read -r tool; do
   [ "$(state1 "SELECT count(*) FROM tools_off WHERE tool = '$tool'")" = 1 ] || lost+=("tool $tool")
 done < <(jq -r . "$S/edited")

@@ -66,6 +66,7 @@ for name in ${DB_WEB:-place nodes versions tools live layout undo offline held};
   step "web-$name"
   case $name in
     instant) web_proof "$name" "$chrome" "$pw" "$restart" ;;
+    palette) CATALOG=1 NO_HUB=$(web_restart "$lock" http://127.0.0.1:9) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     undo | offline) STOP=$(web_halt "$lock") START=$(web_start) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     held) web_held "$chrome" "$pw" ;;
     *) web_proof "$name" "$chrome" "$pw" '' ;;
@@ -73,6 +74,9 @@ for name in ${DB_WEB:-place nodes versions tools live layout undo offline held};
   [ "$name" != scale ] || web_scale_said
 done
 }
+
+# A new take never changes what's approved (cl-908): the page's double tap, its Render, a mention's real run (web/approvals.js).
+approvals() { DB_WEB=approvals db_existing_web; }
 
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return

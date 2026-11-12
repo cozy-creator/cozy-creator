@@ -93,53 +93,69 @@ fn native_project(path: &FsPath, id: &str) {
 }
 
 #[test]
-fn encrypted_cleanup_preserves_good_sources_and_recorded_policy() {
+fn encrypted_conversion_cleanup() {
     // Real keybags, native SQLite and durable directory receipts. Installed CLI
     // tests separately exercise the actual mount/copy/verify provider path.
     let temp = tempfile::tempdir().unwrap();
     let id = format!("source-policy-{}", fresh());
     let created = Keybag::create(&id, SecretString::from("synthetic source policy".to_owned())).unwrap();
-    for (name, remove_source) in [("legacy-keep", false), ("default-remove", true)] {
-        let root = temp.path().join(name);
-        fs::create_dir(&root).unwrap();
-        created.keybag.save(&root.join(KEYBAG_FILE)).unwrap();
-        fs::create_dir(root.join(BACKING)).unwrap();
-        let saved = temp.path().join(format!(".cozy-project-source-{name}"));
-        native_project(&saved, &id);
-        fs::write(saved.join("retained.txt"), b"sole good original").unwrap();
-        let record = Conversion { root: root.clone(), staged: temp.path().join(format!(".cozy-vault-stage-{name}")),
-            saved: saved.clone(), key_id: created.keybag.info().key_id, remove_source, plain: None };
-        let mut wrong = record.clone();
-        wrong.key_id.push_str("-mismatch");
-        save_conversion(&wrong).unwrap();
-        assert!(finish_conversion(&root).is_err());
-        assert!(recover_conversion(&root).is_err());
-        assert_eq!(fs::read(saved.join("retained.txt")).unwrap(), b"sole good original");
-        save_conversion(&record).unwrap();
-        // Restart sees a replacement, but may not delete the original before an
-        // authorized reopen finishes its private journal/verification sequence.
-        recover_conversion(&root).unwrap();
-        assert!(Keybag::load(&root.join(KEYBAG_FILE)).unwrap()
-            .unlock(Credential::Passphrase(SecretString::from("incorrect synthetic passphrase".to_owned()))).is_err());
-        assert!(saved.join("retained.txt").is_file() && receipt_path(&root).is_file());
-        finish_conversion(&root).unwrap();
-        assert_eq!(saved.exists(), !remove_source);
-        assert!(!receipt_path(&root).exists());
-    }
-    // A cancelled copy before the first rename removes only its owned stage,
-    // even when its already-recorded policy requests eventual source removal.
-    let root = temp.path().join("cancelled-copy");
-    native_project(&root, &id);
-    let before = hash(&root.join(db::DB)).unwrap();
-    let staged = temp.path().join(".cozy-vault-stage-cancelled");
-    fs::create_dir(&staged).unwrap();
-    created.keybag.save(&staged.join(KEYBAG_FILE)).unwrap();
-    fs::create_dir(staged.join(BACKING)).unwrap();
-    save_conversion(&Conversion { root: root.clone(), staged: staged.clone(), saved: temp.path().join(".cozy-project-source-cancelled"),
-        key_id: created.keybag.info().key_id, remove_source: true, plain: None }).unwrap();
+    // After the cutover: the original goes only once an unlock finishes the conversion.
+    let root = temp.path().join("switched");
+    let saved = temp.path().join(".cozy-project-source-switched");
+    native_project(&saved, &id);
+    fs::write(saved.join("retained.txt"), b"sole good original").unwrap();
+    fs::create_dir(&root).unwrap();
+    created.keybag.save(&root.join(KEYBAG_FILE)).unwrap();
+    fs::create_dir(root.join(BACKING)).unwrap();
+    let record = Conversion { root: root.clone(), staged: temp.path().join(".cozy-vault-stage-switched"), saved: saved.clone(),
+        key_id: created.keybag.info().key_id, source_id: directory_id(&saved).unwrap(), staged_id: None, ready: true, plain: None };
+    let mut wrong = record.clone();
+    wrong.key_id.push_str("-mismatch");
+    save_conversion(&wrong).unwrap();
+    assert!(finish_conversion(&root).is_err());
+    assert!(recover_conversion(&root).is_err());
+    assert_eq!(fs::read(saved.join("retained.txt")).unwrap(), b"sole good original");
+    save_conversion(&record).unwrap();
+    // Restart sees a replacement, but may not delete the original before an
+    // authorized reopen proves a credential opens it.
     recover_conversion(&root).unwrap();
-    assert_eq!(hash(&root.join(db::DB)).unwrap(), before);
-    assert!(!staged.exists() && !receipt_path(&root).exists());
+    assert!(Keybag::load(&root.join(KEYBAG_FILE)).unwrap()
+        .unlock(Credential::Passphrase(SecretString::from("incorrect synthetic passphrase".to_owned()))).is_err());
+    assert!(saved.join("retained.txt").is_file() && receipt_path(&root).is_file());
+    finish_conversion(&root).unwrap();
+    assert!(!saved.exists() && !receipt_path(&root).exists());
+
+    // Before the cutover: an interrupted stage goes, whole or half-made, and the original stays as it was.
+    for (name, filled) in [("empty", false), ("copied", true)] {
+        let root = temp.path().join(format!("interrupted-{name}"));
+        native_project(&root, &id);
+        let before = hash(&root.join(db::DB)).unwrap();
+        let staged = temp.path().join(format!(".cozy-vault-stage-{name}"));
+        let mut record = Conversion { root: root.clone(), staged: staged.clone(), saved: temp.path().join(format!(".cozy-project-source-{name}")),
+            key_id: created.keybag.info().key_id, source_id: directory_id(&root).unwrap(), staged_id: None, ready: false, plain: None };
+        fs::create_dir(&staged).unwrap();
+        if filled {
+            record.staged_id = Some(directory_id(&staged).unwrap());
+            created.keybag.save(&staged.join(KEYBAG_FILE)).unwrap();
+            fs::create_dir(staged.join(BACKING)).unwrap();
+            fs::write(staged.join(BACKING).join("half"), b"half-made ciphertext").unwrap();
+        }
+        save_conversion(&record).unwrap();
+        recover_conversion(&root).unwrap();
+        assert_eq!(hash(&root.join(db::DB)).unwrap(), before);
+        assert!(!staged.exists() && !receipt_path(&root).exists());
+    }
+
+    // A stage whose identity was never recorded can only be removed while it is empty.
+    let root = temp.path().join("foreign");
+    native_project(&root, &id);
+    let staged = temp.path().join(".cozy-vault-stage-foreign");
+    fs::create_dir(&staged).unwrap();
+    fs::write(staged.join("unrelated.txt"), b"not the conversion's").unwrap();
+    save_conversion(&Conversion { root: root.clone(), staged: staged.clone(), saved: temp.path().join(".cozy-project-source-foreign"),
+        key_id: created.keybag.info().key_id, source_id: directory_id(&root).unwrap(), staged_id: None, ready: false, plain: None }).unwrap();
+    assert!(recover_conversion(&root).is_err());
+    assert!(staged.join("unrelated.txt").is_file() && receipt_path(&root).is_file());
 }
 
 fn staged(root: &FsPath, name: &str, bag: &Keybag) -> Conversion {
@@ -155,9 +171,8 @@ fn staged(root: &FsPath, name: &str, bag: &Keybag) -> Conversion {
     fs::write(stage.join("retained.txt"), b"unchanged retained bytes").unwrap();
     Conversion {
         root: directory.clone(), staged: stage.clone(), saved: root.join(format!(".cozy-project-source-{suffix}")),
-        key_id: bag.info().key_id, remove_source: true,
-        plain: Some(PlainConversion { project_id: bag.info().project_id, generation: bag.info().generation,
-            ready: false, source_id: directory_id(&directory).unwrap(), staged_id: directory_id(&stage).unwrap(), cleanup_started: false }),
+        key_id: bag.info().key_id, source_id: directory_id(&directory).unwrap(), staged_id: Some(directory_id(&stage).unwrap()), ready: false,
+        plain: Some(PlainConversion { project_id: bag.info().project_id, generation: bag.info().generation, cleanup_started: false }),
     }
 }
 
@@ -181,12 +196,12 @@ async fn native_plain_recovery_fixture() {
     // Replacing an owned stage or redirecting its receipt must never delete
     // either that replacement or another directory.
     let mut changed = staged(&root, "replaced", &created.keybag);
-    let actual = changed.plain.as_ref().unwrap().staged_id;
-    changed.plain.as_mut().unwrap().staged_id[1] ^= 1;
+    let actual = changed.staged_id;
+    changed.staged_id.as_mut().unwrap()[1] ^= 1;
     save_conversion(&changed).unwrap();
     assert!(recover_conversion(&changed.root).is_err());
     assert!(changed.root.join(KEYBAG_FILE).is_file() && changed.staged.join("retained.txt").is_file());
-    changed.plain.as_mut().unwrap().staged_id = actual;
+    changed.staged_id = actual;
     let true_stage = changed.staged.clone();
     let elsewhere = root.join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
@@ -218,7 +233,7 @@ async fn native_plain_recovery_fixture() {
     fs::create_dir_all(ready.staged.join(".vault-machine/generations")).unwrap();
     fs::write(ready.staged.join(".vault-machine/generations/rebuildable"), b"old physical environment").unwrap();
     sync_tree(&ready.staged).unwrap();
-    ready.plain.as_mut().unwrap().ready = true;
+    ready.ready = true;
     save_conversion(&ready).unwrap();
     fs::rename(&ready.root, &ready.saved).unwrap();
     assert!(keeps_index(&ready.root), "the durable receipt must retain a temporarily missing project after interruption");
@@ -241,21 +256,21 @@ async fn native_plain_recovery_fixture() {
     // Crash after the second rename, with the source still retained, is also
     // recoverable; tampering with its FileId refuses cleanup first.
     let mut installed = staged(&root, "installed", &created.keybag);
-    installed.plain.as_mut().unwrap().ready = true;
+    installed.ready = true;
     save_conversion(&installed).unwrap();
     fs::rename(&installed.root, &installed.saved).unwrap();
     fs::rename(&installed.staged, &installed.root).unwrap();
-    installed.plain.as_mut().unwrap().source_id[1] ^= 1;
+    installed.source_id[1] ^= 1;
     save_conversion(&installed).unwrap();
     assert!(recover_conversion(&installed.root).is_err());
     assert!(installed.saved.join(KEYBAG_FILE).is_file() && installed.root.join("retained.txt").is_file());
-    installed.plain.as_mut().unwrap().source_id[1] ^= 1;
+    installed.source_id[1] ^= 1;
     save_conversion(&installed).unwrap(); recover_conversion(&installed.root).unwrap();
 
     // Deletion may have removed the old keybag before a crash. Its durable
     // cleanup authorization and original directory ID make this retry safe.
     let mut cleanup = staged(&root, "partial-cleanup", &created.keybag);
-    cleanup.plain.as_mut().unwrap().ready = true;
+    cleanup.ready = true;
     save_conversion(&cleanup).unwrap();
     fs::rename(&cleanup.root, &cleanup.saved).unwrap();
     fs::rename(&cleanup.staged, &cleanup.root).unwrap();
@@ -284,7 +299,7 @@ async fn native_plain_recovery_fixture() {
     next_intent.staged = root.join(format!(".cozy-vault-stage-{suffix}"));
     next_intent.saved = root.join(format!(".cozy-project-source-{suffix}"));
     fs::create_dir(&next_intent.staged).unwrap();
-    next_intent.plain.as_mut().unwrap().staged_id = directory_id(&next_intent.staged).unwrap();
+    next_intent.staged_id = Some(directory_id(&next_intent.staged).unwrap());
     save_conversion(&next_intent).unwrap();
     let next_bytes = fs::read(receipt_path(&serial.root)).unwrap();
     drop(operation_guard);
@@ -298,7 +313,7 @@ async fn native_plain_recovery_fixture() {
     // A read lease prevents recovery writes. Pending plaintext never becomes
     // an ordinary fallback, including when the receipt path is a directory.
     let mut read_held = staged(&root, "read-held", &created.keybag);
-    read_held.plain.as_mut().unwrap().ready = true; save_conversion(&read_held).unwrap();
+    read_held.ready = true; save_conversion(&read_held).unwrap();
     fs::rename(&read_held.root, &read_held.saved).unwrap();
     fs::rename(&read_held.staged, &read_held.root).unwrap();
     let reader = access(&read_held.root).read_owned().await;

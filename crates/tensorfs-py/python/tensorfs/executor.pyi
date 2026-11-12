@@ -39,6 +39,7 @@ __all__ = [
     'MemoSettings',
     'ModelPrefetch',
     'PrepareRequest',
+    'Preview',
     'Publish',
     'PublishPart',
     'Request',
@@ -142,6 +143,19 @@ class PrepareRequest:
     def __new__(cls, /, **fields: Unpack[_PrepareRequestFields]) -> Self: ...
     def json(self) -> str: ...
     def replace(self, /, **changes: Unpack[_PrepareRequestChanges]) -> Self: ...
+
+_PreviewFields = TypedDict("_PreviewFields", {'request_id': str, 'for_ms': int})
+_PreviewChanges = TypedDict("_PreviewChanges", {'request_id': str, 'for_ms': int}, total=False)
+
+@final
+class Preview:
+    @property
+    def request_id(self) -> str: ...
+    @property
+    def for_ms(self) -> int: ...
+    def __new__(cls, /, **fields: Unpack[_PreviewFields]) -> Self: ...
+    def json(self) -> str: ...
+    def replace(self, /, **changes: Unpack[_PreviewChanges]) -> Self: ...
 
 _CancelFields = TypedDict("_CancelFields", {'request_id': str})
 _CancelChanges = TypedDict("_CancelChanges", {'request_id': str}, total=False)

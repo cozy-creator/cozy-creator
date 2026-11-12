@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
+import { CopyError, runText } from "../../ui/CopyError"
 import { Link, useParams } from "react-router-dom"
 import { runFullQuery, runQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
@@ -71,8 +72,9 @@ export function RunDrawer() {
         </p>
       )}
       {run.reason && (
-        <div className="failure" role="alert">
+        <div className="failure error-text" role="alert">
           <span>{run.reason.message}</span>
+          <CopyError text={runText(run, run.reason)} />
           {run.reason.detail && (
             <details>
               <summary>What it said</summary>

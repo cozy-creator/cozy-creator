@@ -435,6 +435,13 @@ pub struct Run {
     /// Live: the machine's latest progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// With `?detail=full`: verified video segment frame ranges and published completion, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_progress: Option<VideoProgress>,
+    /// Live, once it ended: its results coming here (`downloading the result`), their bytes in
+    /// place of all of them, their rate and the time that leaves, until they land.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arriving: Option<Progress>,
     /// A run waiting for its turn: its place in its machine's line (1 is next: only the work
     /// running is ahead of it), or among the runs waiting for a machine to be chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -480,6 +487,37 @@ impl Run {
             None => self.number.to_string(),
         }
     }
+}
+
+/// A video's verified segment plan and the completed prefix, in absolute shot frames.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VideoProgress {
+    pub fps: u32,
+    /// Frames kept from an earlier video; no computation is claimed for them in this run.
+    pub resumed_at: u64,
+    /// End of the published completed prefix, including the frames kept before this run.
+    pub completed_frames: u64,
+    pub segments: Vec<VideoSegmentProgress>,
+}
+
+/// One actual generated segment; a segment may overlap several authored beats.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VideoSegmentProgress {
+    pub from_frame: u64,
+    pub to_frame: u64,
+    pub status: VideoSegmentStatus,
+}
+
+/// Completed means this segment's output was published, not an estimated elapsed share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum VideoSegmentStatus {
+    Pending,
+    InProgress,
+    Completed,
 }
 
 /// What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.
@@ -657,6 +695,10 @@ pub struct Progress {
     pub completed: u64,
     #[serde(default)]
     pub total: u64,
+    /// What `completed` counts: empty for steps, `tokens` for a decode's, whose `total` is only
+    /// its cap: a count, never a share of it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
     #[serde(default)]
     pub bytes_done: u64,
     #[serde(default)]
@@ -687,7 +729,38 @@ pub struct Progress {
     /// What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_basis: Option<EtaBasis>,
+    /// The number of its newest preview of what it's making (`GET /v1/runs/{id}/preview`), from 1;
+    /// none until its machine made one for a client asking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<u64>,
 }
+
+impl Progress {
+    /// It counts a decode's tokens, whose total is only a cap.
+    pub fn tokens(&self) -> bool {
+        self.unit == TOKENS
+    }
+
+    /// The part of the whole it is in, as a scope of its stage's path names it up front (`Segment 2 of 3 / denoise`): its number, 1
+    /// first, and how many there are.
+    pub fn part(&self) -> Option<(u64, u64)> {
+        self.stage.split(" / ").find_map(|scope| {
+            let mut words = scope.rsplit(' ');
+            let of: u64 = words.next()?.parse().ok()?;
+            (words.next()? == "of").then_some(())?;
+            let at: u64 = words.next()?.parse().ok()?;
+            (at >= 1 && at <= of).then_some((at, of))
+        })
+    }
+
+    /// Its stage without the scopes it is in: `decode_video` of `Segment 2 of 3 / decode_video`.
+    pub fn own_stage(&self) -> &str {
+        self.stage.rsplit(" / ").next().unwrap_or(&self.stage)
+    }
+}
+
+/// The unit of a decode's count (`Progress::unit`).
+pub const TOKENS: &str = "tokens";
 
 /// What a time left stands on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -808,6 +881,9 @@ pub enum Event {
     /// Why the run waits now; an empty reason: it waits no longer.
     #[serde(rename = "run.waiting")]
     Waiting { reason: String },
+    /// Its results coming here once it ended, each second until they land (`Run::arriving`).
+    #[serde(rename = "run.arriving")]
+    Arriving { progress: Progress },
 }
 
 impl Event {
@@ -880,7 +956,7 @@ impl Event {
             | Event::Call {
                 sequence_number, ..
             } => Some(*sequence_number),
-            Event::Progress { .. } | Event::Waiting { .. } => None,
+            Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } => None,
         }
     }
 
@@ -1045,7 +1121,12 @@ pub enum MachineState {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Machine {
+    /// A rental's name is its host's, as its Hub names it once it places it there (Paul 11-12: one host, one name).
     pub name: String,
+    /// What a rental is said as, in its name's place, until its Hub names the host it's placed on: `Renting an RTX 4090…`.
+    /// Its name meanwhile is a handle, never shown. Placed again on another host, it's said so again until that host's word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
     pub kind: MachineKind,
     pub state: MachineState,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1088,7 +1169,7 @@ pub struct Machine {
     /// A booting rental's acquisition attempt, as its Hub says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt: Option<Attempt>,
-    /// Calcifer's runs on it.
+    /// Calcifer's function runs on it, its GPUs' work: installs, downloads, updates and removals aren't counted (cl-889).
     #[serde(default)]
     pub running: u32,
     #[serde(default)]
@@ -1347,6 +1428,9 @@ pub struct Gpu {
     /// The most of `memory_bytes` the machine uses; 0: all of it.
     #[serde(default, skip_serializing_if = "unlimited")]
     pub memory_limit_bytes: u64,
+    /// It draws a screen now: a render on it makes the screen lag.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub display: bool,
 }
 
 fn unlimited(bytes: &u64) -> bool {
@@ -1473,6 +1557,19 @@ pub fn package_source(installed_from: &str, hub: &str) -> String {
 }
 
 impl Machine {
+    /// What people see it called: its name, or while its Hub hasn't named its host, its placeholder.
+    pub fn called(&self) -> &str {
+        self.placeholder.as_deref().unwrap_or(&self.name)
+    }
+
+    /// What a command names it by: its name, or while it has none, its rental id (an order its Hub hasn't answered: its handle).
+    pub fn handle(&self) -> &str {
+        match &self.placeholder {
+            Some(_) => self.rental_id.as_deref().unwrap_or(&self.name),
+            None => &self.name,
+        }
+    }
+
     /// The packages it holds, read by a client of `hub`.
     pub fn packages(&self, hub: &str) -> MachinePackages {
         let held = |env: &Environment| HeldPackage {

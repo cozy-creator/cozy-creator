@@ -255,6 +255,24 @@ fi
   || check "own references: <Nobody> was not refused with the command that makes it a box (exit $code): $(tail -c 300 "$OUT/own-refs-nothing.json")"
 }
 
+# cl-900: descriptions are off for now (tools §9). A described picture's mention reaches its function with an empty description, and the
+# description stays in the project.
+no_descriptions() {
+step "a mention reaches its function with an empty description, and the stored one stays"
+local dir=$OUT/no-desc
+mkdir -p "$dir"
+ffmpeg -v error -y -f lavfi -i "color=c=orange:size=40x24" -frames:v 1 "$dir/described.png"
+[ -n "$(row "$RUN_PROJECT" described .name)" ] || project_import "$RUN_PROJECT" "$dir/described.png" described > /dev/null || { check "descriptions: import"; return; }
+project_api "$RUN_PROJECT" /assets/described -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"description": "An orange card."}}' > "$OUT/no-desc-set.json" \
+  || { check "descriptions: describe: $(head -c 300 "$OUT/no-desc-set.json")"; return; }
+if cell no-desc "$here/project/mentions.py/mentions" 'instructions=<described> waves'; then
+  cozy --json --full run watch "$(cat "$OUT/no-desc.number")" --once | jq -c .request.input.instructions.references > "$OUT/no-desc-refs.json"
+  J 'length == 1 and .[0].key == "described" and .[0].description == "" and (.[0].file | startswith("sha256:"))' "$OUT/no-desc-refs.json" \
+    || check "descriptions: <described> reached its function as $(cat "$OUT/no-desc-refs.json")"
+fi
+[ "$(row "$RUN_PROJECT" described .fields.description)" = '"An orange card."' ] || check "descriptions: the stored one is now $(row "$RUN_PROJECT" described .fields)"
+}
+
 # cl-883: an orbit mentioned by angle. A dropped video, turned to an orbit as its box's Orbit switch does (PATCH its version's
 # metadata), reaches a function as the frame at an angle, a picture, and as the frames turned between two, a clip:
 # `floor(angle / 360 × 48)`, wrapping past 360° and across 0°. Its frames are greys, frame n at 5n, so the function says which

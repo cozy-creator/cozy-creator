@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { toolsQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import type { Tool } from "../api/calcifer"
@@ -7,43 +7,50 @@ import { Icon } from "../ui/Icon"
 import type { Load } from "./carry"
 import { useCanvasStore } from "./context"
 import { TEXT_TOOL, VIDEO_EDIT_TOOL } from "./controls"
-import { BASIC_NODES, paletteEntries, type BasicNodeKind, type Operation, type PaletteEntry } from "./palette"
+import { BASIC_NODES, modelLabel, paletteEntries, type BasicNodeKind, type Operation, type PaletteEntry } from "./palette"
 import { useDragScroll } from "./dragScroll"
-import { madeHere } from "./shown"
 import { carryingTool } from "./toolchange"
+import "./ToolPanel.css"
 
-/** A tool carried out of the list: a box of it where it's let go, or on a box, that box's tool. Words and what's made here are boxes of their own: nothing takes them. */
-const toolLoad = (tool: Tool, operation: Operation): Load => ({ tool, operation, box: tool === TEXT_TOOL || madeHere(tool.id) ? undefined : {
+/** A tool is created or attached only when its implementation is dragged. */
+const toolLoad = (tool: Tool, operation: Operation): Load => ({ tool, operation, box: {
   ...carryingTool(tool),
   put: (store, name) => store.putTool(name, tool, operation),
 } })
 
-function ToolRow({ entry, place }: { entry: PaletteEntry; place: (tool: Tool, operation: Operation) => void }) {
-  const tool = entry.tool
+function ToolGroup({ entry, open, toggle }: { entry: PaletteEntry; open: boolean; toggle(): void }) {
   return (
-    <li className="tool" title={tool ? `${entry.label} — choose a model in the node` : `No ${entry.label} model available`} aria-disabled={!tool} data-kind={entry.makes} data-operation={entry.key} data-tool={tool?.id} onClick={() => tool && place(tool, entry.key)}>
-      <b>{entry.label}</b>
+    <li className="tool-group">
+      <button type="button" className="tool tool-category" data-operation={entry.key} data-kind={entry.makes} aria-expanded={open} aria-disabled={!entry.variants.length} disabled={!entry.variants.length} title={entry.variants.length ? `Choose a ${entry.label} tool` : `No ${entry.label} tool available`} onClick={toggle}>
+        <b>{entry.label}</b><span aria-hidden="true">{open ? "⌄" : "›"}</span>
+      </button>
+      {open && <ul className="tool-implementations">
+        {entry.variants.map((tool) => <li key={tool.id} className="tool tool-implementation" data-implementation="" data-tool={tool.id} data-tool-operation={entry.key} data-kind={tool.makes} title={tool.description || modelLabel(tool)}><b>{modelLabel(tool)}</b></li>)}
+      </ul>}
     </li>
   )
 }
 
-/** The sidebar contains only node types and operations, whether a node is open or closed. */
-export function ToolPanel({ project, machine, waiting, shut, setShut, place, placeNode }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void; place: (tool: Tool, operation: Operation) => void; placeNode: (kind: BasicNodeKind) => void }) {
+/** Clicks browse; only a drag creates a node or attaches a tool. */
+export function ToolPanel({ project, machine, waiting, shut, setShut }: { project: string | null; machine: string | null; waiting: boolean; shut: boolean; setShut: (shut: boolean) => void }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const { data, error, isPlaceholderData } = useQuery({ ...toolsQuery(client, "", machine, project, true), enabled: !waiting })
+  const [open, setOpen] = useState<Operation | null>(null)
+  const [selected, setSelected] = useState<BasicNodeKind | null>(null)
+  const { data, error, isPlaceholderData } = useQuery({ ...toolsQuery(client, "", machine, project), enabled: !waiting })
   useEffect(() => {
-    store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, VIDEO_EDIT_TOOL, ...data.tools] : [TEXT_TOOL, VIDEO_EDIT_TOOL])
+    store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, ...data.tools.filter((tool) => tool.id !== VIDEO_EDIT_TOOL.id), VIDEO_EDIT_TOOL] : [TEXT_TOOL, VIDEO_EDIT_TOOL])
   }, [store, data, isPlaceholderData])
-  const tools = data?.tools ?? []
-  const entries = paletteEntries(tools)
+  const entries = paletteEntries(data?.tools ?? [])
   const list = useDragScroll({
     lift(pressed) {
-      const from = pressed.closest<HTMLElement>("li.tool")
-      const node = BASIC_NODES.find((node) => node.kind === from?.dataset.node)
-      if (node && from) return { load: { node: node.kind }, from }
-      const entry = from && entries.find((entry) => entry.key === from.dataset.operation)
-      return entry?.tool && from ? { load: toolLoad(entry.tool, entry.key), from } : null
+      const from = pressed.closest<HTMLElement>("li[data-node], li[data-implementation]")
+      if (!from) return null
+      const node = BASIC_NODES.find((node) => node.kind === from.dataset.node)
+      if (node) return { load: { node: node.kind }, from }
+      const entry = entries.find((entry) => entry.key === from.dataset.toolOperation)
+      const tool = entry?.variants.find((tool) => tool.id === from.dataset.tool)
+      return tool && entry ? { load: toolLoad(tool, entry.key), from } : null
     },
   })
   if (shut) {
@@ -66,12 +73,12 @@ export function ToolPanel({ project, machine, waiting, shut, setShut, place, pla
         <div ref={list} className={`tool-groups ${isPlaceholderData ? "stale" : ""}`}>
           <section data-palette="nodes">
             <h4>Nodes</h4>
-            <ul>{BASIC_NODES.map((node) => <li key={node.kind} className="tool" data-node={node.kind} data-kind={node.kind === "video_edit" ? "video" : node.kind} data-tool={node.kind === "text" ? "text" : node.kind === "video_edit" ? "cozy/edit" : undefined} onClick={() => placeNode(node.kind)}><b>{node.label}</b></li>)}</ul>
+            <ul>{BASIC_NODES.map((node) => <li key={node.kind} className={`tool tool-node ${selected === node.kind ? "selected" : ""}`} data-node={node.kind} data-kind={node.kind} onClick={() => setSelected(node.kind)}><b>{node.label}</b></li>)}</ul>
           </section>
           <section data-palette="tools">
             <h4>Tools</h4>
             {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
-            <ul>{entries.map((entry) => <ToolRow key={entry.key} entry={entry} place={place} />)}</ul>
+            <ul>{entries.map((entry) => <ToolGroup key={entry.key} entry={entry} open={open === entry.key} toggle={() => setOpen(open === entry.key ? null : entry.key)} />)}</ul>
             {data?.note && <p className="muted">{data.note}</p>}
           </section>
         </div>

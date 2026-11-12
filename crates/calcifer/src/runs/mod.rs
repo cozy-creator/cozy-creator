@@ -33,6 +33,7 @@ pub(crate) mod files;
 pub(crate) mod report;
 pub(crate) mod spec;
 pub(crate) mod target;
+pub(crate) mod video_progress;
 
 use bind::Terms;
 use target::Resolved;
@@ -459,6 +460,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     }
     let (gpu, needs_gpu) = (code.interface.gpu(callable), code.interface.needs_gpu(callable));
     let named = format!("{package}/{}", callable.name);
+    let (interface, release) = (code.interface, code.release);
     let (mut submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
     // Placed by its machines' quotes, the payload bound: a published release among several, and every machine when asked for them.
     let size = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).map(|input| v1::JobSize::of(&input)).unwrap_or_default();
@@ -500,6 +502,13 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     if let Some(warning) = gpuless(api, &submit.on, gpu, &named).await.filter(|_| ask.warm.is_none()) {
         notes.push(Note { level: NoteLevel::Warning, message: warning });
     }
+    // A GPU this computer would run it poorly on, said as a render's box says it, never asked (cl-897).
+    if submit.on.is_local() && gpu && ask.warm.is_none() {
+        let input: serde_json::Map<String, serde_json::Value> = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
+        if let Some(line) = crate::project::fit::here_now(api, &hub, package, release, &callable.name, interface, &input) {
+            notes.push(Note { level: NoteLevel::Warning, message: format!("{line} `--on new` rents a GPU: cozy run {named} … --on new") });
+        }
+    }
     // The machine placement chose, on this cozy's minor likewise.
     if let (On::Machine(machine), For::Run, true) = (&submit.on, purpose, set.len() > 1) {
         match api.machines.current(machine).await {
@@ -515,13 +524,20 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     Ok(Prepared::Run { submit, notes, offers })
 }
 
-/// Where a run goes (cl-873): the machines it names, else its project's, else where a render's job would (Paul, 11-06).
+/// Where a run goes (cl-873): the machines it names, else `unnamed_set`.
 async fn run_set(api: &Arc<Api>, ask: &RunRequest) -> Result<Vec<On>, Error> {
     api::calcifer::machine_set(&ask.on)?;
-    if !ask.on.is_empty() {
-        return Ok(ask.on.clone());
+    match ask.on.is_empty() {
+        true => unnamed_set(api, ask.project.as_deref()).await,
+        false => Ok(ask.on.clone()),
     }
-    if let Some(project) = ask.project.as_deref() {
+}
+
+/// Where a run or a project's render that names no machine goes, for the CLI and the page alike (cl-894): its project's machines,
+/// else where a render's job would (Paul, 11-06; `MachineList::render_set`), this computer's `local` stopped or not: it starts to
+/// quote, so its start counts in its finish.
+pub(crate) async fn unnamed_set(api: &Arc<Api>, project: Option<&str>) -> Result<Vec<On>, Error> {
+    if let Some(project) = project {
         let pinned = crate::project::machines_of(api, project)?;
         if !pinned.is_empty() {
             return Ok(pinned);

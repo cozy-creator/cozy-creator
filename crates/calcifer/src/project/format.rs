@@ -24,7 +24,7 @@ use super::{
 pub(crate) const ALL: &str = "all";
 pub(super) const FORMAT: u64 = 4;
 /// What the platform reads of an asset. Any other key is an input.
-const PLATFORM: [&str; 6] = ["tool", "approved", "description", "models", "lora", NODE_KIND];
+const PLATFORM: [&str; 8] = ["tool", "approved", "description", "models", "lora", NODE_KIND, SELECTED_VERSION, STARRED];
 /// What goes on a function's first call, beside its input.
 const MADE: [&str; 2] = ["models", "lora"];
 pub(super) const KINDS: [&str; 3] = ["image", "video", "audio"];
@@ -33,12 +33,25 @@ const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
 pub(super) const TEXT: &str = "text";
 /// Persistent container identity; this is project metadata, never a tool input.
 pub(super) const NODE_KIND: &str = "node_kind";
+/// The exact current media version, independently of whether two versions contain identical bytes.
+pub(super) const SELECTED_VERSION: &str = "selected_version";
+/// A person's star on an asset, to find it again (cl-892): no input, so it puts nothing out of date.
+pub(super) const STARRED: &str = "starred";
 
 pub(super) fn node_kind(value: Option<&Value>) -> Result<Option<&str>, Error> {
     match value {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(kind)) if matches!(kind.as_str(), "text" | "image" | "video" | "audio" | "video_edit") => Ok(Some(kind)),
-        _ => Err(invalid("node_kind", "node_kind must be text, image, video, audio or video_edit".into())),
+        Some(Value::String(kind)) if kind == "video_edit" => Ok(Some("video")),
+        Some(Value::String(kind)) if matches!(kind.as_str(), "text" | "image" | "video" | "audio") => Ok(Some(kind)),
+        _ => Err(invalid("node_kind", "node_kind must be text, image, video or audio".into())),
+    }
+}
+
+pub(super) fn selected_version(value: Option<&Value>) -> Result<Option<u32>, Error> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_u64().and_then(|number| u32::try_from(number).ok()).filter(|number| *number > 0)
+            .map(Some).ok_or_else(|| invalid(SELECTED_VERSION, "selected_version must be a positive version number".into())),
     }
 }
 
@@ -159,6 +172,8 @@ pub(crate) struct Asset {
     pub kind: String,
     /// Explicit container identity, preserved independently of its selected tool.
     pub node_kind: Option<String>,
+    /// The exact version selected by navigation; `pin` retains compatibility with existing file pins.
+    pub selected_version: Option<u32>,
     /// Whether anything said that.
     pub tool_makes: bool,
     /// What makes it, as the memo holds it: no release, no root namespace, and local code by its directory's name.
@@ -181,6 +196,8 @@ pub(crate) struct Asset {
     pub description: String,
     /// `approved`: the sha256 it holds. Its tool and inputs stay in the file, and can show it out of date.
     pub pin: Option<String>,
+    /// `starred: true`.
+    pub starred: bool,
     /// It has no operation: no `tool` that can make it, or the file says nothing of it.
     pub hollow: bool,
     /// What it reads, in the order its text mentions them.
@@ -396,8 +413,9 @@ impl Doc {
         };
         let target = text_of(body.get("tool")).trim().to_owned();
         let tool = (!target.is_empty()).then(|| plain_tool(&target, folder));
-        let node_kind = if tool.as_deref() == Some(EDIT) { Some("video_edit".to_owned()) }
+        let node_kind = if tool.as_deref() == Some(EDIT) { Some("video".to_owned()) }
             else { node_kind(body.get(NODE_KIND)).expect("node kind was validated").map(str::to_owned) };
+        let selected_version = selected_version(body.get(SELECTED_VERSION)).ok().flatten();
         let mut pin = None;
         match body.get("approved") {
             None | Some(Value::Null) => {}
@@ -450,7 +468,8 @@ impl Doc {
         }
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, node_kind, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, hollow, reads: vec![] });
+        let starred = body.get(STARRED).and_then(Value::as_bool).unwrap_or(false);
+        self.assets.push(Asset { name: name.to_owned(), kind, node_kind, selected_version, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, starred, hollow, reads: vec![] });
     }
 
     /// Each mention of a text asset in what a tool is given replaced by its words, and theirs in turn. Only here: what's read, what's sent and
@@ -609,6 +628,15 @@ impl Doc {
         inputs
     }
 
+    /// Editable inputs from this frozen document, before binding or text-asset expansion.
+    pub(crate) fn authoring_fields(&self, i: usize) -> Map<String, Value> {
+        let asset = &self.assets[i];
+        let mut fields = asset.written.clone().unwrap_or_else(|| self.inputs_of(i));
+        fields.values_mut().for_each(end_trimmed);
+        fields.extend(asset.made.iter().map(|(field, value)| (field.clone(), value.clone())));
+        fields
+    }
+
     /// What asset `i` says, flat, by each control's `field`: its inputs, defaults too, and the platform's words. An edit's tracks are the wire's `timeline`.
     pub(crate) fn flat_fields(&self, i: usize) -> Map<String, Value> {
         let asset = &self.assets[i];
@@ -641,7 +669,7 @@ impl Doc {
         let sent = |read: &Reading| {
             let held = now.iter().find(|held| held.asset == read.asset && held.number == read.number)?;
             let files: Vec<_> = held.files.values().collect();
-            let sends = if tool || read.asset == i { json!({"files": files}) } else { json!({"description": self.assets[read.asset].description, "files": files}) };
+            let sends = if tool || read.asset == i { json!({"files": files}) } else { json!({"description": super::binder::OFF, "files": files}) };
             Some(digest(&sends)[..READ_PART].to_owned())
         };
         let read = |read: &Reading| {
@@ -818,7 +846,8 @@ impl Doc {
         let versions = held.map(|held| held.versions.as_slice()).unwrap_or_default();
         let stands = |version: &Version, now: &str| !version.inputs.is_empty() && self.moved(i, &version.inputs, now, &reads).is_empty();
         if let Some(sha256) = &asset.pin {
-            return match versions.iter().rev().find(|version| version.main() == Some(sha256)) {
+            return match asset.selected_version.and_then(|number| versions.iter().find(|version| version.number == number && version.main() == Some(sha256)))
+                .or_else(|| versions.iter().rev().find(|version| version.main() == Some(sha256))) {
                 Some(version) => {
                     let changed = match &inputs {
                         Some(now) if !version.inputs.is_empty() && !asset.hollow => self.moved(i, &version.inputs, now, &reads),
@@ -955,7 +984,7 @@ impl Doc {
         each_text(value, &mut walk);
     }
 
-    /// What each box asset `i` mentions sends, in `order`, by name: a text box its words, numbered on, and a box its files and description,
+    /// What each box asset `i` mentions sends, in `order`, by name: a text box its words, numbered on, and a box its files and (empty) description,
     /// of each version read. Calcifer's own tools read files alone.
     fn parts(&self, i: usize, reads: &[ReadNow], order: &mut Vec<Result<usize, String>>) -> Vec<(String, String)> {
         let tool = self.tool(i).is_some();
@@ -980,7 +1009,7 @@ impl Doc {
                 None => {
                     let mut read: Vec<(Option<u32>, Value)> = reads.iter().filter(|read| read.asset == j).map(|read| {
                         let files: Vec<_> = read.files.values().collect();
-                        (read.number, if tool || j == i { json!({"files": files}) } else { json!({"description": of.description, "files": files}) })
+                        (read.number, if tool || j == i { json!({"files": files}) } else { json!({"description": super::binder::OFF, "files": files}) })
                     }).collect();
                     read.sort_by_key(|(number, _)| *number);
                     json!(read)
@@ -1115,6 +1144,12 @@ pub(super) fn approved_file(approved: Option<&Value>, lock: &Lock) -> Option<Str
         None | Some(Value::Null) => None,
         Some(value) => file_named(&text_of(Some(value)), lock).ok(),
     }
+}
+
+/// Only its first media may initialize an approval. An explicit unpin stays unpinned.
+pub(super) fn can_initialize_approval(folder: &Folder, name: &str) -> Result<bool, Error> {
+    let approved = folder.reading_boxes(|written| written.get(name).and_then(|held| held.get("approved")).cloned())?;
+    folder.reading_lock(|lock| approved_file(approved.as_ref(), lock).is_none() && lock.asset(name).is_none_or(|held| held.on_record().next().is_none()))
 }
 
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".

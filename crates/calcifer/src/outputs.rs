@@ -88,9 +88,14 @@ pub(crate) struct Exports {
     appended: Mutex<HashMap<(RunId, String, u64), u64>>,
     /// Orders replacing a file and recording it against `serve` reading both.
     placing: Mutex<()>,
-    /// The bytes in place of each export in flight, by run, output and index.
-    moving: Mutex<HashMap<(RunId, String, u32), Arc<AtomicU64>>>,
+    /// The bytes in place of each export in flight, by run, output and index, and its length.
+    moving: Mutex<HashMap<(RunId, String, u32), (Arc<AtomicU64>, u64)>>,
+    /// Each run's result coming here, as its record says it: the bytes in place of its exports in flight over their last seconds.
+    arriving: Mutex<HashMap<RunId, (String, std::collections::VecDeque<(Instant, u64)>)>>,
 }
+
+/// What a run's results coming here are called, as its progress says them.
+pub(crate) const ARRIVING: &str = "downloading the result";
 
 /// Why an export stopped short.
 #[derive(Clone)]
@@ -445,7 +450,7 @@ impl Calcifer {
         };
         let moved = Arc::new(AtomicU64::new(0));
         let key = (run.id.clone(), item.name.clone(), item.index);
-        lock(&self.exports.moving).insert(key.clone(), moved.clone());
+        lock(&self.exports.moving).insert(key.clone(), (moved.clone(), item.length));
         let work = async {
             tokio::fs::create_dir_all(&out_dir).await.map_err(|e| {
                 Failure::Again(format!("cannot create {}: {e}", out_dir.display()))
@@ -464,9 +469,19 @@ impl Calcifer {
             Ok(())
         };
         tokio::pin!(work);
+        // Its bytes as they come, each second: the run's record says them, and its followers hear them.
+        let mut ticks = tokio::time::interval(std::time::Duration::from_secs(1));
         let done = loop {
             let told = tokio::select! {
                 done = &mut work => break done,
+                _ = ticks.tick() => {
+                    // Once it ended: while it goes, its own work is what it says.
+                    let ended = matches!(self.store.run(run.id.as_str()), Ok(Some(now)) if now.state == crate::store::State::Settled);
+                    if ended && let Some(progress) = self.arriving(&run.id) {
+                        let _ = self.events.send((run.id.clone(), Event::Arriving { progress }));
+                    }
+                    continue;
+                }
                 told = events.recv() => told,
                 () = machine_changed(&mut changed) => {
                     if let Some(name) = &run.machine
@@ -499,10 +514,37 @@ impl Calcifer {
             }
         };
         lock(&self.exports.moving).remove(&key);
+        if !lock(&self.exports.moving).keys().any(|(id, ..)| *id == run.id) {
+            lock(&self.exports.arriving).remove(&run.id);
+        }
         if !private_run(run) { info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
             bytes = moved.load(Ordering::Relaxed), phase = "output_export", state = "end",
             ok = done.is_ok(), elapsed_ms = began.elapsed().as_secs_f64() * 1000.0); }
         done
+    }
+
+    /// Run `id`'s results coming here, as progress: their bytes in place of all of them, at what rate, and the time that leaves. None
+    /// while none comes.
+    pub(crate) fn arriving(&self, id: &RunId) -> Option<::api::calcifer::Progress> {
+        let (done, total) = lock(&self.exports.moving)
+            .iter()
+            .filter(|((run, ..), _)| run == id)
+            .fold((0, 0), |(done, total), (_, (moved, length))| (done + moved.load(Ordering::Relaxed), total + length));
+        if total == 0 {
+            return None;
+        }
+        let rate = crate::rate(lock(&self.exports.arriving).entry(id.clone()).or_default(), ARRIVING, done, Instant::now());
+        let eta_s = rate.filter(|rate| *rate >= 1.0).map(|rate| (total.saturating_sub(done) as f64 / rate).ceil() as i64);
+        Some(::api::calcifer::Progress {
+            stage: ARRIVING.into(),
+            bytes_done: done,
+            bytes_total: total,
+            bytes_per_s: rate,
+            done_fraction: Some(done as f64 / total as f64),
+            eta_s,
+            at_ms: crate::store::now_ms(),
+            ..Default::default()
+        })
     }
 
     /// The outputs of runs on `machine` that have not landed and are not given up, each with the
@@ -512,7 +554,7 @@ impl Calcifer {
         let moving = lock(&self.exports.moving);
         let owed = owed.into_iter().map(|owed| {
             let key = (owed.run, owed.name, owed.index);
-            let moved = (moving.get(&key)).map_or(0, |moved| moved.load(Ordering::Relaxed));
+            let moved = (moving.get(&key)).map_or(0, |(moved, _)| moved.load(Ordering::Relaxed));
             let (_, name, index) = key;
             Owed {
                 number: owed.number,
@@ -627,6 +669,9 @@ pub(crate) struct Item {
     index: u32,
     #[serde(default)]
     member: Option<String>,
+    /// Saved by a browser under this name (cl-891, `files::save_as`).
+    #[serde(default)]
+    download: Option<String>,
 }
 
 /// `GET /v1/runs/{id|number}/outputs/{name}[?index=i]`: the output's exported file, whole or one
@@ -638,7 +683,7 @@ pub(crate) async fn serve(
     query: Result<Query<Item>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
-    let Item { index, member } = query?.0;
+    let Item { index, member, download } = query?.0;
     let row = api::find(&api, &run)?;
     crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
     let readable = crate::project::vault::readable_token(&row.out_dir);
@@ -697,6 +742,10 @@ pub(crate) async fn serve(
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut response = crate::files::send(file, len, &item.media_type, &format!("\"r{rev}\""), &headers)
         .map_err(|e| api::refuse(Kind::Internal, "output_unreadable", e.to_string()))?;
+    if let Some(saved) = download {
+        let ext = item.path.as_deref().and_then(Path::extension).and_then(|ext| ext.to_str()).unwrap_or_default();
+        crate::files::save_as(&mut response, &saved, ext);
+    }
     if item.done && rev == item.rev
         && let Ok(digest) = HeaderValue::from_str(&item.digest)
     {

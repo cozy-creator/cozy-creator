@@ -5,8 +5,8 @@ import { type Row, rowsIn } from "./text"
 
 /** Words with a name, which whatever mentions them reads: in the tool list, and no function of any package. */
 export const TEXT_TOOL: Tool = { id: "text", package: "cozy", package_title: "Cozy", function: "", release: "", name: "text", label: "Text", makes: "text", fields: [] }
-/** The existing local timeline engine; it is a basic node, never a model attachment. */
-export const VIDEO_EDIT_TOOL: Tool = { id: "cozy/edit", package: "cozy", package_title: "Cozy", function: "edit", release: "", name: "Edit", label: "Video Editor", makes: "video", fields: [{ field: "timeline", type: "timeline", label: "Edit" }] }
+/** The built-in timeline engine is a tool attached to a video node. */
+export const VIDEO_EDIT_TOOL: Tool = { id: "cozy/edit", package: "cozy", package_title: "Cozy", function: "edit", release: "", name: "Video Timeline", label: "Video Timeline", makes: "video", fields: [{ field: "timeline", type: "timeline", label: "Video Timeline" }] }
 
 /** A row's members, from what rows hold: what says the most, and each number, the first adding up. What else a row holds stays, unseen. */
 function membersOf(rows: Row[]): ToolField[] {
@@ -40,12 +40,14 @@ function fromFields(fields: Record<string, unknown>): ToolField[] {
 }
 
 /** The platform's words on any box, whatever made it: no tool asks for them. */
-export const OWN = ["description", "models", "lora", "node_kind"]
+export const OWN = ["description", "models", "lora", "node_kind", "selected_version"]
 
 /** What a box asks for: its tool's fields, or what its fields hold. Nothing here knows any function. */
 export function fieldsOf(asset: Asset, tools: Map<string, Tool>): ToolField[] {
   const tool = asset.tool ? tools.get(asset.tool) : undefined
-  return tool ? tool.fields : fromFields(asset.fields ?? {})
+  const hidden = tool?.package.split("/").at(-1) === "minimax-h3" ? ["seed", "quality", "steps", "turbo"] : ["seed"]
+  const visible = (fields: ToolField[]): ToolField[] => fields.filter((field) => field.type !== "seed" && !hidden.includes(field.field)).map((field) => field.members ? { ...field, members: visible(field.members) } : field)
+  return visible(tool ? tool.fields : fromFields(asset.fields ?? {}))
 }
 
 export const empty = (value: unknown) => value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length)
@@ -81,7 +83,7 @@ export const fieldWords = (field: string) => field[0].toUpperCase() + field.slic
 
 /** What it holds that no field declares, such as a hand-written key: it reaches a render all the same. Its description is its own line, and a LoRA or a fine-tune is an add-on. */
 export const heldBeyond = (fields: Record<string, unknown> | undefined, declared: ToolField[]) =>
-  Object.entries(fields ?? {}).filter(([field, value]) => !OWN.includes(field) && !empty(value) && !declared.some((held) => held.field === field))
+  Object.entries(fields ?? {}).filter(([field, value]) => !["seed", "quality", "steps", "turbo"].includes(field) && !OWN.includes(field) && !empty(value) && !declared.some((held) => held.field === field))
 
 /** What a slot or a prompt's mention can hold, in words. */
 export const WANTED: Record<Media, string> = { image: "a picture", video: "a video", audio: "a sound" }

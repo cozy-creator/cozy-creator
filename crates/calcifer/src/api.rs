@@ -55,6 +55,8 @@ pub(crate) struct Api {
     pub projects: crate::project::Projects,
     /// What this computer last read of each package's releases.
     pub(crate) releases: crate::runs::target::Releases,
+    /// Each Hub's tools, as last read.
+    pub(crate) listing: crate::toolbox::Listing,
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
     pub(crate) sessions: crate::sessions::Sessions,
@@ -79,6 +81,7 @@ impl Api {
             machines,
             projects: Default::default(),
             releases: Default::default(),
+            listing: Default::default(),
             codes: Default::default(),
             tool_uis: Default::default(),
             bearer: Sha256::digest(token).into(),
@@ -153,6 +156,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/cancel", post(cancel))
         .route("/v1/runs/{id}/events", get(events))
         .route("/v1/runs/{id}/outputs/{name}", get(crate::outputs::serve))
+        .route("/v1/runs/{id}/preview", get(crate::previews::serve))
         .route("/v1/runs/{id}/play", get(crate::play::play))
         .route("/v1/down", post(down))
         .route("/v1/status", get(status))
@@ -574,6 +578,7 @@ async fn show(
     (run.waiting, run.progress, run.queue_position) = (record.waiting, record.progress, record.queue_position);
     (run.project, run.project_id, run.stalled) = (record.project, record.project_id, record.stalled);
     run.request = crate::runs::asked(&row);
+    run.video_progress = crate::runs::video_progress::of(&run, &api.calcifer.store().events_after(row.id.as_str(), 0)?);
     run.report = crate::runs::report::of(&run);
     Ok(Json(run))
 }

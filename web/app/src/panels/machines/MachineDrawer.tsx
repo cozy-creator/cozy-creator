@@ -9,27 +9,24 @@ import { Copyable } from "../../ui/Copyable"
 import { say } from "../../ui/notes"
 import { Failure, KV, Section, useAsk, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
-import { bytes, shown, span, usd } from "../format"
+import { bytes, shown, span } from "../format"
 import { End } from "./End"
 import { Installed } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
-import { RenderHere, useRenderMachines } from "./RenderHere"
-import { endsWords, gpusWords, kindWords, named, spentWords, stateClass, stateWords } from "./words"
+import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
+import { called, endsWords, kindWords, named, spentWords } from "./words"
 
-/** The idle clock, and renewing it, which only a person asks for. */
-function KeepUp({ machine, now }: { machine: Machine; now: number }) {
+/** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
+function KeepRunning({ machine }: { machine: Machine }) {
   const { client } = useConnection()
   const ask = useAsk()
   if (machine.kind !== "rental" || machine.state !== "ready" || machine.ordered === false) return null
-  const line = endsWords(machine, now)
   return (
     <>
-      {line && <span className={machine.status?.idle_deadline_ms ? "warn" : "muted"}>{line}</span>}
-      <span className="sp" />
-      <button type="button" className="tb" disabled={ask.busy} onClick={() => void ask.run(() => client.keepAlive(machine.name))}>
-        Keep up
+      <button type="button" className="tb" title="Starts its 15 idle minutes again" disabled={ask.busy} onClick={() => void ask.run(() => client.keepAlive(machine.name))}>
+        Keep running
       </button>
-      <Failure error={ask.error} lead="Couldn't keep it up" />
+      <Failure error={ask.error} lead="Couldn't keep it running" />
     </>
   )
 }
@@ -106,20 +103,21 @@ function DiskShort({ machine }: { machine: Machine }) {
   )
 }
 
-/** All the rest it knows, for whoever asks. */
+/** All the rest it knows, shown when its Details is: versions, disk, addresses and keys, its runs one by one, updating it, what it holds,
+ *  its logs (Paul 11-12: its face is its spec, what it's doing, when it ends, and what to do with it). */
 function Details({ machine, now }: { machine: Machine; now: number }) {
+  const to = useTo()
+  const ended = machine.state === "ended"
   const status = machine.status
   const rental = machine.rental
   const disk = status?.disk_total_bytes ? `${bytes(status.disk_free_bytes ?? 0)} free of ${bytes(status.disk_total_bytes)}` : rental?.disk_gb ? `${rental.disk_gb} GB` : ""
   return (
-    <details className="sect">
-      <summary>Details</summary>
+    <div className="sect machine-details">
       <KV
       rows={[
         ["Kind", kindWords(machine)],
         ...(status?.gpus ?? []).map((gpu): [string, string] => [`GPU ${gpu.index}`, `${gpu.name} · ${bytes(gpu.memory_bytes)}${gpu.driver ? ` · driver ${gpu.driver}` : ""}`]),
         ["Up", rental ? span((now - rental.rented_at_ms) / 1000) : status && span((now - status.started_at_ms) / 1000)],
-        ["Running", machine.running || machine.queued ? `${machine.running ?? 0} running, ${machine.queued ?? 0} queued` : ""],
         ["cozy", status && `${status.version}${status.dev ? " (dev)" : ""}`],
         ["Runtime", status?.runtime],
         ["TensorFS", status?.tensorfs],
@@ -127,6 +125,8 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
         ["Update", status?.update],
         ["Disk", disk],
         ["Address", machine.address],
+        ["Fingerprint", machine.fingerprint],
+        ["Controller key", machine.controller_key],
         ["Add it at", machine.reach],
         ["Placed", rental?.placement_note],
         ["Failure", rental?.failure],
@@ -139,68 +139,6 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
           <Copyable text={machine.ssh.line} />
         </Section>
       )}
-    </details>
-  )
-}
-
-/** One machine, read from the live list while it's in it: reading it alone would start `local`. */
-export function MachineDrawer() {
-  const { client } = useConnection()
-  const to = useTo()
-  const name = useParams().name ?? ""
-  const { data: list } = useQuery(machinesQuery(client))
-  const listed = list?.machines.find((machine) => named(machine, name))
-  const { data: record, error } = useQuery({ ...machineQuery(client, name), enabled: Boolean(list && !listed) })
-  const machine = listed ?? record
-  const now = useNow(Boolean(machine && machine.state !== "ended"))
-  const { chosen } = useRenderMachines()
-
-  if (!machine) {
-    return (
-      <DrawerFrame title={name} back={to("machines")}>
-        <Failure error={error} lead={`Couldn't read ${name}`} />
-      </DrawerFrame>
-    )
-  }
-
-  const ended = machine.state === "ended"
-  const here = chosen.includes(machine.name)
-  return (
-    <DrawerFrame title={machine.name} back={to("machines")}>
-      <div className={`run-head ${here ? "render-here" : ""}`}>
-        <span className={`dot ${stateClass(machine)}`} />
-        <b>{stateWords(machine, now)}</b>
-        <span className="sp" />
-        <small>{gpusWords(machine)}</small>
-      </div>
-      {(!ended || here) && <RenderHere name={machine.name} />}
-      {ended && <p className="muted">Ended. Nothing of it bills now, and what landed here stays.</p>}
-      {machine.state === "booting" && (
-        <p className="muted">
-          Still trying{machine.attempt ? `, attempt ${machine.attempt.number}` : ""}. It bills once it's ready, and goes on with this page closed.
-          {machine.attempt?.replaced && ` The last attempt ended: ${machine.attempt.replaced.failure}.`}
-        </p>
-      )}
-      {machine.offline && <p className="warn">It's offline and refuses runs. It returns if its provider resumes it, and ends after 15 minutes idle.</p>}
-      {machine.unreachable && !ended && <p className="muted">It didn't answer just now ({machine.unreachable}). This is from its last report.</p>}
-      {machine.rental && !ended && (
-        <p className="cost">
-          <b>{usd(machine.rental.usd_micros_per_hour)}/h</b>
-          {spentWords(machine) && <small>{spentWords(machine)} so far</small>}
-        </p>
-      )}
-      <div className="row center keep-up">
-        <KeepUp machine={machine} now={now} />
-      </div>
-      <div className="ending">
-        <End machine={machine} />
-      </div>
-      <DiskShort machine={machine} />
-      {machine.status?.gpu_problems?.map((problem) => (
-        <p className="warn" key={problem}>
-          {problem}
-        </p>
-      ))}
       {Boolean(machine.status?.runs?.length) && (
         <Section title="Its runs now">
           <ul className="rows">
@@ -219,17 +157,89 @@ export function MachineDrawer() {
           </ul>
         </Section>
       )}
-      {machine.state !== "ended" && (
+      {!ended && (
         <p>
           <Link className="more" to={`${to("runs")}?all&machine=${encodeURIComponent(machine.name)}`}>
             Its runs
           </Link>
         </p>
       )}
-      <Details machine={machine} now={now} />
       {machine.state === "ready" && <Update machine={machine} />}
       {!ended && <Installed machine={machine} />}
       {!ended && <MachineLogs machine={machine} />}
+    </div>
+  )
+}
+
+/** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. */
+function Doing({ machine, now }: { machine: Machine; now: number }) {
+  const jobs = machine.running || machine.queued ? `${machine.running} running, ${machine.queued} queued` : "No jobs"
+  const ends = endsWords(machine, now)
+  const spent = spentWords(machine)
+  return (
+    <p className="doing-now">
+      <span>{jobs}</span>
+      {spent && <span className="muted">{spent} so far</span>}
+      {ends && <span className={machine.status?.idle_deadline_ms ? "warn" : "muted"}>{ends}</span>}
+    </p>
+  )
+}
+
+/** One machine, read from the live list while it's in it: reading it alone would start `local`. */
+export function MachineDrawer() {
+  const { client } = useConnection()
+  const to = useTo()
+  const name = useParams().name ?? ""
+  const { data: list } = useQuery(machinesQuery(client))
+  const listed = list?.machines.find((machine) => named(machine, name))
+  const { data: record, error } = useQuery({ ...machineQuery(client, name), enabled: Boolean(list && !listed) })
+  const machine = listed ?? record
+  const now = useNow(Boolean(machine && machine.state !== "ended"))
+  const { chosen } = useRenderMachines()
+  const [details, setDetails] = useState(false)
+
+  if (!machine) {
+    return (
+      <DrawerFrame title={name} back={to("machines")}>
+        <Failure error={error} lead={`Couldn't read ${name}`} />
+      </DrawerFrame>
+    )
+  }
+
+  const ended = machine.state === "ended"
+  const here = chosen.includes(machine.name)
+  return (
+    <DrawerFrame title={called(machine)} back={to("machines")}>
+      <div className={`machine-head ${here ? "render-here" : ""}`}>
+        <Spec machine={machine} now={now} name={false} />
+        <div className="checks">
+          {(!ended || here) && <RenderCheck name={machine.name} called={called(machine)} />}
+          <button type="button" className="more" aria-expanded={details} onClick={() => setDetails(!details)}>
+            Details
+          </button>
+        </div>
+      </div>
+      {ended && <p className="muted">Ended. Nothing of it bills now, and what landed here stays.</p>}
+      {machine.state === "booting" && (
+        <p className="muted">
+          Still trying{machine.attempt ? `, attempt ${machine.attempt.number}` : ""}. It bills once it's ready, and goes on with this page closed.
+          {machine.attempt?.replaced && ` The last attempt ended: ${machine.attempt.replaced.failure}.`}
+        </p>
+      )}
+      {machine.offline && <p className="warn">It's offline and refuses runs. It returns if its provider resumes it, and ends after 15 minutes idle.</p>}
+      {machine.unreachable && !ended && <p className="muted">It didn't answer just now ({machine.unreachable}). This is from its last report.</p>}
+      {!ended && <Doing machine={machine} now={now} />}
+      <div className="machine-actions">
+        <KeepRunning machine={machine} />
+        <End machine={machine} />
+      </div>
+      <DiskShort machine={machine} />
+      {machine.status?.gpu_problems?.map((problem) => (
+        <p className="warn" key={problem}>
+          {problem}
+        </p>
+      ))}
+      {details && <Details machine={machine} now={now} />}
     </DrawerFrame>
   )
 }

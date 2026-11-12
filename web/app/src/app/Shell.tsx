@@ -237,6 +237,11 @@ function MainMenu({ id }: { id: string | null }) {
           </Link>
         )}
         {id && (
+          <Link className="tb" to={to("files")}>
+            Files
+          </Link>
+        )}
+        {id && (
           <Link className="tb" to={to("yaml")}>
             project.yaml
           </Link>

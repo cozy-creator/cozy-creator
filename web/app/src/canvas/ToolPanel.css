@@ -1,0 +1,24 @@
+.tool-category {
+  width: 100%;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tool-category:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+.tool.tool-category:active {
+  cursor: pointer;
+}
+.tool-category > span {
+  flex: none;
+}
+.tools .tool-implementations {
+  padding-left: 12px;
+}
+.tool-node.selected {
+  background: var(--tint);
+}

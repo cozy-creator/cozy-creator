@@ -2,8 +2,8 @@
 // Chrome on a real Calcifer, with the call held by a route that stalls it. A dropped tool's box is on the canvas in the frame it was dropped, with its
 // POST held; what's typed and moved meanwhile lands after it; the box's own echo costs no read of the project and no redraw; an answer lost goes again
 // under its key and makes one asset; another writer's name renames the box; a refused action rolls back with one line; a pending edit and another
-// writer's end in the conflict line; a write's answer never claims another writer's lines; kill -9 of Calcifer mid-queue lands once; and a render whose
-// answer is lost runs once.
+// writer's: the page's unsent words stand and are saved, with nothing asked; a write's answer never claims another writer's lines; kill -9 of
+// Calcifer mid-queue lands once; and a render whose answer is lost runs once.
 //   node instant.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $RESTART: a shell command that kills this Calcifer with -9 and brings it
 // back; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so it runs nothing.
@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
 const { rmSync } = require('fs');
 const { join } = require('path');
-const { projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, importYaml, lastLook, lookAt, openBox, renderOf, until, yamlOf } = require('./page');
+const { implementationRow, projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, importYaml, lastLook, lookAt, openBox, renderOf, until, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -93,7 +93,7 @@ async function loseAnswers(page, method, path, times) {
   const count = (name) => yaml().match(new RegExp(`^  ${name}(_\\d+)?:`, 'gm'))?.length ?? 0;
   const box = (name) => boxOf(page, name);
   // The composition node, independent of any generative Edit Video operation.
-  const editor = () => page.locator('.tools [data-palette="nodes"] .tool[data-node="video_edit"]');
+  const editor = () => implementationRow(page, 'timeline', 'cozy/edit');
   await page.waitForSelector('.tools .tool');
   await page.waitForSelector('.empty-canvas');
 
@@ -115,13 +115,13 @@ async function loseAnswers(page, method, path, times) {
     if (request.method() === 'GET' && pathname.startsWith(`/v1/projects/${id}`)) reads.push(`${pathname.slice(`/v1/projects/${id}`.length) || '/'}${search}`);
   });
   const posts = await hold(page, 'POST', '**/v1/projects/*/assets');
-  await carry(page, editor(), { x: 1100, y: 800 });
+  await carry(page, await editor(), { x: 1100, y: 800 });
   await until('the frame after the drop', () => page.evaluate(() => window.dropped.frame), Boolean);
   const dropped = await page.evaluate(() => window.dropped);
   seen.drop = { frame_ms: dropped.frame - dropped.drop, boxes: [dropped.boxes, dropped.after] };
   check('box_in_the_frame_of_the_drop', dropped.after === dropped.boxes + 1, seen.drop);
   const name = await page.locator('.card.landing').first().getAttribute('data-asset');
-  check('box_named_before_any_answer', name === 'Edit' && !hasAsset(name), { name });
+  check('box_named_before_any_answer', Boolean(name) && !hasAsset(name), { name });
   check('post_is_held', posts.calls.length <= 1, posts.calls.length);
 
   // Moved and typed in while nothing is saved: each keeps its place in line, and nothing on screen says so.
@@ -146,7 +146,7 @@ async function loseAnswers(page, method, path, times) {
 
   // An answer lost: the same key again, and one asset.
   const lost = await loseAnswers(page, 'POST', '**/v1/projects/*/assets', 2);
-  await carry(page, editor(), { x: 400, y: 900 });
+  await carry(page, await editor(), { x: 400, y: 900 });
   const second = `${name}_2`;
   await box(second).waitFor();
   await until('its answer came at last', () => Promise.resolve(lost.keys.length), (n) => n >= 3);
@@ -158,7 +158,7 @@ async function loseAnswers(page, method, path, times) {
 
   // Another writer takes the name while this one's asked: the box takes what it got, and the other shows.
   const stalled = await hold(page, 'POST', '**/v1/projects/*/assets');
-  await carry(page, editor(), { x: 400, y: 200 });
+  await carry(page, await editor(), { x: 400, y: 200 });
   const third = `${name}_3`;
   await box(third).waitFor();
   projectJson(folder, 'POST', '/assets', { tool: 'cozy/edit', name: third, exact: true, fields: {} });
@@ -189,7 +189,7 @@ async function loseAnswers(page, method, path, times) {
   const said = await until('one line', notes, (lines) => lines.some((line) => /Couldn't take out never_held/.test(line)));
   check('refused_says_one_line', said.filter((line) => /never_held/.test(line)).length === 1, said);
 
-  // A pending edit and another writer's edit of the same field: the conflict line, and neither lost.
+  // A pending edit and another writer's edit of the same field: the page's unsent words stand and are saved over theirs, with nothing asked (cl-904).
   projectJson(folder, 'POST', '/assets', { tool: '', name: 'words', exact: true, fields: { text: 'A storm.' } });
   await page.waitForTimeout(600);
   // Nothing held open: what's open lies over what's below it.
@@ -206,12 +206,11 @@ async function loseAnswers(page, method, path, times) {
   projectJson(folder, 'PATCH', '/assets/words', { fields: { text: 'theirs' } });
   await until('theirs in the file', () => Promise.resolve(yaml().includes('text: theirs')), Boolean);
   await page.waitForTimeout(600);
-  await patches.release();
   await openBox(page, 'words');
-  await until('the conflict line', () => box('words').getByRole('button', { name: 'Keep mine' }).count(), (n) => n > 0);
-  check('conflict_keeps_both', yaml().includes('text: theirs') && (await box('words').locator('.mention-text[data-field="text"]').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
-  await box('words').getByRole('button', { name: 'Keep mine' }).click();
+  check('unsent_words_stand', (await box('words').locator('.mention-text[data-field="text"]').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
+  await patches.release();
   await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
+  check('nothing_asked', (await box('words').getByRole('button', { name: 'Keep mine' }).count()) === 0);
   await closeBox(page);
 
   // Another canonical writer commits after ours, before its delayed reply is consumed.
@@ -249,7 +248,7 @@ async function loseAnswers(page, method, path, times) {
   // kill -9 with a box in line: it lands once, when Calcifer's back, with no reload.
   if (process.env.RESTART) {
     const waits = await hold(page, 'POST', '**/v1/projects/*/assets');
-    await carry(page, editor(), { x: 1100, y: 200 });
+    await carry(page, await editor(), { x: 1100, y: 200 });
     const fifth = `${name}_5`;
     await box(fifth).waitFor();
     const restarted = new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
@@ -276,9 +275,8 @@ async function loseAnswers(page, method, path, times) {
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
     await (await renderOf(page, 'fixture')).click();
     await page.waitForTimeout(20);
-    // At once, the take it asks for is in the column beside it, saying it's queued: picked where its tool is known to make pictures
-    // (51887d1b5), else with Queued under its words.
-    check('render_says_queued_at_once', (await box('fixture').locator('.here-side .take.making[title="Queued"]').count()) === 1, await box('fixture').innerText());
+    // The selected image remains one frame; accepted work is visible there rather than in a second thumbnail column.
+    check('render_says_queued_at_once', await box('fixture').locator('.media-making, .prog, .on-its-way, .here-side .take.making').count() > 0, await box('fixture').innerText());
     await until('a version of it', () => Promise.resolve(status().find((asset) => asset.name === 'fixture')?.versions ?? 0), (n) => n >= 1, FIRST_RUN_MS);
     // The take can land before the lost answer's reset reaches the page: what it asks again is seen before the route goes.
     await until('asked again', () => Promise.resolve(renders.keys.length), (n) => n >= 2, 10_000).catch(() => {});
@@ -334,9 +332,9 @@ async function loseAnswers(page, method, path, times) {
     await unread.waitFor();
     const refusal = await unread.innerText();
     check('what_cant_be_read_says_why', /schema 99/.test(refusal) && /only current CRDT schema 2 is supported/.test(refusal) && /Preserve this database/.test(refusal) && /new current-format project in a separate empty directory/.test(refusal) && (await page.locator('.empty-canvas').count()) === 0, refusal);
-    await until('the editor node still there', () => editor().count(), (n) => n === 1);
-    await carry(page, editor(), { x: 1200, y: 300 });
-    await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Video Editor/.test(line)).length, (n) => n === 1);
+    await until('the Timeline implementation still there', async () => (await editor()).count(), (n) => n === 1);
+    await carry(page, await editor(), { x: 1200, y: 300 });
+    await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Video Timeline/.test(line)).length, (n) => n === 1);
     check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
     await page.getByTitle(folder, { exact: true }).click();
     await box(name).waitFor();

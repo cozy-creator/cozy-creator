@@ -227,6 +227,9 @@ pub struct FoundModel {
     pub private: bool,
     /// Who made it: the org it credits, or the parked org it mirrors into.
     pub author: Option<ModelAuthor>,
+    /// Its owner's recommended LoRA strength, when provided; not applied by a render automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f64>,
     /// What its header says it is. None: it couldn't be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "kind")]

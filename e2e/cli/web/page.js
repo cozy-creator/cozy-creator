@@ -35,7 +35,8 @@ function photo() {
   return Buffer.concat([small.subarray(0, 2), note, small.subarray(2)]);
 }
 
-function png(shade, width = 320, height = 200, alpha = false) {
+/** A PNG: a gradient over `shade`, or what `pixel(x, y)` says ([r, g, b]) at each point. */
+function png(shade, width = 320, height = 200, alpha = false, pixel) {
   const chunk = (type, data) => {
     const body = Buffer.concat([Buffer.from(type), data]);
     const length = Buffer.alloc(4), sum = Buffer.alloc(4);
@@ -52,9 +53,10 @@ function png(shade, width = 320, height = 200, alpha = false) {
   for (let y = 0, at = 0; y < height; y++) {
     rows[at++] = 0;
     for (let x = 0; x < width; x++) {
-      rows[at++] = shade;
-      rows[at++] = (x * 255 / width) | 0;
-      rows[at++] = (y * 255 / height) | 0;
+      const [r, g, b] = pixel ? pixel(x, y) : [shade, (x * 255 / width) | 0, (y * 255 / height) | 0];
+      rows[at++] = r;
+      rows[at++] = g;
+      rows[at++] = b;
       if (alpha) rows[at++] = x < width / 2 ? 0 : 255;
     }
   }
@@ -195,8 +197,8 @@ function observeResizes() {
   });
 }
 
-// A box as a person reaches it, worked on or at rest: it's always on the canvas.
-const boxOf = (page, name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`).first();
+// The asset's current surface: Focus while open, otherwise its Wander node.
+const boxOf = (page, name) => page.locator(`[data-focused-asset="${name}"], .react-flow__node:has(.card[data-asset="${name}"])`).first();
 async function closeBox(page) {
   // By the address, as the page has it: after a reload the box is on its way, and not there to count yet, and `page.url()` hears of a move a moment late.
   // Left already, by a click off it say, the canvas may still be on its way back.
@@ -207,10 +209,12 @@ async function closeBox(page) {
   await settled(page);
 }
 // A click works on a box where it stands: the middle of it, where there's nothing else to press.
-/** An open box's Render. An image tool's box looking at a take shows only its description: its + goes to its next take's words, with Render. */
+/** An open box's Render. Image tools enter their explicit Edit mode before rendering. */
 async function renderOf(page, name) {
   const here = page.locator(`.card.here[data-asset="${name}"]`).first();
   await here.waitFor();
+  const edit = here.getByRole('button', { name: 'Edit image', exact: true });
+  if (await edit.count()) await edit.click();
   const next = here.locator('.here-side .take.add[aria-label="Its next take"]');
   // A cold tool list can briefly show fallback fields before an image take gains its +.
   // Wait for an editor (including non-image/custom editors) or that actual next-take control.
@@ -626,19 +630,56 @@ function rowsOf(folder, query) {
   return execFileSync(PYTHON, ['-c', script, `${folder}/project.db`, query], { encoding: 'utf8' }).split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
-/** Pick a real implementation inside a node's operation configuration. */
-async function chooseModel(page, name, id, operation) {
+/** Expand a tool category without creating anything and return one actual draggable implementation. */
+async function implementationRow(page, operation, id) {
+  const focused = page.locator('[data-focused-asset]');
+  if (await focused.count()) {
+    await focused.getByRole('button', { name: 'Back to canvas', exact: true }).click();
+    await focused.waitFor({ state: 'detached' });
+  }
+  const show = page.locator('aside.tools [aria-label="Show the tools"]');
+  if (await show.count()) await show.click();
+  const category = page.locator(`.tools [data-operation="${operation}"]`);
+  await category.waitFor();
+  if (await category.getAttribute('aria-expanded') !== 'true') await category.click();
+  const rows = page.locator(`.tools [data-implementation][data-tool-operation="${operation}"]`);
+  const row = id ? page.locator(`.tools [data-implementation][data-tool-operation="${operation}"][data-tool=${JSON.stringify(id)}]`) : rows.first();
+  await row.waitFor();
+  return row;
+}
+
+/** A thumbnail click previews a retained state without approving it. */
+async function previewVersion(page, name, wanted) {
   await openBox(page, name);
   const card = boxOf(page, name);
-  const tool = card.locator('select[aria-label="Tool"]');
-  if (operation && await tool.inputValue() !== operation) await tool.selectOption(operation);
-  const model = card.locator('select[aria-label="Model"]');
-  await model.locator('option').filter({ hasText: /./ }).first().waitFor({ state: 'attached' });
-  await until(`model ${id} is available`, () => model.locator('option').evaluateAll((options) => options.map((option) => option.value)), (ids) => ids.includes(id));
-  await model.selectOption(id);
+  const take = card.locator(`.image-history.here-side .take[data-take="${wanted}"]`);
+  await take.waitFor();
+  await take.scrollIntoViewIfNeeded();
+  await take.click();
+  await until(`${name} thumbnail is previewed`, () => card.locator('.image-history.here-side .take.on[data-take]').getAttribute('data-take'), (number) => number === String(wanted));
+}
+
+/** Approval is explicit and separate from thumbnail preview. */
+async function approveVersion(page, name, wanted) {
+  await previewVersion(page, name, wanted);
+  const folder = (await projectFromPage(page)).path;
+  const item = projectJson(folder).assets.find((asset) => asset.name === name);
+  if (!item.pinned || item.approved !== wanted) await boxOf(page, name).locator(`.image-history.here-side .take[data-take="${wanted}"]`).dblclick();
+  await until(`${name} version is approved`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)), (asset) => asset?.version === wanted && asset?.approved === wanted && asset?.pinned);
+}
+
+/** Replace the tool with a real compatible implementation dragged from its category. */
+async function chooseModel(page, name, id, operation) {
+  await openBox(page, name);
+  const folder = (await projectFromPage(page)).path;
+  const card = boxOf(page, name);
+  const tool = await implementationRow(page, operation, id);
+  const target = await card.locator('.media').boundingBox();
+  await carry(page, tool, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
+  await until(`tool ${id} attached`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.tool), (held) => held === id);
 }
 
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav, yamlOf };

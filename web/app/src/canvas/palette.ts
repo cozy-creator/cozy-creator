@@ -1,12 +1,12 @@
 import type { Asset, Tool, ToolField } from "../api/calcifer"
+import { VIDEO_EDIT_TOOL } from "./controls"
 import { madeHere } from "./shown"
 
-export type BasicNodeKind = "text" | "image" | "video" | "video_edit" | "audio"
+export type BasicNodeKind = "text" | "image" | "video" | "audio"
 
 export const BASIC_NODES: ReadonlyArray<{ kind: BasicNodeKind; label: string }> = [
   { kind: "image", label: "Image" },
   { kind: "video", label: "Video" },
-  { kind: "video_edit", label: "Video Editor" },
   { kind: "audio", label: "Audio" },
   { kind: "text", label: "Text" },
 ]
@@ -18,6 +18,7 @@ export const OPERATIONS = [
   { key: "video", label: "Video", makes: "video" },
   { key: "edit_video", label: "Edit Video", makes: "video" },
   { key: "upscale_video", label: "Upscale Video", makes: "video" },
+  { key: "timeline", label: "Video Timeline", makes: "video" },
   { key: "llm", label: "LLM", makes: "text" },
 ] as const
 
@@ -36,6 +37,7 @@ const hasSource = (fields: ToolField[], kind: string): boolean => fields.some((f
 
 /** Operations describe the result. Image input on a VLM never makes it an image tool. */
 export function operationOf(tool: Tool): Operation | null {
+  if (tool.id === VIDEO_EDIT_TOOL.id) return "timeline"
   if (madeHere(tool.id) || tool.id === "text") return null
   if (tool.makes === "text") return "llm"
   if (tool.makes !== "image" && tool.makes !== "video") return null
@@ -46,8 +48,12 @@ export function operationOf(tool: Tool): Operation | null {
 }
 
 export const modelLabel = (tool: Tool) => {
-  const model = tool.model?.default?.split("@")[0]?.replace(/^_\//, "")
-  return model ? `${tool.package_title || model} (${model})` : `${tool.package_title || tool.package} · ${tool.label}`
+  if (tool.id === VIDEO_EDIT_TOOL.id) return "Video Timeline"
+  const title = tool.package_title || tool.label
+  const model = tool.model?.default?.split("@")[0]?.split("/").at(-1)
+  if (model === "p-h3-image") return "P-H3 Image"
+  const version = model?.match(/(\d+(?:\.\d+)+)$/)?.[1]
+  return version && /\d+(?:\.\d+)*$/.test(title) ? title.replace(/\d+(?:\.\d+)*$/, version) : title
 }
 
 const takesImage = (fields: ToolField[]): boolean => fields.some((field) =>
@@ -57,8 +63,9 @@ const takesImage = (fields: ToolField[]): boolean => fields.some((field) =>
 
 /** Stable operation rows; executable choices live in the node's model control. */
 export function paletteEntries(tools: Tool[]): PaletteEntry[] {
+  const available = [...tools.filter((tool) => tool.id !== VIDEO_EDIT_TOOL.id), VIDEO_EDIT_TOOL]
   return OPERATIONS.map((operation) => {
-    const variants = tools.filter((tool) => operationOf(tool) === operation.key ||
+    const variants = available.filter((tool) => operationOf(tool) === operation.key ||
       (operation.key === "edit_image" && operationOf(tool) === "image" && takesImage(tool.fields)))
       .sort((a, b) => Number(Boolean(a.local)) - Number(Boolean(b.local)) || a.id.localeCompare(b.id))
     return { ...operation, tool: variants[0], variants }
@@ -67,7 +74,7 @@ export function paletteEntries(tools: Tool[]): PaletteEntry[] {
 
 export const isVideoEdit = (asset: Asset) => asset.tool === "cozy/edit" || asset.fields?.node_kind === "video_edit"
 
-/** An intrinsic timeline is not a generative Video node, even though both produce video files. */
+/** A tool attaches to the kind it produces. Timeline is a removable video tool. */
 export function toolFitsNode(tool: Tool, asset: Asset): boolean {
-  return !isVideoEdit(asset) && !madeHere(asset.tool) && tool.id !== "text" && !madeHere(tool.id) && tool.makes === asset.kind
+  return tool.id !== "text" && (!madeHere(tool.id) || tool.id === VIDEO_EDIT_TOOL.id) && tool.makes === asset.kind
 }

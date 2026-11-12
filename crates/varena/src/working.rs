@@ -466,7 +466,7 @@ impl State {
     }
 
     /// Completed free pages beyond what the active phase needs, and the segments a loop keeps
-    /// whole. With no measure of it, all of them.
+    /// whole while it needs them. With no measure of it, all of them.
     fn beyond_phase(&self) -> (usize, BTreeSet<u64>) {
         let need = self.phase_need();
         if need.is_none() && !self.looping() {
@@ -481,7 +481,12 @@ impl State {
                 outside += bytes;
             }
         }
-        (reusable.saturating_sub(need.unwrap_or(0)).min(outside), kept)
+        let beyond = reusable.saturating_sub(need.unwrap_or(0));
+        // Past what the loop's own segments hold for its need, theirs go too.
+        if beyond > outside {
+            return (beyond, BTreeSet::new());
+        }
+        (beyond, kept)
     }
 
     /// A completed free block across `at` becomes two, so a handle's pages can leave alone.
@@ -1056,21 +1061,10 @@ impl Device {
         Ok(ptr)
     }
 
-    fn fit_pool(
-        state: &mut State,
-        pool: PoolId,
-        bytes: usize,
-        requested: usize,
-        stream: u64,
-    ) -> Option<u64> {
-        // Only free ranges whose ordering permits this stream can be joined. Live blocks,
-        // other-stream pending frees and segment boundaries always end a candidate run.
-        let mut best: Option<(u64, usize, u64)> = None;
-        let mut consider = |ptr, capacity, segment| {
-            if capacity >= bytes && best.is_none_or(|(_, n, _)| capacity < n) {
-                best = Some((ptr, capacity, segment));
-            }
-        };
+    /// Each run of this pool's free blocks that `stream` may use (`None`: any stream, between
+    /// captures), as (start, bytes, segment). Only free ranges whose ordering permits the stream
+    /// join; live blocks, other-stream pending frees and segment boundaries always end a run.
+    fn pool_runs(state: &State, pool: PoolId, stream: Option<u64>, mut each: impl FnMut(u64, usize, u64)) {
         for (base, segment) in &state.segments {
             if segment.pool != Some(pool) {
                 continue;
@@ -1078,15 +1072,15 @@ impl Device {
             let (mut start, mut length) = (*base, 0usize);
             for (ptr, block) in state.blocks.range(*base..*base + segment.bytes as u64) {
                 let ready = block.life == Life::Ready && block.reusable_on.is_none();
-                let ordered = block.reusable_on == Some(stream)
+                let ordered = stream.is_some() && block.reusable_on == stream
                     && matches!(block.life, Life::Ready | Life::Captured);
                 if !ready && !ordered {
-                    consider(start, length, *base);
+                    each(start, length, *base);
                     length = 0;
                     continue;
                 }
                 if length != 0 && *ptr != start + length as u64 {
-                    consider(start, length, *base);
+                    each(start, length, *base);
                     length = 0;
                 }
                 if length == 0 {
@@ -1094,8 +1088,30 @@ impl Device {
                 }
                 length += block.capacity;
             }
-            consider(start, length, *base);
+            each(start, length, *base);
         }
+    }
+
+    /// The most a capture on this pool could take as one block now: its largest free run.
+    fn pool_room(state: &State, pool: PoolId) -> usize {
+        let mut room = 0;
+        Self::pool_runs(state, pool, None, |_, length, _| room = room.max(length));
+        room
+    }
+
+    fn fit_pool(
+        state: &mut State,
+        pool: PoolId,
+        bytes: usize,
+        requested: usize,
+        stream: u64,
+    ) -> Option<u64> {
+        let mut best: Option<(u64, usize, u64)> = None;
+        Self::pool_runs(state, pool, Some(stream), |ptr, capacity, segment| {
+            if capacity >= bytes && best.is_none_or(|(_, n, _)| capacity < n) {
+                best = Some((ptr, capacity, segment));
+            }
+        });
         let (ptr, _, segment) = best?;
         let phase = state.phases.active.as_ref().map(|active| active.token);
         let end = ptr + bytes as u64;
@@ -2448,6 +2464,10 @@ pub fn pool_close(device: i32, id: PoolId) -> Result<()> {
     Ok(())
 }
 
+/// The pool mapped, with one free run of at least `bytes` for a capture: a block never spans two
+/// segments (`fit_pool`), so a pool that has no such run gets a whole new segment of `bytes`, never
+/// just the difference from its total (Klein's upsampler LM on a 4090, var-017: a 22 MiB pool grown
+/// to 42 MiB as 22 + 20 had no run for its second 16 MiB block). Returns the pool's mapped bytes.
 pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     if bytes != 0 {  // Zero is a use of a recorded pool: an LM's token, inside its eager phase.
         invalidate_eager_phase(device, "capture_preparation")?;
@@ -2456,7 +2476,7 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     let wanted = rounded(bytes, owner.page())?;
     let keep = Protect { pool: Some(pool), ..Default::default() };
     let scramble = bytes == 0 && checks::before_use(owner, device, pool)?;
-    {
+    let (unbacked, grow) = {
         let mut state = owner.lock()?;
         let session = state.pools.entry(pool).or_default();
         session.in_use = true;
@@ -2464,10 +2484,10 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
         if session.references == 0 {
             session.prepared = true;
         }
-    }
-    let (unbacked, total) = owner.lock()?.segments.values().filter(|s| s.pool == Some(pool))
-        .fold((0, 0), |(unbacked, total), s| (unbacked + s.unbacked(), total + s.bytes));
-    let need = wanted + unbacked;
+        let unbacked: usize = state.segments.values().filter(|s| s.pool == Some(pool)).map(Segment::unbacked).sum();
+        (unbacked, if wanted != 0 && Device::pool_room(&state, pool) < wanted { wanted } else { 0 })
+    };
+    let need = grow + unbacked;
     // A recording in no request, an idle period's, is a guess: it takes only room already free,
     // its own completed pages included, and asks nobody. Refused, the call stays eager.
     #[cfg(target_os = "linux")]
@@ -2478,9 +2498,8 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
     // recorded program is what runs from now on, and mapped beside them its pool summed with
     // them (SDXL uncapped on a 4090: a 2.7 GiB pool beside 3.7 GiB of eager pages, 11.6 GiB). At
     // idle no call is running that would reuse any of them, so they all go.
-    let fresh = unbacked + wanted.saturating_sub(total);
-    if bytes != 0 && fresh != 0 {
-        release_completed(device, if guess { usize::MAX } else { fresh }, usize::MAX, Some(pool))?;
+    if bytes != 0 && need != 0 {
+        release_completed(device, if guess { usize::MAX } else { need }, usize::MAX, Some(pool))?;
     }
     let reserve = || {
         let gate = crate::gate(device)?;
@@ -2489,10 +2508,15 @@ pub fn pool_reserve(device: i32, pool: PoolId, bytes: usize) -> Result<usize> {
         let _context = owner.driver().enter()?;
         let result = (|| -> crate::AllocationResult<usize> {
             let have = pool_back(owner, &mut state, pool)?;
-            if have < wanted {
-                owner.map(&mut state, wanted - have, Some(pool), 0)?;
+            if wanted == 0 {  // a replay's or a token's use: nothing to make room for
+                return Ok(have);
             }
-            Ok(have.max(wanted))
+            owner.poll(&mut state)?;  // a settled free joins its run
+            if Device::pool_room(&state, pool) >= wanted {
+                return Ok(have);
+            }
+            owner.map(&mut state, wanted, Some(pool), 0)?;
+            Ok(have + wanted)
         })();
         result.map_err(|failure| owner.fail_allocation(&mut state, failure))
     };

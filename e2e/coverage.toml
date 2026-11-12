@@ -189,10 +189,12 @@ test = "pr: a weightless request; BiRefNet on the CPU"
 "--attention-kernel" = "gate: cli cells"
 "--lora" = "gate: cli cells"
 "--output" = "pr: the CLI in a folder Calcifer can't see: a script's still, downloaded by its digest (-o)"
+"--previews" = "pr: previews: a denoise loop on the CPU, its previews saved while it runs"
 ["run watch"]
 test = "pr: a run followed, a snapshot, a cancel"
 "--once" = "pr: a run followed, a snapshot, a cancel"
 "--output" = "pr: a tool: a Latents result stays on its machine, any other file comes down (-o)"
+"--previews" = "pr: previews: the run followed again, its previews saved"
 ["run ls"]
 test = "pr: run ls filters"
 "--state" = "pr: run ls filters"
@@ -222,11 +224,9 @@ test = "pr: entrypoints, local authenticated URL and expiry; web-serves redeems 
 "--directory" = "pr: projectvault: convert and rekey from outside the backing folder"
 
 ["vault encrypt"]
-test = "pr: projectvault: conversion preserves mounted media and logical state"
+test = "pr: projectvault: conversion preserves mounted media and logical state; an interrupted one is recovered; nothing is left outside the vault"
 "--passphrase-file" = "pr: projectvault: conversion reads its credential file"
 "--recovery-out" = "pr: projectvault: recovery is saved outside storage; unsafe destination refuses"
-"--remove-plaintext" = "pr: projectvault: deprecated removal flag remains compatible; removal is the default"
-"--preserve-plaintext" = "pr: projectvault: explicit opt-out retains and reports the verified original"
 "--idle" = "pr: projectvault: conversion disables idle expiry"
 "--max-duration" = "pr: projectvault: returned absolute expiry is within the submitted clock interval"
 

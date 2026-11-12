@@ -24,6 +24,7 @@ pub(crate) mod fetch;
 mod follow;
 pub(crate) mod list;
 pub(crate) mod live;
+mod previews;
 mod watch;
 
 /// `cozy run --help`'s examples: a YAML request file first, inline inputs as overrides.
@@ -91,6 +92,9 @@ struct RunArgs {
     /// Download outputs to this directory.
     #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
     output: Option<PathBuf>,
+    /// Save previews of what it's making to this directory while it runs.
+    #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
+    previews: Option<PathBuf>,
 }
 
 impl RunArgs {
@@ -155,6 +159,9 @@ enum Verb {
         /// Download outputs to this directory.
         #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
         output: Option<PathBuf>,
+        /// Save previews of what it's making to this directory while it runs.
+        #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
+        previews: Option<PathBuf>,
     },
     /// Cancel a queued or running run.
     Cancel {
@@ -190,7 +197,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             let query = list::Query { status: state, package, machine: on, project, before: None, limit };
             list::exec(ctx, query).await
         }
-        Some(Verb::Watch { run, once, output }) => watch::exec(ctx, &run, once, output.as_deref()).await,
+        Some(Verb::Watch { run, once, output, previews }) => watch::exec(ctx, &run, once, output.as_deref(), previews.as_deref()).await,
         Some(Verb::Cancel { run }) => {
             let calcifer = ctx.calcifer().await?;
             let mut run = calcifer.run(&run).await?;
@@ -244,7 +251,7 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
         }
     }
     let ask = request(ctx, &args, target.clone(), code.clone(), &cwd, within.clone()).await?;
-    match send(ctx, ask, package.as_deref()).await {
+    match send(ctx, ask, package.as_deref(), args.previews.as_deref()).await {
         // A package's functions, when the run names none and gives it nothing.
         Err(e) if e.code == "function_unnamed" && !inputs => functions(ctx, &target, code.as_ref(), args.on.as_deref(), Some(&within)).await,
         Err(e) => Err(e),
@@ -390,7 +397,7 @@ fn capture(ctx: &Context, spec: &str, cwd: &Path) -> Result<String, Error> {
 /// code not yet ready on its machine is installed first: that run is followed, then the same
 /// request goes again under the same key. The uv.lock Calcifer made for local code goes into its
 /// `package` folder, as `cargo run` writes Cargo.lock (cl-871).
-async fn send(ctx: &Context, ask: RunRequest, package: Option<&Path>) -> Result<Run, Error> {
+async fn send(ctx: &Context, ask: RunRequest, package: Option<&Path>, previews: Option<&Path>) -> Result<Run, Error> {
     let key = follow::mint_key();
     loop {
         let submitted = follow::submit_request(ctx, &ask, &key).await?;
@@ -401,7 +408,7 @@ async fn send(ctx: &Context, ask: RunRequest, package: Option<&Path>) -> Result<
             output::say(ctx, &format!("wrote {}", path.display()));
         }
         if !submitted.preparing {
-            return follow(ctx, submitted.run).await;
+            return previewed(ctx, submitted.run, previews).await;
         }
         let install = follow::settle(ctx, submitted.run).await?;
         if !settled(&install) {
@@ -409,6 +416,19 @@ async fn send(ctx: &Context, ask: RunRequest, package: Option<&Path>) -> Result<
             return Ok(install);
         }
     }
+}
+
+/// Follows `run`, saving its previews into `previews` meanwhile when asked (`--previews`).
+pub(crate) async fn previewed(ctx: &Context, run: Run, previews: Option<&Path>) -> Result<Run, Error> {
+    let saving = match previews {
+        Some(dir) => Some(previews::Saving::start(ctx.calcifer().await?, &run, dir)?),
+        None => None,
+    };
+    let ended = follow(ctx, run).await;
+    if let Some(saving) = saving {
+        saving.end(ctx);
+    }
+    ended
 }
 
 /// `GET /v1/targets`: the target's function's contract, or its package's functions.

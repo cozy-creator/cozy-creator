@@ -27,7 +27,8 @@ use api::{
     error::{Envelope, Kind},
     machine::{
         EstimateAnswer, EstimateRequest, Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
-        RunBatch, RunBatchAnswer, RunEvent, RunList, RunRequest, RunState, SERVER_NAME, StatusFrame, capability, parse_held, path,
+        PREVIEW_STEP, RunBatch, RunBatchAnswer, RunEvent, RunList, RunRequest, RunState, SERVER_NAME, StatusFrame, capability, parse_held,
+        path,
     },
 };
 
@@ -106,6 +107,15 @@ pub(crate) struct Machine {
 
 /// What a ranged `GET` of an output answered: the revision, the output's whole length, the
 /// range its body carries (`[first, end)`), and the bytes.
+/// A run's newest preview, as its machine answered it: its `ETag`, its step (`<position>/<total>`)
+/// and its picture.
+pub(crate) struct Preview {
+    pub tag: String,
+    pub step: String,
+    pub media_type: String,
+    pub body: Bytes,
+}
+
 pub(crate) struct Output {
     pub rev: u64,
     pub length: u64,
@@ -249,6 +259,21 @@ impl Machine {
                 Err(e) => Some(Err(e)),
             }
         }))
+    }
+
+    /// The run's newest preview (`path::PREVIEW`); none while it has none. Asking keeps the machine
+    /// making them for a while.
+    pub(crate) async fn preview(&self, id: &str) -> Result<Option<Preview>, Error> {
+        let response = send(self.request(Method::GET, path::PREVIEW, &[id])).await?;
+        if response.status() == StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+        let text = |name: &str| {
+            response.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned()
+        };
+        let (tag, step, media_type) = (text("etag"), text(PREVIEW_STEP), text("content-type"));
+        let bytes = response.bytes().await.map_err(transport)?;
+        Ok(Some(Preview { tag, step, media_type, body: bytes }))
     }
 
     /// Cancels the run; an id the machine never received is recorded canceled.

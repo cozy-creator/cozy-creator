@@ -70,7 +70,6 @@ class Payload(TypedDict, total=False):
     id: str
     project: Project
     recovery_secret: str | None
-    preserved_source: str | None
     idle_timeout_s: int
     warnings: list[Warning]
     stopping: bool
@@ -964,28 +963,18 @@ foreach ($rule in $allowed) {
         self.cell('sigterm_drains_then_exits_gracefully_and_reopens_unchanged_media')
         return reopened
 
-    def preservation_policy(self, password: Path) -> None:
-        directory = self.out / 'explicit-preservation'
-        made = self.command('new', '--unencrypted', directory)
+    def source_policy(self, password: Path) -> None:
+        directory = self.out / 'source-removal'
+        self.command('new', '--unencrypted', directory)
         payload = directory / 'retained-source.txt'
-        payload.write_bytes(b'Synthetic verified preservation payload')
+        payload.write_bytes(b'Synthetic verified source payload')
         digest = self.digest(payload)
         refused = self.command('vault', '--directory', directory, 'encrypt', '--passphrase-file', password,
-                               '--preserve-plaintext', '--remove-plaintext', refusal=True)
+                               '--preserve-plaintext', refusal=True)
         assert refused.returncode != 0 and payload.is_file()
         status = self.command('vault', '--directory', directory, 'status')
         assert status['state'] == 'plain' and not status['encrypted']
-        self.cell('conflicting_source_flags_refuse_before_conversion')
-        try:
-            self.request('POST', '/v1/projects/' + made['id'] + '/vault',
-                         body={'action': 'encrypt', 'passphrase': password.read_text().strip(),
-                               'remove_plaintext': True, 'preserve_plaintext': True})
-        except RuntimeError as error:
-            assert 'vault_source_policy' in str(error)
-        else:
-            raise AssertionError('conflicting API source policies changed storage')
-        assert self.digest(payload) == digest and not (directory / 'project.vault.keys.json').exists()
-        self.cell('conflicting_api_source_policy_keeps_plaintext')
+        self.cell('no_flag_keeps_an_unencrypted_copy')
         if os.name != 'nt':
             outside = self.out / 'unrelated-source.txt'
             outside.write_bytes(b'Synthetic unrelated file')
@@ -998,29 +987,24 @@ foreach ($rule in $allowed) {
                 assert self.digest(payload) == digest and outside.read_bytes() == b'Synthetic unrelated file'
                 assert not (directory / 'project.vault.keys.json').exists()
                 assert not self.recovery('refused-source').exists()
-                self.cell('failed_conversion_keeps_the_good_plaintext_source')
+                assert not list(self.out.glob('.cozy-vault-*'))
+                self.cell('failed_conversion_keeps_the_good_plaintext_source_and_no_stage')
             finally:
                 link.unlink()
                 outside.unlink()
         before = set(self.out.glob('.cozy-project-source-*'))
-        kept = self.command('vault', '--directory', directory, 'encrypt', '--passphrase-file', password,
-                            '--recovery-out', self.recovery('preserved-source'), '--preserve-plaintext', '--idle', 0)
-        self.check_recovery('preserved-source')
-        source = kept.get('preserved_source')
-        assert source
-        preserved = Path(source)
-        added = set(self.out.glob('.cozy-project-source-*')) - before
-        assert len(added) == 1 and preserved.samefile(next(iter(added)))
-        assert self.digest(preserved / payload.name) == digest
-        assert self.digest(self.view(kept) / payload.name) == digest
-        assert not payload.exists()
+        encrypted = self.command('vault', '--directory', directory, 'encrypt', '--passphrase-file', password,
+                                 '--recovery-out', self.recovery('removed-source'), '--idle', 0)
+        self.check_recovery('removed-source')
+        assert self.digest(self.view(encrypted) / payload.name) == digest
+        assert not payload.exists() and set(self.out.glob('.cozy-project-source-*')) == before
+        assert not list(self.out.glob('.cozy-vault-*'))
         self.command('vault', '--directory', directory, 'lock')
         self.shutdown()
         status = self.command('vault', '--directory', directory, 'status')
         assert status['encrypted'] and status['state'] == 'locked'
-        assert self.digest(preserved / payload.name) == digest
-        self.cell('explicit_preservation_keeps_and_reports_the_original_after_restart')
-        shutil.rmtree(preserved)
+        assert set(self.out.glob('.cozy-project-source-*')) == before
+        self.cell('encryption_removes_the_original_and_its_stage')
 
     def open_in_tty(self, passwords: list[str] | None, environment: dict[str, str], *options: str,
                     command: tuple[str, ...] = ('open',)) -> tuple[int, str, str]:
@@ -1277,7 +1261,7 @@ foreach ($rule in $allowed) {
         before = self.yaml()
         unsafe_backing = self.project / 'unsafe-recovery.txt'
         refused = self.vault('encrypt', '--passphrase-file', initial, '--recovery-out', unsafe_backing,
-                             '--remove-plaintext', '--idle', 0, refusal=True)
+                             '--idle', 0, refusal=True)
         assert json.loads(refused.stdout)['error']['code'] == 'vault_recovery_location'
         assert not unsafe_backing.exists()
         unchanged = self.status()
@@ -1441,12 +1425,10 @@ foreach ($rule in $allowed) {
         self.cell('decrypted_folder_copy_opens_with_its_own_identity')
         sources_before = set(self.out.glob('.cozy-project-source-*'))
         copied_encrypted = self.request('POST', '/v1/projects/' + copied['id'] + '/vault',
-                                       body={'action': 'encrypt', 'passphrase': rekey.read_text().strip(),
-                                             'remove_plaintext': False, 'idle_timeout_s': 0})
+                                       body={'action': 'encrypt', 'passphrase': rekey.read_text().strip(), 'idle_timeout_s': 0})
         copied_encrypted.pop('recovery_secret', None)
-        assert not copied_encrypted.get('preserved_source')
         assert set(self.out.glob('.cozy-project-source-*')) == sources_before
-        self.cell('legacy_false_removes_verified_plaintext')
+        self.cell('api_encryption_removes_verified_plaintext')
         copied_view = self.view(copied_encrypted)
         assert self.command('status', cwd=copied_path, full=True)['project']['id'] == copied['id']
         assert self.yaml(copied['id']) == copied_state
@@ -1461,7 +1443,6 @@ foreach ($rule in $allowed) {
                                  '--recovery-out', self.recovery('recovery4'))
         assert reencrypted['vault']['idle_timeout_s'] == 1800
         self.cell('default_idle_is_thirty_minutes_and_explicit_zero_is_preserved')
-        assert not reencrypted.get('preserved_source')
         assert set(self.out.glob('.cozy-project-source-*')) == sources_before
         self.check_recovery('recovery4')
         view = self.view(reencrypted)
@@ -1474,7 +1455,7 @@ foreach ($rule in $allowed) {
         assert file_modes['reencrypted'] == write_mode
         self.cell('file_permissions_survive_decrypt_and_reencrypt')
         self.vault('lock', allow_locking=True)
-        self.preservation_policy(rekey)
+        self.source_policy(rekey)
         self.shutdown()
         self.receipt['reencrypted_files_scanned'] = self.scan(self.project)
         self.receipt['reencrypted_global_files_scanned'] = self.scan(self.home, credentials=True)

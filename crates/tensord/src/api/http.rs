@@ -72,6 +72,7 @@ fn routes() -> Router<Machine> {
         .route(path::EVENTS, get(events))
         .route(path::CANCEL, post(cancel))
         .route(path::OUTPUT, get(output))
+        .route(path::PREVIEW, get(preview))
         .route(path::LOG, get(log))
         .route(path::OBJECT, put(put_object).get(follow_object))
         .route(path::OBJECTS_HELD, post(held_objects).layer(DefaultBodyLimit::max(16 << 20)))
@@ -485,6 +486,31 @@ async fn cancel(State(m): State<Machine>, Path(id): Path<String>, headers: Heade
         return Ok(json(StatusCode::OK, &super::machine_update::cancel(&m.identity, &id).await?));
     }
     Ok(json(StatusCode::OK, &m.call(move |runs| runs.cancel(actor, &id)).await?))
+}
+
+/// `GET /v1/runs/{id}/preview`: the run's newest preview, `ETag: "p<n>"`; 204 while it has none.
+/// Each ask keeps its executor making them for a while (cr-282).
+async fn preview(State(m): State<Machine>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+    let caller = m.caller(&headers)?;
+    caller.run(&id, None)?;
+    run_id(&id)?;
+    let actor = caller.actor;
+    let Some(preview) = m.call(move |runs| runs.preview(actor, &id)).await? else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+    let tag = format!("\"p{}\"", preview.n);
+    let held = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok());
+    if held.is_some_and(|held| held.split(',').any(|t| t.trim() == tag)) {
+        return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, tag)]).into_response());
+    }
+    let step = format!("{}/{}", preview.position, preview.total);
+    let headers = [
+        (header::CONTENT_TYPE, preview.media_type.clone()),
+        (header::ETAG, tag),
+        (header::CACHE_CONTROL, "no-store".to_owned()),
+        (header::HeaderName::from_static(v1::PREVIEW_STEP), step),
+    ];
+    Ok((StatusCode::OK, headers, preview.bytes.clone()).into_response())
 }
 
 #[derive(Deserialize)]

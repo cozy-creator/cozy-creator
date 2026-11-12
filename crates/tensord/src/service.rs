@@ -647,7 +647,7 @@ impl Service {
         let choosing = pool.width() > 1 && source_ready.iter().any(crate::estimate::chooses);
         let widths = match choosing {
             true => crate::estimate::widths(self, &pool).unwrap_or_else(|error| {
-                tracing::warn!("the queue was not packed, so its roots run as wide as they go: {error}");
+                tracing::warn!("the queue was not packed, so its roots run at their narrowest: {error}");
                 Default::default()
             }),
             false => Default::default(),

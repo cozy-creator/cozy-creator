@@ -194,6 +194,10 @@ approved?: number | null,
  */
 pinned?: boolean,
 /**
+ * A person starred it, to find it again (cl-892): `starred: true` in its fields, which `PATCH` sets. Never part of its key.
+ */
+starred?: boolean,
+/**
  * Its memo key's inputs now; None while something it reads has no state.
  */
 inputs?: string | null,
@@ -726,6 +730,10 @@ lanes: Array<string>, private: boolean,
  */
 author: ModelAuthor | null,
 /**
+ * Its owner's recommended LoRA strength, when provided; not applied by a render automatically.
+ */
+strength?: number | null,
+/**
  * What its header says it is. None: it couldn't be read.
  */
 kind?: ModelContentKind | null,
@@ -759,7 +767,11 @@ export type Gpu = { index: number, name: string, memory_bytes: number, driver: s
 /**
  * The most of `memory_bytes` the machine uses; 0: all of it.
  */
-memory_limit_bytes?: number, };
+memory_limit_bytes?: number,
+/**
+ * It draws a screen now: a render on it makes the screen lag.
+ */
+display?: boolean, };
 
 /**
  * `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.
@@ -1066,7 +1078,16 @@ at?: string, };
 /**
  * One machine as Calcifer knows it: its kind, state, address, rental, latest status and runs.
  */
-export type Machine = { name: string, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null,
+export type Machine = {
+/**
+ * A rental's name is its host's, as its Hub names it once it places it there (Paul 11-12: one host, one name).
+ */
+name: string,
+/**
+ * What a rental is said as, in its name's place, until its Hub names the host it's placed on: `Renting an RTX 4090…`.
+ * Its name meanwhile is a handle, never shown. Placed again on another host, it's said so again until that host's word.
+ */
+placeholder?: string | null, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null,
 /**
  * The name it had before its Hub named it; it keeps resolving.
  */
@@ -1110,7 +1131,7 @@ boot?: string | null,
  */
 attempt?: Attempt | null,
 /**
- * Calcifer's runs on it.
+ * Calcifer's function runs on it, its GPUs' work: installs, downloads, updates and removals aren't counted (cl-889).
  */
 running: number, queued: number,
 /**
@@ -1954,7 +1975,12 @@ export type Progress = { stage: string, fraction?: number | null,
 /**
  * How far this stage is, when it says.
  */
-stage_fraction?: number | null, completed: number, total: number, bytes_done: number, bytes_total: number, step_ms: number,
+stage_fraction?: number | null, completed: number, total: number,
+/**
+ * What `completed` counts: empty for steps, `tokens` for a decode's, whose `total` is only
+ * its cap: a count, never a share of it.
+ */
+unit?: string, bytes_done: number, bytes_total: number, step_ms: number,
 /**
  * The stage's steady step time: the median of its last five steps after the first; 0 before
  * its second.
@@ -1985,7 +2011,12 @@ eta_confidence?: number | null,
 /**
  * What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
  */
-eta_basis?: EtaBasis | null, };
+eta_basis?: EtaBasis | null,
+/**
+ * The number of its newest preview of what it's making (`GET /v1/runs/{id}/preview`), from 1;
+ * none until its machine made one for a client asking.
+ */
+preview?: number | null, };
 
 /**
  * `GET /v1/projects/{id}/address`: project identity without evaluating its assets; accepts a containing directory.
@@ -2516,6 +2547,15 @@ waiting?: string | null,
  */
 progress?: Progress | null,
 /**
+ * With `?detail=full`: verified video segment frame ranges and published completion, when available.
+ */
+video_progress?: VideoProgress | null,
+/**
+ * Live, once it ended: its results coming here (`downloading the result`), their bytes in
+ * place of all of them, their rate and the time that leaves, until they land.
+ */
+arriving?: Progress | null,
+/**
  * A run waiting for its turn: its place in its machine's line (1 is next: only the work
  * running is ahead of it), or among the runs waiting for a machine to be chosen.
  */
@@ -2573,7 +2613,7 @@ seed?: number | null, };
 /**
  * One event of a run's stream.
  */
-export type RunEvent = { "type": "run.created", sequence_number: number, run: Run, } | { "type": "run.queued", sequence_number: number, run: Run, } | { "type": "run.in_progress", sequence_number: number, run: Run, } | { "type": "run.completed", sequence_number: number, run: Run, } | { "type": "run.failed", sequence_number: number, run: Run, } | { "type": "run.canceled", sequence_number: number, run: Run, } | { "type": "output_item.added", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.delta", sequence_number: number, output_index: number, item_id: string, rev: number, length: number, appended_from?: number | null, checkpoint?: CheckpointRef | null, } | { "type": "output_item.done", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.landed", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "run.log", sequence_number: number, at_ms: number, level: string, text: string, } | { "type": "run.call", sequence_number: number, call: Call, } | { "type": "run.progress", progress: Progress, } | { "type": "run.waiting", reason: string, };
+export type RunEvent = { "type": "run.created", sequence_number: number, run: Run, } | { "type": "run.queued", sequence_number: number, run: Run, } | { "type": "run.in_progress", sequence_number: number, run: Run, } | { "type": "run.completed", sequence_number: number, run: Run, } | { "type": "run.failed", sequence_number: number, run: Run, } | { "type": "run.canceled", sequence_number: number, run: Run, } | { "type": "output_item.added", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.delta", sequence_number: number, output_index: number, item_id: string, rev: number, length: number, appended_from?: number | null, checkpoint?: CheckpointRef | null, } | { "type": "output_item.done", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.landed", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "run.log", sequence_number: number, at_ms: number, level: string, text: string, } | { "type": "run.call", sequence_number: number, call: Call, } | { "type": "run.progress", progress: Progress, } | { "type": "run.waiting", reason: string, } | { "type": "run.arriving", progress: Progress, };
 
 /**
  * A run's id: the caller's id on the machine (`RunRequest.id`), the same in Calcifer, the CLI
@@ -2717,7 +2757,7 @@ export type RunStatus = "queued" | "in_progress" | "completed" | "failed" | "can
 /**
  * `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
  * only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
- * is settled; `on` lists the machines they may go to.
+ * is settled; `on` lists the machines they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
  */
 export type Runs = { names: Array<string>, n: number, on: Array<On>,
 /**
@@ -2969,7 +3009,11 @@ pickup?: Snap | null,
 /**
  * What a checkpoint dropped on its box goes on: the one model its function runs.
  */
-model?: ToolModel | null, };
+model?: ToolModel | null,
+/**
+ * Every declared model slot, including the full paths of slots in child calls.
+ */
+models?: Array<ToolModel>, };
 
 /**
  * One thing a box asks for: a field of its tool's struct.
@@ -3066,7 +3110,7 @@ bytes: number,
 here?: boolean, };
 
 /**
- * Your own tools, the same in every project: these packages' media functions, less `without`, by a tool's `id`. Installing has nothing to do with it.
+ * Your changes to the tools, the same in every project: these packages beside what the Hub lists, and `without`, tools taken off, by a tool's `id`. Installing has nothing to do with it.
  */
 export type ToolList = { packages: Array<string>, without?: Array<string>, };
 
@@ -3090,7 +3134,19 @@ default?: string | null,
 /**
  * That checkpoint's family, as its header says.
  */
-family?: string | null, };
+family?: string | null,
+/**
+ * The kind of checkpoint this slot names by default, verified from its catalog or header.
+ */
+kind?: ModelKind | null,
+/**
+ * The model class declared by the package; absent when an older interface did not name it.
+ */
+class?: string | null,
+/**
+ * This slot reads raw weights rather than constructing a model.
+ */
+weights?: boolean, };
 
 /**
  * `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
@@ -3135,7 +3191,7 @@ detail: string, };
  */
 export type Tools = { tools: Array<Tool>,
 /**
- * Why the list holds only what's installed: the Hub didn't answer.
+ * Why the list holds only what's installed, or the Hub's as last read: the Hub didn't answer.
  */
 note?: string | null, };
 
@@ -3189,20 +3245,12 @@ target: string, warnings?: Array<string>, };
 /**
  * POST /v1/projects/{id}/vault. Credentials are deliberately not Debug; neither the request nor its response is cached in history.
  */
-export type VaultAsk = { action: string, passphrase?: string | null, recovery_secret?: string | null, idle_timeout_s?: number | null, max_duration_s?: number | null,
-/**
- * Legacy removal flag. Verified source removal is now the default; false does not preserve it.
- */
-remove_plaintext: boolean,
-/**
- * Explicitly keep the original plaintext after a verified encrypt conversion. Not valid for rekey/decrypt.
- */
-preserve_plaintext?: boolean, };
+export type VaultAsk = { action: string, passphrase?: string | null, recovery_secret?: string | null, idle_timeout_s?: number | null, max_duration_s?: number | null, };
 
 /**
  * A vault operation can disclose a new recovery secret exactly to the caller. Do not persist this response in request/history caches.
  */
-export type VaultChanged = { vault: VaultStatus, recovery_secret?: string | null, preserved_source?: string | null,
+export type VaultChanged = { vault: VaultStatus, recovery_secret?: string | null,
 /**
  * The project's runs a lock canceled first, by number.
  */
@@ -3258,7 +3306,11 @@ execution_ms?: number | null,
 /**
  * The words it was made from.
  */
-text?: string | null, };
+text?: string | null,
+/**
+ * Its saved editable inputs, before prompt binding, including model choices; absent when unknown.
+ */
+fields?: { [key in string]: JsonValue } | null, };
 
 /**
  * `DELETE /v1/projects/{id}/assets/{name}/versions/{number}` and `POST …/versions`: a version discarded, or joined.
@@ -3336,6 +3388,29 @@ without?: Array<string>,
  * An Edit's: the clips that made this version, which an edit can carry on from.
  */
 timeline?: TimelineNow | null, };
+
+/**
+ * A video's verified segment plan and the completed prefix, in absolute shot frames.
+ */
+export type VideoProgress = { fps: number,
+/**
+ * Frames kept from an earlier video; no computation is claimed for them in this run.
+ */
+resumed_at: number,
+/**
+ * End of the published completed prefix, including the frames kept before this run.
+ */
+completed_frames: number, segments: Array<VideoSegmentProgress>, };
+
+/**
+ * One actual generated segment; a segment may overlap several authored beats.
+ */
+export type VideoSegmentProgress = { from_frame: number, to_frame: number, status: VideoSegmentStatus, };
+
+/**
+ * Completed means this segment's output was published, not an estimated elapsed share.
+ */
+export type VideoSegmentStatus = "pending" | "in_progress" | "completed";
 
 /**
  * One member of this controller's warm set on the machine.

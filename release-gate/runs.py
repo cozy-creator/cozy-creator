@@ -144,7 +144,7 @@ class VarenaStats(TypedDict, total=False):
     host: int | None
     working_splits: list[WorkingSplit] | None
     swallowed_ooms: int | None
-    finer_splits: int | None
+    retries: int | None
     retained_bytes: int | None
     escaped: list[EscapedLoop] | None
 

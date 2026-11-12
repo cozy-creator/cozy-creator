@@ -15,7 +15,7 @@ use crate::{
 /// The kinds of file a box can be.
 pub const MEDIA: [&str; 3] = ["image", "video", "audio"];
 /// The platform's words on any box, whatever made it: no tool's field goes by one.
-pub const PLATFORM: [&str; 6] = ["tool", "approved", "description", "models", "lora", "text"];
+pub const PLATFORM: [&str; 9] = ["tool", "approved", "description", "models", "lora", "text", "node_kind", "selected_version", "starred"];
 
 /// The Edit: what Calcifer makes itself, free, with no machine.
 pub const EDIT: &str = "cozy/edit";
@@ -25,12 +25,12 @@ pub const EDIT: &str = "cozy/edit";
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Tools {
     pub tools: Vec<Tool>,
-    /// Why the list holds only what's installed: the Hub didn't answer.
+    /// Why the list holds only what's installed, or the Hub's as last read: the Hub didn't answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
-/// Your own tools, the same in every project: these packages' media functions, less `without`, by a tool's `id`. Installing has nothing to do with it.
+/// Your changes to the tools, the same in every project: these packages beside what the Hub lists, and `without`, tools taken off, by a tool's `id`. Installing has nothing to do with it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ToolList {
@@ -109,6 +109,9 @@ pub struct Tool {
     /// What a checkpoint dropped on its box goes on: the one model its function runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ToolModel>,
+    /// Every declared model slot, including the full paths of slots in child calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ToolModel>,
 }
 
 /// The model a tool runs.
@@ -123,6 +126,15 @@ pub struct ToolModel {
     /// That checkpoint's family, as its header says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
+    /// The kind of checkpoint this slot names by default, verified from its catalog or header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::model_ref::ModelKind>,
+    /// The model class declared by the package; absent when an older interface did not name it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// This slot reads raw weights rather than constructing a model.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub weights: bool,
 }
 
 /// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
@@ -231,15 +243,15 @@ pub struct ToolField {
     pub max_items: Option<u64>,
 }
 
-/// The Edit as a tool, listed before any function: clips on a track, rendered here.
+/// Timeline, the built-in video composition tool: clips on a track, rendered here.
 pub fn edit() -> Tool {
     Tool {
         id: EDIT.to_owned(),
         package: "cozy".to_owned(),
         function: "edit".to_owned(),
         release: String::new(),
-        name: "Edit".to_owned(),
-        label: "Edit".to_owned(),
+        name: "Video Timeline".to_owned(),
+        label: "Video Timeline".to_owned(),
         package_title: "Cozy".to_owned(),
         makes: "video".to_owned(),
         description: "Put videos and stills together into one video, free, with no machine".to_owned(),
@@ -248,7 +260,8 @@ pub fn edit() -> Tool {
         ui: None,
         pickup: None,
         model: None,
-        fields: vec![ToolField { field: "timeline".to_owned(), ty: FieldType::Timeline, label: "Edit".to_owned(), ..ToolField::default() }],
+        models: vec![],
+        fields: vec![ToolField { field: "timeline".to_owned(), ty: FieldType::Timeline, label: "Video Timeline".to_owned(), ..ToolField::default() }],
     }
 }
 
@@ -295,6 +308,12 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
     let package = shown(package);
     let default = |field: &Field| callable.invocable.defaults.get(&format!("request/{}", field.name)).cloned().or_else(|| field.default.clone());
     let drawn = callable.request.fields.iter().filter(|field| !PLATFORM.contains(&field.name.as_str()));
+    let called = interface.call_slots(callable);
+    let mut seen = std::collections::BTreeSet::new();
+    let models = callable.models.iter().map(|slot| (&slot.param, slot))
+        .chain(called.iter().map(|slot| (&slot.path, *slot)))
+        .filter(|(key, _)| seen.insert((*key).clone()))
+        .map(|(key, slot)| model_slot(key, slot)).collect();
     Some(Tool {
         id: format!("{package}/{}", callable.name),
         name: box_name(&package, callable),
@@ -310,12 +329,20 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
         fields: drawn.filter_map(|field| field_of(field, default(field))).collect(),
         ui: declared.ui.clone(),
         pickup: pickup(&callable.request),
-        model: choices::main_model(&callable.models, &interface.call_slots(callable)).map(|slot| ToolModel {
-            slot: slot.param.clone(),
-            default: slot.default.clone(),
-            family: None,
-        }),
+        model: choices::main_model(&callable.models, &called).map(|slot| model_slot(&slot.param, slot)),
+        models,
     })
+}
+
+fn model_slot(key: &str, slot: &crate::interface::Slot) -> ToolModel {
+    ToolModel {
+        slot: key.to_owned(),
+        default: slot.default.clone(),
+        family: None,
+        kind: None,
+        class: (!slot.class.is_empty()).then(|| slot.class.clone()),
+        weights: slot.weights,
+    }
 }
 
 /// The frames a pickup of `request` may land on, when it takes one.

@@ -67,7 +67,10 @@ REPO, TAG = 'cozy-creator/cozy-creator', 'release-gate-baselines'
 MEDIA = ('video', 'image', 'audio')  # a run's judged output: its first file of the first of these kinds it has
 NUMBERS = ('total_ms', 'execution_ms', 'step1_ms', 'to_step1_ms', 'steady_ms', 'denoise_ms', 'steps', 'vram_mib', 'proc_mib', 'host_low_mib',
            'fills', 'evictions', 'refilled_gib', 'replays', 'clock_mhz', 'clock_limit_mhz', 'throttled', 'temperature_c', 'power_w',
-           'fork_ms', 'cuda_init_ms', 'package_import_ms')
+           'fork_ms', 'cuda_init_ms', 'package_import_ms', 'decode_ms')
+#: A group's video decode at most this share of its one-GPU twin's: H3 spreads its VAE clips over the group's GPUs
+#: (`accel.spread`), so one that decodes the whole video on every GPU fails (cr-268).
+DECODE_SHARE = 0.75
 
 
 class Transport(TypedDict):
@@ -270,6 +273,8 @@ def metrics(run: Run, memavail: list[tuple[int, int]], held_mib: int = 0) -> Met
     began, ended = rec.get('created_at_ms'), rec.get('settled_at_ms')
     calls = rec.get('calls') or []
     memo = (['run'] if (rec.get('memo') or {}).get('memoized') else []) + [c.get('function') or '?' for c in calls if c.get('memoized')]
+    decodes = [float(v.get('total_ms') or 0.0) for m in run.measurements
+               for k, v in ((m.get('attribution') or {}).get('stages') or {}).items() if k == 'decode_video']
     n: dict[str, float | None] = {
         'total_ms': ended - began if began and ended else None, 'execution_ms': run.execution_ms,
         'step1_ms': round(s[0]) if s else None, 'to_step1_ms': run.to_step1_ms,
@@ -289,6 +294,7 @@ def metrics(run: Run, memavail: list[tuple[int, int]], held_mib: int = 0) -> Met
         'throttled': max((r.get('throttled_share') or 0.0 for r in rows), default=None),
         'temperature_c': max((r.get('temperature_max_c') or 0.0 for r in rows), default=None),
         'power_w': max((r.get('power_max_w') or 0.0 for r in rows), default=None),
+        'decode_ms': sum(decodes) if decodes else None,
     }
     if n['host_low_mib'] is not None:
         n['host_low_mib'] = n['host_low_mib'] // 1024
@@ -541,6 +547,10 @@ def judge(defs: list[CellDef], cand: Gate, base: Group | None, version: str | No
                 for k in ('total_ms', 'denoise_ms'):
                     if k in w and k in one['warm'] and w[k] >= one['warm'][k]:
                         v.why.append(f"{k[:-3]} {w[k] / 1000:.1f} s does not beat {d['beats']}'s {one['warm'][k] / 1000:.1f} s on one GPU")
+                # Decode splits across a group, never whole on every GPU.
+                if 'decode_ms' in w and 'decode_ms' in one['warm'] and w['decode_ms'] > one['warm']['decode_ms'] * DECODE_SHARE:
+                    v.why.append(f"decode {w['decode_ms'] / 1000:.1f} s is over {DECODE_SHARE:.0%} of {d['beats']}'s "
+                                 f"{one['warm']['decode_ms'] / 1000:.1f} s on one GPU: not split across the group")
         clock = 1.0
         if b and b['n'] and c['n']:
             bw = b['warm']

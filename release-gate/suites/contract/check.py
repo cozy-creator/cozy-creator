@@ -5,7 +5,7 @@ the records the other suites made and runs nothing. A cell fails on
 - a swallowed OOM (`oom_swallowed` warning, `swallowed_ooms`);
 - a thread the package started itself (`contract_thread` warning);
 - cross-step state left as plain tensors in a run that also declared `author.retained` (a partial port).
-A Runtime Retry (`finer_splits`) and a decode through Transformers' loop (a model `lm` does not serve yet) are notes.
+A Runtime Retry (`retries`: a finer split, an LM token decoded eagerly) and a decode through Transformers' loop (a model `lm` does not serve yet) are notes.
     check.py <gate dir>     the same verdict alone"""
 import json, os, re, sys
 from typing import TypedDict
@@ -66,9 +66,9 @@ def judge(out: str, cell: str, run: Run) -> tuple[list[str], list[str]]:
     swallowed = sum(r.get('swallowed_ooms') or 0 for r in rows)
     if swallowed and not any(k == 'oom_swallowed' for k, _ in warnings(out, cell)):
         fails.append(f'{cell}: run {run.number} returned past {swallowed} refused allocation(s)')
-    retried = sum(r.get('finer_splits') or 0 for r in rows)
+    retried = sum(r.get('retries') or 0 for r in rows)
     if retried:
-        notes.append(f'{cell}: {retried} Runtime split(s) ran again finer: an estimate to fix')
+        notes.append(f'{cell}: {retried} Runtime Retr(ies) answered a refusal: an estimate to fix')
     if any(r.get('retained_bytes') for r in rows):
         for loop in (l for r in rows for l in r.get('escaped') or [] if isinstance(l, dict)):
             if (loop.get('escaped_peak_bytes') or 0) > PARTIAL:

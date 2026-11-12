@@ -1,6 +1,7 @@
 import type { ToolField, MainFile, Tool } from "../api/calcifer"
 import type { Media } from "../types"
 import type { ElementView } from "./CanvasStore"
+import type { Box } from "./graph"
 
 /** The file a card shows, and where it came from. */
 export interface Shown extends MainFile {
@@ -14,33 +15,35 @@ export interface Shown extends MainFile {
  * What a card shows: the version being looked at, else its state, else, out of date or with nothing else, its newest. A constant's
  * state may be no version at all.
  */
-export function shownOf(view: ElementView): Shown | null {
+export function shownOf(view: ElementView, selectedOnly = false): Shown | null {
   const asset = view.asset
   if (!asset) return view.landed ? { output: view.landed.field, path: "", sha256: view.landed.sha256, field: view.landed.field } : null
   // Looking at a take still being made: nothing of it to show yet, and no other take's picture stands in.
-  const watch = watched(view)
+  const watch = selectedOnly ? undefined : watched(view)
   if (watch && watch.number === undefined) return null
   const versions = asset.prefixes ?? []
   const version = (number?: number | null) => versions.find((held) => held.number === number)
-  const held = version(view.viewed) ?? version(asset.version)
+  const held = (selectedOnly ? undefined : version(watch?.number) ?? version(view.viewed)) ?? version(asset.version)
   if (held?.main) return { ...held.main, number: held.number, run: held.run ?? undefined }
   if (asset.sha256 && asset.path && asset.field) {
     const { path, sha256, field, width, height, duration_ms, alpha, absent, machine } = asset
-    return { output: field, path, sha256, field, width, height, duration_ms, alpha, absent, machine }
+    return { output: field, path, sha256, field, width, height, duration_ms, alpha, absent, machine, ...(asset.kind === "image" ? { number: 1 } : {}) }
   }
   const newest = versions.at(-1)
   return newest?.main ? { ...newest.main, number: newest.number, run: newest.run ?? undefined } : null
 }
 
+/** Inputs use the completed selected state, independently of a displayed pending run. */
+export const selectedOf = (view: ElementView): Shown | null => shownOf(view, true)
+
 /** A card's size, unmeasured, so a card culled away still counts in a fit. */
 export const HEAD = 32
 
 /**
- * What hangs off a box at rest, its name over it and its shape's word and add-ons under it, is drawn one size on screen as the canvas
- * zooms out, down to a zoom of 0.5; further out it shrinks with the canvas (--hang, set beside --text). So the room it takes is bounded,
- * and a box keeps that room clear: its name never lies on the box above, nor what hangs under one on the box below.
+ * What hangs off a box at rest, its name over it and its shape's word and add-ons under it, is drawn at the canvas's scale like the
+ * rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
  */
-export const HANG = 2
+const HANG = 2
 // As app.css and AddOns.css draw them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
 const SMALL_LINE = 10.5 * 1.35 * 1.25
@@ -71,7 +74,7 @@ export const toolName = (tool: Tool) => (tool.package_title && tool.package_titl
 export const madeHere = (tool?: string | null) => tool === "cozy" || Boolean(tool?.startsWith("cozy/"))
 
 /** A box that makes something is what it's asked for; approved, it's that file, until its words are asked for. */
-export const faceOf = (view: ElementView): "edit" | "media" => (makes(view) && (view.hereWords || !view.asset?.pinned) ? "edit" : "media")
+export const faceOf = (view: ElementView): "edit" | "media" => view.asset?.kind === "image" ? (view.hereWords ? "edit" : "media") : (makes(view) && (view.hereWords || !view.asset?.pinned) ? "edit" : "media")
 
 /** No box is narrower: its corner stops here, and nothing shrinks one past it. */
 export const NARROWEST = 160
@@ -157,6 +160,37 @@ export function aspectOf(view: ElementView): number {
   return measured ?? view.aspect ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
 }
 
+/** Image navigation keeps the height established by v1 and the saved canvas width.
+ * Editing still draws the requested output frame, so its corner can change shape. */
+function imageViewHeight(view: ElementView, canonicalWidth: number): number | undefined {
+  if (view.asset?.kind !== "image" || view.hereWords || !shownOf(view)) return undefined
+  const versions = view.asset.prefixes ?? []
+  const original = versions.find((version) => version.number === 1)?.main ?? versions[0]?.main
+  const first = original?.width && original.height ? original.width / original.height : undefined
+  const lone = !versions.length && view.asset.width && view.asset.height ? view.asset.width / view.asset.height : undefined
+  return canonicalWidth / (first ?? lone ?? 16 / 9)
+}
+
+/** The displayed body width; the saved canvas width continues to describe v1. */
+export function bodyWidth(view: ElementView, canonicalWidth: number): number {
+  const height = imageViewHeight(view, canonicalWidth)
+  return height === undefined ? canonicalWidth : height * aspectOf(view)
+}
+
+/** Version widths expand around the saved body's center, without moving its top. */
+export function bodyBox(view: ElementView, canonical: Box): Box {
+  const width = bodyWidth(view, canonical.w)
+  if (imageViewHeight(view, canonical.w) === undefined) return canonical
+  return { ...canonical, x: canonical.x + (canonical.w - width) / 2, w: width, h: heightFor(view, canonical.w) }
+}
+
+/** A displayed fit result written back to the v1-based canvas row. */
+export function canvasBox(view: ElementView, displayed: Box): Box {
+  const width = displayed.w / bodyWidth(view, 1)
+  if (imageViewHeight(view, 1) === undefined) return displayed
+  return { ...displayed, x: displayed.x + (displayed.w - width) / 2, w: width, h: heightFor(view, width) }
+}
+
 const hasSlots = (links?: Record<string, string>) => Object.keys(links ?? {}).length > 0
 
 export function heightFor(view: ElementView, width: number): number {
@@ -166,5 +200,5 @@ export function heightFor(view: ElementView, width: number): number {
   }
   // An Edit on its controls: a picture over a filmstrip.
   if (view.asset?.timeline && faceOf(view) === "edit") return HEAD + 332
-  return HEAD + Math.round(width / aspectOf(view))
+  return HEAD + Math.round(imageViewHeight(view, width) ?? width / aspectOf(view)) + (view.asset?.kind === "image" ? 40 : 0)
 }

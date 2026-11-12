@@ -804,6 +804,17 @@ impl Drop for Mounted {
     }
 }
 
+/// Detaches a view an earlier, ended process left mounted, so its runtime folder can go. Only the
+/// mount table is read: a dead provider's endpoint can hang any probe of the view itself.
+pub fn detach_stale(view: &Path) {
+    #[cfg(target_os = "linux")]
+    if linux_identity(view).is_ok_and(|identity| identity.is_some()) {
+        let _ = unix_unmount(view, true, CONTROL_ACK);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = view;
+}
+
 /// A Unix private directory view, or an unused Windows drive root. Drive mounts disappear on
 /// lock and can never fall through into an ordinary writable directory.
 pub fn view_path(runtime: &Path) -> Result<PathBuf> {

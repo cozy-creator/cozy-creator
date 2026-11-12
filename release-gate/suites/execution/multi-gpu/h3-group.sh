@@ -23,4 +23,14 @@ h3_group() {
   expect "$n-video" $ok "${h}p, $fr frames, audio ${au:-none}; degree $deg on $ng GPUs"
   look=$("${FR[@]}" coherent "$v") && jq -e '.contrast >= 15 and .motion >= 0.3 and .coherence >= 0.55 and .fine <= 0.45 and .pattern <= 3.5' <<< "$look" >/dev/null && ok=PASS || ok=FAIL
   expect "$n-frames" $ok "$look"
+  # Sol's sparse steps run sparse in a group: a group served no kernel built during an attempt, so H3 over two H100s ran
+  # every sparse step dense (46678: dense_building 1152 of 1152, cr-268). A first call may run some while its per-length
+  # object builds; a warm one (`*warm*`) runs none dense for that.
+  sol=$(jq -c '[.calls[]?.measurements.observations[]? | select(.name == "attention.sol.calls") | .fields]
+    | {sparse: (map(.sparse // 0) | add // 0), building: (map(.dense_building // 0) | add // 0), ranks: length}' "$n.json" 2>/dev/null)
+  if jq -e '.ranks > 0' <<< "$sol" >/dev/null 2>&1; then
+    ok=PASS; jq -e '.sparse > 0' <<< "$sol" >/dev/null || ok=FAIL
+    [[ $n != *warm* ]] || jq -e '.building == 0' <<< "$sol" >/dev/null || ok=FAIL
+    expect "$n-sparse" $ok "Sol calls summed over GPUs: $sol"
+  fi
 }

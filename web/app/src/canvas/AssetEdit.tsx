@@ -1,22 +1,27 @@
-import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { type DragEvent, type PointerEvent, type ReactNode, useEffect, useId, useRef, useState } from "react"
 import type { ToolField, Tool } from "../api/calcifer"
+import { runFullQuery } from "../api/queries"
+import { useConnection } from "../app/Connection"
 import type { Media } from "../types"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AddOnRows } from "./AddOns"
+import { progressOfBeats } from "./beatProgress"
 import { addOnsOf } from "./checkpoints"
 import type { CanvasStore, ElementView } from "./CanvasStore"
 import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
+import { atDefault, empty, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
 import { Ghosts, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
-import { makes } from "./shown"
+import { makes, watched } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
 import { ToolBox } from "./ToolBox"
+import "./FocusParameters.css"
 
 /** Where a field's value is, and how it's changed: what's typed waits for a pause, what's set is written at once, and unset takes its key away. */
 export interface Bound {
@@ -88,6 +93,10 @@ function Reset({ field, bound }: { field: ToolField; bound: Bound }) {
 
 /** Words, or a prompt: chips for what it mentions, and what a prompt can't send is marked, never sent. */
 function TextField({ name, field, bound, view, place, label, focus, named, block, framed }: Drawn) {
+  const store = useCanvasStore()
+  const beat = /^beats\.\d+\./.test(place)
+  const references = view.asset?.kind === "video" && view.hereWords && field.type === "prompt" && (place === "summary" || beat)
+  const showLabel = !(references && beat && field.field === "description")
   const text = (
     <MentionText
       asset={name}
@@ -98,23 +107,28 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
       missing={view.asset?.missing ?? []}
       takes={field.type === "words" ? WORDS_ONLY : ((field.takes as Media[] | null) ?? undefined)}
       focus={focus}
-      thumbs={!framed}
+      thumbs={!framed && !references}
       onDraft={bound.draft}
       onSave={bound.save}
+      onSubmit={field.type === "prompt" ? () => store.run(name) : undefined}
     />
   )
+  const surface = references ? <div className="video-reference-field" data-video-reference={place}>
+    <Ghosts name={name} view={view} mentions={mentionsIn(said(bound.value))} />
+    {text}
+  </div> : text
   if (named)
     return (
       <div className="slide text-row">
-        <span className="ctl-name">{field.label}</span>
-        <div className="text-box">{text}</div>
+        {showLabel && <span className="ctl-name">{field.label}</span>}
+        <div className="text-box">{surface}</div>
       </div>
     )
-  if (!block) return text
+  if (!block) return surface
   return (
     <div className="field-block">
-      <span className="block-label">{field.label}</span>
-      {text}
+      {showLabel && <span className="block-label">{field.label}</span>}
+      {surface}
     </div>
   )
 }
@@ -478,75 +492,131 @@ function Members({ name, group, bound, view, place, label }: { name: string; gro
 
 /** Rows, each its members, with + and × down to its least and up to its most, dragged by the grip to reorder. A file holding fewer shows them, to write in, and holds them once one's touched. */
 function ListGroup({ name, field, bound, view, place }: Drawn) {
+  const store = useCanvasStore()
+  const { client } = useConnection()
+  const focused = useSignal(store.focusedName)
   const rows = fullRows(field, rowsIn(bound.value))
+  const accordion = view.asset?.kind === "video" && view.hereWords && field.field === "beats"
+  const run = accordion && focused === name ? watched(view)?.run : undefined
+  const live = view.run?.number === run ? view.run : undefined
+  const settled = (status: string | undefined) => status === "completed" || status === "failed" || status === "canceled"
+  const enabled = run !== undefined && !settled(live?.status)
+  const { data: full } = useQuery({
+    ...runFullQuery(client, run ?? 0, live?.settled_at_ms ?? 0),
+    enabled,
+    refetchInterval: (query) => enabled && !settled(query.state.data?.status) ? 1000 : false,
+    refetchIntervalInBackground: false,
+  })
+  const progress = run === undefined ? null : progressOfBeats(field, rows, full)
+  const timing = field.members?.find((member) => member.total)
+  const cut = accordion && view.continuing ? view.continuing.beats_from ?? view.continuing.out_frame / (view.continuingFps ?? 24) : 0
+  let elapsed = 0
+  const kept = rows.map((value) => {
+    const duration = timing ? Number(value[timing.field] ?? timing.default) : NaN
+    elapsed += Number.isFinite(duration) && duration > 0 ? duration : NaN
+    return cut > 0 && elapsed <= cut + 1e-6
+  })
+  const keptCount = kept.filter(Boolean).length
+  const [expanded, setExpanded] = useState<number | null>(() => keptCount < rows.length ? keptCount : null)
+  const panelId = useId()
+  // A new continuation opens its first unfinished Beat; editing rows keeps the chosen accordion open.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a changed continuation resets which Beat is open
+  useEffect(() => setExpanded(keptCount < rows.length ? keptCount : null), [view.continuing])
   const called = field.label.replace(/s$/, "")
   const least = field.min_items ?? 0
-  const total = totalOf(field, rows)
   const list = useRef<HTMLDivElement>(null)
   const [moving, setMoving] = useState<{ from: number; to: number } | null>(null)
+  const movingNow = useRef<{ from: number; to: number } | null>(null)
+  const move = (next: { from: number; to: number } | null) => { movingNow.current = next; setMoving(next) }
+  const drop = () => {
+    const held = movingNow.current
+    if (held && held.to !== held.from) {
+      const next = [...rows]
+      const [one] = next.splice(held.from, 1)
+      next.splice(held.to, 0, one)
+      bound.write(next)
+      if (accordion) setExpanded((open) => open === null ? null : open === held.from ? held.to : held.from < open && held.to >= open ? open - 1 : held.from > open && held.to <= open ? open + 1 : open)
+    }
+    move(null)
+  }
   const rowBound = (i: number): Bound => ({
     value: rows[i],
-    draft: (next) => bound.draft(rows.map((other, at) => (at === i ? next : other))),
-    write: (next) => bound.write(rows.map((other, at) => (at === i ? next : other))),
-    unset: () => bound.write(rows.filter((_, at) => at !== i)),
-    save: bound.save,
+    draft: (next) => { if (!kept[i]) bound.draft(rows.map((other, at) => (at === i ? next : other))) },
+    write: (next) => { if (!kept[i]) bound.write(rows.map((other, at) => (at === i ? next : other))) },
+    unset: () => { if (!kept[i]) bound.write(rows.filter((_, at) => at !== i)) },
+    save: () => { if (!kept[i]) bound.save() },
   })
   const slotAt = (y: number) => {
     const held = [...(list.current?.querySelectorAll<HTMLElement>(":scope > .beat") ?? [])]
     const at = held.findIndex((el) => y < el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2)
-    return at < 0 ? held.length - 1 : at
+    return Math.max(keptCount, at < 0 ? held.length - 1 : at)
   }
   const grip = (i: number) => ({
     onPointerDown(event: PointerEvent<HTMLElement>) {
       event.stopPropagation()
+      if (event.button !== 0 || event.pointerType === "mouse") return
       event.currentTarget.setPointerCapture(event.pointerId)
-      setMoving({ from: i, to: i })
+      move({ from: i, to: i })
     },
     onPointerMove(event: PointerEvent<HTMLElement>) {
-      if (moving) setMoving({ ...moving, to: slotAt(event.clientY) })
+      if (movingNow.current) move({ ...movingNow.current, to: slotAt(event.clientY) })
     },
-    onPointerUp() {
-      if (moving && moving.to !== moving.from) {
-        const next = [...rows]
-        const [one] = next.splice(moving.from, 1)
-        next.splice(moving.to, 0, one)
-        bound.write(next)
+    onPointerUp() { if (movingNow.current) drop() },
+    onPointerCancel(event: PointerEvent<HTMLElement>) { if (event.pointerType !== "mouse") move(null) },
+    draggable: true,
+    onDragStart(event: DragEvent<HTMLElement>) {
+      event.stopPropagation()
+      event.dataTransfer.effectAllowed = "move"
+      event.dataTransfer.setData("application/x-cozy-beat", String(i))
+      const card = event.currentTarget.closest<HTMLElement>(".beat")
+      if (card) {
+        const rect = card.getBoundingClientRect()
+        event.dataTransfer.setDragImage(card, event.clientX - rect.left, event.clientY - rect.top)
       }
-      setMoving(null)
+      move({ from: i, to: i })
     },
+    onDragEnd() { move(null) },
   })
   const add = rows.length < (field.max_items ?? Infinity) && (
-    <button type="button" className="add-beat nodrag" title={`Add a ${called.toLowerCase()}`} onClick={() => bound.write([...rows, newRow(field)])}>
+    <button type="button" className="add-beat nodrag" title={`Add a ${called.toLowerCase()}`} onClick={() => { bound.write([...rows, newRow(field)]); if (accordion) setExpanded(rows.length) }}>
       + {called}
     </button>
   )
   return (
-    <div className="beats-edit" role="group" aria-label={field.label} data-field={place} ref={list}>
-      {rows.map((_, i) => (
-        <div className={`beat ${rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} key={i}>
-          {rows.length > 1 && (
-            <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>
-              ⋮⋮
-            </span>
-          )}
-          <div className="beat-body">
-            <Members name={name} group={field} bound={rowBound(i)} view={view} place={`${place}.${i}`} label={`${called} ${i + 1}`} />
-          </div>
-          {rows.length > least && (
-            <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => bound.write(rows.filter((_, at) => at !== i))}>
-              <Icon name="close" />
-            </button>
-          )}
+    <div className="beats-edit" role="group" aria-label={field.label} data-field={place} ref={list}
+      onDragOver={(event) => {
+        if (!movingNow.current) return
+        event.preventDefault()
+        event.stopPropagation()
+        event.dataTransfer.dropEffect = "move"
+        move({ ...movingNow.current, to: slotAt(event.clientY) })
+      }}
+      onDrop={(event) => {
+        if (!movingNow.current) return
+        event.preventDefault()
+        event.stopPropagation()
+        drop()
+      }}>
+      {rows.map((value, i) => {
+        const status = progress?.[i]
+        const statusWord = status?.state === "skipped" ? "Skipped" : kept[i] || status?.state === "kept" ? "Kept" : status?.state === "completed" ? "Complete" : status?.state === "in_progress" ? "Generating" : run !== undefined && progress ? "Queued" : null
+        const handle = !kept[i] && rows.length - keptCount > 1 && <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>⋮⋮</span>
+        const remove = !kept[i] && rows.length > least && <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
+          bound.write(rows.filter((_, at) => at !== i))
+          if (accordion) setExpanded((open) => open === null ? null : open === i ? Math.max(0, Math.min(i, rows.length - 2)) : open > i ? open - 1 : open)
+        }}><Icon name="close" /></button>
+        const body = <div className="beat-body" inert={kept[i]}><Members name={name} group={field} bound={rowBound(i)} view={view} place={`${place}.${i}`} label={`${called} ${i + 1}`} /></div>
+        const duration = timing ? value[timing.field] ?? timing.default : undefined
+        const open = expanded === i
+        return <div className={`beat ${accordion ? "beat-accordion" : ""} ${kept[i] ? "beat-kept" : rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} data-beat-index={i} data-beat-kept={kept[i] || undefined} data-beat-status={status?.state} key={i}>
+          {accordion ? <>
+            <div className="beat-heading">{handle}<button type="button" className="beat-toggle" aria-label={`${called} ${i + 1}${statusWord ? `, ${statusWord.toLowerCase()}` : ""}`} aria-expanded={open} aria-controls={`${panelId}-${i}`} onClick={() => setExpanded(open ? null : i)}><b>{called} {i + 1}</b>{statusWord && <span className="beat-status">{statusWord}</span>}{duration != null && <span>{String(duration)} {timing?.unit ?? ""}</span>}<Icon name="forward" /></button>{remove}</div>
+            {status && status.state !== "kept" && status.state !== "skipped" && <div className="beat-progress" role="progressbar" aria-label={`${called} ${i + 1} published frames`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(status.completed * 100)}><span style={{ width: `${status.completed * 100}%` }} /></div>}
+            <div className="beat-panel" id={`${panelId}-${i}`} data-open={open || undefined} aria-hidden={!open} inert={!open}>{body}</div>
+          </> : <>{handle}{body}{remove}</>}
         </div>
-      ))}
-      <div className="beats-last">
-        {total && (
-          <span className="total">
-            {total.sum} {total.member.unit ?? ""}
-          </span>
-        )}
-        {add}
-      </div>
+      })}
+      <div className="beats-last">{add}</div>
     </div>
   )
 }
@@ -622,24 +692,8 @@ export function TextAsset({ name, view }: { name: string; view: ElementView }) {
         focus={store.focusing === name}
         onDraft={(words) => store.setDraft(name, "text", words)}
         onSave={() => void store.save(name)}
+        onSubmit={() => void store.save(name)}
       />
-      {view.conflict && <Conflict name={name} />}
-    </div>
-  )
-}
-
-/** The file changed under what's typed. */
-export function Conflict({ name }: { name: string }) {
-  const store = useCanvasStore()
-  return (
-    <div className="status ood">
-      The file changed under this{" "}
-      <button type="button" className="act nodrag" onClick={() => void store.keepMine(name)}>
-        Keep mine
-      </button>{" "}
-      <button type="button" className="act nodrag" onClick={() => store.takeTheFiles(name)}>
-        Take the file's
-      </button>
     </div>
   )
 }
@@ -699,37 +753,43 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 /** What beside Render is only a thing to set: the rest of the face wants a line. */
 const small = (field: ToolField) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
 
-/** What a box asks and holds, under it. On its face: prompts, groups, what a render can't go without, a filled slot, and Render. Everything else is under More, expert settings in its Advanced. On a take: what's done with that. */
-export function AssetEdit({ name, view, editing, head, actions, children }: { name: string; view: ElementView; editing: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
+/** What a box asks and holds, under it. Advanced controls and output resolution remain visible without opening another section. */
+export function AssetEdit({ name, view, editing, prominent = false, head, actions, children }: { name: string; view: ElementView; editing: boolean; prominent?: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const [advanced, setAdvanced] = useState(false)
   if (!view.asset) return null
   const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
-  const fields = makes(view) ? fieldsOf(view.asset, tools) : []
-  const inFrame = framed(view, fields, tool)
+  const declared = makes(view) ? fieldsOf(view.asset, tools) : []
+  const videoForm = prominent && view.asset.kind === "video"
+  const priority = (field: ToolField) => field.field === "summary" ? 0 : field.type === "group" && (field.field === "beats" || field.members?.some((member) => member.total)) ? 1 : 2
+  const fields = prominent ? [...declared].sort((a, b) => priority(a) - priority(b)) : declared
+  const inFrame = prominent ? undefined : framed(view, fields, tool)
   const first = fields.find((field) => field.type === "prompt" || field.type === "words")
   // The box's own shape is its shape: its corner sets it.
   const rest = fields.filter((field) => field !== inFrame && field.type !== "timeline" && field.type !== "shape")
-  const faced = editing ? rest.filter((field) => onFace(field, store.valueOf(name, field.field))) : []
+  const faced = editing ? rest.filter((field) => videoForm ? field.field === "summary" || field.field === "beats" || Boolean(field.required) || (field.type === "slot" && !empty(store.valueOf(name, field.field))) : prominent ? !field.advanced : field.field === "megapixels" || onFace(field, store.valueOf(name, field.field))) : []
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, fields)
   const folded = rest.filter((field) => !faced.includes(field))
   const plainFolded = folded.filter((field) => !field.advanced)
   const expert = folded.filter((field) => field.advanced)
   const open = store.showsMore(name)
   const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
-  const row = (field: ToolField) => <ControlRow key={field.field} name={name} field={field} view={view} focus={store.focusing === name && field === first} named={folded.includes(field)} />
+  const row = (field: ToolField) => {
+    const control = <ControlRow key={field.field} name={name} field={field} view={view} focus={!prominent && store.focusing === name && field === first} named={folded.includes(field)} />
+    return prominent && field.type === "group" && field.list ? <section key={field.field} className="focus-parameter-group"><h3>{field.label}</h3>{control}</section> : control
+  }
   return (
-    <div className="edit-face">
+    <div className={`edit-face ${prominent ? "prominent" : ""}`}>
       {head && <div className="tool-head">{head}</div>}
-      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} row={row}>
+      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => prominent || !small(field))} folded={plainFolded} row={row}>
         {(lines, more) => {
-          const behind = (more !== null && folded.length > 0) || addOns || beyond.length > 0
+          const behind = (more !== null && plainFolded.length > 0) || (videoForm && expert.length > 0) || addOns || beyond.length > 0
           return (
             <>
               {editing && lines && <div className="edit-shown">{lines}</div>}
+              {!videoForm && more !== null && expert.length > 0 && <div className="advanced">{expert.map(row)}</div>}
               <div className="row actions">
-                {more !== null && faced.filter(small).map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named={false} />)}
+                {!prominent && more !== null && faced.filter(small).map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named={false} />)}
                 {actions}
                 {behind && (
                   <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}>
@@ -741,14 +801,7 @@ export function AssetEdit({ name, view, editing, head, actions, children }: { na
                 open && (
                   <div className="edit-more">
                     {open && more}
-                    {open && more !== null && expert.length > 0 && (
-                      <div className="advanced">
-                        <button type="button" className="advanced-toggle nodrag" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}>
-                          Advanced
-                        </button>
-                        {advanced && expert.map(row)}
-                      </div>
-                    )}
+                    {videoForm && expert.length > 0 && <div className="advanced">{expert.map(row)}</div>}
                     {open && <AddOnRows name={name} />}
                     {open && beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
                     {children}
@@ -761,7 +814,6 @@ export function AssetEdit({ name, view, editing, head, actions, children }: { na
           )
         }}
       </ToolBox>
-      {view.conflict && <Conflict name={name} />}
     </div>
   )
 }

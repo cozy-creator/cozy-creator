@@ -21,7 +21,7 @@ async fn make(api: &Arc<Api>, id: &str, value: Value) -> String {
 }
 
 async fn edit(api: &Arc<Api>, id: &str, name: &str, value: Value) {
-    patch(State(api.clone()), Path((id.to_owned(), name.to_owned())), HeaderMap::new(), Ok(Bytes::from(value.to_string()))).await.unwrap();
+    let _ = patch(State(api.clone()), Path((id.to_owned(), name.to_owned())), Ok(Bytes::from(value.to_string()))).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -56,13 +56,17 @@ async fn typed_nodes_fixture() {
     let doc = Doc::load(&project.folder).unwrap();
     let i = doc.find(&name).unwrap();
     assert_eq!(doc.assets[i].kind, "video");
-    assert_eq!(doc.assets[i].node_kind.as_deref(), Some("video_edit"));
+    assert_eq!(doc.assets[i].node_kind.as_deref(), Some("video"));
     assert!(doc.tool(i) == Some(Tool::Cut));
     assert!(!doc.inputs_of(i).contains_key(format::NODE_KIND));
     assert!(!doc.assets[i].own.contains(format::NODE_KIND));
-    assert_eq!(doc.flat_fields(i).get(format::NODE_KIND), Some(&json!("video_edit")));
+    assert_eq!(doc.flat_fields(i).get(format::NODE_KIND), Some(&json!("video")));
     edit(&api, &id, "edit", json!({"fields":{"node_kind":"image"}})).await;
-    assert_eq!(project.folder.written().unwrap().get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video_edit")));
+    assert_eq!(project.folder.written().unwrap().get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video")));
+    edit(&api, &id, "edit", json!({"tool":"","fields":{}})).await;
+    assert_eq!(project.folder.written().unwrap().get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video")));
+    edit(&api, &id, "edit", json!({"tool":"cozy/edit","fields":{}})).await;
+    assert_eq!(project.folder.written().unwrap().get("edit").unwrap().get("tracks"), Some(&json!([{"clips":[]}])));
     let note = doc.find("note").unwrap();
     assert_eq!(doc.assets[note].kind, "text");
     assert_eq!(doc.assets[note].text.as_deref(), Some("Some words."));
@@ -113,13 +117,12 @@ async fn typed_nodes_fixture() {
         ("video", json!({"tool":"fixture/text","fields":{}})),
         ("audio", json!({"tool":"fixture/text","fields":{}})),
         ("note", json!({"tool":"fixture/video","fields":{}})),
-        ("edit", json!({"tool":"fixture/video","fields":{}})),
-        ("edit", json!({"tool":"fixture/video","fields":{"node_kind":"video_edit"}})),
-        ("edit", json!({"tool":"","fields":{}})),
+        ("image", json!({"tool":"cozy/edit","fields":{}})),
+        ("audio", json!({"tool":"cozy/edit","fields":{}})),
     ] {
         let before = project.folder.written().unwrap();
         let seq = project.folder.seq();
-        let refusal = patch(State(api.clone()), Path((id.clone(), name.to_owned())), HeaderMap::new(), Ok(Bytes::from(value.to_string()))).await.err().unwrap();
+        let refusal = patch(State(api.clone()), Path((id.clone(), name.to_owned())), Ok(Bytes::from(value.to_string()))).await.err().unwrap();
         assert_eq!(refusal.0.code, "asset_tool_kind");
         assert_eq!(project.folder.written().unwrap(), before, "a rejected model must not change type, tool or words");
         assert_eq!(project.folder.seq(), seq);
@@ -154,6 +157,155 @@ async fn typed_nodes_fixture() {
     let conn = db::open(&directory.join(db::DB)).unwrap();
     let stored = db::load(&conn, &directory.join(db::DB)).unwrap();
     assert_eq!(stored.written.get("video").unwrap().get(format::NODE_KIND), Some(&json!("video")));
-    assert_eq!(stored.written.get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video_edit")));
+    assert_eq!(stored.written.get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video")));
     assert_eq!(stored.written.get("picture").unwrap().id, stable_id);
+
+    // A real imported file is v1 immediately. New results keep its approval,
+    // even when the two versions have identical bytes.
+    use base64::Engine as _;
+    use sha2::{Digest as _, Sha256};
+    let directory = root.join("version-project");
+    std::fs::create_dir(&directory).unwrap();
+    made_new(&api, &directory, "Version selection", false).unwrap();
+    let series = api.projects.open(&api, &directory).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==").unwrap();
+    let path = root.join("original.png");
+    std::fs::write(&path, &bytes).unwrap();
+    let hash = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+    let kept = series.folder.take_held(&path, &hash).unwrap();
+    let original = super::super::element(&series, &series.id, "Hei", None, None, kept, true, BTreeMap::new(), &BTreeMap::new()).unwrap();
+    let doc = Doc::load(&series.folder).unwrap();
+    let at = doc.find(&original.name).unwrap();
+    let lock = series.folder.lock().unwrap();
+    assert_eq!(lock.asset(&original.name).unwrap().versions.len(), 1);
+    assert_eq!(doc.stand(&lock)[at].version(), Some(1));
+    assert!(!doc.inputs_of(at).contains_key(format::SELECTED_VERSION));
+    assert!(!doc.assets[at].own.contains(format::SELECTED_VERSION));
+    drop(lock);
+    let landing = super::super::Walk::new(&api, &series);
+    let original_fields = serde_json::from_value(json!({
+        "summary":"The original summary",
+        "beats":[{"description":"The original beat","duration":12}],
+        "models":{"model":{"ref":"author/model@1"}}
+    })).unwrap();
+    landing.record(None, &original.name, "image", folder::Version {
+        files: folder::Files::from([("image".to_owned(), hash.clone())]),
+        fields: Some(original_fields),
+        tool: Some("fixture/image".to_owned()), ..Default::default()
+    }, "version", false, |_| {}).unwrap();
+    let doc = Doc::load(&series.folder).unwrap();
+    assert_eq!(doc.stand(&series.folder.lock().unwrap())[at].version(), Some(1));
+    series.folder.update_lock(|lock| assert_eq!(lock.number(&original.name, "image"), 3)).unwrap();
+    landing.record_free(&original.name, "image", folder::Version {
+        number: 3, files: folder::Files::from([("image".to_owned(), hash.clone())]), ..Default::default()
+    }, "version", false).unwrap();
+    assert_eq!(Doc::load(&series.folder).unwrap().stand(&series.folder.lock().unwrap())[at].version(), Some(1));
+    landing.record(None, &original.name, "image", folder::Version {
+        files: folder::Files::from([("image".to_owned(), hash.clone())]), ..Default::default()
+    }, "version", true, |_| {}).unwrap();
+    assert_eq!(Doc::load(&series.folder).unwrap().stand(&series.folder.lock().unwrap())[at].version(), Some(4));
+    let _ = super::super::unpin(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"name":original.name}).to_string()))).await.unwrap();
+    let unpinned = series.folder.written().unwrap();
+    assert!(unpinned.get(&original.name).unwrap().get("approved").is_none());
+    assert!(unpinned.get(&original.name).unwrap().get(format::SELECTED_VERSION).is_none());
+    let Json(selected) = super::super::approve(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"name":original.name,"version":"1"}).to_string()))).await.unwrap();
+    assert_eq!(selected.number, 1);
+    let doc = Doc::load(&series.folder).unwrap();
+    let lock = series.folder.lock().unwrap();
+    assert_eq!(doc.stand(&lock)[at].version(), Some(1));
+    assert_eq!(doc.version_files(at, 2, &lock).unwrap().get("image"), Some(&hash));
+    drop(lock);
+    let conn = db::open(&directory.join(db::DB)).unwrap();
+    let stored = db::load(&conn, &directory.join(db::DB)).unwrap();
+    assert_eq!(stored.written.get(&original.name).unwrap().get(format::SELECTED_VERSION), Some(&json!(1)));
+    let Json(joined) = join(State(api.clone()), Path((series.id.clone(), original.name.clone())), Ok(Bytes::from(json!({"source":hash}).to_string()))).await.unwrap();
+    assert_eq!(joined.stands, Some(1), "joining another version preserves the approved reference");
+
+    let first = make(&api, &series.id, json!({"name":"first-output","kind":"image","fields":{}})).await;
+    landing.record(None, &first, "image", folder::Version {
+        files: folder::Files::from([("image".to_owned(), hash.clone())]), ..Default::default()
+    }, "version", false, |_| {}).unwrap();
+    // A box's first take is its state, not approved (cl-908).
+    let first_doc = Doc::load(&series.folder).unwrap();
+    assert_eq!(first_doc.stand(&series.folder.lock().unwrap())[first_doc.find(&first).unwrap()].version(), Some(1));
+    assert!(first_doc.assets[first_doc.find(&first).unwrap()].pin.is_none());
+
+    // A current image remains renderable, while a reader's completed selected
+    // input is independent of another generation of that image.
+    edit(&api, &series.id, &original.name, json!({"tool":"fixture/image","fields":{"instructions":"edit the current image"}})).await;
+    let Json(history) = read(State(api.clone()), Path((series.id.clone(), original.name.clone())), Query(Asked { call: false })).await.unwrap();
+    let original_request = history.versions.iter().find(|version| version.number == 2).unwrap().fields.as_ref().unwrap();
+    assert_eq!(original_request.get("summary"), Some(&json!("The original summary")));
+    assert_eq!(original_request.get("beats"), Some(&json!([{"description":"The original beat","duration":12}])));
+    let conn = db::open(&directory.join(db::DB)).unwrap();
+    let stored = db::load(&conn, &directory.join(db::DB)).unwrap();
+    assert_eq!(stored.lock.asset(&original.name).unwrap().version(2).unwrap().fields.as_ref(), Some(original_request));
+    assert!(history.versions.iter().find(|version| version.number == 1).unwrap().fields.is_none(), "an import has no historical authoring request");
+    let source_prompt = format!("Keep <{}.1> exactly", original.name);
+    edit(&api, &series.id, &original.name, json!({"fields":{"summary":source_prompt}})).await;
+    let doc = Doc::load(&series.folder).unwrap();
+    let lock = series.folder.lock().unwrap();
+    let source_at = doc.find(&original.name).unwrap();
+    let authored = doc.authoring_fields(source_at);
+    let callable: api::interface::Callable = serde_json::from_value(json!({
+        "name":"image", "request":{"fields":[{"name":"summary","type":{"prompt":["image"]}}]}
+    })).unwrap();
+    let bound = super::super::binder::bind(&super::super::binder::Call {
+        name: &original.name, tool: "fixture/image", package: "fixture", callable: &callable,
+        fields: &authored, reserved: &[], doc: &doc, own: Some(source_at), lock: &lock,
+        stand: &doc.stand(&lock), gone: &BTreeSet::new(), pickup: None, inline: &[],
+    }).unwrap();
+    assert_eq!(authored.get("summary"), Some(&json!(source_prompt)));
+    assert_eq!(bound.payload["summary"]["text"], json!(source_prompt));
+    assert!(bound.payload["summary"]["references"].is_array(), "binding genuinely produces a structured Prompt");
+    drop(lock);
+    let reader = make(&api, &series.id, json!({"name":"reader","tool":"fixture/video","kind":"video","fields":{"summary":format!("<{}>", original.name)}})).await;
+    {
+        use super::super::{AskedText, Graph, Named, Now, Turn, walker};
+        let lock = series.folder.lock().unwrap();
+        let mut reading = AskedText::new(Doc::load(&series.folder).unwrap());
+        let mut graph = Graph::default();
+        let background = folder::Ask { id: "background-image".into(), ..Default::default() };
+        let jobs = graph.add(&background.id, &mut Now { reading: &mut reading, lock: &lock, ask: &background }, &walker::Asked {
+            takes: vec![Named { key: "image-next".into(), asset: original.name.clone(), approve: true }], ..Default::default()
+        });
+        graph.go(jobs[0]);
+        let video = folder::Ask { id: "named-video".into(), ..Default::default() };
+        let jobs = graph.add(&video.id, &mut Now { reading: &mut reading, lock: &lock, ask: &video }, &walker::Asked {
+            takes: vec![Named { key: "video-next".into(), asset: reader.clone(), approve: true }], ..Default::default()
+        });
+        assert!(graph.jobs[jobs[0]].needs.is_empty(), "a selected image does not wait for a background generation");
+        assert_eq!(graph.turn(jobs[0], &mut Now { reading: &mut reading, lock: &lock, ask: &video }), Turn::Go);
+    }
+
+    // Landing a same-byte replacement must not even change the frozen version
+    // number. Explicit --outdated is the opt-in that refreshes that snapshot.
+    let text = series.folder.text().unwrap();
+    let digest = hex::encode(Sha256::digest(text.as_bytes()));
+    series.folder.keep_text(&digest, &text).unwrap();
+    let snapshot = folder::Ask { id: "selected-snapshot".into(), digest, ..Default::default() };
+    series.folder.update_walk(|walk| walk.walk.asks.push(snapshot.clone())).unwrap();
+    let frozen_version = || {
+        let walk = series.folder.walk_now().unwrap();
+        let ask = walk.walk.asks.iter().find(|ask| ask.id == snapshot.id).unwrap();
+        let doc = Doc::read(&series.folder, &series.folder.text_of(ask).unwrap()).unwrap();
+        doc.stand(&series.folder.lock().unwrap())[doc.find(&original.name).unwrap()].version()
+    };
+    let walk = super::super::Walk::new(&api, &series);
+    walk.select_asked(&snapshot.id, &original.name, 2, &hash).unwrap();
+    assert_eq!(frozen_version(), Some(1));
+    series.folder.update_walk(|walk| walk.walk.asks.iter_mut().find(|ask| ask.id == snapshot.id).unwrap().outdated = true).unwrap();
+    walk.select_asked(&snapshot.id, &original.name, 2, &hash).unwrap();
+    assert_eq!(frozen_version(), Some(2));
+    series.folder.update_walk(|walk| walk.walk.asks.retain(|ask| ask.id != snapshot.id)).unwrap();
+
+    let empty = make(&api, &series.id, json!({"name":"unfinished","tool":"fixture/image","kind":"image","fields":{"instructions":"its first image"}})).await;
+    let waiting = make(&api, &series.id, json!({"name":"waiting","tool":"fixture/video","kind":"video","fields":{"summary":format!("<{}>", empty)}})).await;
+    let (_, Json(asked)) = super::super::runs(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"names":["all"],"on":["local"]}).to_string()))).await.unwrap();
+    assert_eq!(asked.added, 4);
+    assert!(!asked.skipped.contains(&original.name));
+    let reader_job = asked.board.jobs.iter().find(|job| job.asset == reader).unwrap();
+    assert!(reader_job.needs.is_empty(), "{reader_job:?}");
+    let waiting_job = asked.board.jobs.iter().find(|job| job.asset == waiting).unwrap();
+    assert_eq!(waiting_job.needs, vec![empty], "{waiting_job:?}");
 }

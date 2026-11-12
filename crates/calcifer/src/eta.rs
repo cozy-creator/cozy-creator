@@ -313,6 +313,16 @@ struct Stepping {
     steady_ms: f64,
 }
 
+/// A run in parts its stage's scope counts up front (`Segment 2 of 3 / denoise`): how many, the one it is in and since when, and what
+/// each before it took.
+#[derive(Clone, Debug, Default)]
+struct Parts {
+    of: u64,
+    at: u64,
+    since: f64,
+    took: Vec<f64>,
+}
+
 /// What Calcifer follows of one run to say its time left.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Clock {
@@ -332,6 +342,8 @@ pub(crate) struct Clock {
     ahead: Option<f64>,
     /// Its machine's quote: it waits until at least its finish.
     quoted: Option<Quoted>,
+    /// Its parts, once a scope counts them.
+    parts: Option<Parts>,
 }
 
 impl Clock {
@@ -360,8 +372,9 @@ impl Clock {
     /// A progress report its machine made at `at`, received here at `received`.
     pub(crate) fn observe(&mut self, progress: &Progress, at: f64, received: f64) {
         self.ahead = Some(self.ahead.map_or(received - at, |ahead| ahead.min(received - at)));
-        // A stage of its executor's says it began, if its machine never did.
-        if self.started.is_none() && self.prior.as_ref().is_some_and(|prior| prior.stages.iter().any(|stage| stage.name == progress.stage)) {
+        // A stage of its executor's says it began, if its machine never did. A stage within a part is its own stage there.
+        let own = progress.own_stage();
+        if self.started.is_none() && self.prior.as_ref().is_some_and(|prior| prior.stages.iter().any(|stage| stage.name == own)) {
             self.started = Some(at);
         }
         if self.started.is_none() {
@@ -372,8 +385,17 @@ impl Clock {
         if progress.stage.is_empty() {
             return;
         }
+        // A part after the first: the one before it took from its first report to this one's.
+        if let Some((at_part, of)) = progress.part() {
+            let parts = self.parts.get_or_insert(Parts { of, at: at_part, since: at, took: vec![] });
+            if at_part > parts.at {
+                parts.took.push(at - parts.since);
+                (parts.at, parts.since) = (at_part, at);
+            }
+            parts.of = parts.of.max(of);
+        }
         if self.stage.as_ref().is_none_or(|(name, ..)| *name != progress.stage) {
-            let found = self.prior.as_ref().and_then(|prior| prior.stages.iter().position(|stage| stage.name == progress.stage));
+            let found = self.prior.as_ref().and_then(|prior| prior.stages.iter().position(|stage| stage.name == own));
             // A stage it enters again, or one the prior has before where it got, is where it is: it never goes back.
             let index = found.filter(|at| self.passed.is_none_or(|passed| *at >= passed));
             if index.is_some() {
@@ -381,7 +403,8 @@ impl Clock {
             }
             self.stage = Some((progress.stage.clone(), index, at));
         }
-        if progress.total == 0 {
+        // A decode's tokens are no steps: its stage is timed whole, as one that counts nothing.
+        if progress.total == 0 || progress.tokens() {
             return;
         }
         let steps = self.steps.get_or_insert_with(Stepping::default);
@@ -404,6 +427,17 @@ impl Clock {
     pub(crate) fn estimate(&self, here: f64) -> Option<Estimate> {
         let now = here - self.ahead.unwrap_or(0.0);
         let prior = self.prior.as_ref();
+        // In parts, once one has ended: those left each as long as those that took, what's left of this one, then its tail. The whole
+        // render, never one part's.
+        if let Some(parts) = &self.parts
+            && let Some(each) = median(&parts.took)
+        {
+            let current = (each - (now - parts.since)).max(0.0);
+            let left = parts.of.saturating_sub(parts.at) as f64 * each + current + prior.map_or(0.0, |prior| prior.tail_ms);
+            let done = (parts.at - 1) as f64 / parts.of.max(1) as f64;
+            let basis = prior.map_or(EtaBasis::Steps, |prior| prior.basis);
+            return Some(Estimate { left_ms: left, confidence: (0.5 + 0.5 * done).min(0.95), basis });
+        }
         let whole = prior.filter(|prior| prior.stages.is_empty());
         // What's left of the phase it's in, and how well that phase keeps to what was expected of it.
         let ((current, fit), rest) = match (self.started, &self.stage, whole) {
@@ -439,7 +473,11 @@ impl Clock {
                 (current, prior.map_or(0.0, |prior| prior.rest_ms(index.or(self.passed))))
             }
         };
-        let left = current + rest;
+        // In its first part with nothing like it before, those after it as long as this one will have taken by the end of the stage it's
+        // in. A prior's stages already hold all of its parts.
+        let others = (self.parts.as_ref().filter(|_| prior.is_none()))
+            .map_or(0.0, |parts| parts.of.saturating_sub(parts.at) as f64 * ((now - parts.since).max(0.0) + current));
+        let left = current + rest + others;
         let basis = prior.map_or(EtaBasis::Steps, |prior| prior.basis);
         // As trusted as what it stands on, less while a phase runs past what was expected, and more with each step of its own.
         let trust = prior.map_or(0.3, |prior| prior.confidence) * fit;

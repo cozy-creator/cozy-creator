@@ -4,7 +4,7 @@
 //! its idempotency key, so a Calcifer that stops mid-ask asks again under the same key. Only the
 //! Hub's word (failed, released) ends a rental here; a rental is never replaced.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -106,17 +106,6 @@ impl Hubs {
         Client::signed_in(&config::Origin::parse(origin)?, &self.home, self.http.clone(), || login(origin))
     }
 
-    /// Every name the Hubs' listings give a rental: as ordered, and as its Hub names its host.
-    fn names(&self) -> HashSet<String> {
-        let listings = lock(&self.listings);
-        let rentals = listings.values().flat_map(|listing| listing.rentals.values());
-        rentals
-            .flat_map(|rental| [Some(&rental.name), rental.machine_name.as_ref()])
-            .flatten()
-            .map(|name| name.to_ascii_lowercase())
-            .collect()
-    }
-
     /// Remembers what a Hub said of one rental.
     fn seen(&self, origin: &str, rental: types::Rental) {
         lock(&self.listings)
@@ -148,23 +137,20 @@ impl Hubs {
         u32::try_from(rental.accelerator_count).ok()
     }
 
-    /// Adds the Hub's word to a recorded rental: its prices and times, and whether its Hub
-    /// answered the last listing.
+    /// Adds the Hub's word to a recorded rental: its prices and times, whether its Hub answered
+    /// the last listing, and what it's said as until its Hub names its host.
     pub(crate) fn describe(&self, machine: &mut Machine, asked: Option<&Ask>) {
+        let ordered = asked.and_then(|ask| RentBody::of(ask).ok()).map(|body| body.request);
         let listings = lock(&self.listings);
-        let Some(listing) = listings.get(&machine.hub) else {
+        let listing = listings.get(&machine.hub);
+        let rental = (machine.rental_id.as_ref()).and_then(|id| listing?.rentals.get(id));
+        machine.placeholder = placeholder(machine, rental, ordered.as_ref());
+        let Some(listing) = listing else {
             return;
         };
         machine.unverified = listing.problem.is_some();
-        if let Some(rental) = machine
-            .rental_id
-            .as_ref()
-            .and_then(|id| listing.rentals.get(id))
-        {
-            let sku = asked
-                .and_then(|ask| RentBody::of(ask).ok())
-                .map(|body| body.request.sku);
-            machine.rental = Some(view(rental, sku));
+        if let Some(rental) = rental {
+            machine.rental = Some(view(rental, ordered.map(|request| request.sku)));
         }
     }
 
@@ -208,7 +194,7 @@ impl Machines {
     /// Nothing is recorded or kept.
     pub(crate) async fn quote(&self, hub: &str, sku: &str, shape: Shape) -> Result<Quote, Error> {
         let origin = config::Origin::parse(hub)?;
-        let (request, _) = request(sku, shape, QUOTED);
+        let (request, ..) = request(sku, shape);
         Ok(quote_of(&self.quoted(&origin, &request).await?))
     }
 
@@ -265,13 +251,14 @@ impl Machines {
                 continue;
             }
             let ended_at_ms = r.ended_at.as_deref().map(instant).transpose()?;
+            // Its host's name, as `machine ls` showed it; one never placed on a host had none (never its handle).
+            let named = hub_name(&r).or_else(|| Some(r.name.clone()).filter(|name| !name.starts_with(HANDLE)));
             rentals.push(RentalRow {
                 ran_s: (ended_at_ms.unwrap_or(now) - started_at_ms) / 1000,
                 sku: r.sku.unwrap_or(r.requested_accelerator_model),
                 gpus: u32::try_from(r.accelerator_count).unwrap_or_default(),
                 rental_id: r.rental_id,
-                // Its name from its order on, as `machine ls` showed it.
-                name: r.name,
+                name: named.unwrap_or_else(|| "—".into()),
                 state: r.state,
                 started_at_ms,
                 ended_at_ms,
@@ -335,43 +322,6 @@ impl Machines {
         })
     }
 
-    /// A word no machine here goes or went by, no order is placing, and no rental its Hubs last
-    /// listed holds: a rental carries it from its order on, in `cozy machine ls` and the page
-    /// (cl-888), and its key is filed under it.
-    fn fresh_name(&self) -> Result<String, Error> {
-        let words: Vec<&str> = WORDS.lines().filter(|word| !word.is_empty()).collect();
-        let ordering: Vec<String> = (self.store().pending_asks().map_err(internal)?.into_iter())
-            .filter_map(|ask| ask.machine)
-            .collect();
-        let listed = self.hubs.names();
-        let free = |name: &str| -> Result<bool, Error> {
-            Ok(!ordering.iter().any(|held| held == name)
-                && !listed.contains(name)
-                && !self.home.rental_key(name).exists()
-                && self.store().machines_named(name).map_err(internal)?.is_empty())
-        };
-        let mut random = [0u8; 8];
-        getrandom::fill(&mut random).expect("the OS provides randomness");
-        let start = (u64::from_le_bytes(random) % words.len() as u64) as usize;
-        for at in 0..words.len() {
-            let word = words[(start + at) % words.len()];
-            if free(word)? {
-                return Ok(word.to_owned());
-            }
-        }
-        // Every word taken: the first with a number.
-        let word = words[start];
-        let mut n = 2;
-        loop {
-            let suffix = format!("-{n}");
-            let name = format!("{}{suffix}", &word[..word.len().min(32 - suffix.len())]);
-            if free(&name)? {
-                return Ok(name);
-            }
-            n += 1;
-        }
-    }
-
     /// Records a rent ask under `key` with the Hub's quote for its exact request, and the
     /// rental's key; an ask the key already names is answered, if it asked for the same. A rent
     /// the Hub will not quote records nothing.
@@ -416,21 +366,20 @@ impl Machines {
             let message = format!("the key {key:?} is not 1 to 200 characters");
             return Err(Error::new(Kind::Usage, "idempotency_key_invalid", message));
         }
-        let name = self.fresh_name()?;
-        let (mut request, signer) = request(sku, shape, &name);
+        let (mut request, alias, signer) = request(sku, shape);
         let quote = self.quoted(&origin, &request).await?;
         // The Hub's cap is the one price check: an order dearer than the price agreed, else this
         // quote's, rents nothing (409 rental.price_rose). It reads 0 as no cap, so 0 is sent as 1.
         let cap = request.max_usd_micros_per_hour.unwrap_or(quote.price_usd_micros_per_hour);
         request.max_usd_micros_per_hour = Some(cap.max(1));
-        write_key(&self.home.rental_key(&name), &signer)?;
+        write_key(&self.home.rental_key(&alias), &signer)?;
         let ask = Ask {
             key: key.to_owned(),
             kind: AskKind::Rent,
             hub: origin.into(),
             digest,
             body: serde_json::to_vec(&RentBody { request, quote, stopped: false }).expect("serializes"),
-            machine: Some(name),
+            machine: Some(alias),
             run,
             state: AskState::Pending,
             reason: None,
@@ -523,15 +472,15 @@ impl Machines {
                     }
                 }
                 Ok(rental) => {
-                    let name = ask.machine.clone().unwrap_or_default();
-                    // Named when it was ordered, and so from then on (cl-888).
+                    let alias = ask.machine.clone().unwrap_or_default();
+                    // Asked under its alias; the boot follower takes the Hub's name for it.
                     let row = MachineRow {
-                        name: name.clone(),
+                        name: alias.clone(),
                         kind: MachineKind::Rental,
                         hub: ask.hub.clone(),
                         rental_id: Some(rental.rental_id.clone()),
                         endpoint: None,
-                        key: self.home.rental_key(&name),
+                        key: self.home.rental_key(&alias),
                         state: MachineState::Booting,
                         served: false,
                         reason: None,
@@ -649,6 +598,7 @@ impl Machines {
             reason: None,
         };
         let mut machine = Machine::from(&row);
+        machine.placeholder = placeholder(&machine, None, RentBody::of(ask).ok().map(|body| body.request).as_ref());
         match RentBody::of(ask).is_ok_and(|body| body.stopped) {
             true => {
                 machine.state = MachineState::Ending;
@@ -724,6 +674,12 @@ impl Machines {
                     Some(sku) if gpus > 0 => (sku, Some(gpus), None, vec![]),
                     sku => me.placed(&run, sku.as_deref()).await?,
                 };
+                // Until its machine is named, the run says what it rents.
+                let card = sku.replace(['-', '_'], " ").to_uppercase();
+                me.calcifer.waiting(&run.id, match gpus {
+                    Some(n) if n > 1 => format!("renting {n}× {card}"),
+                    _ => format!("renting {card}"),
+                });
                 let shape = Shape {
                     gpus,
                     disk_gb,
@@ -944,7 +900,8 @@ impl Machines {
     }
 
     /// Follows a booting rental at its Hub until it has an address (then its runs are sent) or
-    /// the Hub says it ended. It keeps the name it was ordered under.
+    /// the Hub says it ended. The Hub's name for the pod replaces the one it was asked under
+    /// until it serves.
     pub(crate) fn follow_boot(self: &Arc<Self>, row: MachineRow) {
         let Some(id) = row.rental_id.clone() else {
             return;
@@ -964,9 +921,11 @@ impl Machines {
         // While a pod boots, one cheap read of our own Hub every 2 s: the address is seen within 2 s
         // of the pod serving, however long the boot's last phase took. An order with no pod yet
         // (the Hub holds an out-of-stock one until its renter ends it) changes rarely: its reads
-        // back off to a minute, as a failing read's do. Its runs wait for it all the same.
+        // back off to a minute, as a failing read's do, after its first: an order with stock is placed in seconds, and its host's
+        // name is shown as soon as its Hub has it (Paul 11-12). Its runs wait for it all the same.
         const BOOTING: Duration = Duration::from_secs(2);
         const WAITING: Duration = Duration::from_secs(60);
+        let placing = std::time::Instant::now();
         let mut pause = BOOTING;
         loop {
             match self.store().machine(&row.name) {
@@ -977,6 +936,22 @@ impl Machines {
             }
             match self.hubs.read(&row.hub, &id).await {
                 Ok(rental) => {
+                    if let Some(named) = hub_name(&rental)
+                        && named != row.name
+                        && !row.served
+                    {
+                        match self.calcifer.rename_machine(&row.name, &named) {
+                            Ok(true) => {
+                                let seen = lock(&self.seen).remove(&row.name);
+                                lock(&self.seen).insert(named.clone(), seen.unwrap_or_default());
+                                row.name = named;
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                warn!(machine = row.name, "taking the Hub's name {named}: {e}")
+                            }
+                        }
+                    }
                     let boot = boot_phase(&rental);
                     {
                         let mut seen = lock(&self.seen);
@@ -1000,7 +975,7 @@ impl Machines {
                         self.calcifer.machine_changed();
                         return self.watch(&row);
                     }
-                    pause = match no_pod_yet(&rental) {
+                    pause = match no_pod_yet(&rental) && placing.elapsed() > WAITING {
                         true => (pause * 2).min(WAITING),
                         false => BOOTING,
                     };
@@ -1139,10 +1114,7 @@ impl Machines {
         let Ok(hub) = config::Origin::parse(origin) else { return };
         let endpoint = endpoint(rental);
         let row = MachineRow {
-            // The name its order gave it, as the computer that ordered it shows it; one this computer holds already, its id.
-            name: Some(rental.name.to_ascii_lowercase())
-                .filter(|name| crate::machines::valid_name(name).is_ok())
-                .unwrap_or_else(|| rental.rental_id.to_ascii_lowercase()),
+            name: hub_name(rental).unwrap_or_else(|| rental.rental_id.to_ascii_lowercase()),
             kind: MachineKind::Rental,
             hub: origin.to_owned(),
             rental_id: Some(rental.rental_id.clone()),
@@ -1413,7 +1385,7 @@ fn exports(event: &api::calcifer::Event) -> bool {
     use api::calcifer::Event;
     !matches!(
         event,
-        Event::Log { .. } | Event::Call { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::OutputDelta { .. }
+        Event::Log { .. } | Event::Call { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } | Event::OutputDelta { .. }
     )
 }
 
@@ -1625,6 +1597,44 @@ fn cause(rental: &types::Rental) -> String {
         .unwrap_or_else(|| format!("its Hub says it {}", rental.state))
 }
 
+/// What a rental is said as while its name is a handle (Paul 11-12: the GPU's name as soon as it has one, never the
+/// rental's id): booting or ending with the name it was ordered under, or adopted under its id, and booting on a host
+/// other than the one its name is (placed again, it's another machine). `Renting an RTX 4090…`, `Renting 2× H100…`.
+fn placeholder(machine: &Machine, rental: Option<&types::Rental>, ordered: Option<&types::RentalRequest>) -> Option<String> {
+    let handle = machine.name.starts_with(HANDLE) || machine.rental_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(&machine.name));
+    let elsewhere = rental.is_some_and(|rental| hub_name(rental).as_deref() != Some(machine.name.as_str()));
+    let unnamed = match machine.state {
+        MachineState::Booting => handle || elsewhere,
+        MachineState::Ending => handle,
+        _ => false,
+    };
+    if machine.kind != MachineKind::Rental || !unnamed {
+        return None;
+    }
+    let sku = (rental.and_then(|rental| rental.sku.clone()))
+        .or_else(|| ordered.map(|request| request.sku.clone()))
+        .or_else(|| rental.map(|rental| rental.requested_accelerator_model.clone()))
+        .filter(|sku| !sku.is_empty())?;
+    let gpus = (rental.map(|rental| rental.accelerator_count))
+        .or_else(|| ordered.and_then(|request| request.accelerator_count))
+        .unwrap_or(1);
+    let what = sku.replace(['-', '_'], " ").to_uppercase();
+    Some(match gpus {
+        2.. => format!("Renting {gpus}× {what}…"),
+        _ if what.starts_with(['A', 'E', 'F', 'H', 'I', 'L', 'M', 'N', 'O', 'R', 'S', 'X', '8']) => format!("Renting an {what}…"),
+        _ => format!("Renting a {what}…"),
+    })
+}
+
+/// The name the Hub gave the pod, when a machine can carry it.
+fn hub_name(rental: &types::Rental) -> Option<String> {
+    rental
+        .machine_name
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .filter(|name| crate::machines::valid_name(name).is_ok())
+}
+
 /// A ready rental's address and pinned leaf, once the Hub publishes all of them.
 fn endpoint(rental: &types::Rental) -> Option<Endpoint> {
     if rental.state != "ready" {
@@ -1755,17 +1765,15 @@ pub(crate) struct Shape {
     pub ssh_key: Option<String>,
 }
 
-/// The name a quote's request carries: a quote rents nothing, and its name is never kept.
-const QUOTED: &str = "quote";
+/// What an order's name begins with: a handle Calcifer mints, shown as its [`placeholder`] until its Hub names the host.
+const HANDLE: &str = "rent-";
 
-/// The words a rental is named from, one a line: the Hub's vocabulary (tensorhub `internal/machinename`).
-const WORDS: &str = include_str!("machine_words.txt");
-
-/// The Hub's request for renting `sku` in `shape` as `name`, under a fresh signing key.
-fn request(sku: &str, shape: Shape, name: &str) -> (types::RentalRequest, SigningKey) {
-    let mut random = [0; 64];
+/// The Hub's request for renting `sku` in `shape`, under a fresh alias and signing key.
+fn request(sku: &str, shape: Shape) -> (types::RentalRequest, String, SigningKey) {
+    let mut random = [0; 68];
     getrandom::fill(&mut random).expect("the OS provides randomness");
-    let signer = SigningKey::from_bytes(random[32..].try_into().expect("32 bytes"));
+    let alias = format!("{HANDLE}{}", hex::encode(&random[..4]));
+    let signer = SigningKey::from_bytes(random[36..].try_into().expect("32 bytes"));
     let request = types::RentalRequest {
         accelerator_count: shape.gpus.map(i64::from),
         container_disk_gb: shape.disk_gb.map(i64::from),
@@ -1773,14 +1781,14 @@ fn request(sku: &str, shape: Shape, name: &str) -> (types::RentalRequest, Signin
         fallbacks: shape.fallbacks,
         legacy_image: None,
         // The Hub holds a media plane's token hash; machines serve bytes over Read instead.
-        media_token_sha256: hex::encode(Sha256::digest(&random[..32])),
-        name: name.to_owned(),
+        media_token_sha256: hex::encode(Sha256::digest(&random[4..36])),
+        name: alias.clone(),
         provider: shape.provider,
         sku: sku.to_owned(),
         development: shape.ssh_key.map(|ssh_public_key| types::RentalDevelopment { ssh_public_key }),
         max_usd_micros_per_hour: shape.agreed.map(|agreed| agreed.usd_micros_per_hour),
     };
-    (request, signer)
+    (request, alias, signer)
 }
 
 /// The UTC day of a unix-ms instant, `2026-10-30`.

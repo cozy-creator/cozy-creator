@@ -13,8 +13,9 @@ use futures_util::{StreamExt as _, stream};
 use ::api::hub::{Client, types};
 use api::{
     config::Origin,
+    error::{Error, Kind},
     calcifer::hub::{FamilyFrom, FoundModel, ModelContentKind},
-    model_ref::{ModelRef, ModelId},
+    model_ref::{ModelKind, ModelRef},
     calcifer::tool::Tool,
 };
 use tensorfs::{
@@ -146,60 +147,112 @@ pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], mo
 /// How long the family a package's model is named by stands: its owner can change the label.
 const NAMED_FOR: Duration = Duration::from_secs(600);
 
-/// The family of the model each package names, by Hub and release, when it was read.
-static NAMED: OnceLock<Mutex<HashMap<String, (Instant, Option<String>)>>> = OnceLock::new();
+/// The family and kind of each declared default, by Hub and reference, when read.
+#[derive(Clone, Default)]
+struct DefaultModel {
+    family: Option<String>,
+    kind: Option<ModelKind>,
+}
 
-fn named_so_far() -> &'static Mutex<HashMap<String, (Instant, Option<String>)>> {
+static NAMED: OnceLock<Mutex<HashMap<String, (Instant, DefaultModel)>>> = OnceLock::new();
+
+fn named_so_far() -> &'static Mutex<HashMap<String, (Instant, DefaultModel)>> {
     NAMED.get_or_init(Default::default)
 }
 
-/// The family of the release a package names: its label, else its header's.
-async fn named(api: &Api, client: &Client, endpoint: &Endpoint, hub: &Origin, default: &str) -> Option<String> {
-    let (model_id, release): (ModelId, Option<String>) = match ModelRef::parse(default).ok()? {
-        ModelRef::Hub { model: model_id, release } => (model_id, release),
+/// A declared default: its family label or header, and its real checkpoint kind.
+async fn named(api: &Api, client: &Client, endpoint: &Endpoint, hub: &Origin, default: &str) -> Option<DefaultModel> {
+    let reference = ModelRef::parse(default).ok()?;
+    let model_id = match &reference {
+        ModelRef::Hub { model, .. } | ModelRef::Checkpoint { model, .. } => model,
         _ => return None,
     };
     let card = (client.get_model(&model_id.org, &model_id.name).await).inspect_err(|why| tracing::debug!("{default}: {why}")).ok()?;
-    // The Hub's label is its family: only a model with none is read for what its header says.
-    if let Some(label) = card.model.family.clone().filter(|label| !label.is_empty()) {
-        return Some(label);
-    }
-    let header = match release {
-        Some(release) => card.releases.iter().find(|held| held.version == release)?.lanes.values().next().map(|lane| &lane.header),
-        None => header_of(&card),
+    let facts = match reference_header(&card, &reference) {
+        Some(header) => read(api, endpoint, hub, header).await,
+        None => None,
     };
-    read(api, endpoint, hub, header?).await?.family
+    Some(DefaultModel {
+        family: family(card.model.family.clone(), facts.as_ref().and_then(|facts| facts.family.as_deref())).0,
+        kind: known_kind(&card, facts.as_ref()),
+    })
 }
 
-/// Each tool says the family of the model it runs.
+fn known_kind(card: &types::ModelCard, facts: Option<&Facts>) -> Option<ModelKind> {
+    facts.map(|facts| if facts.lora { ModelKind::Lora } else { ModelKind::Base })
+        .or(card.model.kind).or_else(|| card.model.role.as_deref().and_then(ModelKind::from_role))
+}
+
+fn reference_header<'a>(card: &'a types::ModelCard, reference: &ModelRef) -> Option<&'a types::ObjectRef> {
+    match reference {
+        ModelRef::Hub { release: Some(release), .. } => card.releases.iter().find(|held| held.version == *release)?.lanes.values().next().map(|lane| &lane.header),
+        ModelRef::Hub { release: None, .. } => header_of(card),
+        ModelRef::Checkpoint { checkpoint, .. } => card.checkpoints.iter().find(|held| held.id == checkpoint.as_str()).map(|held| &held.header)
+            .or_else(|| card.releases.iter().flat_map(|release| release.lanes.values()).find(|lane| lane.checkpoint == checkpoint.as_str()).map(|lane| &lane.header)),
+        _ => None,
+    }
+}
+
+/// Refuse a known kind/family mismatch before a model choice is written. Missing
+/// metadata is not treated as compatibility; the native loader remains authoritative.
+pub(crate) async fn check_choice(api: &Api, hub: &Origin, slot: &str, reference: &str, expected_family: Option<&str>, expected_kind: Option<ModelKind>) -> Result<Option<String>, Error> {
+    let parsed = ModelRef::parse(reference)?;
+    let model = match &parsed {
+        ModelRef::Hub { model, .. } | ModelRef::Checkpoint { model, .. } => model,
+        _ => return Ok(None),
+    };
+    let Ok(client) = reader(api, hub) else { return Ok(None) };
+    let Ok(card) = client.get_model(&model.org, &model.name).await else { return Ok(None) };
+    let facts = match reference_header(&card, &parsed) {
+        Some(header) => match distribution(&client, hub).await {
+            Ok(endpoint) => read(api, &endpoint, hub, header).await,
+            Err(_) => kept(api, &key(hub, header)),
+        },
+        None => None,
+    };
+    save(api);
+    if let Some((expected, _)) = expected_kind.zip(known_kind(&card, facts.as_ref())).filter(|(expected, actual)| expected != actual) {
+        let expected = if expected == ModelKind::Lora { "a LoRA" } else { "base weights" };
+        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{slot} needs {expected}; {reference} is a different model kind")));
+    }
+    let (family, _) = family(card.model.family.clone(), facts.as_ref().and_then(|facts| facts.family.as_deref()));
+    if let Some((expected, actual)) = expected_family.zip(family.as_deref()).filter(|(expected, actual)| !expected.eq_ignore_ascii_case(actual)) {
+        return Err(Error::new(Kind::Validation, "model_choice_family", format!("{slot} uses {expected}; {reference} is for {actual}")));
+    }
+    Ok(family)
+}
+
+/// Each declared slot says the family and kind of its default checkpoint.
 pub(crate) async fn families(api: &Api, hub: &str, tools: &mut [Tool]) {
-    let defaults: BTreeSet<String> = tools.iter().filter_map(|tool| tool.model.as_ref()?.default.clone()).collect();
+    let defaults: BTreeSet<String> = tools.iter().flat_map(|tool| tool.models.iter().chain(tool.model.iter())).filter_map(|model| model.default.clone()).collect();
     let Ok(origin) = Origin::parse(hub) else { return };
     let fresh = |default: &String| {
         let held = named_so_far().lock().expect("named lock");
-        held.get(&format!("{origin} {default}")).filter(|(at, _)| at.elapsed() < NAMED_FOR).map(|(_, family)| family.clone())
+        held.get(&format!("{origin} {default}")).filter(|(at, _)| at.elapsed() < NAMED_FOR).map(|(_, model)| model.clone())
     };
-    let mut found: HashMap<String, Option<String>> = defaults.iter().filter_map(|default| Some((default.clone(), fresh(default)?))).collect();
+    let mut found: HashMap<String, DefaultModel> = defaults.iter().filter_map(|default| Some((default.clone(), fresh(default)?))).collect();
     if found.len() < defaults.len() {
         let Ok(client) = reader(api, &origin) else { return };
         let Ok(endpoint) = distribution(&client, &origin).await else { return };
         let (client, endpoint, origin) = (&client, &endpoint, &origin);
         let unread: Vec<String> = defaults.iter().filter(|default| !found.contains_key(*default)).cloned().collect();
         let reads = unread.into_iter().map(|default| async move {
-            let family = named(api, client, endpoint, origin, &default).await;
-            (default, family)
+            let model = named(api, client, endpoint, origin, &default).await.unwrap_or_default();
+            (default, model)
         });
-        let reads: Vec<(String, Option<String>)> = stream::iter(reads).buffered(READS).collect().await;
+        let reads: Vec<(String, DefaultModel)> = stream::iter(reads).buffered(READS).collect().await;
         save(api);
         let mut held = named_so_far().lock().expect("named lock");
-        for (default, family) in reads {
-            held.insert(format!("{origin} {default}"), (Instant::now(), family.clone()));
-            found.insert(default, family);
+        for (default, model) in reads {
+            held.insert(format!("{origin} {default}"), (Instant::now(), model.clone()));
+            found.insert(default, model);
         }
     }
     for tool in tools {
-        if let Some(model) = &mut tool.model {
-            model.family = model.default.as_ref().and_then(|default| found.get(default)?.clone());
+        for model in tool.models.iter_mut().chain(tool.model.iter_mut()) {
+            let facts = model.default.as_ref().and_then(|default| found.get(default));
+            model.family = facts.and_then(|facts| facts.family.clone());
+            model.kind = facts.and_then(|facts| facts.kind);
         }
     }
 }

@@ -1,8 +1,8 @@
 import type { Asset, Tool } from "../api/calcifer"
 import { addOnsOf, type Carried, modelsOf, takenOff, wordOf } from "./checkpoints"
 import { OWN, startingFields } from "./controls"
-import { madeHere, toolName } from "./shown"
-import { isVideoEdit, toolFitsNode } from "./palette"
+import { toolName } from "./shown"
+import { toolFitsNode } from "./palette"
 
 // What a tool going on, off or swapped does to a box, worked out here so the box shows it at once. Calcifer does the same to the file (`with_tool`). A tool coming
 // off takes its fields and what they held with it (Paul, 11-06), and Undo puts them back; its pictures, takes, approval and description stay. This holds no state.
@@ -31,8 +31,8 @@ const nounOf = (kind: string) => (kind === "video" ? "take" : "version")
 export const holdsPictures = (asset: Asset) => Boolean(asset.prefixes?.length || asset.sha256)
 
 function rowBack(asset: Asset): Partial<Asset> {
-  const { tool, kind, noun, standing, fields, prefixes, versions, version, approved, status } = asset
-  return { tool, kind, noun, standing, fields, prefixes, versions, version, approved, status }
+  const { tool, kind, noun, standing, fields, prefixes, versions, version, approved, status, timeline } = asset
+  return { tool, kind, noun, standing, fields, prefixes, versions, version, approved, status, timeline }
 }
 
 /** What `lora` and `models` keep on `next`, and what they lose: a LoRA is for a family, and a slot of `models` for a tool. */
@@ -65,7 +65,7 @@ export function startsFrom(tool: Tool, kind: string, fields: Fields, own: string
 export function goingOn(asset: Asset, fields: Fields, from: Tool | undefined, tool: Tool, looked?: number): ToolStep {
   const initial = Object.fromEntries(Object.entries(startingFields(tool)).filter(([field]) => fields[field] == null))
   const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: { ...Object.fromEntries(Object.keys(initial).map((field) => [field, fields[field] ?? null])), node_kind: fields.node_kind ?? null } as Fields }
-  const row: Partial<Asset> = { tool: tool.id, kind: holdsPictures(asset) ? asset.kind : tool.makes, noun: holdsPictures(asset) ? asset.noun : nounOf(tool.makes) }
+  const row: Partial<Asset> = { tool: tool.id, kind: holdsPictures(asset) ? asset.kind : tool.makes, noun: holdsPictures(asset) ? asset.noun : nounOf(tool.makes), timeline: tool.id === "cozy/edit" ? { fps: 24, tracks: [{ clips: [] }] } : undefined }
   if (!asset.tool && !holdsPictures(asset)) {
     // Its words are the prompt.
     const { text, ...rest } = fields
@@ -104,25 +104,27 @@ export function comingOff(asset: Asset, fields: Fields): ToolStep {
   const own = { ...Object.fromEntries(Object.entries(fields).filter(([field]) => OWN.includes(field) || (asset.kind !== "text" && WORDS.includes(field)))), node_kind: asset.kind }
   const gone = Object.keys(fields).filter((field) => !OWN.includes(field))
   const back = { row: rowBack(asset), tool: asset.tool ?? "", fields: { ...Object.fromEntries(gone.map((field) => [field, fields[field]])), node_kind: fields.node_kind ?? null } }
-  if (holdsPictures(asset)) return { row: { tool: undefined, standing: "current", fields: own }, tool: "", fields: { node_kind: asset.kind }, back, lost: [] }
+  if (holdsPictures(asset)) return { row: { tool: undefined, standing: "current", fields: own, timeline: undefined }, tool: "", fields: { node_kind: asset.kind }, back, lost: [] }
   const words = wordsIn(fields)
-  if (asset.kind !== "text") return { row: { tool: undefined, kind: asset.kind, noun: asset.noun, standing: "missing", fields: own }, tool: "", fields: { node_kind: asset.kind }, back, lost: [] }
+  if (asset.kind !== "text") return { row: { tool: undefined, kind: asset.kind, noun: asset.noun, standing: "missing", fields: own, timeline: undefined }, tool: "", fields: { node_kind: asset.kind }, back, lost: [] }
   return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...own, text: words ? fields[words] : "" } }, tool: "", fields: {}, back: { ...back, fields: { ...back.fields, text: null } }, lost: [] }
 }
 
-/** A tool goes on a box of the kind it makes (Paul, 11-11). On a box holding files of another kind it's a new box beside it that mentions them (tools §9). */
-export const goesBeside = (tool: Tool, asset: Asset) =>
-  holdsPictures(asset) && !toolFitsNode(tool, asset) && !isVideoEdit(asset) && !madeHere(asset.tool) && !madeHere(tool.id) && tool.id !== "text"
+/** Why `tool` can't go on `asset`, or null when it can: a tool goes only on a box of the kind it makes (tools §9). */
+export function wontGoOn(tool: Tool, asset: Asset, name: string): string | null {
+  if (toolFitsNode(tool, asset)) return null
+  if (tool.makes === asset.kind) return `${toolName(tool)} can't go on ${name}`
+  const made = tool.makes === "image" ? "images" : tool.makes
+  return `${toolName(tool)} makes ${made}: drop it on ${/^[aeiou]/.test(tool.makes) ? "an" : "a"} ${tool.makes} box`
+}
 
-/** A tool carried: dropped on a box it goes on, or takes the place of the one there, and the box opens (`putTool`). On open canvas, or on files of
- *  another kind, it's a new box. */
+/** A tool carried: dropped on a box it goes on, or takes the place of the one there, and the box opens (`putTool`). On open canvas it's a new box;
+ *  on a box of another kind nothing changes, and a note says why. */
 export const carryingTool = (tool: Tool): Carried => ({
   canvas: true,
   whyNot(name, view) {
     if (!view?.asset || view.placing) return `${toolName(tool)} can't go on ${name}`
-    if (madeHere(view.asset.tool)) return `${name} is made here, so ${toolName(tool)} can't go on it`
-    if (!toolFitsNode(tool, view.asset) && !goesBeside(tool, view.asset)) return `${toolName(tool)} makes ${tool.makes}; ${name} is a ${view.asset.kind} node`
-    return view.asset.tool === tool.id ? `${toolName(tool)} is on ${name} already` : null
+    return wontGoOn(tool, view.asset, name)
   },
   put: (store, name) => store.putTool(name, tool),
 })

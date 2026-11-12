@@ -9,6 +9,7 @@ import type { Account as Who, Code, OrgClaim } from "../api/calcifer"
 import { Copyable } from "../ui/Copyable"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
+import { ShowNsfw, useShowNsfw } from "../ui/Tags"
 import { theme } from "../ui/theme"
 import { Confirm, Failure, KV, Section, useAsk } from "./common"
 import { DrawerFrame } from "./Drawer"
@@ -181,7 +182,17 @@ function SignOut({ who, onDone }: { who: Who; onDone: () => void }) {
   )
 }
 
-/** Who, credit, sign in, sign out, orgs. Absent entirely on a channel connection: a link can point the page at a fake pod, so no secret is entered there. */
+function Settings() {
+  const [showNsfw, setShowNsfw] = useShowNsfw()
+  return (
+    <Section title="Settings">
+      <ShowNsfw shown={showNsfw} onChange={setShowNsfw} />
+      <p className="muted">Applies to model and LoRA lists throughout Creator.</p>
+    </Section>
+  )
+}
+
+/** Who, credit, sign in, sign out, orgs and local settings. Absent entirely on a channel connection: a link can point the page at a fake pod, so no secret is entered there. */
 export function Account() {
   const { client } = useConnection()
   const to = useTo()
@@ -206,6 +217,7 @@ export function Account() {
   const signedIn = who?.logged_in && who.account
   return (
     <DrawerFrame title="Account">
+      <Settings />
       <Failure error={error} lead="The Hub didn't say who this is" />
       {who && !who.logged_in && <SignIn keyRefused={Boolean(who.key_refused)} onSignedIn={changed} />}
       {who?.logged_in && !who.account && <NameAccount onNamed={changed} />}

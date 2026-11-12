@@ -30,7 +30,6 @@ class Changed(TypedDict, total=False):
     vault: VaultStatus
     skipped_files: list[str]
     recovery_secret: str
-    preserved_source: str | None
 
 
 class VaultEvent(TypedDict, total=False):
@@ -87,7 +86,6 @@ def main() -> None:
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     operation = uuid.uuid4().hex
     url = f"http://{holder['address']}/v1/projects/{urllib.parse.quote(str(project.resolve()), safe='')}/vault/operations/{operation}"
-    # An old client omits both policy fields. The new server must still remove plaintext.
     sources_before = set(project.parent.glob(".cozy-project-source-*"))
     body = json.dumps({"action": "encrypt", "passphrase": credential.read_text().strip(),
                        "idle_timeout_s": 0, "max_duration_s": 86400}).encode()
@@ -124,7 +122,6 @@ def main() -> None:
     assert changed is not None
     assert changed["vault"]["encrypted"] and changed["vault"]["state"] == "unlocked"
     assert changed["vault"]["idle_timeout_s"] == 0
-    assert not changed.get("preserved_source")
     assert set(project.parent.glob(".cozy-project-source-*")) == sources_before
     assert not (project / "project.db").exists()
     if os.name != "nt":
