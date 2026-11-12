@@ -98,10 +98,10 @@ async function died(error) {
   const palette = () => page.evaluate(() => ({ shut: document.querySelector('aside.tools')?.classList.contains('shut'), saved: localStorage.getItem('cozy.tools-shut') }));
   const sameCamera = (before, after) => Math.abs(before.x - after.x) < 0.5 && Math.abs(before.y - after.y) < 0.5 && Math.abs(before.zoom - after.zoom) < 0.0001;
   const sameRect = (before, after) => ['x', 'y', 'width', 'height'].every((key) => Math.abs(before[key] - after[key]) < 2);
-  const focusByClick = async () => {
+  const wanderPoint = async () => {
     const media = boxOf(page, NAME).locator('.media');
     await media.waitFor();
-    const point = await media.evaluate((element) => {
+    return media.evaluate((element) => {
       const rect = element.getBoundingClientRect();
       const left = Math.max(rect.left, document.querySelector('aside.tools')?.getBoundingClientRect().right ?? 0);
       const right = Math.min(rect.right, innerWidth - 8);
@@ -110,7 +110,10 @@ async function died(error) {
       if (right <= left || bottom <= top) throw new Error('the Wander image has no visible click target');
       return { x: (left + right) / 2, y: (top + bottom) / 2 };
     });
-    await page.mouse.click(point.x, point.y);
+  };
+  const focusByDoubleClick = async () => {
+    const point = await wanderPoint();
+    await page.mouse.dblclick(point.x, point.y);
     await focus.waitFor();
     await page.locator(`[data-focused-asset="${NAME}"]:not([data-entering])`).waitFor();
     await card.waitFor();
@@ -197,10 +200,16 @@ async function died(error) {
 
   const wander = await camera();
   const expanded = await palette();
-  await focusByClick();
+  const selectionPoint = await wanderPoint();
+  await page.mouse.click(selectionPoint.x, selectionPoint.y);
+  await page.locator(`.react-flow__node.selected:has(.card[data-asset="${NAME}"])`).waitFor();
+  check('single_click_selects_without_entering_focus_or_moving_the_camera', await page.locator('[data-focused-asset]').count() === 0 && sameCamera(wander, await camera()));
+  await boxOf(page, NAME).locator('.head .nm').click();
+  check('Wander_title_click_selects_without_opening_focus_or_renaming', await page.locator('[data-focused-asset]').count() === 0 && await boxOf(page, NAME).locator('.head input').count() === 0 && await page.locator(`.react-flow__node.selected:has(.card[data-asset="${NAME}"])`).count() === 1 && sameCamera(wander, await camera()));
+  await focusByDoubleClick();
   const focusedCanvas = await camera();
   const wide = await expectFit(4);
-  check('node_click_opens_one_focus_workspace', await page.locator('[data-focused-asset]').count() === 1 && await card.count() === 1);
+  check('node_double_click_opens_one_focus_workspace', await page.locator('[data-focused-asset]').count() === 1 && await card.count() === 1);
   check('entry_animates_the_canvas_into_the_selected_asset', !sameCamera(wander, focusedCanvas), { before: wander, after: focusedCanvas });
   check('focus_keeps_temporary_palette_collapse_out_of_saved_settings', (await palette()).saved === expanded.saved);
   const background = await focus.evaluate((element) => ({ color: getComputedStyle(element).backgroundColor, image: getComputedStyle(element).backgroundImage }));
@@ -358,7 +367,7 @@ async function died(error) {
   if (!(await palette()).shut) await tools.getByLabel('Hide the tools', { exact: true }).click();
   const collapsed = await palette();
   const beforeGestures = await camera();
-  await focusByClick();
+  await focusByDoubleClick();
   await expectFit(0.25);
   const gestureCanvas = await camera();
   await focus.getByRole('button', { name: 'Zoom in image', exact: true }).click();
@@ -389,7 +398,7 @@ async function died(error) {
   await until('Escape animates to the original Wander camera', camera, (position) => sameCamera(beforeGestures, position));
   await settled(page);
   check('Escape_explicitly_exits_focus_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
-  await focusByClick();
+  await focusByDoubleClick();
   await expectFit(0.25);
   const mainImage = (await measure()).media;
   await page.mouse.click(mainImage.x + mainImage.width / 2, mainImage.y + mainImage.height / 2);
@@ -417,7 +426,7 @@ async function died(error) {
   await fitCanvas(page);
   const videoWander = await camera();
   const videoTile = await boxOf(page, VIDEO).locator('.media').boundingBox();
-  await page.mouse.click(videoTile.x + videoTile.width / 2, videoTile.y + videoTile.height / 2);
+  await page.mouse.dblclick(videoTile.x + videoTile.width / 2, videoTile.y + videoTile.height / 2);
   const videoFocus = page.locator(`[data-focused-asset="${VIDEO}"]`);
   await videoFocus.waitFor();
   await page.locator(`[data-focused-asset="${VIDEO}"]:not([data-entering])`).waitFor();
@@ -454,9 +463,16 @@ async function died(error) {
   const completedVideo = videoFocus.locator('.here-side .take[data-take="1"]');
   await completedVideo.waitFor();
   await completedVideo.click();
+  await videoFocus.locator('.focus-viewer').getByRole('button', { name: 'Play', exact: true }).click();
   const completedPlayer = videoFocus.locator('.focus-viewer video').first();
   await completedPlayer.waitFor({ state: 'visible' });
-  await until('the imported completed video can actually play', () => completedPlayer.evaluate((element) => element.readyState >= 2 && element.videoWidth > 0), Boolean);
+  // Hold the one-second fixture on a decoded frame while its view controls are checked.
+  await completedPlayer.evaluate((element) => { element.loop = true; });
+  await until('the imported completed video can actually play', () => completedPlayer.evaluate((element) => {
+    const loaded = element.readyState >= 2 && element.videoWidth > 0;
+    if (loaded) element.pause();
+    return loaded;
+  }), Boolean);
   const completedGeometry = await videoFocus.locator('.focus-viewer').boundingBox();
   check('completed_video_has_a_prominent_view_only_face', completedGeometry.width > videoRoom.width * 0.5 && completedGeometry.height > 120 && !await summaryPrompt.isVisible() && !await beatPrompt.isVisible() && await videoFocus.locator('.mention-text:visible').count() === 0, { completedGeometry, videoRoom });
   check('completed_video_has_models_and_an_explicit_pick_up_action', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await videoFocus.locator('.video-pickup-action').isVisible());
@@ -465,7 +481,7 @@ async function died(error) {
   await summaryPrompt.waitFor({ state: 'visible' });
   check('pick_up_opens_the_video_editor_without_starting_a_render', !await videoFocus.locator('.focus-viewer').isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1 && !(await state()).assets.find((item) => item.name === VIDEO).making?.length);
   await completedVideo.click();
-  await completedPlayer.waitFor({ state: 'visible' });
+  await videoFocus.locator('.focus-viewer').getByRole('button', { name: 'Play', exact: true }).waitFor();
   await shot('completed-video');
   check('video_has_a_new_state_tile', await newVideo.isVisible());
   await newVideo.click();
