@@ -14,6 +14,11 @@ fn no_store(headers: &mut HeaderMap) {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
 }
+fn resource(path: &str) -> bool {
+    matches!(path, "/@react-refresh" | "/NOTICES.txt")
+        || ["/src/", "/node_modules/", "/@vite/", "/@id/", "/@fs/", "/assets/"].iter().any(|prefix| path.starts_with(prefix))
+}
+
 fn query(query: Option<&str>) -> String {
     let mut kept = url::form_urlencoded::Serializer::new(String::new());
     for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
@@ -30,7 +35,9 @@ fn query(query: Option<&str>) -> String {
 }
 
 pub(super) async fn http(api: &Arc<Api>, address: SocketAddr, request: Request, client_route: bool) -> Result<Response, Refusal> {
-    if request.uri().path().starts_with("/v1") || !matches!(*request.method(), Method::GET | Method::HEAD) { return Err(unavailable()); }
+    if request.uri().path().starts_with("/v1") || !matches!(*request.method(), Method::GET | Method::HEAD) || !client_route && !resource(request.uri().path()) {
+        return Err(api::refuse(::api::error::Kind::NotFound, "unknown_route", "Calcifer does not serve this development resource"));
+    }
     let target = if client_route { "/".to_owned() } else { format!("{}{}", request.uri().path(), query(request.uri().query())) };
     let client = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().map_err(|_| unavailable())?;
     // Start with no caller headers. In particular no bearer, media/session secret, cookie,
