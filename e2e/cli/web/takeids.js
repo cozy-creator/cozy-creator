@@ -282,8 +282,8 @@ const RECORD = () => {
   if (left.making.includes(e2.take)) {
     await pickTile(e2.take);
     check('e_other_still_selectable', (await until('the second picked', picked, (id) => id === e2.take, 5_000).catch(() => null)) === e2.take, await picked());
-    // Looked away, at the first's version, so the second's landing is said.
-    await page.locator(`[data-focused-asset="card"] .here-side .take[data-take-id="${e1.take}"]`).click();
+    // Looked away, at v1, which stays what's shown whatever lands (the box's state would move to the second), so its landing is said.
+    await page.locator('[data-focused-asset="card"] .here-side .take[data-take="1"]').click();
   } else check('e_other_still_selectable', left.landed.includes(e2.take), left);
   const secondDone = await until('the second lands', asset, (row) => row.prefixes.some((version) => version.id === e2.take), FIRST_RUN_MS);
   const v2 = versionOf(secondDone, e2.take);
