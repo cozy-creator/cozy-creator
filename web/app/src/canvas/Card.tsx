@@ -30,6 +30,9 @@ import { Asking } from "./Asking"
 import { readableSurface } from "./readableSurface"
 import type { Box } from "./graph"
 
+/** A style with its CSS custom properties. */
+type StyleWithVars = CSSProperties & { [name: `--${string}`]: string }
+
 const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-current", making: "s-making", missing: "s-current", failed: "s-failed" }
 const WIDEST = 1600
 const LOWEST = 90
@@ -731,13 +734,16 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
   const originalAspect = firstImage?.width && firstImage.height ? firstImage.width / firstImage.height : aspectOf(view)
   const imageHeight = width / originalAspect
   const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
+  const cardStyle: StyleWithVars = focused
+    ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 210 : 52 : asset?.tool ? 220 : 0}px` }
+    : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
   return (
     <div
       ref={self}
       className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === (view.asset.approved ?? view.asset.version) ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
-      style={(focused ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 210 : 52 : asset?.tool ? 220 : 0}px` } : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }) as CSSProperties}
+      style={cardStyle}
       onClick={buttonsOnly}
       onAnimationEnd={(event) => {
         if (event.target === event.currentTarget && view.landing) store.patch(name, { landing: undefined })
