@@ -137,7 +137,7 @@ pub fn families_digest() -> &'static str {
 /// What [`Facts`] are read under: the families and what [`parts`] counts. A reader keeping facts reads them again when it changes.
 pub fn facts_digest() -> &'static str {
     static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    DIGEST.get_or_init(|| crate::sha256::hex_digest(format!("{}\0parts 1", families_digest()).as_bytes()))
+    DIGEST.get_or_init(|| crate::sha256::hex_digest(format!("{}\0parts 2", families_digest()).as_bytes()))
 }
 
 pub(crate) fn named(name: &str) -> Option<&'static Family> {
@@ -215,10 +215,30 @@ pub struct Facts {
     pub parts: parts::Parts,
 }
 
-/// Whether every tensor of a stored component is a LoRA's, as its source may have spelled it (kohya's
-/// `lora_down`, PEFT's adapter name): one kept as it was until a table read it.
+/// Whether a stored component is a LoRA's: every tensor a LoRA's, as its source may have spelled it (kohya's `lora_down`,
+/// PEFT's adapter name), one kept as it was until a table read it; or factor pairs with tensors it keeps beside them (a
+/// step-distilled LoRA's per-step tables and heads: H3 Turbo's, Regenerate-2K's), as the catalog's role reads it.
 fn holds_factors(component: &Component) -> bool {
-    component.tensors.iter().all(|t| lora_key(&t.key) || crate::import::lora::peft_key(&t.key).is_some())
+    component.tensors.iter().all(|t| factor(&t.key)) || paired(component)
+}
+
+/// A LoRA's factor, alpha or tensor it keeps, in any spelling a source has.
+pub(crate) fn factor(key: &str) -> bool {
+    lora_key(key) || crate::import::lora::peft_key(key).is_some()
+}
+
+/// Whether a component holds a factor pair: one module's A (`lora_down`) and B (`lora_up`).
+pub(crate) fn paired(component: &Component) -> bool {
+    let mut sides: BTreeMap<String, u8> = BTreeMap::new();
+    for key in component.tensors.iter().filter_map(|t| crate::import::lora::peft_key(&t.key)) {
+        let (module, side) = match (key.strip_suffix(".lora_A.weight"), key.strip_suffix(".lora_B.weight")) {
+            (Some(module), _) => (module.to_owned(), 1),
+            (_, Some(module)) => (module.to_owned(), 2),
+            _ => continue,
+        };
+        *sides.entry(module).or_default() |= side;
+    }
+    sides.values().any(|sides| *sides == 3)
 }
 
 impl Facts {
