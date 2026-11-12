@@ -31,7 +31,7 @@ LOOKS = {'ssim': [(0.98, 'the same picture'), (0.93, 'the same picture, details 
          'worst_eighth': [(0.05, 'the same video'), (0.085, 'the same video, details changed'), (0.15, 'a changed video'),
                           (math.inf, 'a different video (toward the another-seed range, 0.23-0.24)')]}
 # The corpus's model names (attention-corpus cells) and the packages the arms run.
-PACKAGE = {'h3-15s': 'minimax-h3', 'qwen4mp': 'qwen-image-2', 'moss': 'moss-image', 'klein': 'flux-3-klein'}
+PACKAGE = {'h3-15s': 'minimax-h3', 'qwen4mp': 'qwen-image-2', 'moss': 'moss-image', 'klein': 'flux.3-klein'}
 
 
 class Pair(TypedDict, total=False):

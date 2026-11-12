@@ -29,7 +29,7 @@ const shell = (command) => new Promise((done, fail) => exec(command, { shell: 'b
 
 // What each first-party package offers, by the operation the palette puts it under: the packages repo's `@app.tool`s.
 const OFFERS = {
-  image: [...['anima', 'fibo-2', 'flux-2', 'flux.3', 'hidream-o1', 'hunyuan-image-3', 'ideogram-4', 'krea-2', 'moss-image', 'qwen-image', 'qwen-image-2', 'sdxl'].map((p) => `${p}/image`), 'p-h3-image/generate'],
+  image: [...['anima', 'fibo-2', 'flux-2', 'flux.3-klein', 'hidream-o1', 'hunyuan-image-3', 'ideogram-4', 'krea-2', 'moss-image', 'qwen-image', 'qwen-image-2', 'sdxl'].map((p) => `${p}/image`), 'p-h3-image/generate'],
   edit_image: ['birefnet/remove_background'],
   upscale_image: ['seedvr2/upscale_image'],
   video: ['minimax-h3/generate', 'orbit/orbit'],
