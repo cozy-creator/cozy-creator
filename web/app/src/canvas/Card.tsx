@@ -980,7 +980,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
             {(asset.kind !== "text" || asset.tool) && <>
-              {asset.timeline && <Takes view={view} name={name} width={width} />}
+              {asset.timeline && <Takes view={view} name={name} width={width} focused={focused} />}
               {asset.kind !== "image" && !asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
               {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
