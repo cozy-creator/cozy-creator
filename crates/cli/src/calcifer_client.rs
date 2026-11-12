@@ -22,7 +22,10 @@ use platform::{
     tools,
 };
 use api::{
-    calcifer::{Down, Event, Holder, LogEvent, MachineList, REFUSED, Run, RunList, StreamEvent, project::{VaultAsk, VaultChanged, VaultEvent}},
+    calcifer::{
+        CalciferActivity, Down, Event, Holder, LogEvent, MachineList, PROCESS_HEADER, REFUSED, Run, RunList, StreamEvent,
+        project::{VaultAsk, VaultChanged, VaultEvent},
+    },
     error::{Envelope, Error, Kind, STOPPING},
     ids::Digest,
     machine::{HELD, LogLines, Ranges, parse_held},
@@ -46,6 +49,8 @@ use crate::{Context, output};
 const SAMPLE: Duration = Duration::from_millis(50);
 /// How often a wait that goes on says so.
 const REPORT: Duration = Duration::from_secs(5);
+/// A request this recent by anyone else means someone uses Calcifer: a `cozy` of another version leaves it running (cl-962).
+const IN_USE: Duration = Duration::from_secs(600);
 /// Calcifer's streams carry a keepalive this often (axum's default): one silent for two is a Calcifer
 /// that does not answer.
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -110,8 +115,11 @@ impl Client {
     }
 
     fn new(ctx: &Context) -> Result<Self, Error> {
-        // Who a project's history says made an edit.
-        let said = header::HeaderMap::from_iter([(header::HeaderName::from_static("cozy-client"), header::HeaderValue::from_static("cli"))]);
+        // Who a project's history says made an edit, and which process asks (cl-962: Calcifer tells its requests from others').
+        let said = header::HeaderMap::from_iter([
+            (header::HeaderName::from_static("cozy-client"), header::HeaderValue::from_static("cli")),
+            (header::HeaderName::from_static(PROCESS_HEADER), header::HeaderValue::from(std::process::id())),
+        ]);
         let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone")
             .no_proxy()
             .default_headers(said)
@@ -489,14 +497,14 @@ impl Client {
                         if let Some(fields) = ignored {
                             let lacks = format!("does not read {fields}");
                             self.say(&format!("{}; it carried out the ask without them", self.lacking(&lacks)));
-                            self.restart(&lacks).await?;
+                            self.restart_after(&lacks).await;
                         }
                         return Ok(value);
                     }
                     Err(e) if self.other_version() && write => {
                         let lacks = format!("answers without what this cozy reads ({e})");
                         self.say(&format!("{}; it carried out the ask, which isn't sent again", self.lacking(&lacks)));
-                        self.restart(&lacks).await?;
+                        self.restart_after(&lacks).await;
                         let said = format!("The operation completed, but its response could not be read: {e}");
                         return Err(Error::new(Kind::Internal, "answer_unreadable", said));
                     }
@@ -563,9 +571,14 @@ impl Client {
     }
 
     /// Restarts Calcifer on the installed cozy because it `lacks` something this cozy asks for;
-    /// false when the restart brought back the same version, which would lack it still.
+    /// false when the restart brought back the same version, which would lack it still. A Calcifer
+    /// that is kept (`kept`: someone uses it, or this is not the installed cozy) is left running, and
+    /// the ask refused (cl-962).
     async fn restart(&self, lacks: &str) -> Result<bool, Error> {
         let Some(holder) = self.holder() else { return Ok(false) };
+        if let Some(why) = self.kept(&holder).await {
+            return Err(other_version(&holder, lacks, &why));
+        }
         self.say(&format!("{}; restarting it on the installed cozy", self.lacking(lacks)));
         if let Err(e) = self.down(&holder).await {
             self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
@@ -573,6 +586,55 @@ impl Client {
         self.remember(None);
         let started = self.endpoint().await?;
         Ok(started.version != holder.version)
+    }
+
+    /// After an ask Calcifer carried out: restarted for the next command, or said why it is kept.
+    async fn restart_after(&self, lacks: &str) {
+        if let Err(e) = self.restart(lacks).await {
+            self.say(&e.message);
+        }
+    }
+
+    /// Why the Calcifer `holder` names must keep running, which none of another version is restarted
+    /// past (cl-962): only the installed cozy's own path replaces it, and only while nobody uses it:
+    /// no page has a stream open, no run is unsettled, and nobody else asked anything for `IN_USE`.
+    /// One too old to say who uses it is kept.
+    async fn kept(&self, holder: &Holder) -> Option<String> {
+        if !self.is_installed() {
+            return Some("this cozy is not the installed one, which a restart would start".into());
+        }
+        let request = self.0.http.get(format!("http://{}/v1/activity", holder.address)).bearer_auth(&holder.token);
+        let answer = match tokio::time::timeout(REPORT, request.send()).await {
+            Ok(Ok(answer)) if answer.status().is_success() => answer,
+            Ok(Ok(_)) => return Some(format!("cozy {} can't say who uses it", holder.version)),
+            _ => return Some("it did not say who uses it".into()),
+        };
+        let Ok(activity) = answer.json::<CalciferActivity>().await else {
+            return Some(format!("cozy {} can't say who uses it", holder.version));
+        };
+        let recent = activity.others_request_ms.map(|at| Duration::from_millis(u64::try_from(activity.now_ms - at).unwrap_or(0)));
+        let mut uses = Vec::new();
+        match activity.pages {
+            0 => {}
+            1 => uses.push("a page is open".to_owned()),
+            n => uses.push(format!("{n} pages are open")),
+        }
+        match activity.runs {
+            0 => {}
+            1 => uses.push("a run is going".to_owned()),
+            n => uses.push(format!("{n} runs are going")),
+        }
+        if let Some(ago) = recent.filter(|ago| *ago < IN_USE) {
+            uses.push(format!("someone asked it something {}s ago", ago.as_secs()));
+        }
+        (!uses.is_empty()).then(|| uses.join(", "))
+    }
+
+    /// Whether this process is the installed cozy, which Calcifer is started from.
+    fn is_installed(&self) -> bool {
+        let me = std::env::current_exe().and_then(|exe| exe.canonicalize());
+        let installed = installed(&self.0.home).ok().and_then(|it| it.canonicalize().ok());
+        matches!((me, installed), (Ok(me), Some(it)) if me == it)
     }
 
     /// Calcifer is older than this cozy and the installed cozy is too.
@@ -719,9 +781,7 @@ impl Client {
     /// Whether the Calcifer `holder` names runs another cozy than this one, which is the installed
     /// one: something replaced the binary under it (`cozy machine update` on a pod, an installer).
     fn replaced(&self, holder: &Holder) -> bool {
-        let me = std::env::current_exe().and_then(|exe| exe.canonicalize());
-        let installed = installed(&self.0.home).ok().and_then(|it| it.canonicalize().ok());
-        holder.version != env!("CARGO_PKG_VERSION") && matches!((me, installed), (Ok(me), Some(it)) if me == it)
+        holder.version != env!("CARGO_PKG_VERSION") && self.is_installed()
     }
 
     /// Reaches Calcifer, starting it if none runs.
@@ -734,23 +794,33 @@ impl Client {
             return Ok(holder);
         }
         let holder = match self.live().await {
-            // It restarts on this binary: runs on machines go on, and it resumes what it owed.
-            Some(holder) if self.replaced(&holder) => {
-                self.say(&format!(
-                    "Calcifer runs cozy {}; restarting it on {}",
-                    holder.version,
-                    env!("CARGO_PKG_VERSION")
-                ));
-                if let Err(e) = self.down(&holder).await {
-                    self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
+            // It restarts on this binary: runs on machines go on, and it resumes what it owed. One someone uses keeps
+            // running (cl-962): this cozy asks it as it is, and only what it lacks is refused.
+            Some(holder) if self.replaced(&holder) => match self.kept(&holder).await {
+                Some(why) => {
+                    self.say(&format!(
+                        "Calcifer here is {}, this cozy is {}: it keeps running ({why}); `cozy restart` switches it",
+                        holder.version,
+                        env!("CARGO_PKG_VERSION")
+                    ));
+                    holder
                 }
-                self.start().await?
-            }
+                None => self.replace(holder).await?,
+            },
             Some(holder) => holder,
             None => self.start().await?,
         };
         self.remember(Some(holder.clone()));
         Ok(holder)
+    }
+
+    /// Stops `holder`'s Calcifer and starts the installed cozy's in its place.
+    async fn replace(&self, holder: Holder) -> Result<Holder, Error> {
+        self.say(&format!("Calcifer runs cozy {}; restarting it on {}", holder.version, env!("CARGO_PKG_VERSION")));
+        if let Err(e) = self.down(&holder).await {
+            self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
+        }
+        self.start().await
     }
 
     fn remember(&self, holder: Option<Holder>) {
@@ -1326,6 +1396,21 @@ pub(crate) fn path(segments: &[&str]) -> String {
 /// installer's `<home>/bin/cozy` when that is there, else this cozy (Homebrew's stable path, winget,
 /// a distro package), and that is recorded. One rule for every installer; another cozy never
 /// replaces a recorded one that is there.
+/// A Calcifer of another version that is kept running (cl-962): what this cozy asked for that it lacks, and why it keeps running.
+fn other_version(holder: &Holder, lacks: &str, why: &str) -> Error {
+    Error::new(
+        Kind::Unavailable,
+        "calcifer_other_version",
+        format!(
+            "Calcifer here is {}, this cozy is {}; run the matching cozy, or `cozy restart` to switch",
+            holder.version,
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .remedy(format!("It {lacks}; it keeps running: {why}"))
+    .next("cozy restart")
+}
+
 pub(crate) fn installed(home: &Home) -> Result<PathBuf, Error> {
     let record = home.installed();
     let recorded = std::fs::read_to_string(&record).ok().map(|text| PathBuf::from(text.trim_end()));

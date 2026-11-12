@@ -36,8 +36,9 @@ step install; install_cozy; run_project "$OUT/project" || fail "project initiali
 user_services
 step status; fixture_calcifer | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
-[ "$SHARD" != commands ] || version_skew
+[ "$SHARD" != commands ] || { version_skew; busy_skew; }
 step candidates; candidates
+[ "$SHARD" != commands ] || explicit_restart
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 }
 

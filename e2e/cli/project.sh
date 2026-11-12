@@ -73,6 +73,57 @@ version_skew() {
   fi
 }
 
+# open_page: a page as the browser makes one, against the running Calcifer: a sign-in code traded for a session, its events
+# stream held open in the background ($PAGE_PID, writing $OUT/page.sse). close_page ends it.
+open_page() {
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder address code session
+  address=$(jq -r .address "$holder")
+  code=$(curl -fsS -X POST -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$address/v1/session-codes" | jq -r .code) &&
+    session=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg c "$code" '{code: $c}')" "http://$address/v1/session" | jq -r .token) ||
+    { check "page: no browser session from $address"; return 1; }
+  curl -sSN -H "Authorization: Bearer $session" -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
+  sleep 2
+  kill -0 "$PAGE_PID" 2> /dev/null || { check "page: its events stream did not stay open: $(tail -c 300 "$OUT/page.sse")"; return 1; }
+}
+close_page() { [ -z "${PAGE_PID:-}" ] || kill "$PAGE_PID" 2> /dev/null; PAGE_PID=''; }
+
+# cl-962: a cozy of another version never restarts a Calcifer someone uses. With a page's stream open, the candidate CLI asks the
+# release's Calcifer what it lacks (`machine use`, cl-873's route): it says "Calcifer here is <v>, this cozy is <w>" and exits, and
+# that Calcifer (its pid) and the page's stream go on. A release that serves the route answers it; Calcifer still keeps its pid.
+busy_skew() {
+  [ -f "$CAND_COZY" ] || return 0
+  step "version skew: the candidate CLI leaves a Calcifer with an open page running"
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pid code=0 release candidate
+  pid=$(jq -r .pid "$holder") release=$(cozy --version) candidate=$("$CAND_COZY" --version)
+  open_page || return
+  (cd "$OUT/project" && "$CAND_COZY" machine use local) > "$OUT/skew-busy.txt" 2>&1 || code=$?
+  cat "$OUT/skew-busy.txt"
+  if [ "$code" != 0 ]; then
+    grep -qF "Calcifer here is ${release#cozy }, this cozy is ${candidate#cozy }" "$OUT/skew-busy.txt" && grep -q 'cozy restart' "$OUT/skew-busy.txt" \
+      || check "skew: the candidate CLI's refused ask did not say which versions meet and \`cozy restart\`"
+  fi
+  [ "$(jq -r .pid "$holder")" = "$pid" ] || check "skew: the candidate CLI restarted the release's Calcifer under an open page (pid $pid is now $(jq -r .pid "$holder"))"
+  kill -0 "$PAGE_PID" 2> /dev/null || check "skew: the page's events stream was cut"
+  ! grep -q 'restarting it' "$OUT/skew-busy.txt" || check "skew: the candidate CLI said it restarts Calcifer"
+  close_page
+}
+
+# cl-962: `cozy restart` is the one way to switch a Calcifer in use: with a page open, Calcifer comes back on the installed cozy
+# under a new pid, the page's stream ends (its page reconnects), and the next command is served.
+explicit_restart() {
+  step "cozy restart"
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pid
+  pid=$(jq -r .pid "$holder")
+  open_page || return
+  cozy --json restart > "$OUT/restart.json" 2> "$OUT/restart.err" || { check "cozy restart failed: $(tail -c 300 "$OUT/restart.err")"; close_page; return; }
+  J --argjson old "$pid" '.restarted and .pid != $old' "$OUT/restart.json" || check "cozy restart: $(cat "$OUT/restart.json")"
+  [ "$(jq -r .pid "$holder")" = "$(jq -r .pid "$OUT/restart.json")" ] || check "cozy restart: the lock names pid $(jq -r .pid "$holder")"
+  sleep 2
+  ! kill -0 "$PAGE_PID" 2> /dev/null || check "cozy restart: the old Calcifer's page stream is still open"
+  close_page
+  cozy --json machine ls > /dev/null || check "cozy restart: the next command was not served"
+}
+
 sha() { { sha256sum "$1" 2> /dev/null || shasum -a 256 "$1"; } | cut -c1-64; }
 J() { jq -e "$@" > /dev/null; }
 # boxes_in <folder>: stdin's JSON array of boxes, each a `POST /v1/projects/{id}/assets` body ({name, tool, kind, fields, at}), made in
