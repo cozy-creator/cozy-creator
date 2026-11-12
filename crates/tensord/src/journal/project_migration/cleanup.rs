@@ -103,7 +103,9 @@ pub(super) fn prepare(
     let mut keys = BTreeSet::new();
     let mut owners = BTreeSet::new();
     for record in &records {
-        generations.insert(record.invocation.generation.clone());
+        if !record.invocation.generation.is_empty() {
+            generations.insert(record.invocation.generation.clone());
+        }
         if let Some(submission) = &record.submission {
             actors.insert(submission.actor.clone());
             if !submission.preparation_id.is_empty() {
