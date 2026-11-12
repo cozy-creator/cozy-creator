@@ -2305,6 +2305,9 @@ video.preview.on {
   white-space: normal;
   overflow-wrap: break-word;
   line-height: 1.1;
+  /* A word a little wider than its box runs into the gap beside it rather than splitting (brok/en). */
+  flex-shrink: 0;
+  max-width: 130%;
 }
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
   display: none;
