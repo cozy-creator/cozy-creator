@@ -265,6 +265,18 @@ const RECORD = () => {
   const both = await now();
   const dots = await page.evaluate((ids) => ids.map((id) => document.querySelectorAll(`[data-focused-asset="card"] .here-side .take.making[data-take-id="${id}"] .state-dot`).length), [e1.take, e2.take]);
   check('e_each_its_own_tile_and_dot', both.making.includes(e1.take) && both.making.includes(e2.take) && dots.every((n) => n === 1), { both, dots });
+  // Paul, 11-12: look at it. The column with two takes on their way and the frame on the second, at 1440×900 and 1920×1080, paper and dark.
+  for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+    await page.setViewportSize({ width, height });
+    for (const dark of [false, true]) {
+      await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, dark);
+      await page.waitForTimeout(500);
+      await shot(`e-pending-${width}x${height}-${dark ? 'dark' : 'paper'}`);
+    }
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.waitForTimeout(500);
   const r1 = await until('the first take running', () => runOf(e1.take), Boolean, 60_000);
   await pickTile(e1.take);
   const f1 = await until('the frame on the first', face, (now) => now === String(r1), 10_000).catch(() => null);
