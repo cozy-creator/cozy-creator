@@ -354,6 +354,73 @@ pub struct Field {
     pub extra: Map<String, Value>,
 }
 
+/// `When(field, *values)`: a field that applies only while its sibling `field` is truthy, or is one of `values`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct When {
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<Value>,
+}
+
+impl When {
+    /// Whether it holds while its field is `value`: truthy as Python reads it, or one of its values.
+    pub fn holds(&self, value: &Value) -> bool {
+        if !self.values.is_empty() {
+            let same = |v: &Value| match (v, value) {
+                (Value::Number(a), Value::Number(b)) => a.as_f64() == b.as_f64(),
+                _ => v == value,
+            };
+            return self.values.iter().any(same);
+        }
+        match value {
+            Value::Null => false,
+            Value::Bool(on) => *on,
+            Value::Number(n) => n.as_f64() != Some(0.0),
+            Value::String(text) => !text.is_empty(),
+            Value::Array(items) => !items.is_empty(),
+            Value::Object(members) => !members.is_empty(),
+        }
+    }
+
+    /// In words, as the Runtime says it, its field a `toggle` or not: `only with prompt_upsampling on`, `only with
+    /// batch_size set`, `only when mode is edit or inpaint`.
+    pub fn words(&self, toggle: bool) -> String {
+        let said = |value: &Value| value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+        match self.values.as_slice() {
+            [] => format!("only with {} {}", self.field, if toggle { "on" } else { "set" }),
+            [Value::Bool(on)] => format!("only with {} {}", self.field, if *on { "on" } else { "off" }),
+            values => format!("only when {} is {}", self.field, values.iter().map(said).collect::<Vec<_>>().join(" or ")),
+        }
+    }
+}
+
+impl Field {
+    /// Its `When`, if it has one.
+    pub fn when(&self) -> Option<When> {
+        serde_json::from_value(self.extra.get("when")?.clone()).ok()
+    }
+}
+
+impl Struct {
+    /// The fields `values` gives where their `When` doesn't hold, each with it: a run takes their defaults. The field a
+    /// `When` names, not given, is its default.
+    pub fn inactive(&self, values: &Map<String, Value>) -> Vec<(String, When)> {
+        let held = |name: &str| {
+            let declared = self.fields.iter().find(|field| field.name == name)?;
+            Some(values.get(name).or(declared.default.as_ref()).cloned().unwrap_or(Value::Null))
+        };
+        let given = self.fields.iter().filter(|field| values.contains_key(&field.name));
+        let conditional = given.filter_map(|field| Some((field.name.clone(), field.when()?)));
+        conditional.filter(|(_, when)| held(&when.field).is_some_and(|value| !when.holds(&value))).collect()
+    }
+
+    /// `when`, of one of its fields, in words.
+    pub fn said(&self, when: &When) -> String {
+        when.words(self.fields.iter().any(|field| field.name == when.field && *field.ty.plain() == Type::Bool))
+    }
+}
+
 /// Whether a field must be sent: required, optional, or omissible for the model to choose.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]

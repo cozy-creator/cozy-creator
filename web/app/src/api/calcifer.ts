@@ -3125,6 +3125,10 @@ auto?: boolean, placeholder?: string | null,
  */
 advanced?: boolean,
 /**
+ * `When()`: it applies only while a field beside it has a value; else the box dulls it and keeps its value.
+ */
+when?: When | null,
+/**
  * A prompt that takes only these kinds of file.
  */
 takes?: Array<string> | null,
@@ -3527,3 +3531,8 @@ export type WarmLevel = "off" | "installed" | "downloaded" | "imported" | "host"
  * Something noticed about a run that did not stop it: a stable code and a message.
  */
 export type Warning = { code: string, message: string, };
+
+/**
+ * `When(field, *values)`: a field that applies only while its sibling `field` is truthy, or is one of `values`.
+ */
+export type When = { field: string, values?: Array<JsonValue>, };
