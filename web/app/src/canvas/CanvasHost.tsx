@@ -422,7 +422,7 @@ function Canvas({
   const machine = machines?.at(-1) ?? null
   const unread = error && !(read && lost(error)) ? error : null
   const readable = unread ? null : projectId
-  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable, true), enabled: machines !== null })
+  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.

@@ -37,7 +37,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut }: { projec
   const store = useCanvasStore()
   const [open, setOpen] = useState<Operation | null>(null)
   const [selected, setSelected] = useState<BasicNodeKind | null>(null)
-  const { data, error, isPlaceholderData } = useQuery({ ...toolsQuery(client, "", machine, project, true), enabled: !waiting })
+  const { data, error, isPlaceholderData } = useQuery({ ...toolsQuery(client, "", machine, project), enabled: !waiting })
   useEffect(() => {
     store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, ...data.tools.filter((tool) => tool.id !== VIDEO_EDIT_TOOL.id), VIDEO_EDIT_TOOL] : [TEXT_TOOL, VIDEO_EDIT_TOOL])
   }, [store, data, isPlaceholderData])
