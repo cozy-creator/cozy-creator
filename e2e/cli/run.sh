@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-scale|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-scale|web-canvas|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -276,6 +276,7 @@ case $SHARD in
   # The palette against a Hub holding every first-party package (e2e/isolated.sh), and with none (cl-896).
   web-palette) export DB_WEB=palette; parts="tools_read db_existing_web logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
+  web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
   web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
   web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
   web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
@@ -308,7 +309,7 @@ esac
 if [ -z "$LOCAL" ]; then
   case $SHARD in
     entrypoints | projectvault) ;;
-    web-layout-* | web-scale) parts="db_existing_web logs" ;;
+    web-layout-* | web-scale | web-canvas) parts="db_existing_web logs" ;;
     web-core) parts="entrypoints refusals web_native completions homebrew calcifer_faults update remove" ;;
     *) parts="entrypoints refusals web_serves completions homebrew calcifer_faults update remove" ;;
   esac

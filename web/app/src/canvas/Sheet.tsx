@@ -5,9 +5,13 @@ import { landscape, theme } from "../ui/theme"
 
 /** What the paper's tiles all repeat on, so wrapping by it can't be seen. */
 const PERIOD = 2048
-/** How far it follows a zoom. Any smaller and a 4K window shows more of it than Chrome will raster, and parts go blank; any larger and its tooth blurs. */
-const SMALLEST = 0.75
-const LARGEST = 1.5
+/**
+ * A background is laid out at a rung, each 4/3 of the one below, and its transform scales it by the rest: (0.75, 1]. Chrome rasters a layer
+ * that will change its transform at the scale it first drew it, and never below 1: drawn larger it blurs, and drawn below 0.75 a 4K window
+ * shows more of it than Chrome will raster, and parts go blank. A zoom across a rung lays out and draws that one layer again.
+ */
+const RUNG = 4 / 3
+const rungOf = (scale: number) => RUNG ** Math.ceil(Math.log(scale) / Math.log(RUNG) - 1e-9)
 
 /** What the canvas is drawn on: on paper a landscape unless it's hidden, else a sheet that goes where the canvas goes. */
 export function Sheet() {
@@ -15,17 +19,20 @@ export function Sheet() {
   return now === "paper" && shown ? <Landscape /> : <World />
 }
 
-/** The sheet, which goes where the canvas goes. The store is read here and the transform set by hand, so a pan renders nothing, and the sheet is on a layer of its own, so it repaints nothing. */
+/** The sheet, which goes where the canvas goes, at every zoom. The store is read here and the transform set by hand, so a pan renders nothing, and the sheet is on a layer of its own, so it repaints nothing. */
 function World() {
   const flow = useStoreApi()
   const sheet = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    let last = flow.getState().transform
+    let [last, held] = [flow.getState().transform, 0]
     const place = ([x, y, zoom]: typeof last) => {
-      const scale = Math.min(LARGEST, Math.max(SMALLEST, zoom))
-      const period = PERIOD * scale
+      const element = sheet.current
+      if (!element) return
+      const rung = rungOf(zoom)
+      if (rung !== held) element.style.setProperty("--rung", String((held = rung)))
+      const period = PERIOD * zoom
       const wrap = (value: number) => (((value % period) + period) % period) - period
-      if (sheet.current) sheet.current.style.transform = `translate3d(${wrap(x)}px, ${wrap(y)}px, 0) scale(${scale})`
+      element.style.transform = `translate3d(${wrap(x)}px, ${wrap(y)}px, 0) scale(${zoom / rung})`
     }
     place(last)
     return flow.subscribe(({ transform }) => {
@@ -38,10 +45,11 @@ function World() {
 }
 
 /**
- * The sky, mountains, hills and meadow (`@cozy-creator/paper`), each moved by its own `--rate` of a pan across and `--rate-y` of one up or
- * down: the farthest slowest. The sky is the paper, with its clouds on it. Up and down they ease to a stop `--reach` from where they began,
- * and each has more of itself below than the one in front can uncover, so no pan leaves a gap. A zoom moves none of them. With reduced
- * motion they hold still. A pan sets four transforms and draws nothing.
+ * The sky, mountains, hills and meadow (`@cozy-creator/paper`), each following the canvas by its own `--rate`: that of a pan across, and the
+ * zoom to that power, so the farthest moves and grows least. A zoom scales each about where it's zoomed across and about the bottom of the
+ * window up and down, where the land stays. Up and down a pan moves each by its `--rate-y`, eased to a stop `--reach` from where it began;
+ * each has more of itself below than the one in front can uncover, and the sky reaches above the window (ui/paper.css), so no pan or zoom
+ * leaves a gap. With reduced motion they hold still. A pan sets four transforms and draws nothing.
  */
 function Landscape() {
   const flow = useStoreApi()
@@ -50,42 +58,60 @@ function Landscape() {
     const whole = land.current
     if (!whole) return
     const layers = [...whole.children] as HTMLElement[]
-    const read = (element: HTMLElement, name: string) => Number(getComputedStyle(element).getPropertyValue(name))
+    const read = (element: HTMLElement, name: string) => parseFloat(getComputedStyle(element).getPropertyValue(name))
     const [across, down] = [layers.map((layer) => read(layer, "--rate")), layers.map((layer) => read(layer, "--rate-y"))]
+    // The land is laid out at its rung by `--landscape-scale`, its tiles `--width` wide at 1; the sky at 1, its tiles the paper's.
+    const widths = layers.map((layer) => read(layer, "--width"))
+    const sky = widths.map((width) => Number.isNaN(width))
+    const still = matchMedia("(prefers-reduced-motion: reduce)")
     const at = layers.map(() => 0)
-    let [periods, reach, vertical] = [[] as number[], 0, 0]
+    const rungs = layers.map(() => 0)
+    let [x, y, zoom] = flow.getState().transform
+    let [size, reach, vertical] = [1, 1, 0]
+    // A taller window draws it larger (paper.css), and lets it go further up and down.
+    const measure = () => {
+      size = read(whole, "--landscape-scale")
+      reach = read(whole, "--reach") * size
+      vertical = Math.max(-reach, Math.min(reach, vertical))
+      rungs.fill(0)
+    }
     const place = () => {
       const eased = vertical - vertical ** 3 / (3 * reach * reach)
       layers.forEach((layer, i) => {
-        at[i] = ((at[i] % periods[i]) - periods[i]) % periods[i]
-        layer.style.transform = `translate3d(${Math.round(at[i])}px, ${Math.round(down[i] * eased)}px, 0)`
+        const scale = still.matches ? 1 : zoom ** across[i]
+        const rung = sky[i] ? 1 : rungOf(scale)
+        if (rung !== rungs[i]) layer.style.setProperty("--landscape-scale", String(size * (rungs[i] = rung)))
+        const period = (sky[i] ? PERIOD : widths[i] * size) * scale
+        at[i] = ((at[i] % period) - period) % period
+        layer.style.transform = `translate3d(${Math.round(at[i])}px, ${Math.round(down[i] * eased * scale)}px, 0) scale(${scale / rung})`
       })
     }
-    // Each wraps by its own width past the window's, and goes up and down as far as its fill allows: a taller window makes both larger.
-    const width = (element: HTMLElement) => element.getBoundingClientRect().width
-    const measure = new ResizeObserver(() => {
-      periods = layers.map((layer) => width(layer) - width(whole))
-      reach = read(whole, "--reach") * read(whole, "--landscape-scale")
-      vertical = Math.max(-reach, Math.min(reach, vertical))
+    measure()
+    place()
+    const resized = new ResizeObserver(() => {
+      measure()
       place()
     })
-    measure.observe(whole)
-    const still = matchMedia("(prefers-reduced-motion: reduce)")
-    let [x, y, zoom] = flow.getState().transform
+    resized.observe(whole)
     const stop = flow.subscribe(({ transform }) => {
-      const panned = transform[2] === zoom && !still.matches && periods.length > 0
-      const [dx, dy] = panned ? [transform[0] - x, transform[1] - y] : [0, 0]
+      const [nx, ny, nz] = transform
+      if (nx === x && ny === y && nz === zoom) return
+      if (!still.matches) {
+        // A pan and a zoom are one move of the canvas: by k about the point it leaves where it was. Each layer moves by k to its rate
+        // about that point: for a pan (k = 1), by its rate of it.
+        const k = nz / zoom
+        across.forEach((rate, i) => {
+          const scaled = k ** rate
+          at[i] = at[i] * scaled + (nx - k * x) * (Math.abs(1 - k) < 1e-9 ? rate : (1 - scaled) / (1 - k))
+        })
+        if (nz === zoom) vertical = Math.max(-reach, Math.min(reach, vertical + ny - y))
+      }
       ;[x, y, zoom] = transform
-      if (!dx && !dy) return
-      across.forEach((rate, i) => {
-        at[i] += dx * rate
-      })
-      vertical = Math.max(-reach, Math.min(reach, vertical + dy))
       place()
     })
     return () => {
       stop()
-      measure.disconnect()
+      resized.disconnect()
     }
   }, [flow])
   return (
@@ -98,14 +124,15 @@ function Landscape() {
   )
 }
 
-/** The dots' step and size at a zoom of 1. The layer is a step at the most zoom (4) wider and taller than the window: `.canvas-dots`. */
+/** The dots' step on the canvas, their size on screen, and the least step on screen: a step smaller doubles, so far out every 2nd, 4th… is drawn. */
 const GAP = 24
 const DOT = 2
+const LEAST = 12
 
 /**
- * The dots on the paper, on a layer of their own that a pan moves by less than a step, so a pan draws none of them: React Flow's own
- * background draws them all again each frame, which in WebKit is most of a pan's frame far out. A zoom draws them again. Further out
- * than `data-lod` 2 they're too small to see, and none is drawn.
+ * The dots, over what the canvas is drawn on and under every box, the same size at every zoom. They're on a layer of their own that a pan
+ * moves by less than a step, so a pan draws none of them: React Flow's own background draws them all again each frame, which in WebKit is
+ * most of a pan's frame far out. A zoom draws them again. The layer is a step at the most zoom (4) wider and taller than the window: `.canvas-dots`.
  */
 export function Dots() {
   const flow = useStoreApi()
@@ -116,15 +143,15 @@ export function Dots() {
     let [last, step] = [flow.getState().transform, 0]
     const place = ([x, y, zoom]: typeof last) => {
       if (!layer.current || !cell.current || !dot.current) return
-      const gap = GAP * zoom
+      let gap = GAP * zoom
+      while (gap < LEAST) gap *= 2
       if (gap !== step) {
         step = gap
-        cell.current.setAttribute("width", String(gap))
-        cell.current.setAttribute("height", String(gap))
-        for (const at of ["cx", "cy", "r"]) dot.current.setAttribute(at, String((DOT * zoom) / 2))
+        for (const at of ["width", "height"]) cell.current.setAttribute(at, String(gap))
+        for (const at of ["cx", "cy"]) dot.current.setAttribute(at, String(gap / 2))
       }
-      const wrap = (value: number) => (((value % gap) + gap) % gap) - gap
-      // Where React Flow's `<Background>` put them, to the pixel.
+      // A dot on the canvas's origin, and on every step from it, each on a whole pixel's edge so a pan doesn't soften it.
+      const wrap = (value: number) => Math.round(devicePixelRatio * ((((value % gap) + gap) % gap) - gap)) / devicePixelRatio
       layer.current.style.transform = `translate3d(${wrap(x - gap / 2)}px, ${wrap(y - gap / 2)}px, 0)`
     }
     place(last)
@@ -137,7 +164,7 @@ export function Dots() {
   return (
     <svg ref={layer} className="canvas-dots" aria-hidden="true">
       <pattern ref={cell} id="canvas-dots" patternUnits="userSpaceOnUse">
-        <circle ref={dot} />
+        <circle ref={dot} r={DOT / 2} />
       </pattern>
       <rect width="100%" height="100%" fill="url(#canvas-dots)" />
     </svg>
