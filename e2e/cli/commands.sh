@@ -139,8 +139,9 @@ grep -q e2e-birefnet "$OUT/models.json" || check "model ls --on local: the local
 component_models() {
 step "a model of one component, composed with another model's at run time"
 local script=$here/script/parts.py default composed
-cozy --json model show e2e/parts-vae > "$OUT/parts-show.json" 2>&1 && J '[.lanes[].components[].name] == ["vae"]' "$OUT/parts-show.json" \
-  || check "model show e2e/parts-vae: not its vae alone: $(jq -c '[.lanes[]?.components[]?.name]' "$OUT/parts-show.json" 2>/dev/null || head -c 300 "$OUT/parts-show.json")"
+cozy --json model show e2e/parts-vae > "$OUT/parts-show.json" 2>&1 \
+  && J '[.lanes[].components[] | {name, bytes}] == [{name: "vae", bytes: 262144}]' "$OUT/parts-show.json" \
+  || check "model show e2e/parts-vae: not its 256 KiB vae alone: $(jq -c '[.lanes[]?.components[]? | {name, bytes}]' "$OUT/parts-show.json" 2>/dev/null || head -c 300 "$OUT/parts-show.json")"
 cozy --json model show e2e/parts > "$OUT/parts-pipeline.json" 2>&1 && J '[.lanes[].components[].name] == ["transformer", "vae"]' "$OUT/parts-pipeline.json" \
   || check "model show e2e/parts: not a transformer and a VAE: $(jq -c '[.lanes[]?.components[]?.name]' "$OUT/parts-pipeline.json" 2>/dev/null || head -c 300 "$OUT/parts-pipeline.json")"
 cozy --json model install e2e/parts-vae --on local > "$OUT/parts-install.ndjson" 2>&1 || check "model install e2e/parts-vae failed: $(tail -c 300 "$OUT/parts-install.ndjson")"

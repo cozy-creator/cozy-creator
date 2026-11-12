@@ -160,6 +160,7 @@ fn component(component: &Component, full: bool) -> ComponentHeader {
         config: full.then(|| component.config.clone()).filter(|config| !config.is_empty()),
         assets: component.assets.iter().map(|(path, object)| (path.clone(), object.length)).collect(),
         tensors: component.tensors.len(),
+        bytes: component.tensors.iter().flat_map(|tensor| tensor.locations()).map(|(_, at)| at.length).sum(),
         lora: lora(component),
     }
 }

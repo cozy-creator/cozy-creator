@@ -429,6 +429,9 @@ pub struct ComponentHeader {
     /// Its run data (`tokenizer.json`, `processor/vocab.json`), by path under its folder, and each one's bytes.
     pub assets: std::collections::BTreeMap<String, u64>,
     pub tensors: usize,
+    /// Its tensors' stored bytes: what installing it fetches of it.
+    #[serde(default)]
+    pub bytes: u64,
     /// A LoRA's modules and their α, when it holds factors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lora: Option<LoraModules>,
