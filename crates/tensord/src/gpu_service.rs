@@ -3193,7 +3193,10 @@ impl Pool {
                 // What its executor's start does, said while it does (cl-921): its package imported, unless an import-only parent
                 // holds it already and it forks from that.
                 let forks = self.zygotes.lock().unwrap().get(&parent_app(&held)).is_some_and(|zygote| zygote.ready());
-                let package = &held.record.package;
+                let package = match held.record.package.is_empty() {
+                    true => "the package",
+                    false => held.record.package.as_str(),
+                };
                 let stage = match (forks, crate::import_pages::recorded(&held)) {
                     (true, _) => "starting the executor".to_owned(),
                     (false, 0) => format!("importing {package}"),

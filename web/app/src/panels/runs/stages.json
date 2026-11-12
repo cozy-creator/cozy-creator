@@ -19,6 +19,12 @@
     { "match": "conditioning", "says": "Encoding the inputs", "phase": "working" },
     { "match": "decoding", "says": "Decoding the image", "phase": "working" },
     { "match": "saving image", "says": "Saving the image", "phase": "saving" },
+    { "match": "picking size", "says": "Picking the size", "phase": "working" },
+    { "match": "reading picture", "says": "Reading the picture", "phase": "working" },
+    { "match": "reading reference", "says": "Reading the reference", "phase": "working" },
+    { "match": "removing background", "says": "Removing the background", "phase": "working" },
+    { "match": "saving character reference", "says": "Saving the character reference", "phase": "saving" },
+    { "match": "saving picture", "says": "Saving the picture", "phase": "saving" },
     { "match": "encode_webp", "says": "Saving the image", "phase": "saving" },
 
     { "match": "prepare", "says": "Preparing the shot", "phase": "working" },
@@ -35,6 +41,9 @@
     { "match": "regenerate-{what}", "says": "Preparing to regenerate {what}", "phase": "preparing", "counts": "item" },
     { "match": "turbo-{what}", "says": "Preparing turbo {what}", "phase": "preparing", "counts": "item" },
     { "match": "{what}-copy", "says": "Copying {what}", "phase": "preparing", "counts": "item" },
+    { "match": "adaln tables", "says": "Computing the AdaLN tables", "phase": "preparing", "counts": "item" },
+    { "match": "copying", "says": "Copying the weights", "phase": "preparing", "counts": "item" },
+    { "match": "copying edited tensors", "says": "Copying the edited tensors", "phase": "preparing", "counts": "item" },
 
     { "match": "upscaling frames", "says": "Upscaling frames", "phase": "working", "counts": "frame" },
     { "match": "seedvr2 vae encode", "says": "Encoding the video", "phase": "working" },
@@ -69,6 +78,11 @@
     { "match": "cpython {version} ready", "says": "Python {version} ready", "phase": "installing" },
 
     { "match": "preparing", "says": "Preparing", "phase": "preparing" },
+    { "match": "waiting", "says": "Waiting", "phase": "queued" },
+    { "match": "installing", "says": "Installing", "phase": "installing" },
+    { "match": "waiting_activation", "says": "Waiting to switch over", "phase": "installing" },
+    { "match": "starting", "says": "Starting", "phase": "starting" },
+    { "match": "preparing the plan", "says": "Preparing the plan", "phase": "preparing" },
     { "match": "installing this machine's pytorch", "says": "Installing this machine's PyTorch", "phase": "installing" },
     { "match": "installing {what}", "says": "Installing {what}", "phase": "installing" },
     { "match": "updating {what}", "says": "Updating {what}", "phase": "installing" },
@@ -102,6 +116,7 @@
     { "match": "starting the executor", "says": "Starting the executor", "phase": "starting" },
     { "match": "warming", "says": "Warming", "phase": "loading" },
     { "match": "warning: {what}", "says": "Warning: {what}", "phase": "preparing" },
+    { "match": "{what}-{component}", "says": "Preparing {what} {component}", "phase": "preparing", "counts": "item" },
 
     { "match": "segment {#k} of {#n}", "says": "Segment {k} of {n}", "scope": true },
     { "match": "regenerate at {what}", "says": "Regenerating at {what}", "scope": true },

@@ -72,7 +72,8 @@ def main() -> int:
             continue
         event = json.loads(line)
         if event.get("type") == "run.log" and event.get("level") == "stage":
-            seen.append((event.get("at_ms", 0), event["text"]))
+            if not seen or seen[-1][1] != event["text"]:
+                seen.append((event.get("at_ms", 0), event["text"]))
         elif event.get("type") == "run.progress" and event.get("progress", {}).get("stage"):
             progress.append(event["progress"])
             if not seen or seen[-1][1] != event["progress"]["stage"]:
