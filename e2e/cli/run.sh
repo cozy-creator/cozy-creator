@@ -297,6 +297,7 @@ case $SHARD in
   projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
   projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
   projectdb-versions) parts="tools_read db_existing_web logs"; DB_WEB=versions ;;
+  projectdb-menu) parts="tools_read db_existing_web logs"; DB_WEB=menu ;;
   projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
   projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,

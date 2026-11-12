@@ -120,6 +120,8 @@ step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture jo
 web_proof versions "$chrome" "$pw" ''
 step "web-download: right click, Download: a box as hei.png, another take as hei.2.png, a run's output, each its own bytes, as an attachment Calcifer names"
 web_proof download "$chrome" "$pw" ''
+step "web-menu: a box with a tool, right clicked: no Change the tool; its tool changes only by a drop from the palette"
+web_proof menu "$chrome" "$pw" ''
 step "web-star: Star from a box's menu: in project.db, nothing out of date, first in Files with a ★, kept by a reload, Undo and Redo, Unstar"
 web_proof star "$chrome" "$pw" ''
 step "web-tools: a box drawn from its tool's fields by type, groups two deep, slots refusing what doesn't fit, a video's range, previews, Pick up from here"

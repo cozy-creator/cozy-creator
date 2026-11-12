@@ -3708,8 +3708,7 @@ input[type="checkbox"] {
   box-shadow: 0 10px 30px var(--shadow);
   animation: open-up 90ms ease-out;
 }
-.asset-menu > button,
-.menu-list button {
+.asset-menu > button {
   display: block;
   width: 100%;
   padding: 6px 8px;
@@ -3720,8 +3719,7 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.asset-menu > button:hover,
-.menu-list button:hover {
+.asset-menu > button:hover {
   background: var(--tint2);
 }
 .menu-row {
@@ -3737,11 +3735,6 @@ input[type="checkbox"] {
   width: 130px;
   height: 26px;
   font-size: var(--body);
-}
-.menu-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
 }
 .note-act {
   flex: none;
