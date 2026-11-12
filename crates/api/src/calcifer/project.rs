@@ -606,6 +606,9 @@ pub struct Asset {
     /// Its state is a file project.yaml names: nothing is made.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// A person starred it, to find it again (cl-892): `starred: true` in its fields, which `PATCH` sets. Never part of its key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub starred: bool,
     /// Its memo key's inputs now; None while something it reads has no state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inputs: Option<String>,

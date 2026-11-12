@@ -194,6 +194,10 @@ approved?: number | null,
  */
 pinned?: boolean,
 /**
+ * A person starred it, to find it again (cl-892): `starred: true` in its fields, which `PATCH` sets. Never part of its key.
+ */
+starred?: boolean,
+/**
  * Its memo key's inputs now; None while something it reads has no state.
  */
 inputs?: string | null,

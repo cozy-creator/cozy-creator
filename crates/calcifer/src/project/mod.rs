@@ -1749,6 +1749,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         version: standing.version(),
         approved: asset.pin.as_ref().and(standing.version()),
         pinned: asset.pin.is_some(),
+        starred: asset.starred,
         inputs: standing.inputs.clone(),
         path: main_path(lock, &files),
         files: listed(lock, &files),
