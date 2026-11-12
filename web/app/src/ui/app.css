@@ -4372,7 +4372,9 @@ input[type="checkbox"] {
   font: inherit;
   cursor: pointer;
 }
-.runrow.machine {
+.runrow.machine,
+.runrow.machine.trying {
+  display: block;
   padding: 6px 8px;
   margin: 2px 0;
   border-radius: 5px;
