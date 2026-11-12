@@ -787,6 +787,10 @@ pub struct AssetPatch {
 pub struct Typed {
     pub heads: Vec<String>,
     pub fields: BTreeMap<String, Vec<Splice>>,
+    /// What the typer's words say with them: words that say it already are left as they are, so the same edit sent twice (a last
+    /// write as a page goes, and a save on its way) lands once.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub to: BTreeMap<String, String>,
 }
 
 /// `delete` Unicode code points of the words at `at`, and `insert` in their place.

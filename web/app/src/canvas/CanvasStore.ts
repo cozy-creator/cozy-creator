@@ -342,6 +342,8 @@ export class CanvasStore {
    * as splices of, wherever they are in it; and what's on its way. What's typed merges by character with anyone else's (cl-904).
    */
   private typedFrom = new Map<string, Map<string, { value: unknown; heads: string[]; sent?: unknown }>>()
+  /** The page has gone (`pagehide`): what's typed went in its last flush. */
+  private gone = false
   private nextId = 0
   private state: Project | null = null
   private began = 0
@@ -400,9 +402,13 @@ export class CanvasStore {
     this.history = new PageHistory(client, () => this.projectId)
     this.selected = new Set(selected)
     this.moreOpen = new Set(moreOpen)
-    // What's typed goes as the tab is hidden, and once more as the page goes (cl-904).
+    // What's typed goes as the tab is hidden, and once more as the page goes, which is its last word (cl-904). Back from the browser's cache, it
+    // goes on.
     document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && this.flush())
     addEventListener("pagehide", () => this.leaving())
+    addEventListener("pageshow", (event) => {
+      if (event.persisted) this.gone = false
+    })
   }
 
   /** The project has been read, so what isn't here isn't in it. */
@@ -1996,6 +2002,7 @@ export class CanvasStore {
     const from = this.typedFrom.get(id)
     const plain: Record<string, unknown> = {}
     const typed: Record<string, Splice[]> = {}
+    const to: Record<string, string> = {}
     let heads: string[] | undefined
     for (const [field, value] of Object.entries(fields)) {
       const base = from?.get(field)
@@ -2007,9 +2014,13 @@ export class CanvasStore {
         continue
       }
       heads = base.heads
-      for (const words of changed) typed[words.path ? `${field}.${words.path}` : field] = [spliceOf(words.from, words.to)]
+      for (const words of changed) {
+        const path = words.path ? `${field}.${words.path}` : field
+        typed[path] = [spliceOf(words.from, words.to)]
+        to[path] = words.to
+      }
     }
-    return { fields: plain, ...(heads ? { typed: { heads, fields: typed } } : {}) } as AssetPatch
+    return { fields: plain, ...(heads ? { typed: { heads, fields: typed, to } } : {}) } as AssetPatch
   }
 
   /** Calcifer answered a write of box `id`: what each field typed in came to is what typing goes on from, and what was typed meanwhile is moved onto
@@ -2069,7 +2080,8 @@ export class CanvasStore {
    */
   private leaving() {
     const project = this.projectId
-    if (!project) return
+    if (!project || this.gone) return
+    this.gone = true
     for (const [name, view] of this.views) {
       const id = this.ids.get(name)
       if (!view.asset || !id || !(view.drafts || view.writing)) continue
@@ -2077,10 +2089,11 @@ export class CanvasStore {
     }
   }
 
-  /** Writes what's typed. Whether it stands: a refusal leaves it typed. */
+  /** Writes what's typed. Whether it stands: a refusal leaves it typed. Once the page has gone, its last flush said it all. */
   save(name: string): Promise<boolean> {
     clearTimeout(this.pauses.get(name))
     this.pauses.delete(name)
+    if (this.gone) return Promise.resolve(true)
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.drafts) return Promise.resolve(true)

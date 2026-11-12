@@ -3318,7 +3318,12 @@ export type TrackNow = { clips: Array<ClipNow>, };
  * Splices of a box's words, by where they are: a field, or words in one (`beats.0.description`), made on the project document as it
  * stood at `heads` (a read's).
  */
-export type Typed = { heads: Array<string>, fields: { [key in string]: Array<Splice> }, };
+export type Typed = { heads: Array<string>, fields: { [key in string]: Array<Splice> },
+/**
+ * What the typer's words say with them: words that say it already are left as they are, so the same edit sent twice (a last
+ * write as a page goes, and a save on its way) lands once.
+ */
+to?: { [key in string]: string }, };
 
 /**
  * When a history entry was undone, and by whom.

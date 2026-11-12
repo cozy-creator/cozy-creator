@@ -308,8 +308,15 @@ pub(super) async fn patch(
             let document = folder.document()?.ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?;
             let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
             for (path, splices) in &typed.fields {
-                let words = Value::String(document.typed(&held.id, path, &typed.heads, splices)?);
                 let (field, within) = path.split_once('.').map_or((path.as_str(), None), |(field, within)| (field, Some(within)));
+                let now = within.map_or(held.get(field), |within| within.split('.').try_fold(held.get(field)?, |at, step| match at {
+                    Value::Array(items) => items.get(step.parse::<usize>().ok()?),
+                    _ => at.get(step),
+                }));
+                if typed.to.get(path).is_some_and(|to| now.and_then(Value::as_str) == Some(to.as_str())) {
+                    continue;
+                }
+                let words = Value::String(document.typed(&held.id, path, &typed.heads, splices)?);
                 match within {
                     None => drop(fields.insert(field.to_owned(), words)),
                     Some(within) => {
