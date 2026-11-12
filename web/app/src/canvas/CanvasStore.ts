@@ -124,6 +124,8 @@ export interface ElementView {
   shape?: string
   /** The shape it makes with none set: `autoOf`. */
   auto?: number
+  /** What sets that shape, in words (`first frame`, `<amy>`); none: its tool's own. */
+  autoFrom?: string
   /** Its warnings are open under it. */
   warned?: boolean
   /** Something is being dragged over it. */
@@ -512,9 +514,9 @@ export class CanvasStore {
 
   /** Its auto shape, kept on its view: the view it has now. Only a box showing no picture is drawn by it; one showing a picture keeps it for what reads it. */
   private reauto(key: string, view: ElementView): ElementView {
-    const auto = this.autoOf(view)
-    if (auto === view.auto) return view
-    const now = { ...view, auto }
+    const { ratio: auto, from: autoFrom } = this.autoOf(view)
+    if (auto === view.auto && autoFrom === view.autoFrom) return view
+    const now = { ...view, auto, autoFrom }
     this.views.set(key, now)
     if (reshapes(now)) {
       this.notify(key)
@@ -523,22 +525,37 @@ export class CanvasStore {
     return now
   }
 
-  /** The shape a box makes with none set, as Cozy's image packages take it: the first picture it mentions, held to what its tool makes, else its tool's own. */
-  private autoOf(view: ElementView): number | undefined {
+  /** The shape a box makes with none set, and what sets it. A picture tool's, as Cozy's image packages take it: the first picture it mentions, held
+   *  to what its tool makes, else its tool's own. A video tool's: the first picture or video in its slots (H3's first or last frame), never a
+   *  mention, as a portrait of who's in it makes no vertical shot; else 16:9 (se-128). */
+  private autoOf(view: ElementView): { ratio?: number; from?: string } {
     const asset = view.asset
     const tools = this.tools.get()
-    const control = asset && makes(view) ? fieldsOf(asset, tools).find((held) => held.type === "shape") : undefined
-    if (!asset || !control) return undefined
-    if (!control.auto) return heldTo(control, ratioOf(control.default) ?? 1)
+    const fields = asset && makes(view) ? fieldsOf(asset, tools) : []
+    const control = fields.find((held) => held.type === "shape")
+    if (!asset || !control) return {}
+    if (!control.auto) return { ratio: heldTo(control, ratioOf(control.default) ?? 1) }
     const kind = tools.get(asset.tool ?? "")?.makes ?? asset.kind
-    for (const mention of this.mentionsOf(view)) {
+    const shapeOf = (mention: string, media: string[]) => {
       const read = this.mentionOf(mention, view.name)
       const of = read ? this.views.get(read.name) : undefined
-      const ratio = read && of?.asset?.kind === kind ? sentShape(of, read.number) : undefined
-      if (ratio) return heldTo(control, ratio)
+      return read && of?.asset && media.includes(of.asset.kind) ? sentShape(of, read.number) : undefined
+    }
+    if (kind === "video") {
+      for (const slot of fields.filter((held) => held.type === "slot")) {
+        for (const mention of textsIn(valueIn(view, slot.field)).flatMap(mentionsIn)) {
+          const ratio = shapeOf(mention, ["image", "video"])
+          if (ratio) return { ratio: heldTo(control, ratio), from: slot.label.toLowerCase() }
+        }
+      }
+      return { ratio: heldTo(control, ratioOf(control.default) ?? 16 / 9) }
+    }
+    for (const mention of this.mentionsOf(view)) {
+      const ratio = shapeOf(mention, [kind])
+      if (ratio) return { ratio: heldTo(control, ratio), from: `<${mention}>` }
     }
     // The SDK's own default with none: 1:1.
-    return heldTo(control, ratioOf(control.default) ?? 1)
+    return { ratio: heldTo(control, ratioOf(control.default) ?? 1) }
   }
 
   /** The pictures a box's words mention, or `mentions` of it, in order: the version named, else what each shows. */
