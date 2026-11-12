@@ -76,9 +76,10 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   seen.hub_packages = released;
   const wanted = Object.fromEntries(Object.entries(OFFERS).map(([operation, ids]) => [operation, ids.filter((tool) => released.includes(tool.split('/')[0]))]));
   seen.wanted = wanted;
-  // On a Hub holding every first-party package ($CATALOG: e2e/isolated.sh's web-palette), every image model and the three video upscalers.
+  // On a Hub holding every first-party package ($CATALOG: e2e/isolated.sh's web-palette), every image model and the three video upscalers;
+  // on the other shards' (qwen-image-2, minimax-h3, sdxl, birefnet), two image models and H3's upscaler.
   const whole = !process.env.CATALOG || (wanted.image.length === OFFERS.image.length && wanted.upscale_video.length === OFFERS.upscale_video.length);
-  check('the_hub_holds_image_and_video_tools', whole && wanted.image.length >= 3 && wanted.upscale_video.length >= 1, wanted);
+  check('the_hub_holds_image_and_video_tools', whole && wanted.image.length >= 2 && wanted.upscale_video.length >= 1, wanted);
 
   // Calcifer's list at rest: every one of them, with no search and nothing installed, once the Hub's list is read.
   const listed = await until('the Hub read', async () => (await api(`/v1/tools?project=${id}`)).body, (body) => body && !body.note && Object.values(wanted).flat().every((tool) => body.tools.some((row) => row.id === tool)), 2 * STEP_MS).catch(() => null);
