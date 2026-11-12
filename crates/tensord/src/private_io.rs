@@ -81,11 +81,15 @@ pub(crate) fn open_execution(scope: &LocalPrivateStorage, ordinary: &Arc<crate::
 /// Opens only a paused project Engine. Metadata migration never executes a Runtime or replays
 /// an old run/warm declaration. An ambiguous outside artifact remains a typed pending result.
 pub(crate) fn migrate_execution(scope: &LocalPrivateStorage, ordinary: &Arc<crate::runs::Runs>, logs: &std::path::Path) -> io::Result<Arc<crate::runs::Runs>> {
+    migrate_execution_bindings(scope, ordinary, logs, &[])
+}
+pub(crate) fn migrate_execution_bindings(scope: &LocalPrivateStorage, ordinary: &Arc<crate::runs::Runs>, logs: &std::path::Path, bindings: &[api::machine::ProjectExecutionMigrationBinding]) -> io::Result<Arc<crate::runs::Runs>> {
+    let verified = verified_scope(scope)?;
     let runs = open_execution(scope, ordinary)?;
-    if runs.service.engine.needs_project_migration_from(&ordinary.service.engine, &scope.project_id)? {
+    if !bindings.is_empty() || runs.service.engine.needs_project_migration_from(&ordinary.service.engine, &scope.project_id)? {
         runs.service.pause_project();
         runs.service.engine.assert_private_idle(&scope.project_id)?;
-        runs.service.engine.migrate_project_from(&ordinary.service.engine, scope, logs)?;
+        runs.service.engine.migrate_project_from(&ordinary.service.engine, scope, logs, &verified.actor, bindings)?;
     }
     Ok(runs)
 }
