@@ -178,6 +178,7 @@
 .focus-viewport .focus-card.focus-parameter-tool .prominent .grip:active {
   cursor: grabbing;
 }
+.beat.beat-accordion,
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beat.beat-accordion {
   display: block;
   padding: 0;
@@ -187,6 +188,8 @@
 .beat-toggle { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; border: 0; background: none; padding: 6px 0; color: var(--ink); text-align: left; cursor: pointer; }
 .beat-toggle b { flex: 1; }
 .beat-toggle > span { color: var(--mute); font: var(--small) var(--mono); }
+.beat-toggle > .beat-status { font-family: var(--sans); }
+.beat-kept .beat-body { opacity: .6; }
 .beat-toggle > .icon { transition: transform 180ms ease; }
 .beat-toggle[aria-expanded="true"] > .icon { transform: rotate(90deg); }
 .beat-panel { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 180ms ease; }
@@ -196,6 +199,7 @@
 .beat-panel > .beat-body > :last-child { margin-bottom: 12px; }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beat-heading .grip { padding-top: 0; }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beat-heading > .iconb { position: static; width: 28px; height: 28px; }
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat-accordion.can-go .video-reference-field .mention-text { padding-right: 16px; }
 @media (prefers-reduced-motion: reduce) {
   .focus-viewport .focus-card.focus-parameter-tool .prominent .beat { transition: none; }
   .beat-panel, .beat-toggle > .icon { transition: none; }
