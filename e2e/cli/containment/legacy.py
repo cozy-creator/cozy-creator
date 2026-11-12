@@ -56,10 +56,20 @@ def schema() -> int:
 
 
 def command(cli: Path, *words: str, cwd: Path | None = None, stdin: bytes | None = None, ok: bool = True) -> bytes:
-    result = subprocess.run([str(cli), "--json", *words], cwd=cwd, input=stdin,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1200)
-    require((result.returncode == 0) == ok, "cli_exit")
-    return result.stdout
+    deadline = time.monotonic() + 90
+    while True:
+        result = subprocess.run([str(cli), "--json", *words], cwd=cwd, input=stdin,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1200)
+        if ok and result.returncode and words[:1] == ("vault",) and words[-1:] == ("lock",):
+            try:
+                busy = json.loads(result.stdout).get("error", {}).get("code") == "project_busy"
+            except (ValueError, AttributeError):
+                busy = False
+            if busy and time.monotonic() < deadline:
+                time.sleep(0.1)
+                continue
+        require((result.returncode == 0) == ok, "cli_exit")
+        return result.stdout
 
 
 def exclusive_free(path: Path) -> None:

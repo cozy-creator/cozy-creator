@@ -377,7 +377,7 @@ fn legacy_input_source(root:&Path,inputs:&Path,digest:&Digest,length:u64)->Resul
     let staged=inputs.join(&name);
     if staged.is_file() {return Ok(staged);}
     let view=vault::resolve_path(root).map_err(private_error)?;
-    match std::fs::read_dir(view.join(crate::project::folder::FILES)) {
+    match std::fs::read_dir(view.join("files")) {
         Ok(entries)=>for entry in entries {
             let entry=entry.map_err(|_|StoreError::Protected("project_input_migration_pending".into()))?;
             let file=entry.file_name();
