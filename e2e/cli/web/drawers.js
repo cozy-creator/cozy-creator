@@ -18,16 +18,18 @@ function check(name, ok, detail) {
 }
 
 const here = join(__dirname, '..');
-/** The CLI's answer, whatever its exit: a canceled run's `show` exits 1 and still says so. */
-function cozy(...args) {
+/** The CLI's answer in `cwd`, whatever its exit: a canceled run's `show` exits 1 and still says so. */
+function cozyAt(cwd, ...args) {
   try {
-    return execFileSync(process.env.COZY, args, { encoding: 'utf8', cwd: here, stdio: ['ignore', 'pipe', 'pipe'], timeout: 600_000 });
+    return execFileSync(process.env.COZY, args, { encoding: 'utf8', cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 600_000 });
   } catch (error) {
     if (error.stdout) return error.stdout;
     throw error;
   }
 }
-const shown = (number) => JSON.parse(cozy('--json', 'run', 'watch', String(number), '--once'));
+const cozy = (...args) => cozyAt(here, ...args);
+/** A run by its number, which is its project's (project data containment): asked in the project's folder. */
+const shown = (number, folder) => JSON.parse(cozyAt(folder, '--json', 'run', 'watch', String(number), '--once'));
 const body = (page) => page.textContent('.drawer');
 const rowOf = (page, words) => page.locator('.runrow').filter({ hasText: words });
 const numberIn = async (row) => Number((await row.first().locator('b').textContent()).slice(1));
@@ -58,7 +60,7 @@ async function runs(page, base, id, folder) {
   await until('its log', () => page.textContent('.log'), (text) => text.trim().length > 0 && text !== 'Nothing yet.', 120_000);
   await until('its end, live', () => page.textContent('.run-head'), (text) => text.includes('completed'), 120_000);
   check('run_ends_live_with_no_reload', reloads === 0, reloads);
-  check('cli_agrees_it_ended', shown(number).status === 'completed', shown(number).status);
+  check('cli_agrees_it_ended', shown(number, folder).status === 'completed', shown(number, folder).status);
   await first;
   await until('the count goes', () => page.textContent('.top a[href*="runs"]'), (text) => !/\d/.test(text)).catch(async (error) => {
     // Whose it is: the page's, or a run Calcifer says is going.
@@ -89,11 +91,11 @@ async function runs(page, base, id, folder) {
 
   await page.click('.drawer-head button:has-text("Cancel")');
   await page.click('.confirm button:has-text("Not now")');
-  check('no_cancel_without_its_yes', !shown(secondNumber).cancel_requested);
+  check('no_cancel_without_its_yes', !shown(secondNumber, folder).cancel_requested);
   await page.click('.drawer-head button:has-text("Cancel")');
   await page.click('.confirm button:has-text("Cancel it")');
   await until('canceled, live', () => page.textContent('.run-head'), (text) => text.includes('canceled'), 120_000);
-  check('cli_agrees_it_canceled', shown(secondNumber).status === 'canceled', shown(secondNumber).status);
+  check('cli_agrees_it_canceled', shown(secondNumber, folder).status === 'canceled', shown(secondNumber, folder).status);
   await second;
 
   await page.goto(await projectUrl(id, `/runs?status=canceled`));
