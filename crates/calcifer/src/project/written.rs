@@ -259,6 +259,13 @@ impl Written {
         self.set(name, fields)
     }
 
+    /// Box `from` again at the end, called `name`: its fields as they are, each mention as `renamed` says.
+    pub(crate) fn copied(&mut self, from: &str, name: &str, renamed: &dyn Fn(&str) -> Option<String>) -> Result<(), Error> {
+        let mut fields = self.get(from).ok_or_else(|| unknown(from))?.fields.clone();
+        fields.iter_mut().for_each(|(_, value)| mentions_renamed(value, renamed));
+        self.push(Boxed { id: super::new_key(), name: name.to_owned(), fields, at: None })
+    }
+
     /// A box holding one file: a name and the file it approves.
     pub(crate) fn constant(&mut self, name: &str, sha256: &str) -> Result<(), Error> {
         self.push(Boxed { id: super::new_key(), name: name.to_owned(), fields: vec![("approved".to_owned(), json!(prefix_of(sha256)))], at: None })

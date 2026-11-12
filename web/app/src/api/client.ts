@@ -15,6 +15,8 @@ import type {
   CanvasPatched,
   Card,
   Code,
+  Copied,
+  Copies,
   Ended,
   ErrorBody,
   Families,
@@ -510,6 +512,11 @@ export class Client {
   /** A tool dropped on the canvas. */
   newAsset(id: string, key: string, body: NewAsset, write: Write = {}): Promise<AssetMade> {
     return this.write("POST", `${project(id)}/assets`, body, key, write)
+  }
+
+  /** Boxes copied, each with its versions: one step of the history. */
+  copies(id: string, key: string, body: Copies, write: Write = {}): Promise<Copied> {
+    return this.write("POST", `${project(id)}/copies`, body, key, write)
   }
 
   /** These inputs set. With `read`, only if its own lines are still what that read. */

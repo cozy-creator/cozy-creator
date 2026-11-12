@@ -185,6 +185,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/reclaim", post(reclaim))
         .route("/v1/projects/{id}/yaml", get(yaml).put(save))
         .route("/v1/projects/{id}/assets", post(assets::create))
+        .route("/v1/projects/{id}/copies", post(assets::copy))
         .route("/v1/projects/{id}/assets/{name}", get(assets::read).patch(assets::patch).delete(assets::delete))
         .route("/v1/projects/{id}/assets/{name}/versions", post(assets::join))
         .route("/v1/projects/{id}/assets/{name}/versions/{number}", delete(assets::discard).patch(assets::patch_version))

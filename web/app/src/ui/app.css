@@ -540,6 +540,10 @@ code {
   opacity: 0.55;
   transition: transform 90ms ease-out, opacity 90ms ease-out;
 }
+/* Carried with Alt or Option held: a copy of it lands where it's let go. */
+.stage[data-copying] .react-flow__node.dragging {
+  cursor: copy;
+}
 /* Let go, it slides: back from a box that took its name, or off one it can't lie on. */
 .react-flow__node.glide {
   transition:

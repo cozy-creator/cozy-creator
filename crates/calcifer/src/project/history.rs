@@ -472,7 +472,7 @@ fn kept(method: &Method, path: &str) -> bool {
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     let ["v1", "projects", _, rest @ ..] = parts.as_slice() else { return false };
     match (method.as_str(), rest) {
-        ("POST", ["imports" | "assets" | "approve" | "unpin" | "rename"]) => true,
+        ("POST", ["imports" | "assets" | "copies" | "approve" | "unpin" | "rename"]) => true,
         ("POST", ["assets", _, "versions"]) => true,
         ("PATCH" | "DELETE", ["assets", _]) => true,
         ("PATCH" | "DELETE", ["assets", _, "versions", _]) => true,
