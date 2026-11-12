@@ -202,7 +202,7 @@ pub(crate) fn retained_scope(root: &Path, project_id: &str) -> Result<Option<Sco
     validate_retained(&marker, project_id)?;
     let view = platform::durable::canonical(root).map_err(|_| error("the retained project is unavailable"))?;
     if marker.storage.view_root != view {
-        return descriptor_for_mounted(&view, project_id, marker.storage.generation).map(Some);
+        return Err(error("close the existing execution namespace before relocating its project storage"));
     }
     let scope = Scope { storage: marker.storage, token: marker.token };
     SCOPES.lock().unwrap().insert(view, scope.clone());
@@ -317,12 +317,15 @@ pub(crate) async fn close_private_project(
             "the local execution service is not ready to close its private namespace",
         ));
     };
-    link.with_private(scope)
+    link.with_private(scope.clone())
         .close_private()
         .await
         .map_err(|_| {
             error("private execution is still active; wait or cancel its work before locking")
         })?;
-    SCOPES.lock().unwrap().remove(root);
+    descriptor_for_mounted(&scope.storage.view_root, &scope.storage.project_id, scope.storage.generation)?;
+    let mut scopes = SCOPES.lock().unwrap();
+    scopes.remove(root);
+    scopes.remove(&scope.storage.view_root);
     Ok(())
 }
