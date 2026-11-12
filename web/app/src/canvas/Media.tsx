@@ -677,6 +677,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
     const next = imageVersions[imageAt + offset]?.main
     return next && !next.absent ? [next.sha256] : []
   })
+  const neighborPaths = Object.fromEntries(imageVersions.flatMap((version) => version.main && !version.main.absent ? [[version.main.sha256, version.main.path]] : []))
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
@@ -698,7 +699,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           />
         )}
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-        {bufferedImage && field === "image" && <BufferedImage sha256={bufferedImage.sha256} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {bufferedImage && field === "image" && <BufferedImage sha256={bufferedImage.sha256} originalPath={bufferedImage.path} neighborPaths={neighborPaths} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
