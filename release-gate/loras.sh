@@ -2,9 +2,8 @@
 # community LoRAs. Each is uploaded from its provider by $M as a private throwaway, so the candidate cozy's importer
 # converts it, and its function runs twice at one seed: without it, then with it at 1.0. Per LoRA: `<name>-convert`
 # (the upload's format names the table that read it), `<name>-applied` (the LoRA run completed, its record counts the
-# layers that apply, and its run was told of none skipped) and `<name>-changed` (the two outputs differ). The last two
-# rows must fail loudly: a LoKr file is refused at upload, a LoRA on another family's model at its run. Each model is
-# deleted after.
+# layers that apply, and its run was told of none skipped) and `<name>-changed` (the two outputs differ); LoKr files
+# too. `wrong-family` must fail loudly: a LoRA on another family's model, at its run. Each model is deleted after.
 
 # lora_upload <name> <source> <format|->: uploads it as LORA_MODEL; LORA_COMMIT is its commit, empty when refused.
 lora_upload() {
@@ -71,13 +70,15 @@ lora_ab h3-hearmeman minimax-h3 generate \
   hf://Hearmeman/minimax-h3-loras@e5f4fb9030d1ac27caa0f773b96fbd2d4cafadbb/HMNSFW-AIO-V2.5.safetensors - - \
   prompt="A woman walks along a beach at sunset, waves rolling in, wide shot, ocean sound" duration_s:=5 seed:=$((R + 46))
 
-# A LoKr (Hearmeman's pussy v6) is refused at upload, naming its kind; nothing is stored.
-if [ -z "$ONLY" ] || [[ $ONLY == *",lokr-refused,"* ]]; then
-  lora_upload lokr-refused hf://Hearmeman/minimax-h3-loras@e5f4fb9030d1ac27caa0f773b96fbd2d4cafadbb/hmpussy_v6_epoch30.safetensors -
-  [ -z "$LORA_COMMIT" ] || lora_delete lokr-refused
-  why=$(run_get "$OUT" lokr-refused-upload '.reason.message')
-  expect lokr-refused "$([ -z "$LORA_COMMIT" ] && [[ $why == *"LyCORIS LoKr"* ]] && echo PASS || echo FAIL)" "${why:-it was not refused}"
-fi
+# LoKr (LyCORIS Kronecker) adapters: Hearmeman's two newest H3 ones and SAkizuki's Anima-Aniart.
+HM=hf://Hearmeman/minimax-h3-loras@e5f4fb9030d1ac27caa0f773b96fbd2d4cafadbb
+lora_ab h3-lokr-cumshot minimax-h3 generate "$HM/HMCumshot_V2.safetensors" - - \
+  prompt="A woman laughs on a sofa in a sunlit living room, medium shot, room tone" duration_s:=5 seed:=$((R + 56))
+lora_ab h3-lokr-pussy minimax-h3 generate "$HM/hmpussy_v6_epoch30.safetensors" - - \
+  prompt="A woman stretches on a bed in soft morning light, slow push-in, quiet room" duration_s:=5 seed:=$((R + 57))
+lora_ab anima-lokr-aniart anima generate \
+  hf://SAkizuki/Anima-Aniart@09f3687270186577aeecc40ad53055c960959230/anima-aniart.safetensors - - \
+  prompt="masterpiece, best quality, 1girl, school uniform, under cherry blossoms" seed:=$((R + 58))
 # An Anima LoRA on MOSS Image fails at its run (another family); it never runs as if it applied.
 if [ -z "$ONLY" ] || [[ $ONLY == *",wrong-family,"* ]]; then
   lora_upload wrong-family hf://ACCC1380/realstyle2_anima@86c3a5b72c97daefe1d99492e3d211650436d789/realstyle2_anima.safetensors -
@@ -120,3 +121,25 @@ HAT=$(output moss-hat 'png|webp|jpg')
   references:="[{\"name\": \"Person\", \"image\": \"$SUBJECT\"}, {\"name\": \"Hat\", \"image\": \"$HAT\"}]" \
   prompt="Put the straw hat from <Hat> on the woman in <Person>. Keep her face, clothes, pose and the background unchanged."
 moss_cell moss-img2img image_to_image --file image="$SUBJECT" prompt="an oil painting, thick brush strokes" strength:=0.6 seed:=$((R + 55))
+
+# MOSS image_to_image's strength (xs-184): 0.6, 0.75 and 0.85 on two pictures (a woman MOSS makes, the gate's place),
+# one seed, judged by eye: the default is where the picture changes but keeps its layout. `only=moss-i2i` runs them.
+if [ -z "$ONLY" ] || [[ $ONLY == *",moss-i2i,"* ]]; then
+  SAVED_I2I=$ONLY
+  [ -z "$ONLY" ] || ONLY="$ONLY,moss-i2i-person,"
+  cell moss-i2i-person "$(pkg moss-image generate)" seed:=$((R + 49)) aspect_ratio=3:4 \
+    prompt="a photo of one young woman with short black hair, alone, in a plain white t-shirt and jeans, standing in a city park, full body, natural light"
+  WOMAN=$(output moss-i2i-person 'png|webp|jpg')
+  for strength in 0.6 0.75 0.85; do
+    for picture in woman place; do
+      source=$([ $picture = woman ] && echo "$WOMAN" || echo "$REF")
+      [ -n "$source" ] || continue
+      name=moss-i2i-$picture-${strength#0.}
+      [ -z "$SAVED_I2I" ] || ONLY="$ONLY$name,"
+      cell "$name" "$(pkg moss-image image_to_image)" --file image="$source" prompt="an oil painting, thick brush strokes" \
+        strength:=$strength seed:=$((R + 60))
+      expect "$name-made" "$([ -n "$(output "$name" 'png|webp|jpg')" ] && echo PASS || echo FAIL)" "run $(cat "$name.number")"
+    done
+  done
+  ONLY=$SAVED_I2I
+fi
