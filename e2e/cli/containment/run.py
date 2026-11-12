@@ -87,6 +87,10 @@ class ForeignBrowsers:
             shutil.rmtree(profile)
 
 
+EDIT_FACTS = frozenset({
+    "located", "focused", "editor_present", "editor_rendered", "here_cards", "focus_viewport", "focus_entering",
+    "visible", "has_focus", "animation_frame", "inert",
+})
 PAGE_FACTS = frozenset({
     "blank", "error_page", "loopback", "reloaded", "navigation_status", "owned_injected", "vite_client", "refresh_preamble",
     "app_mounted", "gate_connecting", "gate_signed_out", "gate_unreachable", "gate_opening_project", "gate_project_failed",
@@ -177,7 +181,7 @@ def main() -> int:
     development: Development | None = None
     projects: list[dict] = []
     readiness = {"slot": -1, "ready_errors": 0, "last_page_ready": False, "last_cards": -1}
-    editing: dict[str, bool] = {}
+    editing: dict[str, bool | int] = {}
     phase = "start"
     try:
         if ready.get("development_web") is True:
@@ -295,7 +299,8 @@ def main() -> int:
         try:
             def edit_b() -> dict:
                 value = proof.exercise(b["id"], "edit", asset=b["asset"], field="text", value=b["edit"])
-                editing.update(located=value.get("located") is True, focused=value.get("focused") is True)
+                editing.clear()
+                editing.update({key: item for key, item in value.items() if key in EDIT_FACTS and type(item) in (bool, int)})
                 return value
             until(edit_b, lambda value: value.get("typed"), "real_browser_edit")
             require(proof.exercise(b["id"], "observe", needle=b["edit"]).get("visible"), "browser_edit_not_visible")

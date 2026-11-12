@@ -140,8 +140,11 @@ mod linux {
                         for count in [1, 2] {
                             for kind in ["mousePressed", "mouseReleased"] { live.pipe.call("Input.dispatchMouseEvent", json!({ "type": kind, "button": "left", "clickCount": count, "x": at["x"], "y": at["y"] }), Some(session)).await?; }
                         }
-                        let focused = fixed(live, session, json!({ "kind": "focus", "asset": asset, "field": field })).await?;
-                        if focused["found"] != true { return Ok(json!({ "typed": false, "located": true, "focused": false })); }
+                        let mut focused = fixed(live, session, json!({ "kind": "focus", "asset": asset, "field": field })).await?;
+                        if focused["found"] != true {
+                            for (key, value) in [("typed", false), ("located", true), ("focused", false)] { focused[key] = json!(value); }
+                            return Ok(focused);
+                        }
                         for kind in ["keyDown", "keyUp"] { live.pipe.call("Input.dispatchKeyEvent", json!({ "type": kind, "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 2 }), Some(session)).await?; }
                         live.pipe.call("Input.insertText", json!({ "text": value }), Some(session)).await?;
                         for kind in ["keyDown", "keyUp"] { live.pipe.call("Input.dispatchKeyEvent", json!({ "type": kind, "key": "Tab", "code": "Tab", "windowsVirtualKeyCode": 9 }), Some(session)).await?; }

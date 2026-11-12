@@ -32,9 +32,17 @@ async function containmentProof(input) {
     }
     case 'focus': {
       const editor = card()?.querySelector(`.mention-text[data-field="${CSS.escape(input.field)}"]`);
-      if (!editor) return { found: false };
-      editor.focus();
-      return { found: document.activeElement === editor };
+      editor?.focus();
+      if (editor && document.activeElement === editor) return { found: true };
+      // Closed facts only, for a box whose editor does not take focus.
+      const frame = await new Promise((done) => { const late = setTimeout(() => done(false), 500); requestAnimationFrame(() => { clearTimeout(late); done(true); }); });
+      return {
+        found: false, editor_present: Boolean(editor),
+        editor_rendered: Boolean(editor) && editor.getClientRects().length > 0 && getComputedStyle(editor).visibility === 'visible',
+        here_cards: document.querySelectorAll(`.card.here[data-asset="${CSS.escape(input.asset)}"]`).length,
+        focus_viewport: document.querySelector('.focus-viewport') !== null, focus_entering: document.querySelector('.focus-viewport[data-entering]') !== null,
+        visible: document.visibilityState === 'visible', has_focus: document.hasFocus(), animation_frame: frame, inert: document.documentElement.inert,
+      };
     }
     case 'observe':
       return { visible: document.body.textContent.includes(input.needle), frozen: document.documentElement.inert, images: document.querySelectorAll('img[src]').length };
