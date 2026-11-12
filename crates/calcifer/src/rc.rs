@@ -273,6 +273,12 @@ impl Machines {
         self.dev && machine.is_empty() && matches!(on, api::calcifer::On::New(_))
     }
 
+    /// Whether `name` (on `frame`) runs the open RC's Runtime, or would were it not held by hand: a dev build now, or a rental of
+    /// this dev home that follows the RC. Such a machine can move to the RC's build for a package that needs it (cl-952).
+    pub(crate) fn rc_machine(&self, name: &str, frame: &v1::StatusFrame) -> bool {
+        prerelease::dev(&frame.runtime) || self.follows(name).is_some()
+    }
+
     /// The line a run on `name` says when it runs dev builds: `RC: Runtime 0.46.0.dev312 · cozy 1a2b3c4d`.
     pub(crate) fn rc_line(&self, name: &str) -> Option<String> {
         let frame = self.frame(name)?;

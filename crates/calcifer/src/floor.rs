@@ -113,8 +113,8 @@ impl Upgrade {
 }
 
 impl Machines {
-    /// The Runtimes `name` (on `frame`) can move to for a package release: PyPI's, and on the RC (`rc`) the RC's build for its
-    /// platform; and whether it moves (`api::release::Moves`): not when held by hand, nor when another computer's (added here,
+    /// The Runtimes `name` (on `frame`) can move to for a package release: PyPI's, and on the RC (`rc`, or held off it) the RC's
+    /// build for its platform; and whether it moves (`api::release::Moves`): not when held by hand, nor when another computer's (added here,
     /// or a rental another client ordered).
     pub(crate) async fn runtimes(&self, name: &str, frame: &api::machine::StatusFrame, rc: bool) -> (Vec<String>, api::release::Moves) {
         let moves = match self.named(name).ok().flatten() {
@@ -129,7 +129,8 @@ impl Machines {
                 vec![]
             }
         };
-        if rc {
+        // A machine held off the RC by hand counts the RC's build too: refused, it names the update that moves it there.
+        if rc || self.rc_machine(name, frame) {
             if let Ok(sums) = self.rc.now().await {
                 runtimes.extend(sums.build("runtime", &frame.platform).map(|(build, _)| build.version));
             }
