@@ -65,6 +65,11 @@ pub(crate) fn pending(calcifer: &Path) -> bool {
     let Ok(found) = entries(calcifer) else { return true };
     if found.iter().any(|entry| entry.file_name().to_str().is_some_and(raw_log)) { return true; }
     if fs::symlink_metadata(calcifer.join("machine-logs")).is_ok() { return true; }
+    // Old hashed runtime folders are project traces even after their mounts close.
+    match entries(&calcifer.join("vaults")) {
+        Ok(found) if found.is_empty() => {},
+        _ => return true,
+    }
     let Some(home) = calcifer.parent() else { return true };
     match entries(&home.join("cache")) {
         Ok(found) => found.iter().any(|entry| entry.file_name().to_str().is_some_and(redirect)),
