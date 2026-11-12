@@ -183,7 +183,7 @@ function replaceFile(at, text) {
     const shapeField = toolWire?.fields.find((field) => field.type === 'shape');
     const fixedRatios = (shapeField?.ratios ?? []).filter((ratio) => typeof ratio === 'string');
     const expectedShape = shapeField?.auto && fixedRatios.length !== 1 ? 'Auto' : fixedRatios.length === 1 ? fixedRatios[0] : typeof shapeField?.default === 'string' ? shapeField.default : fixedRatios[0] ?? '1:1';
-    const caretAt = caretIn ? null : await page.evaluate(() => ({ active: `${document.activeElement?.tagName}.${document.activeElement?.className}`, editable: [...document.querySelectorAll('.focus-body [contenteditable=true], .focus-body textarea')].map((el) => `${el.tagName}.${el.className} in ${el.closest('[class]:not([contenteditable])')?.className}`).slice(0, 6) }));
+    const caretAt = caretIn ? null : await page.evaluate(() => ({ active: `${document.activeElement?.tagName}.${document.activeElement?.className}`, editable: [...document.querySelectorAll('.focus-body [contenteditable]:not([contenteditable=false]), .focus-body textarea')].map((el) => `${el.tagName}.${el.className} in ${el.closest('[class]:not([contenteditable])')?.className}`).slice(0, 6) }));
     check('a_dropped_image_tool_can_enter_edit_mode_explicitly', caretIn === true && (shapeSaid === expectedShape || (expectedShape === 'Auto' && Boolean(shapeSaid?.startsWith('Auto · ')))) && (await page.locator('.nm-field').count()) === 0, { caretIn, caretAt, shapeSaid, expectedShape });
   } else seen.dropped_kind = kind;
   seen.tool_dragged = made.name;
