@@ -91,6 +91,8 @@ export interface ElementView {
   pending?: number
   /** A render is on its way, until when, as `pending`: it says Queued from the click on. */
   asked?: number
+  /** Its render was canceled from here: it says Cancelling… until nothing of it is queued or making. */
+  canceling?: boolean
   /** What was asked of its row and not read back yet, oldest first. */
   over?: Asking[]
   /** How many writes of its fields are on their way. */
@@ -882,6 +884,7 @@ export class CanvasStore {
         const answered = view.asked !== undefined && view.asked < this.began
         if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }))
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
+        if (view.canceling && !asset.making?.length && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (answered) change.asked = undefined
         const over = view.over?.filter((ask) => ask.until >= this.began)
@@ -1787,11 +1790,18 @@ export class CanvasStore {
     if (making) this.over(name, { making: making.filter((number) => number !== run) }, (_, write) => this.client.cancelRun(String(run), write.once).then(() => ({})), `cancel run ${run} of`, undefined)
   }
 
+  /** Its render stops, wherever it is: what's queued leaves, its runs are canceled (as `cozy run cancel`), and it says Cancelling… until
+   *  they end. No question is asked: Undo renders it again. */
   cancelRender(name: string) {
-    this.patch(name, { asked: undefined, ...(this.get(name)?.asset?.kind === "image" ? { watchRun: undefined, watchFrom: undefined } : {}) })
+    const busy = Boolean(this.get(name)?.asset?.making?.length || this.get(name)?.queued)
+    this.patch(name, { asked: undefined, canceling: busy || undefined, ...(this.get(name)?.asset?.kind === "image" ? { watchRun: undefined, watchFrom: undefined } : {}) })
     this.act(name, {
       send: (served, write) => this.client.cancelRender(this.projectId!, [served], write.once),
-      refused: (error) => say(`Couldn't cancel ${name}`, error),
+      done: () => say(`Canceled ${name}'s render`, undefined, { action: { label: "Undo", run: () => this.run(name) }, ms: 8_000 }),
+      refused: (error) => {
+        this.patch(name, { canceling: undefined })
+        say(`Couldn't cancel ${name}`, error)
+      },
     })
   }
 

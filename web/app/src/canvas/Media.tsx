@@ -465,7 +465,8 @@ export function Player({ field, path, machine, seek, auto, onTime }: { field: st
 const GLYPHS: Record<string, IconName> = { image: "picture", video: "video", audio: "sound" }
 
 /** How far it's got, on the picture: a veil that moves and never reflows, and the one line it says. An Edit rendered here is a progress bar. */
-function Progress({ veil = true, fraction, says, phase, rendering }: Way) {
+function Progress({ veil = true, fraction, says, phase, rendering, cancel }: Way) {
+  const store = useCanvasStore()
   return (
     <div
       className={`prog ${fraction === undefined ? "unknown" : ""} ${phase ?? ""}`}
@@ -473,6 +474,20 @@ function Progress({ veil = true, fraction, says, phase, rendering }: Way) {
     >
       {veil && <i style={fraction === undefined ? undefined : { transform: `translateX(${Math.round(fraction * 100) - 100}%)` }} />}
       {says && <b>{says}</b>}
+      {cancel && (
+        <button
+          type="button"
+          className="prog-cancel nodrag"
+          aria-label={`Cancel ${cancel}'s render`}
+          onClick={(event) => {
+            // Its box isn't opened by it.
+            event.stopPropagation()
+            store.cancelRender(cancel)
+          }}
+        >
+          Cancel
+        </button>
+      )}
     </div>
   )
 }
@@ -488,6 +503,8 @@ interface Way {
   phase?: string
   says?: string
   rendering?: boolean
+  /** The box whose render it cancels, by its Cancel beside it. */
+  cancel?: string
 }
 
 /** A render on its way, in one line, the most specific first: an Edit rendering here; what it reads and waits for, with that one's work; its
@@ -511,17 +528,19 @@ function OnItsWay({ view, name, number }: { view: ElementView; name: string; num
   const going = useQuery({ ...runsQuery(client, { status: "in_progress" }, 100), enabled: !run })
   const lined = useQuery({ ...runsQuery(client, { status: "queued" }, 100), enabled: !run })
   if (asset?.rendering != null) return <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />
+  // Canceled from here: it says so until its run ends and nothing of it is queued (Paul, 11-12).
+  if (view.canceling || run?.cancel_requested) return <Progress veil={making} fraction={run?.progress?.done_fraction ?? undefined} says="Cancelling…" />
   if (waits && !on) {
     const theirs = read?.asset?.making?.length ? read.run : undefined
     const words = theirs && theirs.status !== "completed" ? workWords(theirs) : ""
-    return <Progress fraction={theirs?.progress?.done_fraction ?? undefined} says={`Waits for <${waits}>${words ? `: ${words}` : ""}`} />
+    return <Progress fraction={theirs?.progress?.done_fraction ?? undefined} says={`Waits for <${waits}>${words ? `: ${words}` : ""}`} cancel={name} />
   }
   const before = on ?? installing
-  if (before?.kind === "install") return <Progress phase="install" says={`Installing ${packageWords(before.subject)}…`} />
+  if (before?.kind === "install") return <Progress phase="install" says={`Installing ${packageWords(before.subject)}…`} cancel={name} />
   if (before?.kind === "download") {
     const fraction = fractionOf(before)
     const left = before.eta_s == null ? "" : `, ${leftWords(before.eta_s)}`
-    return <Progress phase="download" fraction={fraction} says={`Waiting on download… ${fraction === undefined ? "" : `${Math.round(fraction * 100)}%`}${left}`} />
+    return <Progress phase="download" fraction={fraction} says={`Waiting on download… ${fraction === undefined ? "" : `${Math.round(fraction * 100)}%`}${left}`} cancel={name} />
   }
   // A run that ended says no more of how far: it's all there, on its way here.
   if (run?.status === "completed") return <Progress fraction={1} />
@@ -535,7 +554,7 @@ function OnItsWay({ view, name, number }: { view: ElementView; name: string; num
     work ||
     (machine && `Getting ${machine} ready`) ||
     ((!run || run.status === "queued") && "Queued")
-  return <Progress veil={making} fraction={run?.progress?.done_fraction ?? undefined} says={says || undefined} />
+  return <Progress veil={making} fraction={run?.progress?.done_fraction ?? undefined} says={says || undefined} cancel={name} />
 }
 
 /** The picture in a box's frame, one take's alone. At rest, as wide as it's drawn, in line with the rest. Open, its small thumbnail at once, the one

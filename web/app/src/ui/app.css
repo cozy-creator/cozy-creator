@@ -905,11 +905,35 @@ code {
   color: #cfe6ff;
   font: var(--small) var(--sans);
 }
-/* At rest, one line, so nothing hangs under it but what its box keeps room for. */
+/* Cancel, by what says how far it's got: on every box on its way, in every phase (Paul, 11-12). */
+.prog-cancel {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  padding: 1px 8px;
+  border: 1px solid #fff6;
+  border-radius: 5px;
+  background: #000a;
+  color: #fff;
+  font: var(--small) var(--sans);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.prog-cancel:hover {
+  border-color: #ff8a80;
+  color: #ffd2cc;
+}
+.card:not(.here) .prog-cancel {
+  right: var(--s3);
+  bottom: var(--s3);
+  padding: 1px var(--s3);
+  font: calc(var(--t-small) * var(--ui)) / 1.4 var(--sans);
+}
+/* At rest, one line, so nothing hangs under it but what its box keeps room for; clear of its Cancel. */
 .card:not(.here) .prog b {
   left: var(--s3);
   bottom: var(--s3);
-  max-width: calc(100% - 2 * var(--s3));
+  max-width: calc(100% - 2 * var(--s3) - 6em);
   padding: 1px var(--s3);
   overflow: hidden;
   font: calc(var(--t-small) * var(--ui)) / 1.4 var(--sans);
