@@ -50,7 +50,10 @@ ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_f
     "settled_http_status", "journal_run_present", "output_http_status", "output_digest_present",
     "output_digest_matches", "old_subject_output_marker", "old_subject_log_marker", "old_subject_numbers",
     "worker_owner_pem", "worker_owner_pkcs8", "worker_owner_algorithm", "worker_owner_public_key",
-    "calcifer_replacement_birth", "calcifer_replacement_status"})
+    "calcifer_replacement_birth", "calcifer_replacement_status", "worker_record_shape",
+    "worker_projection_owner", "worker_projection_reference", "worker_projection_file",
+    "worker_projection_blob", "worker_record_identity", "worker_record_submission",
+    "worker_record_unique", "worker_journal_complete", "worker_execution_preserved"})
 
 
 def check(ok: object, case: str, **counts: int | bool) -> None:
@@ -289,6 +292,49 @@ def journal(path: Path, identifiers: list[str]) -> dict:
     return answer
 
 
+def worker_execution(root: Path, number: int, encoded: str) -> dict:
+    record = json.loads(encoded)
+    check(isinstance(record, dict), "worker_record_shape")
+    if "_private_payload" in record:
+        # Modern records are a scheduling projection plus an immutable blob in
+        # this same project's folder (private_journal.rs), not plaintext SQL.
+        # Never follow the reference's supplied root to another filesystem path.
+        area = root.resolve(strict=True)
+        check(root.name == ".vault-machine" and not root.is_symlink(), "worker_projection_owner")
+        project = area.parent
+        marker = json.loads((project / ".vault-local-execution.json").read_bytes())
+        owner = marker["storage"]
+        pointer = record["_private_payload"]
+        check(isinstance(pointer, str) and pointer.startswith("cozy-private-blob:1:"), "worker_projection_reference")
+        reference = json.loads(pointer.removeprefix("cozy-private-blob:1:"))
+        check(isinstance(reference, dict) and set(reference) == {"format", "storage", "context", "file", "length"}, "worker_projection_reference")
+        scope = reference["storage"]
+        context = "execution:" + str(number)
+        check(reference["format"] == 1 and reference["context"] == context
+              and isinstance(scope, dict) and scope.get("project_id") == owner.get("project_id")
+              and type(scope.get("generation")) is int and scope["generation"] > 0
+              and Path(scope.get("view_root", "")) == project, "worker_projection_owner")
+        name = reference["file"]
+        check(isinstance(name, str) and name.endswith(".blob") and len(name) == 37
+              and all(char in "0123456789abcdefABCDEF" for char in name[:-5]), "worker_projection_file")
+        directory = area / "journal"
+        path = directory / name
+        check(directory.is_dir() and not directory.is_symlink() and path.is_file() and not path.is_symlink(), "worker_projection_file")
+        data = path.read_bytes()
+        check(type(reference["length"]) is int and len(data) == reference["length"], "worker_projection_file")
+        blob = json.loads(data)
+        check(isinstance(blob, dict) and set(blob) == {"format", "project_id", "generation", "context", "payload"}
+              and blob["format"] == 1 and blob["project_id"] == scope["project_id"]
+              and blob["generation"] == scope["generation"] and blob["context"] == context,
+              "worker_projection_blob")
+        decoded = json.loads(base64.b64decode(blob["payload"], validate=True))
+        check(isinstance(decoded, dict) and decoded.get("id") == record.get("id")
+              and decoded.get("invocation", {}).get("local_private") == scope, "worker_projection_blob")
+        record = decoded
+    check(record.get("id") == str(number), "worker_record_identity")
+    return record
+
+
 def worker_journal(root: Path, identifiers: list[str]) -> tuple[Path, dict]:
     matches = []
     for path in root.rglob("executions.sqlite3"):
@@ -298,18 +344,17 @@ def worker_journal(root: Path, identifiers: list[str]) -> tuple[Path, dict]:
         with read_db(path) as connection:
             for identifier in identifiers:
                 found = connection.execute("SELECT id,record FROM executions WHERE request_id=?", (identifier,)).fetchall()
-                require(len(found) <= 1, "fixture_failure")
+                check(len(found) <= 1, "worker_record_unique", rows=len(found))
                 if found:
                     number, encoded = found[0]
-                    record = json.loads(encoded)
-                    # Plain released subjects and inside-project modern records
-                    # are read directly; no guessed decrypted source is accepted.
-                    require(record.get("submission", {}).get("request_id") == identifier, "fixture_failure")
+                    record = worker_execution(root, number, encoded)
+                    check(record.get("submission", {}).get("request_id") == identifier, "worker_record_submission")
                     rows[identifier] = {"number": number, **{key: record.get(key) for key in
                         ("attempt", "accepted_at_ms", "started_at_ms", "finished_at_ms", "executed_ms", "submission")}}
         if rows:
             matches.append((path, rows))
-    require(len(matches) == 1 and set(matches[0][1]) == set(identifiers), "fixture_failure")
+    check(len(matches) == 1 and set(matches[0][1]) == set(identifiers), "worker_journal_complete",
+          journals=len(matches), requested=len(identifiers), found=sum(len(rows) for _, rows in matches))
     return matches[0]
 
 
@@ -625,7 +670,7 @@ def qualify(args, receipt: Receipt) -> None:
     checkpoint(receipt, "rehistory")
     complete_migration(native, reference, project)
     receipt.add("legacy_worker_receipt_crash_recovery", passed=True, no_resubmission=True, runs=len(results))
-    require(worker_journal(project / ".vault-machine", list(results))[1] == worker_baseline, "fixture_failure")
+    check(worker_journal(project / ".vault-machine", list(results))[1] == worker_baseline, "worker_execution_preserved", runs=len(results))
     assert_history(native, reference, project, baseline, results)
     # Input closure is required after settlement too; this is not just an API
     # view over a retained outside journal or a currently warm worker.
