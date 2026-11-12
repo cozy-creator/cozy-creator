@@ -3,7 +3,7 @@
 // double click and left by Esc, its close, Back to canvas and a click off it, its picture zoomed in Focus first, and by way of a second box
 // opened from the first: each time the canvas is exactly where it was. And (cl-955, Paul 11-12: "I exit out, but rather than snapping back
 // to the further away view I had going on, I just sit there at like 400% zoom-in"): left while a trackpad's scroll or pinch still glides,
-// the next visit after that, reloaded in Focus and in again by Forward: exactly where it was too.
+// the next visit after that, reloaded in Focus and in again by Forward: exactly where it was too. Pictures of it at two screens, both themes.
 //   node refocus.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -237,6 +237,28 @@ async function died(why) {
   await page.keyboard.press('Escape');
   seen.forward = await rested();
   check('in_again_by_forward_the_canvas_is_where_it_was', same(elsewhere, seen.forward), { elsewhere, after: seen.forward });
+
+  // As a person sees it, at 1440×900 and 1920×1080, light and dark: the canvas, the box in Focus, and the canvas again after leaving while a
+  // pinch glides. Each a picture to look at, and the canvas exactly where it was.
+  for (const [width, height] of [[1440, 900], [1920, 1080]]) for (const dark of [false, true]) {
+    const look = `${width}x${height}-${dark ? 'dark' : 'light'}`;
+    await page.setViewportSize({ width, height });
+    await page.evaluate((dark) => localStorage.setItem('cozy.theme', dark ? 'dark' : 'paper'), dark);
+    await page.reload();
+    await boxOf(page, 'one').waitFor();
+    await settled(page);
+    const from = await viewport();
+    await shot(`${look}-canvas`);
+    await enter('one');
+    await shot(`${look}-focus`);
+    const gliding = glide(1200, true);
+    await page.waitForTimeout(250);
+    await page.keyboard.press('Escape');
+    await gliding;
+    seen[`look_${look}`] = await rested();
+    await shot(`${look}-left`);
+    check(`at_${look}_left_while_a_pinch_glides_the_canvas_is_where_it_was`, same(from, seen[`look_${look}`]), { from, after: seen[`look_${look}`] });
+  }
 
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();
