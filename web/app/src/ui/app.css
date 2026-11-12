@@ -216,8 +216,8 @@ code {
 .top > .brand {
   display: flex;
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: calc(30px * var(--ui));
+  height: calc(30px * var(--ui));
 }
 .top > .brand img {
   width: 100%;
@@ -2184,6 +2184,19 @@ video.preview.on {
   border-bottom: 1px solid var(--line);
   font-size: var(--body);
 }
+/* Back and close: as big to hit and see as the frame's other buttons. */
+.drawer-head .iconb,
+.model-picker-head .iconb,
+.tools .iconb {
+  width: 32px;
+  height: 32px;
+}
+.drawer-head .iconb .icon,
+.model-picker-head .iconb .icon,
+.tools .iconb .icon {
+  width: 18px;
+  height: 18px;
+}
 .drawer-head b {
   font-size: var(--title);
   font-weight: var(--w-title);
@@ -2300,6 +2313,32 @@ video.preview.on {
   flex: 1;
   min-width: 0;
 }
+/* Its × top right, big enough to hit; an error's words take their row whole, with Copy and what to run under them. */
+.note > .iconb {
+  width: 28px;
+  height: 28px;
+}
+.note > .iconb .icon {
+  width: 16px;
+  height: 16px;
+}
+.note .copy-error {
+  min-height: 28px;
+}
+.note:has(> .copy-error, > .copyable) {
+  align-items: flex-start;
+}
+.note:has(> .copy-error, > .copyable) > .line {
+  flex-basis: calc(100% - 40px);
+  padding-top: 3px;
+}
+.note:has(> .copy-error, > .copyable) > .iconb {
+  order: 1;
+}
+.note:has(> .copy-error, > .copyable) > .copy-error,
+.note:has(> .copy-error, > .copyable) > .note-act {
+  order: 3;
+}
 /* What a finished render made (cl-937): its take, small, before its words. */
 .note-picture {
   flex: none;
@@ -2382,6 +2421,17 @@ button:disabled {
 }
 .dot.s-queued {
   background: var(--faint);
+}
+/* Every row keeps its dot's place, so the numbers line up; the dot is the state dot's size. */
+.runrow .dot {
+  width: 10px;
+  height: 10px;
+  margin: 0;
+}
+.runrow .dot.s-current,
+.runrow .dot.s-missing {
+  display: block;
+  visibility: hidden;
 }
 .rows {
   list-style: none;
@@ -2689,11 +2739,23 @@ button:disabled {
 }
 .stack label {
   display: grid;
-  grid-template-columns: 96px 1fr;
+  grid-template-columns: 10em 1fr;
   align-items: center;
   gap: 8px;
   color: var(--faint);
   font-size: var(--body);
+}
+/* A checkbox in the field's column, its words beside it. */
+.stack label:has(> input[type="checkbox"]) {
+  display: flex;
+  gap: 8px;
+  padding-left: calc(10em + 8px);
+  color: var(--ink);
+}
+.stack label > input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
 .heldrow {
   display: flex;
@@ -2813,6 +2875,9 @@ button:disabled {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.assetrow .asset-thumb + .nm {
+  margin-left: 18px;
 }
 .assetrow .nm {
   overflow: hidden;
@@ -3448,6 +3513,15 @@ a.tab:hover {
   justify-content: flex-start;
 }
 .main-menu nav a:hover {
+  background: var(--tint);
+}
+/* One list, as the zoom menu is: no row drawn as a button of its own, the theme's switch too. */
+.main-menu nav .tb {
+  justify-content: flex-start;
+  border-color: transparent;
+  background: none;
+}
+.main-menu nav .tb:hover {
   background: var(--tint);
 }
 
