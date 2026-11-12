@@ -12,19 +12,18 @@ TOOL=$HERE/../e2e/cli/project/tool.py
 codes() { jq -r '[.warnings[]?.code] | join(",")' "$OUT/$1.json" 2>/dev/null; }
 restart() { "$CLI" machine update "$M" --gpu-memory-limit off -y > "$S/restart-$1.log" 2>&1; }
 
-# Refused: the pure wheel of the Runtime release users get, and a source checkout.
-rt=$("$CLI" --json machine show "$M" 2>/dev/null | jq -r '.status.runtime // empty' | sed 's/+.*//')
-pip download -q --no-deps --only-binary=:all: --platform any --python-version 3.12 -d "$S/pure" "cozy-runtime==$rt" > "$S/pure.log" 2>&1 || true
-pure=$(ls "$S"/pure/cozy_runtime-*-none-any.whl 2>/dev/null | head -1)
+# Refused: a source checkout of the Runtime, and the pure wheel it builds.
 git clone -q --depth 1 https://github.com/cozy-creator/cozy-runtime "$S/checkout" > "$S/checkout.log" 2>&1 || true
+(cd "$S/checkout" && uv build -q --wheel --out-dir "$S/pure") >> "$S/checkout.log" 2>&1 || true
+pure=$(ls "$S"/pure/cozy_runtime-*-none-any.whl 2>/dev/null | head -1)
 bad=()
 for what in "${pure:-}" "$S/checkout"; do
-  [ -e "$what" ] || { bad+=("no ${what:-pure wheel of $rt}"); continue; }
+  [ -e "$what" ] || { bad+=("no ${what:-pure wheel built}"); continue; }
   "$CLI" --json machine update "$M" --runtime "$what" -y > "$S/refused.json" 2>&1 && bad+=("$(basename "$what") was taken")
   jq -e '.error.code == "runtime_without_kernels" and (.error.next | length) == 2 and (.error.next[0] | test("dev-build"))' "$S/refused.json" > /dev/null 2>&1 \
     || bad+=("$(basename "$what"): $(head -c 300 "$S/refused.json")")
 done
-expect slow-refuses-pure "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-the pure wheel of $rt and a source checkout refused runtime_without_kernels, naming the dev-build}"
+expect slow-refuses-pure "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-a source checkout and its pure wheel refused runtime_without_kernels, naming the dev-build}"
 
 # Kernel-less: every native kernel module of the machine's Runtimes moved aside, executors started again.
 "$CLI" machine ssh "$M" -- "find / -xdev -path '*cozy_runtime/_kernels/_*.so' -not -path '*/proc/*' 2>/dev/null | while read -r f; do mv \"\$f\" \"\$f.cl913\"; echo \"\$f\"; done" \
