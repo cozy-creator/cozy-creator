@@ -45,6 +45,7 @@ pub(crate) struct Query {
 }
 
 pub(crate) async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Error> {
+    super::note_folder(ctx).await;
     let limit = query.limit.unwrap_or(SHOWN);
     query.limit = (limit > 0).then_some(limit);
     if !ctx.json && ctx.term.stdout {
@@ -227,7 +228,7 @@ pub(crate) fn shown(run: &Run) -> bool {
 
 fn row(run: &Run) -> Vec<String> {
     vec![
-        run.name(),
+        super::handle(run),
         target(run),
         run.project.clone().unwrap_or_else(|| "—".into()),
         run.machine.clone().unwrap_or_else(|| "—".into()),

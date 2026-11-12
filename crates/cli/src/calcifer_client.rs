@@ -90,7 +90,8 @@ pub(crate) enum VaultProgress<'a> {
 }
 
 /// A run number is meaningful only inside the explicit project that owns it. `None` is
-/// independent maintenance, never a fallback after a project lookup failed.
+/// independent maintenance, never a fallback after a project lookup failed. A run id is unique:
+/// inside a project, one the project doesn't know is Calcifer's own run (a download, an update).
 #[derive(Clone)]
 pub(crate) struct RunAddress { pub project: Option<String>, pub run: String }
 impl RunAddress {
@@ -101,7 +102,15 @@ impl RunAddress {
             Err(error) if error.code == "not_in_a_project" => None,
             Err(error) => return Err(error),
         };
-        Ok(Self { project, run: run.into() })
+        crate::run::in_folder(project.is_some());
+        let address = Self { project, run: run.into() };
+        if address.project.is_none() || !run.starts_with("run-") {
+            return Ok(address);
+        }
+        match ctx.calcifer().await?.run(&address).await {
+            Err(error) if error.code == "run_not_found" => Ok(Self { project: None, ..address }),
+            _ => Ok(address),
+        }
     }
     pub(crate) fn path(&self) -> String {
         match &self.project {
@@ -991,7 +1000,23 @@ impl Client {
             let probe = request.try_clone().ok_or_else(|| Error::new(Kind::Internal, "request_unrepeatable", "The request cannot be inspected before transmission"))?
                 .build().map_err(unreachable)?;
             if needs_project_storage(probe.url().path()) {
-                let birth = self.project_storage(&holder).await?;
+                let birth = match self.project_storage(&holder).await {
+                    Ok(birth) => birth,
+                    Err(Probe::Unsupported) => return Err(storage_unsupported()),
+                    // Mid-restart (cl-716 B): asked again on the record it publishes, by the call's rule.
+                    Err(Probe::Restarting(why)) => {
+                        self.remember(None);
+                        let why = format!("{RESTARTING} ({why})");
+                        match backoff.again(&why, false, None) {
+                            Some((wait, said)) => {
+                                output::warn(&said);
+                                tokio::time::sleep(wait).await;
+                                continue;
+                            }
+                            None => return Err(Error::new(Kind::Unavailable, "calcifer_unreachable", backoff.spent(&why)).next("cozy doctor")),
+                        }
+                    }
+                };
                 // No old daemon can receive the project request after a restarted holder was probed. Never by
                 // taking the lock: a client whose home holds only a copy of the record would erase it.
                 if self.record().as_ref() != Some(&holder) || process::Birth::of(holder.pid).ok().as_ref() != Some(&birth) {
@@ -1051,19 +1076,26 @@ impl Client {
 
     /// A header alone is insufficient: old controllers ignore unknown headers. This response is
     /// bound to both this exact process birth and its current bearer before any project bytes go.
-    async fn project_storage(&self, holder: &Holder) -> Result<process::Birth, Error> {
+    /// A Calcifer that is stopping or starting is `Restarting`; only one that answers without the
+    /// protocol is `Unsupported`.
+    async fn project_storage(&self, holder: &Holder) -> Result<process::Birth, Probe> {
         #[derive(Deserialize)]
         struct Capability { version: u32, daemon_birth: String, principal: String }
-        let refused = || Error::new(Kind::Unavailable, "project_storage_unsupported", "Calcifer cannot prove project storage protocol 3; no project request was sent").next("cozy update");
-        let birth = process::Birth::of(holder.pid).map_err(|_| refused())?;
-        let expected_birth = hex::encode(Sha256::digest(serde_json::to_vec(&birth).map_err(|_| refused())?));
+        let birth = process::Birth::of(holder.pid).map_err(|_| Probe::Restarting("its process ended".into()))?;
+        let expected_birth = hex::encode(Sha256::digest(serde_json::to_vec(&birth).map_err(|_| Probe::Unsupported)?));
         let answer = self.0.http.get(format!("http://{}/v1/project-storage", holder.address)).bearer_auth(&holder.token)
-            .send().await.map_err(|_| refused())?;
-        if !answer.status().is_success() { return Err(refused()); }
-        let capability: Capability = answer.json().await.map_err(|_| refused())?;
-        if capability.version != 3 || capability.daemon_birth != expected_birth || capability.principal != hex::encode(Sha256::digest(&holder.token)) {
-            return Err(refused());
+            .send().await.map_err(|error| Probe::Restarting(format!("no answer: {error}")))?;
+        let status = answer.status();
+        // A new token, or a Calcifer stopping or not yet serving.
+        if status == StatusCode::UNAUTHORIZED || weather(status) { return Err(Probe::Restarting(format!("it answered {status}"))); }
+        if !status.is_success() { return Err(Probe::Unsupported); }
+        let body = answer.bytes().await.map_err(|error| Probe::Restarting(format!("its answer broke: {error}")))?;
+        let capability: Capability = serde_json::from_slice(&body).map_err(|_| Probe::Unsupported)?;
+        if capability.version != 3 || capability.principal != hex::encode(Sha256::digest(&holder.token)) {
+            return Err(Probe::Unsupported);
         }
+        // Another process answers at the record's address: the record is being replaced.
+        if capability.daemon_birth != expected_birth { return Err(Probe::Restarting("another Calcifer answers".into())); }
         Ok(birth)
     }
 
@@ -1570,6 +1602,18 @@ mod tests;
 mod restart_tests;
 
 /// Global service/account diagnostics remain available to diagnose an old controller.
+/// Why a project storage probe proved nothing.
+enum Probe {
+    /// Calcifer is stopping, starting or replaced: asked again.
+    Restarting(String),
+    /// It answers without protocol 3: a Calcifer released before it.
+    Unsupported,
+}
+
+fn storage_unsupported() -> Error {
+    Error::new(Kind::Unavailable, "project_storage_unsupported", "Calcifer cannot prove project storage protocol 3; no project request was sent").next("cozy update")
+}
+
 fn needs_project_storage(path: &str) -> bool {
     ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/browser/", "/v1/maintenance/source", "/v1/events"].iter().any(|prefix| path.starts_with(prefix))
 }

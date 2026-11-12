@@ -63,7 +63,7 @@ pub(crate) async fn exec(
         if !follow::settled(&run) {
             follow::next(ctx, &run);
         }
-        println!("its stages, memory, calls and log: cozy run watch {} --full", run.name());
+        println!("its stages, memory, calls and log: cozy run watch {} --full", super::handle(&run));
         return Ok(follow::exit_code(&run));
     }
     grid(&["STAGE", "TIME", "DETAIL"], measured, stage_rows).print(ctx, "stages");
