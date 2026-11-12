@@ -1,12 +1,14 @@
 //! A model composed by reference on another's header (`cozy model upload <source> <org/name>
 //! --base <model>[:<component>,…]`): which of the source's components go where, the header
 //! metadata that records it, and the header itself (`format::compose`). Only the base's header
-//! is read: the components it keeps stay its objects, wherever they are held.
+//! is read: the components it keeps stay its objects, wherever they are held. At resolve, a
+//! checkpoint takes what it lacks from its base ([`inherit`]).
 use std::collections::BTreeMap;
 
 use crate::err::{refuse, Code, Result};
 use crate::family::{self, Record, Stored};
 use super::compose::{compose, Supply};
+pub use super::compose::{inherit, inherited_from, Inherited, INHERITED};
 use crate::format::{Header, ObjectRef, Provenance, Value};
 use crate::store::Store;
 
@@ -23,6 +25,17 @@ pub struct Base {
     pub lane: String,
     pub checkpoint: String,
     pub header: String,
+}
+
+impl Base {
+    /// The base `header` records it was composed on ([`COMPOSED`]), if any.
+    pub fn recorded(header: &Header) -> Option<Base> {
+        let Some(Value::Map(composed)) = header.metadata.get(COMPOSED) else { return None };
+        let Some(Value::Map(base)) = composed.get("base") else { return None };
+        let field = |k: &str| base.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+        let base = Base { model: field("model"), release: field("release"), lane: field("lane"), checkpoint: field("commit"), header: field("header") };
+        (!base.model.is_empty() || !base.header.is_empty() || !base.checkpoint.is_empty()).then_some(base)
+    }
 }
 
 /// The composed header, stored, and the source each of its supplied components came from.

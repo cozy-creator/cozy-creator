@@ -678,6 +678,120 @@ impl Publisher {
         }))
     }
 
+    /// A header held here, parsed.
+    fn read_header(&self, header: &ObjectRef) -> Result<tensorfs::format::Header, Failure> {
+        let failed = |e: String| ("model_resolution_failed", format!("{}: {e}", header.id()));
+        let bytes = self.store.read(header).map_err(|e| failed(e.to_string()))?;
+        tensorfs::format::Header::from_cbor(&bytes).map_err(|e| failed(e.to_string()))
+    }
+
+    /// The base a checkpoint was composed on (`cozy model upload --base`), as its header records
+    /// it, or a derived lane's source header does (`provenance.source`).
+    fn recorded_base(&self, service: &Service, source: &hub::Source, named: &Named, own: &tensorfs::format::Header) -> Option<Named> {
+        use tensorfs::{format::{Provenance, Value}, import::base::Base};
+        let base = Base::recorded(own).or_else(|| {
+            let Some(Value::Map(provenance)) = own.metadata.get(Provenance::KEY) else { return None };
+            let sha = provenance.get("source")?.as_str()?.trim_start_matches("sha256:").to_owned();
+            let lane = Named { model: named.model.clone(), tree: Some(ObjectRef { sha256: sha, length: 0 }), ..Named::default() };
+            let header = self.checkpoint(service, source, lane).ok()?.header?;
+            Base::recorded(&self.read_header(&header).ok()?)
+        })?;
+        let tree = [&base.checkpoint, &base.header].into_iter().find(|id| !id.is_empty())
+            .map(|id| ObjectRef { sha256: id.trim_start_matches("sha256:").to_owned(), length: 0 });
+        Some(Named { model: base.model, release: base.release, lane: base.lane, tree, ..Named::default() })
+    }
+
+    /// `named`, a slot's Hub checkpoint, with what it lacks taken from its bases
+    /// (`tensorfs::import::base::inherit`): the base it records it was composed on, then the slot's
+    /// own default model. A base gives only when it is the same model (each component both have
+    /// is one class), and only what the checkpoint has not: whole components, and the files
+    /// (assets, an empty config) of the components both have. The grant then names the header
+    /// made here; `Pulled` reads it as the Hub checkpoint's, so its chunks come as that one's do.
+    #[allow(clippy::too_many_arguments)]
+    fn inherit(&self, service: &Service, source: &hub::Source, slot: &Value, named: &Named, grant: &mut ModelGrant,
+        hardware: &Hardware, job: &Job) -> Result<(), Failure> {
+        use tensorfs::{format::Value as Meta, import::base::inherit};
+        let checkpoint = named.header()?.clone();
+        let own = self.read_header(&checkpoint)?;
+        let mut bases: Vec<Named> = self.recorded_base(service, source, named, &own).into_iter().collect();
+        if let Some(choice) = default_choice(slot, &grant.slot) {
+            let mut default = choose(&choice, &grant.slot)?;
+            if default.lane.is_empty() {
+                default.lane = named.lane.clone();
+            }
+            bases.push(default);
+        }
+        let (mut effective, mut said) = (own, vec![]);
+        let mut seen = BTreeSet::from([checkpoint.clone()]);
+        for base in bases {
+            let resolved = self.resolve(service, source, base.clone(), hardware).or_else(|why| match base.lane.is_empty() {
+                true => Err(why),
+                false => self.resolve(service, source, Named { lane: String::new(), ..base.clone() }, hardware),
+            });
+            let base = match resolved {
+                Ok(base) => base,
+                Err((_, why)) => {
+                    tracing::info!(model = %named.model, base = %base.shown(), "a base of a checkpoint is not read: {why}");
+                    continue;
+                }
+            };
+            let Ok(header) = base.header().cloned() else { continue };
+            if !seen.insert(header.clone()) {
+                continue;
+            }
+            if let Err((_, why)) = self.pull(source, &base, Some(&[]), job.stop.as_ref(), &|_, _| ()) {
+                tracing::info!(model = %named.model, base = %base.shown(), "a base of a checkpoint is not landed: {why}");
+                continue;
+            }
+            let text =|s: &str| Meta::Str(s.to_owned());
+            let from = BTreeMap::from([
+                ("model".to_owned(), text(&base.model)),
+                ("release".to_owned(), text(&base.release)),
+                ("lane".to_owned(), text(&base.lane)),
+                ("header".to_owned(), text(&header.id())),
+            ]);
+            let made = inherit(&effective, &checkpoint, &self.read_header(&header)?, from)
+                .map_err(|e| ("model_resolution_failed", format!("{} on {}: {e}", named.shown(), base.shown())))?;
+            if let Some((header, gave)) = made {
+                // Its files by folder: `text_encoder/processor/ (5 files)`.
+                let mut folders: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+                for file in &gave.files {
+                    folders.entry(file.rsplit_once('/').map_or("", |(folder, _)| folder)).or_default().push(file);
+                }
+                let mut what = gave.components.clone();
+                what.extend(folders.iter().map(|(folder, files)| match files.as_slice() {
+                    [one] => one.to_string(),
+                    many => format!("{folder}/ ({} files)", many.len()),
+                }));
+                said.push(format!("{} from {}", what.join(", "), base.shown()));
+                effective = header;
+            }
+        }
+        if said.is_empty() {
+            return Ok(());
+        }
+        let bytes = effective.to_cbor().map_err(|e| ("model_resolution_failed", format!("{}: {e}", named.shown())))?;
+        let made = self.store.put_bytes(&bytes).map_err(|e| ("model_resolution_failed", format!("{}: {e}", named.shown())))?;
+        // The files it took are small and read at construction: here before it runs.
+        let absent: Vec<ObjectRef> = (effective.components().iter())
+            .flat_map(|c| c.assets.values().cloned())
+            .filter(|o| !self.store.holds(o))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if !absent.is_empty() {
+            let remote = origin::remote(&self.machine, source).map_err(|e| unsigned(source, refused("model_download_failed", e.clone()), &e))?;
+            let stop = job.stop.clone().unwrap_or_default();
+            self.machine.objects(&remote, &absent, priority::NOW, &stop).map_err(|e| refused("model_download_failed", e))?;
+        }
+        let line = format!("{} takes {}", named.shown(), said.join("; "));
+        tracing::info!(header = %made.id(), "{line}");
+        job.stage(line);
+        grant.manifest = made.id();
+        grant.components.clear();
+        Ok(())
+    }
+
     /// Each Hub checkpoint's header, landed at once: which of its chunks come, and when, its
     /// calls direct (`access`). A held header asks the Hub nothing.
     fn structure(&self, source: &hub::Source, checkpoints: &[Named], job: &Job) -> Result<(), Failure> {
@@ -1420,8 +1534,16 @@ impl Publisher {
                 false => self.structure(request.hub("a Hub model")?, &named, job),
             }
         };
-        let picked: Vec<_> = slots.iter().map(pick).collect::<Result<_, _>>()?;
+        let mut picked: Vec<_> = slots.iter().map(pick).collect::<Result<_, _>>()?;
         land(&picked)?;
+        // A checkpoint that lacks part of its model takes it from its base (cl-935).
+        for (slot, (grant, named, _)) in slots.iter().zip(picked.iter_mut()) {
+            if let Some(named) = named.as_ref() {
+                let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
+                let hardware = tensorfs::fetch::Hardware { plain, ..hardware.clone() };
+                self.inherit(service, request.hub("a Hub model")?, slot, named, grant, &hardware, job)?;
+            }
+        }
         let (mut grants, mut warnings) = (vec![], gpu.problems());
         for (grant, _, said) in picked {
             grants.push(grant);

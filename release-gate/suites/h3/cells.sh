@@ -143,7 +143,7 @@ judge keyframes-last keyframes '.ssim >= 0.9 and .ssim > .other' still "$OUT/gui
 # The 20 s pair is two segments (two 10 s beats): the LoRA must reach both halves, its record must name it on every segment, and no seam.
 VP="$CHAR $MOTION at golden hour, a slow orbit, ambient sound" LORA=jojocodex/minimax-h3-spatial-physics
 BEATS20=$(beats 10 "$VP. They walk toward the camera." 10 'They turn and look back over one shoulder.')
-SAVED=$ONLY; [[ $ONLY == *",h3-checkpoint,"* || $ONLY == *",h3-lora,"* ]] && ONLY="$ONLY,h3-base,"
+SAVED=$ONLY; [[ $ONLY == *",h3-checkpoint,"* || $ONLY == *",h3-lora,"* || $ONLY == *",h3-inherit-"* ]] && ONLY="$ONLY,h3-base,"
 [[ $ONLY == *",h3-lora-20s,"* ]] && ONLY="$ONLY,h3-base-20s,"
 cell h3-base "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5
 cell h3-base-20s "$SHOT" "$BEATS20" seed:=$((R + 81))
@@ -151,6 +151,16 @@ ONLY=$SAVED
 cell h3-checkpoint "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5 model.base_model=warmbloodaban/minimax-h3-singularity@0.1.1
 judge h3-checkpoint-frames h3-checkpoint '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6 and .ssim < 0.9' \
   variant "$(video_of h3-base)"
+# Fine-tunes that ship part of H3 (no text encoder processor; pinkcherry also records no base) take the rest from their base at
+# resolve, and the run says so (cl-935: run 46907 failed model_asset_missing).
+for ft in sexgod1979/pinkcherry@0.1.0 tenstrip/eros-max@0.1.0; do
+  c=h3-inherit-${ft#*/}; c=${c%@*}
+  cell "$c" "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5 model.base_model=$ft
+  judge "$c-frames" "$c" '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6 and .ssim < 0.9' variant "$(video_of h3-base)"
+  [ -f "$c.number" ] || continue
+  w=$("$CLI" run watch --full "$(cat "$c.number")" --once 2>/dev/null | grep -o "takes [^;]*text_encoder/processor/[^;]* from minimaxai/minimax-h3@[^ ]*" | head -1)
+  expect "$c-named" "$([ -n "$w" ] && echo PASS || echo FAIL)" "${w:-the run names nothing taken from minimaxai/minimax-h3}"
+done
 cell h3-lora "$SHOT" prompt="$VP" seed:=$((R + 80)) duration_s:=5 --lora "$LORA,0.8"
 judge h3-lora-frames h3-lora '.contrast >= 0.5 * .control_contrast and .coherence >= 0.6 and .ssim < 0.9' variant "$(video_of h3-base)"
 cell h3-lora-20s "$SHOT" "$BEATS20" seed:=$((R + 81)) --lora "$LORA,0.8"

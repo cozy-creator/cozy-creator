@@ -52,8 +52,24 @@ impl Pulled {
     }
 
     /// The Hub checkpoint whose header is `header`, as this machine pulled it; None for one never
-    /// pulled.
+    /// pulled. A header made here from one with what it lacks of its base (`inherit`, cl-935) is
+    /// that one's: its chunks come from the same Hub.
     pub(crate) fn of(store: &Store, header: &ObjectRef) -> io::Result<Option<Pulled>> {
+        if let Some(pulled) = Self::named(store, header)? {
+            return Ok(Some(pulled));
+        }
+        let Ok(bytes) = store.read(header) else {
+            return Ok(None);
+        };
+        let made = tensorfs::format::Header::from_cbor(&bytes).ok().as_ref().and_then(tensorfs::import::base::inherited_from);
+        match made.filter(|checkpoint| checkpoint != header) {
+            Some(checkpoint) => Self::named(store, &checkpoint),
+            None => Ok(None),
+        }
+    }
+
+    /// The Hub checkpoint a model's ref records with header `header`.
+    fn named(store: &Store, header: &ObjectRef) -> io::Result<Option<Pulled>> {
         for model in store.refs().map_err(storage::io_error)? {
             if model.name.starts_with("local/") {
                 continue;
