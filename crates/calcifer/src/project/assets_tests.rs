@@ -271,6 +271,8 @@ async fn typed_nodes_fixture() {
     let (_, Json(asked)) = super::super::runs(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"names":["all"],"on":["local"]}).to_string()))).await.unwrap();
     assert_eq!(asked.added, 4);
     assert!(!asked.skipped.contains(&original.name));
-    assert!(asked.queued.iter().any(|row| row.name == reader && !row.ahead.contains(&original.name)), "{asked:?}");
-    assert!(asked.queued.iter().any(|row| row.name == waiting && row.ahead.contains(&empty)), "{asked:?}");
+    let reader_job = asked.board.jobs.iter().find(|job| job.asset == reader).unwrap();
+    assert!(reader_job.needs.is_empty(), "{reader_job:?}");
+    let waiting_job = asked.board.jobs.iter().find(|job| job.asset == waiting).unwrap();
+    assert_eq!(waiting_job.needs, vec![empty], "{waiting_job:?}");
 }
