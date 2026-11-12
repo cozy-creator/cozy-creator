@@ -5,6 +5,7 @@ output and remote journal inspection stay in RAM; the receipt contains hashes/co
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -237,6 +238,25 @@ class Worker:
             raise
 
 
+# An encrypted project's run text in project.db is a pointer to a record in its own view
+# (calcifer project/vault.rs `seal_payload`): read as the product's `open_payload` reads it.
+SEALED = "cozy:vault:journal:2:"
+
+
+def opened(view: Path, value: object) -> str:
+    require(isinstance(value, str), "remote_history_text")
+    if not value.startswith(SEALED):
+        return value
+    reference = json.loads(value.removeprefix(SEALED))
+    require(isinstance(reference, dict) and re.fullmatch(r"[0-9a-f]{32}", str(reference.get("object", ""))), "remote_history_journal")
+    at = view / ".vault-journal" / reference["object"]
+    require(at.is_file() and not at.is_symlink(), "remote_history_journal")
+    record = json.loads(at.read_bytes())
+    require(isinstance(record, dict) and record.get("project_id") == reference.get("project_id")
+            and record.get("context") == reference.get("context"), "remote_history_journal")
+    return base64.b64decode(record["data"], validate=True).decode()
+
+
 def history(view: Path, identifier: str) -> dict:
     path = view / "project.db"
     require(path.is_file() and not path.is_symlink(), "fixture_failure")
@@ -245,7 +265,7 @@ def history(view: Path, identifier: str) -> dict:
         row = connection.execute("SELECT number,inputs,idempotency_key,digest FROM runs WHERE id=?", (identifier,)).fetchone()
         logs = connection.execute("SELECT seq,level,text FROM run_logs WHERE run=? ORDER BY seq", (identifier,)).fetchall()
         outputs = connection.execute("SELECT name,idx,digest,length,exported_rev FROM outputs WHERE run=? ORDER BY name,idx", (identifier,)).fetchall()
-    require(row is not None and outputs and any(TEXT in log[2] for log in logs), "fixture_failure")
+    require(row is not None and outputs and any(TEXT in opened(view, log[2]) for log in logs), "fixture_failure")
     return {"row": row, "logs": logs, "outputs": outputs}
 
 
@@ -291,7 +311,7 @@ def qualify(native: Native, project: dict, receipt: Receipt, ready: dict) -> Non
         require(response.status == 200 and response.body == expected, "fixture_failure")
         worker.stage("local_history")
         before = history(project["view"], identifier)
-        require(sha(SOURCE) in before["row"][1], "fixture_failure")
+        require(sha(SOURCE) in opened(project["view"], before["row"][1]), "fixture_failure")
         require(any(path.is_file() and not path.is_symlink() and path.read_bytes() == SOURCE
                     for path in (project["view"] / ".vault-inputs").rglob("*")), "fixture_failure")
         proof = json.loads((project["view"] / ".vault-local-execution.json").read_bytes())
