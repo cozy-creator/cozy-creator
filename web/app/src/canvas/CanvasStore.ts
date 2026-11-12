@@ -576,6 +576,7 @@ export class CanvasStore {
     const view = this.get(name)
     const asset = view?.asset
     if (!view || !asset?.tool) return
+    if (this.inPlace?.name === this.resolveName(name)) this.focusFit?.()
     const field = this.promptOf(asset.tool)
     const said = this.valueOf(name, field)
     const words = typeof said === "string" ? said : ""
@@ -1343,6 +1344,7 @@ export class CanvasStore {
       }
       const fps = shown.fps ?? FPS
       const frame = pickupAt(Math.round(Math.max(0, seconds) * fps), framesIn(shown.duration_ms, fps), tool.pickup)
+      this.focusFit?.()
       this.patch(key, { hereWords: true, watchFrom: undefined, watchRun: undefined, continuing: frame ? { take: `<${key}.${number}>`, out_frame: frame, beats_from: frame / fps } : undefined, continuingFps: fps })
       this.focusing = key
     } catch (error) { say("Couldn't load this video's prompts", error) }

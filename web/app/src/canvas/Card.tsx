@@ -148,6 +148,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
       return
     }
     if (writes) return store.writeNext(name)
+    store.focusFit?.()
     store.focusing = name
     store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watchRun: undefined, watchFrom: undefined })
   }
