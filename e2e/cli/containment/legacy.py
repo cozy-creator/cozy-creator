@@ -56,10 +56,20 @@ def schema() -> int:
 
 
 def command(cli: Path, *words: str, cwd: Path | None = None, stdin: bytes | None = None, ok: bool = True) -> bytes:
-    result = subprocess.run([str(cli), "--json", *words], cwd=cwd, input=stdin,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1200)
-    require((result.returncode == 0) == ok, "cli_exit")
-    return result.stdout
+    deadline = time.monotonic() + 90
+    while True:
+        result = subprocess.run([str(cli), "--json", *words], cwd=cwd, input=stdin,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1200)
+        if ok and result.returncode and words[:1] == ("vault",) and words[-1:] == ("lock",):
+            try:
+                busy = json.loads(result.stdout).get("error", {}).get("code") == "project_busy"
+            except (ValueError, AttributeError):
+                busy = False
+            if busy and time.monotonic() < deadline:
+                time.sleep(0.1)
+                continue
+        require((result.returncode == 0) == ok, "cli_exit")
+        return result.stdout
 
 
 def exclusive_free(path: Path) -> None:
@@ -363,7 +373,9 @@ def qualify(args, receipt: Receipt) -> None:
     for fail in (False, True):
         request = project / ("failure.json" if fail else "success.json")
         request.write_text(json.dumps({"text": marker.decode() + ("-failed" if fail else "-success"), "fail": fail}))
-        raw = command(args.old, "run", provenance["target"], "--input", str(request), "--file", "source=" + str(source), "--on", "local", "--gpus", "0", cwd=project, ok=not fail)
+        # The released CLI rejects --gpus 0; the public callable's actual
+        # accelerator=False contract selects CPU without that flag.
+        raw = command(args.old, "run", provenance["target"], "--input", str(request), "--file", "source=" + str(source), "--on", "local", cwd=project, ok=not fail)
         run = terminal(raw, "failed" if fail else "completed")
         run = settled(old, run["id"], old=True, reference=reference)
         run["bodies"] = output_bytes(old, run, old=True)
@@ -428,7 +440,11 @@ def qualify(args, receipt: Receipt) -> None:
     require(identity["id"] == reference, "fixture_failure")
     assert_history(native, reference, view, baseline, results)
     command(INSTALLED, "vault", "--directory", str(project), "lock")
-    markers = [marker, source_sha.encode(), *(item[3].removeprefix("sha256:").encode() for value in baseline.values() for item in value["outputs"])]
+    markers = [marker, source_sha.encode(), *(item[3].removeprefix("sha256:").encode() for value in baseline.values() for item in value["outputs"]),
+               *(identifier.encode() for identifier in baseline),
+               *(value["row"][1].encode() for value in baseline.values()),
+               *(value["row"][2].encode() for value in baseline.values()),
+               *(value["submission"]["invocation_digest"].encode() for value in worker_baseline.values())]
     scan = outside_scan(markers, [project], receipt)
     receipt.add("legacy_encrypted_retirement", passed=True, **scan)
     stop(native, old=False)
