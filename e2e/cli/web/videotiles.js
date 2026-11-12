@@ -83,8 +83,10 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
     writeFileSync(shots, `${readFileSync(SHOTS, 'utf8')}\n# ${id}\n`);
     await projectAction(folder, 'add', `${shots}/shoot`, 'shot', 'node_kind=video', 'plate=<imported>', 'summary=Along the coast.');
     await projectAction(folder, 'render', 'shot', '--on', 'local');
-    await until('the shot take', async () => (await asset('shot'))?.versions, (n) => n >= 1, RUN_MS);
-    const picked = await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['shot'], on: ['local'], pickup: { take: '<shot.1>', out_frame: 24 } }) });
+    const first = await until('the shot take', async () => asset('shot'), (held) => held?.versions >= 1, RUN_MS);
+    // Its number, whatever it is: a take's number is reserved when Render is pressed (cl-945).
+    const from = first.prefixes.at(-1).number;
+    const picked = await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['shot'], on: ['local'], pickup: { take: `<shot.${from}>`, out_frame: 24 } }) });
     seen.pickup_asked = picked.status;
     const taken = await until('the picked-up take', async () => asset('shot'), (held) => held?.versions >= 2, RUN_MS);
     check('a_take_is_picked_up', Boolean(taken.prefixes?.at(-1)?.pickup), taken.prefixes?.at(-1));
