@@ -202,7 +202,6 @@ impl Store {
             let input_column=runs.column("inputs")?;
             let objects: Vec<(Digest,u64)>=serde_json::from_str(text(&runs.values[0][input_column])?).map_err(|_| corrupt("legacy inputs"))?;
             let retained=project.input_root()?;
-            let state=text(&runs.values[0][runs.column("state")?])?;
             for (digest,length) in objects.clone() {
                 let name=hex::encode(digest.bytes());
                 let target=retained.join(&name);
@@ -213,8 +212,10 @@ impl Store {
                     if size!=length || Digest::from_bytes(hash.finalize().into())!=digest { return Err(StoreError::Protected("project_input_migration_pending".into())); }
                     continue;
                 }
-                let source_file=inputs.join(&name);
-                if !source_file.exists() && state=="settled" { continue; }
+                // Released writers removed settled staging files. A complete
+                // receipt still needs the actual bytes: recover only the exact
+                // canonical digest from retained project files or old CAS.
+                let source_file=legacy_input_source(root,inputs,&digest,length)?;
                 crate::copy_checked(&retained,&api::calcifer::StagedInput {path:source_file,digest,length},&target)
                     .map_err(|_| StoreError::Protected("project_input_migration_pending".into()))?;
             }
@@ -369,6 +370,26 @@ impl Store {
         }
         Ok(())
     }
+}
+
+fn legacy_input_source(root:&Path,inputs:&Path,digest:&Digest,length:u64)->Result<PathBuf> {
+    let name=hex::encode(digest.bytes());
+    let staged=inputs.join(&name);
+    if staged.is_file() {return Ok(staged);}
+    let view=vault::resolve_path(root).map_err(private_error)?;
+    match std::fs::read_dir(view.join(crate::project::folder::FILES)) {
+        Ok(entries)=>for entry in entries {
+            let entry=entry.map_err(|_|StoreError::Protected("project_input_migration_pending".into()))?;
+            let file=entry.file_name();
+            if file.to_str().is_some_and(|file|file==name||file.strip_prefix(&name).is_some_and(|tail|tail.starts_with('.'))) && entry.path().is_file() {
+                return Ok(entry.path());
+            }
+        },
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+        Err(_)=>return Err(StoreError::Protected("project_input_migration_pending".into())),
+    }
+    crate::runs::files::legacy_input_source(digest,length).filter(|path|path.is_file())
+        .ok_or_else(||StoreError::Protected("project_input_migration_pending".into()))
 }
 
 fn verify_file(path:&Path,digest:Digest,length:u64)->Result<()> {
