@@ -100,14 +100,15 @@ const WATCH = () => {
     const node = box(one.name ?? one.gone);
     return { wanted: one, drawn: Boolean(node), text: node?.textContent.slice(0, 160), place: node && placeOf(node) };
   });
-  /** Each place its progress reached, until it has none. */
+  /** Each place its progress reached, until it has none: its two lines say how it goes (cl-898, 3898a5d72), and how far the whole job
+   *  is, the meter along the top of its box at rest (cl-932, 570e35a2d). */
   window.progressOf = (name) => new Promise((done) => {
     const places = [];
     window.progressSaid = [];
     const look = () => {
       const bar = box(name)?.querySelector('.prog');
       if (bar) {
-        const place = bar.querySelector('i')?.style.transform || 'unknown';
+        const place = box(name).querySelector('.tile-meter i')?.style.transform || 'unknown';
         if (places.at(-1) !== place) places.push(place);
         const says = bar.querySelector('.face-stage')?.textContent || bar.querySelector('b')?.textContent;
         if (says && window.progressSaid.at(-1) !== says) window.progressSaid.push(says);
