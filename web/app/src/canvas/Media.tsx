@@ -17,6 +17,7 @@ import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
 import { BufferedImage } from "./BufferedImage"
+import type { VideoPlayback } from "./timeline/Player"
 import { useArriving } from "./RunFace"
 import { bodyText, CopyError } from "../ui/CopyError"
 
@@ -379,7 +380,8 @@ export function viewable(view: ElementView | undefined): boolean {
 }
 
 /** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
-export function Player({ field, path, machine, seek, auto, from, onTime }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void }) {
+/** `controller`: in Focus, the one transport and track drive it (cl-965), so it has no controls of its own. */
+export function Player({ field, path, machine, seek, auto, from, onTime, controller }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void; controller?: VideoPlayback }) {
   const { client, stream } = useConnection()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const [why, setWhy] = useState("This browser can't play it")
@@ -389,6 +391,19 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
   const asked = useRef(seek?.ask ?? 0)
 
   useEffect(() => () => stopRef.current(), [])
+  // Closed, it drives nothing.
+  useEffect(() => {
+    if (state === "idle" || state === "unplayable") controller?.attach(null)
+  }, [state, controller])
+  // Its transport opens it: to play, or to show the frame a scrub asked for.
+  useEffect(() => {
+    if (!controller) return
+    controller.start = () => setState((now) => (now === "idle" ? "waiting" : now))
+    return () => {
+      controller.start = () => {}
+      controller.attach(null)
+    }
+  }, [controller])
   // Asked to play at once: once it's there, so React's second mount in development doesn't stop it.
   useEffect(() => {
     if (auto) setState("waiting")
@@ -447,6 +462,8 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
         setState("playing")
         if (wanted.current !== null) el.currentTime = wanted.current
         wanted.current = null
+        // Opened by a scrub, it shows that frame and waits.
+        if (controller?.attach(el)) return
         el.play().catch(() => {})
       })
       .catch((error: unknown) => {
@@ -456,6 +473,8 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
 
   if (state === "unplayable") return <span className="media-note over">{why}</span>
   if (state === "idle") {
+    // Its transport has the Play.
+    if (controller) return null
     return (
       <button type="button" className="play nodrag" aria-label="Play" onClick={() => setState("waiting")}>
         <Icon name="play" />
@@ -468,7 +487,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
       <Tag
         ref={element}
         className={`live nodrag nopan nowheel ${field}`}
-        controls
+        controls={!controller}
         preload="none"
         onTimeUpdate={(event) => onTime?.(event.currentTarget.currentTime)}
         onSeeked={(event) => onTime?.(event.currentTarget.currentTime)}
@@ -797,6 +816,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const { client } = useConnection()
   const store = useCanvasStore()
   const { asset, placing, preview } = view
+  const focused = useSignal(store.focusedName) === name
   // Being worked on, a take can be played and scrubbed, unless its words are over it.
   const open = Boolean(view.here && !view.hereWords)
   const shown = shownOf(view)
@@ -914,6 +934,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           onTime={field === "video" ? (seconds) => store.patch(name, { scrub: seconds }) : undefined}
           auto={playsOn !== undefined}
           from={playsOn}
+          controller={focused && field === "video" ? store.playbackOf(name, shown?.fps ?? 24) : undefined}
         />
       )}
       {children}

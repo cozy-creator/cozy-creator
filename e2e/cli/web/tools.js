@@ -417,7 +417,7 @@ function replaceFile(at, text) {
     await open('shot');
     // A render from its words stays on them (cl-907): its take, pressed, is what's looked at.
     await page.locator('.focus-viewport .take[aria-label="take 1"]').first().click();
-    const segments = page.locator('.focus-viewport .focus-under .segments');
+    const segments = page.locator('.focus-viewport .tl-take');
     await segments.locator('.segment').nth(1).click();
     const redo = segments.locator('button.redo-segment');
     check('it_offers_its_segment', (await until('Redo segment 2', () => redo.innerText().catch(() => ''), (text) => text === 'Redo segment 2').catch(() => '')) === 'Redo segment 2', await segments.innerText().catch(() => ''));

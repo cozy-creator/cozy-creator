@@ -26,6 +26,7 @@ import type {
 } from "../api/calcifer"
 import type { Entity, Project } from "../types"
 import { dismiss, say } from "../ui/notes"
+import { VideoPlayback } from "./timeline/Player"
 import { signal } from "../ui/signal"
 import { carriedFile } from "./carry"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
@@ -254,6 +255,7 @@ export class CanvasStore {
   private client: Client
   private flow: Flow | null = null
   private views = new Map<string, ElementView>()
+  private playbacks = new Map<string, VideoPlayback>()
   private aliases = new Map<string, string>()
   private subscribers = new Map<string, Set<() => void>>()
   private shapes = new Map<string, string>()
@@ -1405,6 +1407,15 @@ export class CanvasStore {
     if (end === null) return say(`${from}'s take ${number} is shorter than this tool picks up from`)
     this.patch(key, { hereWords: true, watch: undefined, continuing: { take: `<${mentionFrom(key, from, number)}>`, out_frame: end, beats_from: 0 }, continuingFps: fps })
     this.openHere(key)
+  }
+
+  /** The one playback a video in Focus has: its transport and track drive it, its player plays it (cl-965). */
+  playbackOf(name: string, fps: number): VideoPlayback {
+    const key = this.resolveName(name)
+    let held = this.playbacks.get(key)
+    if (!held) this.playbacks.set(key, (held = new VideoPlayback(fps)))
+    held.fps = fps
+    return held
   }
 
   /** Back to a plain draft: nothing kept from a take. */

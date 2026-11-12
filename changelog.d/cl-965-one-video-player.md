@@ -1,0 +1,1 @@
+Every video in Focus plays on one player: the transport under it (play, where it is of how long, a scrubber) and a track on a time ruler with a playhead, the same an Edit has. A take's track shows its segments, the one the playhead is in marked, with Redo segment N above them and what it went on from; the browser's own video controls are gone in Focus.
