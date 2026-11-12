@@ -552,7 +552,7 @@ impl Machines {
                         self.store()
                             .settle_ask(&ask.key, Err(STOPPED))
                             .map_err(internal)?;
-                        self.ask_end(&end_key(&id), &row.hub, &id, Some(row.name.clone()), false)?;
+                        self.ask_end(&end_key(&id), &row.hub, &id, Some(row.name.clone()), EndBody::default())?;
                         if let Some(run) = &ask.run {
                             let reason = Reason {
                                 code: "rental_refused".into(),
@@ -613,7 +613,7 @@ impl Machines {
                 Ok(listing) => {
                     for rental in listing.rentals.iter().filter(|rental| rental.name == name) {
                         warn!(ask = ask.key, rental = rental.rental_id, "the stopped order was placed: ending it");
-                        self.ask_end(&end_key(&rental.rental_id), &ask.hub, &rental.rental_id, None, false)?;
+                        self.ask_end(&end_key(&rental.rental_id), &ask.hub, &rental.rental_id, None, EndBody::default())?;
                     }
                     break;
                 }
@@ -1257,7 +1257,8 @@ impl Machines {
             },
         };
         let wait = !force && !owed.is_empty();
-        self.ask_end(&key, &row.hub, row.rental_id.as_deref().unwrap_or_default(), Some(row.name.clone()), wait)?;
+        let body = EndBody { wait, ..Default::default() };
+        self.ask_end(&key, &row.hub, row.rental_id.as_deref().unwrap_or_default(), Some(row.name.clone()), body)?;
         Ok(Ended {
             machine: self.picture(&row)?,
             changed: true,
@@ -1282,7 +1283,7 @@ impl Machines {
         if self.pending_end(name)?.is_some() {
             return Ok(());
         }
-        self.ask_end(&end_key(id), &row.hub, id, Some(row.name.clone()), false)
+        self.ask_end(&end_key(id), &row.hub, id, Some(row.name.clone()), EndBody { by_pod: true, ..Default::default() })
     }
 
     /// Why the last end asked of a live rental failed: nothing was ended.
@@ -1294,7 +1295,7 @@ impl Machines {
         Ok(ask.filter(|ask| ask.state == AskState::Failed).map(|ask| ask.reason.unwrap_or_default()))
     }
 
-    /// Records the end under `key` (`wait`: once its runs' outputs land) and carries it out; one
+    /// Records the end under `key` (`end.wait`: once its runs' outputs land) and carries it out; one
     /// recorded already keeps its course, unless this one stops its wait.
     fn ask_end(
         self: &Arc<Self>,
@@ -1302,9 +1303,9 @@ impl Machines {
         hub: &str,
         id: &str,
         machine: Option<String>,
-        wait: bool,
+        end: EndBody,
     ) -> Result<(), Error> {
-        let body = serde_json::to_vec(&EndBody { wait }).expect("serializes");
+        let body = serde_json::to_vec(&end).expect("serializes");
         let ask = Ask {
             key: key.to_owned(),
             kind: AskKind::End,
@@ -1322,7 +1323,7 @@ impl Machines {
             self.store().reopen_ask(&ask.key).map_err(internal)?;
         }
         // Asked again: once more after it failed, or with its wait stopped.
-        if reopened || (!fresh && ask.state != AskState::Done && EndBody::of(&ask).wait && !wait) {
+        if reopened || (!fresh && ask.state != AskState::Done && EndBody::of(&ask).wait && !end.wait) {
             self.store().rewrite_ask(&ask.key, &body).map_err(internal)?;
             self.end_waits.notify_waiters();
         }
@@ -1406,7 +1407,9 @@ impl Machines {
                 Err(e) => return settle(Err(said(&e))),
             };
             if !released {
-                let release = client.release_rental(&id).await;
+                // Read now: an end asked again may have been rewritten.
+                let by_pod = self.store().ask(&ask.key).ok().flatten().is_some_and(|now| EndBody::of(&now).by_pod);
+                let release = client.release_rental(&id, by_pod).await;
                 match release.map_err(|e| hub_refusal(&ask.hub, e)) {
                     // Released, or released already (a conflict): its end is read below.
                     Ok(()) => released = true,
@@ -1465,16 +1468,19 @@ fn end_key(rental_id: &str) -> String {
     format!("end-{rental_id}")
 }
 
-/// An end ask as recorded: whether it waits for its machine's runs' outputs to land first. One
-/// recorded before ends waited (an empty body) does not.
-#[derive(serde::Serialize, serde::Deserialize)]
+/// An end ask as recorded: whether it waits for its machine's runs' outputs to land first, and
+/// whether it passes on the machine's own release (`by_pod`) rather than this computer's end. One
+/// recorded before ends waited (an empty body) does neither.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
 struct EndBody {
     wait: bool,
+    #[serde(default)]
+    by_pod: bool,
 }
 
 impl EndBody {
     fn of(ask: &Ask) -> Self {
-        serde_json::from_slice(&ask.body).unwrap_or(EndBody { wait: false })
+        serde_json::from_slice(&ask.body).unwrap_or_default()
     }
 }
 
