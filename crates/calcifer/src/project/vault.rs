@@ -516,15 +516,19 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
 
 pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
     let mut browser = prepare_browser(api)?;
+    close_all_prepared(api, &mut browser)
+}
+
+pub(crate) fn close_all_prepared(api: &Arc<Api>, browser: &mut Option<crate::browser::PreparedBrowserClose>) -> Result<(), Error> {
     let roots: Vec<_> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
     for root in roots {
         let op = operation(&root);
         let _operation = op.lock().expect("vault operation");
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
         let transition = exclusive(&root)?;
-        close(api, &root, &transition, &mut browser)?;
+        close(api, &root, &transition, browser)?;
     }
-    retire_browser(api, &mut browser)?;
+    retire_browser(api, browser)?;
     Ok(())
 }
 

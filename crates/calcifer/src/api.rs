@@ -120,10 +120,13 @@ impl Api {
     }
 
     async fn down_inner(self: &Arc<Self>, keep_admission_closed: bool) -> Result<Vec<String>, Error> {
+        // Draft flushes need ordinary mutation admission. Freeze and drain the exact
+        // owned session before taking the global writer that closes that admission.
+        let mut browser = Some(self.browser.prepare_close().await.map_err(|error| error.0)?);
         let mut stopping = self.stopping.write().await;
         let was_stopping = *stopping;
         *stopping = true;
-        if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all(self)) {
+        if let Err(error) = tokio::task::block_in_place(|| crate::project::vault::close_all_prepared(self, &mut browser)) {
             *stopping = was_stopping || keep_admission_closed;
             return Err(error);
         }
