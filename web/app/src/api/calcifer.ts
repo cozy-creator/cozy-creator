@@ -1730,13 +1730,19 @@ export type ModelUpload = {
 /**
  * A provider source, `local/<alias>`, a Hub model, a held file's `sha256:<hex>` (`PUT /v1/files`): a `.safetensors` file, or a
  * CozyTensors folder's tree document, its files held too, or `run:N[#output]`: a run's weights output, uploaded from the
- * machine that holds it. A Hub checkpoint uploads only on a `base`; else it is recorded, and no machine runs.
+ * machine that holds it. A Hub checkpoint uploads only on a `base` or cut to `components`; else it is recorded, and no
+ * machine runs.
  */
 source: string,
 /**
  * A held source's name where its client has it.
  */
 name?: string | null,
+/**
+ * `SOURCE:COMPONENT,…`: the checkpoint holds only these of the source's components, a source of one taking the one name
+ * (a VAE file is `vae`). None: all of them.
+ */
+components?: Array<string>,
 /**
  * `org/name`.
  */

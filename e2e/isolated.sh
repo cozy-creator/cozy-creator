@@ -127,11 +127,26 @@ with open(path, "wb") as out:
 PY
 }
 
+# part_weights <file> <part> <seed> <n>: one F32 tensor `w` of n seeded values, its metadata `part` and `size`: a component's
+# config as the Runtime reads a file kept as it is.
+part_weights() {
+  python3 -I - "$@" <<'PY'
+import json, random, struct, sys
+path, part, seed, n = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+values = random.Random(seed).random
+raw = json.dumps({"__metadata__": {"part": part, "size": str(n)}, "w": {"dtype": "F32", "shape": [n], "data_offsets": [0, 4 * n]}}).encode()
+raw += b" " * (-len(raw) % 8)
+with open(path, "wb") as out:
+    out.write(struct.pack("<Q", len(raw)) + raw + struct.pack(f"<{n}f", *(values() for _ in range(n))))
+PY
+}
+
 case $suite:$shard in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake) needs='' ;;
   cli:runs | cli:local-code) needs='packages birefnet' ;;
-  # commands shows a LoRA's modules (lora show, xs-183), and fits a lane on a slot's components (lane_fit, xs-191).
-  cli:commands) needs='packages birefnet loras fits' ;;
+  # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a
+  # model of one component with another's (xs-190).
+  cli:commands) needs='packages birefnet loras fits parts' ;;
   # web-localfit's heavy tool paints its edit base with BiRefNet (a take is one since cl-909); only Linux's web-core runs it.
   cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
   cli:web-localfit) needs='packages birefnet' ;;
@@ -142,7 +157,7 @@ case $suite:$shard in
   cli:plan) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras vaes' ;;
-  cli:) needs='packages birefnet downloads loras vaes fits' ;;
+  cli:) needs='packages birefnet downloads loras vaes fits parts' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).
@@ -274,7 +289,7 @@ if [ -n "$needs" ]; then
       relay
       held ;;
   esac
-  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* ]]; then
+  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* || " $needs " == *" parts "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -344,17 +359,31 @@ PYH3
     rm -f "$seed"/*.safetensors
   fi
   if [[ " $needs " == *" vaes "* ]]; then
-    # What Qwen Image's VAE slot lists (web-models, se-131): its default and a VAE of its family, tagged `vae` as the Hub's is.
+    # What Qwen Image's VAE slot lists (web-models, se-131): its default and a VAE of its family, tagged `vae` as the Hub's is,
+    # a model of its `vae` alone (xs-190).
     random_weights "$seed/qwen-image-2.1.safetensors" 1
     mirror "$seed/qwen-image-2.1.safetensors" qwen/qwen-image-2.1 bf16 0.1.0 https://huggingface.co/Qwen/Qwen-Image-2.1 --source-format as-is
-    mirror "$seed/qwen-image-2.1.safetensors" madebyollin/texture-fix-vae bf16 0.2.0 \
+    mirror "$seed/qwen-image-2.1.safetensors:vae" madebyollin/texture-fix-vae bf16 0.3.0 \
       https://huggingface.co/madebyollin/texture-fix-vae-for-qwen-image-2.1 --source-format as-is
     for model in qwen/qwen-image-2.1 madebyollin/texture-fix-vae; do
       tags=(); [ "$model" = qwen/qwen-image-2.1 ] || tags=(--tag vae)
       cozy --json model edit "$model" --family qwen-image-2 "${tags[@]}" > "$seed/edit-${model##*/}.json" 2>&1 \
         || { echo "naming $model's family failed: $(tail -c 600 "$seed/edit-${model##*/}.json")" >&2; exit 1; }
     done
-    log "published qwen/qwen-image-2.1@0.1.0 and madebyollin/texture-fix-vae@0.2.0 (stand-ins) of family qwen-image-2"
+    log "published qwen/qwen-image-2.1@0.1.0 and madebyollin/texture-fix-vae@0.3.0 (stand-ins) of family qwen-image-2"
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" parts "* ]]; then
+    # What component_models (cli/commands.sh, xs-190) composes: e2e/parts, a transformer and a VAE (a transformer alone, the VAE
+    # put on it), and e2e/parts-vae, a model of a `vae` alone.
+    part_weights "$seed/dit.safetensors" dit 1 1048576
+    part_weights "$seed/vae-a.safetensors" vae-a 2 65536
+    part_weights "$seed/vae-b.safetensors" vae-b 3 65536
+    page=https://github.com/cozy-creator/cozy-creator/tree/master/e2e
+    mirror "$seed/dit.safetensors:transformer" e2e/parts-dit f32 0.1.0 "$page" --source-format as-is
+    mirror "$seed/vae-a.safetensors" e2e/parts f32 0.1.0 "$page" --source-format as-is --base e2e/parts-dit@0.1.0:vae
+    mirror "$seed/vae-b.safetensors:vae" e2e/parts-vae f32 0.1.0 "$page" --source-format as-is
+    log "published e2e/parts@0.1.0 (transformer, vae) and e2e/parts-vae@0.1.0 (vae)"
     rm -f "$seed"/*.safetensors
   fi
   if [[ " $needs " == *" fits "* ]]; then

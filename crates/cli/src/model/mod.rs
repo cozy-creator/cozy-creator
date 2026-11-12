@@ -221,8 +221,9 @@ fn local_alias(text: &str) -> Result<String, String> {
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Upload {
-    /// Weights file, CozyTensors folder, local alias, model source, or run:N[#output].
-    #[arg(add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
+    /// Weights file, CozyTensors folder, local alias, model source, or run:N[#output]. Add :component,… to upload only those
+    /// components; a source of one takes the name (file.safetensors:vae).
+    #[arg(value_name = "SOURCE[:COMPONENT,…]", add = clap_complete::ArgValueCompleter::new(crate::completion::local))]
     source: String,
     /// Destination model, org/name.
     #[arg(value_name = "MODEL")]

@@ -429,6 +429,9 @@ pub struct ComponentHeader {
     /// Its run data (`tokenizer.json`, `processor/vocab.json`), by path under its folder, and each one's bytes.
     pub assets: std::collections::BTreeMap<String, u64>,
     pub tensors: usize,
+    /// Its tensors' stored bytes: what installing it fetches of it.
+    #[serde(default)]
+    pub bytes: u64,
     /// A LoRA's modules and their α, when it holds factors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lora: Option<LoraModules>,
@@ -700,11 +703,16 @@ pub struct ModelDownload {
 pub struct ModelUpload {
     /// A provider source, `local/<alias>`, a Hub model, a held file's `sha256:<hex>` (`PUT /v1/files`): a `.safetensors` file, or a
     /// CozyTensors folder's tree document, its files held too, or `run:N[#output]`: a run's weights output, uploaded from the
-    /// machine that holds it. A Hub checkpoint uploads only on a `base`; else it is recorded, and no machine runs.
+    /// machine that holds it. A Hub checkpoint uploads only on a `base` or cut to `components`; else it is recorded, and no
+    /// machine runs.
     pub source: String,
     /// A held source's name where its client has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// `SOURCE:COMPONENT,…`: the checkpoint holds only these of the source's components, a source of one taking the one name
+    /// (a VAE file is `vae`). None: all of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<String>,
     /// `org/name`.
     pub destination: String,
     pub lane: String,

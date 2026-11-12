@@ -362,6 +362,7 @@ case $SHARD in
     kept_preparing
     catalog
     basics
+    component_models
     yaml_requests
     run_flags
     run_follow
@@ -437,6 +438,7 @@ case $SHARD in
     entrypoints
     catalog
     basics
+    component_models
     yaml_requests
     run_filters
     bound_runs

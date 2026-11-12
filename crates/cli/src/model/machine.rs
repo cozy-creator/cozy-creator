@@ -111,8 +111,14 @@ fn print_removed(ctx: &Context, removed: &api::calcifer::RemovedModel) {
 pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Error> {
     let on = args.placement.on()?;
     let from_run = args.source.starts_with("run:");
+    // A file here named with a `:` is that file.
+    let (source, components) = match std::path::Path::new(&args.source).exists() {
+        true => (args.source.as_str(), vec![]),
+        false => api::model_ref::components(&args.source),
+    };
     let mut ask = ModelUpload {
-        source: args.source.clone(),
+        source: source.to_owned(),
+        components,
         name: None,
         destination: args.destination,
         lane: args.lane,

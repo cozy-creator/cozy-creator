@@ -133,12 +133,7 @@ fn formatted(choice: &mut ModelChoice, format: &str) -> Result<(), Refusal> {
 /// `base`, `MODEL[:COMPONENT,…]`: choice `base[:COMPONENT,…]` of a Hub model (a release in the
 /// checkpoint's `lane`, or a checkpoint) or a `local/` one.
 fn base(raw: &str, lane: &str) -> Result<ModelChoice, Refusal> {
-    let segment = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
-    // The last `:` starts a component list unless it is a checkpoint's `sha256:`.
-    let (model, names) = match raw.rsplit_once(':') {
-        Some((model, names)) if !model.ends_with("@sha256") && names.split(',').all(segment) => (model, Some(names)),
-        _ => (raw, None),
-    };
+    let (model, names) = refs::components(raw);
     let mut choice = match ModelRef::parse(model).map_err(Refusal)? {
         ModelRef::Provider(_) => return Err(usage("model_base_invalid", format!("--base {model}: name a Hub model or a local/ one"))),
         reference => reference.choice(v1::BASE),
@@ -146,8 +141,8 @@ fn base(raw: &str, lane: &str) -> Result<ModelChoice, Refusal> {
     if !choice.model.starts_with("local/") && choice.manifest.is_empty() {
         choice.lane = lane.to_owned();
     }
-    if let Some(names) = names {
-        choice.parameter = format!("{}:{names}", choice.parameter);
+    if !names.is_empty() {
+        choice.parameter = format!("{}:{}", choice.parameter, names.join(","));
     }
     Ok(choice)
 }
@@ -237,9 +232,16 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
     let destination = ModelId::hub(&ask.destination).map_err(Refusal)?;
     let lane = refs::label("--lane", &ask.lane).map_err(Refusal)?;
     let mirror = ask.mirror.clone().map(|page| Mirror { source: ask.source.clone(), page, to: destination.clone() });
+    if !ask.components.is_empty() && ask.base.is_some() {
+        return Err(usage("model_components_invalid", "--base places the source's components (--base <model>:<component>); upload a component alone without it"));
+    }
+    if let Some(bad) = ask.components.iter().find(|name| !tensorfs::format::segment(name)) {
+        return Err(usage("model_components_invalid", format!("{bad:?} is no component name")));
+    }
     if let Ok(ModelRef::Checkpoint { model: from, checkpoint }) = ModelRef::parse(&ask.source)
         && ask.base.is_none()
         && ask.add.is_empty()
+        && ask.components.is_empty()
     {
         let target = format!("{from}@{checkpoint} → {destination} ({lane})");
         let record = Record::read(api, hub, ask, from, checkpoint.to_string(), said, mirror).await?;
@@ -254,7 +256,7 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
     }
     let display = |offered| After::Display { model: destination.clone(), triggers: ask.triggers.clone(), strength: ask.strength, offered };
     if let Some(reference) = ask.source.strip_prefix("run:") {
-        if ask.base.is_some() || !ask.add.is_empty() {
+        if ask.base.is_some() || !ask.add.is_empty() || !ask.components.is_empty() {
             return Err(usage("model_base_invalid", "a run's weights output uploads as it is; upload a model source on a base"));
         }
         // It runs where the weights are, whatever `on` names.
@@ -277,8 +279,8 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
             if ask.trained_on.is_some() {
                 return Err(usage("model_trained_on_unused", "--trained-on is read when a LoRA source is converted; a CozyTensors folder already was"));
             }
-            if ask.base.is_some() {
-                return Err(usage("model_base_invalid", "a CozyTensors folder uploads as it is; upload a model source on a base"));
+            if ask.base.is_some() || !ask.components.is_empty() {
+                return Err(usage("model_base_invalid", "a CozyTensors folder uploads as it is; upload a model source on a base or cut to components"));
             }
             if ask.source_format.is_some() {
                 return Err(usage("model_profile_unused", "a CozyTensors folder is already converted; omit --source-format"));
@@ -291,6 +293,10 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
         formatted(&mut made.choice, format)?;
     }
     made.base = ask.base.as_deref().map(|raw| base(raw, &lane)).transpose()?;
+    // The components it keeps: choice `model:<component>,…`, as a base's are named.
+    if !ask.components.is_empty() {
+        made.choice.parameter = format!("{}:{}", made.choice.parameter, ask.components.join(","));
+    }
     // Each added file goes to the machine as an input, and its choice `add:<component>/<path>` names where it goes.
     for (at, held) in &ask.add {
         let (path, digest) = held_file(held)?;
@@ -300,6 +306,10 @@ pub(super) async fn upload(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option<
         made.staged.push(StagedInput { path, digest, length });
     }
     let shown = ask.name.as_deref().unwrap_or(&ask.source);
+    let shown = match ask.components.is_empty() {
+        true => shown.to_owned(),
+        false => format!("{shown}:{}", ask.components.join(",")),
+    };
     let target = match &ask.base {
         None => format!("{shown} → {destination} ({lane})"),
         Some(on) => format!("{shown} on {on} → {destination} ({lane})"),
