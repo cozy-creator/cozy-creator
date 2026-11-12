@@ -551,7 +551,6 @@ code {
 }
 .s-making {
   background: var(--mak);
-  animation: pulse 1.2s infinite;
 }
 .s-missing {
   display: none;
@@ -877,10 +876,9 @@ code {
   border-right: 2px solid var(--mak);
   transition: transform 300ms linear;
 }
+/* How far isn't known: no veil at all, only its words (Paul, 11-12: nothing that only moves). */
 .prog.unknown > i {
-  transform: none;
-  border-right: 0;
-  animation: pulse 1.2s infinite;
+  display: none;
 }
 /* Weights arriving aren't its render: another colour, and the arrow's. */
 .prog.download > i {
@@ -949,7 +947,6 @@ code {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  font-size: calc(1.2 * var(--face-font));
   font-weight: var(--w-heading);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -990,19 +987,6 @@ code {
   background: var(--mak);
   transition: transform 300ms linear;
 }
-/* How far isn't said yet: a part of the bar goes along it, beside the words that say what it's doing. */
-.run-face.unknown .face-track i {
-  width: 30%;
-  animation: face-going 1.6s ease-in-out infinite;
-}
-@keyframes face-going {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(340%);
-  }
-}
 .run-face.download .face-track i {
   background: #2f8fe0;
 }
@@ -1033,22 +1017,6 @@ code {
   font-size: var(--face-font);
   font-weight: normal;
 }
-/* The stage it's in, within its parts, and that stage's own bar, thin, under the whole render's. */
-.run-face .face-part {
-  display: flex;
-  flex-direction: column;
-  gap: calc(0.25 * var(--face-font));
-}
-.run-face .face-stage {
-  color: var(--ink);
-}
-.run-face .face-track.thin {
-  flex: none;
-  height: calc(0.2 * var(--face-font));
-}
-.run-face .face-track.thin i {
-  background: var(--mute);
-}
 /* Open (focus), between its name and its picture, across its width and large: its state and time left read as a heading over a thick
    bar, the numbers first. Its picture stays below, uncovered. */
 .focus-viewport > .run-face.above {
@@ -1060,44 +1028,20 @@ code {
   border: 1px solid var(--line);
   border-radius: var(--round2);
   background: var(--card);
-  /* The Focus card's body step (FocusedViewport.css). */
-  --face-font: 20px;
+  /* The Focus card's small step (FocusedViewport.css): normal text, the numbers first. */
+  --face-font: 17px;
 }
 .focus-viewport > .run-face.above .face {
-  gap: calc(0.5 * var(--face-font));
-  padding: calc(0.9 * var(--face-font)) calc(1.1 * var(--face-font));
-}
-.focus-viewport > .run-face.above .face-state b {
-  font-size: calc(2 * var(--face-font));
-  font-weight: var(--w-title);
-  line-height: 1.2;
+  gap: calc(0.4 * var(--face-font));
+  padding: calc(0.7 * var(--face-font)) var(--face-font);
 }
 .focus-viewport > .run-face.above .face-left {
   color: var(--ink);
-  font-size: calc(1.6 * var(--face-font));
   font-weight: var(--w-heading);
   font-variant-numeric: tabular-nums;
 }
-.focus-viewport > .run-face.above .face-track {
-  height: calc(0.9 * var(--face-font));
-}
-.focus-viewport > .run-face.above .face-track.thin {
-  height: calc(0.3 * var(--face-font));
-}
-.focus-viewport > .run-face.above .face-stage {
-  font-size: calc(1.2 * var(--face-font));
-  font-variant-numeric: tabular-nums;
-}
 .focus-viewport > .run-face.above .face-cancel {
-  font-size: var(--face-font);
-  line-height: 2;
-}
-@media (prefers-reduced-motion: reduce) {
-  .run-face.unknown .face-track i {
-    width: 100%;
-    opacity: 0.35;
-    animation: none;
-  }
+  line-height: 1.8;
 }
 /* At rest, one line, so nothing hangs under it but what its box keeps room for. */
 .card:not(.here) .prog > b {
@@ -1852,7 +1796,6 @@ video.preview.on {
 }
 .take.making {
   color: var(--mak);
-  animation: pulse 2.4s ease-in-out infinite;
 }
 .take.fresh {
   animation: take-in 240ms cubic-bezier(0.2, 1.4, 0.4, 1);

@@ -111,7 +111,7 @@ export function faceOf(seen: Seen): Face {
   if (run?.status === "failed") return face("failed", "Failed", { detail: run.reason?.message, left: undefined })
   if (waits && !on) {
     const words = theirs && theirs.status !== "completed" ? workWords(theirs) : ""
-    return face("queued", `Waits for <${waits}>`, { detail: words || "until it's made", fraction: theirs?.progress?.done_fraction ?? undefined })
+    return face("queued", `Waits for <${waits}>`, { detail: words || "until it's made" })
   }
   if (!run) {
     if (installing) return face("install", `Installing ${packageWords(installing.subject)}…`, { detail: sentence(installing.stage || "installing") })
@@ -131,7 +131,7 @@ export function faceOf(seen: Seen): Face {
   if (on?.kind === "download") {
     const fraction = on.bytes_total ? on.bytes_done / on.bytes_total : undefined
     const own = runLeft(run)
-    return face("download", "Downloading weights", { detail: fetched(on), fraction, left: own ?? (on.eta_s != null ? `at least ${leftWords(on.eta_s)}` : undefined) })
+    return face("download", `Downloading weights · ${fetched(on)}`, { stageFraction: fraction, left: own ?? (on.eta_s != null ? `at least ${leftWords(on.eta_s)}` : undefined) })
   }
   if (run.queue_position != null) return face("queued", `Queued on ${run.machine}`, { detail: [`number ${run.queue_position} in line`, waiting].filter(Boolean).join(" · ") })
   if (run.status === "completed") {
@@ -148,7 +148,8 @@ export function faceOf(seen: Seen): Face {
     const tokens = countsOf(progress) === "token"
     const own = progress.stage_fraction ?? (progress.total && !tokens ? progress.completed / progress.total : progress.bytes_total ? progress.bytes_done / progress.bytes_total : undefined)
     const stage = `${stageName(progress.stage)}${count ? ` · ${count}` : ""}`
-    return face(phase, stageName(progress.stage.split(" / ").at(-1) ?? ""), { detail: detail || undefined, fraction: progress.done_fraction ?? undefined, stage, stageFraction: tokens ? undefined : own })
+    // Never a stage's name alone: with its numbers (Paul, 11-12).
+    return face(phase, stage, { detail: detail || undefined, fraction: phase === "work" ? (progress.done_fraction ?? undefined) : undefined, stageFraction: tokens ? undefined : own })
   }
   if (waiting) return face("queued", sentence(waiting))
   return face("work", run.machine_state === "preparing" ? "Preparing" : "Starting", { detail: `on ${run.machine}` })
@@ -157,6 +158,7 @@ export function faceOf(seen: Seen): Face {
 /** How far its bar is: the whole render by its time, what's passed of what it has taken and has left; else what it's doing now, by its own
  *  count. Neither goes back while it stands on the same. */
 function useBar(run: Run | undefined, face: Face, now: number): number | undefined {
+  // Only a fraction of the whole job is a bar: none for a phase's own count, and nothing that only moves (Paul, 11-12).
   const held = useRef<{ on: string; fraction: number } | null>(null)
   const left = run?.progress?.eta_s
   const since = run ? now - run.created_at_ms : 0
@@ -236,24 +238,15 @@ export function RunFace({ view, name, number, full, above = false }: { view: Ele
             </button>
           )}
         </div>
+        {/* A bar only for a true fraction of the whole job; else its words and numbers say how it goes. */}
         <div className="face-bar">
-          <span className="face-track" role="progressbar" aria-label={face.says} aria-valuenow={fraction === undefined ? undefined : Math.round(fraction * 100)}>
-            <i style={fraction === undefined ? undefined : { transform: `translateX(${Math.round(fraction * 1000) / 10 - 100}%)` }} />
-          </span>
+          {fraction !== undefined && (
+            <span className="face-track" role="progressbar" aria-label={face.says} aria-valuenow={Math.round(fraction * 100)}>
+              <i style={{ transform: `translateX(${Math.round(fraction * 1000) / 10 - 100}%)` }} />
+            </span>
+          )}
           {face.left && <span className="face-left">{face.left}</span>}
         </div>
-        {(full || above) && face.stage && (
-          <div className="face-part">
-            <p className="face-stage" title={face.stage}>
-              {face.stage}
-            </p>
-            {face.stageFraction !== undefined && (
-              <span className="face-track thin">
-                <i style={{ transform: `translateX(${Math.round(face.stageFraction * 1000) / 10 - 100}%)` }} />
-              </span>
-            )}
-          </div>
-        )}
         {(full || above) && face.where && <p className="face-where">{face.where}</p>}
         {(full || above) && face.detail && (
           <p className="face-detail" title={face.detail}>
