@@ -155,23 +155,48 @@ fn by_hand(target: &str) -> bool {
     target.split(", ").any(|named| software(named) && !named.ends_with("(RC)") && !named.ends_with("(Hub)"))
 }
 
+/// Whether an update under `key` is one Calcifer made itself: to the RC, to this cozy's minor, for a package's floor.
+fn calcifers(key: &str) -> bool {
+    ["rc-", "minor-", FLOOR].iter().any(|prefix| key.starts_with(prefix))
+}
+
+/// The hold a completed update (under `key`, named `target`) leaves its machine: its words when it named software by hand, none
+/// when it named software otherwise, and nothing to say when it named none. What a store from before holds were kept reads
+/// its machines' holds from (`store::held_column`).
+pub(crate) fn hold_of(key: &str, target: &str) -> Option<Option<String>> {
+    if calcifers(key) || !target.split(", ").any(software) {
+        return None;
+    }
+    Some(by_hand(target).then(|| target.to_owned()))
+}
+
 /// Whether an update's named component is software (`runtime 0.45.0`), not a mode or a GPU memory limit.
 fn software(named: &str) -> bool {
     ["runtime ", "tensorfs ", "tensord ", "cozy "].iter().any(|member| named.starts_with(member))
 }
 
 impl Machines {
-    /// The update by hand that holds `name` (on `frame`) on its software, in its words: the newest that changed its software,
-    /// while it runs what that gave it, unless it was the RC's, the Hub's, this cozy's own (an update to its minor before work)
-    /// or a package's floor's (`crate::floor`). A rental since placed on the same host under the same name runs its image's
-    /// again, and isn't held. A held machine moves to neither the RC nor a Runtime a package needs (cl-952).
-    pub(crate) fn held_by_hand(&self, name: &str, frame: &v1::StatusFrame) -> Option<String> {
-        let updates = self.store().updates(name, 20).ok()?;
-        let (row, key) = updates.into_iter().find(|(row, _)| row.target.split(", ").any(software))?;
-        let running = serde_json::json!({ "runtime": frame.runtime, "tensorfs": frame.tensorfs, "version": frame.version, "dev": frame.dev, "mode": frame.mode });
-        let runs = crate::update::wanted(&row.spec).iter().all(|(field, value)| running[*field] == *value);
-        let unasked = ["rc-", "minor-", FLOOR].iter().any(|prefix| key.starts_with(prefix));
-        (!unasked && by_hand(&row.target) && runs).then_some(row.target)
+    /// The update by hand that holds `name` on its software, in its words: kept in the store across Calcifer's restarts (cl-952),
+    /// set by an update that named software by hand and let go by one that named nothing (`cozy machine update <name>`). The
+    /// updates Calcifer makes itself (the RC's, this cozy's minor, a package's floor) leave it; a rental placed again under the
+    /// same name starts unheld. A held machine moves to neither the RC nor a Runtime a package needs.
+    pub(crate) fn held_by_hand(&self, name: &str) -> Option<String> {
+        self.store().held(name).ok().flatten()
+    }
+
+    /// Keeps or lets go of `name`'s hold for an update under `key` named `target` (`flagless`: nothing named): see `held_by_hand`.
+    pub(crate) fn mind_hold(&self, name: &str, key: &str, target: &str, flagless: bool) {
+        if calcifers(key) {
+            return;
+        }
+        let words = match (by_hand(target), flagless) {
+            (true, _) => Some(target),
+            (false, true) => None,
+            (false, false) => return,
+        };
+        if let Err(e) = self.store().hold(name, words) {
+            warn!(machine = name, "its hold: {e}");
+        }
     }
 
     /// Whether `name` is a rental of this dev home that follows the RC: one this computer ordered, up.
@@ -191,7 +216,7 @@ impl Machines {
         if store.working(name).ok()? > 0 || store.updating(name).ok()? || (!sending && queued > 0) {
             return None;
         }
-        if self.held_by_hand(name, &frame).is_some() {
+        if self.held_by_hand(name).is_some() {
             return None;
         }
         // A send reads what the look-over last read rather than wait on GitHub.
@@ -244,7 +269,7 @@ impl Machines {
         self.follows(name)?;
         let frame = frame?;
         let follow = |state: &str, detail: String| Some(RcFollow { rc: open(), state: state.into(), detail });
-        if let Some(target) = self.held_by_hand(name, frame) {
+        if let Some(target) = self.held_by_hand(name) {
             return follow("held", format!("an update by hand gave it {target}; `cozy machine update {name}` moves it to the RC again"));
         }
         let Some(sums) = self.rc.last() else {
@@ -268,7 +293,7 @@ impl Machines {
                 return true;
             }
             let built = self.rc.last().is_some_and(|sums| sums.build("runtime", &frame.platform).is_some());
-            return built && self.follows(machine).is_some() && self.held_by_hand(machine, &frame).is_none();
+            return built && self.follows(machine).is_some() && self.held_by_hand(machine).is_none();
         }
         self.dev && machine.is_empty() && matches!(on, api::calcifer::On::New(_))
     }

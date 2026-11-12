@@ -119,7 +119,7 @@ impl Machines {
     pub(crate) async fn runtimes(&self, name: &str, frame: &api::machine::StatusFrame, rc: bool) -> (Vec<String>, api::release::Moves) {
         let moves = match self.named(name).ok().flatten() {
             Some(row) if row.kind == MachineKind::Added || (row.kind == MachineKind::Rental && !self.ordered(&row)) => api::release::Moves::No,
-            _ if self.held_by_hand(name, frame).is_some() => api::release::Moves::Held,
+            _ if self.held_by_hand(name).is_some() => api::release::Moves::Held,
             _ => api::release::Moves::Yes,
         };
         let mut runtimes: Vec<String> = match released().await {

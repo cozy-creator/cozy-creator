@@ -188,6 +188,8 @@ impl Machines {
                 }
             }
             if asked.is_empty() && placed.is_none() {
+                // Nothing to move, and nothing named: it lets go of a hold by hand all the same (cl-952).
+                self.mind_hold(&m.name, key, "", true);
                 return Ok((Updating { machine: m, run: None, target: String::new(), warnings: vec![] }, true));
             }
         }
@@ -316,6 +318,10 @@ impl Machines {
             warnings: vec![],
         };
         let submitted = self.calcifer.submit(key, submit).await.map_err(|e| Refusal::from(e).0)?;
+        // Software named by hand holds the machine on it, across restarts, until an update names nothing (cl-952).
+        if !submitted.replay {
+            self.mind_hold(&m.name, key, &target, flagless);
+        }
         let updating = Updating { machine: m, run: Some(submitted.run), target, warnings };
         Ok((updating, !submitted.replay))
     }
