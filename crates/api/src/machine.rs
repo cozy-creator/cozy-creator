@@ -27,6 +27,55 @@ pub const LOCAL_PRIVATE_DESCRIPTOR: &str = "cozy-local-private-storage";
 pub const LOCAL_PRIVATE_TOKEN: &str = "cozy-local-private-token";
 pub const LOCAL_PRIVATE_MARKER: &str = ".vault-local-execution.json";
 
+/// The strict project-owned execution contract. Older partial-private endpoints are not substitutes.
+pub const PROJECT_EXECUTION_PREFIX: &str = "/v1/project-execution";
+pub type ProjectExecutionScope = LocalPrivateStorage;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectExecutionCapabilities {
+    pub protected_journal: bool,
+    pub protected_objects_and_scratch: bool,
+    /// Reserved broader sandbox capability; managed-storage readiness does not require it.
+    #[serde(default)]
+    pub filesystem_write_confinement: bool,
+    pub quiescent_seal: bool,
+}
+
+impl ProjectExecutionCapabilities {
+    pub fn ready(&self) -> bool {
+        self.protected_journal && self.protected_objects_and_scratch && self.quiescent_seal
+    }
+}
+
+/// Actual legacy acceptances covered by complete inside-project migration receipts.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionMigrationReceipt { pub bindings: Vec<ProjectExecutionMigrationBinding> }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionMigrationBinding {
+    pub request_id: String,
+    pub source_workspace_id: String,
+    pub invocation_spec_digest: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionMigrationRequest { pub legacy_requests: Vec<ProjectExecutionMigrationBinding> }
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionLegacyLookup { pub request_ids: Vec<String> }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionLegacyLookupAnswer { pub bindings: Vec<ProjectExecutionLegacyBinding> }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionLegacyBinding {
+    pub binding: ProjectExecutionMigrationBinding,
+    pub source_number: u64,
+}
+
 /// A proof file written only INSIDE the live encrypted mount. Its random token is sent
 /// as a private authentication header, never as RunSpec, URL, log or global journal data.
 #[derive(Clone, Serialize, Deserialize)]
@@ -51,8 +100,13 @@ impl std::fmt::Debug for LocalPrivateMarker {
 pub mod path {
     /// Verified local encrypted-project namespace; forwards GET/POST/PUT to existing data routes.
     pub const LOCAL_PRIVATE: &str = "/v1/local-private/{project_id}/{*rest}";
+    pub const PROJECT_EXECUTION: &str = "/v1/project-execution/{project_id}/{*rest}";
     /// Close only this project's idle local execution namespace before unmount.
-    pub const PRIVATE_CLOSE: &str = "/v1/local-private/{project_id}/close";
+    pub const PRIVATE_CLOSE: &str = "/v1/project-execution/{project_id}/close";
+    /// Native proof-owned local legacy migration. Empty body; no unscoped attribution is inferred.
+    pub const PROJECT_MIGRATE: &str = "/v1/project-execution/{project_id}/migrate";
+    /// Lookup actual actor-owned acceptances; this never adopts or retires them.
+    pub const PROJECT_LEGACY_BINDINGS: &str = "/v1/project-execution/{project_id}/migration-bindings";
     /// `GET` with no credential: 204 while the machine serves.
     pub const HEALTH: &str = "/v1/health";
     /// `GET`: one JSON [`super::StatusFrame`]; SSE `status` frames with `Accept: text/event-stream`.

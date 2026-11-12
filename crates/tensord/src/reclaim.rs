@@ -252,6 +252,16 @@ impl Entry {
 /// process holds it: renamed first, so no resolve finds it. The bytes it freed, or None when
 /// it is held (an executor of it still runs); reclaim removes it once nothing names it.
 pub(crate) fn remove_generation(generations: &Path, identity: &str) -> io::Result<Option<u64>> {
+    remove_generation_in(generations, identity, false)
+}
+
+/// Exact custody retirement: same reader/rename protocol, with the private result recorded
+/// only in the caller's protected receipt.
+pub(crate) fn retire_generation(generations: &Path, identity: &str) -> io::Result<Option<u64>> {
+    remove_generation_in(generations, identity, true)
+}
+
+fn remove_generation_in(generations: &Path, identity: &str, quiet: bool) -> io::Result<Option<u64>> {
     let path = generations.join(identity);
     let Ok(filesystem) = FileId::at(&path).map(|id| id.dev) else {
         return Ok(Some(0));
@@ -260,7 +270,7 @@ pub(crate) fn remove_generation(generations: &Path, identity: &str) -> io::Resul
     let label = label(&path);
     let mut entry = Entry { kind: Kind::Generation, path, used: SystemTime::now(), hold: None, guard: None };
     let removed = entry.remove()?;
-    if removed {
+    if removed && !quiet {
         tracing::info!("removed package environment {label}: {}", size(bytes));
     }
     Ok(removed.then_some(bytes))

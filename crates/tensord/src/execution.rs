@@ -56,6 +56,11 @@ pub(crate) struct Engine {
     preparations: Mutex<HashMap<String, Preparation>>,
     /// Runs a GPU fault failed (`fault`): their failure, whatever their executor said after.
     faults: Mutex<HashMap<String, crate::journal::Failure>>,
+    /// Runtime-only keys into the ONE machine allocation table. Never written to any journal.
+    scheduler: Mutex<HashMap<u64, u64>>,
+    project: Option<api::machine::LocalPrivateStorage>,
+    machine_activity: OnceLock<Weak<Engine>>,
+    runtime_namespace: String,
 }
 
 /// One run's preparation, registered while it lasts: its cancel stops `stop`, which ends the
@@ -185,9 +190,41 @@ impl Engine {
             settled: OnceLock::new(),
             preparations: Mutex::new(HashMap::new()),
             faults: Mutex::new(HashMap::new()),
+            scheduler: Mutex::default(),
+            project: crate::private_io::current(),
+            machine_activity: OnceLock::new(),
+            runtime_namespace: crate::uuid::simple(),
         }))
     }
 
+    pub(crate) fn bind_machine_activity(&self, parent: &Arc<Engine>) {
+        let _ = self.machine_activity.set(Arc::downgrade(parent));
+        parent.notify_activity();
+    }
+    pub(crate) fn scheduler_root(&self, root: u64) -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        *self.scheduler.lock().unwrap().entry(root).or_insert_with(|| NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+    pub(crate) fn journal_root(&self, scheduler: u64) -> Option<u64> {
+        self.scheduler.lock().unwrap().iter().find_map(|(root, key)| (*key == scheduler).then_some(*root))
+    }
+    pub(crate) fn scheduler_family(&self, family: Option<&str>) -> Option<String> {
+        family.map(|family| format!("{}:{family}", self.runtime_namespace))
+    }
+    pub(crate) fn resource_id(&self, id: &str) -> String { format!("{}:{id}", self.runtime_namespace) }
+    pub(crate) fn runtime_namespace(&self) -> &str { &self.runtime_namespace }
+
+    pub(crate) fn needs_project_migration_from(&self, ordinary: &Engine, project: &str) -> io::Result<bool> {
+        let source = ordinary.journal.lock().unwrap();
+        let target = self.journal.lock().unwrap();
+        source.needs_project_migration(&target, project)
+    }
+    pub(crate) fn migrate_project_from(&self, ordinary: &Engine, scope: &api::machine::LocalPrivateStorage, logs: &Path, actor: &str, bindings: &[api::machine::ProjectExecutionMigrationBinding]) -> io::Result<()> {
+        // One writer per journal; global first is the only migration lock order.
+        let mut source = ordinary.journal.lock().unwrap();
+        let mut target = self.journal.lock().unwrap();
+        source.migrate_project_into(&mut target, scope, logs, ordinary.root.parent().unwrap_or(&ordinary.root), &ordinary.store, actor, bindings)
+    }
     /// Registers run `id`'s preparation until the answer is dropped. A cancel journaled before
     /// it registered stops it at once.
     /// A verified scope rebind may resume a queued preparation exactly once.
@@ -252,7 +289,7 @@ impl Engine {
         }
     }
     pub(crate) fn assert_private_idle(&self, project_id: &str) -> io::Result<()> {
-        if self.journal.lock().unwrap().private_active(project_id)? {
+        if !self.owned.lock().unwrap().is_empty() || !self.preparations.lock().unwrap().is_empty() || self.journal.lock().unwrap().private_active(project_id)? {
             return Err(io::Error::new(io::ErrorKind::ResourceBusy, "private executions must finish or cancel before closing their storage"));
         }
         Ok(())
@@ -479,6 +516,7 @@ impl Engine {
         let accepted = self.journal.lock().unwrap().accept_runs(actor, runs)?;
         owned.extend(accepted.iter().flatten().filter(|(_, new)| *new).map(|(record, _)| record.id.clone()));
         drop(owned);
+        for (record, _) in accepted.iter().flatten() { self.scheduler_root(record.root_seq()); }
         self.notify_activity();
         Ok(accepted)
     }
@@ -593,7 +631,10 @@ impl Engine {
     }
     /// See `Journal::jobs`.
     pub(crate) fn jobs(&self, since: i64) -> io::Result<(bool, i64)> {
-        self.journal.lock().unwrap().jobs(since)
+        let (working, ended) = self.journal.lock().unwrap().jobs(since)?;
+        if self.project.is_some() { return Ok((working, ended)); }
+        let (private_working, private_ended) = crate::private_io::machine_jobs(since)?;
+        Ok((working || private_working, ended.max(private_ended)))
     }
     /// Whether this machine run supervises `id`.
     pub(crate) fn owns(&self, id: &str) -> bool {
@@ -672,6 +713,8 @@ impl Engine {
         let mut epoch = self.activity.lock().unwrap();
         *epoch = epoch.saturating_add(1); // never wrap or reuse a wake cursor
         self.activity_changed.notify_all();
+        drop(epoch);
+        if let Some(parent) = self.machine_activity.get().and_then(Weak::upgrade) { parent.notify_activity(); }
     }
 
     /// Whether a managed attempt of root `root` (the root or a call of it) still runs its thread.
@@ -696,14 +739,15 @@ impl Engine {
         let engine = self.clone();
         let id = id.to_owned();
         let thread_id = id.clone();
+        let project = self.project.clone();
         let launched = std::thread::Builder::new()
-            .name(format!("execution-{id}"))
-            .spawn(move || {
+            .name(if project.is_some() { "project-execution".into() } else { format!("execution-{id}") })
+            .spawn(move || crate::private_io::within(project, || {
                 if let Err(error) = run(engine.clone(), thread_id.clone()) {
                     if matches!(engine.private_storage(&thread_id), Ok(None)) {
                         tracing::warn!("execution {thread_id}: {error}");
                     } else {
-                        tracing::warn!(execution = %thread_id, "private execution failed; diagnostic details stay in its protected journal");
+                        let _ = error;
                     }
                 }
                 if engine
@@ -720,7 +764,7 @@ impl Engine {
                 drop(progress);
                 engine.owned.lock().unwrap().remove(&thread_id);
                 engine.notify_activity();
-            });
+            }));
         if let Err(error) = launched {
             owned.remove(&id);
             drop(owned);
@@ -977,7 +1021,7 @@ impl Engine {
                 if matches!(self.private_storage(id), Ok(None)) {
                     tracing::warn!("run {id}: after its fault, {}: {}", said.code, said.message);
                 } else {
-                    tracing::warn!(run = %id, "private run ended after a device fault");
+                    // The private outcome retains the diagnostic inside this engine.
                 }
                 Outcome::Failed(fault)
             }
@@ -996,7 +1040,7 @@ impl Engine {
                 if journal.private_descriptor(id).is_ok_and(|scope| scope.is_none()) {
                     tracing::warn!("run {id}: attention pin warning not logged: {error}");
                 } else {
-                    tracing::warn!(run = %id, "private run attention warning could not be journaled");
+                    // Do not emit private identity into the global subscriber.
                 }
             }
         }
@@ -1478,9 +1522,9 @@ pub(crate) fn open_artifact(root: &Path, path: &Path) -> io::Result<File> {
                 }
                 // Reopen this exact, retained regular inode through our descriptor, not its name.
                 #[cfg(target_os = "linux")]
-                return File::open(format!("/proc/self/fd/{}", file.as_raw_fd()));
+                return File::open(format!("/proc/self/fd/{}", file.as_raw_fd())).and_then(|file| { file.lock_shared()?; Ok(file) });
                 #[cfg(not(target_os = "linux"))]
-                return Ok(file);
+                return { file.lock_shared()?; Ok(file) };
             }
             directory = file;
         }

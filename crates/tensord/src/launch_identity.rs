@@ -358,3 +358,25 @@ fn boundary_directory(path: &Path) -> io::Result<()> {
     }
     Ok(platform::durable::set_mode(path, 0o711)?)
 }
+
+/// Runtime modules start without processing authored .pth/sitecustomize startup files.
+/// Only the selected environment's package directory is added; ordinary launch stays unchanged.
+pub(crate) const MODULE_BOOTSTRAP: &str = "import pathlib,runpy,sys;root=pathlib.Path(sys.executable).absolute().parent.parent;sys.path[:0]=[str(p) for p in (*(root/'lib').glob('python*/site-packages'),root/'Lib'/'site-packages') if p.is_dir()];sys.argv=sys.argv[1:];runpy.run_module(sys.argv[0],run_name='__main__')";
+
+pub(crate) fn module(python: &Path, module: &str) -> io::Result<Command> {
+    let mut command = interpreter(python)?;
+    command.args(["-I", "-S", "-c", MODULE_BOOTSTRAP, module]);
+    Ok(command)
+}
+
+#[cfg(unix)]
+pub(crate) fn private_trampoline(python: &Path, scope: Option<&platform::contain::Scope>) -> io::Result<Command> {
+    let mut command = module(python, "cozy_runtime.internal.trampoline")?;
+    command.args(["--expect-parent", &std::process::id().to_string(), "--oom-adj", "1000"]);
+    command.args(scope.map_or_else(|| vec!["--scope-backend".into(), "inherit".into()], platform::contain::Scope::trampoline_args)).arg("--").arg(python).process_group(0);
+    Ok(command)
+}
+#[cfg(windows)]
+pub(crate) fn private_trampoline(_: &Path, _: Option<&platform::contain::Scope>) -> io::Result<Command> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "protected Runtime launch requires the native Linux backend"))
+}

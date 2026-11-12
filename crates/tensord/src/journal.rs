@@ -1,5 +1,8 @@
 //! Durable acceptance and transitions. Observation has no lifecycle side effects.
 use platform::process::Birth;
+mod project_migration;
+mod project_inventory;
+mod project_retirement;
 use crate::private_journal;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -778,6 +781,19 @@ impl Journal {
             connection,
             workspace_id,
         })
+    }
+
+    /// A legacy field-encrypted row is still project metadata outside the project. Detect it
+    /// before the strict namespace can claim custody; migration is never an implicit delete.
+    pub(crate) fn contains_private_project(&self, project: &str) -> io::Result<bool> {
+        let present: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE json_extract(invocation,'$.local_private.project_id')=?1 UNION ALL SELECT 1 FROM private_object_uses WHERE project=?1)", [project], |row| row.get(0)).map_err(db_error)?;
+        if present { return Ok(true); }
+        let prefix = format!("local-private:{}:{}:", project.len(), project);
+        for (table, column) in [("installations", "actor"), ("preparations", "actor"), ("warm_sets", "actor"), ("native_outputs", "actor"), ("resolutions", "actor"), ("objects", "actor"), ("held_memos", "actor"), ("held_memo_objects", "actor"), ("held_names", "name")] {
+            let sql = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE substr({column},1,length(?1))=?1)");
+            if self.connection.query_row(&sql, [&prefix], |row| row.get::<_, bool>(0)).map_err(db_error)? { return Ok(true); }
+        }
+        Ok(false)
     }
 
     pub(crate) fn workspace_id(&self) -> &str {
