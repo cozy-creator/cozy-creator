@@ -60,7 +60,7 @@ const WATCH = () => {
   window.boxOf = box;
   /** What the pointer did and where the page was, for a box that doesn't open. First at the window, so it hears a click d3-drag then swallows. */
   window.clicks = [];
-  for (const type of ['pointerdown', 'pointerup', 'click']) {
+  for (const type of ['pointerdown', 'pointerup', 'click', 'dblclick']) {
     window.addEventListener(type, ({ target }) => window.clicks.push(`${type} ${target.tagName}.${target.className} ${location.pathname}`.slice(0, 160)), true);
   }
   /** All it says, at rest or worked on where it stands. */

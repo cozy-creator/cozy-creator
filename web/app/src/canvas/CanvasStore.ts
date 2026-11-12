@@ -1746,11 +1746,6 @@ export class CanvasStore {
     if (said) note = this.offer(edit, said)
   }
 
-  /** The take or version being looked at in `name`, if one is chosen: what Delete means while it's open. */
-  lookingAt(name: string): number | undefined {
-    return this.get(name)?.viewed
-  }
-
   /** Approves it: this version is what `name` is, until it's unapproved. It turns into that file now, and can flip back. `edit`: what it's part of. */
   pin(name: string, number: number, edit?: string) {
     const key = this.resolveName(name)

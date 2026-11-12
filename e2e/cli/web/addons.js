@@ -200,7 +200,7 @@ assets:
   await until('it off the file', () => Promise.resolve(yaml()), (text) => !text.includes(loraB.model));
 
   // Strength is behind More, and not on the chip.
-  await box('shot').locator('.media').first().click({ position: { x: 20, y: 20 } });
+  await box('shot').locator('.media').first().dblclick({ position: { x: 20, y: 20 } });
   await page.locator('.card.here[data-asset="shot"]').waitFor();
   if (!(await box('shot').locator('.edit-more').count())) await box('shot').locator('.more-toggle').click();
   const slider = box('shot').locator(`input[aria-label="Strength of ${word(loraA)}"]`);
