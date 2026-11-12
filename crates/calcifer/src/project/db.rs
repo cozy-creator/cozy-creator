@@ -192,6 +192,9 @@ pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
     Ok(conn)
 }
 
+/// A schema-2 project.db as it was before its migration (cl-904).
+const BEFORE_SCHEMA_3: &str = "project.db.pre-schema3";
+
 /// Schema 2 kept a project's files, versions and runs in its Automerge document as well as in rows. Schema 3 keeps them in rows
 /// alone (cl-904, Paul 11-12: the CRDT is for node state, never files): the document's are written to the rows once, which then
 /// stand, and the document's next change leaves them out.
@@ -201,6 +204,13 @@ fn migrate(path: &Path) -> Result<(), Error> {
     let checked = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(e)?;
     if version(&checked).map_err(e)? != 2 {
         return Ok(());
+    }
+    // The migration is one way: the project as it was, kept beside it once and never read.
+    let kept = path.with_file_name(BEFORE_SCHEMA_3);
+    if !kept.exists() {
+        let part = path.with_file_name(format!("{BEFORE_SCHEMA_3}.part"));
+        checked.backup(rusqlite::MAIN_DB, &part, rusqlite::backup::NO_PROGRESS).map_err(e)?;
+        std::fs::rename(&part, &kept).map_err(|error| err(path, error))?;
     }
     drop(checked);
     let mut conn = Connection::open_with_flags(path, rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE).map_err(e)?;

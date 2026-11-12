@@ -621,6 +621,7 @@ project_api "$M" /assets/notes -X PATCH -H 'Content-Type: application/json' -d '
 [ "$(sql1 "$M" 'PRAGMA user_version')" = 2 ] || check "migrate: 0.24.0 made schema $(sql1 "$M" 'PRAGMA user_version'), not 2"
 # 0.24.0's CLI has no export, history or delete: its Calcifer's routes, as its page asks, read and write alike on both.
 migrate_read "$M" 0240 || check "migrate: what 0.24.0 holds of it"
+local was_0240; was_0240=$(dump_of "$M/project.db")
 # A copy of it whose project.db refuses a take's row, as a migration that fails part-way would meet: below.
 local F=$OUT/migrate-fails was_dump
 mkdir -p "$F" && cp -a "$M/." "$F/" && rm -f "$F"/project.db*
@@ -634,6 +635,10 @@ PY
 in_cozy "$now" || { check "migrate: this cozy back in its place"; return; }
 in_project "$M" --json status > "$OUT/migrate-open.json" 2> "$OUT/migrate-open.err" || { check "migrate: this cozy opening it: $(tail -c 300 "$OUT/migrate-open.err")"; return; }
 [ "$(sql1 "$M" 'PRAGMA user_version')" = 3 ] || check "migrate: project.db is schema $(sql1 "$M" 'PRAGMA user_version') after its first open here, not 3"
+# The project as 0.24.0 left it, kept beside it once.
+local kept=$M/project.db.pre-schema3 kept_at
+[ -f "$kept" ] && [ "$(dump_of "$kept")" = "$was_0240" ] || check "migrate: no copy of it as 0.24.0 left it: $([ -f "$kept" ] && dump_of "$kept") (was $was_0240)"
+kept_at=$(stat -c %Y.%s "$kept" 2> /dev/null)
 migrate_read "$M" now || check "migrate: what this cozy holds of it"
 local part
 for part in facts rows yaml history; do
@@ -666,6 +671,8 @@ db_sql "$F" "DROP TRIGGER e2e_refused"
 in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1 || check "migrate: let be, the copy didn't open: $(tail -c 300 "$OUT/migrate-fails.json")"
 [ "$(sql1 "$F" 'PRAGMA user_version')" = 3 ] || check "migrate: let be, the copy is schema $(sql1 "$F" 'PRAGMA user_version')"
 migrate_facts "$F" | cmp -s - "$OUT/migrate-0240-facts" || check "migrate: let be, the copy reads otherwise: $(migrate_facts "$F" | diff "$OUT/migrate-0240-facts" - | head -c 600)"
+[ "$(stat -c %Y.%s "$kept" 2> /dev/null)" = "$kept_at" ] || check "migrate: the copy kept beside it was written again"
+[ "$(dump_of "$F/project.db.pre-schema3")" = "$was_dump" ] || check "migrate: the refused copy's own kept copy isn't it as it was"
 echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.name): [.versions[].number]}) | add' "$OUT/migrate-now-facts")"
 }
 # in_cozy <file>: that cozy in this one's place, as an update puts it, and its Calcifer the one serving: the last stopped as a
