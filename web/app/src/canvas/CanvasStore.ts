@@ -29,7 +29,7 @@ import { addOnsOf } from "./checkpoints"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import type { ReadableProjection } from "./readableSurface"
-import { fieldsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
+import { fieldsOf, fullRows, heldTo } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
 import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
@@ -2721,7 +2721,7 @@ export class CanvasStore {
   setShape(name: string, control: BoxField, width: number, shape: string) {
     const held = this.valueOf(name, control.field)
     const auto = this.get(name)?.auto
-    const kept = ratioOf(held) === undefined && auto !== undefined && snapped(auto, shapesOf(control)) === shape
+    const kept = ratioOf(held) === undefined && auto !== undefined && ratioOf(shape) === auto
     const edit = this.step(`Reshaped ${this.resolveName(name)}`, [name])
     if (held !== shape && !kept) void this.setField(name, control.field, shape, edit)
     this.patch(name, { shape: undefined })

@@ -46,7 +46,12 @@ export const OWN = ["description", "models", "lora", "node_kind", "selected_vers
 export function fieldsOf(asset: Asset, tools: Map<string, Tool>): ToolField[] {
   const tool = asset.tool ? tools.get(asset.tool) : undefined
   const hidden = tool?.package.split("/").at(-1) === "minimax-h3" ? ["seed", "quality", "steps", "turbo"] : ["seed"]
-  const visible = (fields: ToolField[]): ToolField[] => fields.filter((field) => field.type !== "seed" && !hidden.includes(field.field)).map((field) => field.members ? { ...field, members: visible(field.members) } : field)
+  const visible = (fields: ToolField[]): ToolField[] => fields.filter((field) => field.type !== "seed" && !hidden.includes(field.field)).map((field) => {
+    const single = field.type === "shape" && field.ratios?.length === 1 ? field.ratios[0] : field.options?.length === 1 ? field.options[0] : field.type === "number" && field.min != null && field.min === field.max ? field.min : undefined
+    const value = field.default ?? single
+    const fixed = value != null && !(typeof value === "string" && value.toLowerCase() === "auto")
+    return { ...field, default: value, auto: Boolean(field.auto && !fixed), ...(field.members ? { members: visible(field.members) } : {}) }
+  })
   return visible(tool ? tool.fields : fromFields(asset.fields ?? {}))
 }
 

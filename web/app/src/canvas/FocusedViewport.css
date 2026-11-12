@@ -178,6 +178,10 @@ body:has(.focus-viewport) .zoom {
   z-index: 2;
 }
 .focus-card > .here-under {
+  --body: 20px;
+  --small: 18px;
+  --tiny: 16px;
+  --heading: 24px;
   grid-column: 1;
   grid-row: 2;
   align-self: start;
@@ -187,6 +191,74 @@ body:has(.focus-viewport) .zoom {
   width: 100% !important;
   max-height: calc(var(--focus-footer-room, 200px) - 48px);
   transform: none;
+}
+.focus-card .here-all .slide,
+.focus-card .here-all .ctl-name {
+  font-size: 18px;
+}
+.focus-card .here-all .seg {
+  min-width: 48px;
+  min-height: 42px;
+  padding: 8px 14px;
+  font-size: 18px;
+}
+.focus-card .here-all .num,
+.focus-card .here-all .reset,
+.focus-card .here-all .more-toggle {
+  font-size: 17px;
+}
+.focus-card .here-all input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+}
+.focus-card .here-all input[type="range"] {
+  min-height: 28px;
+}
+.focus-card .here-all .run {
+  min-height: 48px;
+  padding: 10px 22px;
+  font-size: 22px;
+}
+.focus-card .here-all .run .icon {
+  width: 24px;
+  height: 24px;
+}
+.focus-card .media .ratio-rest,
+.focus-card .authoring-ratio .ratio-rest {
+  font-size: 18px;
+}
+.media > .ratio-rest {
+  position: absolute;
+  top: auto;
+  bottom: 12px;
+  right: 30px;
+  z-index: 8;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  pointer-events: auto;
+}
+.focus-card .ratio-clear {
+  width: 26px;
+  height: 26px;
+}
+.authoring-ratio {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  z-index: 6;
+}
+.authoring-ratio .ratio-rest {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.focus-new-video .row.actions {
+  padding-right: 110px;
 }
 .focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video {
   grid-template-columns: minmax(0, 1fr) min(22vw, 260px);
