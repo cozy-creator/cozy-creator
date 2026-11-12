@@ -355,7 +355,7 @@ export function viewable(view: ElementView | undefined): boolean {
 }
 
 /** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
-export function Player({ field, path, machine, seek, auto }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean }) {
+export function Player({ field, path, machine, seek, auto, onTime }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; onTime?(seconds: number): void }) {
   const { client, stream } = useConnection()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const [why, setWhy] = useState("This browser can't play it")
@@ -446,6 +446,8 @@ export function Player({ field, path, machine, seek, auto }: { field: string; pa
         className={`live nodrag nopan nowheel ${field}`}
         controls
         preload="none"
+        onTimeUpdate={(event) => onTime?.(event.currentTarget.currentTime)}
+        onSeeked={(event) => onTime?.(event.currentTarget.currentTime)}
         onEnded={() => stopRef.current()}
         onError={() => {
           const el = element.current
@@ -736,6 +738,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           path={"path" in source ? client.file(store.projectId, source.path) : undefined}
           machine={"run" in source ? source : undefined}
           seek={view.seek}
+          onTime={field === "video" ? (seconds) => store.patch(name, { scrub: seconds }) : undefined}
         />
       )}
       {children}
