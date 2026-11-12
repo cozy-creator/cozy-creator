@@ -113,6 +113,10 @@
   gap: 12px;
   min-width: 0;
   height: 44px;
+  /* It sits on the canvas, whatever is under it there: on a panel of its own, in either theme (cl-958). */
+  padding: 0 8px;
+  border-radius: var(--round2);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
 }
 .tl-transport .tl-go {
   display: inline-grid;
@@ -130,6 +134,7 @@
   font: 18px / 1 var(--mono);
   color: var(--ink);
   white-space: nowrap;
+  text-shadow: var(--halo);
 }
 .tl-of {
   color: var(--mute);
