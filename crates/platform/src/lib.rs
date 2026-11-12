@@ -12,6 +12,8 @@
 use std::{fmt, io, path::PathBuf};
 
 #[cfg(feature = "seams")]
+pub mod alarm;
+#[cfg(feature = "seams")]
 pub mod contain;
 #[cfg(feature = "seams")]
 pub mod durable;
@@ -27,6 +29,8 @@ pub mod ipc;
 pub mod lock;
 #[cfg(all(unix, feature = "seams"))]
 pub mod net;
+#[cfg(feature = "seams")]
+pub mod mounts;
 #[cfg(feature = "seams")]
 pub mod paths;
 #[cfg(feature = "seams")]
@@ -134,6 +138,7 @@ pub enum Seam {
     Service,
     Paths,
     FileWatch,
+    MountWatch,
 }
 
 impl fmt::Display for Seam {
@@ -151,6 +156,7 @@ impl fmt::Display for Seam {
             Self::Service => "user services",
             Self::Paths => "paths",
             Self::FileWatch => "file watching",
+            Self::MountWatch => "mount watching",
         })
     }
 }

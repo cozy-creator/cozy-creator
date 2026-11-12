@@ -1,5 +1,5 @@
 //! Optional local encrypted project sessions. A registered path never becomes a plaintext fallback mount.
-use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{collections::{BTreeMap, BTreeSet}, fs, io::Read as _, path::{Path as FsPath, PathBuf}, sync::{Arc, LazyLock, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, SystemTime}};
 use axum::{body::Bytes, extract::{Path, State, rejection::BytesRejection}, http::{HeaderValue, header}, response::{IntoResponse, Response}};
 use api::{calcifer::project::{VaultAsk, VaultChanged, VaultStatus}, error::{Error, Kind}};
 use project_mount::{MountOptions, Mounted, Provider};
@@ -30,8 +30,18 @@ static ROOTS: LazyLock<Mutex<BTreeMap<PathBuf, PathBuf>>> = LazyLock::new(Mutex:
 static OPERATIONS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
 static ACCESS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::RwLock<()>>>>>= LazyLock::new(Mutex::default);
 static CONVERTING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
-/// A session began: its clocks and mount are watched from now on.
-static HELD: tokio::sync::Notify = tokio::sync::Notify::const_new();
+/// What wakes the vault clock (`start`) beside its next deadline: a session began or is closing, its mount ended, work on a project began
+/// or ended (`stir`).
+static CLOCK: LazyLock<Option<platform::alarm::Alarm>> = LazyLock::new(|| {
+    platform::alarm::Alarm::new().inspect_err(|e| tracing::warn!("vaults have no clock, so none locks itself: {e}")).ok()
+});
+/// While a session is closing, how soon its close is tried again: programs may hold its view.
+const CLOSE_AGAIN: Duration = Duration::from_secs(1);
+
+pub(crate) fn stir() {
+    if let Some(clock) = &*CLOCK { clock.wake(); }
+}
+
 
 struct Session {
     identity: MountIdentity,
@@ -174,6 +184,32 @@ pub(super) async fn admit_work(project: &super::Project) -> Result<tokio::sync::
     Ok(guard)
 }
 
+/// Clients following a run of each project's (`following`), by root: the project is in use until they let go.
+static FOLLOWING: LazyLock<Mutex<BTreeMap<PathBuf, usize>>> = LazyLock::new(Mutex::default);
+
+/// A client follows a run whose outputs land under `path`: while it does, the run's encrypted project is in use, as its run is.
+pub(crate) struct Following(PathBuf);
+
+pub(crate) fn following(path: &FsPath) -> Option<Following> {
+    let path = logical(path);
+    let root = path.ancestors().find(|root| encrypted(root))?.to_owned();
+    *FOLLOWING.lock().expect("vault followers").entry(root.clone()).or_default() += 1;
+    stir();
+    Some(Following(root))
+}
+
+impl Drop for Following {
+    fn drop(&mut self) {
+        let mut following = FOLLOWING.lock().expect("vault followers");
+        if let Some(count) = following.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 { following.remove(&self.0); }
+        }
+        drop(following);
+        stir();
+    }
+}
+
 pub(crate) fn readable_token(path: &FsPath) -> Option<Arc<AtomicBool>> {
     let path = logical(path);
     let root = path.ancestors().find(|root| encrypted(root))?;
@@ -220,9 +256,11 @@ pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
     Ok(super::known(api, named)?.path)
 }
 
-fn status(root: &FsPath) -> VaultStatus {
+fn status(api: &Api, root: &FsPath) -> VaultStatus {
     let mut state = if encrypted(root) { "locked" } else { "plain" };
     let (mut view, mut expires, mut idle) = (None, None, DEFAULT_IDLE);
+    // Work in progress holds the clocks, as the vault clock holds them: the idle one starts when it ends, and the maximum waits for it.
+    let working = held(root).is_some() && working(api, root);
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
@@ -233,9 +271,9 @@ fn status(root: &FsPath) -> VaultStatus {
         if session.mount.is_mounted().unwrap_or(false) {
             state = if session.closing || expired(&session) { "locking" } else { "unlocked" };
             if state == "unlocked" { view = Some(session.mount.view().to_owned()); }
-            let idle_at = (session.idle > 0).then(|| session.active_ms.saturating_add(milliseconds(session.idle)));
-            // Work in progress defers the maximum until it ends.
-            let max_at = (session.maximum > 0 && !session.timer.held()).then(|| session.began_ms.saturating_add(milliseconds(session.maximum)));
+            let active = if working { super::now_ms() } else { session.active_ms };
+            let idle_at = (session.idle > 0).then(|| active.saturating_add(milliseconds(session.idle)));
+            let max_at = (session.maximum > 0 && !working).then(|| session.began_ms.saturating_add(milliseconds(session.maximum)));
             expires = match (idle_at, max_at) { (Some(a), Some(b)) => Some(a.min(b)), (a,b) => a.or(b) };
         }
     }
@@ -289,8 +327,14 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE);
     let maximum = ask.max_duration_s.unwrap_or(0);
     let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, runtime: runtime.keep(), secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
+    // Its supervisor's exit is its mount's end: a provider dying, an unmount from outside.
+    let supervisor = session.mount.supervisor().map_err(provider)?;
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
-    HELD.notify_one();
+    let _ = std::thread::Builder::new().name("vault-mount".into()).spawn(move || {
+        let _ = supervisor.wait();
+        stir();
+    });
+    stir();
     crate::events::project_vault(&project_id, "unlocked");
     Ok(())
 }
@@ -331,7 +375,10 @@ fn mark_closing(session: &mut Session) {
     let changed = !session.closing;
     session.closing = true;
     session.readable.store(false, Ordering::Release);
-    if changed { crate::events::project_vault(session.secret.project_id(), "locking"); }
+    if changed {
+        crate::events::project_vault(session.secret.project_id(), "locking");
+        stir();
+    }
 }
 
 fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
@@ -371,51 +418,80 @@ pub(crate) fn close_all(api: &Arc<Api>) -> Result<(), Error> {
     Ok(())
 }
 
+/// The vault clock: each open vault's idle and maximum clocks and its mount, looked at on its next deadline (a wall-clock alarm, which a
+/// suspend doesn't put off) or a stir, and closed once it's done. With no vault open it waits for one.
 pub(crate) fn start(api: &Arc<Api>) {
     let calcifer = api.machines.hubs.home().calcifer();
-    let api = Arc::downgrade(api);
+    let mut runs = api.calcifer.subscribe();
+    // A run beginning or settling holds or frees its project's vault.
     tokio::spawn(async move {
-        // A provider an earlier Calcifer left can take a moment to let its view go.
-        let mut sweeping = 120;
         loop {
-            // Each second while a vault is open, its idle and maximum clocks and its mount; nothing at all with none.
-            while sweeping == 0 && SESSIONS.lock().expect("vault sessions").is_empty() {
-                HELD.notified().await;
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let Some(api) = api.upgrade() else { return };
-            if sweeping > 0 { sweeping = if sweep_runtime(&calcifer) { 0 } else { sweeping - 1 }; }
-            let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
-            for root in roots {
-                let api = api.clone();
-                // One slow export/unmount must not delay another project's deadline.
-                tokio::task::spawn_blocking(move || {
-                    let op = operation(&root);
-                    let Ok(_operation) = op.try_lock() else { return; };
-                    let working = working(&api, &root);
-                    let needs = held(&root).is_some_and(|session| {
-                        let mut session = session.lock().expect("vault session");
-                        if session.mount.reconcile().is_err() { mark_closing(&mut session); }
-                        // Work in progress holds it open, its maximum included: the clocks go on when the last of it
-                        // ends. Only an explicit lock ends work (owner 11-11: "runs count as activity").
-                        session.timer.hold(working);
-                        if working && !session.closing { session.active_ms = super::now_ms(); }
-                        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
-                    });
-                    if !needs { return; }
-                    if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-                    let Ok(_access) = exclusive(&root) else { return; };
-                    let _ = close(&api, &root);
-                });
+            match runs.recv().await {
+                Ok((_, api::calcifer::Event::Created { .. } | api::calcifer::Event::Completed { .. } | api::calcifer::Event::Failed { .. } | api::calcifer::Event::Canceled { .. }))
+                | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => stir(),
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
         }
     });
+    let runtime = tokio::runtime::Handle::current();
+    let api = Arc::downgrade(api);
+    let clock = std::thread::Builder::new().name("vault-clock".into()).spawn(move || {
+        let Some(clock) = &*CLOCK else { return };
+        // A provider an earlier Calcifer left can take a moment to let its view go: swept each second, at most 120 times.
+        let mut sweeping = 120;
+        loop {
+            let Some(api) = api.upgrade() else { return };
+            if sweeping > 0 { sweeping = if sweep_runtime(&calcifer) { 0 } else { sweeping - 1 }; }
+            let mut next = (sweeping > 0).then(|| SystemTime::now() + Duration::from_secs(1));
+            let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
+            for root in roots {
+                if let Some(at) = keep(&api, &runtime, root) { next = Some(next.map_or(at, |next| next.min(at))); }
+            }
+            drop(api);
+            if let Err(e) = clock.wait(next) {
+                return tracing::warn!("the vault clock stops: {e}");
+            }
+        }
+    });
+    if let Err(e) = clock { tracing::warn!("no vault clock, so no vault locks itself: {e}"); }
+}
+
+/// One open vault's clocks and mount: when to look at it again, or None once it's closing and its close is going.
+fn keep(api: &Arc<Api>, runtime: &tokio::runtime::Handle, root: PathBuf) -> Option<SystemTime> {
+    let op = operation(&root);
+    // An operation going may change it: looked at again once it's let go.
+    let Ok(guard) = op.try_lock() else { return Some(SystemTime::now() + CLOSE_AGAIN) };
+    let work = work(api, &root);
+    let working = work.is_some();
+    let (needs, next) = held(&root).map_or((false, None), |session| {
+        let mut session = session.lock().expect("vault session");
+        if session.mount.reconcile().is_err() { mark_closing(&mut session); }
+        // Work in progress holds it open, its maximum included: the clocks go on when the last of it ends. Only an explicit lock ends
+        // work (owner 11-11: "runs count as activity").
+        let was = session.timer.held();
+        session.timer.hold(working);
+        if (working || was) && !session.closing { session.active_ms = super::now_ms(); }
+        (session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false), session.timer.deadline())
+    });
+    if !needs { return if work == Some(false) { Some(SystemTime::now() + CLOSE_AGAIN) } else { next }; }
+    drop(guard);
+    let api = api.clone();
+    // One slow export/unmount must not delay another project's deadline.
+    runtime.spawn_blocking(move || {
+        let op = operation(&root);
+        let Ok(_operation) = op.try_lock() else { return };
+        if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
+        if let Ok(_access) = exclusive(&root) && close(&api, &root).is_ok() { stir(); }
+    });
+    // Tried again while it stays: programs may hold its view.
+    Some(SystemTime::now() + CLOSE_AGAIN)
 }
 
 pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>) -> Result<Response, Refusal> {
     let root = location(&api, &named).map_err(Refusal)?;
     let _access = access(&root).read_owned().await;
-    Ok(private(axum::Json(status(&root)).into_response()))
+    Ok(private(axum::Json(status(&api, &root)).into_response()))
 }
 
 pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
@@ -438,7 +514,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     progress.phase("preparing");
     let mut changed = match change(&api, &root, ask, progress) {
         // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-        Err(busy) if !ended.is_empty() && busy.code == "project_busy" => VaultChanged { vault: status(&root), recovery_secret: None, ended: vec![], skipped_files: vec![] },
+        Err(busy) if !ended.is_empty() && busy.code == "project_busy" => VaultChanged { vault: status(api, &root), recovery_secret: None, ended: vec![], skipped_files: vec![] },
         changed => changed?,
     };
     changed.ended = ended;
@@ -528,6 +604,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
                     session.began_ms = super::now_ms(); session.active_ms = session.began_ms;
                     session.idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE); session.maximum = ask.max_duration_s.unwrap_or(0);
                     session.timer = timer(session.idle, session.maximum);
+                    stir();
                 } else {
                     session.mount.try_unmount().map_err(provider)?;
                     retire_runtime(&session.runtime);
@@ -575,17 +652,29 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         }
         _ => return Err(Error::new(Kind::Usage, "vault_action", "unknown local vault action")),
     }
-    Ok(VaultChanged { vault: status(root), recovery_secret, ended: vec![], skipped_files: progress.skipped() })
+    Ok(VaultChanged { vault: status(api, root), recovery_secret, ended: vec![], skipped_files: progress.skipped() })
 }
 
-/// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
+/// Whether the project has work in progress: a run not settled or followed, or a render, cut or file move going.
 fn working(api: &Api, root: &FsPath) -> bool {
+    work(api, root).is_some()
+}
+
+/// The project's work in progress: true when its end stirs the vault clock (a run settling, its follower letting go, a walk ending),
+/// false for a cut or a file move alone, which is looked at again shortly.
+fn work(api: &Api, root: &FsPath) -> Option<bool> {
+    if FOLLOWING.lock().expect("vault followers").contains_key(root) {
+        return Some(true);
+    }
     let landing = super::landing(root);
     let runs = api.calcifer.store().read(|conn| Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE out_dir = ?1 AND state <> 'settled')", [landing.to_string_lossy().as_ref()], |row| row.get::<_, bool>(0))?));
     // A journal that can't be read holds the vault open rather than lock a render.
-    runs.unwrap_or(true) || api.projects.now_open().iter().any(|project| {
-        project.root == root && (*project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err())
-    })
+    let open = api.projects.now_open();
+    let open = open.iter().filter(|project| project.root == root);
+    if runs.unwrap_or(true) || open.clone().any(|project| *project.walking.lock().expect("walking lock")) {
+        return Some(true);
+    }
+    open.into_iter().any(|project| project.moving.try_lock().is_err() || project.cutting.try_lock().is_err()).then_some(false)
 }
 
 /// An explicit lock ends the project's work in progress: what its renders still owe dropped, and each of its runs not

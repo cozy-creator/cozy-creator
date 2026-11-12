@@ -771,6 +771,7 @@ async fn events(
     pending.extend(api.calcifer.live(&row.id));
     let follow = Follow {
         vault_token: crate::project::vault::readable_token(&row.out_dir),
+        _following: (row.state != RunState::Settled).then(|| crate::project::vault::following(&row.out_dir)).flatten(),
         id: row.id,
         pending,
         last: starting_after,
@@ -786,6 +787,8 @@ async fn events(
 /// One SSE subscriber's place in its run's stream.
 struct Follow {
     vault_token: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// A run still going, followed: its encrypted project stays unlocked meanwhile.
+    _following: Option<crate::project::vault::Following>,
     id: RunId,
     pending: VecDeque<Event>,
     /// The highest sequence number sent; a durable event at or below it is already known.

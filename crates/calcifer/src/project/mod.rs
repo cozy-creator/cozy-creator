@@ -829,6 +829,7 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
                 *walking = false;
                 drop(walking);
                 remember(&api);
+                vault::stir();
                 return;
             }
         };
@@ -849,6 +850,8 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
         let _ = following.await;
         remember(&api);
         crate::events::project_settled(&walk.project.folder.dir);
+        // Its work ended: its vault's clocks go on.
+        vault::stir();
     });
 }
 

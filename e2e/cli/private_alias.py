@@ -137,7 +137,7 @@ def main() -> None:
         print("vault proof: unlock with a held legacy SQL snapshot started", flush=True)
         blocked = subprocess.run([str(args.cli), "--json", "vault", "unlock", "--passphrase-file", str(args.passphrase_file), "--idle", "0"], capture_output=True, cwd=args.project)
         print(f"vault proof: unlock with a held legacy SQL snapshot exited {blocked.returncode}", flush=True)
-        assert blocked.returncode != 0 and json.loads(blocked.stdout).get("error", {}).get("code") == "vault_journal_cleanup", "a pinned legacy snapshot did not refuse journal cleanup with its typed error"
+        assert blocked.returncode != 0 and json.loads(blocked.stdout).get("error", {}).get("code") == "vault_journal_cleanup", f"a pinned legacy snapshot did not refuse journal cleanup with its typed error: {blocked.stdout[-600:]!r} {blocked.stderr[-300:]!r}"
         # The first unlock committed the new slot before its checkpoint failed. Its
         # ordinary retry must therefore finish cleanup even when no slot changes again.
         with sqlite3.connect(f"file:{state}?mode=ro", uri=True) as db:
