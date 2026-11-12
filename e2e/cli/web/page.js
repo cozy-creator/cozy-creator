@@ -35,7 +35,8 @@ function photo() {
   return Buffer.concat([small.subarray(0, 2), note, small.subarray(2)]);
 }
 
-function png(shade, width = 320, height = 200, alpha = false) {
+/** A PNG: a gradient over `shade`, or what `pixel(x, y)` says ([r, g, b]) at each point. */
+function png(shade, width = 320, height = 200, alpha = false, pixel) {
   const chunk = (type, data) => {
     const body = Buffer.concat([Buffer.from(type), data]);
     const length = Buffer.alloc(4), sum = Buffer.alloc(4);
@@ -52,9 +53,10 @@ function png(shade, width = 320, height = 200, alpha = false) {
   for (let y = 0, at = 0; y < height; y++) {
     rows[at++] = 0;
     for (let x = 0; x < width; x++) {
-      rows[at++] = shade;
-      rows[at++] = (x * 255 / width) | 0;
-      rows[at++] = (y * 255 / height) | 0;
+      const [r, g, b] = pixel ? pixel(x, y) : [shade, (x * 255 / width) | 0, (y * 255 / height) | 0];
+      rows[at++] = r;
+      rows[at++] = g;
+      rows[at++] = b;
       if (alpha) rows[at++] = x < width / 2 ? 0 : 255;
     }
   }
