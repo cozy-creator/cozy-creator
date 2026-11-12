@@ -36,8 +36,8 @@ import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, madeHere, makes, NARR
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
-import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
-import { toolFitsNode, type Operation } from "./palette"
+import { comingOff, goingOn, holdsPictures, type ToolStep, wontGoOn } from "./toolchange"
+import type { Operation } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
@@ -1655,8 +1655,8 @@ export class CanvasStore {
 
   // What makes a box
 
-  /** `tool` goes on it, or takes the place of the one there. What it can't take is said, with Undo. On files of another kind it's a new box beside
-   *  them that mentions them (tools §9). `operation`: the palette's row it came from. */
+  /** `tool` goes on it, or takes the place of the one there. What it can't take is said, with Undo. A tool of another kind changes nothing and
+   *  says why (tools §9). `operation`: the palette's row it came from. */
   putTool(name: string, tool: Tool, operation?: Operation) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
@@ -1666,7 +1666,8 @@ export class CanvasStore {
       this.openHere(key)
       return
     }
-    if (!toolFitsNode(tool, view.asset)) return void say(`${toolName(tool)} makes ${tool.makes}; it cannot attach to this ${view.asset.kind} node`)
+    const wont = wontGoOn(tool, view.asset, key)
+    if (wont) return void say(wont)
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
     this.retool(key, step, step.lost.length ? `${name} runs ${toolName(tool)} now, which can't take ${step.lost.join(" or ")}` : undefined)

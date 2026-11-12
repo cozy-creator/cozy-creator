@@ -110,14 +110,21 @@ export function comingOff(asset: Asset, fields: Fields): ToolStep {
   return { row: { tool: undefined, kind: "text", noun: "version", standing: "current", fields: { ...own, text: words ? fields[words] : "" } }, tool: "", fields: {}, back: { ...back, fields: { ...back.fields, text: null } }, lost: [] }
 }
 
-/** A tool carried: dropped on a box it goes on, or takes the place of the one there, and the box opens (`putTool`). On open canvas, or on files of
- *  another kind, it's a new box. */
+/** Why `tool` can't go on `asset`, or null when it can: a tool goes only on a box of the kind it makes (tools §9). */
+export function wontGoOn(tool: Tool, asset: Asset, name: string): string | null {
+  if (toolFitsNode(tool, asset)) return null
+  if (tool.makes === asset.kind) return `${toolName(tool)} can't go on ${name}`
+  const made = tool.makes === "image" ? "images" : tool.makes
+  return `${toolName(tool)} makes ${made}: drop it on ${/^[aeiou]/.test(tool.makes) ? "an" : "a"} ${tool.makes} box`
+}
+
+/** A tool carried: dropped on a box it goes on, or takes the place of the one there, and the box opens (`putTool`). On open canvas it's a new box;
+ *  on a box of another kind nothing changes, and a note says why. */
 export const carryingTool = (tool: Tool): Carried => ({
   canvas: true,
   whyNot(name, view) {
     if (!view?.asset || view.placing) return `${toolName(tool)} can't go on ${name}`
-    if (!toolFitsNode(tool, view.asset)) return `${toolName(tool)} makes ${tool.makes}; ${name} is a ${view.asset.kind} node`
-    return null
+    return wontGoOn(tool, view.asset, name)
   },
   put: (store, name) => store.putTool(name, tool),
 })
