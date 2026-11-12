@@ -38,26 +38,17 @@ function ModelsButton({ name }: { name: string }) {
   )
 }
 
-/** At the bottom of a box's fields: Models & LoRAs, and what's set listed under it. */
-export function ModelsAndLoras({ name }: { name: string }) {
-  return (
-    <div className="models-loras">
-      <ModelsButton name={name} />
-      <ModelConfig name={name} />
-    </div>
-  )
-}
-
-/** Under a box's media: its tool, and Models & LoRAs beside it when no fields show under it (`models`). */
-export function ImageVersions({ name, view, width, models }: { name: string; view: ElementView; width: number; models: boolean }) {
+/** Beneath every node with a tool, the same for every tool and kind (Paul, 11-12: "We should make this a standard type of interface"): its
+ *  tool, Models & LoRAs beside it, and the models and LoRAs set listed under them. Nothing of models or LoRAs is inside the card. */
+export function ToolLine({ name, view, width }: { name: string; view: ElementView; width: number }) {
   if (!view.asset?.tool) return null
   return (
-    <div className="image-controls nodrag nopan nowheel" style={{ "--image-control-width": `${width}px` } as CSSProperties}>
+    <div className="image-controls tool-line nodrag nopan nowheel" style={{ "--image-control-width": `${width}px` } as CSSProperties}>
       <div className="image-version-row">
         <ToolName name={name} />
-        {models && <ModelsButton name={name} />}
+        <ModelsButton name={name} />
       </div>
-      {models && <ModelConfig name={name} />}
+      <ModelConfig name={name} />
     </div>
   )
 }

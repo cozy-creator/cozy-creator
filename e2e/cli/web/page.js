@@ -216,8 +216,8 @@ async function renderOf(page, name) {
   const edit = here.getByRole('button', { name: 'Edit image', exact: true });
   if (await edit.count()) await edit.click();
   const nextVideo = here.getByRole('button', { name: 'New video', exact: true });
-  if (await nextVideo.count() && !(await here.locator('.prominent').count())) await nextVideo.click();
-  const next = here.locator('.here-side .take.add[aria-label="Its next take"]');
+  if (await nextVideo.count() && !(await here.locator('.in-frame').count())) await nextVideo.click();
+  const next = here.locator('.take.add[aria-label="Its next take"]');
   // A cold tool list can briefly show fallback fields before an image take gains its +.
   // Wait for an editor (including non-image/custom editors) or that actual next-take control.
   const editor = here.locator('.in-frame, .prominent, .tl, .tool-ui, .tool-ui-failed, .media.blank:not(:has(.media-making, .made-from, .prog)), .media:has(.play, video, audio)');

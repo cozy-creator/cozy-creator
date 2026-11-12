@@ -3,8 +3,10 @@
 // one box ... those should fit inside of the video-panel as sections, and we'll still display the reference images in the background"), in a
 // real browser on a real Calcifer. H3's Shot in Focus: Summary and its Beats are sections inside the frame, each opened by its head (Summary
 // too, which can't be removed), + Beat adds one; behind them, faded and full height, the pictures the section being written mentions, all of
-// them with none written in; its corner pulled toward 9:16 lands on a ratio H3 makes; under the frame its tool, then Render, the fields and
-// Models & LoRAs. Writing its next take (New) is the same, its take faded behind. Qwen's Image writes in the same frame. Screenshots of each.
+// them with none written in; its corner pulled toward 9:16 lands on a ratio H3 makes; under the frame its tool with Models & LoRAs, then
+// Render and the fields. Writing its next take (New, beside Render on the title row) is the same, its take faded behind, "New take" said;
+// Render renders and the title row says so; New is a draft again. Qwen's Image writes in the same frame, its Render in the same spot,
+// and Cmd/Ctrl+Enter renders. Screenshots of each.
 //   node frame.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -13,6 +15,9 @@ const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, until, upload } = require('./page');
+
+/** Shots this computer renders itself, weightless. */
+const SHOTS = join(__dirname, '..', 'project', 'shots.py');
 
 const failures = [];
 const seen = {};
@@ -81,7 +86,10 @@ async function died(why) {
   await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'again', exact: true, fields: { summary: '<amy> on the pier.', beats: [{ description: 'She waves.', duration: 5 }] }, at: { x: 700, y: 100 } });
   await post(`${at}/assets/again/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
   await post(`${at}/assets`, { tool: imageTool.id, kind: 'image', name: 'still', exact: true, fields: { instructions: '<amy> in a red coat.' }, at: { x: 1300, y: 100 } });
-  for (const name of ['amy', 'boat', 'scene', 'again', 'still']) await boxOf(page, name).waitFor();
+  // A shot this computer renders itself (`project/shots.py`), with a take: what Render and Cmd/Ctrl+Enter start.
+  await post(`${at}/assets`, { tool: `${SHOTS}/shot`, kind: 'video', name: 'local', exact: true, fields: { summary: 'A walk by the sea.', beats: [{ description: 'Waves.', duration: 2 }] }, at: { x: 100, y: 1000 } });
+  await post(`${at}/assets/local/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
+  for (const name of ['amy', 'boat', 'scene', 'again', 'still', 'local']) await boxOf(page, name).waitFor();
   await fitCanvas(page);
 
   /** The frame of the open box, and what it holds. */
@@ -89,8 +97,8 @@ async function died(why) {
   const looked = (name) => card(name).evaluate((node) => {
     const media = node.querySelector('.media');
     const frame = media?.getBoundingClientRect();
-    const run = node.querySelector('.here-under .run')?.getBoundingClientRect();
-    const models = node.querySelector('.here-under button[aria-label="Models and LoRAs"]')?.getBoundingClientRect();
+    const run = node.querySelector(':scope > .focus-actions .run')?.getBoundingClientRect();
+    const models = node.querySelector(':scope > .tool-line button[aria-label="Models and LoRAs"]')?.getBoundingClientRect();
     const tool = node.querySelector(':scope > .image-controls .image-tool-name')?.getBoundingClientRect();
     const fields = [...node.querySelectorAll('.here-under .edit-shown [data-field], .here-under .edit-shown [aria-label]')].map((el) => el.getBoundingClientRect());
     return {
@@ -100,7 +108,11 @@ async function died(why) {
       behind: [...(media?.querySelectorAll('.backdrop .backdrop-picture') ?? [])].map((el) => el.dataset.mention),
       full_height: [...(media?.querySelectorAll('.backdrop .backdrop-picture') ?? [])].every((el) => Math.abs(el.getBoundingClientRect().height - frame.height) < 2),
       ratio: frame ? frame.width / frame.height : null,
-      order: Boolean(frame && tool && run && models) && tool.top >= frame.bottom - 1 && run.top >= tool.bottom - 1 && fields.every((rect) => rect.top >= run.top - 1) && models.top >= Math.max(run.bottom, ...fields.map((rect) => rect.bottom)) - 1,
+      order: Boolean(frame && tool && run && models) && run.bottom <= frame.top + 1 && tool.top >= frame.bottom - 1 && Math.abs(models.top + models.height / 2 - (tool.top + tool.height / 2)) < models.height && fields.every((rect) => rect.top >= Math.max(tool.bottom, models.bottom) - 1),
+      render: run ? { top: Math.round(run.top), right: Math.round(run.right) } : null,
+      label: document.querySelector('.focus-heading .focus-version-label')?.textContent ?? null,
+      in_fields: node.querySelectorAll('.here-under button[aria-label="Render"]').length,
+      inside: node.querySelectorAll('.here-under .active-models, .here-under button[aria-label="Models and LoRAs"]').length,
     };
   });
   const write = async (name, place) => {
@@ -117,7 +129,7 @@ async function died(why) {
   check('summary_is_a_section_that_cannot_go', !empty.summary_removable, empty);
   check('one_section_open_at_a_time', empty.sections.filter((one) => one.open).length === 1, empty.sections);
   check('the_frame_is_16_9', Math.abs(empty.ratio - 16 / 9) < 0.03, empty.ratio);
-  check('tool_then_render_then_fields_then_models', empty.order, empty);
+  check('render_on_the_title_row_then_frame_tool_and_models_then_fields', empty.order && empty.inside === 0 && empty.in_fields === 0, empty);
   check('with_none_written_in_all_it_mentions_is_behind', JSON.stringify([...empty.behind].sort()) === JSON.stringify(['amy', 'boat']) && empty.full_height, empty.behind);
   await shot('empty-16-9');
 
@@ -161,25 +173,58 @@ async function died(why) {
   await shot('pulled-toward-9-16');
   await closeBox(page);
 
-  // Writing its next take: the same frame, its take faded behind, the picture written of over it.
+  const allRuns = async () => ((await api('/v1/runs?limit=100')).body?.runs ?? []).filter((run) => run.project_id === id && run.kind === 'call').length;
+  const header = () => page.locator('.focus-heading .focus-version-label').innerText().catch(() => null);
+
+  // An H3 node with a take (Paul, 11-12: "I cannot start a new take, like if I push the 'new' button nothing happens"): New is a draft,
+  // unmistakably, its header saying "New take" and its take faded behind.
   await openBox(page, 'again');
-  const next = card('again').locator('.here-side .take.add');
+  const next = card('again').locator(':scope > .focus-actions .focus-new');
   await next.waitFor();
+  const viewing = { sections: await card('again').locator('.in-frame .frame-sections').count(), label: await header() };
   await next.click();
   await card('again').locator('.in-frame .frame-sections').waitFor();
   await write('again', 'summary');
   const again = await looked('again');
-  seen.again = again;
+  seen.again = { viewing, again };
   const take = await card('again').evaluate((node) => {
     const pixels = node.querySelector('.media .media-pixels');
     return { writing: Boolean(node.querySelector('.media.writing')), faded: pixels ? Number(getComputedStyle(pixels).opacity) : null };
   });
   seen.again_take = take;
-  check('a_next_take_is_written_in_the_same_frame', again.in_frame.summary && again.in_frame.beats && take.writing && JSON.stringify(again.behind) === JSON.stringify(['amy']) && again.order, { again, take });
+  check('new_on_a_node_with_takes_is_a_draft', viewing.sections === 0 && again.label === 'New take' && again.in_frame.summary && again.in_frame.beats && take.writing && take.faded !== null && take.faded < 0.5 && JSON.stringify(again.behind) === JSON.stringify(['amy']) && again.order, { viewing, again, take });
   await shot('next-take-with-a-reference');
+  const h3Render = (await looked('again')).render;
   await closeBox(page);
 
-  // A picture writes in the same frame: its one prompt, the picture it mentions behind it.
+  // Rendered, the title row says so; New is a draft again, "New take"; Cmd/Ctrl+Enter in a prompt renders. A shot this computer renders,
+  // so a run starts here.
+  await openBox(page, 'local');
+  const localNew = card('local').locator(':scope > .focus-actions .focus-new');
+  await localNew.click();
+  await card('local').locator('.in-frame .frame-sections').waitFor();
+  const before = await allRuns();
+  await card('local').locator(':scope > .focus-actions button[aria-label="Render"]').click();
+  const rendered = await until('its render started', allRuns, (n) => n > before, 120_000).catch(allRuns);
+  const watching = { runs: rendered - before, label: await header(), render: await card('local').locator(':scope > .focus-actions button[aria-label="Render"]').count() };
+  seen.watching = watching;
+  // Rendered from its words, a video stays on them (cl-907); the title row says it's rendering, not "New take", and Render stays.
+  check('render_renders_and_says_so', watching.runs >= 1 && watching.label !== 'New take' && watching.render === 1, watching);
+  await shot('rendering-its-take');
+  await localNew.click();
+  await card('local').locator('.in-frame .frame-sections').waitFor();
+  const draft = { label: await header(), sections: await card('local').locator('.in-frame .frame-sections').count() };
+  seen.draft_again = draft;
+  check('new_while_it_renders_is_a_draft_again', draft.label === 'New take' && draft.sections === 1, draft);
+  const keyed = await allRuns();
+  await card('local').locator('.in-frame .mention-text[data-field="summary"]').click();
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter');
+  const after = await until('its render asked by the keys', allRuns, (n) => n > keyed, 120_000).catch(allRuns);
+  check('cmd_or_ctrl_enter_renders', after > keyed, { before: keyed, after });
+  for (const run of ((await api('/v1/runs?limit=100')).body?.runs ?? []).filter((run) => run.project_id === id && !['completed', 'failed', 'canceled'].includes(run.status))) await api(`/v1/runs/${run.id}/cancel`, { method: 'POST', body: '{}' });
+  await closeBox(page);
+
+  // A picture writes in the same frame: its one prompt, the picture it mentions behind it; Render in the same spot.
   await openBox(page, 'still');
   await card('still').locator('.in-frame .mention-text[data-field="instructions"]').waitFor();
   const still = await card('still').evaluate((node) => ({
@@ -189,6 +234,9 @@ async function died(why) {
   }));
   seen.still = still;
   check('a_picture_writes_in_the_same_frame', still.sections === 0 && JSON.stringify(still.behind) === JSON.stringify(['amy']) && Boolean(still.tool), still);
+  const imageRender = (await looked('still')).render;
+  seen.render_at = { h3: h3Render, image: imageRender };
+  check('render_is_in_the_same_spot_for_h3_and_an_image', Boolean(h3Render && imageRender) && Math.abs(h3Render.top - imageRender.top) <= 1 && Math.abs(h3Render.right - imageRender.right) <= 1, seen.render_at);
   await shot('picture-writing');
   await closeBox(page);
 
