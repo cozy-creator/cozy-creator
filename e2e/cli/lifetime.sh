@@ -277,8 +277,9 @@ for _ in $(seq 80); do
   sleep 0.25
 done
 behind="waiting for run $n1's download ("
+# A download is the machine's own run, not this project's: its number is read outside any project.
 for _ in $(seq 240); do
-  cozy --json run watch "${n2:-0}" --once > "$OUT/queued-show.json" 2> /dev/null || true
+  (cd / && cozy --json run watch "${n2:-0}" --once) > "$OUT/queued-show.json" 2> /dev/null || true
   said=$(jq -r '.waiting // empty' "$OUT/queued-show.json" 2> /dev/null) || said=
   [[ $said == "$behind"*" ahead)" ]] && break
   J '.status == "completed"' "$OUT/queued-show.json" 2> /dev/null && break

@@ -229,20 +229,43 @@ step "Calcifer reaps the machine it started"; machine_reaped
 step "a restarted Calcifer adopts the machine"; calcifer_restart_adopts
 }
 
+# bounded_cell <seconds> <name> <target> <inputs...>: `cell`, in $here, still going after <seconds> is said (its events, its
+# record, its follower) and ended: a hang after a Calcifer restart fails the step, never the suite.
+bounded_cell() {
+  local limit=$1 name=$2 job pid n began=$SECONDS; shift 2
+  (cd "$here" && cell "$name" "$@") & job=$!
+  while kill -0 "$job" 2> /dev/null && [ $((SECONDS - began)) -lt "$limit" ]; do sleep 1; done
+  if kill -0 "$job" 2> /dev/null; then
+    pid=$(cat "$OUT/$name.pid" 2> /dev/null) n=$(cat "$OUT/$name.number" 2> /dev/null)
+    echo "$name: run ${n:-none}'s cell still going after $limit s; its follower ${pid:-?} $([ -n "$pid" ] && kill -0 "$pid" 2> /dev/null && echo runs || echo exited)"
+    echo "  events: $(grep '^{' "$OUT/$name.ndjson" 2> /dev/null | jq -r '.type' 2> /dev/null | uniq -c | tr -s ' \n' ' ')"
+    echo "  last: $(grep '^{' "$OUT/$name.ndjson" 2> /dev/null | tail -n 3 | jq -c '{type, status: .run.status, machine_state: .run.machine_state, reason}' 2> /dev/null | tr '\n' ' ')"
+    echo "  stderr: $(tail -n 3 "$OUT/$name.err" 2> /dev/null | cut -c1-300 | tr '\n' ' ')"
+    echo "  record: $(cozy --json run watch "${n:-0}" --once 2> /dev/null | jq -c '{status, machine_state, waiting, reason: .reason.code}' 2> /dev/null)"
+    [ -z "$pid" ] || echo "  process: $(grep -E '^(State|voluntary_ctxt|nonvoluntary_ctxt)' "/proc/$pid/status" 2> /dev/null | tr -s '\t\n' ' ') wchan $(cat "/proc/$pid/wchan" 2> /dev/null) cpu $(ps -o time= -p "$pid" 2> /dev/null)"
+    [ -z "$pid" ] || kill "$pid" 2> /dev/null || true
+    kill "$job" 2> /dev/null || true
+    wait "$job" 2> /dev/null || true
+    check "$name: run ${n:-none}'s cell did not end in $limit s"
+    return 1
+  fi
+  wait "$job"
+}
+
 # After the other parts, as these stop Calcifer, and not straight after calcifer_restart_adopts: systemd starts a
 # unit at most five times in 10 s (run 40132725041: doctor's restart was refused).
 calcifer_faults() {
 if [ -n "$LOCAL" ]; then
   step "Calcifer stopped under the machine it started"
   if calcifer_orphaned; then
-    (cd "$here" && cell after-orphan ./weightless/reverse "text=orphan$RANDOM") || check "no run went after cozy doctor recovered Calcifer"
+    bounded_cell 300 after-orphan ./weightless/reverse "text=orphan$RANDOM" || check "no run went after cozy doctor recovered Calcifer"
   fi
 fi
 
 step "a stuck Calcifer"
 if calcifer_stuck; then
   if [ -n "$LOCAL" ]; then
-    (cd "$here" && cell after-stuck ./weightless/reverse "text=after$RANDOM") || check "no run went after cozy doctor restarted Calcifer"
+    bounded_cell 300 after-stuck ./weightless/reverse "text=after$RANDOM" || check "no run went after cozy doctor restarted Calcifer"
   else
     fixture_calcifer | jq -e '.calcifer.running' > /dev/null || check "Calcifer does not answer after cozy doctor restarted it"
   fi
@@ -272,7 +295,7 @@ systemctl --user show -p Result --value cozy-calcifer > "$OUT/burst-result.txt" 
 echo "after the burst: $(cat "$OUT/burst-result.txt")"
 cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && fixture_calcifer | J '.calcifer.running == true' \
   || check "after a burst of restarts ($(cat "$OUT/burst-result.txt")), the next command did not start Calcifer: $(tail -c 300 "$OUT/burst-machines.err")"
-(cd "$here" && cell after-burst ./weightless/reverse "text=burst$RANDOM") || check "no run went after the burst of restarts"
+bounded_cell 300 after-burst ./weightless/reverse "text=burst$RANDOM" || check "no run went after the burst of restarts"
 }
 
 update() { step update; update_to_newest; }

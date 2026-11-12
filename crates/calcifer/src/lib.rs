@@ -416,12 +416,15 @@ impl Calcifer {
         let scope=private_io::current();
         self.waiting_in(scope.as_ref().map(|scope|scope.storage.project_id.as_str()),ids)
     }
-    pub(crate) fn maintenance_waiting_for(&self,ids:&[String])->Option<String> {self.waiting_in(None,ids)}
+    /// A machine-wide view's: each run by the journal that owns it, Calcifer's or an open project's.
+    pub(crate) fn machine_waiting_for(&self,ids:&[String])->Option<String> {
+        self.waiting_named(ids,|id| Ok(self.active_run(id)))
+    }
     fn waiting_in(&self,project:Option<&str>,ids:&[String])->Option<String> {
-        let name=|id:&String| {
-            let row=match project {Some(project)=>self.project_store(project).and_then(|store|store.run(id)),None=>self.maintenance_store().run(id)};
-            row.ok().flatten().map(|row|format!("run {}",row.number)).unwrap_or_else(||"other work".into())
-        };
+        self.waiting_named(ids,|id| match project {Some(project)=>self.project_store(project).and_then(|store|store.run(id)),None=>self.maintenance_store().run(id)})
+    }
+    fn waiting_named(&self,ids:&[String],run:impl Fn(&str)->store::Result<Option<RunRow>>)->Option<String> {
+        let name=|id:&String| run(store::calcifer_id(id)).ok().flatten().map(|row|format!("run {}",row.number)).unwrap_or_else(||"other work".into());
         match ids {[]=>None,[one]=>Some(format!("waiting for {} to end",name(one))),many=>Some(format!("waiting for {} to end",many.iter().map(name).collect::<Vec<_>>().join(", ")))}
     }
 
@@ -482,6 +485,11 @@ impl Calcifer {
         loop {match self.run_scope(id) {Err(error) if error.code=="project_busy"=>pause.wait(wake,None).await,result=>return result}}
     }
 
+    /// A run by its owning journal, Calcifer's or an open project's; none for a locked project's or an unknown one.
+    pub(crate) fn active_run(&self, id: &str) -> Option<RunRow> {
+        self.with_run_store(id, |store| store.run(id)).ok().flatten()
+    }
+
     fn with_run_store<T>(&self, id: &str, f: impl FnOnce(&store::RunStore<'_>) -> store::Result<T>) -> store::Result<T> {
         let store = self.run_store(id)?;
         f(&store)
@@ -500,6 +508,23 @@ impl Calcifer {
             }
         }
         Ok(values)
+    }
+
+    /// Each machine's function runs (accepted, waiting) across Calcifer's journal and every open project's: counts only.
+    pub(crate) fn machine_load(&self) -> store::Result<HashMap<String, (u32, u32)>> {
+        let mut load = HashMap::new();
+        for journal in self.each_store(|store| store.machine_load())? {
+            for (machine, (running, queued)) in journal {
+                let sum: &mut (u32, u32) = load.entry(machine).or_default();
+                *sum = (sum.0 + running, sum.1 + queued);
+            }
+        }
+        Ok(load)
+    }
+
+    /// How many runs `machine` was sent and hasn't settled, in every journal.
+    pub(crate) fn working(&self, machine: &str) -> store::Result<u32> {
+        Ok(self.each_store(|store| store.working(machine))?.into_iter().sum())
     }
 
 

@@ -212,8 +212,8 @@ impl Machines {
         let row = self.follows(name)?;
         let frame = self.frame(name).filter(|frame| frame.phase == "ready" && frame.update.is_none())?;
         let store = self.store();
-        let queued = store.machine_load().ok()?.get(name).map_or(0, |(_, queued)| *queued);
-        if store.working(name).ok()? > 0 || store.updating(name).ok()? || (!sending && queued > 0) {
+        let queued = self.calcifer.machine_load().ok()?.get(name).map_or(0, |(_, queued)| *queued);
+        if self.calcifer.working(name).ok()? > 0 || store.updating(name).ok()? || (!sending && queued > 0) {
             return None;
         }
         if self.held_by_hand(name).is_some() {
