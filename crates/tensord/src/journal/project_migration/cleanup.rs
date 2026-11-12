@@ -347,7 +347,7 @@ pub(super) fn copy_metadata(
                 "resolutions" => Some((
                     "package",
                     format!(
-                        "resolution:{actor}:{}",
+                        "resolution:{actor}:{}:package",
                         row[column("key")?]
                             .text()
                             .ok_or_else(|| db_error("resolution key is invalid"))?
