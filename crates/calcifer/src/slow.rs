@@ -128,8 +128,8 @@ impl Calcifer {
         let base = row.target.split('@').next()?;
         let filter = store::RunFilter { status: Some(Status::Completed), target: Some(base.to_owned()), limit: 60, ..Default::default() };
         let (rows, ..) = self.store.runs(&filter).ok()?;
-        let input = input(row);
-        let (megapixels, steps) = (crate::megapixels(&input), input.get("steps").and_then(Value::as_u64));
+        let asked = input(row);
+        let (megapixels, steps) = (crate::megapixels(&asked), asked.get("steps").and_then(Value::as_u64));
         let (like, extents): (Vec<eta::Took>, Vec<Extent>) = (rows.iter())
             .filter(|other| other.id != row.id && other.target.split('@').next() == Some(base) && other.spec.lane == row.spec.lane)
             .filter(|other| !other.warnings.iter().any(|warning| SLOWED.contains(&warning.code.as_str())))
