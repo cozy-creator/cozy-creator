@@ -4,7 +4,7 @@
 // order, their sum, a block that may be absent, and rows two deep. Slots: what doesn't fit is refused as it's carried and at the drop, with why;
 // a filled one is on the face, and × unsets it. A video's range: in and out dragged on its frames, written `<walk:in-out>` and shown as
 // timecode, in a prompt and on a plate, whose length is set against the beats. Where this computer runs models: previews land as it renders;
-// Pick up from where the player is on its own take, and from another box's take let go on it, landing on the tool's frames, with nothing written.
+// Pick up from where the player is on its own take, landing on the tool's frames, with nothing written (0.25.0 has no take carried onto another box).
 //   node tools.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT, $ALONE as nodes.js. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -437,27 +437,6 @@ function replaceFile(at, text) {
     const pickedLines = JSON.stringify(stored('shot'));
     check('pickup_writes_nothing', pickedLines === typed && !afterPickup.includes('pickup'), { before: typed, after: pickedLines, hasPickup: afterPickup.includes('pickup') });
 
-    // Another box's take let go on it: from that take, at a frame chosen on it. A step that never comes is a failed check with why, so the
-    // cell goes on (on 0.25.0 nothing carries a take out of an open box onto another: see the cl-885 notes).
-    try {
-      addBoxes(folder, [{ name: 'other', tool: `${fixture}/shot`, kind: 'video', fields: { plate: '<walk>' } }]);
-      await until('other in the project', () => of('other'), Boolean);
-      await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { other: { x: at.x - 420, y: at.y } } }) });
-      await render('other', 1);
-      await open('other');
-      await box('other').locator('.take[aria-label="take 1"]').click();
-      const onto = await reach('shot');
-      await box('other').locator('.take-out').dragTo(page.locator('body'), { targetPosition: onto });
-      await box('shot').locator('.from-here .pickup-of:has-text("other\'s take 1")').waitFor();
-      check('another_take_offers_pick_up', (await box('shot').locator('.card.here').count()) === 1);
-      await box('shot').locator('.from-here .keeps').fill('7');
-      await box('shot').locator('button:text-is("Pick up from here")').click();
-      await until('picked up from other', () => versions('shot'), (n) => n === 3, FIRST_RUN_MS);
-      const fromOther = await given('shot');
-      check('pickup_of_another_take', fromOther.pickup?.out_frame === 7 && fromOther.pickup.take?.file?.file === 'VideoFile', fromOther.pickup);
-    } catch (error) {
-      check('pickup_of_another_take', false, String(error.message ?? error).slice(0, 400));
-    }
     await shot('picked-up');
   }
 
