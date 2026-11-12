@@ -26,6 +26,7 @@ mod linux {
     #[serde(tag = "action", rename_all = "snake_case")]
     enum Action {
         Ready,
+        Diagnose,
         Edit { asset: String, field: String, value: String },
         Observe { needle: String },
         Storage,
@@ -120,6 +121,7 @@ mod linux {
                 let session = attached["sessionId"].as_str().ok_or_else(unavailable)?;
                 let arguments = match action {
                     Action::Ready => json!({ "kind": "ready" }),
+                    Action::Diagnose => json!({ "kind": "diagnose" }),
                     Action::Observe { needle } => json!({ "kind": "observe", "needle": needle }),
                     Action::Storage => json!({ "kind": "storage" }),
                     Action::HmrStart => {

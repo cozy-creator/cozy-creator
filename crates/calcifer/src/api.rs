@@ -430,8 +430,9 @@ async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) ->
     }
     let owned_media=media_secret(&request).is_some_and(|media|api.sessions.admits_owned_media(media));
     let path=request.uri().path();
-    let project_protocol=path.starts_with("/v1/projects") || path.starts_with("/v1/project-")
-        || path.starts_with("/v1/run-") || matches!(path,"/v1/events"|"/v1/targets"|"/v1/plans");
+    // The capability probe is how a client learns protocol 3 before opting in; it is no project request.
+    let project_protocol=path != "/v1/project-storage" && (path.starts_with("/v1/projects") || path.starts_with("/v1/project-")
+        || path.starts_with("/v1/run-") || matches!(path,"/v1/events"|"/v1/targets"|"/v1/plans"));
     // Native clients must opt into this storage contract before any project
     // lookup/import/resume. Media elements use the owned session's RAM token.
     if project_protocol && !owned_media

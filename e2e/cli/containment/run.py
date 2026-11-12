@@ -15,10 +15,12 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -85,6 +87,55 @@ class ForeignBrowsers:
             shutil.rmtree(profile)
 
 
+PAGE_FACTS = frozenset({
+    "blank", "error_page", "loopback", "reloaded", "navigation_status", "owned_injected", "vite_client", "refresh_preamble",
+    "app_mounted", "gate_connecting", "gate_signed_out", "gate_unreachable", "gate_opening_project", "gate_project_failed",
+    "gate_broke", "vite_overlay", "visible", "resources", "resources_failed", "resources_unanswered", "resources_403",
+    "resources_404", "resources_503", "resources_504",
+})
+
+
+REDIRECTS = (b"HOME", b"TMPDIR", b"TEMP", b"TMP", b"XDG_CACHE_HOME", b"XDG_CONFIG_HOME", b"XDG_STATE_HOME", b"XDG_DATA_HOME", b"XDG_RUNTIME_DIR")
+
+
+def launch_environments(processes: list[dict]) -> list[dict[bytes, bytes]]:
+    # Chrome's setproctitle zeroes its own environ block; its launcher's stdio relays in the
+    # owned tree keep the exact launch environment. PATH marks an intact block, never a title tail.
+    found = []
+    for exact in processes:
+        try:
+            raw = Path(f"/proc/{exact['pid']}/environ").read_bytes() if alive(exact) else b""
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if not alive(exact):
+            continue
+        environment = dict(item.split(b"=", 1) for item in raw.split(b"\0") if re.fullmatch(rb"[A-Za-z_][A-Za-z0-9_]*=.*", item, re.S))
+        if b"PATH" in environment:
+            found.append(environment)
+    return found
+
+
+def tmpdir_singleton(profile: Path) -> bool:
+    # Chrome binds its singleton socket in a unique directory under TMPDIR and links it from the profile.
+    try:
+        target = Path(os.readlink(profile / "SingletonSocket"))
+        return target.is_absolute() and target.name == "SingletonSocket" and target.parent.parent == profile / "tmp" and stat.S_ISSOCK(target.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def observe_ready(proof: Proof, project: str, seen: dict) -> dict:
+    # Keeps only closed readiness facts for a sanitized failure receipt.
+    try:
+        value = proof.exercise(project, "ready")
+    except Failure:
+        seen["ready_errors"] += 1
+        raise
+    cards = value.get("cards")
+    seen.update(last_page_ready=value.get("page_ready") is True, last_cards=cards if type(cards) is int else -1)
+    return value
+
+
 def scan_case(scanner: Scanner, receipt: Receipt, case: str, roots: list[Path], exclusions: list[Path]) -> None:
     result = scanner.scan(roots, exclusions, receipt.path)
     receipt.add(case, **result)
@@ -123,6 +174,7 @@ def main() -> int:
     foreign: ForeignBrowsers | None = None
     development: Development | None = None
     projects: list[dict] = []
+    readiness = {"slot": -1, "ready_errors": 0, "last_page_ready": False, "last_cards": -1}
     phase = "start"
     try:
         if ready.get("development_web") is True:
@@ -170,20 +222,24 @@ def main() -> int:
             qualify_native(native, scanner, a, receipt)
         phase = "browser_open"
         foreign = ForeignBrowsers()
-        for project in projects:
+        for slot, project in enumerate(projects):
             native.document("open", cwd=project["folder"])
-            until(lambda: proof.exercise(project["id"], "ready"), lambda value: value.get("page_ready") and value.get("cards", 0) >= 2, "owned_page_ready")
+            readiness.update(slot=slot, ready_errors=0, last_page_ready=False, last_cards=-1)
+            until(lambda: observe_ready(proof, project["id"], readiness), lambda value: value.get("page_ready") and value.get("cards", 0) >= 2, "owned_page_ready")
         snapshot = proof.ask("snapshot")
         require(snapshot["present"] and snapshot["pages"] == 2 and len(snapshot.get("processes", [])) >= 2 and snapshot["birth"] in snapshot["processes"], "shared_owned_browser")
         browser_birth, profile = snapshot["birth"], Path(snapshot["profile"])
         require(profile.name.startswith("cozy-private-") and tmpfs(profile) and profile.stat().st_mode & 0o777 == 0o700 and profile.stat().st_uid == os.geteuid(), "owned_profile_volatile")
-        argv = Path(f"/proc/{browser_birth['pid']}/cmdline").read_bytes().split(b"\0")
+        # Chrome's setproctitle rewrites its argv as one space-joined title.
+        title = Path(f"/proc/{browser_birth['pid']}/cmdline").read_bytes()
+        argv = set(re.split(rb"[\0 ]", title))
         require(b"--incognito" in argv and b"--remote-debugging-pipe" in argv and ("--user-data-dir=" + str(profile)).encode() in argv and not any(word.startswith(b"--remote-debugging-port") for word in argv), "actual_private_browser_flags")
-        environment = dict(item.split(b"=", 1) for item in Path(f"/proc/{browser_birth['pid']}/environ").read_bytes().split(b"\0") if b"=" in item)
-        require(all(key.encode() in environment and Path(os.fsdecode(environment[key.encode()])).is_relative_to(profile) for key in ("HOME", "TMPDIR", "TEMP", "TMP", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR")), "actual_private_browser_redirects")
-        require(not any(marker in b"\0".join(argv) for marker in scanner.markers), "private_browser_argv_canary")
+        launched = launch_environments(snapshot["processes"])
+        require(launched and tmpdir_singleton(profile) and all(key in environment and Path(os.fsdecode(environment[key])).is_relative_to(profile) for environment in launched for key in REDIRECTS), "actual_private_browser_redirects")
+        require(not any(marker in title for marker in scanner.markers), "private_browser_argv_canary")
         require(all(browser_birth != held[1] for held in foreign.held), "browser_ownership_distinct")
-        receipt.add("shared_owned_browser", pages=2, volatile=True, unrelated=foreign.preserved(), birth_sha256=sha(json.dumps(browser_birth, sort_keys=True).encode()))
+        receipt.add("shared_owned_browser", pages=2, volatile=True, unrelated=foreign.preserved(), birth_sha256=sha(json.dumps(browser_birth, sort_keys=True).encode()),
+                    title_flags=True, tmpdir_singleton=True, launch_environment_redirected=True, launch_environments=len(launched))
         if ready.get("remote_cpu") is True:
             phase = "remote_cpu"
             qualify_remote(native, a, receipt, ready)
@@ -339,11 +395,19 @@ def main() -> int:
         if phase == "browser_open" and proof is not None and alive(proof.birth):
             try:
                 observed = proof.ask("snapshot")
+                pages = observed.get("pages")
                 receipt.add("browser_open_failure", present=observed.get("present") is True,
                             retirement_incomplete=observed.get("retirement_incomplete") is True,
-                            caf_alive=alive(proof.birth), observed_processes=len(observed.get("processes", [])))
+                            caf_alive=alive(proof.birth), observed_processes=len(observed.get("processes", [])),
+                            pages=pages if type(pages) is int else -1, **readiness)
             except BaseException:
-                receipt.add("browser_open_failure", snapshot_unavailable=True, caf_alive=alive(proof.birth))
+                receipt.add("browser_open_failure", snapshot_unavailable=True, caf_alive=alive(proof.birth), **readiness)
+            if readiness["slot"] >= 0:
+                try:
+                    page = proof.exercise(projects[readiness["slot"]]["id"], "diagnose")
+                    receipt.add("owned_page_diagnostic", **{key: value for key, value in page.items() if key in PAGE_FACTS and type(value) in (bool, int)})
+                except BaseException:
+                    receipt.add("owned_page_diagnostic", unavailable=True)
         receipt.save()
         return 1
     finally:
