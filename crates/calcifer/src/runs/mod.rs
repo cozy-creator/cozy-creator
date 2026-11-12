@@ -49,7 +49,7 @@ pub(crate) async fn submit(
     let ask: RunRequest = parse(&body)?;
     let project = ask.project.clone();
     vault::project_reply(&api, project.as_deref(), async {
-        let submitted = request(&api, &key, ask).await.map_err(Refusal)?;
+        let submitted = Box::pin(request(&api, &key, ask)).await.map_err(Refusal)?;
         let status = if submitted.replay { StatusCode::OK } else { StatusCode::ACCEPTED };
         Ok((status, Json(submitted)))
     }).await
@@ -66,7 +66,7 @@ pub(crate) async fn quote(
     let ask: RunRequest = parse(&body)?;
     let project = ask.project.clone();
     vault::project_reply(&api, project.as_deref(), async {
-        Ok(Json(priced(&api, ask).await.map_err(Refusal)?))
+        Ok(Json(Box::pin(priced(&api, ask)).await.map_err(Refusal)?))
     }).await
 }
 
@@ -408,7 +408,7 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
         },
         None => None,
     };
-    crate::private_io::context(scope, prepare_scoped(api, key, ask, purpose)).await
+    crate::private_io::context(scope, Box::pin(prepare_scoped(api, key, ask, purpose))).await
 }
 
 async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> Result<Prepared, Error> {
@@ -436,7 +436,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let agreed = ask.agreed.clone();
     // Given something to run with, a package of one function runs it; given nothing, it is listed.
     let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
-    let resolved = target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed).await?;
+    let resolved = Box::pin(target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed)).await?;
     let (package, function, code) = match &resolved {
         Resolved::Release { package, function, card, .. } => {
             let code = Code {
@@ -483,7 +483,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let (gpu, needs_gpu) = (code.interface.gpu(callable), code.interface.needs_gpu(callable));
     let named = format!("{package}/{}", callable.name);
     let (interface, release) = (code.interface, code.release);
-    let (mut submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
+    let (mut submit, mut notes) = Box::pin(call(api, code, callable, ask, key, &hub)).await?;
     // Placed by its machines' quotes, the payload bound: a published release among several, and every machine when asked for them.
     let size = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).map(|input| v1::JobSize::of(&input)).unwrap_or_default();
     let gpus = ask.gpus.unwrap_or(0);
