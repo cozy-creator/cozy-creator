@@ -845,7 +845,7 @@ fn later_series(a: &str, b: &str) -> bool {
     matches!((Version::from_str(a), Version::from_str(b)), (Ok(a), Ok(b)) if series(&a) > series(&b))
 }
 
-/// Whether uv's finding `line` (`The package `sdxl` requires `cozy-runtime<0.46,>=0.45.0`, but `0.46.0.dev312+g…` is
+/// Whether uv's finding `line` (`The package `sdxl` requires `cozy-runtime<0.46,>=0.45.0`, but `0.47.0.dev2260+g…` is
 /// installed`) is a cap the open RC's Runtime goes over (`api::release::runs`, cl-952): the RC runs released packages to try them.
 fn rc_admitted(line: &str) -> bool {
     let mut parts = line.split('`');
@@ -853,7 +853,7 @@ fn rc_admitted(line: &str) -> bool {
     SDK.iter().any(|name| api::release::required([required], name).is_some_and(|versions| api::release::runs(&versions, installed)))
 }
 
-/// Whether a Runtime is the open RC's build: the next minor's dev release (`0.46.0.dev312+g1a2b3c4d`, cl-952).
+/// Whether a Runtime is the open RC's build: a dev release of the minor it makes (`0.47.0.dev2260+g1a2b3c4d`, cl-952).
 fn rc_build(runtime: &str) -> bool {
     Version::from_str(runtime).is_ok_and(|version| version.is_dev() && !version.is_pre() && !version.is_post())
 }

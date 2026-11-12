@@ -2,8 +2,8 @@
 //! A prerelease (`0.10.0rc1`) is built for the open RC's Runtime (cl-922), so it counts only on a machine on the RC (`rc`), or
 //! after a prerelease named (a model's `1.0.0-rc.8`); on the RC the newest by PEP 440 alone, elsewhere finals only.
 //!
-//! A package release runs only on a Runtime its `cozy-runtime` requirement admits (`runs`). The open RC's Runtime is the next
-//! minor's dev release (`0.46.0.dev312+g1a2b3c4d`), so a floor can name it. `choose` decides a run's release with its machine:
+//! A package release runs only on a Runtime its `cozy-runtime` requirement admits (`runs`). The open RC's Runtime is a dev
+//! release of the minor it makes (`0.47.0.dev2260+g1a2b3c4d`), so a floor can name it. `choose` decides a run's release with its machine:
 //! the newest it takes, moving the machine to the newest Runtime that runs it; a machine held by hand refuses instead, and one
 //! that isn't this computer's to move takes the newest its Runtime runs.
 
@@ -81,23 +81,14 @@ fn normalized(name: &str) -> String {
     name.trim().split(['-', '_', '.']).filter(|part| !part.is_empty()).collect::<Vec<_>>().join("-").to_ascii_lowercase()
 }
 
-/// Whether a Runtime `version` meets `requirement`. Its floor holds as written. A build of the open RC (`0.46.0.dev312`, the
-/// next minor's dev release) also meets a cap at that minor (`<0.46`): the RC's machines run released packages to try it, and
-/// one that breaks there is a finding. An unparsable version holds nothing back.
+/// Whether a Runtime `version` meets `requirement`. Its floor holds as written. A build of the open RC (`0.47.0.dev2260`, a
+/// dev release of the minor it makes) also meets any cap (`<0.46`, `<0.47`): the RC's machines run released packages to try
+/// them on what's coming, and one that breaks there is a finding. An unparsable version holds nothing back.
 pub fn runs(requirement: &VersionSpecifiers, version: &str) -> bool {
     let Ok(version) = Version::from_str(version) else { return true };
-    requirement.iter().all(|specifier| specifier.contains(&version) || rc_cap(specifier, &version))
-}
-
-/// Whether `specifier` caps at the minor `version` is the open RC's build of: `<0.46` for `0.46.0.dev312`.
-fn rc_cap(specifier: &VersionSpecifier, version: &Version) -> bool {
-    let minor = |release: &[u64]| match release {
-        [major, minor, rest @ ..] if rest.iter().all(|n| *n == 0) => Some((*major, *minor)),
-        _ => None,
-    };
-    let built = version.is_dev() && !version.is_pre() && !version.is_post();
-    let cap = specifier.version();
-    built && *specifier.operator() == Operator::LessThan && cap.is_stable() && minor(cap.release()).is_some() && minor(cap.release()) == minor(version.release())
+    let rc = version.is_dev() && !version.is_pre() && !version.is_post();
+    let cap = |specifier: &VersionSpecifier| matches!(specifier.operator(), Operator::LessThan | Operator::LessThanEqual);
+    requirement.iter().all(|specifier| specifier.contains(&version) || (rc && cap(specifier)))
 }
 
 /// Whether a machine moves its Runtime for a release its own doesn't run.

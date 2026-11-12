@@ -202,7 +202,7 @@ impl Machines {
                 Component::Version(version) if api::prerelease::dev(&version) => {
                     let version = release(&version)?;
                     let sums = self.rc.now().await?;
-                    // The RC's Runtime by its version alone (`0.46.0.dev312`) too.
+                    // The RC's Runtime by its version alone (`0.47.0.dev2260`) too.
                     let same = |build: &api::prerelease::Build| build.version == version || build.version.split_once('+').is_some_and(|(public, _)| public == version);
                     let Some((build, url)) = sums.build(member, &platform).filter(|(build, _)| same(build)) else {
                         let has = sums.build(member, &platform).map_or_else(|| format!("no build of it for {platform}"), |(build, _)| build.version);

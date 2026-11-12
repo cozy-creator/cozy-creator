@@ -74,7 +74,7 @@ impl Sums {
             .collect()
     }
 
-    /// The RC's builds for `platform`, in words: `Runtime 0.46.0.dev312 · TensorFS 1a2b3c4d · cozy 5e6f7a8b`.
+    /// The RC's builds for `platform`, in words: `Runtime 0.47.0.dev2260 · TensorFS 1a2b3c4d · cozy 5e6f7a8b`.
     fn said(&self, platform: &str) -> String {
         [("runtime", "Runtime"), ("tensorfs", "TensorFS"), ("tensord", "cozy")]
             .into_iter()
@@ -279,7 +279,7 @@ impl Machines {
         prerelease::dev(&frame.runtime) || self.follows(name).is_some()
     }
 
-    /// The line a run on `name` says when it runs dev builds: `RC: Runtime 0.46.0.dev312 · cozy 1a2b3c4d`.
+    /// The line a run on `name` says when it runs dev builds: `RC: Runtime 0.47.0.dev2260 · cozy 1a2b3c4d`.
     pub(crate) fn rc_line(&self, name: &str) -> Option<String> {
         let frame = self.frame(name)?;
         let built: Vec<String> = [("Runtime", &frame.runtime), ("TensorFS", &frame.tensorfs), ("cozy", &frame.version)]

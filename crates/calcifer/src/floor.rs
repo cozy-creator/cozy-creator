@@ -105,7 +105,7 @@ pub(crate) struct Upgrade {
 }
 
 impl Upgrade {
-    /// The line the run says: `upgrading vanitas's Runtime 0.45.1 → 0.46.0.dev312 for minimax-h3 0.12.0rc3`.
+    /// The line the run says: `upgrading vanitas's Runtime 0.45.1 → 0.47.0.dev2260 for minimax-h3 0.12.0rc3`.
     pub(crate) fn note(&self) -> Note {
         let (from, to) = (prerelease::shown(&self.from), prerelease::shown(&self.to));
         Note { level: NoteLevel::Info, message: format!("upgrading {}'s Runtime {from} → {to} for {}", self.machine, self.release) }
@@ -245,7 +245,7 @@ fn lacks(uv: &Path, dir: &Path, python: &str, runtime: &Path, package: &Path) ->
 
 /// Publishing (cl-952): refuses a package whose wheel `package` imports from `cozy_runtime` what its floor lacks, so a machine
 /// meeting its `cozy-runtime` requirement runs it. The floor is the oldest release that requirement admits, or, when it names
-/// the open RC's build (`>=0.46.0.dev312`), the build its lock takes by URL, which it must be. The refusal names each name and
+/// the open RC's build (`>=0.47.0.dev2260`), the build its lock takes by URL, which it must be. The refusal names each name and
 /// a floor that has them: its lock's Runtime, else the RC's. A package that names no `cozy-runtime` version claims none.
 pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, package: &Path, label: &str) -> Result<(), Error> {
     let refuse = |code: &str, why: String| Error::new(Kind::Validation, code, why);
