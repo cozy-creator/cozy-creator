@@ -41,7 +41,7 @@ import { PageHistory, type Target } from "./history"
 import { comingOff, goingOn, holdsPictures, type ToolStep, wontGoOn } from "./toolchange"
 import type { Operation } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
-import { merge, spliceOf } from "./words"
+import { mergeValue, same, spliceOf, wordsChanged } from "./words"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
 export type ElementData = { name: string; width: number }
@@ -338,10 +338,10 @@ export class CanvasStore {
   /** What Calcifer calls each, by id: a rename on its way shows here first. */
   private served = new Map<string, string>()
   /**
-   * For each box, by node id, each field typed in: the words it was last known to hold and the project document's heads they were at, what's typed
-   * goes as splices of; and the words on their way. What's typed merges by character with anyone else's (cl-904).
+   * For each box, by node id, each field typed in: what it was last known to hold and the project document's heads that was at, which its words go
+   * as splices of, wherever they are in it; and what's on its way. What's typed merges by character with anyone else's (cl-904).
    */
-  private typedFrom = new Map<string, Map<string, { words: string; heads: string[]; sent?: string }>>()
+  private typedFrom = new Map<string, Map<string, { value: unknown; heads: string[]; sent?: unknown }>>()
   private nextId = 0
   private state: Project | null = null
   private began = 0
@@ -1979,18 +1979,17 @@ export class CanvasStore {
     return this.state?.headsOf?.[name] ?? this.state?.heads ?? []
   }
 
-  /** Typing begins in `field` of `key`: what it goes as splices of, the words read and their heads, unless it's kept them already. */
+  /** Typing begins in `field` of `key`: what its words go as splices of, the field as read and its heads, unless it's kept them already. */
   private begin(key: string, field: string) {
     const id = this.ids.get(key)
-    const said = this.views.get(key)?.asset?.fields?.[field]
     const heads = this.headsOf(this.served.get(id ?? "") ?? key)
-    if (!id || !heads.length || (said !== undefined && said !== null && typeof said !== "string")) return
+    if (!id || !heads.length) return
     const from = this.typedFrom.get(id) ?? new Map()
-    if (!from.has(field)) from.set(field, { words: typeof said === "string" ? said : "", heads })
+    if (!from.has(field)) from.set(field, { value: this.views.get(key)?.asset?.fields?.[field] ?? null, heads })
     this.typedFrom.set(id, from)
   }
 
-  /** A write of `fields` of box `id`: its words typed as splices on what they began from, the rest as they are. */
+  /** A write of `fields` of box `id`: what of its words changed as splices on what they began from, wherever they are in it; the rest as it is. */
   private body(id: string, fields: Record<string, unknown>, view?: ElementView): AssetPatch {
     const from = this.typedFrom.get(id)
     const plain: Record<string, unknown> = {}
@@ -1998,17 +1997,21 @@ export class CanvasStore {
     let heads: string[] | undefined
     for (const [field, value] of Object.entries(fields)) {
       const base = from?.get(field)
-      const local = view?.sent?.[field] ?? value
-      if (base && typeof local === "string" && (!heads || heads.join() === base.heads.join())) {
-        heads = base.heads
-        base.sent = local
-        typed[field] = [spliceOf(base.words, local)]
-      } else plain[field] = value
+      const local = view?.sent && field in view.sent ? view.sent[field] : value
+      const changed = base && (!heads || heads.join() === base.heads.join()) ? wordsChanged(base.value, local) : null
+      if (!base || !changed) {
+        plain[field] = value
+        continue
+      }
+      heads = base.heads
+      base.sent = local
+      for (const words of changed) typed[words.path ? `${field}.${words.path}` : field] = [spliceOf(words.from, words.to)]
     }
     return { fields: plain, ...(heads ? { typed: { heads, fields: typed } } : {}) } as AssetPatch
   }
 
-  /** Calcifer answered a write of box `id`: what its typed words came to is what typing goes on from, and what was typed meanwhile is moved onto it. */
+  /** Calcifer answered a write of box `id`: what each field typed in came to is what typing goes on from, and what was typed meanwhile is moved onto
+   *  it. */
   private typedAnswered(id: string, answer: AssetPatched) {
     const from = this.typedFrom.get(id)
     const name = this.namesById.get(id)
@@ -2016,13 +2019,13 @@ export class CanvasStore {
       const base = from?.get(field)
       if (!base || base.sent === undefined || !answer.heads?.length) continue
       const view = name ? this.views.get(name) : undefined
-      if (name && view && merged !== base.sent) {
-        const onto = (local: unknown) => (typeof local === "string" ? merge(base.sent!, local, merged) : local)
+      if (name && view && !same(merged, base.sent)) {
+        const onto = (local: unknown) => mergeValue(base.sent, local, merged)
         const sent = view.sent && field in view.sent ? { sent: { ...view.sent, [field]: onto(view.sent[field]) } } : {}
         const drafts = view.drafts && field in view.drafts ? { drafts: { ...view.drafts, [field]: onto(view.drafts[field]) } } : {}
         this.patch(name, { ...sent, ...drafts })
       }
-      Object.assign(base, { words: merged, heads: answer.heads, sent: undefined })
+      Object.assign(base, { value: merged, heads: answer.heads, sent: undefined })
     }
   }
 
@@ -2035,12 +2038,10 @@ export class CanvasStore {
     const heads = this.headsOf(asset.name)
     let drafts = view.drafts
     for (const [field, base] of from) {
-      const said = asset.fields?.[field]
-      const words = typeof said === "string" ? said : ""
-      if (words === base.words || !heads.length) continue
-      const local = drafts?.[field]
-      if (typeof local === "string") drafts = { ...drafts, [field]: merge(base.words, local, words) }
-      Object.assign(base, { words, heads })
+      const said = asset.fields?.[field] ?? null
+      if (same(said, base.value) || !heads.length) continue
+      if (drafts && field in drafts) drafts = { ...drafts, [field]: mergeValue(base.value, drafts[field], said) }
+      Object.assign(base, { value: said, heads })
     }
     return drafts === view.drafts ? {} : { drafts }
   }
@@ -2049,7 +2050,7 @@ export class CanvasStore {
   setDraft(name: string, field: string, value: unknown) {
     const view = this.get(name)
     if (!view) return
-    if (typeof value === "string") this.begin(this.resolveName(name), field)
+    this.begin(this.resolveName(name), field)
     this.patch(name, { drafts: { ...view.drafts, [field]: value } })
     clearTimeout(this.pauses.get(name))
     this.pauses.set(name, setTimeout(() => void this.save(name), TYPING_PAUSE_MS))

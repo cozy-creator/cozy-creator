@@ -301,10 +301,11 @@ impl Document {
         self.heads.iter().map(ToString::to_string).collect()
     }
 
-    /// What `field` of box `id` holds once `splices`, made on it as the document stood at `heads`, merge with all written since: by
-    /// character, as Automerge merges text, so two people typing in one prompt keep both (cl-904). Words that weren't text then (a
-    /// project from before) merge from what they said then.
-    pub(super) fn typed(&self, id: &str, field: &str, heads: &[String], splices: &[Splice]) -> Result<String, Error> {
+    /// What the words at `path` of box `id` (a field, or words in it: `beats.0.description`) say once `splices`, made on them as the
+    /// document stood at `heads`, merge with all written since: by character, as Automerge merges text, so two people typing in one
+    /// prompt keep both (cl-904). Words that weren't text then (a project from before) merge from what they said then.
+    pub(super) fn typed(&self, id: &str, path: &str, heads: &[String], splices: &[Splice]) -> Result<String, Error> {
+        let field = path;
         let heads = heads.iter().map(|head| head.parse::<ChangeHash>().map_err(invalid)).collect::<Result<Vec<_>, _>>()?;
         // Typed on the project as it stands, as one person typing is: nothing to merge, and nothing copied.
         if heads.iter().collect::<BTreeSet<_>>() == self.heads.iter().collect::<BTreeSet<_>>() {
@@ -341,10 +342,14 @@ impl Document {
         scratch.text(&text).map_err(invalid)
     }
 
-    /// Box `id`'s `field` as the projection holds it: "" for none or for what isn't words.
-    fn projected_words(&self, id: &str, field: &str) -> String {
+    /// The words at `path` of box `id`, as the projection holds them: "" for none or for what isn't words.
+    fn projected_words(&self, id: &str, path: &str) -> String {
         let Some(Group::Records(boxes)) = self.projection.get("boxes") else { return String::new() };
-        boxes.get(id).and_then(|held| held.get("fields")?.get(field)?.as_str().map(str::to_owned)).unwrap_or_default()
+        let found = boxes.get(id).and_then(|held| path.split('.').try_fold(held.get("fields")?, |at, step| match at {
+            Value::Array(items) => items.get(step.parse::<usize>().ok()?),
+            _ => at.get(step),
+        }));
+        found.and_then(Value::as_str).unwrap_or_default().to_owned()
     }
 
     /// Explicit conflict metadata, rather than silently presenting AutoSerde's selected winner.
@@ -923,19 +928,17 @@ fn put_record(doc: &mut AutoCommit, namespace: &str, records: &ObjId, id: &str, 
         let old = before.and_then(|before| before.get(key));
         match (key.as_str(), value.as_object()) {
             ("fields", Some(fields)) => {
-                let object = match doc.get(&held, "fields").map_err(invalid)? {
-                    Some((AmValue::Object(ObjType::Map), object)) => object,
-                    _ => doc.put_object(&held, "fields", ObjType::Map).map_err(invalid)?,
+                let (object, reused) = match doc.get(&held, "fields").map_err(invalid)? {
+                    Some((AmValue::Object(ObjType::Map), object)) => (object, true),
+                    _ => (doc.put_object(&held, "fields", ObjType::Map).map_err(invalid)?, false),
                 };
                 let keys: Vec<String> = doc.keys(&object).collect();
                 for field in keys.iter().filter(|field| !fields.contains_key(*field)) {
                     doc.delete(&object, field.as_str()).map_err(invalid)?;
                 }
                 for (field, value) in fields {
-                    match value {
-                        Value::String(words) => put_words(doc, &object, field, words)?,
-                        _ => put(doc, &object, Prop::Map(field.clone()), old.and_then(|old| old.get(field)), value, false)?,
-                    }
+                    let old = old.filter(|_| reused).and_then(|old| old.get(field));
+                    put_node(doc, &object, Prop::Map(field.clone()), old, value, false)?;
                 }
             }
             _ => put(doc, &held, Prop::Map(key.clone()), old, value, false)?,
@@ -944,21 +947,60 @@ fn put_record(doc: &mut AutoCommit, namespace: &str, records: &ObjId, id: &str, 
     Ok(())
 }
 
-/// Words as Automerge text: what differs from what it holds, as one splice.
-fn put_words(doc: &mut AutoCommit, parent: &ObjId, key: &str, words: &str) -> Result<(), Error> {
-    let text = match doc.get(parent, key).map_err(invalid)? {
-        Some((AmValue::Object(ObjType::Text), text)) => text,
-        _ => {
-            let text = doc.put_object(parent, key, ObjType::Text).map_err(invalid)?;
-            return doc.splice_text(&text, 0, 0, words).map_err(invalid);
+/// A box's field, or what's in it: its words, at any depth, are Automerge text, each change to them the one splice that makes it; the maps
+/// and lists holding them stay the same objects, so what's typed in one row merges with what's typed in another.
+fn put_node(doc: &mut AutoCommit, parent: &ObjId, prop: Prop, before: Option<&Value>, after: &Value, insert: bool) -> Result<(), Error> {
+    let found = if insert { None } else { doc.get(parent, prop.clone()).map_err(invalid)? };
+    let made = |doc: &mut AutoCommit, kind: ObjType| -> Result<ObjId, Error> {
+        match (&prop, insert) {
+            (Prop::Seq(index), true) => doc.insert_object(parent, *index, kind),
+            _ => doc.put_object(parent, prop.clone(), kind),
         }
+        .map_err(invalid)
     };
-    let held = doc.text(&text).map_err(invalid)?;
-    if held == words {
-        return Ok(());
+    match after {
+        Value::String(words) => {
+            let Some((AmValue::Object(ObjType::Text), text)) = found else {
+                let text = made(doc, ObjType::Text)?;
+                return doc.splice_text(&text, 0, 0, words).map_err(invalid);
+            };
+            let held = doc.text(&text).map_err(invalid)?;
+            if held == *words {
+                return Ok(());
+            }
+            let (at, delete, insert) = splice_between(&held, words);
+            doc.splice_text(&text, at, delete as isize, insert).map_err(invalid)
+        }
+        Value::Object(wanted) => {
+            let (object, reused) = match found {
+                Some((AmValue::Object(ObjType::Map), object)) => (object, true),
+                _ => (made(doc, ObjType::Map)?, false),
+            };
+            let keys: Vec<String> = doc.keys(&object).collect();
+            for key in keys.iter().filter(|key| !wanted.contains_key(*key)) {
+                doc.delete(&object, key.as_str()).map_err(invalid)?;
+            }
+            for (key, value) in wanted {
+                put_node(doc, &object, Prop::Map(key.clone()), before.filter(|_| reused).and_then(|before| before.get(key)), value, false)?;
+            }
+            Ok(())
+        }
+        Value::Array(items) => {
+            let (list, reused) = match found {
+                Some((AmValue::Object(ObjType::List), list)) => (list, true),
+                _ => (made(doc, ObjType::List)?, false),
+            };
+            let length = doc.length(&list);
+            for (index, value) in items.iter().enumerate() {
+                put_node(doc, &list, Prop::Seq(index), before.filter(|_| reused).and_then(|before| before.get(index)), value, index >= length)?;
+            }
+            for index in (items.len()..length).rev() {
+                doc.delete(&list, index).map_err(invalid)?;
+            }
+            Ok(())
+        }
+        _ => put(doc, parent, prop, before.filter(|_| found.is_some()), after, insert),
     }
-    let (at, delete, insert) = splice_between(&held, words);
-    doc.splice_text(&text, at, delete as isize, insert).map_err(invalid)
 }
 
 /// What turns `from` into `to`, in code points: where they first differ, how much of `from` goes, and what comes in its place.
@@ -971,33 +1013,44 @@ fn splice_between<'a>(from: &str, to: &'a str) -> (usize, usize, &'a str) {
     (prefix, from_rest - suffix, &to[start..end])
 }
 
-/// Box `id`'s `field`, where it's text.
-fn text_of(doc: &AutoCommit, id: &str, field: &str) -> Result<Option<ObjId>, Error> {
-    let object = |parent: &ObjId, key: &str| -> Result<Option<(AmValue<'static>, ObjId)>, Error> {
-        doc.get(parent, key).map(|found| found.map(|(value, id)| (value.to_owned(), id))).map_err(invalid)
-    };
-    let Some((AmValue::Object(ObjType::Map), boxes)) = object(&ROOT, "boxes")? else { return Ok(None) };
-    let Some((AmValue::Object(ObjType::Map), held)) = object(&boxes, id)? else { return Ok(None) };
-    let Some((AmValue::Object(ObjType::Map), fields)) = object(&held, "fields")? else { return Ok(None) };
-    Ok(match object(&fields, field)? {
+/// What's at `path` in box `id`'s fields: a field, then `.`, and the keys and list indexes in it.
+fn node_at(doc: &AutoCommit, id: &str, path: &str) -> Option<(AmValue<'static>, ObjId)> {
+    let get = |parent: &ObjId, prop: Prop| doc.get(parent, prop).ok().flatten().map(|(value, id)| (value.to_owned(), id));
+    let mut at = ROOT;
+    for step in ["boxes", id, "fields"] {
+        let Some((AmValue::Object(ObjType::Map), next)) = get(&at, Prop::Map(step.to_owned())) else { return None };
+        at = next;
+    }
+    let mut found = None;
+    for step in path.split('.') {
+        if let Some((value, next)) = found.take() {
+            let AmValue::Object(_) = value else { return None };
+            at = next;
+        }
+        let prop = match doc.object_type(&at) {
+            Ok(ObjType::List) => Prop::Seq(step.parse().ok()?),
+            _ => Prop::Map(step.to_owned()),
+        };
+        found = Some(get(&at, prop)?);
+    }
+    found
+}
+
+/// The words at `path` of box `id`, where they're text.
+fn text_of(doc: &AutoCommit, id: &str, path: &str) -> Result<Option<ObjId>, Error> {
+    Ok(match node_at(doc, id, path) {
         Some((AmValue::Object(ObjType::Text), text)) => Some(text),
         _ => None,
     })
 }
 
-/// What box `id`'s `field` says, text or a plain value; nothing is "".
-fn words_of(doc: &AutoCommit, id: &str, field: &str) -> Result<String, Error> {
-    if let Some(text) = text_of(doc, id, field)? {
-        return doc.text(&text).map_err(invalid);
-    }
-    let found = (|| {
-        let (_, boxes) = doc.get(ROOT, "boxes").ok()??;
-        let (_, held) = doc.get(&boxes, id).ok()??;
-        let (_, fields) = doc.get(&held, "fields").ok()??;
-        let (value, _) = doc.get(&fields, field).ok()??;
-        value.into_string().ok()
-    })();
-    Ok(found.unwrap_or_default())
+/// What the words at `path` of box `id` say, text or a plain value; nothing is "".
+fn words_of(doc: &AutoCommit, id: &str, path: &str) -> Result<String, Error> {
+    Ok(match node_at(doc, id, path) {
+        Some((AmValue::Object(ObjType::Text), text)) => doc.text(&text).map_err(invalid)?,
+        Some((value, _)) => value.into_string().unwrap_or_default(),
+        None => String::new(),
+    })
 }
 
 /// `splice` on `text`, held to what's there.

@@ -25,3 +25,51 @@ export function merge(base: string, ours: string, theirs: string): string {
   const inserts = mine.at <= other.at ? mine.insert + other.insert : other.insert + mine.insert
   return [...points.slice(0, start), ...Array.from(inserts), ...points.slice(end)].join("")
 }
+
+const isMap = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value)
+
+/** The same value however its keys were ordered. */
+export function same(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((held, i) => same(held, b[i]))
+  if (isMap(a) && isMap(b)) {
+    const keys = Object.keys(a)
+    return keys.length === Object.keys(b).length && keys.every((key) => key in b && same(a[key], b[key]))
+  }
+  return (a ?? null) === (b ?? null)
+}
+
+/** Each place `to`'s words differ from `from`'s, by path (`0.description`, "" for words alone), when only words differ; else null. */
+export function wordsChanged(from: unknown, to: unknown, at = ""): { path: string; from: string; to: string }[] | null {
+  const under = (key: string | number) => (at ? `${at}.${key}` : String(key))
+  if (typeof from === "string" && typeof to === "string") return from === to ? [] : [{ path: at, from, to }]
+  if (Array.isArray(from) && Array.isArray(to)) {
+    if (from.length !== to.length) return null
+    const each = from.map((held, i) => wordsChanged(held, to[i], under(i)))
+    return each.some((one) => one === null) ? null : each.flatMap((one) => one!)
+  }
+  if (isMap(from) && isMap(to)) {
+    if (!same(Object.keys(from).sort(), Object.keys(to).sort())) return null
+    const each = Object.keys(from).map((key) => wordsChanged(from[key], to[key], under(key)))
+    return each.some((one) => one === null) ? null : each.flatMap((one) => one!)
+  }
+  return same(from, to) ? [] : null
+}
+
+/** `ours` and `theirs`, each made from `base`, as one: words merged by character wherever all three are the same shape; elsewhere ours, unless
+ *  ours is still `base`. */
+export function mergeValue(base: unknown, ours: unknown, theirs: unknown): unknown {
+  if (same(ours, base)) return theirs
+  if (same(theirs, base) || same(theirs, ours)) return ours
+  if (typeof base === "string" && typeof ours === "string" && typeof theirs === "string") return merge(base, ours, theirs)
+  if (Array.isArray(base) && Array.isArray(ours) && Array.isArray(theirs) && base.length === ours.length && base.length === theirs.length) {
+    return base.map((held, i) => mergeValue(held, ours[i], theirs[i]))
+  }
+  if (isMap(base) && isMap(ours) && isMap(theirs)) {
+    const keys = [...new Set([...Object.keys(ours), ...Object.keys(theirs)])]
+    return Object.fromEntries(keys.flatMap((key) => {
+      const merged = mergeValue(base[key], ours[key], theirs[key])
+      return merged === undefined ? [] : [[key, merged]]
+    }))
+  }
+  return ours
+}

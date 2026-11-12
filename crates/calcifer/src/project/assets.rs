@@ -303,12 +303,29 @@ pub(super) async fn patch(
         }
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();
-        // Words typed on an older project merge with what's been written since, by character (cl-904).
+        // Words typed on an older project merge with what's been written since, by character (cl-904): each in its field as it is now.
         if let Some(typed) = &asked.typed {
             let document = folder.document()?.ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?;
-            let id = &written.get(&name).ok_or_else(|| own_lines(&name))?.id;
-            for (field, splices) in &typed.fields {
-                fields.insert(field.clone(), Value::String(document.typed(id, field, &typed.heads, splices)?));
+            let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
+            for (path, splices) in &typed.fields {
+                let words = Value::String(document.typed(&held.id, path, &typed.heads, splices)?);
+                let (field, within) = path.split_once('.').map_or((path.as_str(), None), |(field, within)| (field, Some(within)));
+                match within {
+                    None => drop(fields.insert(field.to_owned(), words)),
+                    Some(within) => {
+                        let mut value = fields.get(field).cloned().or_else(|| held.get(field).cloned()).unwrap_or(Value::Null);
+                        let leaf = within.split('.').try_fold(&mut value, |at, step| match at {
+                            Value::Array(items) => items.get_mut(step.parse::<usize>().ok()?),
+                            Value::Object(map) => map.get_mut(step),
+                            _ => None,
+                        });
+                        let Some(leaf) = leaf else {
+                            return Err(Error::new(Kind::Conflict, "words_moved", format!("{name} no longer has {path}")).remedy("read it again"));
+                        };
+                        *leaf = words;
+                        fields.insert(field.to_owned(), value);
+                    }
+                }
             }
         }
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
@@ -350,15 +367,13 @@ pub(super) async fn patch(
         Ok(AssetPatched { name: name.clone(), etag, was, warnings, typed: Default::default(), heads: vec![] })
     });
     let mut patched = patched.map_err(Refusal)?;
-    // What the typed words came to, and the heads they're at: what the page types on next.
+    // What each field typed in came to, whole, and the heads it's at: what the page types on next.
     if let Some(typed) = &asked.typed {
         (patched.typed, patched.heads) = folder.reading_document(|written, heads| {
             let held = written.get(&name);
-            let words = typed.fields.keys().map(|field| {
-                let said = held.and_then(|held| held.get(field)).and_then(Value::as_str).unwrap_or_default();
-                (field.clone(), said.to_owned())
-            });
-            (words.collect(), heads)
+            let fields: BTreeSet<&str> = typed.fields.keys().map(|path| path.split('.').next().unwrap_or(path)).collect();
+            let came = fields.into_iter().map(|field| (field.to_owned(), held.and_then(|held| held.get(field)).cloned().unwrap_or(Value::Null)));
+            (came.collect(), heads)
         }).map_err(Refusal)?;
     }
     Ok(Json(patched))

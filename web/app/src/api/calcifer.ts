@@ -309,9 +309,9 @@ typed?: Typed | null, };
  */
 export type AssetPatched = { name: string, etag: string, was: string, warnings?: Array<string>,
 /**
- * Each typed field's words once merged, as the project stands at `heads`.
+ * Each field typed in, whole, once merged, as the project stands at `heads`.
  */
-typed?: { [key in string]: string }, heads?: Array<string>, };
+typed?: { [key in string]: JsonValue }, heads?: Array<string>, };
 
 /**
  * `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
@@ -3315,7 +3315,8 @@ note?: string | null, };
 export type TrackNow = { clips: Array<ClipNow>, };
 
 /**
- * Splices of a box's words, by field, made on the project document as it stood at `heads` (a read's).
+ * Splices of a box's words, by where they are: a field, or words in one (`beats.0.description`), made on the project document as it
+ * stood at `heads` (a read's).
  */
 export type Typed = { heads: Array<string>, fields: { [key in string]: Array<Splice> }, };
 

@@ -780,7 +780,8 @@ pub struct AssetPatch {
     pub typed: Option<Typed>,
 }
 
-/// Splices of a box's words, by field, made on the project document as it stood at `heads` (a read's).
+/// Splices of a box's words, by where they are: a field, or words in one (`beats.0.description`), made on the project document as it
+/// stood at `heads` (a read's).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Typed {
@@ -806,9 +807,9 @@ pub struct AssetPatched {
     pub was: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
-    /// Each typed field's words once merged, as the project stands at `heads`.
+    /// Each field typed in, whole, once merged, as the project stands at `heads`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub typed: BTreeMap<String, String>,
+    pub typed: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub heads: Vec<String>,
 }

@@ -506,6 +506,23 @@ function replaceFile(at, text) {
   await page.keyboard.press('ArrowRight');
   const beats = await until('both beats stored', () => Promise.resolve(storedBox('knobs')?.beats ?? []), (held) => held.some((beat) => beat.description?.includes('Second.')) && held.some((beat) => beat.duration === 5));
   check('a_beat_keeps_what_it_holds', beats.some((beat) => beat.camera === 'low'), beats);
+
+  // Another's words in one beat while the page types in another, its write held until theirs is in: both stand, each merged by character
+  // (cl-904: words anywhere in a box are Automerge text).
+  let rowsIn;
+  const rowsGoing = new Promise((done) => (rowsIn = done));
+  const rowsLate = (call) => (call.request().method() === 'PATCH' ? rowsGoing.then(() => call.fallback().catch(() => {})) : call.fallback());
+  await page.route('**/v1/projects/*/assets/knobs', rowsLate);
+  await knobs.locator('.beat .mention-text').nth(0).click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' Page.');
+  const theirBeats = (await of('knobs')).fields.beats.map((beat, i) => (i === 1 ? { ...beat, description: 'Second, theirs.' } : beat));
+  await api(`/v1/projects/${id}/assets/knobs`, { method: 'PATCH', body: JSON.stringify({ fields: { beats: theirBeats } }) });
+  await page.waitForTimeout(800);
+  rowsIn();
+  await page.unroute('**/v1/projects/*/assets/knobs', rowsLate);
+  const merged = await until('both beats merged', async () => (await of('knobs')).fields.beats, (held) => held?.[0]?.description?.includes('First. Page.') && held?.[1]?.description === 'Second, theirs.').catch(async () => (await of('knobs')).fields.beats);
+  check('two_beats_merged', merged?.[0]?.description?.includes('First. Page.') && merged?.[1]?.description === 'Second, theirs.', merged);
   await open('knobs');
   await knobs.locator('[aria-label="Remove beat 2"]').click();
   await until('one beat again', () => Promise.resolve(storedBox('knobs')?.beats ?? []), (held) => held.length === 1);
