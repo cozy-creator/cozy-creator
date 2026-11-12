@@ -88,11 +88,12 @@ const AUTOMATIC = /No machine is green, so this project's renders are placed aut
     await page.waitForURL(/\/machines$/);
     return { pressed, head };
   };
-  // A machine's chip top right, and its Render here there.
+  // A machine's chip top right: its flyout, and Render here, its first control, there (Paul 11-12).
   const pressChip = async (name) => {
     await page.locator(`.mtab[data-machine="${name}"]`).click();
     const button = page.locator('.activity button.render-here');
     await button.waitFor();
+    seen.flyout_first_control = await page.locator('.activity button, .activity a').first().evaluate((one) => one.classList.contains('render-here'));
     const was = await button.getAttribute('aria-pressed');
     await button.click();
     await until(`${name}'s chip toggled`, () => button.getAttribute('aria-pressed'), (now) => now !== was, 5000).catch(() => {});
@@ -115,7 +116,27 @@ const AUTOMATIC = /No machine is green, so this project's renders are placed aut
   const first = await pressChip(IN);
   const fromChip = await until('the chip\'s choice kept', state, (now) => same(now.machines, [IN])).catch(() => null);
   const chipGreen = await until('its chip green', green, (now) => same(now.chips, [IN])).catch(() => null);
-  check('a_chip_toggles_render_here', first.pressed === 'true' && fromChip !== null && chipGreen !== null, { first, machines: (await state()).machines, green: await green() });
+  check('a_chip_toggles_render_here', first.pressed === 'true' && fromChip !== null && chipGreen !== null && seen.flyout_first_control === true, { first, machines: (await state()).machines, green: await green(), first_control: seen.flyout_first_control });
+
+  // Its drawer from the canvas, by its flyout's Details: its face is what it is and what it's doing, Render here first among its buttons,
+  // green when on, and the rest behind Details (Paul 11-12).
+  await page.goto(at);
+  await page.locator(`.mtab[data-machine="${IN}"]`).click();
+  await page.locator('.activity a', { hasText: 'Details' }).click();
+  await page.locator('.drawer .machine-actions').waitFor();
+  const face = await page.evaluate(() => {
+    const drawer = document.querySelector('.drawer');
+    const first = drawer.querySelector('.machine-actions button');
+    const details = [...drawer.querySelectorAll('details.sect')].find((held) => held.querySelector(':scope > summary')?.textContent === 'Details');
+    return {
+      first: first?.textContent, pressed: first?.getAttribute('aria-pressed'), green: first?.classList.contains('on'),
+      doing: drawer.querySelector('.doing-now')?.textContent ?? null, details: Boolean(details), folded: details ? !details.open : null,
+      kv_shown: [...drawer.querySelectorAll('.kv')].some((kv) => kv.offsetParent !== null),
+    };
+  });
+  check('drawer_from_the_canvas_leads_with_render_here', face.first === 'Render here' && face.pressed === 'true' && face.green === true, face);
+  check('drawer_face_is_slim', face.doing !== null && face.details && face.folded === true && !face.kv_shown, face);
+  await shot('drawer');
   const local = await press('local');
   const pinned = await until('both kept', state, (now) => same(now.machines, [IN, 'local'])).catch(() => null);
   check('pressed_shows_pressed', local.pressed === 'true' && local.head === 1, { local });

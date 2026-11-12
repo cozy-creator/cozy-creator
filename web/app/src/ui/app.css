@@ -2149,8 +2149,24 @@ button:disabled {
   color: var(--mute);
   font-size: var(--small);
 }
-.keep-up:empty {
-  display: none;
+/* A machine's drawer: what it's doing and when it ends, then what to do with it, Render here first. */
+.doing-now {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 6px 0;
+}
+.machine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+.machine-actions > p,
+.machine-actions > .failure {
+  flex-basis: 100%;
+  margin: 0;
 }
 .kv {
   margin: 8px 0;
@@ -2351,12 +2367,6 @@ button:disabled {
 }
 .order p {
   margin: 0 0 8px;
-}
-.ending {
-  margin: 8px 0;
-}
-.ending p {
-  margin: 0 0 6px;
 }
 .stack {
   display: grid;
