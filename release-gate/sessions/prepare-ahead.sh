@@ -5,7 +5,8 @@
 # install and download lines. When the take lands, H3's run starts on weights already there. prepare-ahead.py reads the runs' records,
 # the board and TensorD's log (each install turn, each object's start and landing with its order) into timeline.json: each job's spans
 # in each line, seconds from the ask, end to end against the longest single chain, and the wait H3 saved. The session's cozy (a dev
-# build of the RC: its TensorD goes on the pod) and, dispatched from rc/<x>, its Runtime (RUNTIME_WHEEL). params:
+# build of the RC) puts its TensorD on the pod; the pod keeps its image's released Runtime, whose kernels the times need (RUNTIME_WHEEL
+# is a pure wheel built from source, with none: a pod on it runs slowly and says nothing). params:
 #   picture   the picture's tool (default qwen-image-2/image), at `megapixels` (default 1)
 #   video     the video's tool (default minimax-h3/generate, its default lane and turbo), `seconds` long (default 15)
 . "$(dirname "$0")/lib.sh"
@@ -19,7 +20,6 @@ jq -n --arg picture "$PICTURE" --argjson mp "$MP" --arg video "$VIDEO" --argjson
     soundscape: "Waves lapping at the posts, gulls, footsteps on wet wood.",
     beats: [{duration: $seconds, description: "A tracking shot follows a woman in a yellow raincoat as she walks along <pier> toward the lamps at its far end, gulls circling overhead."}]}}]' > "$OUT/boxes.json"
 run_page boxes "$OUT/boxes.json" > "$OUT/boxes.txt" 2>&1 || fail "the project's boxes: $(tail -3 "$OUT/boxes.txt")"
-[ -n "${RUNTIME_WHEEL:-}" ] || say "no RUNTIME_WHEEL (dispatched from no rc/<x>): the pod keeps its image's Runtime"
 say "the session's cozy: $(cozy --version)"
 quote 2700
 rent
@@ -27,10 +27,7 @@ rent
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod refused the session's TensorD"
 v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 [ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
-if [ -n "${RUNTIME_WHEEL:-}" ]; then
-  step runtime machine update "$NAME" --runtime "$RUNTIME_WHEEL" -y || say "the pod refused the RC's Runtime: it keeps its image's"
-fi
-say "pod TensorD $v, Runtime $(cozy machine show "$NAME" --json | jq -r '.status.runtime // empty')"
+say "pod TensorD $v, its image's Runtime $(cozy machine show "$NAME" --json | jq -r '.status.runtime // empty')"
 
 # The board as the page sees it, every 5 s: when the video's fetch ahead began, and what each box said.
 ( while :; do printf '{"at_ms":%s,"board":%s}\n' "$(date +%s%3N)" "$(run_page board 2> /dev/null || echo null)" >> "$OUT/board.ndjson"; sleep 5; done ) & BG=$!
