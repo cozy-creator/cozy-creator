@@ -240,6 +240,12 @@ if [ -n "$needs" ]; then
     mirror "$seed/minimax-h3.safetensors" "${h3%@*}" bf16 "${h3#*@}" https://huggingface.co/MiniMaxAI/MiniMax-H3 --source-format as-is
     cozy --json model edit "${h3%@*}" --family minimax-h3 > "$seed/edit-minimax-h3.json" 2>&1 \
       || { echo "naming ${h3%@*}'s family failed: $(tail -c 600 "$seed/edit-minimax-h3.json")" >&2; exit 1; }
+    # Two fine-tunes of its family for its one Base Model to choose between (cl-960).
+    for tune in sexgod1979/pinkcherry tenstrip/eros-max; do
+      mirror "$seed/minimax-h3.safetensors" "$tune" bf16 0.1.0 "https://huggingface.co/$tune" --source-format as-is
+      cozy --json model edit "$tune" --family minimax-h3 > "$seed/edit-${tune##*/}.json" 2>&1 \
+        || { echo "naming $tune's family failed: $(tail -c 600 "$seed/edit-${tune##*/}.json")" >&2; exit 1; }
+    done
     # An H3 LoRA as musubi-tuner writes it (e2e/release/synthetic.sh's), one rank of one block.
     python3 -I - "$seed/vfx-edit.safetensors" <<'PYH3'
 import json, struct, sys

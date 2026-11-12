@@ -69,8 +69,9 @@
 .model-picker-tabs button[aria-pressed="true"] { border-bottom-color: var(--ember); color: var(--ink); }
 .model-picker-choices { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .model-picker-choices button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; border: 0; border-radius: var(--round); background: none; padding: 9px 4px; color: var(--ink); text-align: left; cursor: pointer; }
-.model-picker-choices button:hover:not(:disabled),
-.model-picker-choices button[aria-pressed="true"] { background: var(--tint); }
+/* One choice: the picked row is outlined and its mark filled; a row under the pointer is only tinted, never as picked. */
+.model-picker-choices button:hover:not(:disabled) { background: var(--tint); }
+.model-picker-choices button[aria-checked="true"] { box-shadow: inset 0 0 0 1.5px var(--ember); }
 .model-picker-choices button:disabled { color: var(--mute); cursor: default; }
 .model-picker-choices button > span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .model-picker-choices small { display: block; color: var(--mute); font-size: var(--small); }
@@ -79,7 +80,7 @@
 .model-picker-choices .model-picker-lora-option > span > span { display: block; overflow-wrap: anywhere; }
 .model-picker-lora-description { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 .model-picker-choice-mark { flex: none; width: 12px; height: 12px; border: 1px solid var(--line2); border-radius: 50%; }
-.model-picker-choices [aria-pressed="true"] .model-picker-choice-mark { border-color: var(--ember); background: var(--ember); box-shadow: inset 0 0 0 3px var(--panel); }
+.model-picker-choices [aria-checked="true"] .model-picker-choice-mark { border-color: var(--ember); background: var(--ember); box-shadow: inset 0 0 0 3px var(--panel); }
 .model-picker-choices .icon { flex: none; width: 14px; height: 14px; }
 .model-picker-lora-head { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
 .model-picker-lora-head > h4 { flex: 1; }

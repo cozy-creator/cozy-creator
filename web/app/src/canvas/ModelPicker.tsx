@@ -151,11 +151,24 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   )
 }
 
+/** Another key of `models` naming the same slot: a merged parameter's segment paths, or a path's parameter (choices.rs `slots`). */
+const covers = (key: string, slot: PickerSlot) => key !== slot.slot && (slot.slot === slot.param ? key.endsWith(`.models.${slot.param}`) : key === slot.param)
+
+/** `ref` as `slot`'s one model: what the picker and a dropped checkpoint both do. */
+export const chooseModel = (store: ReturnType<typeof useCanvasStore>, name: string, slot: PickerSlot, ref: string) => changeSlot(store, name, slot, (held) => ({ ...held, ref }))
+
+/** A slot holds one model (Paul, 11-12): writing it drops any model another key holds for the same slot; LoRAs stay. */
 function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot: PickerSlot, change: (held: Entry) => Entry) {
   const models = { ...entryOf(store.valueOf(name, "models")) }
-  const next = Object.fromEntries(Object.entries(change(entryOf(models[slot.slot]))).filter(([, value]) => value !== undefined && value !== null && !(Array.isArray(value) && !value.length)))
+  const kept = (entry: Entry) => Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== undefined && value !== null && !(Array.isArray(value) && !value.length)))
+  const next = kept(change(entryOf(models[slot.slot])))
   if (Object.keys(next).length) models[slot.slot] = next
   else delete models[slot.slot]
+  for (const key of Object.keys(models).filter((key) => covers(key, slot))) {
+    const { ref: _, ...rest } = entryOf(models[key])
+    if (Object.keys(kept(rest)).length) models[key] = kept(rest)
+    else delete models[key]
+  }
   store.putOn(name, { models: Object.keys(models).length ? models : null })
 }
 
@@ -222,15 +235,15 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
     {!restricted && Boolean(slot.family) && isPending && <p className="muted">Loading choices…</p>}
     {!restricted && error && <p className="warn">Couldn't load models.</p>}
     {tab === "models" || restricted ? <>
-      <ul className="model-picker-choices" aria-label={`Base model for ${slot.slot}`}>
-        <li><button type="button" aria-pressed={!selected && !malformed} disabled={!defaultVisible} onClick={clearBase}>
+      <ul className="model-picker-choices" role="radiogroup" aria-label={`Base model for ${slot.slot}`}>
+        <li><button type="button" role="radio" aria-checked={!selected && !malformed} disabled={!defaultVisible} onClick={clearBase}>
           <span>{defaultVisible ? slot.default ? modelChoiceLabel(slot.default) : "No model selected" : defaultModel ? "Default model hidden" : "Default model"}<small>Default</small></span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>
-        {malformed && <li><button type="button" aria-pressed="true" disabled><span>Invalid model selection</span><span className="model-picker-choice-mark" aria-hidden="true" /></button></li>}
-        {selected && <li><button type="button" aria-pressed="true" disabled={!selectedValid || !selectedVisible} onClick={() => changeSlot(store, name, slot, (held) => ({ ...held, ref: selected }))}>
+        {malformed && <li><button type="button" role="radio" aria-checked="true" disabled><span>Invalid model selection</span><span className="model-picker-choice-mark" aria-hidden="true" /></button></li>}
+        {selected && <li><button type="button" role="radio" aria-checked="true" disabled={!selectedValid || !selectedVisible} onClick={() => changeSlot(store, name, slot, (held) => ({ ...held, ref: selected }))}>
           <span>{selectedVisible ? modelChoiceLabel(selected) : selectedMeta ? "Selected model hidden" : "Selected model"}<small>{selectedValid ? "Selected" : selectionState.trim().replace(/^\(|\)$/g, "")}</small></span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>}
-        {alternatives.filter((model) => model.model !== identityOf(slot.default ?? "")).map((model) => <li key={model.model}><button type="button" aria-pressed="false" onClick={() => changeSlot(store, name, slot, (held) => ({ ...held, ref: model.model }))}>
+        {alternatives.filter((model) => model.model !== identityOf(slot.default ?? "")).map((model) => <li key={model.model}><button type="button" role="radio" aria-checked="false" onClick={() => changeSlot(store, name, slot, (held) => ({ ...held, ref: model.model }))}>
           <span>{modelChoiceLabel(model.model)}</span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>)}
       </ul>
