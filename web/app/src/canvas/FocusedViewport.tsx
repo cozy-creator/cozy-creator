@@ -64,11 +64,12 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
   const onItsWay = view?.asset?.standing === "making" || Boolean(view?.queued) || view?.asked !== undefined
   const above = (onItsWay || arriving !== undefined) && view?.asset?.rendering == null
-  // Its lines gone, their room stays till Focus leaves the box: what was made lands where it was being made (Paul, 11-12, cl-907).
+  // Its lines gone, their room stays till Focus leaves the box, as high as they were with Cancel (their last phase has none): what was
+  // made lands where it was being made (Paul, 11-12, cl-907).
   const [room, setRoom] = useState<{ name: string; height: number } | null>(null)
   useLayoutEffect(() => {
     const height = above ? element.current?.querySelector<HTMLElement>(":scope > .run-face.above")?.offsetHeight : undefined
-    if (height && (room?.name !== name || room.height !== height)) setRoom({ name, height })
+    if (height && (room?.name !== name || height > room.height)) setRoom({ name, height })
   })
   if (!view?.asset && !view?.entity) return null
   const version = shownOf(view)?.number
