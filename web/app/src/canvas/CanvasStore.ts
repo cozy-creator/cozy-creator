@@ -1794,8 +1794,7 @@ export class CanvasStore {
   /** A double tap on a take: it's approved, or if it was, nothing is, and it's still the one looked at. */
   toggleApproved(name: string, number: number) {
     const asset = this.get(name)?.asset
-    if (asset?.kind === "image") return this.selectVersion(name, number)
-    if (!asset?.pinned || asset.approved !== number) return this.pin(name, number)
+    if (!asset?.pinned || asset.approved !== number) return asset?.kind === "image" ? this.selectVersion(name, number) : this.pin(name, number)
     this.unpin(name)
     this.view(name, number)
   }
