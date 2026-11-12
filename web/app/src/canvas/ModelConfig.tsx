@@ -56,8 +56,6 @@ export function ModelConfig({ name }: { name: string }) {
 /** A LoRA's strength: a slider from 0 to 2, its number (exact, or beyond 2), and the LoRA's recommended strength back. */
 function Strength({ name, reference, value, onChange }: { name: string; reference: string; value: unknown; onChange(strength: number): void }) {
   const { client } = useConnection()
-  // The renderer's default for an omitted strength is 1.
-  const held = value == null ? 1 : typeof value === "number" && Number.isFinite(value) ? value : undefined
   const [dragging, setDragging] = useState<number | null>(null)
   const [typed, setTyped] = useState<string | null>(null)
   const { data } = useQuery({
@@ -65,6 +63,8 @@ function Strength({ name, reference, value, onChange }: { name: string; referenc
     staleTime: 60_000, retry: false,
   })
   const recommended = data?.strength ?? 1
+  // An omitted strength runs at the recommended one (Calcifer fills it from the card, else 1).
+  const held = value == null ? recommended : typeof value === "number" && Number.isFinite(value) ? value : undefined
   const shown = dragging ?? held
   const commit = (next: number | null) => { if (next !== null && Number.isFinite(next) && next !== held) onChange(Math.round(next * 1000) / 1000) }
   const release = () => { commit(dragging); setDragging(null) }

@@ -512,7 +512,8 @@ pub struct Adapter {
     pub lane: String,
     /// `sha256:<hex>`, a commit of `model` by hash; else `model` at `release`, `lane`.
     pub manifest: String,
-    /// Canonical decimal; empty means 1.
+    /// Canonical decimal; empty means 1. Calcifer gives a LoRA it was given without a strength its
+    /// recommended one first.
     pub scale: String,
     /// A provider source (`civitai://<version>`, `hf://…`) made here and normalized at ingest,
     /// under these reviewed `profiles` (none: the one its headers select); never with `model`.
