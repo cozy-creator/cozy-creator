@@ -183,7 +183,8 @@ function replaceFile(at, text) {
     const shapeField = toolWire?.fields.find((field) => field.type === 'shape');
     const fixedRatios = (shapeField?.ratios ?? []).filter((ratio) => typeof ratio === 'string');
     const expectedShape = shapeField?.auto && fixedRatios.length !== 1 ? 'Auto' : fixedRatios.length === 1 ? fixedRatios[0] : typeof shapeField?.default === 'string' ? shapeField.default : fixedRatios[0] ?? '1:1';
-    check('a_dropped_image_tool_can_enter_edit_mode_explicitly', caretIn === true && (shapeSaid === expectedShape || (expectedShape === 'Auto' && Boolean(shapeSaid?.startsWith('Auto · ')))) && (await page.locator('.nm-field').count()) === 0, { caretIn, shapeSaid, expectedShape });
+    const caretAt = caretIn ? null : await page.evaluate(() => ({ active: `${document.activeElement?.tagName}.${document.activeElement?.className}`, editable: [...document.querySelectorAll('.focus-body [contenteditable=true], .focus-body textarea')].map((el) => `${el.tagName}.${el.className} in ${el.closest('[class]:not([contenteditable])')?.className}`).slice(0, 6) }));
+    check('a_dropped_image_tool_can_enter_edit_mode_explicitly', caretIn === true && (shapeSaid === expectedShape || (expectedShape === 'Auto' && Boolean(shapeSaid?.startsWith('Auto · ')))) && (await page.locator('.nm-field').count()) === 0, { caretIn, caretAt, shapeSaid, expectedShape });
   } else seen.dropped_kind = kind;
   seen.tool_dragged = made.name;
   const word = (name) => name?.replace(/_\d+$/, '');
@@ -239,7 +240,7 @@ function replaceFile(at, text) {
   check('video_accepts_operation_without_exposing_type_hint', (await of(blanks.video.name)).fields?.node_kind === 'video' && await page.locator('[data-field="node_kind"]').count() === 0);
   check('opening_model_keeps_the_two_sidebar_lists', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .box-shelf-head, .tools input, .tools .picks').count() === 0);
   await openBox(page, blanks.video.name);
-  await box(blanks.video.name).getByRole('button', { name: new RegExp(`^Take .* off ${blanks.video.name}$`) }).first().click();
+  await box(blanks.video.name).getByRole('button', { name: 'Remove video tool', exact: true }).first().click();
   await until('video model removed', () => of(blanks.video.name), (held) => !held.tool);
   check('removing_model_keeps_blank_video_type', (await of(blanks.video.name)).kind === 'video' && (await of(blanks.video.name)).fields?.node_kind === 'video');
   const timelineTool = await implementationRow(page, 'timeline', 'cozy/edit');
@@ -247,7 +248,7 @@ function replaceFile(at, text) {
   await until('Timeline attached to Video', () => of(blanks.video.name), (held) => held.tool === 'cozy/edit');
   check('timeline_is_a_tool_on_video', (await of(blanks.video.name)).kind === 'video' && Boolean((await of(blanks.video.name)).timeline));
   await openBox(page, blanks.video.name);
-  await box(blanks.video.name).getByRole('button', { name: new RegExp(`^Take .* off ${blanks.video.name}$`) }).click();
+  await box(blanks.video.name).getByRole('button', { name: 'Remove video tool', exact: true }).click();
   await until('Timeline removed', () => of(blanks.video.name), (held) => !held.tool);
   check('removing_timeline_keeps_video_holder', (await of(blanks.video.name)).kind === 'video');
 
