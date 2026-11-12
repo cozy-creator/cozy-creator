@@ -37,6 +37,29 @@ impl PrivateWritePolicy {
     pub fn apply(&self, command: &mut Command) -> Result<()> {
         imp::apply(self.0.clone(), command)
     }
+    /// Enter a delegated kernel cgroup before the policy and first exec. Token-only
+    /// process scopes cannot prove arbitrary descendant shutdown and are unsupported.
+    pub fn apply_in_scope(
+        &self,
+        command: &mut Command,
+        scope: &crate::contain::Scope,
+    ) -> Result<()> {
+        imp::enter_scope(command, scope)?;
+        self.apply(command)
+    }
+}
+
+/// Lingering descendants, including a kernel-stuck process, prevent a seal receipt.
+pub fn project_scope_quiescent(scope: &crate::contain::Scope) -> Result<bool> {
+    imp::scope_quiescent(scope)
+}
+
+/// Validate an ancillary descriptor before the trusted worker sends it to a confined child.
+/// Read-only source authority is established by the caller's existing object/grant resolver.
+/// Writable filesystem descriptors must belong to the project; anonymous writable memory must
+/// be kernel RAM-backed and unlinked, never an arbitrary deleted disk file.
+pub fn validate_project_descriptor(project_root: &File, descriptor: &File) -> Result<()> {
+    imp::validate_descriptor(project_root, descriptor)
 }
 
 /// Trusted parents call this before reading their first private record, and never restore it.
@@ -61,6 +84,15 @@ mod imp {
         Err(unsupported())
     }
     pub(super) fn apply(_: std::sync::Arc<Policy>, _: &mut Command) -> Result<()> {
+        Err(unsupported())
+    }
+    pub(super) fn enter_scope(_: &mut Command, _: &crate::contain::Scope) -> Result<()> {
+        Err(unsupported())
+    }
+    pub(super) fn scope_quiescent(_: &crate::contain::Scope) -> Result<bool> {
+        Err(unsupported())
+    }
+    pub(super) fn validate_descriptor(_: &File, _: &File) -> Result<()> {
         Err(unsupported())
     }
     pub(super) fn disable_cores() -> Result<()> {
@@ -89,7 +121,8 @@ mod imp {
     const READ_DIR: u64 = 1 << 3;
     // ABI3's complete filesystem surface. No rights are silently dropped on older kernels.
     const ALL: u64 = (1 << 15) - 1;
-    const MUTATE: u64 = ALL & !(EXECUTE | READ | READ_DIR);
+    // Device creation is always denied: a writable device node could bypass filesystem custody.
+    const MUTATE: u64 = ALL & !(EXECUTE | READ | READ_DIR | (1 << 6) | (1 << 11));
     #[repr(C)]
     struct Ruleset {
         handled_access_fs: u64,
@@ -106,6 +139,7 @@ mod imp {
         kept: Vec<RawFd>,
         filter: Vec<libc::sock_filter>,
         root: PathBuf,
+        read_paths: Vec<(PathBuf, bool)>,
     }
 
     fn invalid(detail: &'static str) -> crate::Error {
@@ -130,7 +164,6 @@ mod imp {
         Ok(())
     }
     pub(super) fn disable_cores() -> Result<()> {
-        core_pattern()?;
         // SAFETY: prctl/setrlimit receive valid scalar arguments and a live native structure.
         unsafe {
             syscall_result(libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) as _)?;
@@ -142,7 +175,7 @@ mod imp {
                 },
             ) as _)?;
         }
-        Ok(())
+        core_pattern()
     }
     fn mode(file: &File) -> Result<i32> {
         // SAFETY: F_GETFL reads only this owned, live descriptor's flags.
@@ -186,6 +219,76 @@ mod imp {
         }
         Ok(())
     }
+    fn validate_local_parent(file: &File) -> Result<()> {
+        let mut domain: i32 = 0;
+        let mut kind: i32 = 0;
+        // SAFETY: every bit pattern is valid for this plain native output structure.
+        let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut int_size = std::mem::size_of::<i32>() as libc::socklen_t;
+        let mut peer_size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: getsockopt receives live native output structures and their exact sizes.
+        unsafe {
+            syscall_result(libc::getsockopt(
+                file.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_DOMAIN,
+                (&mut domain as *mut i32).cast(),
+                &mut int_size,
+            ) as _)?;
+            syscall_result(libc::getsockopt(
+                file.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_TYPE,
+                (&mut kind as *mut i32).cast(),
+                &mut int_size,
+            ) as _)?;
+            syscall_result(libc::getsockopt(
+                file.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut peer as *mut libc::ucred).cast(),
+                &mut peer_size,
+            ) as _)?;
+            if domain != libc::AF_UNIX
+                || kind != libc::SOCK_STREAM
+                || peer.pid != libc::getpid()
+                || peer.uid != libc::geteuid()
+            {
+                return Err(invalid(
+                    "IPC channel is not a stream created by this trusted parent",
+                ));
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn validate_descriptor(project: &File, file: &File) -> Result<()> {
+        let stat = file.metadata()?;
+        let kind = stat.mode() & libc::S_IFMT;
+        match kind {
+            libc::S_IFREG if mode(file)? == libc::O_RDONLY => Ok(()),
+            libc::S_IFREG => {
+                if within(file, &path(project)?).is_ok() {
+                    return Ok(());
+                }
+                // SAFETY: fstatfs writes only the exact native output structure.
+                let mut filesystem = unsafe { std::mem::zeroed::<libc::statfs>() };
+                // SAFETY: the descriptor and output pointer are live for fstatfs.
+                syscall_result(unsafe { libc::fstatfs(file.as_raw_fd(), &mut filesystem) } as _)?;
+                if stat.nlink() == 0 && filesystem.f_type as u64 == 0x01021994 {
+                    Ok(())
+                } else {
+                    Err(invalid(
+                        "writable ancillary file is neither project-owned nor anonymous RAM",
+                    ))
+                }
+            }
+            libc::S_IFSOCK => validate_local_parent(file),
+            libc::S_IFIFO => Ok(()),
+            _ => Err(invalid(
+                "ancillary descriptor has no approved project resource type",
+            )),
+        }
+    }
     fn rule(ruleset: &File, file: &File, access: u64) -> Result<()> {
         let attr = Beneath {
             allowed_access: access,
@@ -210,6 +313,9 @@ mod imp {
             for entry in fs::read_dir(dir)? {
                 let entry = entry?;
                 let stat = fs::symlink_metadata(entry.path())?;
+                if matches!(stat.mode() & libc::S_IFMT, libc::S_IFCHR | libc::S_IFBLK) {
+                    return Err(invalid("project contains an unreviewed device node"));
+                }
                 if stat.is_dir() {
                     pending.push(entry.path());
                 } else if stat.is_file() && stat.nlink() > 1 {
@@ -306,6 +412,12 @@ mod imp {
                     file
                 }
                 PrivateDescriptor::ProjectWritable(file) => {
+                    let stat = file.metadata()?;
+                    if !stat.is_file() && !stat.is_dir() {
+                        return Err(invalid(
+                            "project-writable descriptor has the wrong native type",
+                        ));
+                    }
                     within(file, &root)?;
                     file
                 }
@@ -314,17 +426,46 @@ mod imp {
                     if !matches!(kind, libc::S_IFSOCK | libc::S_IFIFO) {
                         return Err(invalid("kernel IPC descriptor is a filesystem escape"));
                     }
+                    if kind == libc::S_IFSOCK {
+                        validate_local_parent(file)?;
+                    }
                     file
                 }
             };
             kept.push(file.as_raw_fd());
         }
+        let read_paths = resources
+            .read_only_trees
+            .iter()
+            .map(|file| Ok((path(file)?, true)))
+            .chain(
+                resources
+                    .read_only_files
+                    .iter()
+                    .chain(resources.executables.iter())
+                    .map(|file| Ok((path(file)?, false))),
+            )
+            .collect::<Result<Vec<_>>>()?;
+        let protected: Vec<_> = resources
+            .inherited
+            .iter()
+            .filter_map(|resource| match resource {
+                PrivateDescriptor::KernelIpc(file) => Some(file.as_raw_fd()),
+                _ => None,
+            })
+            .collect();
+        if protected.len() > 64 || protected.iter().any(|fd| *fd < 3) {
+            return Err(invalid(
+                "too many protected IPC descriptors or invalid descriptor number",
+            ));
+        }
         Ok(Policy {
             ruleset,
             _resources: resources,
             kept,
-            filter: filter(),
+            filter: filter(&protected),
             root,
+            read_paths,
         })
     }
 
@@ -344,7 +485,7 @@ mod imp {
             k,
         }
     }
-    fn filter() -> Vec<libc::sock_filter> {
+    fn filter(protected: &[RawFd]) -> Vec<libc::sock_filter> {
         const ALLOW: u32 = 0x7fff0000;
         const DENY: u32 = 0x00050000 | libc::EPERM as u32;
         #[cfg(target_arch = "x86_64")]
@@ -368,6 +509,83 @@ mod imp {
             },
             statement(0x06, DENY),
         ]);
+        // A trusted parent-created IPC fd is pinned: no close/reuse, rebind, CLOEXEC or
+        // dup2/dup3 target replacement can turn its recvmsg allowance into another socket.
+        let width = (protected.len() * 2 + 2) as u8;
+        code.extend([
+            jump(libc::SYS_recvmsg as u32, 0, width),
+            statement(0x20, 16),
+        ]);
+        for fd in protected {
+            code.extend([jump(*fd as u32, 0, 1), statement(0x06, ALLOW)]);
+        }
+        code.extend([statement(0x06, DENY), statement(0x20, 0)]);
+        let mut pinned_calls = vec![
+            (libc::SYS_close, 16),
+            (libc::SYS_connect, 16),
+            (libc::SYS_dup3, 24),
+        ];
+        #[cfg(target_arch = "x86_64")]
+        pinned_calls.push((libc::SYS_dup2, 24));
+        for (syscall, argument) in pinned_calls {
+            code.extend([jump(syscall as u32, 0, width), statement(0x20, argument)]);
+            for fd in protected {
+                code.extend([jump(*fd as u32, 0, 1), statement(0x06, DENY)]);
+            }
+            code.extend([statement(0x06, ALLOW), statement(0x20, 0)]);
+        }
+        // Whitelist descriptor/query/locking fcntls. Inode write-hint and other metadata
+        // commands are not allowed through a read-only public file descriptor.
+        let safe_fcntl = [
+            libc::F_DUPFD,
+            libc::F_DUPFD_CLOEXEC,
+            libc::F_GETFD,
+            libc::F_GETFL,
+            libc::F_SETFL,
+            libc::F_GETLK,
+            libc::F_SETLK,
+            libc::F_SETLKW,
+            libc::F_OFD_GETLK,
+            libc::F_OFD_SETLK,
+            libc::F_OFD_SETLKW,
+            libc::F_GET_SEALS,
+            libc::F_GETPIPE_SZ,
+            libc::F_SETPIPE_SZ,
+        ];
+        let mut fcntl = vec![
+            statement(0x20, 24),
+            jump(libc::F_SETFD as u32, (safe_fcntl.len() * 2 + 1) as u8, 0),
+        ];
+        for cmd in safe_fcntl {
+            fcntl.extend([jump(cmd as u32, 0, 1), statement(0x06, ALLOW)]);
+        }
+        fcntl.extend([statement(0x06, DENY), statement(0x20, 16)]);
+        for fd in protected {
+            fcntl.extend([jump(*fd as u32, 0, 1), statement(0x06, DENY)]);
+        }
+        fcntl.push(statement(0x06, ALLOW));
+        code.push(jump(libc::SYS_fcntl as u32, 0, fcntl.len() as u8));
+        code.extend(fcntl);
+        code.push(statement(0x20, 0));
+        // clone3 hides namespace flags behind a pointer. ENOSYS permits libc's ordinary
+        // clone fallback; namespace-creating clone flags remain denied explicitly.
+        code.extend([
+            jump(libc::SYS_clone3 as u32, 0, 1),
+            statement(0x06, 0x00050000 | libc::ENOSYS as u32),
+        ]);
+        code.extend([
+            jump(libc::SYS_clone as u32, 0, 4),
+            statement(0x20, 16),
+            libc::sock_filter {
+                code: 0x45,
+                jt: 1,
+                jf: 0,
+                k: 0x7e020000,
+            },
+            statement(0x06, ALLOW),
+            statement(0x06, DENY),
+            statement(0x20, 0),
+        ]);
         // Never acquire another process's descriptors/address space, a filesystem bypass, or
         // an unfiltered asynchronous I/O submission path. recvmsg can import writable SCM_RIGHTS.
         for syscall in [
@@ -383,8 +601,12 @@ mod imp {
             libc::SYS_bpf,
             libc::SYS_perf_event_open,
             libc::SYS_io_uring_setup,
-            libc::SYS_recvmsg,
             libc::SYS_recvmmsg,
+            libc::SYS_ioctl,
+            libc::SYS_close_range,
+            libc::SYS_getxattr,
+            libc::SYS_lgetxattr,
+            libc::SYS_fgetxattr,
             // Landlock ABI3 does not mediate inode metadata mutation. Deny these paths too;
             // callers requiring them must fail, rather than gain writes outside the project.
             libc::SYS_fchmod,
@@ -444,6 +666,47 @@ mod imp {
         code
     }
 
+    fn scope_path(scope: &crate::contain::Scope) -> Result<PathBuf> {
+        let relative = scope.cgroup_relative().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "protected project execution requires a delegated kernel cgroup",
+            )
+        })?;
+        let relative = relative
+            .strip_prefix('/')
+            .ok_or_else(|| invalid("invalid native process scope"))?;
+        if Path::new(relative)
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(invalid("invalid native process scope"));
+        }
+        Ok(Path::new("/sys/fs/cgroup").join(relative))
+    }
+    pub(super) fn enter_scope(command: &mut Command, scope: &crate::contain::Scope) -> Result<()> {
+        let file = File::options()
+            .write(true)
+            .open(scope_path(scope)?.join("cgroup.procs"))?;
+        // SAFETY: callback only writes the kernel's self-PID token to an owned live cgroup fd.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::write(file.as_raw_fd(), b"0".as_ptr().cast(), 1) != 1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        Ok(())
+    }
+    pub(super) fn scope_quiescent(scope: &crate::contain::Scope) -> Result<bool> {
+        match fs::read_to_string(scope_path(scope)?.join("cgroup.events")) {
+            Ok(events) => Ok(events.lines().any(|line| line == "populated 0")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub(super) fn apply(policy: Arc<Policy>, command: &mut Command) -> Result<()> {
         core_pattern()?;
         // Keep the caller's reviewed project subdirectory (uv lock/build relies on it).
@@ -483,7 +746,7 @@ mod imp {
                     if flags < 0 {
                         return Err(io::Error::last_os_error());
                     }
-                    if flags & libc::O_ACCMODE != libc::O_RDONLY {
+                    {
                         let mut stat = std::mem::zeroed::<libc::stat>();
                         if libc::fstat(fd, &mut stat) < 0 {
                             return Err(io::Error::last_os_error());
@@ -500,13 +763,22 @@ mod imp {
                                 bytes.as_mut_ptr().cast(),
                                 bytes.len(),
                             );
-                            if count < 0 {
+                            if count < 0 || count as usize == bytes.len() {
                                 return Err(io::Error::last_os_error());
                             }
                             let path = std::ffi::OsStr::from_encoded_bytes_unchecked(
                                 &bytes[..count as usize],
                             );
-                            if !Path::new(path).starts_with(&policy.root) {
+                            let path = Path::new(path);
+                            let readable = flags & libc::O_ACCMODE == libc::O_RDONLY
+                                && policy.read_paths.iter().any(|(allowed, tree)| {
+                                    if *tree {
+                                        path.starts_with(allowed)
+                                    } else {
+                                        path == allowed
+                                    }
+                                });
+                            if !path.starts_with(&policy.root) && !readable {
                                 return Err(io::Error::from_raw_os_error(libc::EPERM));
                             }
                         } else {
@@ -570,6 +842,45 @@ mod imp {
                     || libc::syscall(
                         libc::SYS_landlock_restrict_self,
                         policy.ruleset.as_raw_fd(),
+                        0,
+                    ) < 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                // No retained root capabilities may authorize a later filesystem/device escape.
+                #[repr(C)]
+                struct CapabilityHeader {
+                    version: u32,
+                    pid: i32,
+                }
+                #[repr(C)]
+                struct CapabilityData {
+                    effective: u32,
+                    permitted: u32,
+                    inheritable: u32,
+                }
+                let header = CapabilityHeader {
+                    version: 0x20080522,
+                    pid: 0,
+                };
+                let data = [
+                    CapabilityData {
+                        effective: 0,
+                        permitted: 0,
+                        inheritable: 0,
+                    },
+                    CapabilityData {
+                        effective: 0,
+                        permitted: 0,
+                        inheritable: 0,
+                    },
+                ];
+                if libc::syscall(libc::SYS_capset, &header, data.as_ptr()) < 0
+                    || libc::prctl(
+                        libc::PR_CAP_AMBIENT,
+                        libc::PR_CAP_AMBIENT_CLEAR_ALL,
+                        0,
+                        0,
                         0,
                     ) < 0
                 {
