@@ -39,8 +39,9 @@
   .tb.primary {
     border-image: var(--frame-primary) 12 fill / 12px / 4px stretch;
   }
+  /* border-image-source, not `border-image: none`: the build's minifier empties that shorthand, and the frame stayed on every row. */
   .main-menu nav .tb {
-    border-image: none;
+    border-image-source: none;
   }
   .ptab.on {
     background: none;
