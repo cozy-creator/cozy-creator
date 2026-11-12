@@ -45,24 +45,33 @@ pub(crate) struct Preview {
     pub bytes: Vec<u8>,
 }
 
-/// A run's previews: whether a client asks, how to tell its executor, and the newest.
+/// A root run's previews, its calls' among them: whether a client asks, how to tell each attempt
+/// of it running (by its id) that one does, and the newest.
 #[derive(Default)]
 struct Previewing {
-    watch: Option<PreviewWatch>,
+    watches: HashMap<String, PreviewWatch>,
     asked: Option<Instant>,
     told: Option<Instant>,
     latest: Option<Arc<Preview>>,
 }
 impl Previewing {
-    /// The watch to call now: a client asked within `PREVIEW_WATCH`, and its executor wasn't told
+    /// The watches to call now: a client asked within `PREVIEW_WATCH`, and they weren't told
     /// within `PREVIEW_RETELL`.
-    fn due(&mut self) -> Option<PreviewWatch> {
+    fn due(&mut self) -> Vec<PreviewWatch> {
         let now = Instant::now();
         let asked = self.asked.is_some_and(|at| now.duration_since(at) < PREVIEW_WATCH);
         let told = self.told.is_some_and(|at| now.duration_since(at) < PREVIEW_RETELL);
-        let watch = self.watch.clone().filter(|_| asked && !told)?;
+        if !asked || told || self.watches.is_empty() {
+            return vec![];
+        }
         self.told = Some(now);
-        Some(watch)
+        self.watches.values().cloned().collect()
+    }
+}
+
+fn tell(watches: Vec<PreviewWatch>) {
+    for watch in watches {
+        watch(PREVIEW_WATCH.as_millis() as u64);
     }
 }
 
@@ -952,52 +961,69 @@ impl Engine {
         Ok(())
     }
 
-    /// Run `id`'s executor makes previews when told through `watch`, at once if a client asks;
-    /// `None`: it serves the run no more (its newest stays until the run ends).
-    pub(crate) fn watch_previews(&self, id: &str, watch: Option<PreviewWatch>) {
-        let due = {
-            let mut previews = self.previews.lock().unwrap();
-            let entry = previews.entry(id.into()).or_default();
-            (entry.watch, entry.told) = (watch, None);
-            entry.due()
-        };
-        if let Some(watch) = due {
-            watch(PREVIEW_WATCH.as_millis() as u64);
-        }
+    /// The run whose box shows run `id`'s previews: its root, a call's caller's caller and so on.
+    fn preview_root(&self, id: &str) -> String {
+        let root = self.get(id).map(|record| record.invocation.root).unwrap_or_default();
+        if root.is_empty() { id.to_owned() } else { root }
     }
 
-    /// A client asks for run `id`'s previews: its executor makes them for the next
+    /// Run `id`'s executor makes previews when told through `watch`, at once if a client asks
+    /// about its root; `None`: it serves the run no more (its root's newest stays until that ends).
+    pub(crate) fn watch_previews(&self, id: &str, watch: Option<PreviewWatch>) {
+        let root = self.preview_root(id);
+        let due = {
+            let mut previews = self.previews.lock().unwrap();
+            let entry = previews.entry(root).or_default();
+            match watch {
+                Some(watch) => {
+                    entry.watches.insert(id.into(), watch);
+                    entry.told = None;
+                }
+                None => {
+                    entry.watches.remove(id);
+                }
+            }
+            entry.due()
+        };
+        tell(due);
+    }
+
+    /// A client asks for run `id`'s previews: its root's running attempts make them for the next
     /// `PREVIEW_WATCH`. The newest so far.
     pub(crate) fn want_preview(&self, id: &str) -> Option<Arc<Preview>> {
+        let root = self.preview_root(id);
         let (due, latest) = {
             let mut previews = self.previews.lock().unwrap();
-            if previews.len() >= PREVIEW_RUNS && !previews.contains_key(id) {
-                previews.retain(|_, entry| entry.watch.is_some() || entry.latest.is_some());
+            if previews.len() >= PREVIEW_RUNS && !previews.contains_key(&root) {
+                previews.retain(|_, entry| !entry.watches.is_empty() || entry.latest.is_some());
             }
-            let entry = previews.entry(id.into()).or_default();
+            let entry = previews.entry(root).or_default();
             entry.asked = Some(Instant::now());
             (entry.due(), entry.latest.clone())
         };
-        if let Some(watch) = due {
-            watch(PREVIEW_WATCH.as_millis() as u64);
-        }
+        tell(due);
         latest
     }
 
-    /// The number of run `id`'s newest preview: its progress carries it.
+    /// The number of the newest preview run `id`'s box shows: its progress carries it.
     pub(crate) fn preview_number(&self, id: &str) -> Option<u64> {
-        self.previews.lock().unwrap().get(id)?.latest.as_ref().map(|preview| preview.n)
+        if self.previews.lock().unwrap().is_empty() {
+            return None;
+        }
+        let root = self.preview_root(id);
+        self.previews.lock().unwrap().get(&root)?.latest.as_ref().map(|preview| preview.n)
     }
 
-    /// Run `id`'s executor sent a preview: the newest now, and its progress says so (`preview`),
-    /// so a client following it fetches this one.
+    /// Run `id`'s executor sent a preview: its root's newest now, and the root's progress says so
+    /// (`preview`), so a client following it fetches this one.
     pub(crate) fn observe_preview(&self, id: &str, frame: &executor_api::PreviewFrame) -> io::Result<()> {
         if frame.data.is_empty() || frame.data.len() > PREVIEW_BYTES || !self.owned.lock().unwrap().contains(id) {
             return Ok(());
         }
+        let id = &self.preview_root(id);
         let n = {
             let mut previews = self.previews.lock().unwrap();
-            let entry = previews.entry(id.into()).or_default();
+            let entry = previews.entry(id.clone()).or_default();
             let n = entry.latest.as_ref().map_or(1, |preview| preview.n + 1);
             entry.latest = Some(Arc::new(Preview {
                 n,
