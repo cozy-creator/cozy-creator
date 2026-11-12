@@ -430,6 +430,12 @@ SINGLE_FILE: dict[str, SingleFile] = {
         ],
     },
 }
+# Anima's diffusion model file alone (ComfyUI's `diffusion_models/`, a fine-tune's one Civitai file): its LLM adapter and DiT,
+# read as the full release's; its text encoder and VAE come from the base it is uploaded on (`--base`).
+SINGLE_FILE["anima.diffusion_model"] = {
+    "reference": SINGLE_FILE["anima.single_file"]["reference"], "cast": "BF16",
+    "components": [c for c in SINGLE_FILE["anima.single_file"]["components"] if c["name"] in ("text_conditioner", "transformer")],
+}
 
 
 def single_file(name: str) -> tuple[Table[TableRow], dict[str, dict[str, Shape]]]:
@@ -1515,12 +1521,14 @@ def qwen_moe(name: str, pinned: str) -> Table[TableRow | RepeatedRow]:
 def generate() -> dict[str, Generated]:
     sdxl, layers = single_file("sdxl.single_file")
     anima, _ = single_file("anima.single_file")
+    anima_dit, _ = single_file("anima.diffusion_model")
     unet = types.SimpleNamespace(**reference_config(SINGLE_FILE["sdxl.single_file"]["reference"], "unet/config.json"))
     h3 = h3_converter()
     native, source = h3_native(h3)
     return {
         "sdxl.single_file": sdxl,
         "anima.single_file": anima,
+        "anima.diffusion_model": anima_dit,
         "h3.native": native,
         "h3.comfy": h3_native(h3, comfy=True)[0],
         "h3.lora": h3_lora(h3, source),

@@ -23,9 +23,10 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub(crate) const TABLES: [&str; 22] = [
+pub(crate) const TABLES: [&str; 23] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
+    table!("anima.diffusion_model"),
     table!("qwenimage21.comfy"),
     table!("krea2.native"),
     table!("krea2.comfy"),
