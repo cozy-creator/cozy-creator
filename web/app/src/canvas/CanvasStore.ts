@@ -286,7 +286,7 @@ export class CanvasStore {
   readonly focusedName = signal<string | null>(null)
   readonly focusEntering = signal(false)
   /** Aligns the canvas media with the measured Focus viewer before revealing its controls. */
-  enterFocus: (room: { x: number; y: number; width: number; height: number }) => void = () => {}
+  enterFocus: (room: { x: number; y: number; width: number; height: number } | null) => void = () => {}
   /** The focused viewer owns its image camera separately from the canvas. */
   focusZoomBy?: (direction: number) => void
   focusZoomTo?: (scale: number) => void

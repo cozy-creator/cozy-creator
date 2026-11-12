@@ -1009,9 +1009,11 @@ export function Card({ data }: NodeProps<ElementNode>) {
   const resting = useRef(view)
   if (focused !== data.name) resting.current = view
   if (focused === data.name && !entering) return <div className="focus-placeholder" style={{ width: view ? bodyWidth(view, data.width) : data.width, height: view ? heightFor(view, data.width) : 1 }} />
+  // While the canvas draws in on it, the box as it rested: the open box is Focus's alone.
+  const atRest = focused === data.name && entering && resting.current ? { ...resting.current, here: undefined, hereWords: undefined } : undefined
   return (
     <>
-      <CardBody name={data.name} width={data.width} snapshot={focused === data.name && entering ? resting.current : undefined} />
+      <CardBody name={data.name} width={data.width} snapshot={atRest} />
       <AddOns name={data.name} />
     </>
   )
