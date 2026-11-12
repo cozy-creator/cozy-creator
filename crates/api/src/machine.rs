@@ -60,6 +60,10 @@ pub struct ProjectExecutionMigrationBinding {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ProjectExecutionMigrationRequest { pub legacy_requests: Vec<ProjectExecutionMigrationBinding> }
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectExecutionLegacyLookup { pub request_ids: Vec<String> }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

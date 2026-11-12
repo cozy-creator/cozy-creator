@@ -161,13 +161,18 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     }
     if rest == "migrate" {
         if request.method() != axum::http::Method::POST && request.method() != axum::http::Method::GET { return Refusal::from(Error::validation("method_not_allowed", "Project migration uses POST; coverage uses GET.")).into_response(); }
-        // No body is read or interpreted as provenance. Only old positive local scope is covered.
+        // Explicit attribution contains only real bindings looked up from the exact registered
+        // worker and revalidated by Caf against canonical project request identities.
         let read_receipt = request.method() == axum::http::Method::GET;
+        let adoption = if read_receipt { v1::ProjectExecutionMigrationRequest::default() } else {
+            let bytes = match axum::body::to_bytes(request.into_body(), 65536).await { Ok(bytes) => bytes, Err(_) => return Refusal::from(Error::validation("invalid_request", "Legacy binding adoption exceeds its protocol bound.")).into_response() };
+            if bytes.is_empty() { v1::ProjectExecutionMigrationRequest::default() } else { match serde_json::from_slice(&bytes) { Ok(adoption) => adoption, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid verified legacy binding adoption.")).into_response() } }
+        };
         let ordinary = m.runs.clone();
         let logs = m.identity.logs.clone();
         let selected = descriptor.clone();
         let migrated = tokio::task::spawn_blocking(move || crate::private_io::within(Some(selected.clone()), || {
-            let runs = crate::private_io::migrate_execution(&selected, &ordinary, &logs)?;
+            let runs = crate::private_io::migrate_execution_bindings(&selected, &ordinary, &logs, &adoption.legacy_requests)?;
             if read_receipt { runs.service.engine.with_journal(|journal| journal.project_migration_receipt()).map(Some) } else { Ok(None) }
         })).await;
         return match migrated {
