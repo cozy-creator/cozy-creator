@@ -556,6 +556,15 @@ impl Binder<'_> {
     /// Each list held to its count and each row to its own bounds, and each number, choice and shape to what it takes, with a line for each
     /// that moved.
     fn rows(&mut self, declared: &Struct, fields: &mut Map<String, Value>, of: &str) {
+        // What applies only while a field beside it has a value (`When`) goes without it, as its default. A box keeps its
+        // value, dulled, until it applies again; a run's own is said.
+        for (key, when) in declared.inactive(fields) {
+            if let Some(given) = fields.remove(&key)
+                && self.call.own.is_none()
+            {
+                self.warn(format!("{of}'s {key}: {given} is ignored: it applies {}, so it's its default", declared.said(&when)));
+            }
+        }
         for field in &declared.fields {
             let key = field.name.as_str();
             let Some(value) = fields.get_mut(key) else {

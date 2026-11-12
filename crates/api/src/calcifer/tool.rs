@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::{
     choices,
-    interface::{Callable, Constraints, Field, Interface, Snap, Struct, Type, Wire},
+    interface::{Callable, Constraints, Field, Interface, Snap, Struct, Type, When, Wire},
     names::shown,
 };
 
@@ -189,6 +189,9 @@ pub struct ToolField {
     /// `Advanced()`: drawn in a collapsed Advanced section under More.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub advanced: bool,
+    /// `When()`: it applies only while a field beside it has a value; else the box dulls it and keeps its value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<When>,
     /// A prompt that takes only these kinds of file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takes: Option<Vec<String>>,
@@ -395,6 +398,7 @@ fn field_of(field: &Field, default: Option<Value>) -> Option<ToolField> {
         auto: field.ty.optional(),
         placeholder: text("placeholder"),
         advanced: extra("advanced").and_then(Value::as_bool) == Some(true),
+        when: field.when(),
         ..ToolField::default()
     };
     let slot = |out: &mut ToolField, kind: &str, described: bool, multiple: bool| {
