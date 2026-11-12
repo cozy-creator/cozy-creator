@@ -41,7 +41,7 @@ pub mod tail;
 #[cfg(feature = "seams")]
 pub mod tools;
 #[cfg(feature = "seams")]
-mod watch;
+pub mod watch;
 
 /// A seam's failure: unsupported on this OS, an I/O or OS call, a service manager, or NVML.
 #[derive(Debug, thiserror::Error)]

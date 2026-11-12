@@ -244,7 +244,7 @@ impl Follow {
     ) -> io::Result<()> {
         let watch = &mut self.watch;
         self.log.lines(self.reader, send, || {
-            watch.wait(IDLE)?;
+            watch.wait(Some(IDLE))?;
             Ok(wanted())
         })
     }

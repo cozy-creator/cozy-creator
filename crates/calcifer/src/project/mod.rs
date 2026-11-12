@@ -145,6 +145,8 @@ pub(crate) struct Project {
     unsent: Mutex<Vec<Error>>,
     /// The versions this person hasn't looked at, by box id (cl-928): `state.db`'s, held here.
     unseen: Mutex<unseen::Unseen>,
+    /// Its folder watched while it's open, a plain one's (`Projects::look`).
+    _watch: Option<platform::watch::Watcher>,
 }
 
 impl Drop for Project {
@@ -212,13 +214,23 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/address", get(address))
 }
 
+/// Watches the plain project `id`'s folder `dir`, for what changes with no write of Calcifer's: a file into or out of `files/` (one
+/// leaving is on another computer), another program's commit to project.db.
+fn watch(id: &str, dir: &FsPath) -> Option<platform::watch::Watcher> {
+    use platform::watch::{Watcher, Writes};
+    let (stirred, files) = (id.to_owned(), dir.join(folder::FILES));
+    let dirs = [(dir, Writes::Named(&[db::DB, db::WAL])), (files.as_path(), Writes::None)];
+    Watcher::new("project-watch", &dirs, move || crate::events::project_stirred(&stirred))
+        .inspect_err(|error| warn!("{}: what other programs change in it isn't seen: {error}", dir.display()))
+        .ok()
+}
+
 impl Projects {
-    /// Each open project told to the streams if it changed with no write of Calcifer's: a file into or out of `files/` (one leaving is on
-    /// another computer), another program's commit to project.db (`revision`). Only what moved is told. Its revision is read through its
-    /// own folder, and told only while it's still open: a forget takes it out under `open` before letting go of what Calcifer kept of it
-    /// (cl-822), which a look mustn't make again.
-    pub(crate) fn look(&self) {
-        for project in self.now_open() {
+    /// Each of the `stirred` open projects told to the streams if its folder's change moved its revision (`revision`). Its revision is read
+    /// through its own folder, and told only while it's still open: a forget takes it out under `open` before letting go of what Calcifer
+    /// kept of it (cl-822), which a look mustn't make again.
+    pub(crate) fn look(&self, stirred: &std::collections::BTreeSet<String>) {
+        for project in self.now_open().into_iter().filter(|project| stirred.contains(&project.id)) {
             let id = &project.id;
             let dir = &project.folder.dir;
             if vault::encrypted(&project.root) || project.require_view().is_err() { continue; }
@@ -297,6 +309,7 @@ impl Projects {
             .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir) {
             Some(project) => project,
             None => {
+                let watch = (!vault::encrypted(&root)).then(|| watch(&id, dir)).flatten();
                 let project = Arc::new(Project {
                     id: id.clone(),
                     code,
@@ -315,6 +328,7 @@ impl Projects {
                     said: Mutex::default(),
                     unsent: Mutex::default(),
                     unseen: Mutex::new(unseen::read(api.calcifer.store(), &id)),
+                    _watch: watch,
                 });
                 // What closed since the last open goes from the list.
                 open.retain(|_, held| held.strong_count() > 0);
