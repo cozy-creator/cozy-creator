@@ -99,11 +99,22 @@ async fn legacy_private_request() -> Response {
 async fn project_request(State(m): State<Machine>, Path((project, rest)): Path<(String, String)>, request: Request<Body>) -> Response {
     // No private body is read while the stronger storage/security contract is being prepared.
     // This explicit refusal is removed only when the native backend and project-owned engine qualify.
-    if rest != "close" { if let Err(error) = crate::private_io::require_project_execution() {
+    let guarded = if rest == "close" || rest == "migrate" {
+        platform::private_exec::disable_project_parent_dumps().map_err(std::io::Error::from)
+    } else { crate::private_io::require_project_execution() };
+    if let Err(error) = guarded {
         return Refusal::from(Error::conflict("project_execution_unavailable", error.to_string())).into_response();
     }
-    }
     private_request(State(m), Path((project, rest)), request).await
+}
+
+fn project_migration_error(error: std::io::Error) -> Error {
+    let (code, message) = match error.kind() {
+        std::io::ErrorKind::WouldBlock => ("project_storage_migration_pending", "Legacy artifacts have unresolved custody; inspect the protected migration receipt before locking or executing."),
+        std::io::ErrorKind::ResourceBusy => ("project_storage_migration_busy", "Legacy executions, readers or project custody are still active; migration remains pending."),
+        _ => ("project_storage_migration_conflict", "Legacy custody could not be reconciled without changing unproven history; migration remains pending."),
+    };
+    Error::conflict(code, message).next("cozy doctor")
 }
 
 /// New privacy namespace: authenticate and verify a live protected-view proof BEFORE
@@ -137,21 +148,41 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
         let headers = request.headers().clone();
         return crate::private_io::request(descriptor, close_private(State(m), headers)).await.into_response();
     }
+    if rest == "migrate" {
+        if request.method() != axum::http::Method::POST && request.method() != axum::http::Method::GET { return Refusal::from(Error::validation("method_not_allowed", "Project migration uses POST; coverage uses GET.")).into_response(); }
+        // No body is read or interpreted as provenance. Only old positive local scope is covered.
+        let read_receipt = request.method() == axum::http::Method::GET;
+        let ordinary = m.runs.clone();
+        let logs = m.identity.logs.clone();
+        let selected = descriptor.clone();
+        let migrated = tokio::task::spawn_blocking(move || crate::private_io::within(Some(selected.clone()), || {
+            let runs = crate::private_io::migrate_execution(&selected, &ordinary, &logs)?;
+            if read_receipt { runs.service.engine.with_journal(|journal| journal.project_migration_receipt()).map(Some) } else { Ok(None) }
+        })).await;
+        return match migrated {
+            Ok(Ok(Some(receipt))) => Json(receipt).into_response(),
+            Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
+            Ok(Err(error)) => Refusal::from(project_migration_error(error)).into_response(),
+            Err(_) => Refusal::from(Error::conflict("project_storage_migration_stopped", "Project migration stopped; no completion receipt is available.")).into_response(),
+        };
+    }
     let ordinary = m.runs.clone();
     let selected = descriptor.clone();
+    let logs = m.identity.logs.clone();
     let selected = tokio::task::spawn_blocking(move || {
-        if ordinary.service.engine.with_journal(|journal| journal.contains_private_project(&selected.project_id))? { return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "project_storage_migration_required")); }
+        let runs = crate::private_io::within(Some(selected.clone()), || crate::private_io::migrate_execution(&selected, &ordinary, &logs))?;
         crate::private_io::bind_process_namespace(&selected, ordinary.publisher.process_namespace())?;
         crate::private_io::within(Some(selected.clone()), || crate::private_io::probe_native(&selected))?;
         let python = ordinary.publisher.probe_project_sdk()?;
         crate::private_io::within(Some(selected.clone()), || {
             crate::private_io::probe_transport(&selected, &ordinary.publisher, &python)?;
-            crate::private_io::open_execution(&selected, &ordinary)
+            crate::private_io::activate_execution(&selected, &runs)?;
+            Ok::<_, std::io::Error>(runs)
         })
     }).await;
     let runs = match selected {
         Ok(Ok(runs)) => runs,
-        Ok(Err(error)) if error.to_string() == "project_storage_migration_required" => return Refusal::from(Error::conflict("project_storage_migration_required", "Legacy project history remains in the ordinary worker journal; migrate and compact it before protected execution.")).into_response(),
+        Ok(Err(error)) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::ResourceBusy) => return Refusal::from(project_migration_error(error)).into_response(),
         _ => return Refusal::from(Error::conflict("project_execution_unavailable", "This worker cannot install the protected project execution policy.")).into_response(),
     };
     let m = Machine { identity: m.identity, runs };
@@ -194,8 +225,10 @@ async fn close_private(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     caller.machine()?;
     let descriptor = crate::private_io::current().ok_or_else(|| Error::forbidden("private_storage_scope", "no private workspace was selected"))?;
     let actor = actor_id(caller.actor);
-    m.call(move |runs| {
-        if runs.service.engine.with_journal(|journal| journal.contains_private_project(&descriptor.project_id)).map_err(|_| Error::conflict("project_storage_migration_required", "Legacy worker custody could not be verified."))? { return Err(Error::conflict("project_storage_migration_required", "Legacy project history remains in the ordinary journal; migrate and compact it before sealing.")); }
+    let logs = m.identity.logs.clone();
+    m.call(move |ordinary| {
+        let migrated = crate::private_io::migrate_execution(&descriptor, ordinary, &logs).map_err(project_migration_error)?;
+        drop(migrated);
         crate::private_io::close(&descriptor, &actor).map_err(|_| Error::conflict("private_storage_busy", "Project execution, native handles or output custody are still active."))
     }).await?;
     Ok(StatusCode::NO_CONTENT.into_response())

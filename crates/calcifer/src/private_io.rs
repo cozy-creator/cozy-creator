@@ -301,7 +301,7 @@ pub(crate) async fn close_private_project(
     root: &Path,
 ) -> Result<(), Error> {
     let view = crate::project::vault::resolve_path(root)?;
-    if !view.join(".vault-machine").exists() { return Ok(()); }
+    if !view.join(".vault-machine").exists() { let mut scopes = SCOPES.lock().unwrap(); scopes.remove(root); scopes.remove(&view); return Ok(()); }
     if !api.machines.local.running() {
         return Err(Error::new(Kind::Unavailable, "project_seal_pending", "The local worker is offline; its previous project custody has not been sealed.").next("cozy doctor"));
     }
@@ -332,8 +332,9 @@ pub(crate) async fn close_private_project(
     link.with_private(scope.clone())
         .close_private()
         .await
-        .map_err(|_| {
-            error("private execution is still active; wait or cancel its work before locking")
+        .map_err(|failure| match failure {
+            crate::link::LinkError::Refused { code, message, remedy, next } => Error { remedy, next, ..Error::new(Kind::Conflict, code, message) },
+            _ => error("The worker could not prove project migration and quiescent seal; locking remains pending."),
         })?;
     descriptor_for_mounted(&scope.storage.view_root, &scope.storage.project_id, scope.storage.generation)?;
     let mut scopes = SCOPES.lock().unwrap();
