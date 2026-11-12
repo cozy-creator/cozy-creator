@@ -188,6 +188,14 @@ pub(crate) async fn admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLock
     Ok(guard)
 }
 
+/// Synchronous tool admission holds the transition gate only until its active
+/// owner has been registered. The caller releases it before waiting for work.
+pub(crate) fn try_admit_root(root: &FsPath) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
+    let guard = access(root).try_read_owned().map_err(|_| Error::new(Kind::Conflict, "project_busy", "the project's storage is changing; retry after it finishes"))?;
+    view(root)?;
+    Ok(guard)
+}
+
 /// An already accepted walker may finish while viewing is closing, but only on its own mount.
 pub(super) async fn admit_work(project: &super::Project) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, Error> {
     let guard = access(&project.root).read_owned().await;
