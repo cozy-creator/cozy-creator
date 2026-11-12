@@ -286,6 +286,16 @@ async function died(why) {
   const zoomOf = (page) => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
   await shoot('canvas-fit', { open: (page) => leave(page), prepare: (page) => fitCanvas(page) });
   await shoot('canvas-100', { prepare: async (page) => { await fitCanvas(page); await zoomMenu(page, /^Zoom to 100%/); } });
+  // Past the far band (below 20%): a box is its picture and its name.
+  await shoot('canvas-farthest', {
+    prepare: async (page) => {
+      await fitCanvas(page);
+      for (let i = 0; i < 16 && (await zoomOf(page)) > 0.16; i++) {
+        await page.click('button[aria-label="Zoom out"]');
+        await settled(page);
+      }
+    },
+  });
   await shoot('canvas-far', {
     prepare: async (page) => {
       await fitCanvas(page);
