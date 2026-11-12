@@ -32,6 +32,11 @@ impl Scope {
         Ok(Self(crate::process::job().map_err(Error::os("create a process scope"))?))
     }
 
+    /// Namespace-wide process proofs are currently available only on Linux.
+    pub fn namespace_processes(_: &str) -> Result<usize> {
+        Err(Error::unsupported(crate::Seam::Containment))
+    }
+
     pub fn sweep(_: &str) -> Result<usize> {
         Ok(0)
     }
