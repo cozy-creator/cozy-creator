@@ -108,7 +108,8 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
 
   // 3. `<` in another box's prompt, a picture tool's, offers the rest, not it; nor does a box of words.
   const prompt = box('reader').locator('.mention-text[data-field=instructions]');
-  const shown = box('reader').locator('.mention-thumb, .ghosts img');
+  // Its picture where the reader shows what it mentions: in the frame, behind the words, its backdrop (cl-938); elsewhere a chip's thumbnail.
+  const shown = box('reader').locator('.backdrop img, .ghosts img, .mention-thumb');
   const openReader = async () => {
     await openBox(page, 'reader');
     await renderOf(page, 'reader');
