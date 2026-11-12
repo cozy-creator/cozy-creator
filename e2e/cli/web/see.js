@@ -476,6 +476,8 @@ async function rest(page, handle) {
       if (madeBox?.name !== box.name) throw new Error(`n${i}: ${JSON.stringify(madeBox)}`);
       placed[`n${i}`] = { x: (i % perRow) * 304, y: Math.floor(i / perRow) * 240, w: 240 };
     }
+    // The files' own boxes go: the 300 approve their files.
+    for (const name of ['a_picture', 'a_video']) await api(`/v1/projects/${made.id}/assets/${name}`, { method: 'DELETE' });
     await api(`/v1/projects/${made.id}/canvas`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cards: placed }) });
     const began = Date.now();
     const bigState = await api(`/v1/projects/${made.id}`);

@@ -222,7 +222,8 @@ part_v() {
   ]' | write /home/client/v.json
   page boxes /home/client/v.json > "$OUT/v-$TAG-boxes.txt" 2>&1 || wrong "v: its boxes: $(tail -3 "$OUT/v-$TAG-boxes.txt")"
   line "up 1000000"
-  page render --on box --queue all > "$OUT/v-$TAG.txt" 2>&1 || wrong "v: render: $(tail -3 "$OUT/v-$TAG.txt" | cut -c1-200)"
+  # By name: the parts before left their boxes in this project.
+  page render --on box --queue clip edit aframe > "$OUT/v-$TAG.txt" 2>&1 || wrong "v: render: $(tail -3 "$OUT/v-$TAG.txt" | cut -c1-200)"
   local t=0 got
   while [ $t -lt 900 ]; do
     got=$(page asset clip edit aframe)
