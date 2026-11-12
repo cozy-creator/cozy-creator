@@ -56,7 +56,7 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
   const storage = async (signal?: AbortSignal | null) => {
     const token = session()?.token
     if (!token) throw new Error("A browser session is required before opening project data")
-    const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { Authorization: `Bearer ${token}` } })
+    const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { Authorization: `Bearer ${token}`, [PROJECT_STORAGE_HEADER]: PROJECT_STORAGE_VERSION } })
     const capability = response.ok ? await response.json() : null
     const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
     const principal = [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("")

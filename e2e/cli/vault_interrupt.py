@@ -21,7 +21,7 @@ from vault_stream import events  # noqa: E402
 def main() -> None:
     project, credential = Path(sys.argv[1]).resolve(), Path(sys.argv[2])
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
-    url = f"http://{holder['address']}/v1/projects/{urllib.parse.quote(str(project), safe='')}/vault/operations/{uuid.uuid4().hex}"
+    url = f"http://{holder['address']}/v1/projects/{urllib.parse.quote(str(project), safe='')}/vault/operations/p3_{uuid.uuid4().hex}"
     body = json.dumps({"action": "encrypt", "passphrase": credential.read_text().strip(), "idle_timeout_s": 0}).encode()
     headers = {"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3", "Content-Type": "application/json", "Accept": "text/event-stream"}
     request = urllib.request.Request(url, data=body, headers=headers, method="PUT")

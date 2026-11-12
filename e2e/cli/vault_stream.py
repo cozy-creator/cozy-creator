@@ -84,7 +84,7 @@ def events(response: Iterable[bytes]) -> Iterator[VaultEvent]:
 def main() -> None:
     project, credential, recovery = map(Path, sys.argv[1:])
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
-    operation = uuid.uuid4().hex
+    operation = "p3_" + uuid.uuid4().hex
     url = f"http://{holder['address']}/v1/projects/{urllib.parse.quote(str(project.resolve()), safe='')}/vault/operations/{operation}"
     sources_before = set(project.parent.glob(".cozy-project-source-*"))
     body = json.dumps({"action": "encrypt", "passphrase": credential.read_text().strip(),
