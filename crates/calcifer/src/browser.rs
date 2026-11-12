@@ -65,7 +65,7 @@ pub(crate) struct OwnedBrowser { live: Arc<Mutex<Option<Live>>>, retirement_inco
 pub(crate) struct PreparedBrowserClose { owner: Arc<Mutex<Option<Live>>>, live: OwnedMutexGuard<Option<Live>> }
 
 impl OwnedBrowser {
-    pub(crate) fn new() -> Self { Self { live: Arc::default(), retirement_incomplete: Arc<AtomicBool>::new(false) } }
+    pub(crate) fn new() -> Self { Self { live: Arc::default(), retirement_incomplete: Arc::new(AtomicBool::new(false)) } }
 
     #[cfg(target_os = "linux")]
     async fn launch(sessions: &Sessions, address: SocketAddr) -> Result<Live, Refusal> {
@@ -73,7 +73,7 @@ impl OwnedBrowser {
         let path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
         let program = ["google-chrome", "chromium", "chromium-browser"].into_iter().find_map(|name| platform::tools::on_path(name, &path)).ok_or_else(unavailable)?;
         let profile = VolatileProfileLease::create()?;
-        let mut command = Command::new(program);
+        let mut command = Command::new(program.path);
         let original_runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
         let original_authority = std::env::var_os("XAUTHORITY").map(std::path::PathBuf::from)
             .or_else(|| std::env::home_dir().map(|home| home.join(".Xauthority")));
