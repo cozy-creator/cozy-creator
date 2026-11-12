@@ -290,6 +290,8 @@ def main() -> int:
         # Exception messages, response reprs, SQL values and command output can contain canaries.
         receipt.value["failed_case"] = phase
         receipt.value["error_class"] = type(error).__name__
+        if isinstance(error, Failure):
+            receipt.value["failed_check"] = error.code
         receipt.save()
         return 1
     finally:
