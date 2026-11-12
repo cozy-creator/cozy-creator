@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav, rowsOf, addBoxes, assetsOf, storedOf, fitCanvas, observeResizes } = require('./page');
+const { projectFromPage, importFile, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, drop, openBox, png, launch, noStall, until, wav, rowsOf, addBoxes, assetsOf, storedOf, fitCanvas, observeResizes, openCanvas, settled: viewSettled } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -380,6 +380,16 @@ async function placedInView(page, expected) {
       return cards.flatMap((a, i) => cards.slice(i + 1).filter((b) => on(a.rect, b.rect)).map((b) => `${a.name} on ${b.name}`));
     });
     const zoomNow = () => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
+    // Drawn in on some, as a person does to work on them: selected, Zoom to selection (Shift+2), and let go by a click on the canvas. All of
+    // it fitted is under 20%, where a box has no corner, and the bottom row's within reach of the edge, where a drag pans the canvas.
+    const nearer = async (names) => {
+      for (const [i, name] of names.entries()) await element(page, name).locator('.media').first().click({ modifiers: i ? ['Shift'] : [] });
+      await page.keyboard.press('Shift+Digit2');
+      await viewSettled(page);
+      const open = await openCanvas(page);
+      await page.mouse.click(open.x, open.y);
+      await until('none selected', () => page.locator('.react-flow__node.selected').count(), (n) => n === 0);
+    };
     // Rows that have stopped changing, both what the page wrote and what it shows.
     const settledRows = (name) => until(`${name} settled`, async () => {
       const one = JSON.stringify(rows(folder));
@@ -428,6 +438,7 @@ async function placedInView(page, expected) {
     check('a_crowded_drop_stays_where_it_was_let_go', crowded.now.w >= 360 * 0.8 && seen.crowded.by <= 3 && Object.keys(crowded.moved).length > 0, seen.crowded);
     check('a_crowded_drop_lies_on_nothing', crowded.lying.length === 0, crowded.lying);
 
+    await nearer([...Object.keys(lay).filter((name) => name.startsWith('row_')), 'squeezed']);
     const squeezed = await letGo('squeezed', -400);
     seen.squeezed = { ...squeezed, by: stays(squeezed) };
     const pushedRows = Object.values(squeezed.moved).reduce((sum, by) => sum + by, 0);
@@ -435,6 +446,7 @@ async function placedInView(page, expected) {
     check('a_shrunk_drop_lies_on_nothing', squeezed.lying.length === 0, squeezed.lying);
 
     // B pulled 100 wider by its corner, live: each after it goes right as little as keeps a gap of 16, or what it had if less.
+    await nearer(CHAIN);
     const before = rows(folder);
     const zoom = await zoomNow();
     await element(page, 'chain_b').locator('.media').first().hover();
