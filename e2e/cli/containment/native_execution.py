@@ -148,15 +148,23 @@ def qualify(native: Native, scanner: Scanner, project: dict, receipt: Receipt, c
     core.set(b"|/usr/bin/false")
     piped = _run(native, project, script, request)
     documents = _documents(piped.stdout)
+    runs = [document.get("run", document) for document in documents]
     coded = [document["error"] for document in documents if isinstance(document.get("error"), dict)]
-    coded += [document["run"]["reason"] for document in documents if isinstance(document.get("run"), dict) and isinstance(document["run"].get("reason"), dict)]
-    require(piped.returncode != 0 and not allowed.exists() and any(error.get("code") in {"project_execution_unavailable", "project_transport_unsupported"} for error in coded), "piped_core_not_refused")
+    coded += [run["reason"] for run in runs if isinstance(run, dict) and isinstance(run.get("reason"), dict)]
+    coded += [run["result"]["error"] for run in runs if isinstance(run, dict) and isinstance(run.get("result"), dict) and isinstance(run["result"].get("error"), dict)]
+    accepted = any(error.get("code") in {"project_execution_unavailable", "project_transport_unsupported"} for error in coded)
+    receipt.add("native_piped_core_observation", exit_code=piped.returncode, project_code_executed=allowed.exists(), accepted_refusal_code=accepted,
+        specific_core_text=b"piped kernel core handler" in piped.stdout + piped.stderr,
+        migration_pending=any(error.get("code") in {"project_migration_pending", "private_journal_pending"} for error in coded),
+        usage_error=any(error.get("code") == "usage" for error in coded))
+    require(piped.returncode != 0 and not allowed.exists() and accepted, "piped_core_not_refused")
     require(b"piped kernel core handler" in piped.stdout + piped.stderr, "piped_core_refusal_not_specific")
     receipt.add("native_piped_core_refusal", refused=True, code_executed=False)
     core.set(b"core")
     regular = _run(native, project, script, request)
     require(regular.returncode == 0, "regular_core_native_execution_failed")
-    records = [document["run"] for document in _documents(regular.stdout) if isinstance(document.get("run"), dict) and isinstance(document["run"].get("result"), dict)]
+    documents = [document.get("run", document) for document in _documents(regular.stdout)]
+    records = [run for run in documents if isinstance(run, dict) and isinstance(run.get("result"), dict)]
     require(records, "native_terminal_result_missing")
     record = records[-1]
     result = record["result"]
