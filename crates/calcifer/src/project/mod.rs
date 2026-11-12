@@ -4621,12 +4621,19 @@ impl Walk {
         })
     }
 
-    /// Readers in this render follow the media version it just made, while explicit
-    /// numbered references in the frozen text keep their original meaning.
+    /// An initially empty source gains the media this render made. A completed
+    /// selected source stays the ask's input snapshot unless --outdated refreshes it.
     fn select_asked(&self, ask: &str, name: &str, number: u32, sha256: &str) -> Result<(), Error> {
         let walk = self.folder().walk_now()?;
         let Some(mine) = walk.walk.asks.iter().find(|mine| mine.id == ask) else { return Ok(()) };
-        let mut written = written::Written::from_yaml(&self.folder().text_of(mine)?)?;
+        let before = self.folder().text_of(mine)?;
+        if !mine.outdated {
+            let doc = Doc::read(self.folder(), &before)?;
+            if doc.find(name).is_some_and(|i| doc.assets[i].pin.is_some()) {
+                return Ok(());
+            }
+        }
+        let mut written = written::Written::from_yaml(&before)?;
         written.selected(name, number, sha256)?;
         let text = written.to_yaml();
         let digest = hex::encode(Sha256::digest(text.as_bytes()));

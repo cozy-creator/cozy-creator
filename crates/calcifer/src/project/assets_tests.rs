@@ -199,12 +199,54 @@ async fn typed_nodes_fixture() {
     let stored = db::load(&conn, &directory.join(db::DB)).unwrap();
     assert_eq!(stored.written.get(&original.name).unwrap().get(format::SELECTED_VERSION), Some(&json!(1)));
 
-    // A current image remains a renderable asset. Render all schedules its next
-    // image and makes readers wait for it rather than treating selection as a skip.
+    // A current image remains renderable, while a reader's completed selected
+    // input is independent of another generation of that image.
     edit(&api, &series.id, &original.name, json!({"tool":"fixture/image","fields":{"instructions":"edit the current image"}})).await;
-    let reader = make(&api, &series.id, json!({"name":"reader","tool":"fixture/image","kind":"image","fields":{"instructions":format!("<{}>", original.name)}})).await;
+    let reader = make(&api, &series.id, json!({"name":"reader","tool":"fixture/video","kind":"video","fields":{"summary":format!("<{}>", original.name)}})).await;
+    {
+        use super::super::{AskedText, Graph, Named, Now, Turn, walker};
+        let lock = series.folder.lock().unwrap();
+        let mut reading = AskedText::new(Doc::load(&series.folder).unwrap());
+        let mut graph = Graph::default();
+        let background = folder::Ask { id: "background-image".into(), ..Default::default() };
+        let jobs = graph.add(&background.id, &mut Now { reading: &mut reading, lock: &lock, ask: &background }, &walker::Asked {
+            takes: vec![Named { key: "image-next".into(), asset: original.name.clone(), approve: true }], ..Default::default()
+        });
+        graph.go(jobs[0]);
+        let video = folder::Ask { id: "named-video".into(), ..Default::default() };
+        let jobs = graph.add(&video.id, &mut Now { reading: &mut reading, lock: &lock, ask: &video }, &walker::Asked {
+            takes: vec![Named { key: "video-next".into(), asset: reader.clone(), approve: true }], ..Default::default()
+        });
+        assert!(graph.jobs[jobs[0]].needs.is_empty(), "a selected image does not wait for a background generation");
+        assert_eq!(graph.turn(jobs[0], &mut Now { reading: &mut reading, lock: &lock, ask: &video }), Turn::Go);
+    }
+
+    // Landing a same-byte replacement must not even change the frozen version
+    // number. Explicit --outdated is the opt-in that refreshes that snapshot.
+    let text = series.folder.text().unwrap();
+    let digest = hex::encode(Sha256::digest(text.as_bytes()));
+    series.folder.keep_text(&digest, &text).unwrap();
+    let snapshot = folder::Ask { id: "selected-snapshot".into(), digest, ..Default::default() };
+    series.folder.update_walk(|walk| walk.walk.asks.push(snapshot.clone())).unwrap();
+    let frozen_version = || {
+        let walk = series.folder.walk_now().unwrap();
+        let ask = walk.walk.asks.iter().find(|ask| ask.id == snapshot.id).unwrap();
+        let doc = Doc::read(&series.folder, &series.folder.text_of(ask).unwrap()).unwrap();
+        doc.stand(&series.folder.lock().unwrap())[doc.find(&original.name).unwrap()].version()
+    };
+    let walk = super::super::Walk::new(&api, &series);
+    walk.select_asked(&snapshot.id, &original.name, 2, &hash).unwrap();
+    assert_eq!(frozen_version(), Some(1));
+    series.folder.update_walk(|walk| walk.walk.asks.iter_mut().find(|ask| ask.id == snapshot.id).unwrap().outdated = true).unwrap();
+    walk.select_asked(&snapshot.id, &original.name, 2, &hash).unwrap();
+    assert_eq!(frozen_version(), Some(2));
+    series.folder.update_walk(|walk| walk.walk.asks.retain(|ask| ask.id != snapshot.id)).unwrap();
+
+    let empty = make(&api, &series.id, json!({"name":"unfinished","tool":"fixture/image","kind":"image","fields":{"instructions":"its first image"}})).await;
+    let waiting = make(&api, &series.id, json!({"name":"waiting","tool":"fixture/video","kind":"video","fields":{"summary":format!("<{}>", empty)}})).await;
     let (_, Json(asked)) = super::super::runs(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"names":["all"],"on":["local"]}).to_string()))).await.unwrap();
-    assert_eq!(asked.added, 2);
+    assert_eq!(asked.added, 4);
     assert!(!asked.skipped.contains(&original.name));
-    assert!(asked.queued.iter().any(|row| row.name == reader && row.ahead.contains(&original.name)), "{asked:?}");
+    assert!(asked.queued.iter().any(|row| row.name == reader && !row.ahead.contains(&original.name)), "{asked:?}");
+    assert!(asked.queued.iter().any(|row| row.name == waiting && row.ahead.contains(&empty)), "{asked:?}");
 }
