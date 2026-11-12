@@ -464,15 +464,16 @@ local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
 # dependencies), never the code: an edit to the code alone runs on the same one, an edit back runs the first code again, and a new
 # dependency builds another. Each step's `cozy run` wall time, the reply and the environment TensorD ran it in.
 # Local codes made ready at once on a computer with no uv yet (cl-911): Calcifer fetches uv once, and the others wait for that
-# fetch, where the second was refused `uv_unavailable` ("run this again", cli gate 43133580881). First in its shard: nothing
-# before it needs uv.
+# fetch, where the second was refused `uv_unavailable` ("run this again", cli gate 43133580881). The local machine fetched uv
+# into the same tools folder when its candidates went on, so that is removed first, as on a computer that never had it.
 uv_at_once() {
 step "local codes at once on a fresh computer: one uv fetch, all of them run"
 [ -n "$LOCAL" ] || return 0
 local fetched=$HOME/.cozy/tools/uv pid dir found='' at=$OUT/at-once i pids=() code
 pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
 while IFS= read -r dir; do [ ! -x "$dir/uv" ] || found=$dir/uv; done < <(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^PATH=//p' | tr ':' '\n')
-[ ! -e "$fetched" ] && [ -z "$found" ] || { check "uv at once: not a fresh computer, Calcifer has uv at ${found:-$fetched}"; return; }
+[ -z "$found" ] || { check "uv at once: Calcifer finds uv on its PATH ($found), so it never fetches one"; return; }
+rm -rf "$fetched"
 rm -rf "$at" && mkdir -p "$at"
 for i in a b; do
   cp -r "$here/weightless" "$at/$i" && sed -i "s/^name = \"e2e-weightless\"/name = \"e2e-at-once-$i\"/" "$at/$i/pyproject.toml"
