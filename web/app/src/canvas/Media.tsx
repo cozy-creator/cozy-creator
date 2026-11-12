@@ -655,8 +655,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !view.glimpse
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   return (
-    <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
-      <div className="media-pixels">
+    <div className={`media ${asset?.kind === "image" ? "image-asset" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
+      <div className="media-pixels" data-image-reference={asset?.kind === "image" && shown ? "" : undefined}>
         {preview && (
           <img
             src={preview}
@@ -681,7 +681,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           <Icon name={glyph} />
         </span>
       )}
-      {view.glimpse && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
+      {view.glimpse && !(asset?.kind === "image" && shown) && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
       {busy && view.viewed === undefined && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}

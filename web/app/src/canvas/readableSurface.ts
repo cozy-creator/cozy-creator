@@ -64,7 +64,7 @@ export function readableSurface(source: HTMLElement) {
     const under = card.querySelector<HTMLElement>(":scope > .here-under")
     const media = card.querySelector<HTMLElement>(":scope > .media")
     const shown = shownOf(view)
-    const passive = Boolean(media && shown && !shown.absent && !view.hereWords && (shown.field === "image" || shown.field === "video"))
+    const passive = Boolean(media && shown && !shown.absent && (shown.field === "image" || (!view.hereWords && shown.field === "video")))
     const apply = (zoom: number, cap: number | undefined) => {
       const text = Math.round((1 / Math.min(MOST_HERE, zoom)) * 20) / 20
       const scale = Math.max(1, text)

@@ -56,13 +56,17 @@ async fn typed_nodes_fixture() {
     let doc = Doc::load(&project.folder).unwrap();
     let i = doc.find(&name).unwrap();
     assert_eq!(doc.assets[i].kind, "video");
-    assert_eq!(doc.assets[i].node_kind.as_deref(), Some("video_edit"));
+    assert_eq!(doc.assets[i].node_kind.as_deref(), Some("video"));
     assert!(doc.tool(i) == Some(Tool::Cut));
     assert!(!doc.inputs_of(i).contains_key(format::NODE_KIND));
     assert!(!doc.assets[i].own.contains(format::NODE_KIND));
-    assert_eq!(doc.flat_fields(i).get(format::NODE_KIND), Some(&json!("video_edit")));
+    assert_eq!(doc.flat_fields(i).get(format::NODE_KIND), Some(&json!("video")));
     edit(&api, &id, "edit", json!({"fields":{"node_kind":"image"}})).await;
-    assert_eq!(project.folder.written().unwrap().get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video_edit")));
+    assert_eq!(project.folder.written().unwrap().get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video")));
+    edit(&api, &id, "edit", json!({"tool":"","fields":{}})).await;
+    assert_eq!(project.folder.written().unwrap().get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video")));
+    edit(&api, &id, "edit", json!({"tool":"cozy/edit","fields":{}})).await;
+    assert_eq!(project.folder.written().unwrap().get("edit").unwrap().get("tracks"), Some(&json!([{"clips":[]}])));
     let note = doc.find("note").unwrap();
     assert_eq!(doc.assets[note].kind, "text");
     assert_eq!(doc.assets[note].text.as_deref(), Some("Some words."));
@@ -113,9 +117,8 @@ async fn typed_nodes_fixture() {
         ("video", json!({"tool":"fixture/text","fields":{}})),
         ("audio", json!({"tool":"fixture/text","fields":{}})),
         ("note", json!({"tool":"fixture/video","fields":{}})),
-        ("edit", json!({"tool":"fixture/video","fields":{}})),
-        ("edit", json!({"tool":"fixture/video","fields":{"node_kind":"video_edit"}})),
-        ("edit", json!({"tool":"","fields":{}})),
+        ("image", json!({"tool":"cozy/edit","fields":{}})),
+        ("audio", json!({"tool":"cozy/edit","fields":{}})),
     ] {
         let before = project.folder.written().unwrap();
         let seq = project.folder.seq();
@@ -154,6 +157,54 @@ async fn typed_nodes_fixture() {
     let conn = db::open(&directory.join(db::DB)).unwrap();
     let stored = db::load(&conn, &directory.join(db::DB)).unwrap();
     assert_eq!(stored.written.get("video").unwrap().get(format::NODE_KIND), Some(&json!("video")));
-    assert_eq!(stored.written.get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video_edit")));
+    assert_eq!(stored.written.get("edit").unwrap().get(format::NODE_KIND), Some(&json!("video")));
     assert_eq!(stored.written.get("picture").unwrap().id, stable_id);
+
+    // A real imported file is v1 immediately. Image edits select their new version,
+    // even if its bytes equal v1; selecting v1 again must not collapse back to v2.
+    use base64::Engine as _;
+    use sha2::{Digest as _, Sha256};
+    let directory = root.join("version-project");
+    std::fs::create_dir(&directory).unwrap();
+    made_new(&api, &directory, "Version selection", false).unwrap();
+    let series = api.projects.open(&api, &directory).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==").unwrap();
+    let path = root.join("original.png");
+    std::fs::write(&path, &bytes).unwrap();
+    let hash = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
+    let kept = series.folder.take_held(&path, &hash).unwrap();
+    let original = super::super::element(&series, &series.id, "Hei", None, None, kept, true, BTreeMap::new(), &BTreeMap::new()).unwrap();
+    let doc = Doc::load(&series.folder).unwrap();
+    let at = doc.find(&original.name).unwrap();
+    let lock = series.folder.lock().unwrap();
+    assert_eq!(lock.asset(&original.name).unwrap().versions.len(), 1);
+    assert_eq!(doc.stand(&lock)[at].version(), Some(1));
+    assert!(!doc.inputs_of(at).contains_key(format::SELECTED_VERSION));
+    assert!(!doc.assets[at].own.contains(format::SELECTED_VERSION));
+    drop(lock);
+    super::super::Walk::new(&api, &series).record(None, &original.name, "image", folder::Version {
+        files: folder::Files::from([("image".to_owned(), hash.clone())]),
+        tool: Some("fixture/image".to_owned()), ..Default::default()
+    }, "version", false, |_| {}).unwrap();
+    let doc = Doc::load(&series.folder).unwrap();
+    assert_eq!(doc.stand(&series.folder.lock().unwrap())[at].version(), Some(2));
+    let Json(selected) = super::super::approve(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"name":original.name,"version":"1"}).to_string()))).await.unwrap();
+    assert_eq!(selected.number, 1);
+    let doc = Doc::load(&series.folder).unwrap();
+    let lock = series.folder.lock().unwrap();
+    assert_eq!(doc.stand(&lock)[at].version(), Some(1));
+    assert_eq!(doc.version_files(at, 2, &lock).unwrap().get("image"), Some(&hash));
+    drop(lock);
+    let conn = db::open(&directory.join(db::DB)).unwrap();
+    let stored = db::load(&conn, &directory.join(db::DB)).unwrap();
+    assert_eq!(stored.written.get(&original.name).unwrap().get(format::SELECTED_VERSION), Some(&json!(1)));
+
+    // A current image remains a renderable asset. Render all schedules its next
+    // image and makes readers wait for it rather than treating selection as a skip.
+    edit(&api, &series.id, &original.name, json!({"tool":"fixture/image","fields":{"instructions":"edit the current image"}})).await;
+    let reader = make(&api, &series.id, json!({"name":"reader","tool":"fixture/image","kind":"image","fields":{"instructions":format!("<{}>", original.name)}})).await;
+    let (_, Json(asked)) = super::super::runs(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"names":["all"],"on":["local"]}).to_string()))).await.unwrap();
+    assert_eq!(asked.added, 2);
+    assert!(!asked.skipped.contains(&original.name));
+    assert!(asked.queued.iter().any(|row| row.name == reader && row.ahead.contains(&original.name)), "{asked:?}");
 }

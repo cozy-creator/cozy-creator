@@ -24,7 +24,7 @@ use super::{
 pub(crate) const ALL: &str = "all";
 pub(super) const FORMAT: u64 = 4;
 /// What the platform reads of an asset. Any other key is an input.
-const PLATFORM: [&str; 6] = ["tool", "approved", "description", "models", "lora", NODE_KIND];
+const PLATFORM: [&str; 7] = ["tool", "approved", "description", "models", "lora", NODE_KIND, SELECTED_VERSION];
 /// What goes on a function's first call, beside its input.
 const MADE: [&str; 2] = ["models", "lora"];
 pub(super) const KINDS: [&str; 3] = ["image", "video", "audio"];
@@ -33,12 +33,23 @@ const SECTIONS: [&str; 3] = ["version", "defaults", "assets"];
 pub(super) const TEXT: &str = "text";
 /// Persistent container identity; this is project metadata, never a tool input.
 pub(super) const NODE_KIND: &str = "node_kind";
+/// The exact current media version, independently of whether two versions contain identical bytes.
+pub(super) const SELECTED_VERSION: &str = "selected_version";
 
 pub(super) fn node_kind(value: Option<&Value>) -> Result<Option<&str>, Error> {
     match value {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(kind)) if matches!(kind.as_str(), "text" | "image" | "video" | "audio" | "video_edit") => Ok(Some(kind)),
-        _ => Err(invalid("node_kind", "node_kind must be text, image, video, audio or video_edit".into())),
+        Some(Value::String(kind)) if kind == "video_edit" => Ok(Some("video")),
+        Some(Value::String(kind)) if matches!(kind.as_str(), "text" | "image" | "video" | "audio") => Ok(Some(kind)),
+        _ => Err(invalid("node_kind", "node_kind must be text, image, video or audio".into())),
+    }
+}
+
+pub(super) fn selected_version(value: Option<&Value>) -> Result<Option<u32>, Error> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_u64().and_then(|number| u32::try_from(number).ok()).filter(|number| *number > 0)
+            .map(Some).ok_or_else(|| invalid(SELECTED_VERSION, "selected_version must be a positive version number".into())),
     }
 }
 
@@ -159,6 +170,8 @@ pub(crate) struct Asset {
     pub kind: String,
     /// Explicit container identity, preserved independently of its selected tool.
     pub node_kind: Option<String>,
+    /// The exact version selected by navigation; `pin` retains compatibility with existing file pins.
+    pub selected_version: Option<u32>,
     /// Whether anything said that.
     pub tool_makes: bool,
     /// What makes it, as the memo holds it: no release, no root namespace, and local code by its directory's name.
@@ -396,8 +409,9 @@ impl Doc {
         };
         let target = text_of(body.get("tool")).trim().to_owned();
         let tool = (!target.is_empty()).then(|| plain_tool(&target, folder));
-        let node_kind = if tool.as_deref() == Some(EDIT) { Some("video_edit".to_owned()) }
+        let node_kind = if tool.as_deref() == Some(EDIT) { Some("video".to_owned()) }
             else { node_kind(body.get(NODE_KIND)).expect("node kind was validated").map(str::to_owned) };
+        let selected_version = selected_version(body.get(SELECTED_VERSION)).ok().flatten();
         let mut pin = None;
         match body.get("approved") {
             None | Some(Value::Null) => {}
@@ -450,7 +464,7 @@ impl Doc {
         }
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, node_kind, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, hollow, reads: vec![] });
+        self.assets.push(Asset { name: name.to_owned(), kind, node_kind, selected_version, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, hollow, reads: vec![] });
     }
 
     /// Each mention of a text asset in what a tool is given replaced by its words, and theirs in turn. Only here: what's read, what's sent and
@@ -818,7 +832,8 @@ impl Doc {
         let versions = held.map(|held| held.versions.as_slice()).unwrap_or_default();
         let stands = |version: &Version, now: &str| !version.inputs.is_empty() && self.moved(i, &version.inputs, now, &reads).is_empty();
         if let Some(sha256) = &asset.pin {
-            return match versions.iter().rev().find(|version| version.main() == Some(sha256)) {
+            return match asset.selected_version.and_then(|number| versions.iter().find(|version| version.number == number && version.main() == Some(sha256)))
+                .or_else(|| versions.iter().rev().find(|version| version.main() == Some(sha256))) {
                 Some(version) => {
                     let changed = match &inputs {
                         Some(now) if !version.inputs.is_empty() && !asset.hollow => self.moved(i, &version.inputs, now, &reads),

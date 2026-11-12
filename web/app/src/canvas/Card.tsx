@@ -26,6 +26,7 @@ import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
 import { ToolSettings } from "./ToolSettings"
+import { ImageVersions } from "./ImageVersions"
 import { Asking } from "./Asking"
 import { readableSurface } from "./readableSurface"
 import type { Box } from "./graph"
@@ -41,7 +42,7 @@ function kindOf(view: ElementView): string {
   const asset = view.asset
   if (!asset) return ""
   if (madeHere(asset.tool)) return asset.kind === "video" ? "edit" : "frame"
-  if (asset.field && !asset.tool) return "file"
+  if (asset.field && !asset.tool) return asset.kind
   return asset.kind === "video" ? "shot" : asset.kind
 }
 
@@ -699,10 +700,10 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   const at = versions.findIndex((version) => version.number === shown?.number)
   const shownVersion = versions.find((version) => version.number === shown?.number)
   const face = faceOf(view)
-  const canFlip = makes(view)
+  const canFlip = asset?.kind !== "image" && makes(view)
   // On the canvas a box is its name, its picture or its text, its state and an X. All else comes with a click, so 300 boxes cost little.
-  const editing = here && (asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
-  const looking = here && !view.hereWords && paints(view, tools)
+  const editing = here && (asset?.kind === "image" ? Boolean(view.hereWords) : asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
+  const looking = here && asset?.kind !== "image" && !view.hereWords && paints(view, tools)
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   // Looking at a take, nothing of its tool: its warnings and state are the next take's too.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media") && !looking
@@ -740,7 +741,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           </span>
         )}
         {view.draft === undefined && !lite && <span className="sp" />}
-        {view.draft === undefined && here && versions.length > 1 && at >= 0 && (
+        {view.draft === undefined && here && asset?.kind !== "image" && versions.length > 1 && at >= 0 && (
           <span className="count">
             {at + 1}/{versions.length}
           </span>
@@ -789,35 +790,36 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
               className="take-out nodrag nopan"
               onPointerDown={(event) => {
                 const tile = self.current?.querySelector<HTMLElement>(`.take[data-take="${shownVersion.number}"]`)
-                carryOnMove(event.nativeEvent, { take: taken(store, name, asset, { ...shownVersion, main: shownVersion.main! }) }, tile ?? event.currentTarget)
+                carryOnMove(event.nativeEvent, asset.kind === "image" ? { name } : { take: taken(store, name, asset, { ...shownVersion, main: shownVersion.main! }) }, tile ?? event.currentTarget)
               }}
             />
           )}
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
-      {!lite && asset && !view.placing && !looking && <ShapeLine name={name} view={view} />}
+      {!lite && asset?.kind === "image" && !view.placing && <ImageVersions name={name} view={view} />}
+      {!lite && asset && asset.kind !== "image" && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
         <div className="rest-asking nodrag nopan nowheel">
           <Asking name={name} fit={view.asking.fit} />
         </div>
       )}
-      {here && asset && asset.kind !== "text" && !asset.timeline && <Takes view={view} name={name} width={width} side />}
+      {here && asset && asset.kind !== "text" && asset.kind !== "image" && !asset.timeline && <Takes view={view} name={name} width={width} side />}
       {here && asset && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
             {!looking && <ToolSettings name={name} asset={asset} selected={view.operation} />}
             {(asset.kind !== "text" || asset.tool) && <>
               {asset.timeline && <Takes view={view} name={name} width={width} />}
-              {!asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
-              {!asset.timeline && <OrbitToggle view={view} name={name} />}
-              {!editing && <Bar view={view} name={name} />}
+              {asset.kind !== "image" && !asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
+              {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
+              {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
-              {!looking && <AssetEdit name={name} view={view} editing={editing} head={<Stack name={name} />} actions={editing && <RenderButton name={name} view={view} />} />}
-              {!view.hereWords && <TakeName view={view} />}
+              {!looking && (asset.kind !== "image" || editing) && <AssetEdit name={name} view={view} editing={editing} head={asset.kind !== "image" ? <Stack name={name} /> : undefined} actions={editing && <RenderButton name={name} view={view} />} />}
+              {asset.kind !== "image" && !view.hereWords && <TakeName view={view} />}
               {/* Writing an image tool's next take, its description isn't asked: it's for what's looked at. */}
-              {!(view.hereWords && paints(view, tools)) && <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />}
+              {asset.kind !== "image" && !(view.hereWords && paints(view, tools)) && <Description name={name} view={view} rule={Boolean(asset.tool) && !looking} />}
               {view.warned && warned ? (
                 <div className="warned-lines">
                   {view.warnings!.map((warning) => (

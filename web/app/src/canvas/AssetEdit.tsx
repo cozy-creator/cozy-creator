@@ -14,7 +14,7 @@ import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, 
 import { Ghosts, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
-import { makes } from "./shown"
+import { makes, shownOf } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
 import { ToolBox } from "./ToolBox"
 
@@ -677,7 +677,7 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
   if (!field) return null
   return (
     <div className="in-frame">
-      <Ghosts name={name} view={view} />
+      {!(view.asset?.kind === "image" && shownOf(view)) && <Ghosts name={name} view={view} />}
       <ControlRow name={name} field={field} view={view} focus={store.focusing === name} named={false} framed />
     </div>
   )
