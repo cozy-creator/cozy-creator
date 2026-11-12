@@ -76,6 +76,11 @@ lora_ab h3-lokr-cumshot minimax-h3 generate "$HM/HMCumshot_V2.safetensors" - - \
   prompt="A woman laughs on a sofa in a sunlit living room, medium shot, room tone" duration_s:=5 seed:=$((R + 56))
 lora_ab h3-lokr-pussy minimax-h3 generate "$HM/hmpussy_v6_epoch30.safetensors" - - \
   prompt="A woman stretches on a bed in soft morning light, slow push-in, quiet room" duration_s:=5 seed:=$((R + 57))
+# SNOFS, Krea 2's second most downloaded LoRA: a LoKr too (AI-Toolkit, factor 4). v1.4 from its author's Hugging Face
+# repo; the Civitai v1.6 is the same layout.
+lora_ab krea-lokr-snofs krea-2 generate \
+  hf://Ashen3/SNOFS@11c39dcd0758b6f047e933ea00fe019570ab1485/Krea2/snofs_krea_v1_4.safetensors - - \
+  prompt="a woman reading on a sofa in a sunlit living room, photo" seed:=$((R + 59))
 lora_ab anima-lokr-aniart anima generate \
   hf://SAkizuki/Anima-Aniart@09f3687270186577aeecc40ad53055c960959230/anima-aniart.safetensors - - \
   prompt="masterpiece, best quality, 1girl, school uniform, under cherry blossoms" seed:=$((R + 58))

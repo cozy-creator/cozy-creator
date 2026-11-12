@@ -682,16 +682,36 @@ impl Runs {
                         ("lane".to_owned(), text(&record.lane)),
                         ("header".to_owned(), text(&record.header)),
                     ]);
-                    let made = tensorfs::import::base::inherit(&read(&header)?, &header, &read(&on.header)?, from)
-                        .map_err(|e| refused("model_compose_refused", format!("{} on {}: {e}", choice.model, base.model)))?;
+                    let (own, theirs) = (read(&header)?, read(&on.header)?);
                     let source = row["checkpoint"].take();
-                    match made {
-                        Some((complete, took)) => {
+                    if tensorfs::family::Facts::of(&own).is_some_and(|facts| facts.lora) {
+                        // A LoRA is never filled from its base: its base names the family its `adapter` record says
+                        // its factors fit (xs-183), and nothing else of it changes.
+                        let family = tensorfs::family::family_of(&theirs).ok_or_else(|| {
+                            refused("model_compose_refused", format!("{} verifies as no family, so it names none for {}", base.model, choice.model))
+                        })?;
+                        let adapters = tensorfs::family::unrecorded_adapters(&own, &family);
+                        if adapters.is_empty() {
+                            observe(&format!("{} records nothing new of {family}", choice.model), 0, 0);
+                        } else {
+                            let complete = tensorfs::family::with_adapters(&own, &adapters).map_err(|e| refused("model_compose_refused", e.to_string()))?;
                             let bytes = complete.to_cbor().map_err(|e| refused("model_compose_refused", e.to_string()))?;
                             header = publisher.store().put_bytes(&bytes).map_err(|e| refused("model_compose_refused", e.to_string()))?;
-                            row["took"] = json!({"components": took.components, "files": took.files});
+                            let shown: std::collections::BTreeMap<&String, String> =
+                                adapters.iter().map(|(c, a)| (c, format!("{} {}", a.family, a.component))).collect();
+                            row["adapter"] = json!(shown);
                         }
-                        None => observe(&format!("{} lacks nothing of {}", choice.model, base.model), 0, 0),
+                    } else {
+                        let made = tensorfs::import::base::inherit(&own, &header, &theirs, from)
+                            .map_err(|e| refused("model_compose_refused", format!("{} on {}: {e}", choice.model, base.model)))?;
+                        match made {
+                            Some((complete, took)) => {
+                                let bytes = complete.to_cbor().map_err(|e| refused("model_compose_refused", e.to_string()))?;
+                                header = publisher.store().put_bytes(&bytes).map_err(|e| refused("model_compose_refused", e.to_string()))?;
+                                row["took"] = json!({"components": took.components, "files": took.files});
+                            }
+                            None => observe(&format!("{} lacks nothing of {}", choice.model, base.model), 0, 0),
+                        }
                     }
                     row["base"] = on.row;
                     row["source_checkpoint"] = source;

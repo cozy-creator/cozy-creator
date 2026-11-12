@@ -1200,8 +1200,8 @@ code {
 /* Each take on its way its own state, on its tile (cl-945): grey queued, blue rendering. */
 .take .state-dot {
   position: absolute;
-  top: 5px;
-  left: 5px;
+  top: 9px;
+  left: 9px;
   z-index: 2;
   pointer-events: none;
 }
@@ -1689,19 +1689,20 @@ video.preview.on {
 .here-under .take.add.on {
   border-color: var(--ember);
 }
+/* A control on its own: 28 px, never smaller (Paul, 11-12). */
 .here-under .take-off,
 .here-side .take-off {
   display: inline-flex;
   top: 3px;
   right: 3px;
-  width: 20px;
-  height: 20px;
+  width: 28px;
+  height: 28px;
   color: #fff;
 }
 .here-under .take-off .icon,
 .here-side .take-off .icon {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 .mention-thumbs {
   display: flex;
@@ -3178,7 +3179,7 @@ a.tab:hover {
 }
 .image-history .image-version-entry {
   display: grid;
-  grid-template-columns: 24px minmax(0, auto) 24px;
+  grid-template-columns: 28px minmax(0, auto) 28px;
   gap: 6px;
   align-items: center;
 }

@@ -494,7 +494,7 @@ fn list_in(spec: &Spec, access: &Scope<'_>) -> Result<Listing> {
                         at: At::Remote {
                             url: format!(
                                 "{base}/{org}/{repo}/resolve/{commit}/{}",
-                                row.path.replace(' ', "%20")
+                                url_path(&row.path)
                             ),
                             provider: Provider::Hf,
                         },
@@ -1036,6 +1036,17 @@ pub(crate) fn read_range(m: &Member, from: u64, to: u64, access: &Access) -> Res
         },
     )?;
     Ok(out)
+}
+
+/// A repository path as a URL path: each byte outside RFC 3986's unreserved set and `/` percent-encoded, so a file named
+/// in any script (`Minimax h3多参考双采打斗工作流.json`) is fetched, never refused as not ASCII.
+fn url_path(path: &str) -> String {
+    path.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 #[cfg(test)]

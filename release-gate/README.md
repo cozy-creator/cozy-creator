@@ -218,6 +218,8 @@ later call of the same model asks the Hub nothing, and a model the Hub has not i
 the pod's idle window: its release goes unaccepted, and it ends itself at its provider within one window of its deadline.
 `runtime-floor` (run 28075, one cheap GPU pod) puts a machine on an older numbered prerelease pair: a package whose floor
 that pair misses takes its own Runtime in its own environment, and the machine's pair stays.
+`machine-end` (cl-946, `pods` cheap pods, 3 by default) ends each with `cozy machine end <name>`: what it printed must be its
+Hub's record of the rental (`released` or `failed`, with an end time, only once its provider holds no pod) and Calcifer's.
 
 ## More cells and checks
 

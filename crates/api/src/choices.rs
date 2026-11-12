@@ -26,7 +26,8 @@ pub struct Choice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adapter {
     pub reference: String,
-    /// A canonical decimal.
+    /// A canonical decimal; empty when none was given, which Calcifer fills with the LoRA's recommended
+    /// strength, else 1, as it records the run.
     pub scale: String,
 }
 
@@ -118,16 +119,17 @@ impl<'a> Choices<'a> {
             };
             let reference = entry.get("ref").and_then(Value::as_str).unwrap_or_default();
             let strength = match entry.get("strength") {
-                None => "1".to_owned(),
+                None | Some(Value::Null) => String::new(),
                 Some(Value::Number(n)) => n.to_string(),
                 Some(Value::String(s)) => s.clone(),
                 Some(_) => return Err(usage("lora_strength_invalid", format!("{at}.strength is not a number"))),
             };
             let unknown = entry.keys().filter(|k| !matches!(k.as_str(), "ref" | "strength"));
             self.dropped.extend(unknown.map(|k| format!("{at}.{k}")));
+            let given = if strength.is_empty() { String::new() } else { format!(",{strength}") };
             let written = match slot {
-                Some(slot) => format!("{slot}={reference},{strength}"),
-                None => format!("{reference},{strength}"),
+                Some(slot) => format!("{slot}={reference}{given}"),
+                None => format!("{reference}{given}"),
             };
             self.lora(slot, reference, &strength, &written)?;
         }
@@ -153,7 +155,8 @@ impl<'a> Choices<'a> {
             }
             None => self.lora_slots(written)?,
         };
-        let adapter = Adapter { reference: reference.to_owned(), scale: model_ref::strength(strength)? };
+        let scale = if strength.trim().is_empty() { String::new() } else { model_ref::strength(strength)? };
+        let adapter = Adapter { reference: reference.to_owned(), scale };
         self.at(slots, |choice| {
             choice.adapters.push(adapter.clone());
             Ok(())

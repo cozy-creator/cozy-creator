@@ -209,7 +209,8 @@ pub struct ModelSummary {
     pub source: Option<String>,
     /// The org it credits (a root model) or is in (a mirror).
     pub author: Option<ModelAuthor>,
-    /// Words a LoRA's prompt uses, and its recommended strength (on a card); never applied.
+    /// Words a LoRA's prompt uses, and its recommended strength (on a card): what Calcifer runs a
+    /// LoRA given without a strength at.
     pub trigger: Option<String>,
     pub strength: Option<f64>,
     /// Its labels, sorted: filled once from its source, then its owner's. `nsfw` marks one that makes sexual or nude images.

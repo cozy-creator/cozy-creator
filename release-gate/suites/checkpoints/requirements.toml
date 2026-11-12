@@ -2,7 +2,8 @@
 # published lane to each entry that matches it; a package owner extends the entries for its tools.
 #
 # [[checkpoint]] matches a lane by `models` (org/name), else by `families` (what its header verifies as, or its owner's
-# label) and `kind` (weights, component or lora), else by `kind` alone. An entry naming the model replaces family entries.
+# label) and `kind` (weights, component or lora), and by `kind` alone. An entry naming the model replaces both: it says
+# what reads that model (lora = true when TensorD's adapter.rs does).
 # `reads` says what reads it. [checkpoint.components.<name>]: the component exists, with
 #   config = true   a config (the default; false: none is read)    keys = [...]   config keys the tool reads
 #   files = [...]   run data under the component's folder, its config file included: "a|b" either, "a+b" both

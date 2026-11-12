@@ -468,7 +468,7 @@ impl Calcifer {
         self: &Arc<Self>,
         key: &str,
         digest: &str,
-        submit: SubmitRun,
+        mut submit: SubmitRun,
         batch: &str,
     ) -> Result<(Submitted, Option<RunId>), Error> {
         if submit
@@ -480,6 +480,14 @@ impl Calcifer {
             return Err(Error::Invalid(
                 "a stored submission cannot contain a TensorFS token; omit tensorfs options to use this computer's Hub sign-in at send time".into(),
             ));
+        }
+        // A LoRA given without a strength runs at its recommended one: here, the one place every run is recorded.
+        if let Some(machines) = self.machines() {
+            let spec = &mut submit.spec;
+            crate::hub::models::recommended(&machines.hubs, &submit.hub, &mut spec.models).await;
+            for item in spec.set.iter_mut().flat_map(|set| set.items.iter_mut()) {
+                crate::hub::models::recommended(&machines.hubs, &submit.hub, &mut item.models).await;
+            }
         }
         let mut named = None;
         if self.store.keyed(key)?.is_none()
