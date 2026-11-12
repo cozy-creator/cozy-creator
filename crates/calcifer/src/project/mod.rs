@@ -2141,7 +2141,8 @@ async fn runs(
 ) -> Result<(StatusCode, Json<Asked>), Refusal> {
     let body = body?;
     let asked: Runs = parse(&body)?;
-    if asked.on.is_empty() || asked.on.iter().any(|on| matches!(on, On::New(_))) {
+    api::calcifer::machine_set(&asked.on).map_err(Refusal)?;
+    if asked.on.iter().any(|on| matches!(on, On::New(_))) {
         let said = "a project's runs go to machines: rent one first, then name it with --on";
         return Err(Refusal(Error::new(Kind::Usage, "project_on_new", said).next("cozy machine rent")));
     }
@@ -2156,12 +2157,17 @@ async fn runs(
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
+    // None named: where `cozy run` naming none goes (cl-894).
+    let on = match asked.on.is_empty() {
+        true => crate::runs::unnamed_set(&api, Some(&id)).await.map_err(Refusal)?,
+        false => asked.on,
+    };
     project.unsent.lock().expect("unsent lock").clear();
     // What this render uses: the project as it is now, its export kept by digest until the render ends.
     let text = project.folder.text().map_err(Refusal)?;
     let doc = Doc::read(&project.folder, &text).map_err(Refusal)?;
     let digest = hex::encode(Sha256::digest(text.as_bytes()));
-    let target = Target { on: asked.on, hub };
+    let target = Target { on, hub };
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let lock = project.folder.lock().map_err(Refusal)?;
     let stand = doc.stand(&lock);

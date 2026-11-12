@@ -3,7 +3,8 @@
 //! there now; each job goes to the soonest finish of those that can run it at all, on a tie one measured before one not and a rental
 //! before this computer (Paul, 11-05). Only a machine on this cozy's
 //! minor quotes (`Machines::current`). A quote reserves nothing: two clients that pick one machine are settled by its queue. Offers not
-//! yet rented (`any`, `new`) are never asked: the Hub keeps no times per SKU.
+//! yet rented (`any`, `new`) are never asked: the Hub keeps no times per SKU. This computer's `local`, which stops after 15 idle minutes,
+//! is asked as any: it starts to answer, and its times count from its answer, so its finish counts its start (cl-894).
 use std::sync::Arc;
 
 use api::{
@@ -152,6 +153,7 @@ pub(crate) async fn takes(api: &Arc<Api>, on: &[On], offers: &[Offer]) -> Result
 async fn quotes(api: &Arc<Api>, on: &On, jobs: &[&Job], update: bool) -> Result<Vec<Offer>, String> {
     let On::Machine(text) = on else { return Err("it isn't rented yet".into()) };
     let machines = &api.machines;
+    // Stopped, it starts now: what that takes is in its finish, counted from its answer.
     if text == "local" {
         machines.local_up().await.map_err(|e| e.message)?;
     }
