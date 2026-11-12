@@ -232,7 +232,7 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
       try { recommended = (await client.model(model.model)).strength }
       catch (error) { say("Couldn't read the LoRA's default strength", error); return }
     }
-    const strength = recommended ?? loraNote(model.model)?.strength
+    const strength = recommended
     const adapter = { ref: model.model, ...(typeof strength === "number" && Number.isFinite(strength) ? { strength } : {}) }
     changeSlot(store, name, slot, (held) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model)) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }))
   }
