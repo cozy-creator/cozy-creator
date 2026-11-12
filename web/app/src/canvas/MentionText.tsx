@@ -43,6 +43,43 @@ function chip(name: string, words: string, missing: boolean, refused: string | n
   return el
 }
 
+/** A mention's chip, as loading, typing and pasting all make it: one gone struck through, one this text doesn't send dimmed; none for a name this
+ *  project doesn't know, which stays words. */
+function chipFor(store: CanvasStore, name: string, asset: string, missing: string[], takes: Media[] | undefined): HTMLElement | null {
+  const said = store.mentionOf(name, asset)
+  if (missing.includes(name) || said?.gone || (isSelf(name) && !said)) return chip(name, chipSaid(store, name, asset), true, null)
+  return said ? chip(name, chipSaid(store, name, asset), false, unsent(store, name, asset, takes)) : null
+}
+
+/** Text as the box shows it: each `<name>` its chip, the rest words. */
+function nodesOf(store: CanvasStore, text: string, asset: string, missing: string[], takes: Media[] | undefined): (HTMLElement | Text)[] {
+  return withMentions(text).map((part) => (part.mention && chipFor(store, part.text.slice(1, -1), asset, missing, takes)) || document.createTextNode(part.text))
+}
+
+/** Where the caret is in what `box` says, counted as the file holds it, or null when it isn't in it. */
+function caretIn(box: HTMLElement): number | null {
+  const selection = document.getSelection()
+  if (!selection?.rangeCount || !selection.anchorNode || !box.contains(selection.anchorNode)) return null
+  const before = document.createRange()
+  before.selectNodeContents(box)
+  before.setEnd(selection.anchorNode, selection.anchorOffset)
+  const held = document.createElement("div")
+  held.append(before.cloneContents())
+  return read(held).length
+}
+
+/** The caret `offset` into what `box` says: in words where it falls in them, else just after the chip it falls in. */
+function caretAt(box: HTMLElement, offset: number) {
+  const selection = document.getSelection()
+  let left = offset
+  for (const [at, child] of [...box.childNodes].entries()) {
+    const length = child instanceof HTMLElement && child.dataset.mention ? child.dataset.mention.length + 2 : (child.textContent ?? "").length
+    if (left <= length) return child instanceof Text ? selection?.collapse(child, left) : selection?.collapse(box, at + 1)
+    left -= length
+  }
+  selection?.collapse(box, box.childNodes.length)
+}
+
 /** What the box says, as the file will hold it: plain text, `<name>` for each chip. */
 function read(box: HTMLElement): string {
   let text = ""
@@ -112,19 +149,20 @@ export function MentionText({
   // biome-ignore lint/correctness/useExhaustiveDependencies: names tells it a chip may have come or gone
   useLayoutEffect(() => {
     const el = box.current
-    // What ends a text is its file's to say: what's typed, and the caret in it, stand.
-    if (!el || (document.activeElement === el && read(el).trimEnd() === value.trimEnd())) return
-    const nodes = withMentions(value).map((part) => {
-      const inner = part.text.slice(1, -1)
-      const said = part.mention ? store.mentionOf(inner, asset) : null
-      if (part.mention && (missing.includes(inner) || said?.gone || (isSelf(inner) && !said))) return chip(inner, chipSaid(store, inner, asset), true, null)
-      if (said) return chip(inner, chipSaid(store, inner, asset), false, unsent(store, inner, asset, takes))
-      return document.createTextNode(part.text)
-    })
-    const merged = (held: ChildNode[]) => held.reduce((said, node) => said + (node instanceof HTMLElement ? `\u0000${node.className}:${node.dataset.mention}:${node.textContent}:${node.title}\u0000` : node.textContent), "")
+    if (!el) return
+    // What ends a text is its file's to say: what's typed, and the caret in it, stand. Only its marks follow what's now known (a box made, a
+    // name Calcifer says is nothing), as they would loaded.
+    const typing = document.activeElement === el && read(el).trimEnd() === value.trimEnd()
+    const nodes = nodesOf(store, typing ? read(el) : value, asset, missing, takes)
+    const mark = (node: Node) => (node instanceof HTMLElement ? `\u0000${node.className}:${node.dataset.mention}:${node.textContent}:${node.title}\u0000` : node.textContent)
     const trimmed = (said: string) => said.replace(/\s+$/, "")
-    if (trimmed(merged([...el.childNodes])) === trimmed(merged(nodes))) return
+    // Typed, only its chips count: the line breaks a browser keeps as it types are its own.
+    const shown = typing ? [...el.querySelectorAll("[data-mention]")] : [...el.childNodes]
+    const wanted = typing ? nodes.filter((node) => node instanceof HTMLElement) : nodes
+    if (trimmed(shown.map(mark).join("")) === trimmed(wanted.map(mark).join(""))) return
+    const at = typing ? caretIn(el) : null
     el.replaceChildren(...nodes)
+    if (at !== null) return caretAt(el, at)
     // What it pointed into is gone: a name dropped now goes at the end.
     caret.current = null
   }, [value, missing, store, names, asset, takes])
@@ -148,8 +186,7 @@ export function MentionText({
     (name: string, at: Range | null) => {
       const el = box.current
       if (!el) return
-      const said = store.mentionOf(name, asset)
-      const made = chip(name, chipSaid(store, name, asset), !said || Boolean(said.gone), said ? unsent(store, name, asset, takes) : null)
+      const made = chipFor(store, name, asset, missing, takes) ?? chip(name, chipSaid(store, name, asset), true, null)
       const after = document.createTextNode(" ")
       if (at && el.contains(at.startContainer)) {
         at.deleteContents()
@@ -165,7 +202,7 @@ export function MentionText({
       }
       emit()
     },
-    [emit, store, asset, takes],
+    [emit, store, asset, missing, takes],
   )
 
   // A drop, or anything else asking this text to take a name, goes where its caret last was.
@@ -230,7 +267,7 @@ export function MentionText({
     const before = at.data.slice(0, selection.anchorOffset)
     const closed = before.match(/<([^<>\s]+)>$/)
     if (closed && isSelf(closed[1]) && !store.nameOf(closed[1])) say(NO_BARE_SELF)
-    if (closed && (store.mentionOf(closed[1], asset) || isSelf(closed[1]))) {
+    if (closed && chipFor(store, closed[1], asset, missing, takes)) {
       const range = document.createRange()
       range.setStart(at, selection.anchorOffset - closed[0].length)
       range.setEnd(at, selection.anchorOffset)
@@ -325,15 +362,18 @@ export function MentionText({
     emit()
   }
 
+  // What's pasted is marked as it would be loaded: its mentions are chips at once, however many lines, whatever program it came from.
   const paste = (event: ClipboardEvent) => {
     event.preventDefault()
     const selection = document.getSelection()
     if (!selection?.rangeCount) return
     const range = selection.getRangeAt(0)
     range.deleteContents()
-    const text = document.createTextNode(event.clipboardData.getData("text/plain"))
-    range.insertNode(text)
-    selection.collapse(text, text.length)
+    const end = document.createTextNode("")
+    const pasted = document.createDocumentFragment()
+    pasted.append(...nodesOf(store, event.clipboardData.getData("text/plain"), asset, missing, takes), end)
+    range.insertNode(pasted)
+    selection.collapse(end, 0)
     emit()
   }
 
