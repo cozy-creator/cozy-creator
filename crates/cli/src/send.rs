@@ -2,7 +2,7 @@
 //! digest. What Calcifer holds is skipped, and a part it holds is resumed. A folder is its tree document (`api::tree`), sent after
 //! its files, and local code is its package's tree (`api::code`). Calcifer reads no path of this computer's.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::SeekFrom,
     path::{Path, PathBuf},
 };
@@ -95,6 +95,15 @@ impl<'a> Sender<'a> {
         })
     }
 
+    /// Maintenance may stage code only after every actual source path is proven outside a project.
+    pub(crate) async fn independent_code(ctx: &'a Context, path: &Path) -> Result<LocalCode, Error> {
+        let plan = source_plan(path).await?;
+        source_scope(ctx, &plan, CodeScope::Independent).await?;
+        let staged = tokio::task::spawn_blocking(move || plan.stage(None))
+            .await.map_err(|error| Error::internal("stage", error.to_string()))??;
+        Self::new(ctx).await?.prepared_code(staged).await
+    }
+
     fn memo(&self) -> PathBuf {
         self.ctx.home.root().join("cache").join("digests")
     }
@@ -163,12 +172,18 @@ impl<'a> Sender<'a> {
     /// The package at `path` (a folder or a script) as local code: its tree, each file and then the document held by Calcifer
     /// (`api::code`). What never goes is said.
     pub(crate) async fn code(&self, path: &Path) -> Result<LocalCode, Error> {
+        let Some(project) = self.project.as_deref() else {
+            return Err(code_scope_refused());
+        };
+        let plan = source_plan(path).await?;
+        source_scope(self.ctx, &plan, CodeScope::Project(project)).await?;
+        let staged = tokio::task::spawn_blocking(move || plan.stage(None))
+            .await.map_err(|error| Error::internal("stage", error.to_string()))??;
+        self.prepared_code(staged).await
+    }
+
+    async fn prepared_code(&self, staged: api::code::Staged) -> Result<LocalCode, Error> {
         let mut progress = Sending::new(self.ctx);
-        progress.line.phase("Checking local code");
-        let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
-        let staged = tokio::task::spawn_blocking(move || api::code::stage(&at, memo.as_deref()))
-            .await
-            .map_err(|e| Error::internal("stage", e.to_string()))??;
         if !staged.left.is_empty() {
             let warning = format!("left out of the code it sends: {}", staged.left.join(", "));
             progress.line.println(format!("warning: {warning}"));
@@ -303,6 +318,49 @@ impl<'a> Sender<'a> {
             _ => Ok(None),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum CodeScope<'a> { Independent, Project(&'a str) }
+
+fn code_scope_refused() -> Error {
+    Error::new(Kind::Forbidden, "project_source_scope", "This package source belongs to a Cozy project")
+        .remedy("Run it from that project, or export a separate package copy before installing or publishing")
+        .next("cozy run --help")
+}
+
+async fn source_plan(path: &Path) -> Result<api::code::SourcePlan, Error> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || api::code::plan(&path))
+        .await.map_err(|error| Error::internal("stage", error.to_string()))?
+}
+
+async fn source_scope(ctx: &Context, plan: &api::code::SourcePlan, scope: CodeScope<'_>) -> Result<(), Error> {
+    let mut directories = BTreeSet::new();
+    for path in plan.roots().chain(plan.files()) {
+        let canonical = std::fs::canonicalize(path).map_err(|error| unreadable(path, error))?;
+        let directory = if canonical.is_dir() { canonical } else {
+            canonical.parent().ok_or_else(code_scope_refused)?.to_owned()
+        };
+        directories.insert(directory);
+    }
+    let client = ctx.calcifer().await?;
+    for directory in directories {
+        let directory = directory.to_str().ok_or_else(|| Error::new(Kind::Usage, "project_path", "The source path is not UTF-8"))?;
+        let path = crate::calcifer_client::path(&["v1", "projects", directory, "address"]);
+        let owner = match client.get::<api::calcifer::project::Address>(&path).await {
+            Ok(owner) => Some(owner),
+            Err(error) if error.code == "project_not_found" => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(owner) = owner {
+            match scope {
+                CodeScope::Project(expected) if owner.id == expected => {},
+                _ => return Err(code_scope_refused()),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `raw`, when it is written as a path here: its file (a folder too, with `folders`) sent, `raw` its digest and `name` its name.

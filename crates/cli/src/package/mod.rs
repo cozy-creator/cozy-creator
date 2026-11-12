@@ -90,7 +90,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Command::Install { package, placement } => match local(ctx, &package)? {
             Some(path) => {
                 let on = placement.on()?;
-                let code = crate::send::Sender::new(ctx).await?.code(&path).await?;
+                let code = crate::send::Sender::independent_code(ctx, &path).await?;
                 machine::install(ctx, String::new(), Some(code), None, on).await
             }
             None => {
