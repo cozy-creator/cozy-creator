@@ -2,7 +2,8 @@
 //! (with its kernels), TensorFS and the `cozy` a machine runs, which each push to `rc/<x.y.z>` puts on the rolling
 //! prerelease `rc-<x.y.z>` of cozy-runtime and cozy-creator (their rc-dev.yaml). A rental this computer ordered moves to
 //! them once it is ready, before its first run, and again as the RC moves, only while it has no work. One an update by
-//! hand gave other software keeps it until `cozy machine update <machine>` names nothing, which in a dev home is the RC.
+//! hand named software for (any version, the RC's builds too) keeps it until `cozy machine update <machine>` names nothing,
+//! which in a dev home is the RC.
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -150,8 +151,9 @@ pub(crate) async fn held_cozy(build: &Build, url: &str) -> Result<DevBuild, Erro
     Ok(held)
 }
 
-/// Whether an update's words (`runtime 0.45.0 (prerelease), mode dedicated`) named its machine's software by hand: a
-/// component not marked `(RC)` or `(Hub)`, as one with nothing named moves it. A mode or a GPU memory limit names none.
+/// Whether an update's words (`runtime 0.45.0 (prerelease), mode dedicated`) read as software named by hand: a component
+/// not marked `(RC)` or `(Hub)`, as one with nothing named moves it. Only a store from before holds were kept reads words
+/// this way (`hold_of`); an update now says whether it named anything (`mind_hold`).
 fn by_hand(target: &str) -> bool {
     target.split(", ").any(|named| software(named) && !named.ends_with("(RC)") && !named.ends_with("(Hub)"))
 }
@@ -186,13 +188,14 @@ impl Machines {
     }
 
     /// Keeps or lets go of `name`'s hold for an update under `key` named `target` (`flagless`: nothing named): see `held_by_hand`.
+    /// Software named by version holds it whatever that version is: an RC build named by hand (`(RC)`) is a pin, not the RC.
     pub(crate) fn mind_hold(&self, name: &str, key: &str, target: &str, flagless: bool) {
         if calcifers(key) {
             return;
         }
-        let words = match (by_hand(target), flagless) {
-            (true, _) => Some(target),
-            (false, true) => None,
+        let words = match (flagless, target.split(", ").any(software)) {
+            (true, _) => None,
+            (false, true) => Some(target),
             (false, false) => return,
         };
         if let Err(e) = self.store().hold(name, words) {

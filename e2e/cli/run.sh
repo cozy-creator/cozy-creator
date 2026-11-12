@@ -373,6 +373,7 @@ case $SHARD in
     lock_refresh
     bound_runs
     own_references
+    lane_fit
     no_descriptions
     orbit_angles
     old_runtime
@@ -440,6 +441,7 @@ case $SHARD in
     run_filters
     bound_runs
     own_references
+    lane_fit
     no_descriptions
     orbit_angles
     old_runtime
