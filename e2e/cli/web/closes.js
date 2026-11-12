@@ -197,7 +197,8 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
       if (afterImport === null || afterOpen === null) notClosed.cli.push(folder);
       // The page shows it, and asks nothing more of it: it's open while it does. The one it showed before closes.
       await page.goto(await projectUrl(imported.state.id));
-      await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
+      // By its title: a name is drawn breakable after its underscores (cl-958's <wbr>), which its text no longer matches whole.
+      await page.waitForSelector('.react-flow__node .nm[title="shot_0"]', { timeout: 120_000 });
       await page.waitForTimeout(1000);
       if (readable && !held(folder)) notHeld.push(folder);
       if (i > 0) {
