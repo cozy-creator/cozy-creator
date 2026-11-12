@@ -96,8 +96,9 @@ PY_ENCRYPT_DEADLINE
   ffprobe -v error -show_entries format=duration -of json "$view/files/audio.wav" > "$work/audio.json"
   boxes_of "$P" > "$work/after-encryption.json"
   cmp "$work/before.json" "$work/after-encryption.json" || fail "encryption changed logical project state"
-  # The fixture directory contains only encrypted backing storage and a public keybag.
-  python3 - "$E2E/cli" "$P" > "$work/plaintext-matches.txt" <<'PY_BACKING_SCAN'
+  # The fixture directory contains only encrypted backing storage and a public keybag. Its open view is mounted inside it
+  # (`.vault-runtime/<id>/view`): that mount, and no other, is the readable view, not backing.
+  python3 - "$E2E/cli" "$P" "$view" > "$work/plaintext-matches.txt" <<'PY_BACKING_SCAN'
 import os
 from pathlib import Path
 import sys
@@ -106,8 +107,11 @@ from private_execution import contains
 markers = [b"SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400", b"private-sentinel.txt"]
 def failed(error):
     raise error
-leaks = []
+leaks, mounts = [], []
 for directory, dirs, files in os.walk(sys.argv[2], followlinks=False, onerror=failed):
+    mounted = [name for name in dirs if os.path.ismount(Path(directory) / name)]
+    mounts += [Path(directory) / name for name in mounted]
+    dirs[:] = [name for name in dirs if name not in mounted]
     for name in dirs + files:
         path = Path(directory) / name
         assert not path.is_symlink(), "backing scan encountered an unexpected symlink"
@@ -116,7 +120,8 @@ for directory, dirs, files in os.walk(sys.argv[2], followlinks=False, onerror=fa
         if any(marker in name.encode() for marker in markers) or contains(path, markers):
             leaks.append(str(path))
 print("\n".join(leaks))
-assert not leaks, "encrypted backing retains readable private file content or names"
+assert all(mount.resolve() == Path(sys.argv[3]).resolve() for mount in mounts), f"backing holds a mount other than its view: {mounts}"
+assert not leaks, "encrypted backing retains readable private file content or names: " + ", ".join(os.path.relpath(leak, sys.argv[2]) for leak in leaks)
 PY_BACKING_SCAN
 
   step "recovery output inside the unlocked view refuses without replacing recovery"

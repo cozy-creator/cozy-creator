@@ -139,13 +139,14 @@ kept_install() {
   local k at=15 start=$SECONDS id
   for k in 1 2 3 4 5; do
     while [ $((SECONDS - start)) -lt "$at" ]; do
-      id=$(cozy --json run ls --all --limit 20 2> /dev/null | jq -r 'first(.runs[]? | select(.target == "install local/kept-gate"
+      # Its own project's runs: the install is the project's.
+      id=$(cozy --json run ls --limit 20 2> "$OUT/kept-ls.err" | jq -r 'first(.runs[]? | select(.target == "install local/kept-gate"
         and ("\(.progress.stage // "") \(.waiting // "")" | contains("installing local/kept-gate"))) | .id) // empty')
       [ -n "$id" ] && { echo "$id"; return 0; }
       kill -0 "$(cat "$OUT/kept.pid")" 2> /dev/null || return 1
       sleep 2
     done
-    echo "kept: its install does not hold yet after $((SECONDS - start)) s (attempt $k/5)" >&2
+    echo "kept: its install does not hold yet after $((SECONDS - start)) s (attempt $k/5)$(tail -c 200 "$OUT/kept-ls.err" | tr '\n' ' ')" >&2
     at=$((at * 2 + 15))
   done
   return 1
@@ -237,7 +238,7 @@ systemctl --user restart cozy-calcifer || check "kept: systemctl --user restart 
 echo $! > "$OUT/kept.pid"
 install=$(kept_install) || install=
 if [ -z "$install" ]; then
-  check "kept: its install never held in its preparation: $(tail -n 3 "$OUT/kept.err" | tr '\n' ' ')"
+  check "kept: its install never held in its preparation: $(tail -n 3 "$OUT/kept.err" | tr '\n' ' ') listed: $(cozy --json run ls --limit 5 2>&1 | jq -c '[.runs[]? | {target, stage: .progress.stage, waiting}]' 2>&1 | head -c 400)"
 else
   machine_stop || check "kept: the local machine did not stop"
   touch "$gate"

@@ -971,7 +971,8 @@ impl Calcifer {
     }
     pub(crate) fn maintenance_warm(&self,machine:&str,items:Vec<v1::WarmItem>)->Vec<v1::WarmItem> {
         let rows=self.maintenance_rows(machine);
-        items.into_iter().filter(|item|rows.iter().flat_map(|row|row.spec.set.iter().flat_map(|set|&set.items)).any(|known|same_warm(known,item))).map(|mut item|{item.held_back.clear();item}).collect()
+        // `held_back` stays: TensorD's fixed reason why an item holds less, which names nothing of a project.
+        items.into_iter().filter(|item|rows.iter().flat_map(|row|row.spec.set.iter().flat_map(|set|&set.items)).any(|known|same_warm(known,item))).collect()
     }
 
     /// The machine's downloads, as its Status lists them (none: it went quiet). A run with bytes still to come, none of
