@@ -1541,12 +1541,11 @@ video.preview.on {
 .field-block .mention-text {
   font-size: var(--body);
 }
-.tool-head {
+/* What makes a box, over its Render (cl-934). */
+.edit-foot {
   display: flex;
-  padding: 2px 0 4px;
-}
-.tool-head .add-ons {
-  position: static;
+  flex-direction: column;
+  gap: 6px;
 }
 .here-all {
   display: flex;

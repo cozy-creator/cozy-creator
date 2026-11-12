@@ -73,7 +73,6 @@ function changed(addOn: AddOn, lora: unknown, models: unknown, to: (entry: Entry
 
 export const takenOff = (addOn: AddOn, lora: unknown, models: unknown) => changed(addOn, lora, models, () => null)
 
-export const atStrength = (addOn: AddOn, strength: number, lora: unknown, models: unknown) => changed(addOn, lora, models, (entry) => ({ ...entry, strength }))
 
 /** A checkpoint's own word: `hf://a/b` and `a/b@1.0` are `b`. */
 export const wordOf = (ref: string) => (ref.split("://").pop() ?? ref).split("@")[0].split("/").filter(Boolean).pop()?.replace(/\.safetensors$/, "") ?? ref

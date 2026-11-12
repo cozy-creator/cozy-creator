@@ -1,4 +1,5 @@
-// Existing model and adapter parameters on real nodes: project API assignment; at rest no chips (cl-932), open their list, removal and strength behind More.
+// Existing model and adapter parameters on real nodes: project API assignment; at rest no chips (cl-932), open their list; removal and strength in
+// Models & LoRAs, the one picker (cl-934).
 // The sidebar's checkpoint explorer and contextual picker are retired; this file records those removed UI flows explicitly instead of recreating them.
 // Current authoring import/export preserves words and `|`; model names come from `GET /v1/models` and `GET /v1/tools`.
 //   node addons.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
@@ -116,13 +117,10 @@ assets:
   await box('shot').waitFor();
   const kept = () => words.filter((line) => !yaml().includes(line));
   // At rest a box has no chips (cl-932, Paul 11-12): its tool and shape under it, nothing else. Open, its models and LoRAs are listed
-  // (ModelConfig, each by its ref), and taken off or made stronger behind More.
+  // (ModelConfig, each by its ref), and taken off or made stronger in Models & LoRAs (cl-934).
   const here = (name) => page.locator(`.card.here[data-asset="${name}"]`);
   const refs = (name) => here(name).locator('.active-models .active-model-name').evaluateAll((els) => els.map((el) => el.title));
   const restChips = () => page.locator('.react-flow__node .add-on, .react-flow__node .add-ons').count();
-  const more = async (name) => {
-    if (!(await here(name).locator('.edit-more').count())) await here(name).locator('.more-toggle').click();
-  };
   const opened = async (name, run) => {
     await openBox(page, name);
     try { return await run(); } finally { await closeBox(page); }
@@ -175,7 +173,22 @@ assets:
   check('no_run_and_no_weights', (await madeHere()) === 0 && (await fetched([loraA.model, loraB.model, fineA.model, fineB.model])).length === 0);
   await shot('node-model-parameters');
 
-  // Behind More, an X, at once: the page first again.
+  // Models & LoRAs open on a box's LoRAs: its slot's, or those on its model (Existing LoRAs).
+  const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
+  const openLoras = async (name) => {
+    await here(name).locator('button[aria-label="Models and LoRAs"]').first().click();
+    await picker.waitFor();
+    const existing = picker.getByRole('button', { name: 'Existing LoRAs' });
+    if (await existing.count()) await existing.click();
+    else {
+      await picker.locator('[data-model-slot]').first().click();
+      await picker.getByRole('button', { name: 'LoRAs', exact: true }).click();
+    }
+  };
+  const adapter = (model) => picker.locator('.model-picker-adapter', { hasText: new RegExp(word(model).split(/[-_]+/).join('.'), 'i') });
+  const shut = () => picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
+
+  // In Models & LoRAs, an X, at once: the page first again.
   let again;
   const held2 = new Promise((done) => { again = done; });
   await page.route(`**/v1/projects/${id}/assets/shot`, async (route) => {
@@ -183,35 +196,37 @@ assets:
     await route.fallback();
   });
   await openBox(page, 'shot');
-  await more('shot');
-  await here('shot').locator(`[aria-label="Take ${word(loraB)} off shot"]`).click();
+  await openLoras('shot');
+  await adapter(loraB).locator('button[title="Remove LoRA"]').click();
   await until('one LoRA left', () => refs('shot'), (now) => !now.includes(loraB.model), 2000);
   check('x_before_the_write', yaml().includes(loraB.model));
   again();
   await page.unroute(`**/v1/projects/${id}/assets/shot`);
   await until('it off the file', () => Promise.resolve(yaml()), (text) => !text.includes(loraB.model));
 
-  // Strength is behind More.
-  await more('shot');
-  const slider = here('shot').locator(`input[aria-label="Strength of ${word(loraA)}"]`);
-  await slider.focus();
-  for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight');
+  // Its strength, there too.
+  const strength = adapter(loraA).locator('input[aria-label^="Strength of"]');
+  await strength.fill('1.2');
+  await strength.press('Enter');
   await until('its strength in the file', () => Promise.resolve(yaml()), (text) => /strength: 1\.2/.test(text.split(`ref: ${loraA.model}`)[1] ?? ''));
+  await shut();
   await closeBox(page);
 
   // Hand-written: one off, the rest of it as it was.
   await opened('hand', async () => {
-    await more('hand');
-    await here('hand').locator(`[aria-label="Take ${word(loraC)} off hand"]`).click();
+    await openLoras('hand');
+    await adapter(loraC).locator('button[title="Remove LoRA"]').click();
     await until('off the file', () => Promise.resolve(yaml()), (text) => !text.includes(loraC.model));
+    await shut();
   });
   check('hand_written_rest_stays', yaml().includes(`${mine.model.slot}: {ref: ${fineB.model}}`) || yaml().split('hand:')[1].includes(fineB.model), yaml());
   check('words_outlast_it', kept().length === 0, kept());
 
   await opened('flowed', async () => {
-    await more('flowed');
-    await here('flowed').locator('[aria-label="Take wushu off flowed"]').click();
+    await openLoras('flowed');
+    await adapter({ model: 'hf://someone/wushu' }).locator('button[title="Remove LoRA"]').click();
     await until('off the one line', () => Promise.resolve(yaml()), (text) => !text.includes('wushu'));
+    await shut();
   });
   check('one_line_goes', yaml().includes('instructions: One line.'), yaml());
 

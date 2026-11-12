@@ -7,15 +7,14 @@ import type { Media } from "../types"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
-import { AddOnRows } from "./AddOns"
 import { progressOfBeats } from "./beatProgress"
-import { addOnsOf } from "./checkpoints"
 import type { CanvasStore, ElementView } from "./CanvasStore"
 import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { atDefault, empty, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
+import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
 import { Ghosts, Thumb } from "./Media"
+import { ModelsAndLoras } from "./ImageVersions"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { makes, watched } from "./shown"
@@ -758,60 +757,62 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 /** What beside Render is only a thing to set: the rest of the face wants a line. */
 const small = (field: ToolField) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
 
-/** What a box asks and holds, under it. Advanced controls and output resolution remain visible without opening another section. */
-export function AssetEdit({ name, view, editing, prominent = false, head, actions, children }: { name: string; view: ElementView; editing: boolean; prominent?: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
+/** What a box asks and holds, under it, and Models & LoRAs at the bottom (its tool is named under its media). In Focus (`prominent`) every
+ *  field shows at once, nothing under More or Advanced (cl-934, Paul 11-12: "display the 'more' by default"); elsewhere what isn't on the
+ *  face is under More. What's only a thing to set is grouped above Render, at the bottom right. */
+export function AssetEdit({ name, view, editing, prominent = false, actions, children }: { name: string; view: ElementView; editing: boolean; prominent?: boolean; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   if (!view.asset) return null
   const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
   const declared = makes(view) ? fieldsOf(view.asset, tools) : []
-  const videoForm = prominent && view.asset.kind === "video"
   const priority = (field: ToolField) => field.field === "summary" ? 0 : field.type === "group" && (field.field === "beats" || field.members?.some((member) => member.total)) ? 1 : 2
   const fields = prominent ? [...declared].sort((a, b) => priority(a) - priority(b)) : declared
   const inFrame = prominent ? undefined : framed(view, fields, tool)
   const first = fields.find((field) => field.type === "prompt" || field.type === "words")
   // The box's own shape is its shape: its corner sets it.
   const rest = fields.filter((field) => field !== inFrame && field.type !== "timeline" && field.type !== "shape")
-  const faced = editing ? rest.filter((field) => videoForm ? field.field === "summary" || field.field === "beats" || Boolean(field.required) || (field.type === "slot" && !empty(store.valueOf(name, field.field))) : prominent ? !field.advanced : field.field === "megapixels" || onFace(field, store.valueOf(name, field.field))) : []
+  const faced = !editing ? [] : prominent ? rest : rest.filter((field) => field.field === "megapixels" || onFace(field, store.valueOf(name, field.field)))
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, fields)
   const folded = rest.filter((field) => !faced.includes(field))
   const plainFolded = folded.filter((field) => !field.advanced)
   const expert = folded.filter((field) => field.advanced)
-  const parameters = [...faced.filter(small), ...(!videoForm ? expert.filter(small) : [])]
+  const parameters = [...faced.filter(small), ...expert.filter(small)]
   const open = store.showsMore(name)
-  const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
   const row = (field: ToolField) => {
     const control = <ControlRow key={field.field} name={name} field={field} view={view} focus={!prominent && store.focusing === name && field === first} named={folded.includes(field)} />
     return prominent && field.type === "group" && field.list ? <section key={field.field} className="focus-parameter-group"><h3>{field.label}</h3>{control}</section> : control
   }
+  const held = beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)
   return (
     <div className={`edit-face ${prominent ? "prominent" : ""}`}>
-      {head && <div className="tool-head">{head}</div>}
       <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} row={row}>
         {(lines, more) => {
-          const behind = (more !== null && plainFolded.length > 0) || (videoForm && expert.length > 0) || addOns || beyond.length > 0
+          const behind = !prominent && ((more !== null && plainFolded.length > 0) || beyond.length > 0)
+          const render = (
+            <div className="row actions">
+              {behind && <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
+              {actions}
+            </div>
+          )
           return (
             <>
               {editing && lines && <div className="edit-shown">{lines}</div>}
-              {!videoForm && more !== null && expert.some((field) => !small(field)) && <div className="advanced">{expert.filter((field) => !small(field)).map(row)}</div>}
+              {prominent && held}
+              {more !== null && expert.some((field) => !small(field)) && <div className="advanced">{expert.filter((field) => !small(field)).map(row)}</div>}
               {more !== null && parameters.length > 0 && <div className="edit-parameters">{parameters.map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named />)}</div>}
               {behind ? (
                 open && (
                   <div className="edit-more">
-                    {open && more}
-                    {videoForm && expert.length > 0 && <div className="advanced">{expert.map(row)}</div>}
-                    {open && <AddOnRows name={name} />}
-                    {open && beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
+                    {more}
+                    {held}
                     {children}
                   </div>
                 )
               ) : (
                 children
               )}
-              <div className="row actions">
-                {behind && <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
-                {actions}
-              </div>
+              {prominent ? <div className="edit-foot">{render}<ModelsAndLoras name={name} /></div> : <>{render}<ModelsAndLoras name={name} /></>}
             </>
           )
         }}
@@ -819,4 +820,3 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
     </div>
   )
 }
-

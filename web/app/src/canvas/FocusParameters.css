@@ -123,13 +123,19 @@
   min-height: 44px;
   padding: 10px 18px;
 }
-.focus-viewport .focus-card.focus-parameter-tool .prominent .actions {
+/* What makes it and Render stay in sight at the bottom, as a picture's tool line does under it. */
+.focus-viewport .focus-card.focus-parameter-tool .prominent .edit-foot {
   position: sticky;
   bottom: -24px;
   z-index: 2;
   gap: 12px;
-  padding-block: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line2);
   background: var(--panel);
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .actions {
+  gap: 12px;
+  padding-block: 4px 16px;
 }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .run {
   min-height: 48px;
