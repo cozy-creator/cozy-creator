@@ -377,6 +377,9 @@ pub(crate) struct Clock {
     parts: Option<Parts>,
     /// Its results coming here once it ends, at its machine's rate.
     result_ms: f64,
+    /// Bytes it moves now at a known rate, its own stage's or a segment's in it (`… / loading model`), on its machine's clock: when, and
+    /// what they had left then. Its time left is at least that.
+    moving: Option<(f64, f64)>,
 }
 
 impl Clock {
@@ -407,6 +410,14 @@ impl Clock {
         if self.needs_prior() {
             self.prior = Some(prior);
         }
+    }
+
+    /// What `progress`, reported at `at` with its rate worked out here, has left of the bytes it moves; none moving at a known rate,
+    /// nothing.
+    pub(crate) fn moving(&mut self, progress: &Progress, at: f64) {
+        self.moving = (progress.bytes_per_s.filter(|rate| *rate >= 1.0))
+            .filter(|_| progress.bytes_total > progress.bytes_done)
+            .map(|rate| (at, (progress.bytes_total - progress.bytes_done) as f64 / rate * 1000.0));
     }
 
     /// Its results take `ms` to come here once it ends.
@@ -476,8 +487,22 @@ impl Clock {
         (steps.total, steps.steady_ms) = (progress.total, progress.step_steady_ms);
     }
 
-    /// What it has left at `now` (this computer's), as best known; none with no basis.
+    /// What it has left at `now` (this computer's), as best known: never less than the bytes it moves now have left at their rate,
+    /// which alone, with nothing else known, are its time left at least (`bytes`, cl-921); none with no basis.
     pub(crate) fn estimate(&self, here: f64) -> Option<Estimate> {
+        let now = here - self.ahead.unwrap_or(0.0);
+        let floor = (self.moving.map(|(at, ms)| (ms - (now - at)).max(0.0)))
+            .filter(|ms| *ms > 0.0)
+            .map(|ms| ms + self.result_ms);
+        match (self.estimated(here), floor) {
+            (Some(estimate), Some(floor)) if estimate.left_ms < floor => Some(Estimate { left_ms: floor, ..estimate }),
+            (None, Some(floor)) => Some(Estimate { left_ms: floor, confidence: 0.2, basis: EtaBasis::Bytes }),
+            (estimate, _) => estimate,
+        }
+    }
+
+    /// What it has left at `now` (this computer's) by what ran before it and its own steps; none with no basis.
+    fn estimated(&self, here: f64) -> Option<Estimate> {
         let now = here - self.ahead.unwrap_or(0.0);
         let prior = self.prior.as_ref();
         // In parts, once one has ended: those left each as long as those that took, what's left of this one, then its tail. The whole

@@ -775,6 +775,8 @@ pub enum EtaBasis {
     Card,
     /// Its own steps alone: nothing like it ran anywhere this computer knows.
     Steps,
+    /// The bytes it moves now, left at their rate, alone: its time left is at least this.
+    Bytes,
     /// Nothing yet: no run like it on any card this computer knows, and no step of its own.
     FirstRun,
 }
