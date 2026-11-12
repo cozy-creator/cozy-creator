@@ -26,11 +26,14 @@ function useSrc(path: string | null): string | undefined {
   useEffect(() => {
     if (!path) return setSrc(undefined)
     let live = true
+    let held: string | undefined
     void client.transport.src(path).then((url) => {
-      if (live) setSrc(url)
-    })
+      if (live) { held = url; setSrc(url) }
+      else if (url.startsWith("blob:")) URL.revokeObjectURL(url)
+    }).catch(() => {})
     return () => {
       live = false
+      if (held?.startsWith("blob:")) URL.revokeObjectURL(held)
     }
   }, [client, path])
   return src
@@ -123,8 +126,8 @@ function Output({ run, item, project }: OutputProps) {
         <small>{facts.join(" · ")}</small>
         <span className="sp" />
         {here && save && (
-          <a className="more" href={save} download>
-            Save
+          <a className="more" href={save} download title={project ? "Exported copies are not protected when this project locks." : undefined}>
+            {project ? "Export copy" : "Save"}
           </a>
         )}
       </figcaption>

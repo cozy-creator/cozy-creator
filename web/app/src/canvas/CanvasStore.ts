@@ -389,6 +389,8 @@ export class CanvasStore {
     this.moreOpen = new Set(moreOpen)
   }
 
+  get active() { return !this.retired }
+
   /** The project has been read, so what isn't here isn't in it. */
   get hasRead() {
     return this.seen

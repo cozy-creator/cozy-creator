@@ -35,9 +35,14 @@ function Viewing({ name, close }: { name: string; close: () => void }) {
   useEffect(() => {
     let live = true
     setSrc(undefined)
-    if (picture && store.projectId) void client.transport.src(client.file(store.projectId, picture)).then((url) => live && setSrc(url))
+    let held: string | undefined
+    if (picture && store.projectId) void client.transport.src(client.file(store.projectId, picture)).then((url) => {
+      if (live) { held = url; setSrc(url) }
+      else if (url.startsWith("blob:")) URL.revokeObjectURL(url)
+    }).catch(() => {})
     return () => {
       live = false
+      if (held?.startsWith("blob:")) URL.revokeObjectURL(held)
     }
   }, [client, store, picture])
   useEffect(() => {
