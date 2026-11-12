@@ -293,7 +293,7 @@
     "media_type": "video/mp4"
    },
    "warnings": [
-    "the 320x180 video was cover-scaled to 1344x768 for the refine"
+    "the 320x180 video was scaled to 1344x768 for the refine"
    ]
   }
  },
@@ -317,7 +317,7 @@
     "media_type": "video/mp4"
    },
    "warnings": [
-    "the 320x180 video was cover-scaled to 1344x768 for the refine"
+    "the 320x180 video was scaled to 1344x768 for the refine"
    ]
   }
  },
@@ -341,7 +341,7 @@
     "media_type": "video/mp4"
    },
    "warnings": [
-    "the 320x180 video was cover-scaled to 1344x768 for the refine"
+    "the 320x180 video was scaled to 1344x768 for the refine"
    ]
   }
  },
