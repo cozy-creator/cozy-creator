@@ -326,7 +326,8 @@ function replaceFile(at, text) {
   const offered = await page.locator('.name-menu li').allTextContents();
   check('less_than_offers_names', offered.includes('source-a') && offered.includes('source-b'), offered);
   await shot('offered');
-  await page.keyboard.press('Enter');
+  // Tab takes the name offered. Enter in a prompt renders, and takes the name first (cl-893, 20a9c5c92): a take landed and the words were gone.
+  await page.keyboard.press('Tab');
   await until('a chip', () => sheetText.locator('.chip').count(), (n) => n === 1);
   await page.keyboard.type('and ');
   // Everything saves itself (Paul, 11-05): a pause in typing writes it, a chip as its name.
