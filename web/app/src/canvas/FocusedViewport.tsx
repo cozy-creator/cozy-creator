@@ -71,7 +71,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         <button type="button" className="tb" aria-label="Back to canvas" onClick={onClose}><Icon name="back" />Back to canvas</button>
         <div className="focus-title">
           {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename node" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
-          {view.asset?.kind === "image" && <span className="focus-version-label" aria-label="Image version">{version === undefined ? "New" : `v${version}`}</span>}
+          {view.asset?.kind === "image" && (version !== undefined || Boolean(view.asset.prefixes?.length) || Boolean(view.asset.sha256)) && <span className="focus-version-label" aria-label="Image version">{version === undefined ? "New" : `v${version}`}</span>}
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
