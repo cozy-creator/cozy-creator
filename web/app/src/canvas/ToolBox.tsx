@@ -134,6 +134,7 @@ export function ToolBox({
   view,
   shown,
   folded,
+  grouped,
   row,
   children,
 }: {
@@ -142,11 +143,13 @@ export function ToolBox({
   view: ElementView
   shown: ToolField[]
   folded: ToolField[]
+  /** What's only a thing to set, grouped apart (AssetEdit's parameters): a component for one of them draws it there. */
+  grouped: ToolField[]
   row(control: ToolField): React.ReactNode
-  children(shown: React.ReactNode, folded: React.ReactNode): React.ReactNode
+  children(shown: React.ReactNode, folded: React.ReactNode, grouped: React.ReactNode): React.ReactNode
 }) {
   const { own, trouble } = useOwn(tool)
-  const controls = [...shown, ...folded]
+  const controls = [...shown, ...folded, ...grouped]
   if (!own) {
     return children(
       shown.length || trouble ? (
@@ -156,6 +159,7 @@ export function ToolBox({
         </>
       ) : null,
       folded.map(row),
+      grouped.length ? grouped.map(row) : null,
     )
   }
   const drawn = <Drawn own={own} name={name} view={view} controls={controls} />
@@ -165,6 +169,7 @@ export function ToolBox({
       <Guard key={own.module} fallback={controls.map(row)}>
         {drawn}
       </Guard>,
+      null,
       null,
     )
   }
@@ -176,5 +181,5 @@ export function ToolBox({
     ) : (
       row(control)
     )
-  return children(shown.length ? shown.map(each) : null, folded.map(each))
+  return children(shown.length ? shown.map(each) : null, folded.map(each), grouped.length ? grouped.map(each) : null)
 }

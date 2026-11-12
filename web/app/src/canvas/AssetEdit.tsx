@@ -861,8 +861,8 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
   const held = beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)
   return (
     <div className={`edit-face ${focused ? "focused" : ""}`}>
-      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} row={row}>
-        {(lines, more) => {
+      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} grouped={parameters} row={row}>
+        {(lines, more, set) => {
           const behind = !focused && ((more !== null && plainFolded.length > 0) || beyond.length > 0)
           const render = (
             <div className="row actions">
@@ -870,7 +870,7 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
               {actions}
             </div>
           )
-          const grouped = more !== null && parameters.length > 0 && <div className="edit-parameters">{parameters.map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named />)}</div>
+          const grouped = set !== null && <div className="edit-parameters">{set}</div>
           if (focused) {
             return (
               <>
