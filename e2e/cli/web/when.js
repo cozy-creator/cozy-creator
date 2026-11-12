@@ -90,12 +90,12 @@ async function died(why) {
   const described = cozy('run', `${fixture}/image`, '--describe');
   check('describe_says_each_condition', described.stdout.includes('(only with prompt_upsampling on)') && described.stdout.includes('(only with batch_size set)'), described.stdout.slice(-800));
 
-  // The tool as the page reads it, from this machine's reading.
+  // A box of it, and the tool as the page reads it: local code a box names, read by this machine.
+  const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: `${fixture}/image`, kind: 'image', name: 'still', exact: true, fields: { instructions: 'a lighthouse at dusk', creativity: 'wild' }, at: { x: 200, y: 200 } }) });
+  if (made.status >= 300) throw new Error(`the box: ${JSON.stringify(made)}`);
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body?.tools?.find((one) => one.local && one.id === `${fixture}/image`), Boolean, FIRST_RUN_MS);
   const creativityField = tool.fields.find((field) => field.field === 'creativity');
   check('the_tool_says_when', JSON.stringify(creativityField?.when) === JSON.stringify({ field: 'prompt_upsampling' }), creativityField);
-  const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: tool.id, kind: 'image', name: 'still', exact: true, fields: { instructions: 'a lighthouse at dusk', creativity: 'wild' }, at: { x: 200, y: 200 } }) });
-  if (made.status >= 300) throw new Error(`the box: ${JSON.stringify(made)}`);
   await boxOf(page, 'still').waitFor();
   await openBox(page, 'still');
   const fieldsOf = async () => (await api(at)).body?.assets?.find((row) => row.name === 'still')?.fields ?? {};
