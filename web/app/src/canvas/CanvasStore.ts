@@ -1174,12 +1174,13 @@ export class CanvasStore {
     return field
   }
 
-  /** Its height at a width, stack and all, when what it shows keeps its shape as it narrows: a box that may shrink to fit. */
+  /** Its height at a width as drawn, stack and all, when what it shows keeps its shape as it narrows: a box that may shrink to fit. A picture
+   *  showing another take is drawn at that take's width (`bodyWidth`): its height is its row's at the width that draws it that wide. */
   private tallOf(name: string): ((w: number) => number) | undefined {
     const view = this.views.get(name)
     if (!view) return undefined
-    if (view.asset?.kind === "image" && !view.hereWords && shownOf(view)) return undefined
-    const tall = (w: number) => this.laid(name, { x: 0, y: 0, w, h: heightFor(view, w) }).h
+    const per = bodyWidth(view, 1)
+    const tall = (w: number) => this.laid(name, { x: 0, y: 0, w: w / per, h: heightFor(view, w / per) }).h
     return tall(NARROWEST) < tall(NARROWEST * 2) ? tall : undefined
   }
 
