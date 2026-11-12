@@ -1,0 +1,15 @@
+{
+ "note": "Qwen3-VL-4B text encoders as ComfyUI saves them (Transformers' Qwen3VLModel names under model., the language model's without language_model.): Quiho's abliterated encoder for Krea 2, its 356 language and vision linears plain F8_E4M3 with no scale tensors, the rest BF16",
+ "members": [
+  {
+   "source": "hf://Quiho/Krea2_NSFW_Uncensored_Complete@4ecd0d82d30daec24691db30495d752f2d7d7f64/qwen3VL4BAbliteratedComfyui_FP8.safetensors",
+   "page": "https://huggingface.co/Quiho/Krea2_NSFW_Uncensored_Complete",
+   "member": "qwen3VL4BAbliteratedComfyui_FP8.safetensors",
+   "header_file": "qwen3VL4BAbliteratedComfyui_FP8.safetensors.header",
+   "header_sha256": "58f552157ad9474aaaa2ff093079ea1492cf704cebe2dc0f983d70533f4c3b22",
+   "header_bytes": 82176,
+   "full_length": 4831356160,
+   "declared_source_sha256": "1cc1120f54f04736e4dee3b8b22744637332cb34e645a1e4c51196191861ae9d"
+  }
+ ]
+}

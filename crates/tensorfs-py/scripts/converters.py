@@ -883,6 +883,35 @@ def krea2_single_file(name: str) -> Table[TableRow]:
     return {"name": name, "components": [component]}
 
 
+# ------------------------------------------------------------------ Qwen3-VL text encoders as ComfyUI saves them
+
+QWEN3VL_FILES = VECTORS / "qwen3vl-comfy-headers"
+#: Krea 2's text encoder is Qwen3-VL-4B-Instruct (Krea's repository is gated; Qwen's config builds the family's census).
+QWEN3VL_4B = "hf://Qwen/Qwen3-VL-4B-Instruct@ebb281ec70b05090aa6165b016eac8ec08e71b17"
+
+
+def qwen3vl_comfy() -> Table[TableRow]:
+    """A Qwen3-VL text encoder in ComfyUI's one file (`text_encoders/`): Transformers' `Qwen3VLModel` names under
+    `model.`, its language model's without `language_model.`, so every tensor is renamed and none moves. The component is
+    BF16: a float8 weight with no scale beside it (a published abliterated encoder's, `vectors/`) is the value ComfyUI
+    upcasts, `fp8.tensorwise` at scale 1, its bytes kept. No reference: the file takes its config and tokenizer from the
+    Hub base it is uploaded on (`--base`)."""
+    family: FamilyDoc = json.loads((FAMILIES / "krea-2.json").read_text())
+    keys = {k: tuple(shape) for k, shape in family["components"]["text_encoder"]["keys"]}
+    model = construct("transformers:Qwen3VLModel", reference_config(QWEN3VL_4B, "config.json"))
+    census = {k: tuple(v.shape) for k, v in model.state_dict().items()}
+    assert census == keys, "Qwen3-VL-4B's census is not krea-2's text_encoder"
+    sources = {k.removeprefix("language_model."): shape for k, shape in census.items()}
+    vectors = sorted(QWEN3VL_FILES.glob("*.header"))
+    assert vectors, "no published file in this layout"
+    for vector in vectors:
+        published = header(vector)
+        assert {k.removeprefix("model."): s for k, (_, s) in published.items()} == sources, vector.name
+    rows = [row(k, k.removeprefix("language_model.")) for k in census]
+    component: Component[TableRow] = {"name": "text_encoder", "prefix": "model.", "cast": "BF16", "rows": rows}
+    return {"name": "qwen3vl.comfy", "components": [component]}
+
+
 # ------------------------------------------------------------------ Qwen-Image 2.1 LoRA
 
 QWEN21 = VECTORS / "qwen-image-2.1-lora-headers"
@@ -1535,6 +1564,7 @@ def generate() -> dict[str, Generated]:
         "sdxl.lora": sdxl_lora(sdxl, layers, unet),
         "krea2.lora": krea2_lora(),
         **{name: krea2_single_file(name) for name in KREA2_SINGLE_FILE},
+        "qwen3vl.comfy": qwen3vl_comfy(),
         "qwenimage21.lora": qwenimage21_lora(),
         **{name: comfy_single_file(name) for name in COMFY},
         "flux2.lora": flux2_lora(),

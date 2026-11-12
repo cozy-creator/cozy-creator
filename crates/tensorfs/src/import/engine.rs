@@ -23,13 +23,14 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub(crate) const TABLES: [&str; 23] = [
+pub(crate) const TABLES: [&str; 24] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
     table!("anima.diffusion_model"),
     table!("qwenimage21.comfy"),
     table!("krea2.native"),
     table!("krea2.comfy"),
+    table!("qwen3vl.comfy"),
     table!("h3.native"),
     table!("h3.comfy"),
     table!("h3.lora"),
@@ -992,7 +993,8 @@ fn part_rows(
 /// `component/key` read from `t` through `ops` and `cast`. A tensor whose bytes do not
 /// move is one run of bytes, so it may be any dtype. An encoded tensor is renamed, or, for a
 /// row-wise encoding, cut into whole rows (each part's rows with them): its parts are the
-/// producer's bytes, and `cast` names its logical dtype.
+/// producer's bytes, and `cast` names its logical dtype. A float8 tensor that `cast` makes a
+/// wider float is its stored values ([`unit_scaled`]).
 fn planned(
     component: &str,
     key: &str,
@@ -1039,6 +1041,9 @@ fn planned(
             parts,
         });
     }
+    if let (Some(logical @ (Dtype::BF16 | Dtype::F16 | Dtype::F32)), Dtype::F8_E4M3 | Dtype::F8_E5M2) = (cast, &t.dtype) {
+        return unit_scaled(&what, component, key, t, ops, logical);
+    }
     let (dtype, cast) = cast_to(&what, &t.dtype, cast)?;
     let (shape, runs) = layout(&what, &t.shape, ops)?;
     let moves = ops.view.is_some() || ops.take.is_some() || ops.permute.is_some();
@@ -1077,6 +1082,33 @@ fn planned(
             shape,
             read,
         }],
+    })
+}
+
+/// A float8 tensor with no scale beside it, in a component whose `cast` is a wider float: ComfyUI
+/// upcasts such a weight (its plain `fp8_e4m3fn` files), so it is `fp8.tensorwise` at scale 1. Its
+/// bytes are kept, cut as a plain tensor's would be, and decode to `logical` exactly.
+fn unit_scaled(what: &str, component: &str, key: &str, t: &Tensor, ops: &Ops, logical: &Dtype) -> Result<Planned> {
+    let (shape, runs) = layout(what, &t.shape, ops)?;
+    let moves = ops.view.is_some() || ops.take.is_some() || ops.permute.is_some();
+    let weight = match (moves, &t.derive) {
+        (false, _) => Reading::whole(t),
+        (true, None) => Reading { runs, ..Reading::whole(t) },
+        (true, Some(_)) => {
+            return refuse(Code::SEAM_UNBANKED, format!("{what}: a computed tensor; a table row may rename it, never cut it"))
+        }
+    };
+    let scale = Reading::inline(1f32.to_le_bytes().to_vec(), Dtype::F32);
+    Ok(Planned {
+        component: component.into(),
+        key: key.into(),
+        dtype: logical.clone(),
+        shape: shape.clone(),
+        encoding: Some(Encoding { scheme: "fp8.tensorwise".into(), params: Default::default() }),
+        parts: vec![
+            PlannedPart { role: "weight".into(), dtype: t.dtype.clone(), shape, read: weight },
+            PlannedPart { role: "scale".into(), dtype: Dtype::F32, shape: vec![], read: scale },
+        ],
     })
 }
 

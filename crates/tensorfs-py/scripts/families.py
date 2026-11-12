@@ -281,7 +281,7 @@ FAMILIES: list[Spec] = [
         "reference": "hf://krea/Krea-2-Raw@6b0ece7fffb640c5e3bcbe0a7f10f66b8e60a603",
         "classes": ["Krea2Pipeline", "Krea2Transformer2DModel"],
         "folders": ["transformer", "text_encoder", "vae"],
-        "sources": ["krea2.native", "krea2.comfy", "krea2.lora"],
+        "sources": ["krea2.native", "krea2.comfy", "qwen3vl.comfy", "krea2.lora"],
     },
     {
         "name": "moss",
