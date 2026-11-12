@@ -572,6 +572,12 @@ impl Calcifer {
             store.admit_new_work()?;
             return Ok(store::RunStore::Project(store));
         }
+        // This constructor is reached only through the explicit typed machine
+        // updater. Its component files/payload are installation maintenance,
+        // including the candidate binary used before any project exists.
+        if submit.kind==::api::calcifer::Kind::Update && submit.spec.kind==v1::RunKind::Update && submit.out.is_none() && private_io::current().is_none() {
+            return Ok(store::RunStore::Maintenance(self.maintenance_store()));
+        }
         if submit.kind == ::api::calcifer::Kind::Call || submit.spec.kind == v1::RunKind::Call
             || submit.out.is_some() || !submit.inputs.is_empty() || !submit.spec.inputs.is_empty()
             || submit.spec.payload.is_some() || matches!(submit.spec.source.as_ref(), Some(v1::Source::Local(_)))

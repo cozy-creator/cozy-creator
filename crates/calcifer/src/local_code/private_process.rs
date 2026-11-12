@@ -81,7 +81,8 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
         resources.devices.push(fs::OpenOptions::new().read(true).write(path=="/dev/null").open(path)?);
     }
     let policy=prepare_project_writes(resources).map_err(error)?;
-    policy.apply(&mut owned).map_err(error)?;
+    let process_scope=platform::contain::Scope::create(&platform::contain::namespace(&scratch)).map_err(error)?;
+    policy.apply_in_scope(&mut owned,&process_scope).map_err(error)?;
     let mut tree=platform::process::spawn(owned).map_err(error)?;
     running.release=false;
     let birth=platform::process::Birth::of(tree.pid()).map_err(error)?;
@@ -99,6 +100,7 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     }
     let closed=(|| {
         tree.kill().map_err(error)?;
+        if process_scope.end().map_err(error)?!=0 || !platform::private_exec::project_scope_quiescent(&process_scope).map_err(error)? {return Err(error("tool descendants still hold the project"));}
         let followers=followers.into_values().collect::<Vec<_>>();
         platform::process::end_tree(&followers).map_err(error)?;
         let status=tree.wait().map_err(error)?;

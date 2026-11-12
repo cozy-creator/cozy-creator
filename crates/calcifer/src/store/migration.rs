@@ -72,6 +72,21 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)", [name], |row| row.get(0))?)
 }
 
+fn plain_owner(source:&Connection,home:&Path,id:&str,root:&Path)->Result<bool> {
+    if table_exists(source,"legacy_project_projects")? {
+        let path=source.query_row("SELECT path FROM legacy_project_projects WHERE id=?1",[id],|row|row.get::<_,String>(0)).optional()?;
+        if path.as_ref().is_some_and(|path|vault::logical(Path::new(path))==root) {return Ok(true);}
+    }
+    match std::fs::read(home.join("projects.json")) {
+        Ok(bytes)=>{
+            let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|StoreError::Protected("legacy_project_ownership_pending".into()))?;
+            Ok(value.get("projects").and_then(|projects|projects.get(id)).and_then(|project|project.get("path")).and_then(serde_json::Value::as_str).is_some_and(|path|vault::logical(Path::new(path))==root))
+        },
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(false),
+        Err(_)=>Err(StoreError::Protected("legacy_project_ownership_pending".into())),
+    }
+}
+
 enum Destination<'a,'b> {
     Open(&'a crate::project::ProjectStore),
     Sealing(&'a crate::project::journal::SealingStore<'b>),
@@ -86,6 +101,29 @@ impl Destination<'_,'_> {
 }
 
 impl Store {
+    /// These selectors are checked against the unchanged old SQL, not inferred
+    /// from a copied project or a request's user-supplied opaque run ID.
+    pub(crate) fn verify_legacy_worker_requests(&self,project:&crate::project::ProjectStore)->Result<Vec<(String,String,Option<u64>)>> {
+        self.verified_legacy_requests(Destination::Open(project))
+    }
+    pub(crate) fn verify_legacy_worker_requests_sealing(&self,project:&crate::project::journal::SealingStore<'_>)->Result<Vec<(String,String,Option<u64>)>> {
+        self.verified_legacy_requests(Destination::Sealing(project))
+    }
+    fn verified_legacy_requests(&self,project:Destination<'_,'_>)->Result<Vec<(String,String,Option<u64>)>> {
+        let pending=project.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' ORDER BY number")?;Ok(stmt.query_map([project.project_id()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<i64>>(2)?.map(|number|number as u64))))?.collect::<rusqlite::Result<Vec<_>>>()?)})?;
+        if pending.is_empty() {return Ok(vec![]);}
+        self.read(|source| {
+            if !table_exists(source,"legacy_project_runs")? && !pending.is_empty() {return Err(StoreError::Protected("legacy_worker_source_missing".into()));}
+            let root=project.execution_scope().1;
+            let plain=plain_owner(source,&self.legacy_home,project.project_id(),root)?;
+            for (id,machine,number) in &pending {
+                let row=source.query_row("SELECT machine,machine_number,out_dir,spec FROM legacy_project_runs WHERE id=?1",[id],|row|Ok((row.get::<_,Option<String>>(0)?,row.get::<_,Option<i64>>(1)?.map(|number|number as u64),row.get::<_,String>(2)?,row.get::<_,Vec<u8>>(3)?))).optional()?.ok_or_else(||StoreError::Protected("legacy_worker_source_missing".into()))?;
+                let owned=match vault::payload_root(&row.3).map_err(private_error)? {Some(owner)=>{if owner==root {open_bytes(&run_context(id,"spec"),&row.3)?;true} else {false}},None=>plain&&Path::new(&row.2)==crate::project::landing(root)};
+                if !owned || row.0.as_deref()!=Some(machine.as_str()) || row.1!=*number {return Err(StoreError::Protected("legacy_worker_owner_mismatch".into()));}
+            }
+            Ok(pending)
+        })
+    }
     /// Only an admitted, mounted project can receive its legacy history. The source's
     /// immediate transaction spans import and retirement, so its closure cannot change.
     pub(crate) fn migrate_project(&self, project: &crate::project::ProjectStore, inputs: &Path) -> Result<()> {
@@ -100,6 +138,7 @@ impl Store {
         let source = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut changed=false;
         let root = project.execution_scope().1;
+        let plain=plain_owner(&source,&self.legacy_home,project.project_id(),root)?;
         let landing = crate::project::landing(root);
         let candidates: Vec<(String,String,Vec<u8>)> = {
             let mut stmt=source.prepare("SELECT id,out_dir,spec FROM legacy_project_runs")?;
@@ -107,7 +146,7 @@ impl Store {
         };
         for (id,out,spec) in candidates {
             let envelope_root=vault::payload_root(&spec).map_err(private_error)?;
-            if envelope_root.as_deref()!=Some(root) && Path::new(&out)!=landing { continue; }
+            if envelope_root.as_deref()!=Some(root) && !(envelope_root.is_none()&&plain&&Path::new(&out)==landing) { continue; }
             // An envelope must open through this admitted view before any source is retired.
             if envelope_root.is_some() { open_bytes(&run_context(&id,"spec"),&spec)?; }
             let mut runs=Rows::load(&source,"runs","id=?1",&id)?;
