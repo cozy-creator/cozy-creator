@@ -38,6 +38,8 @@ async function died(error) {
   });
   const shot = (state) => process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${state}.png` }) : Promise.resolve();
   await signIn(page);
+  // Signed in once the page is up: going on before then drops its session.
+  await page.waitForSelector('.top');
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-focused-${Date.now()}`);
   await page.getByLabel('Create without encryption', { exact: true }).check();
