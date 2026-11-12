@@ -321,7 +321,9 @@ export async function connect(): Promise<Boot> {
   const closeBlockers = new Set<() => boolean>()
   const stopEdit = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation() }
   const editEvents = ["pointerdown", "keydown", "beforeinput", "input", "drop", "paste", "submit"]
-  const hooks = globalThis as typeof globalThis & { __cozyFreeze?: () => boolean; __cozyPrepareClose?: () => Promise<void>; __cozyResume?: () => void }
+  const hooks = globalThis as typeof globalThis & { __cozyFreeze?: () => boolean; __cozyPrepareClose?: () => Promise<void>; __cozyResume?: () => void; __cozyUnsent?: () => number }
+  // A lock past its deadline says how many edits it could not wait for: counts only.
+  hooks.__cozyUnsent = () => outbox.unsent() + client.unsentWrites()
   hooks.__cozyFreeze = () => {
     if ([...closeBlockers].some((blocked) => blocked())) return false
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur()

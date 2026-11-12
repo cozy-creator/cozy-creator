@@ -612,47 +612,69 @@ pub(crate) fn start(api: &Arc<Api>) {
             for root in roots {
                 let api = api.clone();
                 // One slow export/unmount must not delay another project's deadline.
-                tokio::task::spawn_blocking(move || {
-                    let op = operation(&root);
-                    let Ok(_operation) = op.try_lock() else { return; };
-                    let working = working(&api, &root);
-                    let needs = held(&root).is_some_and(|session| {
-                        let mut session = session.lock().expect("vault session");
-                        if session.mount.reconcile().is_err() { mark_closing(&mut session); }
-                        // Work in progress holds it open, its maximum included: the clocks go on when the last of it
-                        // ends. Only an explicit lock ends work (owner 11-11: "runs count as activity").
-                        session.timer.hold(working.is_some());
-                        if let Some(why) = working.filter(|_| !session.closing) {
-                            session.active_ms = super::now_ms();
-                            if session.idle > 0 { say(&root, "held", || format!("its idle clock is held by {why}")); }
-                        }
-                        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
-                    });
-                    if !needs { return; }
-                    if LOCK_RETRIES.lock().expect("lock retries").get(&root).is_some_and(|retry| std::time::Instant::now() < retry.at) { return; }
-                    // The browser's save acknowledgements may include activity writes
-                    // under this operation mutex. Never wait for them while owning it.
-                    drop(_operation);
-                    let mut browser = match prepare_browser(&api) {
-                        Ok(browser) => browser,
-                        Err(why) => { say(&root, "browser", || format!("its idle lock waits for Cozy's browser to prepare: {}", why.message)); return; }
-                    };
-                    let Ok(_operation) = op.try_lock() else { say(&root, "operation", || "its idle lock waits for a vault operation".into()); return; };
-                    let still_needs = held(&root).is_some_and(|session| {
-                        let session = session.lock().expect("vault session");
-                        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
-                    });
-                    if !still_needs { return; }
-                    if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-                    let Ok(transition) = exclusive(&root) else {
-                        say(&root, "gate", || "locking waits for a request still holding the project".into());
-                        return;
-                    };
-                    if let Err(failure) = close(&api, &root, &transition, &mut browser) { idle_lock_failed(&root, &failure); }
-                });
+                tokio::task::spawn_blocking(move || idle_sweep(&api, &root));
             }
         }
     });
+}
+
+/// How long past an idle or maximum deadline a vault waits for Cozy's browser to confirm its edits are saved before it
+/// locks anyway: the deadline is a security one.
+const SAVE_GRACE: Duration = Duration::from_secs(30);
+/// When each open vault was first seen past its deadline and not yet locked.
+static DUE: LazyLock<Mutex<BTreeMap<PathBuf, std::time::Instant>>> = LazyLock::new(Mutex::default);
+
+/// One second of a vault's clocks: it locks once its deadline has passed, in order (the browser's edits saved, its
+/// requests drained) and, past `SAVE_GRACE`, whatever is unsaved.
+fn idle_sweep(api: &Arc<Api>, root: &FsPath) {
+    let op = operation(root);
+    let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its clocks wait for a vault operation".into()); return; };
+    let working = working(api, root);
+    let needs = held(root).is_some_and(|session| {
+        let mut session = session.lock().expect("vault session");
+        if session.mount.reconcile().is_err() { mark_closing(&mut session); }
+        // Work in progress holds it open, its maximum included: the clocks go on when the last of it
+        // ends. Only an explicit lock ends work (owner 11-11: "runs count as activity").
+        session.timer.hold(working.is_some());
+        if let Some(why) = working.filter(|_| !session.closing) {
+            session.active_ms = super::now_ms();
+            if session.idle > 0 { say(root, "held", || format!("its idle clock is held by {why}")); }
+        }
+        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
+    });
+    if !needs { DUE.lock().expect("vault deadlines").remove(root); return; }
+    let due = *DUE.lock().expect("vault deadlines").entry(root.to_owned()).or_insert_with(std::time::Instant::now);
+    let forced = due.elapsed() >= SAVE_GRACE;
+    if !forced && LOCK_RETRIES.lock().expect("lock retries").get(root).is_some_and(|retry| std::time::Instant::now() < retry.at) { return; }
+    // The browser's save acknowledgements may include activity writes
+    // under this operation mutex. Never wait for them while owning it.
+    drop(_operation);
+    let mut browser = match prepare_browser(api) {
+        Ok(browser) => browser,
+        Err(why) if forced => {
+            let unsent = tokio::runtime::Handle::current().block_on(api.browser.unsent());
+            let unsent = unsent.map_or("an unknown number of".to_owned(), |count| count.to_string());
+            say(root, "forced", || format!("its deadline passed {} s ago and Cozy's browser has not confirmed its edits are saved ({}): locking anyway, {unsent} unsent edits left", due.elapsed().as_secs(), why.message));
+            if let Some(id) = project_id(root) { crate::events::project_vault(&id, "locking"); }
+            None
+        }
+        Err(why) => { say(root, "browser", || format!("its lock waits for Cozy's browser to save its edits: {}", why.message)); return; }
+    };
+    let Ok(_operation) = op.try_lock() else { say(root, "operation", || "its lock waits for a vault operation".into()); return; };
+    let still_needs = held(root).is_some_and(|session| {
+        let session = session.lock().expect("vault session");
+        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
+    });
+    if !still_needs { return; }
+    if let Some(session) = held(root) { mark_closing(&mut session.lock().expect("vault session")); }
+    let Ok(transition) = exclusive(root) else {
+        say(root, "gate", || "locking waits for a request still holding the project".into());
+        return;
+    };
+    match close(api, root, &transition, &mut browser) {
+        Ok(()) => { DUE.lock().expect("vault deadlines").remove(root); }
+        Err(failure) => idle_lock_failed(root, &failure),
+    }
 }
 
 pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>) -> Result<Response, Refusal> {
@@ -853,7 +875,13 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             if held(root).is_some() { close(api, root, transition, browser)?; } else { retire_orphaned_views(root)?; }
         }
         "activity" => {
-            if let Some(session) = held(root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { if session.timer.activity() { session.active_ms = super::now_ms(); } } }
+            if let Some(session) = held(root) {
+                let mut session = session.lock().expect("vault session");
+                if !session.closing && !expired(&session) && session.timer.activity() {
+                    session.active_ms = super::now_ms();
+                    say(root, "activity op", || "its idle clock restarts on a page's activity".into());
+                }
+            }
         }
         "passphrase" | "recovery" => {
             let session = held(root).ok_or_else(|| locked(root))?;
@@ -1857,7 +1885,13 @@ pub(super) async fn privacy(
         readable_token(&root)
     };
     if request.method() != axum::http::Method::GET && request.method() != axum::http::Method::HEAD {
-        if let Some(session) = held(&root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { if session.timer.activity() { session.active_ms = super::now_ms(); } } }
+        if let Some(session) = held(&root) {
+            let mut session = session.lock().expect("vault session");
+            if !session.closing && !expired(&session) && session.timer.activity() {
+                session.active_ms = super::now_ms();
+                say(&root, "activity", || format!("its idle clock restarts on {} {}", request.method(), request.uri().path()));
+            }
+        }
     }
     protect_reply(next.run(request).await, token)
 }
