@@ -1,7 +1,8 @@
 // A shot rendered segment by segment plays all it has made so far while the next renders (cl-907), with project/segments.py, H3's
-// stand-in: three segments of 10 s, each after the first taking 30 s. Segment 1 lands and its box shows it, nothing over it but how far
-// the render has got: opened, it waits with its controls, seeks, and plays with its sound. Segments 1-2 land as one video where it was
-// paused. At rest it plays silent. Played as the take lands, the take takes its place and plays on from there.
+// stand-in: three segments of 10 s, each after the first taking 30 s. Segment 1 lands: rendered from its words, the box stays on them and
+// its take's tile plays segment 1 silent; the tile picked, the box shows it with nothing over it, waiting with its controls, and it seeks
+// and plays with its sound. Segments 1-2 land as one video where it was paused. At rest it plays silent. Played as the take lands, the
+// take takes its place and plays on from there.
 //   node segments.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER. $PLAYWRIGHT, $CHROME, $COZY, $SHOT,
 //   $ALONE as nodes.js. Where this computer runs no models it renders nothing. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -45,7 +46,7 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
     const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
-    return { status: answer.status, body: await answer.json().catch(() => null), answer };
+    return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;
   seen.ran = local;
@@ -84,7 +85,12 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
     muted: el.muted, controls: el.controls, ready: el.readyState, seekable: el.seekable.length ? el.seekable.end(0) : 0, audio: el.webkitAudioDecodedByteCount ?? null,
   })).catch(() => null);
 
-  // Segment 1 lands while segment 2 renders: opened, it waits with its controls and its sound on, seeks, and plays.
+  // Segment 1 lands while segment 2 renders. Rendered from its words, the box stays on them, and its take's tile plays segment 1 silent.
+  const tile = box.locator('.take.making').first();
+  const tiled = await until('segment 1 on its take\'s tile', () => tile.locator('video.take-glimpse').evaluate((el) => ({ at: el.currentTime, muted: el.muted, ready: el.readyState })).catch(() => null), (now) => now?.ready >= 2 && now.at > 0, RUN_MS);
+  check('its_tile_plays_what_is_made_silent', tiled.muted, tiled);
+  // The tile picked, it's looked at: opened, it waits with its controls and its sound on, seeks, and plays.
+  await tile.click();
   const first = await until('segment 1 on the box', facts, (now) => now?.label === 'Segment 1 of 3' && now.ready >= 1, RUN_MS);
   const going = async () => (await api(`/v1/runs/${making}`)).body;
   const during2 = await until('segment 2 rendering', going, (run) => run.status !== 'in_progress' || /Segment 2 of 3/.test(run.progress?.stage ?? ''), 15_000);
@@ -96,7 +102,7 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
     const { x, y, width, height } = el.getBoundingClientRect();
     return document.elementFromPoint(x + width / 2, y + height / 2) === el;
   }), await box.evaluate((el) => [...el.querySelectorAll('.media > *')].map((child) => child.className)));
-  const bytes = async (rev) => Buffer.from(await (await api(`/v1/runs/${making}/outputs/video?rev=${rev}`)).answer.arrayBuffer());
+  const bytes = async (rev) => Buffer.from(await (await fetch(`${base}/v1/runs/${making}/outputs/video?rev=${rev}`, { headers: { Authorization: `Bearer ${token}` } })).arrayBuffer());
   const file1 = await bytes(first.rev);
   check('segment_1_has_picture_and_sound', file1.includes('avc1') && file1.includes('mp4a'), file1.length);
   await video.evaluate((el) => { el.currentTime = 4; });
@@ -131,6 +137,7 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
 
   // Played as segment 3 ends, the take lands in its place and plays on from where it was.
   await openBox(page, 'shot');
+  await tile.click();
   await until('segment 3 nearly done', going, (run) => run.status !== 'in_progress' || (/Segment 3 of 3/.test(run.progress?.stage ?? '') && run.progress.completed >= 6), 90_000);
   const where = await box.locator('.media').boundingBox();
   await video.evaluate((el) => { el.currentTime = 0; return el.play(); });

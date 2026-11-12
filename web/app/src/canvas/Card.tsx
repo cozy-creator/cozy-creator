@@ -53,7 +53,28 @@ function TakeProgress({ view, run }: { view: ElementView; run: number }) {
   const on = useWaitsOn(mine)
   if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
   const fraction = mine?.progress?.done_fraction
-  return <>{fraction == null ? "…" : `${Math.round(fraction * 100)}%`}</>
+  const said = fraction == null ? "…" : `${Math.round(fraction * 100)}%`
+  // What it has made so far plays on its tile, silent (cl-907): a pick of the tile plays it with its sound.
+  const glimpse = view.glimpse?.media === "video" && view.glimpse.number === run ? view.glimpse : undefined
+  return glimpse ? <TileGlimpse glimpse={glimpse} said={said} /> : <>{said}</>
+}
+
+function TileGlimpse({ glimpse, said }: { glimpse: NonNullable<ElementView["glimpse"]>; said: string }) {
+  const { client } = useConnection()
+  const [src, setSrc] = useState<string>()
+  useEffect(() => {
+    let live = true
+    void client.transport.src(client.output(glimpse.run, glimpse.output, glimpse.index, glimpse.rev)).then((url) => live && setSrc(url))
+    return () => {
+      live = false
+    }
+  }, [client, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
+  return (
+    <>
+      {src && <video className="take-glimpse" src={src} muted loop autoPlay playsInline preload="metadata" />}
+      <span className="take-said">{said}</span>
+    </>
+  )
 }
 
 /** A button on a card does its one thing, and a field takes the click: neither selects it. */
