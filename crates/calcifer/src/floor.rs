@@ -114,10 +114,11 @@ impl Upgrade {
 
 impl Machines {
     /// The Runtimes `name` (on `frame`) can move to for a package release: PyPI's, and on the RC (`rc`) the RC's build for its
-    /// platform. None when it moves for none: held by hand, or another computer's (`api::release::Moves`).
+    /// platform; and whether it moves (`api::release::Moves`): not when held by hand, nor when another computer's (added here,
+    /// or a rental another client ordered).
     pub(crate) async fn runtimes(&self, name: &str, frame: &api::machine::StatusFrame, rc: bool) -> (Vec<String>, api::release::Moves) {
         let moves = match self.named(name).ok().flatten() {
-            Some(row) if row.kind == MachineKind::Added => api::release::Moves::No,
+            Some(row) if row.kind == MachineKind::Added || (row.kind == MachineKind::Rental && !self.ordered(&row)) => api::release::Moves::No,
             _ if self.held_by_hand(name, frame).is_some() => api::release::Moves::Held,
             _ => api::release::Moves::Yes,
         };
