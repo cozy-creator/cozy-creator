@@ -45,11 +45,17 @@ def echo(payload: Request, out: Outputs, tel: Telemetry) -> Answer:
     return Answer(out.save_file(target, media_type="text/plain"), payload.text)
 '''
 
-CONFIGURE = '''from pathlib import Path
+CONFIGURE = '''import json,os
+from pathlib import Path
 p = Path.home()/".cozy"
 p.mkdir(mode=0o700, exist_ok=True)
 if p.is_symlink() or not p.is_dir(): raise ValueError()
 (p/"config.toml").write_text('[machine]\\nlisten_host = "127.0.0.1"\\n')
+# Closed facts of the session environment this user's cozy inherits through sudo.
+runtime=os.environ.get("XDG_RUNTIME_DIR")
+try: own=bool(runtime) and os.stat(runtime).st_uid == os.getuid()
+except OSError: own=False
+print(json.dumps({"runtime_dir_set":bool(runtime),"runtime_dir_own":own,"session_bus_set":bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS"))}))
 '''
 JOURNAL = '''import json,sqlite3,sys
 from pathlib import Path
@@ -74,7 +80,7 @@ if not root.is_absolute() or not root.is_relative_to(home): raise ValueError()
 boot=Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 def birth(pid):
     path=Path(f"/proc/{pid}")
-    if path.stat().st_uid != os.getuid(): raise ValueError()
+    if path.stat().st_uid != os.getuid(): return None
     fields=(path/"stat").read_text().rsplit(") ",1)[1].split()
     return (pid,int(fields[19]))
 def live(item):
@@ -89,12 +95,12 @@ for role,path in (("caf",home/"calcifer/calcifer.lock.holder"),("worker",root/"v
         try:
             record=json.loads(path.read_bytes())
             item=birth(record["pid"])
-            if role == "worker" and (record.get("boot_id") != boot or record.get("start_ticks") != item[1]): raise ValueError()
+            # A record naming another user's or an older process is nothing of ours to retire.
+            if item is None or role == "worker" and (record.get("boot_id") != boot or record.get("start_ticks") != item[1]): continue
             if not live(item): continue
             owned[item[0]]=item
             seen[role]=True
         except (FileNotFoundError,ProcessLookupError): pass
-if not owned or not seen["worker"]: raise ValueError()
 changed=True
 while changed:
     changed=False
@@ -103,7 +109,8 @@ while changed:
         try:
             fields=(path/"stat").read_text().rsplit(") ",1)[1].split()
             if int(fields[1]) in owned and live(owned[int(fields[1])]):
-                item=birth(int(path.name)); owned[item[0]]=item; changed=True
+                item=birth(int(path.name))
+                if item: owned[item[0]]=item; changed=True
         except (FileNotFoundError,ProcessLookupError,PermissionError): pass
 for item in reversed(list(owned.values())):
     if not live(item): continue
@@ -190,15 +197,18 @@ class Worker:
             pass
         self.call("user", ["useradd", "-m", self.user]); self.created = True
         self.call("binary", ["install", "-D", "-m", "755", str(self.native.cli), str(self.binary)])
-        self.call("config", ["python3", "-c", CONFIGURE], user=True)
+        environment = json.loads(self.call("config", ["python3", "-c", CONFIGURE], user=True))
+        self.receipt.add("remote_cpu_user_environment", **{key: environment.get(key) is True for key in ("runtime_dir_set", "runtime_dir_own", "session_bus_set")})
         self.stage("primary_identity")
         primary = self.native.document("machine", "show", "local")
         remote = json.loads(self.call("identity", [str(self.binary), "--json", "machine", "show", "local"], user=True))
         key, fingerprint = primary.get("controller_key"), remote.get("fingerprint")
         require(isinstance(key, str) and isinstance(fingerprint, str), "fixture_failure")
         authorized = json.loads(self.call("authorize", [str(self.binary), "--json", "machine", "authorize", key], user=True))
-        reach = authorized.get("machine", {}).get("reach")
-        require(isinstance(reach, str) and urlsplit(reach).hostname in {"127.0.0.1", "::1", "localhost"}, "fixture_failure")
+        # `reach` is where other computers add it, none on loopback (tensord serve.rs `reach`); this
+        # loopback stand-in is added at its pinned `address`, `host:port` as `reach` would be.
+        reach = authorized.get("machine", {}).get("address")
+        require(isinstance(reach, str) and urlsplit("//" + reach).hostname in {"127.0.0.1", "::1", "localhost"}, "fixture_failure")
         self.stage("add")
         self.native.document("machine", "add", self.name, reach, "--fingerprint", fingerprint)
         updates = []
@@ -210,14 +220,16 @@ class Worker:
         self.receipt.add("remote_cpu_worker", default_user_home=True, loopback=True, fingerprint_pinned=True,
                          public_controller_authorized=True, binary_sha256=sha(self.native.cli.read_bytes()))
 
-    def close(self) -> None:
+    def close(self, *, primary_failed: bool = False) -> None:
         if not self.created: return
         try:
             observed = json.loads(self.call("retire", ["python3", "-c", CLOSE], user=True))
             count = observed.get("processes", 0)
             self.receipt.add("remote_cpu_retirement", gone=observed.get("gone") is True, processes=count,
                              worker_observed=observed.get("worker_observed") is True, caf_observed=observed.get("caf_observed") is True)
-            require(observed.get("gone") is True and isinstance(count, int) and count > 0 and observed.get("worker_observed") is True, "fixture_failure")
+            require(observed.get("gone") is True, "fixture_failure")
+            # After a failed start there may be nothing to retire; a completed run's worker must have been.
+            require(primary_failed or isinstance(count, int) and count > 0 and observed.get("worker_observed") is True, "fixture_failure")
         except BaseException as error:
             if not self.cleanup_failed:
                 self.failure(error, cleanup=True)
@@ -246,11 +258,12 @@ def qualify(native: Native, project: dict, receipt: Receipt, ready: dict) -> Non
         worker.stage("source")
         folder = project["view"] / "public-remote-cpu"
         folder.mkdir(mode=0o700)
-        script, source = folder / "echo.py", folder / "source.txt"
-        script.write_text(PROGRAM); source.write_bytes(SOURCE)
+        script, source, request = folder / "echo.py", folder / "source.txt", folder / "input.json"
+        script.write_text(PROGRAM); source.write_bytes(SOURCE); request.write_text(json.dumps({"text": TEXT}))
         worker.stage("run")
-        body = native.command("run", str(script) + "/echo", "--input", "-", "--file", "source=" + str(source),
-                              "--on", worker.name, cwd=project["folder"], stdin=json.dumps({"text": TEXT}).encode())
+        # `--input` takes a FILE (cli run/mod.rs `read_input`); `-` is not stdin.
+        body = native.command("run", str(script) + "/echo", "--input", str(request), "--file", "source=" + str(source),
+                              "--on", worker.name, cwd=project["folder"])
         runs = [document.get("run", document) for document in _documents(body)]
         terminal = [run for run in runs if isinstance(run, dict) and run.get("status") == "completed" and run.get("result", {}).get("text") == TEXT]
         require(terminal, "fixture_failure")
@@ -297,7 +310,7 @@ def qualify(native: Native, project: dict, receipt: Receipt, ready: dict) -> Non
     finally:
         if worker.created and not worker.cleanup_failed:
             try:
-                worker.close()
+                worker.close(primary_failed=primary_failed)
             except BaseException:
                 # Cleanup has its own closed receipt; preserve the original work exception.
                 if not primary_failed:
