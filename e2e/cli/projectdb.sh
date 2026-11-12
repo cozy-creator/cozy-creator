@@ -617,7 +617,7 @@ project_api "$M" /approve -X POST -H 'Content-Type: application/json' -d '{"name
 project_api "$M" /assets/take/versions/3 -X DELETE > /dev/null || check "migrate: discard take 3"
 project_api "$M" /assets/drawn -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"instructions": "A <take.2> in teal, as 0.24.0 had it."}}' > /dev/null || check "migrate: drawn's words"
 project_api "$M" /assets/notes -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"text": "Notes 0.24.0 wrote, then changed."}}' > /dev/null || check "migrate: notes' words"
-project_import "$M" "$M/olive.png" > "$OUT/migrate-import.txt" 2>&1 || check "migrate: import olive: $(tail -c 300 "$OUT/migrate-import.txt")"
+project_import "$M" "$M/olive.png" olive > "$OUT/migrate-import.txt" 2>&1 || check "migrate: import olive: $(tail -c 300 "$OUT/migrate-import.txt")"
 project_api "$M" /assets/olive -X DELETE > /dev/null || check "migrate: delete olive"
 [ "$(sql1 "$M" 'PRAGMA user_version')" = 2 ] || check "migrate: 0.24.0 made schema $(sql1 "$M" 'PRAGMA user_version'), not 2"
 # 0.24.0's CLI has no export, history or delete: its Calcifer's routes, as its page asks, read and write alike on both.
@@ -632,11 +632,13 @@ for part in facts rows yaml history; do
   cmp -s "$OUT/migrate-0240-$part" "$OUT/migrate-now-$part" || check "migrate: its $part read otherwise here: $(diff "$OUT/migrate-0240-$part" "$OUT/migrate-now-$part" | head -c 800)"
 done
 [ "$(sql1 "$M" "SELECT count(*) FROM versions WHERE coalesce(json_extract(record, '\$.id'), '') = ''")" = 0 ] || check "migrate: a take has no id"
-for f in $(sql "$M" "SELECT json_extract(record, '\$.path') FROM lock_files" | jq -r '.[0]'); do [ -f "$M/$f" ] || check "migrate: $f is gone"; done
+for f in $(status "$M" | jq -r '.assets[].name' | while read -r name; do held "$M" "$name" | jq -r '.versions[].files[].path // empty'; done); do
+  [ -f "$M/$f" ] || check "migrate: $f is gone"
+done
 # Undo reaches what 0.24.0 did: olive back with its take, and gone again.
-in_project "$M" undo > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: undo olive's delete: $(tail -c 300 "$OUT/migrate-undo.txt")"
+project_api "$M" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: undo olive's delete: $(tail -c 300 "$OUT/migrate-undo.txt")"
 [ "$(held "$M" olive | jq -r '.versions[0].files | map(.sha256) | .[0]')" = "sha256:$(sha "$M/olive.png")" ] || check "migrate: olive undeleted has not its take: $(held "$M" olive | jq -c '.versions')"
-in_project "$M" redo > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: redo olive's delete: $(tail -c 300 "$OUT/migrate-undo.txt")"
+project_api "$M" /history/redo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: redo olive's delete: $(tail -c 300 "$OUT/migrate-undo.txt")"
 # A take after it: number 4 (3 is discarded), its own id, all four there across Calcifer killed.
 source="sha256:$(sha "$M/olive.png")"
 project_api "$M" /assets/take/versions -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/migrate-version.txt" 2>&1 \
