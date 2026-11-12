@@ -60,7 +60,7 @@ pub(crate) async fn exec(ctx: &Context, mut query: Query) -> Result<ExitCode, Er
     for run in &list.unreadable {
         println!("left out {run}");
     }
-    let listed: Vec<&Run> = list.runs.iter().chain(&list.others).filter(|run| shown(run)).collect();
+    let listed: Vec<&Run> = list.runs.iter().chain(&list.others).collect();
     if listed.is_empty() {
         let only = query.status.is_some() || query.package.is_some() || query.machine.is_some();
         match (only, &query.project) {
@@ -132,9 +132,6 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
 
 /// Whether `run` is one `query` lists: its state, package and machine.
 pub(crate) fn matches(query: &Query, run: &Run) -> bool {
-    if !shown(run) {
-        return false;
-    }
     let status = serde_json::to_value(run.status).ok();
     let state = query
         .status
@@ -177,11 +174,6 @@ fn clip_target(target: String) -> String {
 /// run's reason in one line; `cozy run watch` has it whole. TIME is its own, never its queue's.
 pub(crate) fn rows(runs: &[Run]) -> Vec<Vec<String>> {
     runs.iter().map(row).collect()
-}
-
-/// Whether the list people read shows it: what a walk sends ahead of itself is `cozy project`'s own (`run watch` and `--json` have it).
-pub(crate) fn shown(run: &Run) -> bool {
-    !run.target.starts_with(api::calcifer::project::AHEAD)
 }
 
 fn row(run: &Run) -> Vec<String> {

@@ -967,9 +967,6 @@ struct Walker {
     again: HashSet<String>,
     /// The assets the project names now, as of its stamp.
     names: Option<(String, Arc<HashSet<String>>)>,
-    /// What machines were asked to fetch ahead, by machine, function and its model choices (`ahead_key`): when the machine's
-    /// software last started, so a restart (an update) prepares again.
-    asked_ahead: HashMap<String, Option<i64>>,
     /// Where each job not ready yet will most likely go, by its key, as the last plan placed it (cl-967).
     foreseen: HashMap<String, Option<On>>,
     /// Where each job whose turn is next goes, by its key, as the last plan placed it (cl-967), with its other machines' offers.
@@ -2561,11 +2558,9 @@ fn cancelled(api: &Arc<Api>, project: &Arc<Project>, names: &[String], takes: &[
     }
     project.asked.notify_one();
     sync_jobs(project, numbered(api)).map_err(Refusal)?;
-    // `all` stops what is fetched ahead too; the walker stops what fewer leave unneeded.
+    // `all` stops what its machines have ready ahead for it too; the walker drops what fewer leave unneeded from their lists.
     if all {
-        for (_, _, run) in project.jobs.ahead_going() {
-            let _ = api.calcifer.cancel(&run);
-        }
+        api.machines.lists.set(&api.machines, &folder.dir.to_string_lossy(), HashMap::new());
     }
     Ok(Cancelled { dropped, canceled })
 }
@@ -3026,11 +3021,6 @@ struct Wanted {
     made: Map<String, Value>,
 }
 
-/// What one fetch ahead is, as `asked_ahead` and the board know it: machine, function and its model choices.
-fn ahead_key(machine: &str, with: &str, made: &Map<String, Value>) -> String {
-    let chosen = serde_json::to_string(&(made.get("models"), made.get("lora"))).unwrap_or_default();
-    format!("{machine}\n{with}\n{chosen}")
-}
 
 /// A run being sent, until it has gone or hasn't.
 struct OnTheWay<'a>(&'a Mutex<HashSet<String>>, String);
@@ -3429,7 +3419,6 @@ impl Walk {
             self.list_ahead(&ahead);
             self.finish_asks().await?;
             self.sync();
-            self.ahead_unneeded();
             if work.is_empty() {
                 // What is going with nothing following it has ended. What this walker took in is done; an ask that came since is
                 // the next turn's, so `over` finds it and the walk goes on.
@@ -3566,44 +3555,6 @@ impl Walk {
         };
         let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
         Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
-    }
-
-    /// Asks a machine for a function's code and weights, in the background: a warm run, which holds no GPU and starts no executor. The
-    /// function is what the text names, else the first of its package that makes this kind. Nothing here can fail a render.
-    async fn ask_ahead(&self, wanted: Wanted) -> Result<(), Error> {
-        let Wanted { machine, hub, with, kind, made } = wanted;
-        let key = ahead_key(&machine.to_string(), &with, &made);
-        let on = [machine.clone()];
-        let package = self.host.package(&hub, &with, &self.folder().dir, &on).await?;
-        let Some(renderer) = package.first_making(&kind) else { return Ok(()) };
-        let placed = machine;
-        let mut payload = Map::new();
-        for field in ["models", "lora"] {
-            if let Some(value) = made.get(field).filter(|value| !value.is_null()) {
-                payload.insert(field.into(), value.clone());
-            }
-        }
-        let called = renderer.target();
-        let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
-        choices.take(&mut payload)?;
-        let models = choices::wire(&choices.into_choices())?;
-        let (source, inputs) = match &renderer.local {
-            None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
-            Some(path) => {
-                // A fetch-ahead run stages its files outside any project: a private project's code waits for the run that calls it.
-                if crate::private_io::of_path(&self.folder().dir)?.is_some() { return Ok(()); }
-                let prepared = self.host.ready(path, &placed, &hub).await?;
-                (v1::Source::Local(prepared.source), prepared.files)
-            }
-        };
-        let spec = v1::RunSpec { kind: v1::RunKind::Warm, source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
-        let target = format!("{}{called}", api::calcifer::project::AHEAD);
-        let shown = package.name.clone() + "/" + &renderer.function;
-        let submit = SubmitRun { on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None, stays: vec![] };
-        let run = self.send_run(&format!("project-ahead-{}", new_key()), submit).await?;
-        info!("{}: fetching {shown} ahead on {placed}: run {}", self.folder().dir.display(), run.number);
-        self.project.jobs.ahead(run.id.clone(), key, with, shown, placed.to_string(), run.number);
-        Ok(())
     }
 
     /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices. None when its package doesn't say in
@@ -3763,27 +3714,6 @@ impl Walk {
         let planned = placed.as_ref().map(|placed| placed.soonest.clone()).filter(|offer| on.contains(&offer.machine));
         let offers: Vec<Offer> = placed.map(|placed| placed.offers).unwrap_or_default().into_iter().filter(|offer| on.contains(&offer.machine)).collect();
         pick(&self.host.api(), on, &offers, planned.as_ref(), hub, Some(package), &renderer.function, &asset.made).await
-    }
-
-    /// What it fetches ahead for jobs that all went or ended: it needn't go on.
-    fn ahead_unneeded(&self) {
-        let needed: HashSet<String> = {
-            let walk = self.folder().walk_now().unwrap_or_default();
-            let walker = self.project.walker.lock().expect("walker lock");
-            let graph = &walker.graph;
-            (graph.open_jobs().into_iter().filter(|&id| graph.jobs[id].state == walker::State::Waiting))
-                .filter_map(|id| {
-                    let job = &graph.jobs[id];
-                    let ask = walk.walk.asks.iter().find(|ask| ask.id == job.ask)?;
-                    Some(walker.readings.get(&ask.digest)?.doc.target(job.node))
-                })
-                .collect()
-        };
-        for (with, _, run) in self.project.jobs.ahead_going() {
-            if !needed.contains(&with) {
-                self.host.cancel_ahead(&run);
-            }
-        }
     }
 
     /// Takes in what was asked since: said once, and what can't be read ends there.

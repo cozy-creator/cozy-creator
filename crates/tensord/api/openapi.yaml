@@ -264,7 +264,7 @@ paths:
     post:
       summary: >-
         Work, admitted as one (cl-816). Each new run is accepted with the others before any prepares, so the
-        machine packs them together as `POST /v1/estimate` quoted them. Each is idempotent on its id per
+        machine packs them together as Calcifer quoted them. Each is idempotent on its id per
         signer: the same id with the same spec answers its state; with another spec, `run_id_conflict`. An
         update's activation and a rental's idle release wait for them.
       operationId: submit
@@ -280,22 +280,6 @@ paths:
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
         '503':
           description: '`machine_updating` or `machine_released`'
-          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
-  /v1/estimate:
-    post:
-      summary: >-
-        When each job would run here were the caller to send them all now, packed with the
-        machine's queue by the model its scheduler gives each root its width by. A quote: nothing is reserved.
-      operationId: estimate
-      requestBody:
-        content: {application/json: {schema: {$ref: '#/components/schemas/EstimateRequest'}}}
-        required: true
-      responses:
-        '200':
-          description: One quote per job, in its order
-          content: {application/json: {schema: {$ref: '#/components/schemas/EstimateAnswer'}}}
-        '400':
-          description: '`invalid_function`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/upcoming:
     put:
@@ -1024,10 +1008,6 @@ components:
       type: string
       enum: [measured, prior, none]
       description: 'What a quote''s time stands on: runs here, the caller''s `prior_ms`, or nothing (a minute).'
-    EstimateAnswer:
-      type: object
-      properties:
-        jobs: {type: array, items: {$ref: '#/components/schemas/Quote'}, description: One per job asked, in its order.}
     EstimateJob:
       type: object
       properties:
@@ -1050,10 +1030,6 @@ components:
           format: int64
           minimum: 0
           description: 'The soonest it can start, ms from now: when what it reads is made.'
-    EstimateRequest:
-      type: object
-      properties:
-        jobs: {type: array, items: {$ref: '#/components/schemas/EstimateJob'}, description: In the order they would be sent.}
     JobSize:
       type: object
       description: What a job makes, in the units its time scales with; each unknown one absent.

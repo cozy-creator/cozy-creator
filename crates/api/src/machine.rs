@@ -79,8 +79,6 @@ pub mod path {
     pub const OBJECT: &str = "/v1/objects/{digest}";
     /// `POST` a [`super::HeldRequest`]: what the machine holds of many objects, in one request.
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
-    /// `POST` an [`super::EstimateRequest`]: when each job would finish here; a quote, not a reservation.
-    pub const ESTIMATE: &str = "/v1/estimate";
     /// `PUT` an [`super::Upcoming`]: the jobs the caller expects to send here, nearest first (cl-967).
     pub const UPCOMING: &str = "/v1/upcoming";
     /// `PUT` a [`super::Prepare`]: what the caller expects demand for here, with no job yet (cl-967).
@@ -872,16 +870,7 @@ pub struct AheadAnswer {
 
 // ---- Estimate -------------------------------------------------------------------------------
 
-/// `POST /v1/estimate` (cl-816): jobs a caller may send here, packed with this machine's queue as
-/// if all of them were sent now, by the model its scheduler gives each run its width by. A quote:
-/// nothing is reserved, and the queue settles two callers that pick the same machine.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EstimateRequest {
-    /// In the order they would be sent.
-    pub jobs: Vec<EstimateJob>,
-}
-
+/// A job the estimator quotes a machine for (`api::estimate::quote`, cl-967): Calcifer's, from what the machine pushes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EstimateJob {
@@ -961,13 +950,6 @@ impl JobSize {
         ];
         each.into_iter().flatten().map(|(a, b)| a / b).product()
     }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EstimateAnswer {
-    /// One per job asked, in its order.
-    pub jobs: Vec<Quote>,
 }
 
 /// When one job would run here. Times are milliseconds from the answer, so machines' clocks never
