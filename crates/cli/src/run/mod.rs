@@ -193,9 +193,10 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Some(Verb::Watch { run, once, output }) => watch::exec(ctx, &run, once, output.as_deref()).await,
         Some(Verb::Cancel { run }) => {
             let calcifer = ctx.calcifer().await?;
-            let mut run = calcifer.run(&run).await?;
+            let address = crate::calcifer_client::RunAddress::current(ctx, &run).await?;
+            let mut run = calcifer.run(&address).await?;
             if !follow::settled(&run) {
-                run = calcifer.cancel(run.id.as_str()).await?;
+                run = calcifer.cancel(&crate::calcifer_client::RunAddress::of(&run)).await?;
             }
             follow::record(ctx, &run);
             Ok(ExitCode::SUCCESS)

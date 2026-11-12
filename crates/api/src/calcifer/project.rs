@@ -9,6 +9,10 @@ use serde_json::{Map, Value};
 
 use crate::{calcifer::On, error::Error};
 
+/// Project mutation storage protocol; clients without this fence cannot mutate project state.
+pub const PROJECT_STORAGE_HEADER: &str = "cozy-project-storage";
+pub const PROJECT_STORAGE_VERSION: &str = "3";
+
 /// The canvas view, saved inside its project's database.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

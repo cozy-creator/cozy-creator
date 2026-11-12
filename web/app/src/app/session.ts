@@ -1,24 +1,14 @@
 import type { BrowserSession } from "../api/calcifer"
 
-const KEY = "cozy.session"
+/** Injected over the native process's private debugging pipe before application boot. */
+const owned = (globalThis as typeof globalThis & { __cozyOwned?: { session: BrowserSession; birth: string } }).__cozyOwned
+let held: BrowserSession | null = owned?.session ?? null
+export const ownedBirth = owned?.birth ?? null
 
-export function readSession(): BrowserSession | null {
-  try {
-    const held = JSON.parse(localStorage.getItem(KEY) ?? "null")
-    return typeof held?.token === "string" && typeof held?.media === "string" ? held : null
-  } catch {
-    return null
-  }
-}
+export function readSession(): BrowserSession | null { return held }
 
-export function saveSession(session: BrowserSession | null) {
-  try {
-    if (session) localStorage.setItem(KEY, JSON.stringify(session))
-    else localStorage.removeItem(KEY)
-  } catch {
-    // Private windows may refuse storage: this tab still has the session in memory.
-  }
-}
+/** Browser authority is memory-only and never recovered from an older normal browser profile. */
+export function saveSession(session: BrowserSession | null) { held = session }
 
 /** Consume auth fragments and old hash routes before the history router is created. */
 export function takeCode(): string | null {
