@@ -208,7 +208,7 @@ completed "$A" c1-run || fail "c1: A on $OLD did not run on B on $NEW"
 update "$A" "$(command -v cozy)" "$NEW"
 [ "$(calcifer_on "$A")" = "$OLD" ] || fail "c: A's Calcifer is not the one before the update"
 [ "$(sh "$A" '/usr/local/bin/.cozy-previous --version')" = "cozy $OLD" ] || fail "c: no previous cozy beside A's"
-sh "$A" "nohup /usr/local/bin/.cozy-previous run sdxl/generate --on b prompt='a lantern-lit greenhouse at night, photo' \
+sh "$A" "cd /root/session && nohup /usr/local/bin/.cozy-previous run sdxl/generate --on b prompt='a lantern-lit greenhouse at night, photo' \
   seed:=$((SEED + 6)) steps:=50 < /dev/null > /root/inflight.txt 2>&1 &"
 N=''; for _ in $(seq 1 90); do
   N=$(sh "$A" 'cat /root/inflight.txt' | grep -m1 -oE '^run [0-9]+' | awk '{print $2}')
