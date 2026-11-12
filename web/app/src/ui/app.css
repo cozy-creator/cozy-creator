@@ -216,8 +216,8 @@ code {
 .top > .brand {
   display: flex;
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: calc(30px * var(--ui));
+  height: calc(30px * var(--ui));
 }
 .top > .brand img {
   width: 100%;
@@ -987,6 +987,37 @@ code {
 .run-face.failed .face-state b {
   color: var(--bad);
 }
+/* A failed take picked (cl-954): its error is all its frame shows, whole and wrapped, on the card, its Copy under it. */
+.run-face.failed.whole {
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  border: 1px solid var(--bad);
+  background: var(--card);
+  font: var(--body) / 1.4 var(--sans);
+  text-shadow: none;
+}
+.run-face.failed.whole p {
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: 40em;
+  text-align: center;
+}
+.run-face.failed.whole b {
+  overflow: visible;
+  font-size: var(--title);
+}
+.run-face.failed.whole .face-words {
+  overflow: visible;
+  white-space: pre-wrap;
+}
+.run-face.failed.whole .copy-error {
+  min-height: 28px;
+  padding: 0 14px;
+}
 .run-face .face-cancel {
   flex: none;
   padding: 0 var(--s3);
@@ -1291,6 +1322,83 @@ video.preview.on {
   flex-direction: column;
   z-index: 1;
 }
+/* A draft that goes on from a take says so across the top of its frame (cl-951): the kept part's last frame, what's kept and redone, and Cancel. */
+.lead-in {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+/* Its words start under it; the pictures behind them still fill the frame. */
+.media:has(.lead-in) .in-frame {
+  padding-top: 56px;
+}
+.lead-in-frame {
+  position: relative;
+  flex: none;
+  height: 44px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--well);
+}
+.lead-in-frame img.strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+}
+.lead-in-words {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lead-in-words b {
+  overflow: hidden;
+  font-size: var(--body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lead-in-line {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+}
+.lead-in-line .kept {
+  flex: var(--kept) 0 0;
+  border-radius: 3px;
+  background: var(--mute);
+}
+.lead-in-line .new {
+  flex: var(--new) 0 0;
+  border-radius: 3px;
+  background: var(--ember);
+}
+.lead-in-gone {
+  flex: none;
+  color: var(--warn, var(--ember));
+  font-size: var(--body);
+}
+/* A take that went on from another box's, on its tile: as its tool's name is. */
+.continues-rest {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mute);
+  font: calc(var(--t-body) * var(--ui)) / 1.25 var(--sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .in-frame .mention-text {
   flex: 1;
   min-height: 0;
@@ -1564,6 +1672,14 @@ video.preview.on {
   z-index: 1;
   border: 4px solid var(--ember);
   pointer-events: none;
+}
+/* A take that failed stays in the column (cl-954): red, saying so, until it's deleted. */
+.here-side .take.making.failed {
+  border-color: var(--bad);
+}
+.take-failed {
+  color: var(--bad);
+  font: 600 var(--title) / 1.2 var(--sans);
 }
 .here-side .take.making {
   background: var(--card);
@@ -1907,16 +2023,6 @@ video.preview.on {
 .run:active {
   transform: scale(0.96);
 }
-/* Pick up from here: what's kept is marked, under the take it's picked up from. */
-.from-here {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.tc-inline {
-  font: var(--tiny) var(--mono);
-  color: var(--mute);
-}
 /* Its takes or versions, side by side. */
 .takes {
   display: flex;
@@ -2184,6 +2290,19 @@ video.preview.on {
   border-bottom: 1px solid var(--line);
   font-size: var(--body);
 }
+/* Back and close: as big to hit and see as the frame's other buttons. */
+.drawer-head .iconb,
+.model-picker-head .iconb,
+.tools .iconb {
+  width: 32px;
+  height: 32px;
+}
+.drawer-head .iconb .icon,
+.model-picker-head .iconb .icon,
+.tools .iconb .icon {
+  width: 18px;
+  height: 18px;
+}
 .drawer-head b {
   font-size: var(--title);
   font-weight: var(--w-title);
@@ -2300,6 +2419,32 @@ video.preview.on {
   flex: 1;
   min-width: 0;
 }
+/* Its × top right, big enough to hit; an error's words take their row whole, with Copy and what to run under them. */
+.note > .iconb {
+  width: 28px;
+  height: 28px;
+}
+.note > .iconb .icon {
+  width: 16px;
+  height: 16px;
+}
+.note .copy-error {
+  min-height: 28px;
+}
+.note:has(> .copy-error, > .copyable) {
+  align-items: flex-start;
+}
+.note:has(> .copy-error, > .copyable) > .line {
+  flex-basis: calc(100% - 40px);
+  padding-top: 3px;
+}
+.note:has(> .copy-error, > .copyable) > .iconb {
+  order: 1;
+}
+.note:has(> .copy-error, > .copyable) > .copy-error,
+.note:has(> .copy-error, > .copyable) > .note-act {
+  order: 3;
+}
 /* What a finished render made (cl-937): its take, small, before its words. */
 .note-picture {
   flex: none;
@@ -2382,6 +2527,17 @@ button:disabled {
 }
 .dot.s-queued {
   background: var(--faint);
+}
+/* Every row keeps its dot's place, so the numbers line up; the dot is the state dot's size. */
+.runrow .dot {
+  width: 10px;
+  height: 10px;
+  margin: 0;
+}
+.runrow .dot.s-current,
+.runrow .dot.s-missing {
+  display: block;
+  visibility: hidden;
 }
 .rows {
   list-style: none;
@@ -2689,11 +2845,23 @@ button:disabled {
 }
 .stack label {
   display: grid;
-  grid-template-columns: 96px 1fr;
+  grid-template-columns: 10em 1fr;
   align-items: center;
   gap: 8px;
   color: var(--faint);
   font-size: var(--body);
+}
+/* A checkbox in the field's column, its words beside it. */
+.stack label:has(> input[type="checkbox"]) {
+  display: flex;
+  gap: 8px;
+  padding-left: calc(10em + 8px);
+  color: var(--ink);
+}
+.stack label > input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
 .heldrow {
   display: flex;
@@ -2813,6 +2981,9 @@ button:disabled {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.assetrow .asset-thumb + .nm {
+  margin-left: 18px;
 }
 .assetrow .nm {
   overflow: hidden;
@@ -3450,6 +3621,15 @@ a.tab:hover {
 .main-menu nav a:hover {
   background: var(--tint);
 }
+/* One list, as the zoom menu is: no row drawn as a button of its own, the theme's switch too. */
+.main-menu nav .tb {
+  justify-content: flex-start;
+  border-color: transparent;
+  background: none;
+}
+.main-menu nav .tb:hover {
+  background: var(--tint);
+}
 
 /* Its controls: what it asks for, Render, and all else when that's asked for. */
 .edit-shown,
@@ -3974,24 +4154,6 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.beats-from input {
-  width: 72px;
-}
-.pickup-frame {
-  position: relative;
-  overflow: hidden;
-  border-radius: 4px;
-  background: var(--well);
-}
-.pickup-frame img.strip {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 800%;
-  max-width: none;
-  object-fit: fill;
-}
 .desc-row {
   display: flex;
   align-items: center;
@@ -4477,34 +4639,6 @@ p.warn.slow {
   visibility: visible;
 }
 
-.from-here .keeps {
-  flex: none;
-  width: 100%;
-  height: 10px;
-  margin: 0;
-  appearance: none;
-  border-radius: 5px;
-  background: linear-gradient(to right, var(--ember) var(--kept), var(--line) var(--kept));
-}
-.from-here .keeps::-webkit-slider-thumb {
-  appearance: none;
-  width: 6px;
-  height: 18px;
-  border-radius: 3px;
-  background: var(--ink);
-}
-.from-here .keeps::-moz-range-thumb {
-  width: 6px;
-  height: 18px;
-  border: 0;
-  border-radius: 3px;
-  background: var(--ink);
-}
-.from-here .row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
 /* A file looked at large: the one thing over the canvas. */
 .viewer {
   position: fixed;

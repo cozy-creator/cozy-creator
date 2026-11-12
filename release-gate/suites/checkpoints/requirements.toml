@@ -250,7 +250,7 @@ model = { files = [
 ] }
 
 [[checkpoint]]
-reads = "qwen-image-2 turbo_lora (Fun Acc's sigma grid: the package's copy until --add puts it here)"
+reads = "qwen-image-2 turbo_lora (0.10.0rc5 on: Fun Acc's steps and sigma grid from pdd_config.json)"
 models = ["alibaba-pai/qwen-image-2.1-fun-acc"]
 lora = true
 [checkpoint.components]
@@ -309,3 +309,14 @@ models = ["kopper/relayvsr"]
 model = { keys = ["architecture"] }
 wan = { config = false, tensors = true }
 flash = { config = false, tensors = true }
+
+# Two Anima adapters listed as LoRAs that TensorD's adapter path never applies (xs-183): naming each says what reads it.
+[[checkpoint]]
+reads = "anima ip_adapter (se-127): its tensors; lora_alpha defaults to the factors' rank, 32, as the file's metadata says"
+models = ["lucifertc/ip-adapter"]
+[checkpoint.components]
+model = { config = false, tensors = true }
+
+[[checkpoint]]
+reads = "nothing: a pose control-LoRA whose control_embedder takes a pose latent no package builds"
+models = ["claquasse/control-pose"]

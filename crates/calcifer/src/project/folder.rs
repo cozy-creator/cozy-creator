@@ -373,6 +373,9 @@ pub(crate) struct Asset {
     pub tried: Option<Tried>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<Failed>,
+    /// Its takes that failed, by id, the newest last: each kept until it's dismissed (cl-954), at most `ENDED_KEPT`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ended: Vec<Ended>,
     /// When a delete set it aside: Undo brings it back until the window ends, then its files leave the project (cl-919, `purge`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_ms: Option<i64>,
@@ -388,6 +391,18 @@ pub(crate) struct Failed {
     pub inputs: Option<String>,
     pub error: Error,
 }
+
+/// A take that failed: its id, its run if it had one, and why (cl-954).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Ended {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u64>,
+    pub error: Error,
+}
+
+/// The most failed takes an asset keeps.
+pub(crate) const ENDED_KEPT: usize = 20;
 
 /// The seed last sent for `inputs`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

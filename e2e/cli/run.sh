@@ -36,8 +36,9 @@ step install; install_cozy; run_project "$OUT/project" || fail "project initiali
 user_services
 step status; fixture_calcifer | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
-[ "$SHARD" != commands ] || version_skew
+[ "$SHARD" != commands ] || { version_skew; busy_skew; }
 step candidates; candidates
+[ "$SHARD" != commands ] || { explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
 }
 
@@ -440,6 +441,8 @@ case $SHARD in
   web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
   # A take is one id from Render to its version, listed at once and never off, through a slow Calcifer and a reload (cl-945), with cl-942's.
   web-takeids) export DB_WEB="takeids focusfinish"; parts="tools_read db_existing_web logs" ;;
+  # A take that fails stays in its column, red, its error to read and copy, through a reload, until its trash deletes it (cl-954).
+  web-failedtakes) export DB_WEB=failedtakes; parts="tools_read db_existing_web logs" ;;
   # A project cozy 0.24.0 made keeps every take under this cozy, and a take asked by id lands as that version (cl-945).
   old-takes) parts="old_takes logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
@@ -478,6 +481,7 @@ case $SHARD in
     newtakes
     focusfinish
     takeids
+    failedtakes
     old_takes
     prepares
     db_migrate

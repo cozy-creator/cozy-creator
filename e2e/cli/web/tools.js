@@ -4,7 +4,7 @@
 // order, their sum, a block that may be absent, and rows two deep. Slots: what doesn't fit is refused as it's carried and at the drop, with why;
 // a filled one is on the face, and × unsets it. A video's range: in and out dragged on its frames, written `<walk:in-out>` and shown as
 // timecode, in a prompt and on a plate, whose length is set against the beats. Where this computer runs models: previews land as it renders;
-// Pick up from here on its own take and from another box's take let go on it, landing on the tool's frames, with nothing written.
+// Redo a segment of its own take, and continue another box's take let go on it from its end, with nothing written (cl-951).
 //   node tools.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT, $ALONE as nodes.js. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -387,7 +387,7 @@ function replaceFile(at, text) {
   await shot('ranges');
   await closeBox(page);
 
-  // Rendering, where this computer runs models: previews land as it goes, then Pick up from here.
+  // Rendering, where this computer runs models: previews land as it goes, then a segment redone and another take continued.
   if (local) {
     const versions = async (name) => (await of(name))?.prefixes?.length ?? 0;
     const given = async (name) => {
@@ -412,20 +412,25 @@ function replaceFile(at, text) {
     check('each_type_reaches_the_function', asTyped.summary?.text === 'Along the coast.' && Array.isArray(asTyped.beats) && asTyped.beats[0].angles?.[0]?.framing?.text?.includes('<amy>') && asTyped.plate?.file === 'VideoFile', asTyped);
     check('a_mention_two_deep_is_its_prompts_reference', Object.keys(asTyped.beats[0].angles[0].framing.references ?? {}).join() === 'amy', asTyped.beats[0].angles[0].framing);
 
-    // On its own take: scrubbed to a frame, it lands on the tool's grid, and picks up there.
+    // On its own take, in Focus: its two segments (the fixture says the second starts at frame 7); Redo segment 2 keeps the first.
     await open('shot');
-    await box('shot').locator('.from-here').waitFor();
-    await box('shot').locator('.from-here .keeps').fill('4');
-    check('it_says_where_it_lands', (await box('shot').locator('.from-here .cut-says').textContent()).startsWith('Lands on 0:00.02'), await box('shot').locator('.from-here').innerText());
-    await box('shot').locator('button:text-is("Pick up from here")').click();
+    // A render from its words stays on them (cl-907): its take, pressed, is what's looked at.
+    await page.locator('.focus-viewport .take[aria-label="take 1"]').first().click();
+    const segments = page.locator('.focus-viewport .focus-under .segments');
+    await segments.locator('.segment').nth(1).click();
+    const redo = segments.locator('button.redo-segment');
+    check('it_offers_its_segment', (await until('Redo segment 2', () => redo.innerText().catch(() => ''), (text) => text === 'Redo segment 2').catch(() => '')) === 'Redo segment 2', await segments.innerText().catch(() => ''));
+    await redo.click();
+    await page.locator('.focus-viewport .lead-in').waitFor();
+    await page.locator('.focus-viewport button[aria-label=Render]').first().click();
     await until('a picked-up take', () => versions('shot'), (n) => n === 2, FIRST_RUN_MS);
     const picked = await given('shot');
-    check('pickup_reaches_the_function', picked.pickup?.out_frame === 2 && picked.pickup.take?.file?.file === 'VideoFile', picked.pickup);
+    check('pickup_reaches_the_function', picked.pickup?.out_frame === 7 && picked.pickup.take?.file?.file === 'VideoFile', picked.pickup);
     const afterPickup = JSON.stringify(storedOf(folder));
     const pickedLines = JSON.stringify(stored('shot'));
     check('pickup_writes_nothing', pickedLines === typed && !afterPickup.includes('pickup'), { before: typed, after: pickedLines, hasPickup: afterPickup.includes('pickup') });
 
-    // Another box's take let go on it: from that take, at a frame chosen on it.
+    // Another box's take let go on it: it continues that take from its end, the grid's last frame in it (7 of 11), and says so.
     addBoxes(folder, [{ name: 'other', tool: `${fixture}/shot`, kind: 'video', fields: { plate: '<walk>' } }]);
     await until('other in the project', () => of('other'), Boolean);
     await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { other: { x: at.x - 420, y: at.y } } }) });
@@ -434,10 +439,10 @@ function replaceFile(at, text) {
     await box('other').locator('.take[aria-label="take 1"]').click();
     const onto = await reach('shot');
     await box('other').locator('.take-out').dragTo(page.locator('body'), { targetPosition: onto });
-    await box('shot').locator('.from-here .pickup-of:has-text("other\'s take 1")').waitFor();
-    check('another_take_offers_pick_up', (await box('shot').locator('.card.here').count()) === 1);
-    await box('shot').locator('.from-here .keeps').fill('7');
-    await box('shot').locator('button:text-is("Pick up from here")').click();
+    const leadIn = page.locator('.card.here[data-asset="shot"] .lead-in');
+    await leadIn.waitFor();
+    check('another_take_continues', (await leadIn.locator('.lead-in-words b').innerText()).startsWith('Continues <other.1> from its end'), await leadIn.innerText());
+    await page.locator('.card.here[data-asset="shot"] button[aria-label=Render]').first().click();
     await until('picked up from other', () => versions('shot'), (n) => n === 3, FIRST_RUN_MS);
     const fromOther = await given('shot');
     check('pickup_of_another_take', fromOther.pickup?.out_frame === 7 && fromOther.pickup.take?.file?.file === 'VideoFile', fromOther.pickup);

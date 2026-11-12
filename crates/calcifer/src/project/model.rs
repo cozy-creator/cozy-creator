@@ -165,8 +165,11 @@ fn overlaid(row: &mut Row, rendering: &BTreeMap<String, f64>, making: &HashMap<S
     }
     // Sent and its run not numbered yet, as while it binds, installs or fetches weights, it's being made all the same (cl-945).
     if let Some(takes) = takes.get(&name_key(&row.name)) {
-        row.takes.clone_from(takes);
-        if takes.iter().any(|take| !take.queued) {
+        // What's on its way, then what failed of it (the row's own), each once: one just failed is the failed one.
+        let failed: Vec<TakeNow> = std::mem::take(&mut row.takes);
+        let ended: std::collections::HashSet<String> = failed.iter().map(|take| take.id.clone()).collect();
+        row.takes = takes.iter().filter(|take| !ended.contains(&take.id)).cloned().chain(failed).collect();
+        if takes.iter().any(|take| !take.queued && !row.takes.iter().any(|held| held.id == take.id && held.failure.is_some())) {
             row.standing = RowStanding::Making;
         }
     }

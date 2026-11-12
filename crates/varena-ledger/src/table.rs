@@ -282,6 +282,12 @@ impl Table {
         self.page.rows.iter().filter(|row| row.pid.load(Acquire) != 0).map(|row| row.held.load(Acquire)).sum()
     }
 
+    /// What every other live row holds: peers' memory, which may come back.
+    pub fn held_elsewhere_bytes(&self, row: Row) -> u64 {
+        self.page.rows.iter().enumerate().filter(|(index, words)| *index != row.0 && words.pid.load(Acquire) != 0)
+            .map(|(_, words)| words.held.load(Acquire)).sum()
+    }
+
     /// The pids in live rows: on this GPU, but not foreign.
     pub fn pids(&self) -> Vec<u32> {
         self.page.rows.iter().map(|row| row.pid.load(Acquire) as u32).filter(|pid| *pid != 0).collect()

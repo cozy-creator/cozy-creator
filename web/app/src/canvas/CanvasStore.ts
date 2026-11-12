@@ -147,8 +147,6 @@ export interface ElementView {
   landing?: boolean
   /** What its render has shown so far, the newest revision that landed here, by its run's id and number: kept, dimmed, if the render fails. */
   glimpse?: { run: string; number: number; output: string; index: number; rev: number; media: string; label?: string; sha256?: string }
-  /** Another box's take let go on it, to pick up from: that take, as a mention of it, and where it's from. */
-  pickingUp?: { take: string; from: string; number: number }
   /** The take that just landed, sliding in beside the last. */
   slid?: number
 }
@@ -870,7 +868,8 @@ export class CanvasStore {
     const owner = this.owners.get(run.number) ?? [...this.views].find(([, view]) => watched(view)?.run === run.number)?.[0]
     if (!owner) return
     const viewed = this.get(owner)
-    if (viewed && watched(viewed)?.run === run.number && (run.status === "failed" || run.status === "canceled")) this.patch(owner, { watch: undefined })
+    // A take looked at that's canceled is gone; one that failed stays looked at, its error in its frame (cl-954).
+    if (viewed && watched(viewed)?.run === run.number && run.status === "canceled") this.patch(owner, { watch: undefined })
     // The run its frame is on: the take looked at (cl-945), else the first going. Another's progress is its own tile's.
     const making = this.get(owner)?.asset?.making ?? []
     const view = this.get(owner)
@@ -931,7 +930,7 @@ export class CanvasStore {
         const answered = view.asked !== undefined && view.asked < this.began
         if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }), { stays: true })
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
-        if (view.canceling && !asset.making?.length && !asset.takes?.length && !queued.has(asset.name)) change.canceling = undefined
+        if (view.canceling && !asset.making?.length && !asset.takes?.some((take) => !take.failure) && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (answered) change.asked = undefined
         // Its own takes (cl-945): each listed from the click until Calcifer lists it, as a take or as its version, or a read begun after
@@ -958,7 +957,7 @@ export class CanvasStore {
           // showing what it showed (cl-936), what's approved staying and what lands beside it unseen (cl-928): its watch goes once nothing is on its way.
           const seen = watched({ ...view, asset })
           const still = (id: string) => listed.has(id) || Boolean(taking?.some((take) => take.id === id))
-          if (!view.here && view.watch !== undefined && !asset.takes?.length && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
+          if (!view.here && view.watch !== undefined && !asset.takes?.some((take) => !take.failure) && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
           else if (seen?.number !== undefined) Object.assign(change, { watch: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Ended with no version (failed, canceled): nothing of it to look at.
           else if (view.watch !== undefined && !still(view.watch)) change.watch = undefined
@@ -1368,8 +1367,8 @@ export class CanvasStore {
     this.patch(name, { hereWords: undefined })
   }
 
-  /** Restore this take's authoring fields before continuing from the displayed playhead. */
-  async beginVideoPickup(name: string, seconds: number) {
+  /** Redo from a seam of the take shown (`frame`, se-130): its authoring fields restored, every segment before it kept. */
+  async beginVideoPickup(name: string, frame: number) {
     const key = this.resolveName(name)
     const view = this.get(key)
     const shown = view && shownOf(view)
@@ -1386,11 +1385,39 @@ export class CanvasStore {
         for (const field of new Set([...tool.fields.map((field) => field.field), "models", "lora"])) this.setDraft(key, field, saved[field] ?? null)
       }
       const fps = shown.fps ?? FPS
-      const frame = pickupAt(Math.round(Math.max(0, seconds) * fps), framesIn(shown.duration_ms, fps), tool.pickup)
+      const cut = pickupAt(frame, framesIn(shown.duration_ms, fps), tool.pickup)
       this.focusFit?.()
-      this.patch(key, { hereWords: true, watch: undefined, continuing: frame ? { take: `<${key}.${number}>`, out_frame: frame, beats_from: frame / fps } : undefined, continuingFps: fps })
+      this.patch(key, { hereWords: true, watch: undefined, continuing: cut ? { take: `<${key}.${number}>`, out_frame: cut, beats_from: cut / fps } : undefined, continuingFps: fps })
       this.focusing = key
     } catch (error) { say("Couldn't load this video's prompts", error) }
+  }
+
+  /** Continue another box's take from its end, a seam too (cl-951): its words are this box's own, from their start. */
+  continueFrom(name: string, from: string, number: number) {
+    const key = this.resolveName(name)
+    const file = this.fileOf(`${from}.${number}`, key)
+    const snap = this.tools.get().get(this.get(key)?.asset?.tool ?? "")?.pickup
+    if (!snap || file?.field !== "video") return
+    const fps = file.fps ?? FPS
+    const last = framesIn(file.duration_ms, fps)
+    // H3's takes end on its grid: one that doesn't goes on from the grid's last frame in it.
+    const end = pickupAt(last, last, snap)
+    if (end === null) return say(`${from}'s take ${number} is shorter than this tool picks up from`)
+    this.patch(key, { hereWords: true, watch: undefined, continuing: { take: `<${mentionFrom(key, from, number)}>`, out_frame: end, beats_from: 0 }, continuingFps: fps })
+    this.openHere(key)
+  }
+
+  /** Back to a plain draft: nothing kept from a take. */
+  stopContinuing(name: string) {
+    this.patch(this.resolveName(name), { continuing: undefined, continuingFps: undefined })
+  }
+
+  /** Every other box's video takes, newest box first: what a box can continue. */
+  videoTakes(besides: string): Array<{ name: string; number: number }> {
+    const key = this.resolveName(besides)
+    return [...this.views.values()]
+      .filter((view) => view.name !== key && view.asset?.kind === "video" && !view.asset.timeline)
+      .flatMap((view) => (view.asset?.prefixes ?? []).filter((held) => held.main?.field === "video").map((held) => ({ name: view.name, number: held.number })))
   }
 
   /** Looks at a take still being made, by its id: its tile is picked, and its own progress fills the frame, a video's too (Paul, 11-12).
@@ -1441,7 +1468,7 @@ export class CanvasStore {
     // From an image tool's words, the box looks at the take being made, and its + goes back to them. Not before it goes: what it waits
     // for or asks first is said under its words.
     if (asset.kind === "image" || asset.kind === "video") this.watchTake(key, take, asset.kind === "video")
-    this.patch(key, { waiting: undefined, asking: undefined, scrub: undefined, pickingUp: undefined, glimpse: undefined, asked: NOT_YET })
+    this.patch(key, { waiting: undefined, asking: undefined, scrub: undefined, glimpse: undefined, asked: NOT_YET })
     const id = this.ids.get(key)
     // Answered, its take is Calcifer's to list from a read begun after; not sent, it's no take.
     const settle = (asked?: number) => {
@@ -1787,10 +1814,9 @@ export class CanvasStore {
       return true
     }
     const own = file.from !== undefined && nameKey(file.from) === nameKey(key)
-    // Another box's take on one that picks up: from there, at a frame chosen on it.
+    // Another box's take on one that picks up: it continues that take from its end (cl-951).
     if (!own && file.from && file.number && file.field === "video" && this.tools.get().get(asset.tool ?? "")?.pickup) {
-      this.patch(key, { pickingUp: { take: mentionFrom(key, file.from, file.number), from: file.from, number: file.number }, scrub: 0 })
-      this.openHere(key)
+      this.continueFrom(key, file.from, file.number)
       return true
     }
     if (this.joins(key)) {
@@ -1924,8 +1950,10 @@ export class CanvasStore {
     if (take.id) this.patch(name, { gone: [...(view.gone ?? []), take.id] })
     // One with an id is off by it (`gone`), and what's listed after stays as read; a run no take names is off its runs until a read.
     const making = take.id ? {} : { making: asset.making?.filter((number) => number !== take.run) }
-    const send = take.run !== undefined ? (_: string, write: Write) => this.client.cancelRun(String(take.run), write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(this.projectId!, [take.id], write.once).then(() => ({}))
-    this.over(name, making, send, take.run !== undefined ? `cancel run ${take.run} of` : "cancel a take of", undefined)
+    // One that failed is deleted by its id (cl-954); one sent, its run is stopped; one queued is dropped by its id.
+    const byRun = take.run !== undefined && !take.failure
+    const send = byRun ? (_: string, write: Write) => this.client.cancelRun(String(take.run), write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(this.projectId!, [take.id], write.once).then(() => ({}))
+    this.over(name, making, send, take.failure ? "delete a failed take of" : byRun ? `cancel run ${take.run} of` : "cancel a take of", undefined)
   }
 
   /** Its render stops, wherever it is: what's queued leaves, its runs are canceled (as `cozy run cancel`), and it says Cancelling… until
