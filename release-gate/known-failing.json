@@ -1,1 +1,4 @@
-[]
+[
+  {"sku": "*", "cells": ["qwen2-max-cap8"], "issue": "se-122"},
+  {"sku": "*", "cells": ["describer-max-cap8"], "issue": "cr-284"}
+]
