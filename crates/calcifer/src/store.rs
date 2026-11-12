@@ -183,6 +183,62 @@ fn fence_legacy_unseen(writer:&mut Connection)->Result<()> {
     Ok(())
 }
 
+/// Whether a legacy run names a project: its spec sealed to one, or its outputs landing in one (`<project>/.runs`), even a
+/// project now gone. Any other run is the controller's own maintenance (an update, an install, a publish, a call outside
+/// any project).
+pub(crate) fn project_owned_run(out_dir: &str, spec: &[u8]) -> bool {
+    vault::is_payload(spec) || crate::project::of_landing(Path::new(out_dir)).is_some()
+}
+
+fn has_table(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)", [name], |row| row.get(0))?)
+}
+
+/// A 0.24 maintenance run returns to this store as on the RC, with its outputs, logs, asks, retry answer and after step,
+/// each verified row for row before its legacy row is retired. One a later maintenance run's number or key now holds
+/// stays fenced, never merged by guess. A run naming a project stays fenced until that project admits it.
+fn migrate_maintenance_runs(writer: &mut Connection) -> Result<()> {
+    if !has_table(writer, "legacy_project_runs")? { return Ok(()); }
+    let tx = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let candidates: Vec<(String, String, Vec<u8>, String)> = {
+        let mut stmt = tx.prepare("SELECT id,out_dir,spec,idempotency_key FROM legacy_project_runs")?;
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    for (id, out_dir, spec, key) in candidates {
+        if project_owned_run(&out_dir, &spec) { continue; }
+        tx.execute_batch("SAVEPOINT maintenance_run")?;
+        let moved = [("runs", "id", id.clone()), ("outputs", "run", id.clone()), ("run_logs", "run", id.clone()), ("asks", "run", id.clone()),
+                     ("answers", "key", key.clone()), ("after_steps", "key_sha256", key_digest(&key))]
+            .into_iter().try_fold(true, |exact, (table, column, value)| -> Result<bool> {
+                let legacy = format!("legacy_project_{table}");
+                if !exact || !has_table(&tx, &legacy)? { return Ok(exact); }
+                let columns: Vec<String> = {
+                    let mut stmt = tx.prepare("SELECT name FROM pragma_table_info(?1)")?;
+                    stmt.query_map([&legacy], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
+                };
+                let columns = columns.join(",");
+                // A column this store no longer has, a number or a key taken: keep it fenced.
+                if tx.execute(&format!("INSERT OR IGNORE INTO {table}({columns}) SELECT {columns} FROM {legacy} WHERE {column}=?1"), [&value]).is_err() {
+                    return Ok(false);
+                }
+                Ok(tx.query_row(&format!("SELECT NOT EXISTS(SELECT {columns} FROM {legacy} WHERE {column}=?1 EXCEPT SELECT {columns} FROM {table} WHERE {column}=?1)"),
+                    [&value], |row| row.get::<_, bool>(0))?)
+            })?;
+        if !moved {
+            tx.execute_batch("ROLLBACK TO maintenance_run; RELEASE maintenance_run")?;
+            continue;
+        }
+        for (table, column, value) in [("after_steps", "key_sha256", key_digest(&key)), ("answers", "key", key.clone()), ("asks", "run", id.clone()),
+                                       ("run_logs", "run", id.clone()), ("outputs", "run", id.clone()), ("runs", "id", id.clone())] {
+            let legacy = format!("legacy_project_{table}");
+            if has_table(&tx, &legacy)? { tx.execute(&format!("DELETE FROM {legacy} WHERE {column}=?1"), [&value])?; }
+        }
+        tx.execute_batch("RELEASE maintenance_run")?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 fn migrate_maintenance_asks(writer:&mut Connection)->Result<()> {
     let exists=writer.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_asks')",[],|row|row.get::<_,bool>(0))?;
     if !exists {return Ok(());}
@@ -1790,6 +1846,7 @@ impl Store {
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
         writer.execute_batch(crate::state::TABLES)?;
         migrate_maintenance_asks(&mut writer)?;
+        migrate_maintenance_runs(&mut writer)?;
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;
         writer.pragma_update(None,"synchronous",if wal {"NORMAL"} else {"FULL"})?;
@@ -1836,8 +1893,24 @@ impl Store {
                 stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
             };
             for table in tables {
-                let exists: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM \"{}\")", table.replace('"', "\"\"")), [], |row| row.get(0))?;
-                if exists { return Ok(true); }
+                // Runs (with their rows) and answers count when they name a project; a maintenance row kept fenced does not.
+                let owned = match table.as_str() {
+                    "legacy_project_runs" => {
+                        let mut stmt = conn.prepare("SELECT out_dir,spec FROM legacy_project_runs")?;
+                        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                        rows.iter().any(|(out_dir, spec)| project_owned_run(out_dir, spec))
+                    }
+                    "legacy_project_outputs" | "legacy_project_run_logs" | "legacy_project_after_steps" => false,
+                    "legacy_project_answers" => {
+                        let mut stmt = conn.prepare("SELECT body FROM legacy_project_answers")?;
+                        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                        rows.iter().any(|body| vault::is_payload(body) || answer_path(body).is_some())
+                    }
+                    "legacy_project_asks" if has_table(conn, "legacy_project_runs")? => conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_asks WHERE run IS NULL OR run IN (SELECT id FROM legacy_project_runs))", [], |row| row.get(0))?,
+                    "legacy_project_asks" => conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_asks WHERE run IS NULL)", [], |row| row.get(0))?,
+                    other => conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM \"{}\")", other.replace('"', "\"\"")), [], |row| row.get(0))?,
+                };
+                if owned { return Ok(true); }
             }
             // Older source caches have no explicit owner. Do not silently call
             // them independent maintenance merely because the SQL rows moved.
@@ -2117,6 +2190,49 @@ impl Store {
 
     /// Old plaintext must not remain in our live SQLite freelist or WAL after conversion.
     /// This cannot erase historical external copies or SSD remnants.
+    /// Whether the legacy source still holds anything of the project at `root` (`id`): its runs and their rows, its retry
+    /// answers, its index entry or its unseen marks. Others' pending history never holds this project.
+    pub(crate) fn project_migration_required(&self, root: &Path, id: &str) -> Result<bool> {
+        let root = vault::logical(root);
+        let landing = crate::project::landing(&root);
+        match std::fs::read(self.legacy_home.join("projects.json")) {
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(index) if index.get("projects").and_then(|projects| projects.get(id)).is_none() => {}
+                _ => return Ok(true),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Ok(true),
+        }
+        self.read(|conn| {
+            if has_table(conn, "legacy_project_runs")? {
+                let mut stmt = conn.prepare("SELECT out_dir,spec FROM legacy_project_runs")?;
+                for row in stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)))? {
+                    let (out_dir, spec) = row?;
+                    match vault::payload_root(&spec) {
+                        Ok(Some(owner)) if owner == root => return Ok(true),
+                        Ok(None) if Path::new(&out_dir) == landing => return Ok(true),
+                        Err(_) => return Ok(true),
+                        _ => {}
+                    }
+                }
+            }
+            if has_table(conn, "legacy_project_answers")? {
+                let mut stmt = conn.prepare("SELECT body FROM legacy_project_answers")?;
+                for body in stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))? {
+                    let body = body?;
+                    let owner = vault::payload_root(&body).ok().flatten().or_else(|| answer_path(&body).map(|path| vault::logical(&path)));
+                    if owner.is_some_and(|owner| owner.starts_with(&root)) { return Ok(true); }
+                }
+            }
+            for (table, column) in [("legacy_project_projects", "id"), ("legacy_project_unseen", "project")] {
+                if has_table(conn, table)? && conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column}=?1)"), [id], |row| row.get::<_, bool>(0))? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+    }
+
     pub(crate) fn cleanup_private_journal(&self) -> Result<()> {
         // VACUUM can build a temporary database. Never make a second global
         // copy of unresolved private history; retire only after every owner is verified.

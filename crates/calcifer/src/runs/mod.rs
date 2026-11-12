@@ -42,12 +42,14 @@ use target::Resolved;
 pub(crate) async fn submit(
     State(api): State<Arc<Api>>,
     IdempotencyKey(key): IdempotencyKey,
+    headers: axum::http::HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Refusal> {
     let body = body?;
     prebuilt(&body)?;
     let ask: RunRequest = parse(&body)?;
     if ask.project.is_some() || (ask.warm.is_none() && !crate::hub::jobs::is(&ask.target)) {
+        if !crate::api::speaks_project_storage(&headers) { return Err(crate::api::project_storage_protocol_required()); }
         return Err(Refusal(Error::new(Kind::Usage, "project_context_required", "use the explicit project run-submission route")));
     }
     let project = ask.project.clone();

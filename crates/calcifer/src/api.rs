@@ -270,6 +270,17 @@ pub(crate) fn refuse(kind: Kind, code: &str, message: impl Into<String>) -> Refu
     Refusal(Error::new(kind, code, message))
 }
 
+/// Whether a native client speaks project storage protocol 3; one released before it does not.
+pub(crate) fn speaks_project_storage(headers: &axum::http::HeaderMap) -> bool {
+    headers.get(::api::calcifer::project::PROJECT_STORAGE_HEADER).and_then(|value| value.to_str().ok()) == Some(::api::calcifer::project::PROJECT_STORAGE_VERSION)
+}
+
+/// What a client released before project storage protocol 3 is told for any project request.
+pub(crate) fn project_storage_protocol_required() -> Refusal {
+    Refusal(Error::new(Kind::Usage, "project_storage_protocol_required", "update this client: project storage protocol 3 is required")
+        .remedy("run the installed cozy (~/.cozy/bin/cozy), or update this one").next("cozy update"))
+}
+
 impl Refusal {
     fn remedy(self, remedy: &str) -> Self {
         Refusal(self.0.remedy(remedy))
@@ -447,10 +458,8 @@ async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) ->
         || path.starts_with("/v1/run-") || matches!(path,"/v1/events"|"/v1/targets"|"/v1/plans"));
     // Native clients must opt into this storage contract before any project
     // lookup/import/resume. Media elements use their session's media secret.
-    if project_protocol && !session_media
-        && request.headers().get(::api::calcifer::project::PROJECT_STORAGE_HEADER).and_then(|value|value.to_str().ok())!=Some(::api::calcifer::project::PROJECT_STORAGE_VERSION)
-    {
-        return refuse(Kind::Usage,"project_storage_protocol_required","update this client: project storage protocol 3 is required").into_response();
+    if project_protocol && !session_media && !speaks_project_storage(request.headers()) {
+        return project_storage_protocol_required().into_response();
     }
     let process = request.headers().get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
     api.activity.note(if page { "page" } else { process });
@@ -575,8 +584,9 @@ pub(crate) struct Listing {
 }
 
 /// Runs newest first, and how many older ones match.
-async fn list(State(api): State<Arc<Api>>, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
+async fn list(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
     let Query(listing) = query?;
+    if listing.project.is_some() && !speaks_project_storage(&headers) { return Err(project_storage_protocol_required()); }
     if listing.project.is_some() { return Err(refuse(Kind::Usage, "project_context_required", "use the project run-history route")); }
     list_scoped(&api, None, listing).await
 }
@@ -625,10 +635,17 @@ pub(crate) struct Detail {
 pub(crate) async fn show(
     State(api): State<Arc<Api>>,
     Path(path): Path<RunPath>,
+    headers: axum::http::HeaderMap,
     query: Result<Query<Detail>, QueryRejection>,
 ) -> Result<Json<Run>, Refusal> {
     let key = path.key();
-    let row = find_scoped(&api, path.project(), key).await?;
+    let row = match find_scoped(&api, path.project(), key).await {
+        // An older client asks the global route for what is now a project's run.
+        Err(refusal) if path.project().is_none() && refusal.0.code == "run_not_found" && !speaks_project_storage(&headers) => {
+            return Err(project_storage_protocol_required());
+        }
+        found => found?,
+    };
     if query?.0.detail.as_deref() != Some("full") {
         return Ok(Json(api.calcifer.record(&row)?));
     }

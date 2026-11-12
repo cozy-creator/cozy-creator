@@ -57,10 +57,8 @@ async fn project_of(api: &Arc<Api>, parts: &mut axum::http::request::Parts) -> R
 /// Around every project route: a write with an `Idempotency-Key` is answered once, and again as it was.
 pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
     let mut _activity=None;
-    if !matches!(*request.method(),Method::GET|Method::HEAD|Method::OPTIONS)
-        && request.headers().get(api::calcifer::project::PROJECT_STORAGE_HEADER).and_then(|value|value.to_str().ok())!=Some(api::calcifer::project::PROJECT_STORAGE_VERSION)
-    {
-        return Refusal(Error::new(Kind::Usage,"project_storage_protocol_required","update this client: project storage protocol 3 is required")).into_response();
+    if !matches!(*request.method(),Method::GET|Method::HEAD|Method::OPTIONS) && !crate::api::speaks_project_storage(request.headers()) {
+        return crate::api::project_storage_protocol_required().into_response();
     }
     // Opening a project attaches only its admitted journal, using a bounded lease.
     // The middleware releases it before a handler waits for a worker or a stream.
