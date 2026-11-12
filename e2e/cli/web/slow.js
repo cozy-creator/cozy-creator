@@ -5,7 +5,7 @@
 // nodes.js. Prints what it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { join } = require('path');
-const { calcifer, launch, lastLook, lookAt, noStall, projectAction, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
+const { calcifer, launch, lastLook, lookAt, noStall, openBox, projectAction, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -79,9 +79,14 @@ const HEAT = /GPU 0 ran throttled for heat 98% of its last run \(89 °C, \d+ of 
   seen.said = said;
   check('box_record_says_heat', said.some((message) => /GPU 0 ran throttled for heat 98% of this run/.test(message)), said);
   check('box_record_says_slow', said.some((message) => /took .*×.*Likely: .*throttled for heat/.test(message) || /has run .*×.*Likely: .*throttled for heat/.test(message)), said);
-  const warned = page.locator('.card[data-asset="hot_box"] .iconb.warned');
+  // Open, its warnings are its head's !, and pressed, its lines.
+  await openBox(page, 'hot_box');
+  const warned = page.locator('.card.here[data-asset="hot_box"] .iconb.warned');
   const title = await until('the box warned', () => warned.getAttribute('title').catch(() => null), (now) => Boolean(now) && /throttled for heat/.test(now) && /×/.test(now), 30_000).catch(() => null);
   check('box_shows_it', title !== null, await warned.getAttribute('title').catch(() => null));
+  await warned.click().catch(() => {});
+  const lines = await page.locator('.card.here[data-asset="hot_box"] .warned-lines').innerText().catch(() => '');
+  check('box_lines_say_it', /throttled for heat/.test(lines) && /×/.test(lines), lines);
   await shot('box');
 
   check('no_page_errors', errors.length === 0, errors);
