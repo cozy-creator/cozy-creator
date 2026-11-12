@@ -577,6 +577,16 @@ fn documents(
             files.insert(path.clone(), serde_json::to_vec(doc).expect("a JSON value"));
         }
     }
+    for c in &recognized.claims {
+        let Some(field) = &tables[c.table].components[c.component].config_from else { continue };
+        let group = &set.groups[c.group];
+        let path = format!("{}/{CONFIG_FILE}", c.name);
+        let Some(text) = group.metadata.get(field) else {
+            return refuse(Code::MISSING_FIELD, format!("{}: no `{field}` in its metadata, which holds {}'s config", group.label(), c.name));
+        };
+        parse_config(&path, text.as_bytes())?;
+        files.insert(path, text.as_bytes().to_vec());
+    }
     Ok((files, filled, versions))
 }
 

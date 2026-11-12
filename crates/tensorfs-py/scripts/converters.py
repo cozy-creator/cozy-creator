@@ -115,6 +115,7 @@ class Component[R](TypedDict, total=False):
     name: Required[str]
     prefix: str
     cast: str
+    config_from: str
     drop: list[str]
     optional: list[str]
     expect: dict[str, list[int]]
@@ -1261,13 +1262,14 @@ def relayvsr_census() -> dict[str, list[str]]:
 def relayvsr() -> Table[TableRow]:
     """RelayVSR's two files as they are, named for the relayvsr package's components: `wan`
     (bf16, with its prompt embeddings) and `flash` (F32). Rows follow upstream's construction
-    order; the banked headers hold exactly their keys."""
+    order; the banked headers hold exactly their keys. Each component's config is its file's own
+    `config` (`config_from`)."""
     census = relayvsr_census()
     components: list[Component[TableRow]] = []
     for name in ("wan", "flash"):
         keys = header(RELAYVSR_HEADERS / f"{name}.safetensors.header")
         assert sorted(keys) == sorted(census[name]), name
-        components.append({"name": name, "rows": [(k,) for k in census[name]]})
+        components.append({"name": name, "config_from": "config", "rows": [(k,) for k in census[name]]})
     return {"name": "relayvsr", "files": {"config.json": {"architecture": "RelayVSR"}}, "components": components}
 
 
