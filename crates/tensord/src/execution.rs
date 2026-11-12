@@ -59,6 +59,9 @@ pub(crate) struct Engine {
     /// Runtime-only keys into the ONE machine allocation table. Never written to any journal.
     scheduler: Mutex<HashMap<u64, u64>>,
     project: Option<api::machine::LocalPrivateStorage>,
+    /// Pre-existing ordinary rows have no project custody authority. This is only an
+    /// in-memory dispatch fence; canonical rows/specs remain untouched for native adoption.
+    startup_inert: HashSet<String>,
     machine_activity: OnceLock<Weak<Engine>>,
     runtime_namespace: String,
 }
@@ -173,6 +176,7 @@ impl Engine {
         }
         platform::durable::sync_dir(root)?;
         let mut journal = Journal::open(root)?;
+        let startup_inert=if crate::private_io::current().is_none() {journal.nonterminal_ids()?} else {HashSet::new()};
         journal.interrupt_preparations()?;
         Ok(Arc::new(Self {
             root: root.to_path_buf(),
@@ -192,6 +196,7 @@ impl Engine {
             faults: Mutex::new(HashMap::new()),
             scheduler: Mutex::default(),
             project: crate::private_io::current(),
+            startup_inert,
             machine_activity: OnceLock::new(),
             runtime_namespace: crate::uuid::simple(),
         }))
@@ -582,7 +587,7 @@ impl Engine {
     pub(crate) fn interrupted_for(&self, project_id: Option<&str>) -> io::Result<Vec<(String, String, Vec<u8>)>> {
         let mut owned = self.owned.lock().unwrap();
         let mut runs = self.journal.lock().unwrap().interrupted_for(project_id)?;
-        runs.retain(|(id, _, _)| !owned.contains(id));
+        runs.retain(|(id, _, _)| !owned.contains(id) && !self.startup_inert.contains(id));
         owned.extend(runs.iter().map(|(id, _, _)| id.clone()));
         Ok(runs)
     }
@@ -662,8 +667,11 @@ impl Engine {
 
     /// Every run ready to dispatch, by its root's acceptance, then its own.
     pub(crate) fn ready(&self) -> io::Result<Vec<Execution>> {
-        self.journal.lock().unwrap().ready()
+        let mut ready=self.journal.lock().unwrap().ready()?;
+        ready.retain(|record|!self.startup_inert.contains(&record.id));
+        Ok(ready)
     }
+    pub(crate) fn awaiting_project_custody(&self,id:&str)->bool {self.startup_inert.contains(id)}
     pub(crate) fn gpu_births_after(
         &self,
         after: u64,

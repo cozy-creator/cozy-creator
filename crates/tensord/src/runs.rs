@@ -479,6 +479,9 @@ impl Runs {
 
     /// Prepare accepted run `run` on a thread of its own, which ends the run unless it binds.
     pub(crate) fn prepare_later(self: &Arc<Self>, actor: &str, run: &str, mut spec: Spec) -> io::Result<()> {
+        if self.service.engine.awaiting_project_custody(run) {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock,"project_storage_migration_pending: legacy execution requires its verified project custody claim"));
+        }
         // The accepted record is authoritative, including inherited internal child scope.
         // A closed/unavailable private view is an error, never ordinary preparation.
         spec.local_private = self.service.engine.private_storage(run)?;
