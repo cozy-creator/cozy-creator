@@ -1681,7 +1681,17 @@ impl Calcifer {
                     if finished(&state.state) {
                         unsent.clone_from(&state.waiting);
                     }
-                    self.machine_waiting(id, state.clone());
+                    // Its executor starting, what it does there is its stage (`importing <package>`, `starting the executor`):
+                    // a phase of its own, kept with the run as its stages are (cl-921), not a wait.
+                    if state.state == STARTING && !state.waiting.is_empty() {
+                        let stage = state.waiting.clone();
+                        if self.progress(id, Progress { stage: stage.clone(), at_ms: frame.at_ms, ..Default::default() }) {
+                            batch.logs.push((frame.at_ms, "stage".into(), stage));
+                        }
+                        self.not_waiting(id);
+                    } else {
+                        self.machine_waiting(id, state.clone());
+                    }
                     if state.started_at_ms > 0 {
                         batch.started_at_ms = Some(state.started_at_ms as i64);
                         if let Some(clock) = lock(&self.live).get_mut(id).and_then(|live| live.clock.as_mut()) {
@@ -1942,6 +1952,9 @@ impl Calcifer {
         Ok(())
     }
 }
+
+/// A run out of its machine's queue whose executor starts (`v1::RunState::state`).
+const STARTING: &str = "starting";
 
 /// Whether a machine's word for a run says it is over.
 fn finished(state: &str) -> bool {
