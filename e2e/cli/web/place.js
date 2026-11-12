@@ -197,9 +197,9 @@ async function placedInView(page, expected) {
   await page.keyboard.press('Enter');
   await until('the chosen file named', () => constants(folder).Hero_Shot_v2, Boolean);
 
-  // Renamed by double-click.
+  // Renamed from its name in Focus's heading (cl-893).
   await openBox(page, 'sea_sound');
-  await element(page, 'sea_sound').locator('.nm').dblclick();
+  await page.locator('[data-focused-asset="sea_sound"] .focus-name').click();
   await page.waitForSelector('.nm-field');
   await page.keyboard.type('ocean');
   await page.keyboard.press('Enter');
