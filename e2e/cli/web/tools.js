@@ -326,6 +326,16 @@ function replaceFile(at, text) {
     return said;
   };
   await more('shot');
+  // Focus zooms the canvas in and leaves only the strip right of its fields in view: the two carried in stand there, one over the other,
+  // the others out of the way (as rc's ddc9c15b5).
+  const strip = await page.evaluate(() => {
+    const at = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+    const right = Math.max(...[...document.querySelectorAll('.focus-viewport .focus-card > .here-under, .focus-viewport .focus-card .media')].map((el) => el.getBoundingClientRect().right));
+    return { x: Math.round((right + 24 - at.e) / at.a), y: Math.round((150 - at.f) / at.a), h: Math.round((innerHeight - 170) / at.a) };
+  });
+  seen.strip = strip;
+  await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { coast: { x: strip.x, y: strip.y }, walk: { x: strip.x, y: strip.y + Math.round(strip.h / 2) }, amy: { x: strip.x + 4000, y: strip.y }, hum: { x: strip.x + 4000, y: strip.y + 1000 } } }) });
+  await until('coast and walk in reach', () => Promise.all(['coast', 'walk'].map((name) => reach(name).catch(() => null))), (both) => both.every(Boolean), 10_000);
   const firstFrame = field('shot', 'first_frame');
   const whileCarried = await carry('walk', firstFrame, async () => ({ refuses: (await firstFrame.getAttribute('class')).includes('refuses'), why: await firstFrame.locator('.refusal').textContent().catch(() => '') }));
   check('wrong_kind_said_as_carried', whileCarried.refuses && whileCarried.why.includes('takes a picture'), whileCarried);

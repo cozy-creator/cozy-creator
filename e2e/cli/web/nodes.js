@@ -493,9 +493,14 @@ function replaceFile(at, text) {
   const taller = await until('reshaped open', () => field('aspect_ratio'), (value) => value !== wider).catch(() => field('aspect_ratio'));
   check('reshapes_while_open', taller && taller !== wider && (await page.locator('.card.here[data-asset="knobs"]').count()) === 1, { wider, taller });
   check('its_shape_says_so_open', (await knobs.locator('.ratio-rest').innerText()).trim() === taller, await knobs.locator('.ratio-rest').innerText());
-  await knobs.locator('.ratio-rest .ratio-clear').click();
-  await until('back to Auto', () => Promise.resolve(storedBox('knobs') ?? {}), (fields) => !('aspect_ratio' in fields));
-  check('its_x_is_auto', true);
+  // Its x does what it says (b547781d8, 1752118ea: an honest reset): back to Auto where its tool makes an Auto shape, else to its tool's own
+  // shape. This tool is one no list knows, so it has no Auto: "Reset aspect ratio to <its default>".
+  const clear = knobs.locator('.ratio-rest .ratio-clear');
+  const clearSays = await clear.getAttribute('aria-label');
+  const resetTo = clearSays?.match(/^Reset aspect ratio to (\d+:\d+)$/)?.[1];
+  await clear.click();
+  const reset = await until('reset as its x says', () => Promise.resolve(storedBox('knobs') ?? {}), (fields) => (resetTo ? fields.aspect_ratio === resetTo : !('aspect_ratio' in fields))).catch(() => storedBox('knobs'));
+  check('its_x_resets_as_it_says', Boolean(resetTo) && reset?.aspect_ratio === resetTo, { clearSays, aspect_ratio: reset?.aspect_ratio });
 
   // Beats: one text and a duration slider each, in the frame under its prompt's section, one open at a time (cl-938); add, remove, down to the
   // one that always stays; what else a beat holds stays.

@@ -395,10 +395,14 @@ async function died(why) {
     await api(`${at}/assets/other`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/wait`, fields: { instructions: '<self.1> in a new light.', aspect_ratio: '1:1' } }) });
     await until('local image tool ready', () => asset('other'), (row) => row.tool === `${fixture}/wait`);
     await open('other');
-    await (await renderOf(page, 'other')).click();
+    const renderIt = await renderOf(page, 'other');
+    // Render sends what the page holds: it renders once the page shows the 1:1 written over the API, as a person sees it before pressing.
+    const shapeSaid = await until('the page holds 1:1', () => box('other').locator('.ratio-rest').getAttribute('data-output-aspect').catch(() => null), (label) => (label ?? '').includes('1:1'), 10_000).catch(() => box('other').locator('.ratio-rest').getAttribute('data-output-aspect').catch(() => null));
+    await renderIt.click();
     const second = await until('first modification is v2', () => asset('other'), (row) => row.versions === 2 && !row.making?.length, 5 * STEP_MS);
     check('first_modification_is_v2_and_v1_stays_approved', second.pinned && second.approved === 1 && second.version === 1 && shaOf(second, 1) === originalSha && shaOf(second, 2) !== originalSha, second);
-    check('new_output_has_requested_ratio', Math.abs(second.prefixes.find((row) => row.number === 2).main.width / second.prefixes.find((row) => row.number === 2).main.height - 1) < 0.02);
+    const made = second.prefixes.find((row) => row.number === 2).main;
+    check('new_output_has_requested_ratio', Math.abs(made.width / made.height - 1) < 0.02, { width: made.width, height: made.height, shapeSaid, aspect_ratio: second.fields?.aspect_ratio });
     await until('the new take looked at, open', () => selected('other'), (value) => value === '2');
     check('new_output_adds_a_retained_preview', await previews('other').count() === 2 && await history('other').locator('.take.approved[data-take="1"]').count() === 1);
     await approveVersion(page, 'other', 1);
@@ -453,7 +457,8 @@ async function died(why) {
     await render(['canceled_edit'], `canceled-edit-${Date.now()}`);
     const running = await until('image run is active before cancellation', () => asset('canceled_edit'), (row) => row.making?.length === 1, 2 * STEP_MS);
     const canceled = await post(`/v1/runs/${running.making[0]}/cancel`, {});
-    check('image_render_can_be_canceled', canceled.status === 200, canceled);
+    // A run still going answers 202, asked to stop (api.rs `cancel`); 200 is for one already over. That it stopped is the checks after.
+    check('image_render_can_be_canceled', canceled.status === 202 && canceled.body?.cancel_requested === true, canceled);
     const canceledImage = await until('canceled image run leaves no work', () => asset('canceled_edit'), (row) => !row.making?.length, 2 * STEP_MS);
     check('canceled_render_adds_no_version', canceledImage.versions === 0 && !canceledImage.sha256, canceledImage);
 
