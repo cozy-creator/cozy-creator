@@ -608,7 +608,8 @@ impl Calcifer {
                 || submit.out.is_some() || !submit.inputs.is_empty() || !submit.spec.inputs.is_empty()
                 || submit.spec.payload.is_some() || local_source))
         {
-            return Err(Error::Refused(::api::error::Error::new(::api::error::Kind::Validation, "project_required", "function calls and project-owned data require an explicit project")));
+            return Err(Error::Refused(::api::error::Error::new(::api::error::Kind::Validation, "project_required", "function calls and project-owned data require an explicit project")
+                .remedy("cd into a project folder, or create one with cozy new").next("cozy new")));
         }
         Ok(store::RunStore::Maintenance(self.maintenance_store()))
     }

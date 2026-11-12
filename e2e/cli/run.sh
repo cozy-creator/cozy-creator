@@ -311,7 +311,8 @@ for at in 1 2 1; do
     grep -q "\"words\": *$at\b" "$OUT/folder-$turn.ndjson" || check "one package name at two paths: path $at ran another's code"
   fi
 done
-cozy --json package uninstall local/one-name --on local > /dev/null || check "package uninstall local/one-name failed"
+in_project "$RUN_PROJECT" --json package uninstall local/one-name --on local > "$OUT/uninstall-one-name.json" 2>&1 \
+  || check "package uninstall local/one-name failed: $(tail -c 300 "$OUT/uninstall-one-name.json")"
 for at in 1 2; do
   mkdir -p "$OUT/paths/$at/scripts"
   sed "s/words=len(payload.text.split())/words=$at/" "$words" > "$OUT/paths/$at/scripts/one_script.py"
@@ -322,7 +323,12 @@ for at in 1 2 1; do
     grep -q "\"words\": *$at\b" "$OUT/script-$turn.ndjson" || check "one script name at two paths: path $at ran another's code"
   fi
 done
-cozy --json package uninstall local/one_script --on local > /dev/null || check "package uninstall local/one_script failed"
+in_project "$RUN_PROJECT" --json package uninstall local/one_script --on local > "$OUT/uninstall-one-script.json" 2>&1 \
+  || check "package uninstall local/one_script failed: $(tail -c 300 "$OUT/uninstall-one-script.json")"
+# Outside any project, a local package is refused typed, naming where to go.
+code=0; cozy --json package uninstall local/one_script --on local > "$OUT/uninstall-outside.json" 2> "$OUT/uninstall-outside.err" || code=$?
+[ "$code" != 0 ] && J '.error.code == "project_required" and (.error.next | index("cozy new"))' "$OUT/uninstall-outside.json" \
+  || check "package uninstall outside a project: exit $code, not project_required naming cozy new: $(tail -c 300 "$OUT/uninstall-outside.json")"
 }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.

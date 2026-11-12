@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import urllib.error
+from urllib.parse import quote
 import urllib.request
 import uuid
 
@@ -31,12 +32,23 @@ def main() -> int:
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     base = "http://" + holder["address"]
     headers = {"Authorization": "Bearer " + holder["token"]}
-    for file in staged["files"]:
-        upload(base, headers, file["digest"], Path(file["path"]).read_bytes())
-    upload(base, headers, staged["code"]["tree"], staged["document"].encode())
     request = {"target": "cozy/package_lock", "code": staged["code"], "hub": hub,
         "input": {"root": args.root, "upgrade": args.upgrade_package}}
-    call = urllib.request.Request(base + "/v1/runs", data=json.dumps(request).encode(), headers={
+    # Local code is project data: in a project, its files go to that project and it locks there.
+    project = project_of(base, headers, directory)
+    if project is None:
+        for file in staged["files"]:
+            upload(base, headers, file["digest"], Path(file["path"]).read_bytes())
+        upload(base, headers, staged["code"]["tree"], staged["document"].encode())
+        route = "/v1/runs"
+    else:
+        headers = {**headers, "cozy-project-storage": "3"}
+        for file in staged["files"]:
+            upload_project(base, headers, project, file["digest"], Path(file["path"]).read_bytes())
+        upload_project(base, headers, project, staged["code"]["tree"], staged["document"].encode())
+        request["project"] = project
+        route = "/v1/projects/" + quote(project, safe="") + "/runs/submit"
+    call = urllib.request.Request(base + route, data=json.dumps(request).encode(), headers={
         **headers, "Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4()),
     })
     with urllib.request.urlopen(call) as response:
@@ -64,6 +76,25 @@ def main() -> int:
             temporary.unlink(missing_ok=True)
     print(json.dumps({**result, "lock": str(path)}))
     return 0
+
+
+def project_of(base: str, headers: dict[str, str], directory: Path) -> str | None:
+    """The id of the project holding `directory`, as Calcifer resolves it; None outside one."""
+    url = base + "/v1/projects/" + quote(str(directory), safe="") + "/address"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={**headers, "cozy-project-storage": "3"})) as response:
+            return json.load(response)["id"]
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
+
+
+def upload_project(base: str, headers: dict[str, str], project: str, digest: str, data: bytes) -> None:
+    call = urllib.request.Request(base + "/v1/project-files/" + digest + "?project=" + quote(project, safe=""), data=data, method="PUT",
+        headers={**headers, "Content-Type": "application/octet-stream", "Content-Length": str(len(data))})
+    with urllib.request.urlopen(call):
+        pass
 
 
 if __name__ == "__main__":

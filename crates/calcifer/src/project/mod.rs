@@ -1367,7 +1367,10 @@ pub(crate) fn source_project(path: &FsPath) -> Result<Option<PathBuf>, Error> {
 
 fn holding(path: &FsPath) -> Result<PathBuf, Error> {
     let unavailable = || Error::new(Kind::Unavailable, "project_ownership_unavailable", "the source's project ownership cannot be verified");
-    let start = platform::durable::canonical(path).map_err(|_| unavailable())?;
+    // A client can name a path only it sees (its own copy under a project's folder here): the nearest
+    // ancestor that exists here decides the owner, as for any path.
+    let existing = path.ancestors().find(|dir| dir.exists()).ok_or_else(unavailable)?;
+    let start = platform::durable::canonical(existing).map_err(|_| unavailable())?;
     let metadata=std::fs::metadata(&start).map_err(|_|unavailable())?;
     let start=if metadata.is_file() {start.parent().ok_or_else(unavailable)?.to_owned()} else if metadata.is_dir() {start} else {return Err(unavailable());};
     for dir in start.ancestors() {

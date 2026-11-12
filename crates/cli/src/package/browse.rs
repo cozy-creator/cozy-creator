@@ -161,13 +161,13 @@ pub(crate) async fn perform(ctx: &Context, operation: Operation) -> Result<(Exit
     match operation {
         Operation::Install { package, machine } => {
             let named = super::PackageRef::parse(&package)?;
-            let status = super::machine::install(ctx, named.package(), None, None, Some(On::Machine(machine.clone()))).await?;
+            let status = super::machine::install(ctx, named.package(), None, None, Some(On::Machine(machine.clone())), None).await?;
             let notice = if status == ExitCode::SUCCESS { format!("Installed {} on {machine}", display_package(&package)) } else { "Installation stopped or failed".into() };
             Ok((status, notice))
         }
         Operation::Uninstall(package) => {
             let named = super::PackageRef::parse(&package)?;
-            let status = super::machine::uninstall(ctx, &[named.package()], Some(On::Machine("local".into()))).await?;
+            let status = super::machine::uninstall(ctx, &[named.package()], Some(On::Machine("local".into())), None).await?;
             Ok((status, format!("Uninstalled {} from local", display_package(&package))))
         }
     }
