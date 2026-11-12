@@ -12,9 +12,15 @@ pub(crate) fn install(home: &Home) -> Result<(), ::api::error::Error> {
     options.create(true).append(true);
     #[cfg(unix)] {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
     let file = options.open(home.calcifer_health()).map_err(|_| failed())?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let metadata = file.metadata().map_err(|_| failed())?;
+        if !metadata.is_file() || metadata.uid() != rustix::process::geteuid().as_raw() { return Err(failed()); }
+        file.set_permissions(std::fs::Permissions::from_mode(0o600)).map_err(|_| failed())?;
+    }
     let layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .with_target(false)

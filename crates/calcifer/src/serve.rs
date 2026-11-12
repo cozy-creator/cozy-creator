@@ -271,6 +271,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     steps.done("machines");
     tokio::spawn(drop_old_measurements(calcifer.clone()));
     let api = Api::new(calcifer.clone(), machines.clone(), &token);
+    api.browser_address.set(address).expect("listener address set once");
     // A service manager's stop (SIGTERM) is `down`, as graceful: the machine runs on.
     #[cfg(unix)]
     if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {

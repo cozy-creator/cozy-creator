@@ -4,7 +4,8 @@
 //! host, and `localStorage` only its own. Only digests are kept, in `state.db`'s `sessions`, so a
 //! session outlives a restart and the store opens nothing.
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
+    collections::HashMap,
 };
 
 use axum::{
@@ -35,6 +36,7 @@ const NOTED_EVERY_MS: i64 = 3600 * 1000;
 /// Browser sessions cached in memory; unredeemed code digests stay in the store across restarts.
 pub(crate) struct Sessions {
     live: Mutex<Vec<SessionRow>>,
+    owned: Arc<Mutex<HashMap<String, (String, String)>>>,
 }
 
 fn secret() -> String {
@@ -54,7 +56,24 @@ impl Sessions {
             warn!("{e}; browser sessions start over");
             vec![]
         });
-        Self { live: Mutex::new(live) }
+        Self { live: Mutex::new(live), owned: Arc::default() }
+    }
+
+    /// Memory-only authority minted solely for a fresh Cozy-owned private process.
+    pub(crate) fn begin_owned(&self) -> (OwnedSessionLease, BrowserSession) {
+        let (id, token, media) = (secret(), secret(), secret());
+        self.owned.lock().expect("owned sessions").insert(id.clone(), (digest(&token), digest(&media)));
+        (OwnedSessionLease { id, sessions: Arc::downgrade(&self.owned) }, BrowserSession { token, media })
+    }
+
+    pub(crate) fn admits_owned_token(&self, token: &str) -> bool {
+        let token = digest(token);
+        self.owned.lock().expect("owned sessions").values().any(|(held, _)| held == &token)
+    }
+
+    pub(crate) fn admits_owned_media(&self, media: &str) -> bool {
+        let media = digest(media);
+        self.owned.lock().expect("owned sessions").values().any(|(_, held)| held == &media)
     }
 
     fn mint_code(&self, store: &Store) -> Result<(String, i64), Refusal> {
@@ -102,11 +121,13 @@ impl Sessions {
     }
 
     pub(crate) fn admits_token(&self, store: &Store, presented: &str) -> bool {
+        if self.admits_owned_token(presented) { return true; }
         let presented = digest(presented);
         self.used(store, |session| session.token == presented)
     }
 
     pub(crate) fn admits_media(&self, store: &Store, presented: &str) -> bool {
+        if self.admits_owned_media(presented) { return true; }
         let presented = digest(presented);
         self.used(store, |session| session.media == presented)
     }
@@ -114,11 +135,30 @@ impl Sessions {
     /// Ends the session `token` opens; any other token names none, and nothing happens.
     fn end(&self, store: &Store, token: &str) -> Result<(), Refusal> {
         let token = digest(token);
+        self.owned.lock().expect("owned sessions").retain(|_, (held, _)| held != &token);
         let mut live = self.live.lock().expect("sessions");
         let Some(at) = live.iter().position(|session| session.token == token) else { return Ok(()) };
         store.session_ended(&token).map_err(unwritable)?;
         live.swap_remove(at);
         Ok(())
+    }
+}
+
+/// One exact owned browser incarnation. It cannot be cloned or recovered from a persisted token.
+pub(crate) struct OwnedSessionLease {
+    id: String,
+    sessions: Weak<Mutex<HashMap<String, (String, String)>>>,
+}
+
+impl OwnedSessionLease {
+    pub(crate) fn id(&self) -> &str { &self.id }
+}
+
+impl Drop for OwnedSessionLease {
+    fn drop(&mut self) {
+        if let Some(sessions) = self.sessions.upgrade() {
+            sessions.lock().expect("owned sessions").remove(&self.id);
+        }
     }
 }
 

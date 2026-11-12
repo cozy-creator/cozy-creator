@@ -169,7 +169,7 @@ pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
 
 /// The tree's files, each from `from`, copied under `code/<digest>/tree`, made whole and then named; and a copy unused for a day
 /// past the newest `COPIES` goes.
-fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, api::tree::Member>, from: impl Fn(&Digest) -> Option<PathBuf>) -> Result<(), Error> {
+pub(crate) fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, api::tree::Member>, from: impl Fn(&Digest) -> Option<PathBuf>) -> Result<(), Error> {
     let root = copies(home)?;
     let dir = root.join(hex(tree));
     let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", root.display()));
