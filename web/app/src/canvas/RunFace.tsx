@@ -180,7 +180,7 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const onItsWay = making || Boolean(view.queued) || view.asked !== undefined
   const waits = making || !onItsWay ? null : store.waitsFor(name)
   const installsOf = asset?.tool ? tools.get(asset.tool) : undefined
-  const installing = useInstalling(run || waits ? undefined : installsOf && (installsOf.installs ?? installsOf.package))
+  const installing = useInstalling(run || waits ? undefined : installsOf && (installsOf.installs ?? installsOf.package), store.projectId)
   useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
   useSignal(store.ahead)
   const now = useNow(true)

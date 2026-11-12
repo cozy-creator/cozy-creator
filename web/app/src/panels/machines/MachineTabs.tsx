@@ -161,7 +161,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
     <>
       <nav className="mtabs" aria-label="Machines">
         {machines.map((machine) => {
-          const doing = doingOf(machine, runs)
+          const doing = doingOf(machine, runs, projectId)
           // Its jobs are function runs, its GPUs' work: an install or a download is listed, not counted (cl-889).
           const total = doing.filter((one) => one.kind === "run" && one.run.kind === "call").length
           return (
@@ -187,7 +187,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
           )
         })}
       </nav>
-      {open && shown && <Activity machine={shown} doing={doingOf(shown, runs)} boxes={boxes} to={to} chip={open.chip} close={() => setOpen(null)} />}
+      {open && shown && <Activity machine={shown} doing={doingOf(shown, runs, projectId)} boxes={boxes} to={to} chip={open.chip} close={() => setOpen(null)} />}
     </>
   )
 }

@@ -29,6 +29,10 @@ export const operationName = (operation: Operation) => (operation.kind === "down
 
 export const waits = (run: Run) => run.status === "queued" || run.machine_state === "queued"
 
+/** What a machine does that `project`'s views see: this computer's own work, and that project's (another project's never reaches it). */
+export const ownActivity = (machine: Machine | undefined, project: string | null | undefined) =>
+  (machine?.status?.activity ?? []).filter((operation) => !operation.project || operation.project === project)
+
 /** What run `number` waits on there: its install before its weights. */
 export const waitsOnOf = (activity: Operation[], number: number) =>
   activity.find((operation) => operation.kind === "install" && operation.runs.includes(number)) ?? activity.find((operation) => operation.runs.includes(number))
@@ -37,8 +41,8 @@ export const waitsOnOf = (activity: Operation[], number: number) =>
 export const working = (run: Run, on?: Operation) => run.started_at_ms != null && !waits(run) && !on
 
 /** What a machine is doing now: each install and download once, however many runs wait on it, then its runs, those going first. */
-export function doingOf(machine: Machine, runs: Run[]): Doing[] {
-  const activity = machine.status?.activity ?? []
+export function doingOf(machine: Machine, runs: Run[], project: string | null): Doing[] {
+  const activity = ownActivity(machine, project)
   const booting: Doing[] = machine.state === "booting" ? [{ kind: "boot", key: "boot", words: machine.boot ?? "booting" }] : []
   const operations: Doing[] = [...activity]
     .sort((a, b) => Number(a.kind === "download") - Number(b.kind === "download"))
@@ -69,17 +73,17 @@ export function useWaitsOn(run: Run | undefined): Operation | undefined {
   const { client } = useConnection()
   const { data } = useQuery({
     ...machinesQuery(client),
-    select: (list) => (run ? waitsOnOf(list.machines.find((machine) => machine.name === run.machine)?.status?.activity ?? [], run.number) : undefined),
+    select: (list) => (run ? waitsOnOf(ownActivity(list.machines.find((machine) => machine.name === run.machine), run.project_id), run.number) : undefined),
   })
   return data
 }
 
 /** Package `pkg` installing on any machine: a box whose render waits for it before its run is sent says so. */
-export function useInstalling(pkg: string | undefined): Operation | undefined {
+export function useInstalling(pkg: string | undefined, project: string | null): Operation | undefined {
   const { client } = useConnection()
   const { data } = useQuery({
     ...machinesQuery(client),
-    select: (list) => (pkg ? list.machines.flatMap((machine) => machine.status?.activity ?? []).find((operation) => operation.kind === "install" && operation.subject === pkg) : undefined),
+    select: (list) => (pkg ? list.machines.flatMap((machine) => ownActivity(machine, project)).find((operation) => operation.kind === "install" && operation.subject === pkg) : undefined),
   })
   return data
 }

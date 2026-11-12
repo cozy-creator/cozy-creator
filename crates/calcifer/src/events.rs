@@ -233,7 +233,7 @@ async fn subscribe(api: Arc<Api>, scope: Scope) -> Watch {
     let runs = api.calcifer.subscribe();
     let said = all.then(|| PROJECTS.said.subscribe());
     let shown = if all {
-        listed(&api.machines).await.unwrap_or_else(|e| {
+        listed(&api.machines, &[]).await.unwrap_or_else(|e| {
             warn!("the events stream cannot list the machines: {}", e.message);
             HashMap::new()
         })
@@ -294,6 +294,11 @@ impl Showing {
     fn includes(&self, project: &str) -> bool {
         SHOWN.lock().expect("shown lock").get(&self.0)
             .is_some_and(|readers| readers.iter().any(|reader| reader.id() == project))
+    }
+
+    /// The projects this stream's page shows.
+    fn projects(&self) -> Vec<String> {
+        SHOWN.lock().expect("shown lock").get(&self.0).map(|readers| readers.iter().map(|reader| reader.id().to_owned()).collect()).unwrap_or_default()
     }
 }
 
@@ -506,7 +511,16 @@ impl Watch {
 
     /// Owes each machine that differs from the list as last told, and each that left it.
     async fn list_machines(&mut self) {
-        let now = match listed(&self.api.machines).await {
+        // What a machine does for the projects this page shows, unlocked, is theirs to see: never another's.
+        let projects: Vec<String> = self.showing.as_ref().map(Showing::projects).unwrap_or_default().into_iter()
+            .filter(|id| self.api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| project::vault::require_path(&known.path).is_ok()))
+            .collect();
+        for project in &projects {
+            if self.api.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0) {
+                self.api.machines.follow_project(project);
+            }
+        }
+        let now = match listed(&self.api.machines, &projects).await {
             Ok(now) => now,
             Err(e) => {
                 warn!("the events stream cannot list the machines: {}", e.message);
@@ -536,8 +550,8 @@ fn frame(event: &StreamEvent) -> sse::Event {
 }
 
 /// The machines a list shows now, by name, from what Calcifer holds (no Hub is asked).
-async fn listed(machines: &Arc<Machines>) -> Result<HashMap<String, Machine>, Error> {
-    let list = machines.list(false).await?;
+async fn listed(machines: &Arc<Machines>, projects: &[String]) -> Result<HashMap<String, Machine>, Error> {
+    let list = machines.list_for(false, projects).await?;
     Ok(list.machines.into_iter().map(|m| (m.name.clone(), m)).collect())
 }
 

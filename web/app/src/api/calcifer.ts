@@ -1906,9 +1906,13 @@ bytes_per_s?: number | null,
  */
 eta_s?: number | null, started_at_ms: number,
 /**
- * The runs waiting on it, by number.
+ * The runs waiting on it, by number: this computer's own runs, or those of `project`.
  */
-runs: Array<number>, };
+runs: Array<number>,
+/**
+ * The project whose runs wait on it, shown to its own views only; none for this computer's own work.
+ */
+project?: string | null, };
 
 /**
  * `POST /v1/orgs/{org}/claim` (`{hub}`): the org is the caller's once a handle it lists shows
