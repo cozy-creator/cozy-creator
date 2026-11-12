@@ -20,6 +20,9 @@ test = "pr: completion, each shell's script loads and completes cozy's verbs"
 test = "pr: doctor, healthy, then a stuck Calcifer it restarts"
 "--on" = "pr: doctor --on local"
 
+[restart]
+test = "pr: explicit_restart, Calcifer on the installed cozy under a new pid, the page's stream cut and the next command served"
+
 [login]
 test = "pr: rental_end, with the code the isolated Hub logs (by hand: the emailed code, release-gate/enroll-ci-key.sh)"
 "--export" = "pr: rental_end, a pod's own key (release-gate/enroll-ci-key.sh mints the CI key with it)"

@@ -2216,6 +2216,26 @@ pub struct CalciferStatus {
     pub encrypted_project_creation: bool,
 }
 
+/// The header each request of a `cozy` process carries: its pid, so Calcifer tells its requests from everyone else's (cl-962).
+pub const PROCESS_HEADER: &str = "cozy-process";
+
+/// `GET /v1/activity` (cl-962): who uses this Calcifer now, which a `cozy` of another version reads before it would restart it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalciferActivity {
+    pub version: String,
+    /// Pages with a stream open.
+    pub pages: u32,
+    /// Runs not yet settled, Calcifer's own among them (`here`).
+    pub runs: u32,
+    /// Calcifer's own runs not yet settled: an upload, a publish.
+    pub here: u32,
+    /// Requests it is serving now, other than this one: an upload, a submission, a page's write.
+    pub requests: u32,
+    /// The newest request of anyone but the asking process (`PROCESS_HEADER`): a page, another `cozy`, one that sends no pid.
+    pub others_request_ms: Option<i64>,
+    pub now_ms: i64,
+}
+
 /// `POST /v1/session-codes`: a code a browser trades once for a session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionCode {

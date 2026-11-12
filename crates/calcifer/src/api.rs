@@ -3,10 +3,19 @@
 //! `Origin`, if any, that matches it, then (on the routes Calcifer serves) the bearer or a browser
 //! session (`sessions.rs`), and the admission gate a stopping Calcifer closes. Refusals are
 //! `api::error::Envelope`s. No CORS header is ever sent.
-use std::{collections::VecDeque, convert::Infallible, net::SocketAddr, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    convert::Infallible,
+    net::SocketAddr,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{
         ConnectInfo, DefaultBodyLimit, FromRequestParts, Path, Query, Request, State,
         rejection::{BytesRejection, QueryRejection},
@@ -20,7 +29,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use api::{
-    calcifer::{CalciferStatus, Down, Event, MachineKind, MachineState, Run, RunList, Status},
+    calcifer::{CalciferActivity, CalciferStatus, Down, Event, MachineKind, MachineState, PROCESS_HEADER, Run, RunList, Status},
     error::{Envelope, Error, Kind, STOPPING},
     ids::RunId,
 };
@@ -62,6 +71,8 @@ pub(crate) struct Api {
     pub(crate) sessions: crate::sessions::Sessions,
     /// The components packages ship, as read for the page.
     pub(crate) tool_uis: crate::tool_ui::Held,
+    /// Who uses this Calcifer (`GET /v1/activity`).
+    activity: Activity,
     bearer: [u8; 32],
     /// Shut once Calcifer is stopping: a mutation holds it open while it runs, so the exit can
     /// never land between a submission's check and its commit.
@@ -84,6 +95,7 @@ impl Api {
             listing: Default::default(),
             codes: Default::default(),
             tool_uis: Default::default(),
+            activity: Activity::default(),
             bearer: Sha256::digest(token).into(),
             stopping: Arc::new(RwLock::new(false)),
             stop: watch::channel(false).0,
@@ -160,6 +172,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/runs/{id}/play", get(crate::play::play))
         .route("/v1/down", post(down))
         .route("/v1/status", get(status))
+        .route("/v1/activity", get(activity))
         .route("/v1/machines", get(machines::list).post(machines::create))
         .route(
             "/v1/machines/{name}",
@@ -395,18 +408,28 @@ fn media_secret(request: &Request) -> Option<&str> {
 pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
 
 async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
-    let admitted = match bearer(request.headers()) {
-        Some(token) => api.admits(token) || api.sessions.admits_token(api.calcifer.store(), token),
-        None => media_secret(&request).is_some_and(|media| api.sessions.admits_media(api.calcifer.store(), media)),
+    let (admitted, page) = match bearer(request.headers()) {
+        Some(token) if api.admits(token) => (true, false),
+        Some(token) => (api.sessions.admits_token(api.calcifer.store(), token), true),
+        None => (media_secret(&request).is_some_and(|media| api.sessions.admits_media(api.calcifer.store(), media)), true),
     };
     if !admitted {
         let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
         let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
         return Refusal(error).into_response();
     }
+    let process = request.headers().get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
+    api.activity.note(if page { "page" } else { process });
+    // Served until its answer is made (a stream's body is the open page's, not this); `/v1/activity` counts no one.
+    let _serving = (request.uri().path() != "/v1/activity").then(|| Counted::of(&api.activity.requests));
     // A read is answered while Calcifer stops: a HEAD's refusal would lose its body.
     if matches!(*request.method(), Method::GET | Method::HEAD) || request.uri().path() == "/v1/down" {
-        return next.run(request).await;
+        let response = next.run(request).await;
+        let stream = response.headers().get(header::CONTENT_TYPE).is_some_and(|kind| kind.as_bytes().starts_with(b"text/event-stream"));
+        return match page && stream {
+            true => api.activity.held_open(response),
+            false => response,
+        };
     }
     let stopping = api.stopping.clone().read_owned().await;
     if *stopping {
@@ -621,6 +644,83 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
         heap_bytes: platform::heap::held(),
         encrypted_project_creation: true,
     }))
+}
+
+/// Who uses this Calcifer now (cl-962): a `cozy` of another version restarts it only when no page, run or other client does.
+async fn activity(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap) -> Result<Json<CalciferActivity>, Refusal> {
+    let store = api.calcifer.store();
+    let here = store.unsettled_here().map_err(store_refusal)?.len();
+    let runs = store.unsettled().map_err(store_refusal)?.len() + here;
+    let asker = headers.get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
+    Ok(Json(CalciferActivity {
+        version: env!("CARGO_PKG_VERSION").into(),
+        pages: api.activity.pages.load(Ordering::Relaxed),
+        runs: u32::try_from(runs).unwrap_or(u32::MAX),
+        here: u32::try_from(here).unwrap_or(u32::MAX),
+        requests: api.activity.requests.load(Ordering::Relaxed),
+        others_request_ms: api.activity.others(asker),
+        now_ms: crate::store::now_ms(),
+    }))
+}
+
+fn store_refusal(e: StoreError) -> Refusal {
+    refuse(Kind::Internal, "store_unreadable", e.to_string())
+}
+
+/// Each client's newest request, by the process it names (`PROCESS_HEADER`; a page is `page`, a client that names none ``), the
+/// requests being served, and the pages' open streams.
+#[derive(Default)]
+struct Activity {
+    pages: Arc<AtomicU32>,
+    requests: Arc<AtomicU32>,
+    seen: Mutex<HashMap<String, i64>>,
+}
+
+/// One of `Activity`'s counts, held while this lives.
+struct Counted(Arc<AtomicU32>);
+
+impl Counted {
+    fn of(count: &Arc<AtomicU32>) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        Self(count.clone())
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Activity {
+    /// Clients kept: the newest this many.
+    const KEPT: usize = 64;
+
+    fn note(&self, client: &str) {
+        let mut seen = self.seen.lock().expect("activity");
+        seen.insert(client.to_owned(), crate::store::now_ms());
+        if seen.len() > Self::KEPT
+            && let Some(oldest) = seen.iter().min_by_key(|(_, at)| **at).map(|(client, _)| client.clone())
+        {
+            seen.remove(&oldest);
+        }
+    }
+
+    fn others(&self, asker: &str) -> Option<i64> {
+        let seen = self.seen.lock().expect("activity");
+        seen.iter().filter(|(client, _)| asker.is_empty() || client.as_str() != asker).map(|(_, at)| *at).max()
+    }
+
+    /// `response`, a page's stream, counted among the open pages while its body lives.
+    fn held_open(&self, response: Response) -> Response {
+        let open = Counted::of(&self.pages);
+        let (parts, body) = response.into_parts();
+        let body = Body::from_stream(body.into_data_stream().map(move |chunk| {
+            let _open = &open;
+            chunk
+        }));
+        Response::from_parts(parts, body)
+    }
 }
 
 async fn unknown_route(method: Method, uri: Uri) -> Refusal {
