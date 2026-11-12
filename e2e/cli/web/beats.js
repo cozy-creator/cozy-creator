@@ -6,7 +6,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
+const { animationsDone, projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -81,7 +81,7 @@ async function died(why) {
       await toggle.click();
       await until(`beat ${i + 1} open`, () => toggle.getAttribute('aria-expanded'), (open) => open === 'true');
       // Measured once it has opened all the way, not part way through.
-      await row.evaluate((one) => Promise.all(one.getAnimations({ subtree: true }).map((motion) => motion.finished)));
+      await animationsDone(row);
     }
     measured.push(await row.evaluate((one) => {
       const words = one.querySelector('.mention-text[data-field$=".description"]') ?? one.querySelector('.mention-text');

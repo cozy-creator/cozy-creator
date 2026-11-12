@@ -16,7 +16,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, addBoxes } = require('./page');
+const { animationsDone, projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, addBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -1072,7 +1072,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
       const opened = page.locator('.drawer');
       await opened.waitFor();
       // Looked at once it has slid in.
-      await opened.evaluate((element) => Promise.all(element.getAnimations({ subtree: true }).map((motion) => motion.finished)));
+      await animationsDone(opened);
       await look(`drawer-${drawer}`, true);
     }
     await page.goto(await projectUrl(id));

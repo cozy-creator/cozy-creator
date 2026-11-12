@@ -127,6 +127,11 @@ async function settled(page) {
   }
 }
 
+/** Once every animation on `locator` and under it that ends has ended: a slide or a fade. A looping one (a spinner's, a caret's) never ends,
+ *  so it isn't waited for, and one cancelled as its element goes is done. */
+const animationsDone = (locator) => locator.evaluate((element) => Promise.all(element.getAnimations({ subtree: true })
+  .filter((motion) => motion.effect?.getComputedTiming().endTime !== Infinity).map((motion) => motion.finished.catch(() => {}))));
+
 /** The actual fit action, independent of what control last had keyboard focus. */
 async function fitCanvas(page) {
   if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
@@ -695,4 +700,4 @@ async function chooseModel(page, name, id, operation) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { addBoxes, assetsOf, storedOf, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };
+module.exports = { animationsDone, addBoxes, assetsOf, storedOf, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };
