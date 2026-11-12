@@ -168,7 +168,8 @@ function imageViewHeight(view: ElementView, canonicalWidth: number): number | un
   const original = versions.find((version) => version.number === 1)?.main ?? versions[0]?.main
   const first = original?.width && original.height ? original.width / original.height : undefined
   const lone = !versions.length && view.asset.width && view.asset.height ? view.asset.width / view.asset.height : undefined
-  return canonicalWidth / (first ?? lone ?? 16 / 9)
+  // Not measured yet: a dropped picture's shape, as the page read it.
+  return canonicalWidth / (first ?? lone ?? view.aspect ?? 16 / 9)
 }
 
 /** The displayed body width; the saved canvas width continues to describe v1. */
@@ -200,5 +201,11 @@ export function heightFor(view: ElementView, width: number): number {
   }
   // An Edit on its controls: a picture over a filmstrip.
   if (view.asset?.timeline && faceOf(view) === "edit") return HEAD + 332
-  return HEAD + Math.round(imageViewHeight(view, width) ?? width / aspectOf(view)) + (view.asset?.kind === "image" ? 40 : 0)
+  return HEAD + Math.round(imageViewHeight(view, width) ?? width / aspectOf(view)) + (isPicture(view) ? 40 : 0)
 }
+
+/** A picture's box, from its drop on: its row under it is there from the first frame. */
+export const isPicture = (view: ElementView) => (view.asset?.kind ?? view.placing?.media ?? view.landed?.field) === "image"
+
+/** A digest as a file is named by it. */
+export const hexOf = (sha256: string) => sha256.replace(/^sha256:/, "").toLowerCase()

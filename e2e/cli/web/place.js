@@ -158,8 +158,8 @@ async function placedInView(page, expected) {
     { name: 'Clash Take.mp4', type: 'video/mp4', bytes: MP4 },
     { name: 'Sea.Sound.wav', type: 'audio/wav', bytes: wav() },
   ], 500, 300);
-  // The asset in the file above can show before or after these.
-  const atOnce = (await names(page)).filter((name) => name !== 'coast');
+  // The asset in the file above can show before or after these. A picture is placed once it's decoded, all of a drop together (cl-918).
+  const atOnce = await until('three placed', async () => (await names(page)).filter((name) => name !== 'coast'), (now) => now.length === 3, 3000).catch(async () => (await names(page)).filter((name) => name !== 'coast'));
   check('three_appear_at_once', atOnce.length === 3, atOnce);
   check('none_focused', await page.evaluate(() => document.activeElement?.tagName !== 'INPUT'));
   check('stems_are_names', JSON.stringify(atOnce) === JSON.stringify(['clash_take', 'kyogre_art_1', 'sea_sound']), atOnce);
@@ -169,12 +169,15 @@ async function placedInView(page, expected) {
   // An import writes the constant, then the row, so the last row can come a moment after the third constant.
   await until('three rows in project.db', () => rows(folder), (now) => ['kyogre_art_1', 'clash_take', 'sea_sound'].every((name) => now[name]));
   check('rows_written', true);
-  // Calcifer may fetch its ffmpeg for the first of these.
+  // Calcifer may fetch its ffmpeg for the first of these. The picture shows the file dropped, and no copy of it takes its place (cl-918); the video
+  // and the sound show Calcifer's thumbnails.
   const thumbs = await until('thumbnails up', () => page.evaluate(() => ({
-    up: [...document.querySelectorAll('.react-flow__node .media img')].filter((img) => img.naturalWidth > 0 && !img.src.startsWith('blob:')).length,
+    up: [...document.querySelectorAll('.react-flow__node .media')].filter((media) => [...media.querySelectorAll('img')].some((img) => img.naturalWidth > 0)).length,
+    made: [...document.querySelectorAll('.react-flow__node .media img')].filter((img) => img.naturalWidth > 0 && !img.src.startsWith('blob:')).length,
+    own: [...document.querySelectorAll('.react-flow__node .card[data-asset="kyogre_art_1"] .media img')].map((img) => img.getAttribute('src')),
     none: [...document.querySelectorAll('.media-note')].map((note) => note.textContent),
-  })), (now) => now.up === 3 || now.none.includes('No preview'), 5 * STEP_MS);
-  check('thumbnails', thumbs.up === 3, thumbs);
+  })), (now) => (now.up === 3 && now.made === 2) || now.none.includes('No preview'), 5 * STEP_MS);
+  check('thumbnails', thumbs.up === 3 && thumbs.made === 2 && thumbs.own.length === 1 && thumbs.own[0].startsWith('blob:'), thumbs);
   if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-dropped.png` });
 
   // The top-bar plus opens the existing native selector and uploads the chosen file.

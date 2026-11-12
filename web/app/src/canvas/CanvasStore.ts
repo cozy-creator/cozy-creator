@@ -32,7 +32,7 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -59,10 +59,6 @@ export type Stage = "waiting" | "reading" | "sending" | "adding"
 export interface Placing {
   media: MediaKind
   stage: Stage
-  /** How far this stage is, 0 to 1. */
-  done: number
-  /** Which try of the current call, when it isn't the first. */
-  attempt?: number
   /** The name with nothing typed. */
   stem: string
   abort: AbortController
@@ -98,8 +94,8 @@ export interface ElementView {
   /** How many writes of its fields are on their way. */
   writing?: number
   placing?: Placing
-  /** A blob URL, until the thumbnail is up. */
-  preview?: string
+  /** A dropped picture's own bytes as a blob URL, and once it has landed their digest: shown for that file in place of any copy of it, until it shows another. */
+  preview?: { url: string; sha256?: string }
   /** The name field's text, while it's open. */
   draft?: string
   aspect?: number
@@ -452,7 +448,7 @@ export class CanvasStore {
     for (const view of this.views.values()) {
       view.placing?.abort.abort()
       if (view.preview) {
-        URL.revokeObjectURL(view.preview)
+        URL.revokeObjectURL(view.preview.url)
         view.preview = undefined
       }
     }
@@ -2488,8 +2484,8 @@ export class CanvasStore {
   }
 
   /** A file being placed has a row of its own, under its key, until it lands: its canvas drawn again finds it there. What it pushes aside is part of `edit`. */
-  addPlacing(key: string, name: string, placing: Placing, at: Card, opts: { naming: boolean; preview?: string }, edit: string) {
-    this.views.set(key, { name, placing, draft: opts.naming ? name : undefined, preview: opts.preview, landing: true })
+  addPlacing(key: string, name: string, placing: Placing, at: Card, opts: { naming: boolean; preview?: string; aspect?: number }, edit: string) {
+    this.views.set(key, { name, placing, draft: opts.naming ? name : undefined, preview: opts.preview ? { url: opts.preview } : undefined, aspect: opts.aspect })
     const row = this.clearOf(key, at, edit)
     this.rows?.set(key, row)
     this.flow?.addNodes(this.node(key, row))
@@ -2567,7 +2563,8 @@ export class CanvasStore {
 
   /** The project holds it now. If it moved while being asked, its row moves too. */
   land(key: string, answer: Imported, at: Card, edit?: string) {
-    this.patch(key, { placing: undefined, draft: undefined, landed: { sha256: answer.sha256, field: answer.field } })
+    const preview = this.views.get(key)?.preview
+    this.patch(key, { placing: undefined, draft: undefined, landed: { sha256: answer.sha256, field: answer.field }, ...(preview ? { preview: { ...preview, sha256: hexOf(answer.sha256) } } : {}) })
     this.moveName(key, answer.name)
     this.rows?.set(answer.name, at)
     const now = this.position(answer.name)
@@ -2582,7 +2579,7 @@ export class CanvasStore {
     this.rows?.delete(key)
     const view = this.views.get(key)
     view?.placing?.abort.abort()
-    if (view?.preview) URL.revokeObjectURL(view.preview)
+    if (view?.preview) URL.revokeObjectURL(view.preview.url)
     this.removeNode(key)
     for (const held of edits) if (!this.alive(held)) this.unpush(held)
   }
@@ -2595,11 +2592,11 @@ export class CanvasStore {
     this.reshape(name)
   }
 
-  /** Its thumbnail is up. */
+  /** It shows a file other than the one dropped, and that's up: the dropped one's bytes go. */
   showThumb(name: string) {
     const view = this.get(name)
     if (!view?.preview) return
-    URL.revokeObjectURL(view.preview)
+    URL.revokeObjectURL(view.preview.url)
     this.patch(name, { preview: undefined })
   }
 

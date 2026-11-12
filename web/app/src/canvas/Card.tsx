@@ -20,7 +20,7 @@ import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames 
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, shownOf, valuesOf, watched, widthFor } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, shownOf, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -56,7 +56,8 @@ function TakeProgress({ view, run }: { view: ElementView; run: number }) {
 
 /** An approved box shows nothing wrong unless what it reads changed: a failure of something tried since is on its other face. */
 function dotOf(view: ElementView): string {
-  if (view.placing || view.queued || view.asked !== undefined) return "s-making"
+  // A file on its way to Calcifer says nothing: it's there already, as far as anyone looking can tell (cl-918).
+  if (view.queued || view.asked !== undefined) return "s-making"
   const asset = view.asset
   if (asset?.standing === "making") return "s-making"
   if (asset?.failure && !(asset.pinned && faceOf(view) === "media")) return "s-failed"
@@ -764,7 +765,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
         )}
-        {view.draft === undefined && asset?.kind === "image" && shown?.number !== undefined && <span className="node-version-label">v{shown.number}</span>}
+        {view.draft === undefined && (asset ? asset.kind === "image" && shown?.number !== undefined : isPicture(view)) && <span className="node-version-label">v{asset ? shown?.number : 1}</span>}
         {view.draft === undefined && !lite && <span className="sp" />}
         {view.draft === undefined && here && asset?.kind !== "image" && versions.length > 1 && at >= 0 && (
           <span className="count">
@@ -790,13 +791,14 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           >
             <Icon name="close" />
           </button>
-        ) : view.placing && view.placing.stage !== "adding" ? (
-          <button type="button" className="iconb nodrag" aria-label="Cancel" onClick={cancel}>
+        ) : view.placing ? (
+          // Its × stays as it was dropped: past the point of no return, the moment Calcifer is being asked, it does nothing.
+          <button type="button" className="iconb nodrag" aria-label="Cancel" onClick={() => view.placing?.stage !== "adding" && cancel()}>
             <Icon name="close" />
           </button>
         ) : (
           view.draft === undefined &&
-          asset &&
+          (asset || view.landed) &&
           !lite && (
             <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
               <Icon name="close" />
