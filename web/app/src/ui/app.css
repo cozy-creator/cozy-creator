@@ -1311,12 +1311,6 @@ video.preview.on {
   font: inherit;
   cursor: copy;
 }
-/* What a box is, in its own words: a field of its own, under its label. */
-.desc-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
 .block-label {
   font-size: var(--heading);
   font-weight: var(--w-heading);
@@ -1336,21 +1330,6 @@ video.preview.on {
 }
 .tool-head .add-ons {
   position: static;
-}
-.here-rule {
-  width: 100%;
-  margin: 8px 0 6px;
-  border: 0;
-  border-top: 1px solid var(--line2);
-}
-.desc-field .mention-text {
-  min-height: 3.5em;
-  padding: 8px 10px;
-  border: 1px solid var(--line2);
-  border-radius: var(--round);
-  background: var(--card);
-  font-size: var(--body);
-  line-height: 1.4;
 }
 .here-all {
   display: flex;

@@ -431,6 +431,17 @@ function linesOf(text, name) {
     await shot('picked-up');
   }
 
+  // No box shows a description field for now (cl-900, Paul 11-12: "remove all of the 'description' boxes since they are confusing"): a
+  // picture, a video, a sound, a box with a tool; a stored one stays in the file.
+  await api(`/v1/projects/${id}/assets/walk`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'A walk by the sea' } }) });
+  await until('walk described', () => fieldsOf('walk'), (fields) => fields.description === 'A walk by the sea');
+  for (const name of ['coast', 'walk', 'hum', 'shot']) {
+    await open(name);
+    check(`${name}_shows_no_description`, (await box(name).locator('.desc-field, [aria-label="Description"]').count()) === 0, await box(name).innerText());
+  }
+  check('a_stored_description_stays', (await fieldsOf('walk')).description === 'A walk by the sea', await fieldsOf('walk'));
+  await shot('no-description');
+
   check('sidebar_still_only_nodes_and_tools', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .browse, .tools .box-shelf-head, .tools .tool-off, .tools input').count() === 0);
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   check('nothing_refused', refused.filter((refusal) => refusal.url.includes('/v1/projects/')).length === 0, refused);
