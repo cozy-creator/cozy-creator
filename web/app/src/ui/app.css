@@ -2796,8 +2796,8 @@ a.tab:hover {
 }
 .here-side.image-history {
   width: 280px;
-  left: calc(50% + var(--image-history-offset, 0px) + var(--here-gap) * var(--text, 1) * var(--here));
-  height: calc(var(--image-history-height, 200px) / (var(--text, 1) * var(--here)));
+  left: calc(50% + var(--image-history-offset, 0px) + var(--here-gap) * var(--here));
+  height: calc(var(--image-history-height, 200px) / var(--here));
 }
 .image-history .takes {
   align-items: center;

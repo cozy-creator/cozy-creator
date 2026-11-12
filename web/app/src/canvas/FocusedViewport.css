@@ -79,9 +79,6 @@
   translate: none !important;
   scale: 1 !important;
   --here: 1;
-  --text: 1;
-  --hang: 1;
-  --surface-inverse: 1;
 }
 .focus-card > .head,
 .focus-card > .ratio-rest {

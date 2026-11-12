@@ -1,6 +1,6 @@
 // Zoom from the canvas's corner, as Figma's: − and + step along the page's zooms about the middle of what's visible, the zoom says what it
-// is, and its menu fits everything, goes to 100%, and works on a box being worked on without leaving it, which it draws larger or smaller
-// alike (cl-890). 300 boxes panned at 70% and 11%, with it on the canvas, as see.js measures them.
+// is, its menu fits everything, goes to 100%, and works on a box being worked on without leaving it. A box is drawn larger or smaller
+// alike, words and all (cl-890). 300 boxes panned at 70% and 11%, with it on the canvas, as see.js measures them.
 //   node zoom.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as see.js. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -166,6 +166,56 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     await settled(tab);
     check('shift_1_fits', near((await view(tab)).zoom, fitted.zoom), await view(tab));
 
+    // A box on the canvas is drawn at its scale, words and all (cl-890): at 50%, 100% and 200% each of its words is the same part of its
+    // height, and in and back out it's just as it was. Each part where it is in the box, in canvas pixels.
+    const n0 = await boxOf(tab, 'n0').locator('.media').first().boundingBox();
+    await tab.keyboard.down('Shift');
+    await tab.mouse.click(n0.x + n0.width / 2, n0.y + n0.height / 2);
+    await tab.keyboard.up('Shift');
+    await tab.keyboard.press('Shift+Digit2');
+    await settled(tab);
+    const look = () => tab.evaluate(() => {
+      const node = [...document.querySelectorAll('.react-flow__node')].find((one) => one.querySelector('.card')?.dataset.asset === 'n0');
+      const card = node?.querySelector('.card');
+      if (!card) return null;
+      const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+      const base = card.getBoundingClientRect();
+      const pathOf = (el) => {
+        const path = [];
+        for (let e = el; e && e !== node; e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
+        return path.join('.');
+      };
+      const shown = (el) => el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && el.getBoundingClientRect().height > 0;
+      const own = (el) => [...el.childNodes].some((one) => one.nodeType === 3 && one.textContent.trim());
+      const all = [...node.querySelectorAll('*')].filter(shown);
+      const inCanvas = (r) => [r.left - base.left, r.top - base.top, r.width, r.height].map((v) => Math.round((v / zoom) * 10) / 10);
+      return {
+        zoom,
+        words: all.filter(own).map((el) => ({ at: pathOf(el), said: el.textContent.trim().slice(0, 24), part: el.getBoundingClientRect().height / base.height, font: getComputedStyle(el).fontSize })),
+        parts: all.map((el) => [pathOf(el), ...inCanvas(el.getBoundingClientRect())]),
+        style: card.getAttribute('style'),
+      };
+    });
+    const zoomAt = async (label) => {
+      await menu();
+      await tab.click(`.zoom-menu >> text=${label}`);
+      await settled(tab);
+      return look();
+    };
+    const at = { 1: await zoomAt('Zoom to 100%'), 2: await zoomAt('Zoom to 200%'), 0.5: await zoomAt('Zoom to 50%') };
+    const again = await zoomAt('Zoom to 100%');
+    seen.box_scales = Object.fromEntries(Object.entries(at).map(([zoom, held]) => [zoom, held && { zoom: held.zoom, words: held.words.map(({ said, part }) => [said, Math.round(part * 10000) / 10000]) }]));
+    const sameParts = Object.values(at).every((held) => held && held.words.length >= 2 && held.words.length === at[1].words.length
+      && held.words.every((word, i) => word.at === at[1].words[i].at && Math.abs(word.part / at[1].words[i].part - 1) < 0.005));
+    check('box_words_scale_with_the_canvas', sameParts && near(at[0.5].zoom, 0.5) && at[1].zoom === 1 && near(at[2].zoom, 2), seen.box_scales);
+    const drift = again && at[1] && again.parts.length === at[1].parts.length
+      ? again.parts.map((part, i) => (part[0] === at[1].parts[i][0] ? Math.max(...part.slice(1).map((v, j) => Math.abs(v - at[1].parts[i][j + 1]))) : Infinity))
+      : [Infinity];
+    const unchanged = Math.max(...drift) <= 0.5 && again.style === at[1].style && again.words.every((word, i) => word.font === at[1].words[i].font);
+    check('box_zoom_in_and_out_leaves_it_as_it_was', unchanged, { drift: Math.max(...drift), before: at[1], after: again });
+    await shot(tab, 'zoom-box-scales');
+    await tab.keyboard.press('Escape');
+
     // A box worked on: + draws in further and it stays open; Zoom to fit draws back in on it; Esc in the menu shuts the menu, not the box.
     await openBox(tab, 'n0');
     const here = await view(tab);
@@ -180,50 +230,6 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     await settled(tab);
     const back = await view(tab);
     check('here_fit_is_the_box', near(back.zoom, here.zoom) && (await tab.locator('.card.here').count()) === 1, { here, back });
-
-    // A box worked on is drawn at the canvas's scale (cl-890): at 50%, 100% and 200% its words are the same part of its height, and in and
-    // back out it's just as it was. Each part where it is in the box, in canvas pixels; each word's height on screen against the box's.
-    const look = () => tab.evaluate(() => {
-      const card = document.querySelector('.card.here');
-      if (!card) return null;
-      const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-      const base = card.getBoundingClientRect();
-      const pathOf = (el) => {
-        const path = [];
-        for (let e = el; e && e !== card; e = e.parentElement) path.unshift([...e.parentElement.children].indexOf(e));
-        return path.join('.');
-      };
-      const shown = (el) => el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && el.getBoundingClientRect().height > 0;
-      const own = (el) => [...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim());
-      const words = [...card.querySelectorAll('.head .nm, .here-under *, .here-side *')].filter((el) => own(el) && shown(el)).slice(0, 6);
-      const parts = [...card.querySelectorAll(':scope > *, :scope > .head > *, :scope > .here-under *, :scope > .here-side > *')].filter(shown);
-      const inCanvas = (r) => [r.left - base.left, r.top - base.top, r.width, r.height].map((v) => Math.round((v / zoom) * 10) / 10);
-      return {
-        zoom,
-        height: base.height,
-        words: words.map((el) => ({ at: pathOf(el), said: el.textContent.trim().slice(0, 24), part: el.getBoundingClientRect().height / base.height, font: getComputedStyle(el).fontSize })),
-        parts: parts.map((el) => [pathOf(el), ...inCanvas(el.getBoundingClientRect())]),
-        style: card.getAttribute('style'),
-      };
-    });
-    const zoomHere = async (label) => {
-      await menu();
-      await tab.click(`.zoom-menu >> text=${label}`);
-      await settled(tab);
-      return look();
-    };
-    const at = { 1: await zoomHere('Zoom to 100%'), 2: await zoomHere('Zoom to 200%'), 0.5: await zoomHere('Zoom to 50%') };
-    const again = await zoomHere('Zoom to 100%');
-    seen.here_scales = Object.fromEntries(Object.entries(at).map(([zoom, held]) => [zoom, held && { zoom: held.zoom, words: held.words.map(({ said, part }) => [said, Math.round(part * 10000) / 10000]) }]));
-    const sameParts = Object.values(at).every((held) => held && held.words.length >= 2 && held.words.length === at[1].words.length
-      && held.words.every((word, i) => word.at === at[1].words[i].at && Math.abs(word.part / at[1].words[i].part - 1) < 0.005));
-    check('here_words_scale_with_the_canvas', sameParts && near(at[0.5].zoom, 0.5) && at[1].zoom === 1 && near(at[2].zoom, 2), seen.here_scales);
-    const drift = again && at[1] && again.parts.length === at[1].parts.length
-      ? again.parts.map((part, i) => (part[0] === at[1].parts[i][0] ? Math.max(...part.slice(1).map((v, j) => Math.abs(v - at[1].parts[i][j + 1]))) : Infinity))
-      : [Infinity];
-    const unchanged = Math.max(...drift) <= 0.5 && again.style === at[1].style && again.words.every((word, i) => word.font === at[1].words[i].font);
-    check('here_zoom_in_and_out_leaves_it_as_it_was', unchanged, { drift: Math.max(...drift), before: at[1], after: again });
-    await shot(tab, 'zoom-here-scales');
     await closeBox(tab);
     check('box_left', !(await tab.locator('.card.here').count()) && (await boxOf(tab, 'n0').count()) === 1);
     await tab.close();
