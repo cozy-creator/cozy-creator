@@ -3096,6 +3096,10 @@ default?: string | null,
  */
 family?: string | null,
 /**
+ * The kind of checkpoint this slot names by default, verified from its catalog or header.
+ */
+kind?: ModelKind | null,
+/**
  * The model class declared by the package; absent when an older interface did not name it.
  */
 class?: string | null,
