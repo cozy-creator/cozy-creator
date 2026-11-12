@@ -5,6 +5,7 @@
 // (its segments' slots as one, written `base_model`), a LoRA picked there set on the box; its tool named once, "<Package> · <Tool>", under its media, nothing of it
 // beside the title. Qwen's Image has the same component beneath it, and its Models & LoRAs opens the same picker. Screenshots of each.
 // Its VAE slot offers the VAEs of its family and its Model slot none of them; a VAE picked is the box's `vae` (se-131).
+// A LoRA added on SDXL, Ideogram 4 (words) or Krea 2 (a prompt) puts its trigger in the prompt, never a negative prompt (se-132).
 // The isolated Hub holds H3's default model (a stand-in) and an H3 LoRA of its family (e2e/isolated.sh, `loras`), and Qwen's
 // default model and a VAE of its family (stand-ins, `vaes`).
 //   node models.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
@@ -359,6 +360,112 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   check('the_model_slot_offers_no_vae', modelChoices.length >= 1 && !modelChoices.some((one) => /Texture Fix VAE/.test(one)), modelChoices);
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   await closeBox(page);
+
+  // se-132: a LoRA's trigger goes to its tool's prompt; a tool whose prompt is words (SDXL's and Ideogram 4's `instructions: str`)
+  // takes it in its first words that aren't a negative prompt, even one written first, and a picture those words mention stays crossed
+  // out. Krea 2's prompt field takes it as before. Each tool's LoRA is a stand-in of its family with one trigger (isolated.sh `prompts`).
+  const toolsFor = async (q) => (await api(`/v1/tools?project=${id}&q=${q}`)).body?.tools ?? [];
+  const imageOf = async (pkg) => (await toolsFor(pkg.split('-')[0])).find((tool) => tool.package.split('/').at(-1) === pkg && tool.function === 'image');
+  const wordsTools = { sdxl: await imageOf('sdxl'), ideogram: await imageOf('ideogram-4'), krea: await imageOf('krea-2') };
+  if (Object.values(wordsTools).some((tool) => !tool)) throw new Error(`the Hub lists no SDXL, Ideogram 4 or Krea 2 Image: ${JSON.stringify(Object.fromEntries(Object.entries(wordsTools).map(([key, tool]) => [key, tool?.id])))}`);
+  const typeOf = (tool, field) => tool.fields.find((held) => held.field === field)?.type;
+  seen.prompt_types = Object.fromEntries(Object.entries(wordsTools).map(([key, tool]) => [key, typeOf(tool, 'instructions')]));
+  check('sdxl_and_ideogram_write_words_krea_a_prompt', seen.prompt_types.sdxl === 'words' && seen.prompt_types.ideogram === 'words' && seen.prompt_types.krea === 'prompt', seen.prompt_types);
+  const boxes = [
+    { name: 'sdxl', tool: wordsTools.sdxl, said: 'A lighthouse at dusk beside <still>.', trigger: 'ink_wash', x: 80 },
+    { name: 'ideogram', tool: wordsTools.ideogram, said: 'A diner sign at night', trigger: 'neon_sign', x: 700 },
+    { name: 'krea', tool: wordsTools.krea, said: 'A clay fox in a meadow', trigger: 'claymation', x: 1320 },
+  ];
+  for (const box of boxes) {
+    const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: box.tool.id, kind: 'image', name: box.name, exact: true, fields: { instructions: box.said }, at: { x: box.x, y: 1400 } }) });
+    if (made.status >= 300) throw new Error(`the ${box.name} box: ${JSON.stringify(made)}`);
+  }
+  // Below the others, off screen until the canvas is fitted to them.
+  const onPage = (names) => until(`${names.join(', ')} on the canvas`, async () => {
+    await fitCanvas(page);
+    return Promise.all(names.map((name) => boxOf(page, name).isVisible()));
+  }, (shown) => shown.every(Boolean));
+  await onPage(boxes.map((box) => box.name));
+  const litIn = (name, field) => page.evaluate(({ name, field }) => {
+    const held = [...document.querySelectorAll(`.card.here[data-asset="${name}"] [data-field="${field}"]`)];
+    const marks = globalThis.CSS?.highlights?.get('lora-trigger');
+    return marks ? [...marks].filter((range) => held.some((el) => el.contains(range.startContainer))).map((range) => range.toString()) : [];
+  }, { name, field });
+  /** Box `name` opened, its Model slot given its family's LoRA from the picker: the box's fields once the LoRA is on it. */
+  const addLora = async (name, trigger) => {
+    await openBox(page, name);
+    const card = page.locator(`.card.here[data-asset="${name}"]`).first();
+    await card.locator(':scope > .tool-line button[aria-label="Models and LoRAs"]').click();
+    await picker.waitFor();
+    await picker.locator('button[data-model-slot="model"]').click();
+    await picker.getByRole('button', { name: 'LoRAs', exact: true }).click();
+    const option = picker.locator('.model-picker-lora-option', { hasText: new RegExp(trigger.split('_').join(' '), 'i') }).first();
+    await option.waitFor();
+    await option.click();
+    const fields = await until(`${name}'s LoRA on it`, () => fieldsOf(name), (now) => now.models?.model?.lora?.length === 1).catch(() => fieldsOf(name));
+    await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
+    await picker.waitFor({ state: 'detached' });
+    return fields;
+  };
+  const unusedOf = async (name) => (await api(at)).body.assets.find((asset) => asset.name === name)?.unused ?? [];
+  for (const box of boxes) {
+    const fields = await addLora(box.name, box.trigger);
+    const marks = await until(`${box.name}'s trigger drawn`, () => litIn(box.name, 'instructions'), (now) => now.some((mark) => mark.toLowerCase() === box.trigger)).catch(() => litIn(box.name, 'instructions'));
+    seen[`trigger_${box.name}`] = { instructions: fields.instructions, lora: fields.models?.model?.lora, marks };
+    check(`${box.name}_appends_its_trigger_once_and_draws_it`, String(fields.instructions).startsWith(box.said) && times(fields.instructions, box.trigger) === 1 && marks.some((mark) => mark.toLowerCase() === box.trigger), seen[`trigger_${box.name}`]);
+    if (box.name === 'sdxl') {
+      // `<still>`, a picture, in SDXL's words: Calcifer leaves it out, and the page strikes it through.
+      const left = await until('sdxl leaves out <still>', () => unusedOf('sdxl'), (now) => now.some((one) => one.mention === 'still')).catch(() => unusedOf('sdxl'));
+      const chipsOf = () => page.locator('.card.here[data-asset="sdxl"] [data-field="instructions"] .chip').evaluateAll((els) => els.map((chip) => ({ mention: chip.dataset.mention, unused: chip.classList.contains('unused'), struck: getComputedStyle(chip).textDecorationLine.includes('line-through'), title: chip.title })));
+      const chips = await until('<still> struck through', chipsOf, (now) => now.some((chip) => chip.mention === 'still' && chip.unused)).catch(chipsOf);
+      seen.sdxl_picture = { left, chips };
+      check('a_picture_in_sdxls_words_is_crossed_out', left.some((one) => one.mention === 'still' && one.at === 'instructions' && /can't use images$/.test(one.why)) && chips.some((chip) => chip.mention === 'still' && chip.unused && chip.struck), seen.sdxl_picture);
+    }
+    for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+      await page.setViewportSize({ width, height });
+      for (const theme of ['light', 'dark']) {
+        await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme === 'dark');
+        await page.waitForTimeout(300);
+        await shot(`prompt-${box.name}-${width}x${height}-${theme}`);
+      }
+    }
+    await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await closeBox(page);
+  }
+  // A tool whose first words are a negative prompt (a fixture: SDXL's description with `negative_prompt` moved first): the trigger
+  // still goes to `instructions`.
+  const reordered = [];
+  await page.route(/\/v1\/tools\?/, async (route) => {
+    const answer = await route.fetch();
+    const body = await answer.json();
+    for (const tool of body.tools ?? []) {
+      if (tool.id !== wordsTools.sdxl.id) continue;
+      const negative = tool.fields.findIndex((field) => field.field === 'negative_prompt');
+      if (negative > 0) tool.fields.unshift(...tool.fields.splice(negative, 1));
+      reordered.push(tool.fields.map((field) => `${field.field}:${field.type}`));
+    }
+    await route.fulfill({ response: answer, json: body });
+  });
+  await page.reload();
+  await page.waitForSelector('.top');
+  const neg = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: wordsTools.sdxl.id, kind: 'image', name: 'sdxl_neg', exact: true, fields: { instructions: 'A quiet pier' }, at: { x: 1940, y: 1400 } }) });
+  if (neg.status >= 300) throw new Error(`the sdxl_neg box: ${JSON.stringify(neg)}`);
+  await onPage(['sdxl_neg']);
+  const negFields = await addLora('sdxl_neg', 'ink_wash');
+  seen.negative_first = { order: reordered.at(-1), instructions: negFields.instructions, negative_prompt: negFields.negative_prompt };
+  check('a_negative_prompt_written_first_never_takes_the_trigger', /^negative_prompt:words,/.test(String(reordered.at(-1))) && negFields.instructions === 'A quiet pier, ink_wash' && !negFields.negative_prompt, seen.negative_first);
+  await openBox(page, 'sdxl_neg');
+  for (const theme of ['light', 'dark']) {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme === 'dark');
+    await page.waitForTimeout(300);
+    await shot(`prompt-negative-first-1440x900-${theme}`);
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.setViewportSize({ width: 1600, height: 1100 });
+  await closeBox(page);
+  await page.unroute(/\/v1\/tools\?/);
 
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();

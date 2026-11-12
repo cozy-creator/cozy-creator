@@ -56,8 +56,14 @@ export function appended(text: string, triggers: string[]): string | null {
   }, text)
 }
 
-/** A tool's prompt: the first field a person writes it in. */
-export const promptOf = (tool: Tool | undefined): string | undefined => tool?.fields.find((field) => field.type === "prompt")?.field
+// Nothing marks a negative prompt yet (the SDK's `NegativePrompt` is plain text), so its name stands in for the mark.
+const NEGATIVE = /^neg(ative)?(_|$)/i
+
+/** A tool's prompt: its first `prompt` field, else its first words (SDXL's and Ideogram 4's `str`); never a negative prompt. */
+export function promptOf(tool: Tool | undefined): string | undefined {
+  const fields = tool?.fields.filter((field) => !NEGATIVE.test(field.field)) ?? []
+  return (fields.find((field) => field.type === "prompt") ?? fields.find((field) => field.type === "words"))?.field
+}
 
 // The highlight: ranges over each prompt's own text nodes (never its chips), one CSS highlight for the page, so nothing a person types moves.
 
