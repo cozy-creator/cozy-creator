@@ -612,6 +612,7 @@ impl Binder<'_> {
         let mut seen = BTreeSet::new();
         let mut files = Vec::new();
         for spec in specs {
+            let positional = spec.field.is_none();
             let parts = match spec.field {
                 Some(field) => {
                     let mut parts: Vec<String> = field.split('.').map(str::to_owned).collect();
@@ -684,7 +685,7 @@ impl Binder<'_> {
             let held = sniffed.media_type.split('/').next().unwrap_or_default();
             let takes = self.modalities(&parts);
             if MEDIA.contains(&held) && !takes.is_empty() && !takes.iter().any(|kind| kind == held || kind == "file") {
-                let collection = self.callable.assets.as_ref().map(|assets| assets.parameter.clone()).filter(|_| spec.field.is_none());
+                let collection = self.callable.assets.as_ref().map(|assets| assets.parameter.clone()).filter(|_| positional);
                 if let Some(list) = collection.and_then(|parameter| self.document.get_mut(&parameter)).and_then(Value::as_array_mut) {
                     list.pop();
                 }
