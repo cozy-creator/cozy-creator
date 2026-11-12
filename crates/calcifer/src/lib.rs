@@ -541,6 +541,12 @@ impl Calcifer {
 
     /// Existing accepted work can settle after viewing closes. This never
     /// constructs a public run response or admits another execution.
+    /// Whether an attached project's journal holds runs not settled, read alongside its requests; unreadable counts as yes.
+    pub(crate) fn project_unsettled(&self, project: &str) -> bool {
+        let Some(owner) = lock(&self.project_owners).get(project).cloned() else { return false };
+        owner.store().and_then(|store| Ok(!store.unsettled()?.is_empty() || !store.unsettled_here()?.is_empty())).unwrap_or(true)
+    }
+
     pub(crate) fn cancel_for_lock(&self,project:&str)->Result<Vec<u64>,Error> {
         let owner=lock(&self.project_owners).get(project).cloned();
         let Some(owner)=owner else {return Ok(vec![]);};

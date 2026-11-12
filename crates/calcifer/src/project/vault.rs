@@ -869,12 +869,15 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
 }
 
 /// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
+/// Work going holds an unlocked vault open: its runs, renders, moves, cuts and private processes. A request being
+/// answered is not work, so a page's reads and an automatic preview never extend the unlock; the lock's gate waits for it.
 fn working(api: &Arc<Api>, root: &FsPath) -> bool {
-    if api.projects.active_requests(root) || crate::local_code::private_process_active(root) { return true; }
+    if crate::local_code::private_process_active(root) { return true; }
     let projects = api.projects.now_open();
     let Some(project) = projects.iter().find(|project| project.root == root) else { return false };
     if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return true; }
-    let Ok(transition) = exclusive(root) else { return true };
+    // A request holds the project: read its runs beside it.
+    let Ok(transition) = exclusive(root) else { return api.calcifer.project_unsettled(&project.id) };
     let Ok(store) = api.projects.transition_store(api, &project.id, &transition) else { return true };
     // The transition authority can inspect already-accepted work even if an idle
     // deadline just expired. Public viewing admission is deliberately stricter.
