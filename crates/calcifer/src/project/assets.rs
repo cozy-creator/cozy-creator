@@ -415,6 +415,7 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     let before = stale_names(&doc, &doc.stand(&folder.lock().map_err(Refusal)?));
     let (number, already) = folder
         .act(|| {
+            let initialize = format::can_initialize_approval(folder, &name)?;
             if let Some(pin) = &asset.pin {
                 constant_numbered(folder, asset, pin)?;
             }
@@ -424,7 +425,9 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             if !already {
                 history::take(folder, &name, number, noun(&doc, &folder.lock()?, i), Took::Absent, Took::Listed);
             }
-            folder.edit(|written| written.selected(&name, number, &kept.file.sha256))?;
+            if initialize {
+                folder.edit(|written| written.selected(&name, number, &kept.file.sha256))?;
+            }
             Ok((number, already))
         })
         .map_err(Refusal)?;

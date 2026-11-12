@@ -65,7 +65,7 @@
   height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) min(26vw, 280px);
-  grid-template-rows: minmax(0, 1fr) var(--focus-footer-room, 52px);
+  grid-template-rows: minmax(0, 1fr) minmax(var(--focus-footer-room, 52px), auto);
   gap: 12px 20px;
   background: none;
   border: 0;
