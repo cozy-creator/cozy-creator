@@ -55,7 +55,8 @@ cat "$OUT/ondemand-ahead.timeline.json"
 while read -r why; do check "ondemand-ahead: $why"; done < "$OUT/ondemand-ahead.failed"
 }
 
-# A call holds (resolved, its on-demand BiRefNet guessed behind every run's needs), then `cozy model install` downloads Qwen3.5
+# A call holds (resolved, its on-demand BiRefNet guessed behind every run's needs, so part of it may land first), then `cozy model
+# install` downloads Qwen3.5
 # 0.8B's 1.6 GB, and while it does the call reads its on-demand BiRefNet (446 MB): its executor
 # asks TensorD for it (`model_need`), which fetches it before every other download (order 0) and answers once it's here, and the
 # install goes on after. The isolated Hub's store is slowed to 30 MB/s (tc on the loopback, from its MinIO's port), so the link is
@@ -95,7 +96,7 @@ for line in (out / "ondemand-need.tensord.log").read_text(errors="replace").spli
     if t < began:
         continue
     if "emergency: zhengpeng7/birefnet is read now" in line:
-        need.append(t)
+        need.append((t, int(dict(re.findall(r"(\w+)=(\S+)", line)).get("bytes", "0"))))
     if "emergency: zhengpeng7/birefnet is here" in line:
         here.append((t, dict(re.findall(r"(\w+)=(\S+)", line))))
     found = re.search(r": (fetching|landed) .*bytes=(\d+).*priority=(\d+)", line)
@@ -105,18 +106,21 @@ for line in (out / "ondemand-need.tensord.log").read_text(errors="replace").spli
             urgent.append((t, kind, int(found[2])))
         elif 2 <= order < 1 << 62 and kind == "fetching":
             queued.append(t)
-began_ms, ended_ms = (need[0], here[0][0]) if need and here else (None, None)
+began_ms, ended_ms = (need[0][0], here[0][0]) if need and here else (None, None)
+absent = need[0][1] if need else 0
 during = [t for t in queued if began_ms and began_ms < t < ended_ms]
 landed = sum(b for _, kind, b in urgent if kind == "landed")
 record = json.loads((out / "ondemand-need.json").read_text())
 print(json.dumps({"run": {k: record.get(k) for k in ("number", "status")}, "asked_ms": began_ms, "here_ms": ended_ms,
-                  "emergency": here[0][1] if here else None, "emergency_bytes_landed": landed,
+                  "emergency": here[0][1] if here else None, "absent_at_read": absent, "emergency_bytes_landed": landed,
                   "queued_objects_started": len(queued), "queued_objects_started_during": len(during)}, indent=1))
 fail = lambda why: print(why, file=sys.stderr)
 if not need or not here:
     fail("TensorD never said it fetched the call's on-demand BiRefNet as an emergency")
-if landed < 400 << 20:
-    fail(f"{landed} bytes of BiRefNet landed at the emergency's order")
+if absent < 100 << 20:
+    fail(f"only {absent} bytes of BiRefNet were absent at its read: its guess had come, so nothing was an emergency")
+elif landed < 0.9 * absent:
+    fail(f"{landed} bytes of BiRefNet landed at the emergency's order of the {absent} absent at its read")
 if not queued:
     fail("the queued install started nothing: there was no other download")
 if during:
