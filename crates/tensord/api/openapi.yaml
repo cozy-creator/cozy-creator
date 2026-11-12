@@ -379,6 +379,34 @@ paths:
         '416':
           description: '`range_unsatisfiable`'
           content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
+  /v1/runs/{id}/preview:
+    get:
+      summary: >-
+        The running run's newest preview of what it's making (cr-282), its number in its progress (`preview`). Each ask has
+        its executor make them for the next 30 s: a run no one asks about makes none. An ended run has none.
+      operationId: preview
+      parameters:
+        - {name: id, in: path, description: The run id, required: true, schema: {type: string}}
+        - name: If-None-Match
+          in: header
+          description: '`"p<n>"`: unchanged while it is still the newest'
+          schema: {type: [string, 'null']}
+      responses:
+        '200':
+          description: The newest
+          headers:
+            ETag: {schema: {type: string}, description: '`"p<n>"`'}
+            Cozy-Preview-Step: {schema: {type: string}, description: '`<position>/<total>`: the step it shows'}
+          content:
+            image/webp:
+              schema: {type: array, items: {type: integer, format: int32, minimum: 0}}
+        '204':
+          description: None yet
+        '304':
+          description: Still the newest
+        '404':
+          description: No such run
+          content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}
   /v1/status:
     get:
       summary: >-
@@ -872,6 +900,7 @@ components:
           description: The mean of its steps after the first, which carries the stage's setup; 0 before one.
         step_ms: {type: number, format: double, description: 'The latest step''s time, while a stage steps.'}
         total: {type: integer, format: int64, minimum: 0}
+        preview: {type: integer, format: int64, minimum: 0, description: 'The number of the run''s newest preview (`GET /v1/runs/{id}/preview`); absent: none.'}
     ProviderAccess:
       type: object
       description: The caller's provider tokens, for models a run makes from a provider source.
