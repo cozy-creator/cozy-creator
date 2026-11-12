@@ -231,7 +231,7 @@ async function died(error) {
   check('right_hand_original_previews_are_available', await history.isVisible() && await history.locator('.take[data-take]').count() === 10);
   check('focus_has_no_linear_counter_or_arrow_controls', await focus.locator('.count:visible').count() === 0 && await focus.getByRole('button', { name: /^(Previous version|Next version)$/ }).count() === 0);
   const title = focus.getByRole('button', { name: 'Rename node', exact: true });
-  check('focus_title_is_large_and_version_is_separate', await title.innerText() === NAME && await title.evaluate((element) => parseFloat(getComputedStyle(element).fontSize) >= 24) && await focus.getByLabel('Image version', { exact: true }).innerText() === 'v1');
+  check('focus_title_is_large_and_version_is_separate', await title.innerText() === NAME && await title.evaluate((element) => parseFloat(getComputedStyle(element).fontSize) >= 24) && await focus.getByLabel('Take', { exact: true }).innerText() === 'v1');
   await title.click();
   const titleInput = focus.locator('.focus-heading input[aria-label="Name"]');
   await titleInput.fill(NAME);
@@ -279,7 +279,7 @@ async function died(error) {
   const tall = await expectFit(0.25);
   check('wide_and_tall_states_fit_the_same_viewport_room', sameRect(wide.viewer, tall.viewer) && fits(wide, 4) && fits(tall, 0.25), { wide, tall });
   check('tool_controls_stay_pinned_when_state_ratio_changes', sameRect(wide.controls, tall.controls), { wide: wide.controls, tall: tall.controls });
-  check('thumbnail_click_previews_without_approving', (await asset()).version === 1 && (await asset()).approved === 1 && await focus.getByLabel('Image version', { exact: true }).innerText() === 'v2');
+  check('thumbnail_click_previews_without_approving', (await asset()).version === 1 && (await asset()).approved === 1 && await focus.getByLabel('Take', { exact: true }).innerText() === 'v2');
   check('state_preview_does_not_change_the_focused_canvas_camera', sameCamera(focusedCanvas, await camera()));
   await approve(2);
   check('double_click_approves_the_preview_separately', (await asset()).version === 2 && (await asset()).approved === 2);
