@@ -1001,6 +1001,12 @@ fn recover_internal(record: &Conversion) -> Result<(), Error> {
             return Err(error("vault_recovery", "the ordinary replacement project identity did not verify"));
         }
         verify_snapshot(&record.root)?;
+        match crate::private_io::retained_scope(&record.root, &plain.project_id)? {
+            Some(scope) if scope.storage.generation == plain.generation => {},
+            Some(_) => return Err(error("vault_recovery", "the plaintext execution generation changed")),
+            None => { crate::private_io::descriptor_for_mounted(&record.root, &plain.project_id, plain.generation)?; },
+        }
+        register_plain_root(&record.root, &plain.project_id)?;
         if record.saved.exists() { fs::remove_dir_all(&record.saved).map_err(io)?; }
         if record.staged.exists() { fs::remove_dir_all(&record.staged).map_err(io)?; }
         clear_conversion(record)?;
