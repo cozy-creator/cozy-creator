@@ -28,7 +28,7 @@ pub(crate) mod file;
 mod folder;
 pub use folder::{copy_checked, files as folder_files};
 mod gc;
-pub use gc::RemovedModel;
+pub use gc::{RemovedModel, RetiredObjects};
 mod records;
 pub mod retention;
 

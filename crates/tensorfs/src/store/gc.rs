@@ -29,6 +29,14 @@ pub struct RemovedModel {
     pub retained_bytes: u64,
 }
 
+/// Exact verified custody retirement. Unrequested roots and readers always keep their bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RetiredObjects {
+    pub removed: Vec<ObjectRef>,
+    pub retained: Vec<ObjectRef>,
+    pub removed_uses: Vec<String>,
+}
+
 /// Documents bigger than this are never read as trees or headers.
 const MAX_DOCUMENT: u64 = 256 << 20;
 
@@ -186,6 +194,95 @@ impl Store {
         self.stamp_eviction()?;
         *collections += 1;
         Ok(removed)
+    }
+
+    /// Retire only caller-proven use keys and object candidates after their verified copy.
+    /// Uses containing an unrequested digest are retained, as are independent refs, header
+    /// roots, live holds, authoritative peer requests and open file readers. No grace or TTL
+    /// is used to infer ownership. This reuses the normal collection/deletion engine.
+    pub fn retire_objects(
+        &self,
+        objects: &[ObjectRef],
+        owned_uses: &[String],
+        authoritative_keep: &[ObjectRef],
+    ) -> Result<RetiredObjects> {
+        if !self.cache {
+            return Err(invalid(
+                self.root(),
+                "custody retirement requires a cache store",
+            ));
+        }
+        let mut collections = self
+            .collections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _fence = super::retention::exclusive(self)?;
+        let _refs = self.lock("refs")?;
+        self.restore_trash()?;
+        let candidates = objects
+            .iter()
+            .map(|object| object.sha256.clone())
+            .collect::<BTreeSet<_>>();
+        let requested = owned_uses.iter().cloned().collect::<BTreeSet<_>>();
+        if requested.iter().any(|name| !is_digest(name)) {
+            return Err(invalid(self.root(), "owned use has an invalid digest"));
+        }
+        let mut keep = self.holders()?.into_keys().collect::<BTreeSet<_>>();
+        // Cached refs are independent registrations too; pressure GC's TTL does not confer
+        // permission to erase them as part of another project's migration.
+        for model in self.refs()? {
+            for root in model.roots() {
+                keep.extend(self.closure(root)?.into_iter().map(|object| object.sha256));
+            }
+        }
+        for root in authoritative_keep {
+            keep.extend(self.closure(root)?.into_iter().map(|object| object.sha256));
+        }
+        let mut retired = RetiredObjects::default();
+        let uses = self.uses(&BTreeSet::new())?;
+        for used in uses {
+            if requested.contains(&used.name)
+                && !keep.contains(&used.name)
+                && used
+                    .digests
+                    .iter()
+                    .all(|digest| candidates.contains(digest))
+            {
+                self.remove_record(&self.root.join("uses").join(&used.name))?;
+                retired.removed_uses.push(used.name);
+            } else {
+                keep.insert(used.name);
+                keep.extend(used.digests);
+            }
+        }
+        let before = SystemTime::now();
+        for object in objects {
+            if keep.contains(&object.sha256) {
+                retired.retained.push(object.clone());
+                continue;
+            }
+            let path = self.path(object)?;
+            match fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Ok(metadata) if metadata.is_file() && metadata.len() == object.length => (),
+                Ok(_) => {
+                    return Err(invalid(
+                        &path,
+                        "retirement candidate changed type or length",
+                    ));
+                }
+                Err(error) => return Err(fail("stat", &path)(error)),
+            }
+            match self.discard(&object.sha256, before)? {
+                Some(_) => retired.removed.push(object.clone()),
+                None => retired.retained.push(object.clone()),
+            }
+        }
+        if !retired.removed.is_empty() {
+            self.stamp_eviction()?;
+        }
+        *collections += 1;
+        Ok(retired)
     }
 
     /// What `root` keeps alive, each once: `root`, and for a tree its files and its header's
