@@ -243,7 +243,9 @@ impl Store {
         source.commit()?;
         drop(writer);
         self.migrate_legacy_files(&project)?;
-        if changed { self.cleanup_private_journal() } else { Ok(()) }
+        if changed {
+            if self.migration_required()? {self.checkpoint_legacy_retirement()} else {self.cleanup_private_journal()}
+        } else {Ok(())}
     }
 
     fn migrate_legacy_files(&self, project:&Destination<'_,'_>)->Result<()> {

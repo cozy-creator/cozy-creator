@@ -669,10 +669,40 @@ impl Machines {
                 machine.state = MachineState::Stopped;
             }
             machine.status = seen.frame.as_ref().map(|frame| {
-                let mut status = status(frame, &self.hubs);
+                let mut visible=frame.clone();
+                let rows=self.calcifer.maintenance_rows(&row.name);
+                let mut manifests=HashSet::new();
+                let mut installations=HashSet::new();
+                for run in &rows {
+                    for choice in run.spec.models.iter().chain(run.spec.set.iter().flat_map(|set|set.items.iter().flat_map(|item|&item.models))) {
+                        if !choice.model.is_empty() && !choice.manifest.is_empty() {manifests.insert((choice.model.clone(),choice.manifest.clone()));}
+                    }
+                    if run.status==Some(wire::Status::Completed) {
+                        if let Some(result)=run.outcome.as_ref().and_then(|outcome|outcome.result.as_ref()).and_then(|result|serde_json::from_str::<serde_json::Value>(result.get()).ok()) {
+                            if let Some(id)=result.get("installation").and_then(serde_json::Value::as_str) {installations.insert(id.to_owned());}
+                            for model in result.get("models").and_then(serde_json::Value::as_array).into_iter().flatten() {
+                                if let (Some(name),Some(commit))=(model.get("repository").and_then(serde_json::Value::as_str),model.get("checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
+                            }
+                        }
+                    }
+                }
+                for model in &mut visible.models {
+                    let total=model.checkpoints.len();
+                    model.checkpoints.retain(|checkpoint|manifests.contains(&(model.model.clone(),checkpoint.manifest.clone())));
+                    if total!=model.checkpoints.len() {model.total_bytes=0;model.unique_bytes=0;}
+                }
+                visible.models.retain(|model|!model.checkpoints.is_empty());
+                visible.models_bytes=visible.models.iter().map(|model|model.total_bytes).sum();
+                visible.environments.retain(|environment|installations.contains(&environment.installation));
+                for environment in &mut visible.environments {environment.warning.clear();}
+                visible.warm=self.calcifer.maintenance_warm(&row.name,visible.warm);
+                visible.kernels.clear();
+                for process in &mut visible.stuck {process.command.clear();}
+                visible.toolchain.detail.clear();
+                let mut status = status(&visible, &self.hubs);
                 // An update says what it waits for by this controller's run numbers.
                 status.update = (frame.update.as_ref())
-                    .map(|u| self.calcifer.waiting_for(&u.waiting_for).unwrap_or_else(|| Some(&u.waiting).filter(|w| !w.is_empty()).unwrap_or(&u.state).clone()))
+                    .map(|u| self.calcifer.maintenance_waiting_for(&u.waiting_for).unwrap_or_else(|| Some(&u.waiting).filter(|w| !w.is_empty()).unwrap_or(&u.state).clone()))
                     .unwrap_or_default();
                 status
             });
@@ -684,8 +714,8 @@ impl Machines {
             machine.attempt.clone_from(&seen.attempt);
         }
         if let Some(status) = &mut machine.status {
-            status.runs = held.into_iter().map(|run| self.held(run)).collect();
-            status.activity = activity.iter().map(|operation| self.operation(operation)).collect();
+            status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
+            status.activity = activity.iter().filter_map(|operation| self.operation(operation)).collect();
         }
         let asked = match row.kind {
             MachineKind::Rental => store.rent_ask(&row.name).map_err(internal)?,
@@ -721,34 +751,17 @@ impl Machines {
     }
 
     /// A run the machine holds for this controller, with this controller's record of it.
-    fn held(&self, run: v1::RunState) -> wire::LiveRun {
-        let row = self.calcifer.run_store(&run.id).and_then(|store| store.run(&run.id)).ok().flatten();
-        wire::LiveRun {
-            run: row.and_then(|row| self.calcifer.record(&row).ok()),
-            id: run.id,
-            state: run.state,
-            waiting: run.waiting,
-        }
+    fn held(&self, run:v1::RunState)->Option<wire::LiveRun> {
+        let row=self.calcifer.maintenance_store().run(&run.id).ok()??;
+        Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting:run.waiting})
     }
 
-    /// What a machine does for runs, its waiters by this controller's run numbers: a run it keeps no record of isn't one.
-    fn operation(&self, operation: &v1::Operation) -> wire::Operation {
-        let runs = (operation.runs.iter()).filter_map(|id| Some(self.calcifer.run_store(id).and_then(|store| store.run(id)).ok()??.number)).collect();
-        let rate = Some(operation.bytes_per_s).filter(|rate| *rate >= 1.0);
-        let left = operation.bytes_total.saturating_sub(operation.bytes_done);
-        wire::Operation {
-            id: operation.id.clone(),
-            kind: operation.kind.clone(),
-            subject: operation.subject.clone(),
-            stage: operation.stage.clone(),
-            bytes_done: operation.bytes_done,
-            bytes_total: operation.bytes_total,
-            bytes_here: operation.bytes_here,
-            bytes_per_s: rate,
-            eta_s: rate.filter(|_| left > 0).map(|rate| (left as f64 / rate) as i64),
-            started_at_ms: operation.started_at_unix_ms,
-            runs,
-        }
+    fn operation(&self,operation:&v1::Operation)->Option<wire::Operation> {
+        if operation.runs.is_empty() {return None;}
+        let runs=operation.runs.iter().map(|id|self.calcifer.maintenance_store().run(id).ok().flatten().map(|row|row.number)).collect::<Option<Vec<_>>>()?;
+        let rate=Some(operation.bytes_per_s).filter(|rate|*rate>=1.0);
+        let left=operation.bytes_total.saturating_sub(operation.bytes_done);
+        Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs})
     }
 
     /// Keeps one `Status` stream open to the machine while it has an endpoint and has not ended.
