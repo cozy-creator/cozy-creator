@@ -27,15 +27,27 @@ async function containmentProof(input) {
     case 'locate': {
       const box = card(), target = box?.classList.contains('here') ? box : box?.querySelector('.media');
       if (!target) return { found: false };
-      const rect = target.getBoundingClientRect(), x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
-      // Closed facts for an edit that never opens: what is on top at the press, and which events reach the box.
-      const node = box.closest('.react-flow__node'), hit = document.elementFromPoint(x, y);
+      const rect = target.getBoundingClientRect(), node = box.closest('.react-flow__node');
+      // Press where the box itself is on top, as a person would: its centre can be off-screen or under the palette.
+      const left = Math.max(rect.left, 0), right = Math.min(rect.right, innerWidth), top = Math.max(rect.top, 0), bottom = Math.min(rect.bottom, innerHeight);
+      let x = null, y = null;
+      for (const fy of [0.5, 0.3, 0.7, 0.15, 0.85]) for (const fx of [0.5, 0.3, 0.7, 0.15, 0.85]) {
+        const px = left + (right - left) * fx, py = top + (bottom - top) * fy;
+        if (x === null && right > left && bottom > top && target.contains(document.elementFromPoint(px, py))) { x = px; y = py; }
+      }
+      // Closed facts for an edit that never opens: the centre's place and cover, and which events reach the box.
+      const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2, centre = document.elementFromPoint(cx, cy);
+      const cover = { centre_in_view: cx >= 0 && cy >= 0 && cx < innerWidth && cy < innerHeight, centre_hit: centre !== null,
+        centre_on_pane: Boolean(centre?.closest('.react-flow__pane')), centre_on_other_node: Boolean(centre?.closest('.react-flow__node') && !node?.contains(centre)),
+        centre_on_tools: Boolean(centre?.closest('.tools')), centre_on_top: Boolean(centre?.closest('.top')), centre_on_zoom: Boolean(centre?.closest('.zoom')),
+        centre_on_drawer: Boolean(centre?.closest('.drawer, .drawer-head, .drawer-body')), box_visible_point: x !== null };
+      const hit = x === null ? null : document.elementFromPoint(x, y);
       if (!globalThis.__cozyProofClicks) {
         const seen = globalThis.__cozyProofClicks = { node: null };
         for (const type of ['mousedown', 'click', 'dblclick']) document.addEventListener(type, (event) => { seen[type] = true; seen[`${type}_in_node`] ||= Boolean(seen.node?.contains(event.target)); }, true);
       }
       Object.assign(globalThis.__cozyProofClicks, { node, mousedown: false, click: false, dblclick: false, mousedown_in_node: false, click_in_node: false, dblclick_in_node: false });
-      return { found: rect.width > 0 && rect.height > 0, x, y, hit_target: Boolean(hit && target.contains(hit)), hit_node: Boolean(hit && node?.contains(hit)) };
+      return { found: x !== null, x, y, hit_target: Boolean(hit && target.contains(hit)), hit_node: Boolean(hit && node?.contains(hit)), ...cover };
     }
     case 'focus': {
       const editor = card()?.querySelector(`.mention-text[data-field="${CSS.escape(input.field)}"]`);

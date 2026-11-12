@@ -134,8 +134,11 @@ mod linux {
                     }
                     Action::Media { path, range, conditional } => json!({ "kind": "media", "project": project, "path": path, "range": range, "conditional": conditional }),
                     Action::Edit { asset, field, value } => {
-                        let at = fixed(live, session, json!({ "kind": "locate", "asset": asset })).await?;
-                        if at["found"] != true { return Ok(json!({ "typed": false, "located": false, "focused": false })); }
+                        let mut at = fixed(live, session, json!({ "kind": "locate", "asset": asset })).await?;
+                        if at["found"] != true {
+                            for (key, value) in [("typed", false), ("located", false), ("focused", false)] { at[key] = json!(value); }
+                            return Ok(at);
+                        }
                         // A single click only selects a box; a person moves there and opens it for writing with a double click.
                         live.pipe.call("Input.dispatchMouseEvent", json!({ "type": "mouseMoved", "x": at["x"], "y": at["y"] }), Some(session)).await?;
                         for count in [1, 2] {
@@ -144,7 +147,7 @@ mod linux {
                         let mut focused = fixed(live, session, json!({ "kind": "focus", "asset": asset, "field": field })).await?;
                         if focused["found"] != true {
                             for (key, value) in [("typed", false), ("located", true), ("focused", false)] { focused[key] = json!(value); }
-                            for key in ["hit_target", "hit_node"] { focused[key] = json!(at[key] == true); }
+                            for key in ["hit_target", "hit_node", "centre_in_view", "centre_hit", "centre_on_pane", "centre_on_other_node", "centre_on_tools", "centre_on_top", "centre_on_zoom", "centre_on_drawer", "box_visible_point"] { focused[key] = json!(at[key] == true); }
                             return Ok(focused);
                         }
                         for kind in ["keyDown", "keyUp"] { live.pipe.call("Input.dispatchKeyEvent", json!({ "type": kind, "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 2 }), Some(session)).await?; }
