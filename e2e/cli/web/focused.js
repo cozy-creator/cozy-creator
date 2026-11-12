@@ -38,6 +38,8 @@ async function died(error) {
   });
   const shot = (state) => process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${state}.png` }) : Promise.resolve();
   await signIn(page);
+  // The code URL finishes loading before boot() has redeemed it and mounted the signed-in shell.
+  await page.locator('.top').waitFor();
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-focused-${Date.now()}`);
   await page.getByLabel('Create without encryption', { exact: true }).check();
