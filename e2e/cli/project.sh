@@ -11,9 +11,28 @@ in_project() { local directory=$1; shift; (cd "$directory" && cozy "$@"); }
 project_api() {
   local directory=$1 suffix=$2; shift 2
   cozy --json machine ls > /dev/null || return
-  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded arg wrote=
   encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
-  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix" || return
+  for arg in "$@"; do case $arg in POST|PATCH|PUT|DELETE|-d|--data*) wrote=1 ;; esac; done
+  [ -z "$wrote" ] || project_integrity "$directory" "$suffix"
+}
+# The rows a read takes against the document they were written with (cl-885): after any write, nowhere different. A Calcifer from
+# before the check (0.24.0's, in the cells that make a project with it) serves no such route, and is no Calcifer under test.
+project_integrity() {
+  local directory=$1 after=${2:-a write} holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded found code
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
+  found=$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/projects/$encoded/integrity") \
+    || { check "rows_equal_document after $after in $directory: the integrity read failed: $found"; return 0; }
+  code=${found##*$'\n'} found=${found%$'\n'*}
+  if [ "$code" = 404 ] && [ "$(jq -r '.error.code? // empty' <<< "$found" 2> /dev/null)" = unknown_route ]; then
+    return 0
+  elif [ "$code" != 200 ]; then
+    check "rows_equal_document after $after in $directory: the integrity read answered $code: $found"
+  elif [ "$(jq '.differences | length' <<< "$found")" != 0 ]; then
+    check "rows_equal_document after $after in $directory: $(jq -c .differences <<< "$found")"
+  fi
+  return 0
 }
 project_import() {
   local directory=$1 file=$2 name=${3:-} source holder=$HOME/.cozy/calcifer/calcifer.lock.holder

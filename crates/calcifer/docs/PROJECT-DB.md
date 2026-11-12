@@ -28,9 +28,9 @@ an `edited-*` side copy. The retained version's media and timeline stay in `file
 |---|---|
 | `crdt_document(id, format, snapshot, heads)` | The complete native Automerge snapshot and causal heads; logical schema 1 |
 | `crdt_changes(hash, seq, actor, bytes)` | Original immutable native changes, keyed by native change hash |
-| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on, and whose (a copy's or another Calcifer's isn't shown) |
+| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on, and whose (a copy's or another Calcifer's isn't shown); `rows_at`: the document's heads and stream length the rows were written at; `conflicts`: the document's concurrent alternatives |
 | `head(key, value)` | A top-level section other than `assets` (`defaults`), as JSON |
-| `boxes(key, name, ord)` | One box: its name key, its name as written, its place in the list |
+| `boxes(key, name, ord, id)` | One box: its name key, its name as written, its place in the list, its permanent id |
 | `fields(box, ord, field, value)` | One field of a box, as JSON (`tool`, `approved`, `description`, `models`, `lora`, every input) |
 | `canvas(key, name, x, y, w, seq, by)` | A box's row, and the transaction and client that last wrote it |
 | `lock_assets(key, name, kind, numbered, tried, failed)` | A box's record: the last number given, the last seed tried, its failure. `key#n` is an orphan set aside |
@@ -44,8 +44,11 @@ an `edited-*` side copy. The retained version's media and timeline stay in `file
 | `request_keys(key, digest, status, content_type, body, at_ms)` | One write's `Idempotency-Key`, its ask's digest and its answer, a day |
 | `ops(id, seq, at_ms, by, words, edits, changes, undone)` | One history entry: undo/redo |
 
-The relational `head`, `boxes`, `fields`, `canvas`, `lock_assets`, `versions`, `lock_files`, `run_files`, `facts` and `ops` rows are
-query projections. Logical reads, history reads and the next write derive from the native document, even if a projection was damaged.
+Schema 4 (cl-885): a read takes the `head`, `boxes`, `fields` and `canvas` rows, the heads and `meta` `conflicts`, which each commit
+writes with the document; the document is decoded only to write, for history, or when `rows_at` doesn't match `crdt_document` (a
+document set in place by another writer, cut short, or holding two boxes of one name, which rows can't say). Then the document is read,
+and the next write rewrites the rows whole. `GET /v1/projects/{id}/integrity` lists where the rows differ from the document; e2e checks
+it after every write. History reads the document, never `ops`.
 `walk`, `asked`, `measured` and request keys remain local SQL bookkeeping. A render's temporary `asked` text is dropped at settlement;
 its retained versions keep original text, input digest, files, seed, tool, pickup/clips, warnings and actual global run identity.
 
@@ -125,7 +128,7 @@ stands, and is answered in `kept` as it is. This is checked in the transaction, 
 
 ## Current-format opening
 
-Only schema-2 databases containing the current native Automerge storage format are supported.
+Schema 4 databases with the current native Automerge storage format are opened; 2 and 3 are migrated in one transaction.
 `db::open` opens an existing file only. Read-only SQLite inspection validates schema and native
 storage format before any writable connection setup, pragmas or DDL. Schema 1, unversioned/empty
 existing databases and unsupported versions are refused; no migration, recovery backup, stage,
@@ -133,7 +136,7 @@ relational load or SQL identity fallback runs. Normal SQLite read-only WAL coord
 create necessary sidecar metadata; committed current WAL contents remain readable. Refusal
 preserves the primary data/schema/history and any existing backup/stage files.
 
-New project creation exclusively reserves a new database path, initializes schema 2 and its
+New project creation exclusively reserves a new database path, initializes the current schema and its
 canonical native document, then sets project identity before publishing it. An existing path,
 including a zero-byte or interrupted `.new` file, is never removed/truncated by creation.
 A missing database is not recreated by opening a folder. Current append/CAS, transaction,

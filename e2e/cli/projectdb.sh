@@ -406,7 +406,7 @@ step "project CRDT: canonical state, stable identities, old-schema refusal and n
 local P=$OUT/crdt-project V=$OUT/crdt-v1 before after source
 cozy --json new --unencrypted "$P" > "$OUT/crdt-new.json" 2> "$OUT/crdt-new.err" || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.err")"; return; }
 J '.created == true and (.id | length > 0)' "$OUT/crdt-new.json" || check "CRDT: new did not create a project"
-[ "$(sql1 "$P" 'PRAGMA user_version')" = 3 ] || { check "CRDT: project.db is not schema 3"; return; }
+[ "$(sql1 "$P" 'PRAGMA user_version')" = 4 ] || { check "CRDT: project.db is not schema 4"; return; }
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_document WHERE format = 1 AND length(snapshot) > 0')" = 1 ] || check "CRDT: no native snapshot"
 boxes_in "$P" <<'JSON' || { check "CRDT: seed the editable graph"; return; }
 [{"name": "kyogre", "tool": "qwen-image-2/image", "kind": "image", "fields": {"instructions": "A whale."}},
@@ -443,13 +443,17 @@ grep -q project_db_version "$OUT/crdt-v1-refusal.json" "$OUT/crdt-v1-refusal.err
 [ "$(sha "$V/project.db")" = "$old_digest" ] && [ "$(sql1 "$V" 'PRAGMA user_version')" = 1 ] || check "CRDT: refusal changed schema 1 data"
 [ ! -e "$V/project.db.v1" ] && [ ! -e "$V/project.db.new" ] || check "CRDT: refusal made a migration backup/stage"
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_changes')" -ge 4 ] || check "CRDT: original change journal absent"
-# Relational graph/history rows are now projections: damaging them must not become a logical
-# project edit when the next real HTTP edit commits.
+# A read takes the rows each commit writes with the document (cl-885): rows damaged outside Calcifer are a fault the rows' check names
+# in full, and history is the document's, never the ops rows'. Put back, the next real HTTP edit commits on the document as it was.
 db_sql "$P" "UPDATE fields SET value = '\"QUERY_CACHE_ONLY\"' WHERE box = 'whale' AND field = 'instructions'; UPDATE ops SET words = 'QUERY_CACHE_ONLY';"
+project_api "$P" /integrity > "$OUT/crdt-damage.json" || check "CRDT: the rows' check after damage"
+J '[.differences[] | select(contains("QUERY_CACHE_ONLY"))] | length > 0' "$OUT/crdt-damage.json" || check "CRDT: damaged rows not named: $(cat "$OUT/crdt-damage.json")"
+project_api "$P" /history > "$OUT/crdt-cache-history.json" || check "CRDT: history after projection damage"
+! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json" || check "CRDT: history read the ops rows, not the document"
+db_sql "$P" "UPDATE fields SET value = '\"Before the rename.\"' WHERE box = 'whale' AND field = 'instructions';"
 project_api "$P" /assets/groudon -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"description":"A canonical-store check."}}' > "$OUT/crdt-cache-set.txt" 2>&1 || check "CRDT: write after projection damage"
 project_api "$P" '' > "$OUT/crdt-cache-state.json" || check "CRDT: read after projection damage"
-project_api "$P" /history > "$OUT/crdt-cache-history.json" || check "CRDT: history after projection damage"
-{ ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-state.json" && ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json"; } || check "CRDT: a relational projection overrode canonical state/history"
+! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-state.json" || check "CRDT: rows put back still read damaged"
 # Cargo consumes the same published native library as the product. This is a format/merge proof,
 # not another daemon or a substitute project storage implementation.
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- "$OUT/crdt-before.am" "$OUT/crdt-renamed.am" > "$OUT/crdt-native.json" 2> "$OUT/crdt-native.err" \
@@ -749,7 +753,8 @@ PY
 
 in_cozy "$now" || { check "migrate: this cozy back in its place"; return; }
 in_project "$M" --json status > "$OUT/migrate-open.json" 2> "$OUT/migrate-open.err" || { check "migrate: this cozy opening it: $(tail -c 300 "$OUT/migrate-open.err")"; return; }
-[ "$(sql1 "$M" 'PRAGMA user_version')" = 3 ] || check "migrate: project.db is schema $(sql1 "$M" 'PRAGMA user_version') after its first open here, not 3"
+[ "$(sql1 "$M" 'PRAGMA user_version')" = 4 ] || check "migrate: project.db is schema $(sql1 "$M" 'PRAGMA user_version') after its first open here, not 4"
+project_integrity "$M" "its first open here"
 # The project as 0.24.0 left it, kept beside it once.
 local kept=$M/project.db.pre-schema3 kept_at
 [ -f "$kept" ] && [ "$(dump_of "$kept")" = "$was_0240" ] || check "migrate: no copy of it as 0.24.0 left it: $([ -f "$kept" ] && dump_of "$kept") (was $was_0240)"
@@ -785,7 +790,7 @@ if in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1; then check "m
 [ "$(dump_of "$F/project.db")" = "$was_dump" ] || check "migrate: a migration refused part-way changed project.db ($was_dump, now $(dump_of "$F/project.db")): $(tail -c 300 "$OUT/migrate-fails.json")"
 db_sql "$F" "DROP TRIGGER e2e_refused"
 in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1 || check "migrate: let be, the copy didn't open: $(tail -c 300 "$OUT/migrate-fails.json")"
-[ "$(sql1 "$F" 'PRAGMA user_version')" = 3 ] || check "migrate: let be, the copy is schema $(sql1 "$F" 'PRAGMA user_version')"
+[ "$(sql1 "$F" 'PRAGMA user_version')" = 4 ] || check "migrate: let be, the copy is schema $(sql1 "$F" 'PRAGMA user_version')"
 migrate_facts "$F" | cmp -s - "$OUT/migrate-0240-facts" || check "migrate: let be, the copy reads otherwise: $(migrate_facts "$F" | diff "$OUT/migrate-0240-facts" - | head -c 600)"
 [ "$(stat -c %Y.%s "$kept" 2> /dev/null)" = "$kept_at" ] || check "migrate: the copy kept beside it was written again"
 [ "$(dump_of "$F/project.db.pre-schema3")" = "$was_dump" ] || check "migrate: the refused copy's own kept copy isn't it as it was"

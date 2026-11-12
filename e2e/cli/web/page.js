@@ -499,6 +499,11 @@ function projectJson(folder, method = 'GET', suffix = '', body) {
   return text ? JSON.parse(text) : null;
 }
 
+/** Where `folder`'s rows differ from the document they were written with (cl-885): a read takes the rows, so nowhere, after any write. */
+function integrity(folder) {
+  return projectJson(folder, 'GET', '/integrity')?.differences ?? ['no answer'];
+}
+
 /** Import a real file by the same content endpoint the browser uses. */
 function importFile(folder, file, name) {
   const bytes = readFileSync(file);
@@ -695,4 +700,4 @@ async function chooseModel(page, name, id, operation) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { addBoxes, assetsOf, storedOf, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };
+module.exports = { addBoxes, assetsOf, storedOf, integrity, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };

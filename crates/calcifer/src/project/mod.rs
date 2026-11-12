@@ -202,6 +202,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
         .route("/v1/projects/{id}/nodes", get(nodes::read))
         .route("/v1/projects/{id}/apply", post(apply::apply))
+        .route("/v1/projects/{id}/integrity", get(integrity))
         .route("/v1/projects/{id}/history", get(history::list))
         .route("/v1/projects/{id}/history/undo", post(history::undo))
         .route("/v1/projects/{id}/history/redo", post(history::redo))
@@ -1415,6 +1416,13 @@ async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> 
     }
     let entry = known(&api, &reference).map_err(Refusal)?;
     Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code }))
+}
+
+/// Where its rows differ from its document (cl-885): nowhere, always. What e2e checks after each write.
+async fn integrity(State(api): State<Arc<Api>>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, Refusal> {
+    let project = api.projects.get(&api, &id)?;
+    let differences = project.folder.integrity().map_err(Refusal)?;
+    Ok(Json(serde_json::json!({ "differences": differences })))
 }
 
 /// Its assets as they stand.
