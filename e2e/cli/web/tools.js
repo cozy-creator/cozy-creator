@@ -396,7 +396,10 @@ function replaceFile(at, text) {
   check('a_video_in_pictures_is_marked', await struck('pictures'));
   check('a_picture_in_words_is_marked', await struck('negative'));
 
-  // A video's range in a prompt: in and out on its frames, written in frames, shown as timecode.
+  // A video's range in a prompt: in and out on its frames, written in frames, shown as timecode. One section of the frame is open at a
+  // time (cl-938): Summary's, to write in.
+  const summaryToggle = shotBox.locator('.in-frame .frame-first .beat-toggle');
+  if ((await summaryToggle.getAttribute('aria-expanded')) !== 'true') await summaryToggle.click();
   await shotBox.locator('.mention-text[data-field=summary]').click();
   await page.keyboard.type('Along <walk> ');
   const range = shotBox.locator('.mention-thumbs .clip-range').first();
