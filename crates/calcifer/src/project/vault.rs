@@ -295,6 +295,15 @@ fn status(root: &FsPath) -> VaultStatus {
     VaultStatus { encrypted: encrypted(root), state: state.into(), path: root.to_owned(), view, expires_at_ms: expires, idle_timeout_s: idle, next }
 }
 
+fn reported_status(api: &Api, root: &FsPath) -> VaultStatus {
+    let mut state = status(root);
+    if state.state == "locked" && api.calcifer.maintenance_store().migration_required().unwrap_or(true) {
+        state.state = "storage_update_required".into();
+        state.next = vec!["cozy vault unlock".into()];
+    }
+    state
+}
+
 fn milliseconds(seconds: u64) -> i64 { i64::try_from(seconds).unwrap_or(i64::MAX).saturating_mul(1000) }
 
 fn expired(session: &Session) -> bool { session.timer.expired() }
@@ -449,6 +458,12 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
     crate::runs::files::release_private(root)?;
     retire_browser(api, browser)?;
     if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) { api.calcifer.retire_project(&id); }
+    let pending = api.calcifer.maintenance_store().migration_required()
+        .map_err(|_| error("project_migration_pending", "legacy storage could not be checked before closing"))?;
+    if !pending {
+        api.calcifer.maintenance_store().cleanup_private_journal()
+            .map_err(|_| error("project_migration_pending", "legacy database pages could not be retired before closing"))?;
+    }
     if let Some(session) = held(root) {
         let mut session = session.lock().expect("vault session");
         session.mount.try_unmount().map_err(|why| match why {
@@ -459,7 +474,13 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
-        if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) { crate::events::project_vault(&keybag.info().project_id, "locked"); }
+        if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) {
+            let state = reported_status(api, root);
+            crate::events::project_vault(&keybag.info().project_id, &state.state);
+            if state.state != "locked" && !CONVERTING.lock().expect("vault conversions").contains(root) {
+                return Err(error("project_migration_pending", "the project is closed, but legacy data outside it still needs a verified storage update"));
+            }
+        }
     }
     Ok(())
 }
@@ -516,7 +537,7 @@ pub(crate) fn start(api: &Arc<Api>) {
 pub(super) async fn read(State(api): State<Arc<Api>>, Path(named): Path<String>) -> Result<Response, Refusal> {
     let root = location(&api, &named).map_err(Refusal)?;
     let _access = access(&root).read_owned().await;
-    Ok(private(axum::Json(status(&root)).into_response()))
+    Ok(private(axum::Json(reported_status(&api, &root)).into_response()))
 }
 
 pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
@@ -552,7 +573,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     progress.phase("preparing");
     let mut changed = match change(&api, &root, ask, progress, &transition, &mut browser) {
         // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-        Err(busy) if !ended.is_empty() && busy.code == "project_busy" => VaultChanged { vault: status(&root), recovery_secret: None, preserved_source: None, ended: vec![], skipped_files: vec![] },
+        Err(busy) if !ended.is_empty() && busy.code == "project_busy" => VaultChanged { vault: reported_status(api, &root), recovery_secret: None, preserved_source: None, ended: vec![], skipped_files: vec![] },
         changed => changed?,
     };
     changed.ended = ended;
@@ -723,7 +744,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.finish_receipt(&store, "completed")?;
     }
-    Ok(VaultChanged { vault: status(root), recovery_secret, preserved_source, ended: vec![], skipped_files: progress.skipped() })
+    Ok(VaultChanged { vault: reported_status(api, root), recovery_secret, preserved_source, ended: vec![], skipped_files: progress.skipped() })
 }
 
 /// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
