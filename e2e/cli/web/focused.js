@@ -648,12 +648,28 @@ async function died(error) {
   check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1);
   check('new_video_hides_the_main_player_and_keeps_the_prompt_workspace', !await videoFocus.locator('.focus-viewer').isVisible() && await summaryPrompt.isVisible() && await beatPrompt.isVisible());
   const beatRows = videoForm.locator('.beats-edit[data-field="beats"] > .beat');
-  check('video_editor_expands_the_first_beat_and_collapses_the_rest', await beatRows.count() === 2 && await beatRows.first().locator('.mention-text').first().isVisible() && !await beatRows.nth(1).locator('.mention-text').first().isVisible());
+  // Closed panels clip their still-laid-out text; descendant isVisible() does not measure that clipping.
+  const readBeatPanels = () => beatRows.evaluateAll((rows) => rows.map((row) => {
+    const panel = row.querySelector('.beat-panel');
+    return { expanded: row.querySelector('.beat-toggle').getAttribute('aria-expanded'),
+      hidden: panel.getAttribute('aria-hidden'), inert: panel.hasAttribute('inert'),
+      height: panel.getBoundingClientRect().height, contentHeight: panel.querySelector('.beat-body').scrollHeight,
+      promptHeight: row.querySelector('.mention-text').getBoundingClientRect().height,
+      animating: panel.getAnimations().some((animation) => animation.playState === 'running') };
+  }));
+  const beatPanelMatches = (panel, open) => panel.expanded === String(open) && panel.hidden === String(!open) && panel.inert === !open
+    && !panel.animating && panel.promptHeight > 100 && (open ? panel.height > 100 && panel.height >= panel.contentHeight - 2 : panel.height <= 1);
+  const firstBeatOpen = (panels) => panels.length === 2 && beatPanelMatches(panels[0], true) && beatPanelMatches(panels[1], false);
+  const firstBeatPanels = await until('the first Beat is open and the second is fully clipped', readBeatPanels, firstBeatOpen);
+  check('video_editor_expands_the_first_beat_and_collapses_the_rest', firstBeatOpen(firstBeatPanels), firstBeatPanels);
   const firstBeatToggle = beatRows.first().getByRole('button', { name: 'Beat 1', exact: true });
   const secondBeatToggle = beatRows.nth(1).getByRole('button', { name: 'Beat 2', exact: true });
   await secondBeatToggle.click();
-  check('expanding_another_beat_closes_the_previous_one', await firstBeatToggle.getAttribute('aria-expanded') === 'false' && await secondBeatToggle.getAttribute('aria-expanded') === 'true' && !await beatRows.first().locator('.mention-text').first().isVisible() && await beatRows.nth(1).locator('.mention-text').first().isVisible());
+  const secondBeatOpen = (panels) => panels.length === 2 && beatPanelMatches(panels[0], false) && beatPanelMatches(panels[1], true);
+  const secondBeatPanels = await until('the second Beat finishes opening and the first finishes clipping', readBeatPanels, secondBeatOpen);
+  check('expanding_another_beat_closes_the_previous_one', secondBeatOpen(secondBeatPanels), secondBeatPanels);
   await firstBeatToggle.click();
+  await until('the first Beat finishes reopening for its reference backdrop', readBeatPanels, firstBeatOpen);
   for (const [place, ratio] of [['summary', 4], ['beats.0.description', 0.25]]) {
     const backdrop = videoForm.locator(`[data-video-reference="${place}"] .ghosts img`);
     const painted = await until(`the ${place} field displays its own referenced image`, () => backdrop.evaluate((image) => {

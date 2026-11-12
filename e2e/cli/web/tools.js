@@ -259,8 +259,10 @@ function linesOf(text, name) {
   check('one_beat_to_start', (await beatRows().count()) === 1 && (await shotBox.locator('[aria-label="Remove beat 1"]').count()) === 0);
   await shotBox.locator('.beats-edit[data-field=beats] > .beats-last .add-beat').click();
   await until('two beats', () => beatRows().count(), (n) => n === 2);
+  await beatRows().first().getByRole('button', { name: 'Beat 1', exact: true }).click();
   await shotBox.locator('.mention-text[data-field="beats.0.description"]').click();
   await page.keyboard.type('The first.');
+  await beatRows().nth(1).getByRole('button', { name: 'Beat 2', exact: true }).click();
   await shotBox.locator('.mention-text[data-field="beats.1.description"]').click();
   await page.keyboard.type('The second.');
   await until('both beats in the file', () => fieldsOf('shot'), (fields) => fields.beats?.length === 2 && fields.beats[1].description?.includes('The second.'));
