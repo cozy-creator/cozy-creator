@@ -472,7 +472,7 @@ fn measured(build: DevBuild, distribution: &str) -> Result<(String, StagedInput,
 /// What a machine that carried out update `spec` reports: each wheel's version (a staged one's
 /// from its file name, a fetched one's from its URL's), and its `cozy`'s release, or `dev` for a
 /// dev binary that did not say its release here.
-fn wanted(spec: &v1::RunSpec) -> Vec<(&'static str, Value)> {
+pub(crate) fn wanted(spec: &v1::RunSpec) -> Vec<(&'static str, Value)> {
     let payload: Value = spec.payload.as_ref().and_then(|p| serde_json::from_str(p.0.get()).ok()).unwrap_or_default();
     let wheel = |file: &str| file.strip_suffix(".whl").map(|w| w.split('-').nth(1).unwrap_or_default().to_owned());
     let mut want = vec![];
