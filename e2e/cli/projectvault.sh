@@ -231,7 +231,7 @@ vault_leftovers() (
   mkdir -p "$L/files"
   printf 'private %s\n' "$marker" > "$L/files/notes.txt"
   # Large enough to be caught while it copies.
-  head -c 1073741824 /dev/urandom > "$L/files/large.bin"
+  head -c 536870912 /dev/urandom > "$L/files/large.bin"
   before=$(sha "$L/files/notes.txt")
 
   python3 "$E2E/cli/vault_interrupt.py" "$L" "$secrets/pass" > "$work/interrupted.json" || fail "leftovers: the conversion could not be interrupted midway"
@@ -289,7 +289,8 @@ print(json.dumps({"roots": [str(root) for root in roots], "checked_new_or_modifi
 assert checked > 0 and not leaked
 PY_LEFTOVER_SCAN
   trap - EXIT
-  rm -rf -- "$secrets"
+  # The locked project's ciphertext isn't an artifact.
+  rm -rf -- "$secrets" "$L"
   jq -c '{interrupted: .interrupted, stages_at_kill: .stages}' "$work/interrupted.json" > "$work/receipt.json"
 )
 
