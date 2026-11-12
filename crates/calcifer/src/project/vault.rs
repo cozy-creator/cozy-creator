@@ -184,6 +184,32 @@ pub(super) async fn admit_work(project: &super::Project) -> Result<tokio::sync::
     Ok(guard)
 }
 
+/// Clients following a run of each project's (`following`), by root: the project is in use until they let go.
+static FOLLOWING: LazyLock<Mutex<BTreeMap<PathBuf, usize>>> = LazyLock::new(Mutex::default);
+
+/// A client follows a run whose outputs land under `path`: while it does, the run's encrypted project is in use, as its run is.
+pub(crate) struct Following(PathBuf);
+
+pub(crate) fn following(path: &FsPath) -> Option<Following> {
+    let path = logical(path);
+    let root = path.ancestors().find(|root| encrypted(root))?.to_owned();
+    *FOLLOWING.lock().expect("vault followers").entry(root.clone()).or_default() += 1;
+    stir();
+    Some(Following(root))
+}
+
+impl Drop for Following {
+    fn drop(&mut self) {
+        let mut following = FOLLOWING.lock().expect("vault followers");
+        if let Some(count) = following.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 { following.remove(&self.0); }
+        }
+        drop(following);
+        stir();
+    }
+}
+
 pub(crate) fn readable_token(path: &FsPath) -> Option<Arc<AtomicBool>> {
     let path = logical(path);
     let root = path.ancestors().find(|root| encrypted(root))?;
@@ -629,14 +655,17 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
     Ok(VaultChanged { vault: status(api, root), recovery_secret, ended: vec![], skipped_files: progress.skipped() })
 }
 
-/// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
+/// Whether the project has work in progress: a run not settled or followed, or a render, cut or file move going.
 fn working(api: &Api, root: &FsPath) -> bool {
     work(api, root).is_some()
 }
 
-/// The project's work in progress: true when its end stirs the vault clock (a run settling, a walk ending), false for a cut or a file
-/// move alone, which is looked at again shortly.
+/// The project's work in progress: true when its end stirs the vault clock (a run settling, its follower letting go, a walk ending),
+/// false for a cut or a file move alone, which is looked at again shortly.
 fn work(api: &Api, root: &FsPath) -> Option<bool> {
+    if FOLLOWING.lock().expect("vault followers").contains_key(root) {
+        return Some(true);
+    }
     let landing = super::landing(root);
     let runs = api.calcifer.store().read(|conn| Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE out_dir = ?1 AND state <> 'settled')", [landing.to_string_lossy().as_ref()], |row| row.get::<_, bool>(0))?));
     // A journal that can't be read holds the vault open rather than lock a render.
