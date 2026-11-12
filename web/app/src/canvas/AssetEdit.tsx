@@ -1,4 +1,4 @@
-import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import { type DragEvent, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
 import type { ToolField, Tool } from "../api/calcifer"
 import type { Media } from "../types"
 import { Icon } from "../ui/Icon"
@@ -90,6 +90,9 @@ function Reset({ field, bound }: { field: ToolField; bound: Bound }) {
 /** Words, or a prompt: chips for what it mentions, and what a prompt can't send is marked, never sent. */
 function TextField({ name, field, bound, view, place, label, focus, named, block, framed }: Drawn) {
   const store = useCanvasStore()
+  const beat = /^beats\.\d+\./.test(place)
+  const references = view.asset?.kind === "video" && view.hereWords && field.type === "prompt" && (place === "summary" || beat)
+  const showLabel = !(references && beat && field.field === "description")
   const text = (
     <MentionText
       asset={name}
@@ -100,24 +103,28 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
       missing={view.asset?.missing ?? []}
       takes={field.type === "words" ? WORDS_ONLY : ((field.takes as Media[] | null) ?? undefined)}
       focus={focus}
-      thumbs={!framed}
+      thumbs={!framed && !references}
       onDraft={bound.draft}
       onSave={bound.save}
       onSubmit={field.type === "prompt" ? () => store.run(name) : undefined}
     />
   )
+  const surface = references ? <div className="video-reference-field" data-video-reference={place}>
+    <Ghosts name={name} view={view} mentions={mentionsIn(said(bound.value))} />
+    {text}
+  </div> : text
   if (named)
     return (
       <div className="slide text-row">
-        <span className="ctl-name">{field.label}</span>
-        <div className="text-box">{text}</div>
+        {showLabel && <span className="ctl-name">{field.label}</span>}
+        <div className="text-box">{surface}</div>
       </div>
     )
-  if (!block) return text
+  if (!block) return surface
   return (
     <div className="field-block">
-      <span className="block-label">{field.label}</span>
-      {text}
+      {showLabel && <span className="block-label">{field.label}</span>}
+      {surface}
     </div>
   )
 }
@@ -487,6 +494,18 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
   const total = totalOf(field, rows)
   const list = useRef<HTMLDivElement>(null)
   const [moving, setMoving] = useState<{ from: number; to: number } | null>(null)
+  const movingNow = useRef<{ from: number; to: number } | null>(null)
+  const move = (next: { from: number; to: number } | null) => { movingNow.current = next; setMoving(next) }
+  const drop = () => {
+    const held = movingNow.current
+    if (held && held.to !== held.from) {
+      const next = [...rows]
+      const [one] = next.splice(held.from, 1)
+      next.splice(held.to, 0, one)
+      bound.write(next)
+    }
+    move(null)
+  }
   const rowBound = (i: number): Bound => ({
     value: rows[i],
     draft: (next) => bound.draft(rows.map((other, at) => (at === i ? next : other))),
@@ -502,21 +521,28 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
   const grip = (i: number) => ({
     onPointerDown(event: PointerEvent<HTMLElement>) {
       event.stopPropagation()
+      if (event.button !== 0 || event.pointerType === "mouse") return
       event.currentTarget.setPointerCapture(event.pointerId)
-      setMoving({ from: i, to: i })
+      move({ from: i, to: i })
     },
     onPointerMove(event: PointerEvent<HTMLElement>) {
-      if (moving) setMoving({ ...moving, to: slotAt(event.clientY) })
+      if (movingNow.current) move({ ...movingNow.current, to: slotAt(event.clientY) })
     },
-    onPointerUp() {
-      if (moving && moving.to !== moving.from) {
-        const next = [...rows]
-        const [one] = next.splice(moving.from, 1)
-        next.splice(moving.to, 0, one)
-        bound.write(next)
+    onPointerUp() { if (movingNow.current) drop() },
+    onPointerCancel(event: PointerEvent<HTMLElement>) { if (event.pointerType !== "mouse") move(null) },
+    draggable: true,
+    onDragStart(event: DragEvent<HTMLElement>) {
+      event.stopPropagation()
+      event.dataTransfer.effectAllowed = "move"
+      event.dataTransfer.setData("application/x-cozy-beat", String(i))
+      const card = event.currentTarget.closest<HTMLElement>(".beat")
+      if (card) {
+        const rect = card.getBoundingClientRect()
+        event.dataTransfer.setDragImage(card, event.clientX - rect.left, event.clientY - rect.top)
       }
-      setMoving(null)
+      move({ from: i, to: i })
     },
+    onDragEnd() { move(null) },
   })
   const add = rows.length < (field.max_items ?? Infinity) && (
     <button type="button" className="add-beat nodrag" title={`Add a ${called.toLowerCase()}`} onClick={() => bound.write([...rows, newRow(field)])}>
@@ -524,9 +550,22 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
     </button>
   )
   return (
-    <div className="beats-edit" role="group" aria-label={field.label} data-field={place} ref={list}>
+    <div className="beats-edit" role="group" aria-label={field.label} data-field={place} ref={list}
+      onDragOver={(event) => {
+        if (!movingNow.current) return
+        event.preventDefault()
+        event.stopPropagation()
+        event.dataTransfer.dropEffect = "move"
+        move({ ...movingNow.current, to: slotAt(event.clientY) })
+      }}
+      onDrop={(event) => {
+        if (!movingNow.current) return
+        event.preventDefault()
+        event.stopPropagation()
+        drop()
+      }}>
       {rows.map((_, i) => (
-        <div className={`beat ${rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} key={i}>
+        <div className={`beat ${rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} data-beat-index={i} key={i}>
           {rows.length > 1 && (
             <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>
               ⋮⋮
@@ -710,7 +749,7 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
   if (!view.asset) return null
   const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
   const declared = makes(view) ? fieldsOf(view.asset, tools) : []
-  const priority = (field: ToolField) => field.type === "group" && (field.field === "beats" || field.members?.some((member) => member.total)) ? 0 : field.field === "summary" ? 1 : 2
+  const priority = (field: ToolField) => field.field === "summary" ? 0 : field.type === "group" && (field.field === "beats" || field.members?.some((member) => member.total)) ? 1 : 2
   const fields = prominent ? [...declared].sort((a, b) => priority(a) - priority(b)) : declared
   const inFrame = prominent ? undefined : framed(view, fields, tool)
   const first = fields.find((field) => field.type === "prompt" || field.type === "words")
