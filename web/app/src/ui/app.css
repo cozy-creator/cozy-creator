@@ -2843,9 +2843,15 @@ a.tab:hover {
   bottom: 0;
   transform: translateX(-50%);
 }
+/* Words over a picture read on either theme: bold, with a halo of the panel's colour round each letter (cl-901). */
+.words,
 .in-frame .mention-text {
-  font-weight: 600;
-  text-shadow: 0 1px 2px var(--panel);
+  font-weight: 700;
+  text-shadow: 0 0 1px var(--panel), 0 0 2px var(--panel), 0 0 3px var(--panel), 0 0 6px var(--panel);
+}
+.words .chip,
+.in-frame .mention-text .chip {
+  text-shadow: none;
 }
 .image-edit-action {
   position: absolute;
@@ -3157,6 +3163,7 @@ a.tab:hover {
   text-overflow: ellipsis;
   color: var(--faint);
 }
+/* What's typed is bold, in every prompt (Paul, 11-12): the font has 400 and 700 only. */
 .mention-text {
   min-height: 44px;
   max-height: 180px;
@@ -3166,6 +3173,7 @@ a.tab:hover {
   border-radius: 6px;
   background: var(--tint);
   font-size: var(--body);
+  font-weight: 700;
   line-height: 18px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
