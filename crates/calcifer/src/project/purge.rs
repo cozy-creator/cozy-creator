@@ -51,7 +51,7 @@ pub(crate) fn window_said() -> String {
 
 /// Project `id` has deleted boxes whose files may go at `at_ms`: Calcifer looks then, and the next start does if this one doesn't.
 pub(crate) fn due(api: &Api, id: &str, at_ms: i64) {
-    if let Err(error) = api.calcifer.store().purge_due(id, at_ms, false) {
+    if let Err(error) = api.calcifer.store().purge_due(id, at_ms) {
         warn!("{id}: when its deleted boxes go: {error}");
     }
     WAKE.notify_one();
@@ -66,7 +66,7 @@ pub(crate) fn start(api: Arc<Api>) {
             for project in known.iter().filter(|project| project.purge_ms > 0 && project.purge_ms <= now) {
                 let (held, id, path) = (api.clone(), project.id.clone(), project.path.clone());
                 let next = tokio::task::spawn_blocking(move || purged(&held, &path)).await.unwrap_or(Some(now + AGAIN.as_millis() as i64));
-                if let Err(error) = api.calcifer.store().purge_due(&id, next.unwrap_or(0), true) {
+                if let Err(error) = api.calcifer.store().purged(&id, project.purge_ms, next.unwrap_or(0)) {
                     warn!("{id}: when its deleted boxes go: {error}");
                 }
             }

@@ -244,13 +244,21 @@ impl Store {
         })
     }
 
-    /// `id`'s deleted boxes' files are due to go at `at_ms` (0: none): the earlier of it and what was due, or with `replace`, it.
-    pub(crate) fn purge_due(&self, id: &str, at_ms: i64, replace: bool) -> Result<()> {
+    /// `id`'s deleted boxes' files are due to go at `at_ms`, if that's sooner than what was due.
+    pub(crate) fn purge_due(&self, id: &str, at_ms: i64) -> Result<()> {
         self.write(|tx| {
-            match replace {
-                true => tx.execute("UPDATE projects SET purge_ms = ?2 WHERE id = ?1", params![id, at_ms])?,
-                false => tx.execute("UPDATE projects SET purge_ms = ?2 WHERE id = ?1 AND (purge_ms = 0 OR purge_ms > ?2)", params![id, at_ms])?,
-            };
+            tx.execute("UPDATE projects SET purge_ms = ?2 WHERE id = ?1 AND (purge_ms = 0 OR purge_ms > ?2)", params![id, at_ms])?;
+            Ok(())
+        })
+    }
+
+    /// `id` purged, its next due at `next_ms` (0: none), as read when it was due at `was_ms`: a delete since, due later, stands too.
+    pub(crate) fn purged(&self, id: &str, was_ms: i64, next_ms: i64) -> Result<()> {
+        self.write(|tx| {
+            tx.execute(
+                "UPDATE projects SET purge_ms = CASE WHEN purge_ms = ?2 THEN ?3 WHEN ?3 = 0 THEN purge_ms ELSE MIN(purge_ms, ?3) END WHERE id = ?1",
+                params![id, was_ms, next_ms],
+            )?;
             Ok(())
         })
     }
