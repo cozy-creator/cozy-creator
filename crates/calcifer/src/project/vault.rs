@@ -538,7 +538,6 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
     forget(api, root, transition)?;
     tokio::runtime::Handle::current().block_on(crate::private_io::close_private_project(api, root))?;
     crate::runs::files::release_private(root)?;
-    retire_browser(api, browser)?;
     if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) { api.calcifer.retire_project(&id); }
     let pending = api.calcifer.maintenance_store().migration_required()
         .map_err(|_| error("project_migration_pending", "legacy storage could not be checked before closing"))?;
@@ -554,6 +553,8 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
         })?;
         retire_runtime(&session.runtime)?;
         drop(session);
+        // Only after the view is gone: a busy refusal above leaves the owned pages as they were.
+        retire_browser(api, browser)?;
         SESSIONS.lock().expect("vault sessions").remove(root);
         LOCK_RETRIES.lock().expect("lock retries").remove(root);
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
@@ -565,6 +566,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
             }
         }
     }
+    retire_browser(api, browser)?;
     Ok(())
 }
 

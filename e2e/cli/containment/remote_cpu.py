@@ -5,6 +5,7 @@ output and remote journal inspection stay in RAM; the receipt contains hashes/co
 """
 from __future__ import annotations
 
+import contextlib
 import base64
 import json
 import os
@@ -260,7 +261,8 @@ def opened(view: Path, value: object) -> str:
 def history(view: Path, identifier: str) -> dict:
     path = view / "project.db"
     require(path.is_file() and not path.is_symlink(), "fixture_failure")
-    with sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True) as connection:
+    # sqlite3's context manager never closes; a lingering handle would keep the project view busy.
+    with contextlib.closing(sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True)) as connection:
         connection.execute("PRAGMA query_only=ON")
         row = connection.execute("SELECT number,inputs,idempotency_key,digest FROM runs WHERE id=?", (identifier,)).fetchone()
         logs = connection.execute("SELECT seq,level,text FROM run_logs WHERE run=? ORDER BY seq", (identifier,)).fetchall()

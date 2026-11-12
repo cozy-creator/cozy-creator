@@ -92,7 +92,7 @@ EDIT_FACTS = frozenset({
     "visible", "has_focus", "animation_frame", "inert", "hit_target", "hit_node",
     "mousedown", "click", "dblclick", "mousedown_in_node", "click_in_node", "dblclick_in_node",
     "centre_in_view", "centre_hit", "centre_on_pane", "centre_on_other_node", "centre_on_tools", "centre_on_top",
-    "centre_on_zoom", "centre_on_drawer", "box_visible_point",
+    "centre_on_zoom", "centre_on_drawer", "box_visible_point", "node_hidden",
 })
 PAGE_FACTS = frozenset({
     "blank", "error_page", "loopback", "reloaded", "navigation_status", "owned_injected", "vite_client", "refresh_preamble",
@@ -129,6 +129,55 @@ def tmpdir_singleton(profile: Path) -> bool:
         return target.is_absolute() and target.name == "SingletonSocket" and target.parent.parent == profile / "tmp" and stat.S_ISSOCK(target.lstat().st_mode)
     except OSError:
         return False
+
+
+BUSY_MESSAGES = {
+    "busy_browser_unsaved": "The Cozy browser has not confirmed", "busy_request": "a project request or tool is still finishing",
+    "busy_work_stopping": "the project's work is still stopping", "busy_rendering": "The project is rendering, cutting or transferring",
+    "busy_database_reader": "a database reader is preventing", "busy_unmount": "close programs using the project",
+    "busy_transition_held": "Close applications using the project",
+    "busy_storage_changing": "the project's storage is changing",
+}
+
+
+def busy_facts(document: dict) -> dict[str, bool]:
+    # Fixed product sentences become closed booleans; the message itself never enters the receipt.
+    message = document.get("error", {}).get("message", "") if isinstance(document.get("error"), dict) else ""
+    message = message if isinstance(message, str) else ""
+    return {key: text in message for key, text in BUSY_MESSAGES.items()}
+
+
+def view_holders(view: Path, calcifer: int, chrome: set[int]) -> dict[str, int]:
+    # Counts only: which kinds of same-user process hold the project view open (fd, mapping, cwd).
+    roots = {os.fsencode(str(view)), os.fsencode(str(view.resolve()))}
+    inside = lambda path: any(path == root or path.startswith(root + b"/") for root in roots)
+    def ancestry(pid: int) -> bool:
+        for _ in range(64):
+            if pid == calcifer: return True
+            try: pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[1])
+            except (OSError, ValueError, IndexError): return False
+            if pid <= 1: return False
+        return False
+    counts = {"holders_calcifer": 0, "holders_calcifer_tree": 0, "holders_chrome": 0, "holders_other": 0, "holding_fd": 0, "holding_map": 0, "holding_cwd": 0}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit(): continue
+        pid, kinds = int(entry.name), set()
+        try:
+            if inside(os.fsencode(os.readlink(entry / "cwd"))): kinds.add("cwd")
+            for fd in (entry / "fd").iterdir():
+                try:
+                    if inside(os.fsencode(os.readlink(fd))): kinds.add("fd"); break
+                except OSError: pass
+            for line in (entry / "maps").read_bytes().splitlines():
+                parts = line.split(maxsplit=5)
+                if len(parts) == 6 and inside(parts[5].strip()): kinds.add("map"); break
+        except OSError:
+            continue
+        if not kinds: continue
+        for kind in kinds: counts["holding_" + kind] += 1
+        role = "calcifer" if pid == calcifer else "chrome" if pid in chrome else "calcifer_tree" if ancestry(pid) else "other"
+        counts["holders_" + role] += 1
+    return counts
 
 
 def observe_ready(proof: Proof, project: str, seen: dict) -> dict:
@@ -320,7 +369,11 @@ def main() -> int:
         stdout, stderr = locking.communicate(timeout=90)
         busy = locking.returncode != 0
         if busy:
-            require(json.loads(stdout).get("error", {}).get("code") == "project_busy", "a_lock_unexpected_refusal")
+            refusal = json.loads(stdout)
+            present = proof.ask("snapshot")
+            receipt.add("a_lock_busy", browser_present=present.get("present") is True, **busy_facts(refusal),
+                        **view_holders(a["view"], proof.process.pid, {process["pid"] for process in snapshot["processes"]}))
+            require(refusal.get("error", {}).get("code") == "project_busy", "a_lock_unexpected_refusal")
             require(proof.exercise(b["id"], "observe", needle=b["edit"]).get("visible"), "busy_lock_lost_b_draft")
             # An orderly busy refusal is valid. Finish the same real UI edit, then retry A's lock.
             until(lambda: proof.exercise(b["id"], "edit", asset=b["asset"], field="text", value=b["edit"]), lambda value: value.get("typed"), "busy_edit_resume")

@@ -134,6 +134,8 @@ mod linux {
                     }
                     Action::Media { path, range, conditional } => json!({ "kind": "media", "project": project, "path": path, "range": range, "conditional": conditional }),
                     Action::Edit { asset, field, value } => {
+                        // A person types into the window in front of them; a background page draws no frames.
+                        live.pipe.call("Page.bringToFront", json!({}), Some(session)).await?;
                         let mut at = fixed(live, session, json!({ "kind": "locate", "asset": asset })).await?;
                         if at["found"] != true {
                             for (key, value) in [("typed", false), ("located", false), ("focused", false)] { at[key] = json!(value); }
