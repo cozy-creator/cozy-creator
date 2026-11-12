@@ -2006,7 +2006,12 @@ eta_confidence?: number | null,
 /**
  * What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
  */
-eta_basis?: EtaBasis | null, };
+eta_basis?: EtaBasis | null,
+/**
+ * The number of its newest preview of what it's making (`GET /v1/runs/{id}/preview`), from 1;
+ * none until its machine made one for a client asking.
+ */
+preview?: number | null, };
 
 /**
  * `GET /v1/projects/{id}/address`: project identity without evaluating its assets; accepts a containing directory.

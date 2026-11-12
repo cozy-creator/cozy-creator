@@ -647,6 +647,11 @@ export class Client {
     return `${run(id)}/outputs/${encodeURIComponent(name)}${index ? `?index=${index}` : ""}`
   }
 
+  /** A running run's newest picture of what it's making, from its machine (cr-282): asking is what keeps it making them. */
+  runPreview(id: string | number): string {
+    return `${run(id)}/preview`
+  }
+
   /** How to play an output straight from its machine. */
   play(id: string, name: string, index: number): Promise<Play> {
     const output = encodeURIComponent(index ? `${name}/${index}` : name)

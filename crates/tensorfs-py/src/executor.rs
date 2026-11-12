@@ -5,7 +5,7 @@
 use executor_api::{
     Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, CheckpointItem, ChildCall, ChildCancel,
     ChildEvents, ChildForget, ChildPoll, Command, Construction, DisplayPace, Fork, GpuRelease, InputFile,
-    InputMetadata, Invoke, Load, Map, MemoSettings, ModelPrefetch, PrepareRequest, Publish, PublishPart, SavedFile,
+    InputMetadata, Invoke, Load, Map, MemoSettings, ModelPrefetch, PrepareRequest, Preview, Publish, PublishPart, SavedFile,
     StageMemoLookup, StageMemoStore, Start, TensorFSOptions, View,
 };
 use pyo3::{create_exception, exceptions::PyValueError, prelude::*, IntoPyObjectExt};
@@ -38,6 +38,7 @@ fn decode_command(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
         Command::Invoke(c) => (*c).into_py_any(py),
         Command::Map(c) => c.into_py_any(py),
         Command::Fork(c) => c.into_py_any(py),
+        Command::Preview(c) => c.into_py_any(py),
     }
 }
 
@@ -58,6 +59,7 @@ pub(crate) fn install(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Invoke>()?;
     m.add_class::<Map>()?;
     m.add_class::<Fork>()?;
+    m.add_class::<Preview>()?;
     m.add_class::<Binding>()?;
     m.add_class::<View>()?;
     m.add_class::<MemoSettings>()?;

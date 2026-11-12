@@ -721,6 +721,10 @@ pub struct Progress {
     /// What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_basis: Option<EtaBasis>,
+    /// The number of its newest preview of what it's making (`GET /v1/runs/{id}/preview`), from 1;
+    /// none until its machine made one for a client asking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<u64>,
 }
 
 /// What a time left stands on.

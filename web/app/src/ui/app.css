@@ -3568,6 +3568,20 @@ input[type="checkbox"] {
   content: "▾ ";
 }
 /* What a render has shown so far, over its box; kept dimmed when it fails. */
+/* What a rendering box's run is making, faded over what it's made from and under how far it's got (cr-282). */
+.latent-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--card);
+  pointer-events: none;
+}
+.latent-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0.6;
+}
 .glimpse {
   position: absolute;
   inset: 0;

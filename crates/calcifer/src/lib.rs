@@ -28,6 +28,7 @@ mod outputs;
 mod others;
 mod page;
 mod placement;
+mod previews;
 pub(crate) mod private_io;
 mod play;
 mod project;
@@ -1855,6 +1856,7 @@ pub(crate) fn progress_of(p: v1::Progress, at_ms: i64) -> Progress {
         step_ms: p.step_ms,
         step_steady_ms: p.step_steady_ms,
         at_ms,
+        preview: (p.preview > 0).then_some(p.preview),
         ..Default::default()
     };
     progress.done_fraction = done_fraction(&progress);
