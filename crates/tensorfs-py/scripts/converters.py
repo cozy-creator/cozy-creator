@@ -830,7 +830,6 @@ def krea2_lora() -> Table[LoraRow]:
 
 # ------------------------------------------------------------------ Krea 2 single files
 
-KREA2_REFERENCE = "hf://krea/Krea-2-Raw@6b0ece7fffb640c5e3bcbe0a7f10f66b8e60a603"
 KREA2_FILES = VECTORS / "krea2-comfy-headers"
 #: The reference checkpoint's names bare (Krea's `raw.safetensors`, Comfy-Org's `diffusion_models/krea2_*`), or under
 #: the prefix ComfyUI's model save writes.
@@ -843,7 +842,8 @@ def krea2_single_file(name: str) -> Table[TableRow]:
     """Krea 2's DiT from one file in the reference checkpoint's names, onto Diffusers' (the family's): Diffusers'
     `convert_krea2_transformer_checkpoint_to_diffusers` renames every tensor and reshapes each block's flat modulation
     table to `[6, dim]`. A quantized weight (ComfyUI's fp8, int8_convrot and nvfp4: published fine-tunes, `vectors/`)
-    is folded into one tensor before a row reads it and is only renamed."""
+    is folded into one tensor before a row reads it and is only renamed. No reference: Krea's repository is gated, so
+    a DiT-only file takes its configs and other components from the Hub base it is uploaded on (`--base`)."""
     prefix = KREA2_SINGLE_FILE[name]
     family: FamilyDoc = json.loads((FAMILIES / "krea-2.json").read_text())
     keys = {k: tuple(shape) for k, shape in family["components"]["transformer"]["keys"]}
@@ -873,7 +873,7 @@ def krea2_single_file(name: str) -> Table[TableRow]:
         held += 1
     assert held, (name, "no published file in this layout")
     component: Component[TableRow] = {"name": "transformer", "prefix": prefix, "rows": rows}
-    return {"name": name, "reference": KREA2_REFERENCE, "components": [component]}
+    return {"name": name, "components": [component]}
 
 
 # ------------------------------------------------------------------ Qwen-Image 2.1 LoRA
