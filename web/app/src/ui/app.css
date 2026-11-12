@@ -212,6 +212,18 @@ code {
 .top > * {
   pointer-events: auto;
 }
+/* The official Cozy Creator mark, top left on every page. */
+.top > .brand {
+  display: flex;
+  flex: none;
+  width: 32px;
+  height: 32px;
+}
+.top > .brand img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 .top > .ptabs-room,
 .ptabs-said {
   pointer-events: none;

@@ -15,6 +15,7 @@ import type { ProjectsAsk } from "../panels/Projects"
 import { RunsLink } from "../panels/runs/RunsLink"
 import type { KnownProject } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
+import logo from "../ui/logo.png"
 import { Notes } from "../ui/NoteList"
 import { pressBeganOutside } from "../ui/press"
 import { useSignal } from "../ui/signal"
@@ -431,6 +432,7 @@ export function Shell() {
   return (
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
+        <Link className="brand" to="/" title="Cozy Creator" aria-label="Cozy Creator home"><img src={logo} alt="" /></Link>
         <span className="history-controls" ref={setHistory} />
         <ProjectTabs id={id} readable={readable}>
           <Connectivity />
