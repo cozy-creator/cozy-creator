@@ -550,11 +550,11 @@ function linesOf(text, name) {
   check('typed_after_a_name', Boolean(typedAfter.file?.lines?.includes('<source-a> typed')), typedAfter);
   await away();
 
-  // Right click: download, rename, delete, and what it's made with.
+  // Right click: download, star, rename, delete, and what it's made with.
   await away();
   await box('source-b').locator('.nm').click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
-  check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Download,Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
+  check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Download,Star,Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
   await page.keyboard.press('Escape');
   await open('Sheet');
   await box('Sheet').locator('.nm').click({ button: 'right' });

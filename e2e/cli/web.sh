@@ -3,7 +3,7 @@
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), undo and redo of the project's history from the page and the CLI (web/undo.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), right click Download (web/download.js), a box from its tool's fields (web/tools.js), a tool on a box of the kind it makes (web/kinds.js), every tool the Hub lists in the palette (web/palette.js), an orbit video turned (web/orbit.js), an Edit rendered (web/timeline.js),
+# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), right click Download (web/download.js), a starred asset first in Files (web/star.js), a box from its tool's fields (web/tools.js), a tool on a box of the kind it makes (web/kinds.js), every tool the Hub lists in the palette (web/palette.js), an orbit video turned (web/orbit.js), an Edit rendered (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), projects closed once nothing reads them (web/closes.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and a save past project.db held by another program (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, and leaves
@@ -114,6 +114,8 @@ step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture jo
 web_proof versions "$chrome" "$pw" ''
 step "web-download: right click, Download: a box as hei.png, another take as hei.2.png, a run's output, each its own bytes, as an attachment Calcifer names"
 web_proof download "$chrome" "$pw" ''
+step "web-star: Star from a box's menu: in project.db, nothing out of date, first in Files with a ★, kept by a reload, Undo and Redo, Unstar"
+web_proof star "$chrome" "$pw" ''
 step "web-tools: a box drawn from its tool's fields by type, groups two deep, slots refusing what doesn't fit, a video's range, previews, Pick up from here"
 web_proof tools "$chrome" "$pw" ''
 step "web-kinds: a tool goes on a box of the kind it makes: a video tool refused on a picture, and let go on it a new video box beside it that mentions it; BiRefNet on it starts from <self.1>"

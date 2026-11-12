@@ -78,6 +78,7 @@ assets:
 | `tool` | A function, in full, in `cozy run`'s grammar: `org/package/function[@release]`, `package/function`, or local code by its path, `./dir/function`, keyed by its directory's name, so moving to the published package re-renders nothing. No `@release` uses what its machine has installed. With none, it's a dropped file, and what it is comes from the file |
 | `approved` | The file it holds, by a prefix of its hash. A choice, not a claim: out of date comes from the lock, so an upstream change never edits the file. A number-shaped hash is its text |
 | `description` | What it is. It reaches whatever mentions it, and never its own tool. A `<name>` in it stays text, with a warning |
+| `starred` | `true`: a person starred it, and the page's Files lists it first. No input: it puts nothing out of date, and it's no approval |
 | `models`, `lora` | Go on its function's first call |
 
 Every other key is a **field** of its tool: the binder gives it to the function by its type, and it counts in the key. A tool's struct is its box. An unknown key warns at render, and an unknown section warns at reading. A pickup is never written: Pick up from here fills it for one render.

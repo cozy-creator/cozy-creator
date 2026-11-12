@@ -1725,6 +1725,13 @@ export class CanvasStore {
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "approve", by)
   }
 
+  /** Starred, it leads the project's Files list (cl-892). A star is no input: nothing goes out of date, and it's no approval. */
+  star(name: string, on: boolean) {
+    const key = this.resolveName(name)
+    const edit = this.step(`${on ? "Starred" : "Unstarred"} ${key}`, [key])
+    this.over(key, { starred: on }, (served, write) => this.client.patchAsset(this.projectId!, served, { fields: { starred: on || null } }, undefined, write), on ? "star" : "unstar", edit)
+  }
+
   /** A double tap on a take: it's approved, or if it was, nothing is, and it's still the one looked at. */
   toggleApproved(name: string, number: number) {
     const asset = this.get(name)?.asset

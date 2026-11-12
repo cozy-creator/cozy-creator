@@ -374,6 +374,9 @@ fn words(changes: &[Change], lock: Option<&Lock>) -> String {
             _ => format!("Brought back {noun} {number} of {name}"),
         };
     }
+    if let Some((name, (_, after))) = fields.iter().find_map(|(name, fields)| Some((*name, fields.get(super::format::STARRED)?))) {
+        return format!("{} {name}", if after.as_bool() == Some(true) { "Starred" } else { "Unstarred" });
+    }
     if let Some((name, (_, after))) = fields.iter().find_map(|(name, fields)| Some((*name, fields.get("approved")?))) {
         let Some(prefix) = after.as_str() else { return format!("Unapproved {name}") };
         let held = lock.and_then(|lock| lock.asset(name));

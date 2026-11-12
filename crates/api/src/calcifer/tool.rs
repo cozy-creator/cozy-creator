@@ -15,7 +15,7 @@ use crate::{
 /// The kinds of file a box can be.
 pub const MEDIA: [&str; 3] = ["image", "video", "audio"];
 /// The platform's words on any box, whatever made it: no tool's field goes by one.
-pub const PLATFORM: [&str; 8] = ["tool", "approved", "description", "models", "lora", "text", "node_kind", "selected_version"];
+pub const PLATFORM: [&str; 9] = ["tool", "approved", "description", "models", "lora", "text", "node_kind", "selected_version", "starred"];
 
 /// The Edit: what Calcifer makes itself, free, with no machine.
 pub const EDIT: &str = "cozy/edit";
