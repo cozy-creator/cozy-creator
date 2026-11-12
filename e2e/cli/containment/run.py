@@ -27,6 +27,7 @@ from urllib.parse import quote
 from common import Failure, Native, Proof, Receipt, alive, birth, kill_exact, project_route, require, sha, until
 from scan import Scanner, tmpfs
 from native_execution import CorePattern, qualify as qualify_native
+from development import Development
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from test_hub import require_test_hub
@@ -120,12 +121,17 @@ def main() -> int:
     proof: Proof | None = None
     foreign: ForeignBrowsers | None = None
     core: CorePattern | None = None
+    development: Development | None = None
     projects: list[dict] = []
     phase = "start"
     try:
         if ready.get("native_execution") is True:
             core = CorePattern(ready)
             core.set(b"core")
+        if ready.get("development_web") is True:
+            phase = "development_start"
+            development = Development()
+            development.start()
         proof = Proof(cli)
         until(lambda: native.holder(), lambda holder: holder.get("pid") == proof.process.pid, "holder_ready")
         receipt.add("native_capability", accepted=native.call("GET", "/v1/project-storage").get("version") == 3)
@@ -201,6 +207,17 @@ def main() -> int:
         unauthenticated = native.raw("GET", project_route(a["id"]), auth=False)
         require(unauthenticated.status == 401, "native_auth_required")
         scan_case(scanner, receipt, "live_outside_scan", roots, [a["view"], b["view"], profile])
+        if development is not None:
+            phase = "development_hmr"
+            development.no_api_bridge()
+            initial = proof.exercise(b["id"], "hmr_start")
+            require(initial.get("development") and initial.get("value") == 1, "owned_hmr_initial_module")
+            development.update()
+            updated = until(lambda: proof.exercise(b["id"], "hmr_observe"), lambda value: value.get("value") == 2, "owned_hmr_update")
+            require(updated.get("document_sha256") == initial["document_sha256"], "owned_hmr_reloaded_document")
+            refused_dev = native.raw("GET", "/files/" + a["marker"])
+            require(refused_dev.status == 404, "development_private_path_forwarded")
+            receipt.add("owned_development_hmr", same_origin=True, actual_update=True, document_retained=True, private_path_refused=True, direct_vite_api_refused=True)
         phase = "queued_b_edit"
         held = sqlite3.connect(b["view"] / "project.db", timeout=1)
         held.execute("BEGIN IMMEDIATE")
@@ -309,15 +326,25 @@ def main() -> int:
             if foreign is not None:
                 foreign.close()
         finally:
-            if core is not None:
-                try:
-                    core.restore()
-                    receipt.add("host_core_restoration", restored=True)
-                except BaseException:
-                    receipt.value["host_core_restore_failed"] = True
-                    receipt.value["complete"] = False
-                    receipt.save()
-                    raise
+            try:
+                if development is not None:
+                    development.close()
+                    receipt.add("development_restoration", restored=True)
+            except BaseException:
+                receipt.value["development_restore_failed"] = True
+                receipt.value["complete"] = False
+                receipt.save()
+                raise
+            finally:
+                if core is not None:
+                    try:
+                        core.restore()
+                        receipt.add("host_core_restoration", restored=True)
+                    except BaseException:
+                        receipt.value["host_core_restore_failed"] = True
+                        receipt.value["complete"] = False
+                        receipt.save()
+                        raise
 
 
 if __name__ == "__main__":
