@@ -399,14 +399,14 @@ code {
   transform: scale(1.03);
 }
 
-/* The dots, and in WebKit the boxes (`data-layered`), are on layers of their own, so a pan draws none of them again. The boxes not while the canvas zooms:
-   a layer keeps the scale it was drawn at, so they'd blur. Two frames after a zoom they're back (CanvasHost.tsx). The dots keep theirs: they're drawn
-   at steps a zoom only shrinks (Sheet.tsx). */
+/* The dots, and in WebKit the boxes (`data-layered`), are on layers of their own, so a pan draws none of them again. Not while the canvas zooms: a layer
+   keeps the scale it was drawn at, so they'd blur, and Chrome draws the dots slower on one. Two frames after a zoom they're back (CanvasHost.tsx). */
 .stage[data-layered] .react-flow__viewport,
 .canvas-dots {
   will-change: transform;
 }
-.stage[data-zooming] .react-flow__viewport {
+.stage[data-zooming] .react-flow__viewport,
+.stage[data-zooming] .canvas-dots {
   will-change: auto;
 }
 /* Over the paper or the landscape and under the boxes, at every zoom (Sheet.tsx). */
@@ -414,9 +414,8 @@ code {
   position: absolute;
   top: 0;
   left: 0;
-  width: calc(110% + 110px);
-  height: calc(110% + 110px);
-  transform-origin: 0 0;
+  width: calc(100% + 96px);
+  height: calc(100% + 96px);
   z-index: -1;
   fill: var(--dot);
   pointer-events: none;

@@ -420,13 +420,16 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
       await timing.close();
     }
 
-    // No slower than before: each run of frames against rc/0.25.0's on its runner, by this runner's speed against that one's.
+    // No slower than before: each run of frames against rc/0.25.0's on its runner, by this runner's speed against that one's. A pan's median
+    // and 95th, and a zoom's median, no slower. A zoom's 95th up to one display frame (16.7 ms) more: crossing a rung (every 4/3 of zoom) lays
+    // out and draws that one layer again, which before's sheet, held between 0.75 and 1.5, and its landscape, which no zoom moved, never did.
     if (BEFORE) {
       // A frame is a whole number of the display's: a faster runner than that one's holds to the same bars.
       const by = Math.max(1, speed.median_ms / BEFORE.speed_ms);
       const slower = Object.entries(seen.frames).filter(([name, now]) => {
         const then = BEFORE.frames[name];
-        return then && (now.median_ms > then.median_ms * by * 1.1 + 2 || now.p95_ms > then.p95_ms * by * 1.25 + 4);
+        const rung = name.endsWith('_zoom') ? 16.7 : 0;
+        return then && (now.median_ms > then.median_ms * by * 1.1 + 2 || now.p95_ms > then.p95_ms * by * 1.25 + 4 + rung);
       });
       seen.frames_against = { run: BEFORE.run, by: +by.toFixed(2) };
       check('frames_no_slower', slower.length === 0, Object.fromEntries(slower.map(([name, now]) => [name, { now, before: BEFORE.frames[name] }])));

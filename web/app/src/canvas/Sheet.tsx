@@ -153,14 +153,12 @@ function Landscape() {
 const GAP = 24
 const DOT = 2
 const LEAST = 12
-/** The steps they're drawn at, each 2^(1/8) of the one below: between two, the layer is scaled by the rest, (0.917, 1], so it's never enlarged and a zoom draws them again only at a step. */
-const DRAWN = 2 ** (1 / 8)
 
 /**
  * The dots, over what the canvas is drawn on and under every box, the same size at every zoom. They're on a layer of their own that a pan
  * moves by less than a step, so a pan draws none of them: React Flow's own background draws them all again each frame, which in WebKit is
- * most of a pan's frame far out. A zoom draws them again at each of their steps. The layer is a step at the most zoom (4) wider and taller than the window
- * drawn at 0.917: `.canvas-dots`.
+ * most of a pan's frame far out. A zoom draws them again. Scaled, the layer would be filtered each frame of a pan, and kept on a layer through a zoom it's
+ * drawn slower (e2e 43144421327). The layer is a step at the most zoom (4) wider and taller than the window: `.canvas-dots`.
  */
 export function Dots() {
   const flow = useStoreApi()
@@ -173,16 +171,15 @@ export function Dots() {
       if (!layer.current || !cell.current || !dot.current) return
       let gap = GAP * zoom
       while (gap < LEAST) gap *= 2
-      const drawn = LEAST * DRAWN ** Math.ceil(Math.log(gap / LEAST) / Math.log(DRAWN) - 1e-9)
-      if (drawn !== step) {
-        step = drawn
-        for (const at of ["width", "height"]) cell.current.setAttribute(at, String(drawn))
-        for (const at of ["cx", "cy"]) dot.current.setAttribute(at, String(drawn / 2))
+      if (gap !== step) {
+        step = gap
+        for (const at of ["width", "height"]) cell.current.setAttribute(at, String(gap))
+        for (const at of ["cx", "cy"]) dot.current.setAttribute(at, String(gap / 2))
       }
       // The layer on a whole pixel, so a pan doesn't soften the dots.
       const wrap = (value: number) => Math.round(devicePixelRatio * ((((value % gap) + gap) % gap) - gap)) / devicePixelRatio
       const off = (GAP / 2) * zoom - gap / 2
-      layer.current.style.transform = `translate3d(${wrap(x + off)}px, ${wrap(y + off)}px, 0) scale(${gap / drawn})`
+      layer.current.style.transform = `translate3d(${wrap(x + off)}px, ${wrap(y + off)}px, 0)`
     }
     place(last)
     return flow.subscribe(({ transform }) => {
