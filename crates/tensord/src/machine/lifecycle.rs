@@ -353,6 +353,7 @@ impl Lifecycle {
     /// Work came between this computer's machine's claim and its stop: it serves on.
     fn reopen(&self) {
         self.state.lock().unwrap().ledger.released = false;
+        crate::activity::status_changed();
     }
 
     /// Takes the release once the idle clock ran out on a current reading. Irreversible but for
@@ -374,6 +375,8 @@ impl Lifecycle {
         ledger.released = true;
         self.save(&ledger)?;
         state.ledger = ledger;
+        drop(state);
+        crate::activity::status_changed();
         Ok(true)
     }
 }
@@ -552,7 +555,9 @@ pub(crate) fn exit_when_idle(
             released = Some(since);
         }
         let held = kept();
-        lifecycle.kept.store(held, Ordering::Release);
+        if lifecycle.kept.swap(held, Ordering::AcqRel) != held {
+            crate::activity::status_changed();
+        }
         if now >= since + grace && held && parents_released != Some(since) {
             tracing::info!("idle {} s, kept up for its controllers: its import-only parents end", (now - since) / 1000);
             release_parents();
