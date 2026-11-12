@@ -248,7 +248,7 @@ async fn subscribe(api: Arc<Api>, scope: Scope) -> Watch {
     } else { HashMap::new() };
     let showing = all.then(Showing::new);
     let id = showing.as_ref().map(|showing| showing.0.clone()).unwrap_or_else(stream_id);
-    let hello = StreamEvent::Hello { version: env!("CARGO_PKG_VERSION").into(), stream: id };
+    let hello = StreamEvent::Hello { version: ::api::VERSION.into(), stream: id };
     Watch {
         showing,
         pending: VecDeque::from([hello]),

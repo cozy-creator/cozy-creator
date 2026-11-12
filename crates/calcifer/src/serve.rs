@@ -289,7 +289,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         address,
         token,
         pid: std::process::id(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         started_at_ms: crate::store::now_ms(),
     };
     let mut record = serde_json::to_vec(&holder).expect("serializes");

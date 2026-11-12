@@ -27,12 +27,14 @@ const FRESH: Duration = Duration::from_secs(60);
 /// moves.
 const EVERY: Duration = Duration::from_secs(30);
 
-/// The open RC: the minor after this cozy's release (`0.24.0` → `0.25.0`); RCs are minor bumps.
+/// The open RC: the minor after this cozy's release (`0.25.0` → `0.26.0`), or a dev version's own (`0.26.0-dev` → `0.26.0`,
+/// cl-973); RCs are minor bumps.
 pub(crate) fn open() -> String {
-    let mut parts = crate::update::this_release().split('.');
+    let release = crate::update::this_release();
+    let mut parts = release.split(['.', '-']);
     let major = parts.next().unwrap_or("0");
     let minor: u64 = parts.next().and_then(|minor| minor.parse().ok()).unwrap_or(0);
-    format!("{major}.{}.0", minor + 1)
+    format!("{major}.{}.0", minor + u64::from(!release.contains('-')))
 }
 
 /// What the RC's prereleases name, as read.

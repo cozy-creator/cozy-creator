@@ -172,7 +172,7 @@ impl Measured<'_> {
             "worker_foreign_credential_refused": self.foreign_credential_refused,
             "tls_certificate_der_base64": STANDARD.encode(self.cert_der),
             "runtime_gpus": self.gpus,
-            "machine_version": env!("CARGO_PKG_VERSION"),
+            "machine_version": ::api::VERSION,
         });
         if let Some(port) = self.webrtc_port {
             value["webrtc"] = serde_json::json!({ "port": port });

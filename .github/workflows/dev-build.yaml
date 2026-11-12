@@ -1,7 +1,7 @@
 name: dev-build
 # Builds dev artifacts for any ref, off the dev box:
 #   gh workflow run dev-build.yaml -R cozy-creator/cozy-creator -f ref=<sha> -f build=cozy,tensord,tensorfs
-# Artifacts: cozy-<sha> (the runner arch's dev `cozy`, <version>+dev.g<sha8>, which `cozy machine update --tensord <path>`
+# Artifacts: cozy-<sha> (the runner arch's dev `cozy`, the RC's <x.y.z>-dev+g<sha8> or a release's <version>+dev.g<sha8>, which `cozy machine update --tensord <path>`
 # runs on any machine: `ghbuild.sh cozy <ref> cozy`, `-r ubuntu-24.04-arm` for arm64), tensord-<sha> (the runner arch's
 # `tensord`, the machine role TensorD's and Calcifer's tests run, from the same build and stamp), tensorfs-kernels-<sha>
 # and tensorfs-wheel-<sha> (the manylinux x86_64 wheel). The jobs run side by side. The cozy binary's release archives
@@ -116,8 +116,9 @@ jobs:
       - name: Build the page
         if: contains(inputs.build, 'cozy') && hashFiles('web/app/package.json') != ''
         run: web/build.sh
-      # Both stamped <version>+dev.g<sha8> with their commit. Both packages are selected whichever binaries are asked
-      # for, so every build resolves cozy's features and the cache holds one set of dependencies.
+      # Both stamped with their commit: a release's <version>+dev.g<sha8> here, the RC's dev version (0.26.0-dev) +g<sha8> by
+      # crates/api/build.rs from COZY_COMMIT (cl-973). Both packages are selected whichever binaries are asked for, so every
+      # build resolves cozy's features and the cache holds one set of dependencies.
       - name: Build cozy and tensord
         env:
           BUILD: ${{ inputs.build }}
@@ -128,8 +129,11 @@ jobs:
           [[ $BUILD != *tensord* ]] || bins+=(--bin tensord)
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
           cargo fetch --locked
-          sed -i "0,/^version = \"$version\"$/s//version = \"$version+dev.g${sha:0:8}\"/" Cargo.toml
-          cargo update -w --offline
+          case $version in
+            *-*) ;;
+            *) sed -i "0,/^version = \"$version\"$/s//version = \"$version+dev.g${sha:0:8}\"/" Cargo.toml
+               cargo update -w --offline ;;
+          esac
           rm -rf "$target/rustup" && mkdir -p "$target" dist/cozy dist/tensord
           docker run --rm -e CARGO_BUILD_JOBS="$(nproc)" --user "$(id -u):$(id -g)" -e HOME=/tmp -e RUSTUP_HOME=/target/rustup -e COZY_COMMIT="$sha" -e FEATURES \
             -v "$HOME/.cargo/registry:/cargo/registry" -v "$HOME/.cargo/git:/cargo/git" -v "$PWD:/src:ro" -v "$target:/target" -w /src \
@@ -140,7 +144,7 @@ jobs:
             install -m 0755 "$target/release/cozy" "dist/cozy/cozy-linux-$arch"
             (cd dist/cozy && sha256sum "cozy-linux-$arch" > "cozy-linux-$arch.sha256")
             said=$("dist/cozy/cozy-linux-$arch" --version)
-            case $said in *"+dev.g${sha:0:8}") echo "$said" ;; *) echo "::error::the dev cozy says $said"; exit 1 ;; esac
+            case $said in *"+dev.g${sha:0:8}" | *"-dev+g${sha:0:8}") echo "$said" ;; *) echo "::error::the dev cozy says $said"; exit 1 ;; esac
           fi
           if [[ $BUILD == *tensord* ]]; then
             install -m 0755 "$target/release/tensord" "dist/tensord/tensord-linux-$arch"

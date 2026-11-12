@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use tensord::{config::Flags, serve};
 
 #[derive(Parser)]
-#[command(name = "tensord", version)]
+#[command(name = "tensord", version = ::api::VERSION)]
 struct Tensord {
     #[command(subcommand)]
     mode: Option<Mode>,

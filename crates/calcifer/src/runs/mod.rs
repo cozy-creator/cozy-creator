@@ -222,7 +222,7 @@ fn prebuilt(body: &[u8]) -> Result<(), Refusal> {
     if shape.get("spec").is_none() {
         return Ok(());
     }
-    let version = env!("CARGO_PKG_VERSION");
+    let version = ::api::VERSION;
     Err(Refusal(
         Error::new(
             Kind::Usage,
