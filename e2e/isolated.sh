@@ -103,11 +103,12 @@ mirror() {
 }
 
 # standin_lora <file> <org/name> <page> <family> [--trigger <words>]...: a LoRA uploaded, published at 0.1.0, its family and
-# triggers named, as an admin mirrors an author's LoRA.
+# triggers named, as an admin mirrors an author's LoRA. $FORMAT: its --source-format, else detected.
 standin_lora() {
   local file=$1 lora=$2 page=$3 family=$4 commit
   shift 4
-  cozy --json lora upload "$file" "$lora" --lane f16 --mirror "$page" --on local -y > "$seed/upload-${lora##*/}.json" 2>&1 \
+  cozy --json lora upload "$file" "$lora" --lane f16 --mirror "$page" --on local -y ${FORMAT:+--source-format "$FORMAT"} \
+    > "$seed/upload-${lora##*/}.json" 2>&1 \
     || { echo "uploading $lora failed: $(tail -c 600 "$seed/upload-${lora##*/}.json")" >&2; return 1; }
   commit=$(python3 "$here/model-details.py" "$lora" | jq -r '.checkpoints[0].checkpoint // empty')
   [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; return 1; }
@@ -369,6 +370,19 @@ PYH3
       # model with its family named, and a LoRA of that family with a trigger.
       publish "$packages/ideogram-4"
       publish "$packages/krea-2"
+      # A LoRA whose header names no family (one factor pair of no family's module), so Calcifer judges it by its label.
+      python3 -I - "$seed/neutral.safetensors" <<'PYN'
+import json, struct, sys
+header, data, at = {}, b"", 0
+for key, shape in {"e2e_standin.lora_down.weight": [1, 8], "e2e_standin.lora_up.weight": [8, 1]}.items():
+    header[key] = {"dtype": "F16", "shape": shape, "data_offsets": [at, at + 16]}
+    data, at = data + b"\x00\x3c" * 8, at + 16
+header["e2e_standin.alpha"] = {"dtype": "F32", "shape": [], "data_offsets": [at, at + 4]}
+data += struct.pack("<f", 1.0)
+raw = json.dumps(header).encode()
+raw += b" " * (-len(raw) % 8)
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + data)
+PYN
       default() { sed -n "s/$2/\\1/p" "$packages/$1" | head -n 1; }
       for spec in "sdxl/sdxl/__init__.py sdxl ink_wash" "ideogram-4/ideogram_4/__init__.py ideogram-4 neon_sign" \
         "krea-2/krea_2/__init__.py krea-2 claymation"; do
@@ -381,8 +395,8 @@ PYH3
         mirror "$seed/minimax-h3.safetensors" "${base%@*}" bf16 "${base#*@}" "https://huggingface.co/${base%@*}" --source-format as-is
         cozy --json model edit "${base%@*}" --family "$family" > "$seed/edit-$family.json" 2>&1 \
           || { echo "naming ${base%@*}'s family failed: $(tail -c 600 "$seed/edit-$family.json")" >&2; exit 1; }
-        standin_lora "$seed/vfx-edit.safetensors" "e2e-standin/$family-${trigger//_/-}" "https://huggingface.co/e2e-standin/$family-${trigger//_/-}" \
-          "$family" --trigger "$trigger" || exit 1
+        FORMAT=as-is standin_lora "$seed/neutral.safetensors" "e2e-standin/$family-${trigger//_/-}" \
+          "https://huggingface.co/e2e-standin/$family-${trigger//_/-}" "$family" --trigger "$trigger" || exit 1
       done
       log "published SDXL's, Ideogram 4's and Krea 2's defaults (stand-ins) and a LoRA of each family, each with a trigger"
     fi
