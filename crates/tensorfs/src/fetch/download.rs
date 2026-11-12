@@ -14,6 +14,9 @@
 //!   of starting a later job's: one job's download at a time at full speed, its tail never shared
 //!   with the next (cl-905); a job's own parts follow one another with the link full. A task nothing
 //!   wants stops (cl-686).
+//! - **Giving way.** Places go to the most urgent waiting range first. Every place taken, a range in flight gives
+//!   its place up at its next bytes to one waiting at an earlier job's order (or 0: what a running call reads now),
+//!   and asks again from the byte it reached (cl-966).
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every byte
 //!   enters the store's admission, which hashes it: wrong bytes are never admitted. A process sharing
 //!   the store that is fetching an object is waited for, not raced (tfs-142).
@@ -22,7 +25,7 @@
 //! - **Every answer that is not 2xx is logged** with its object, range and attempt, and counted.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
@@ -296,6 +299,8 @@ enum Failed {
     /// Ask again (after the answer's stated wait, when it gave one).
     Again(String, Option<Duration>),
     Fatal(Refusal),
+    /// It gave its place up to a more urgent range (`Slots::outranked`): its bytes so far stay, and it asks again from there.
+    GaveWay,
 }
 
 impl From<Refusal> for Failed {
@@ -533,7 +538,9 @@ struct Places {
     free: usize,
     /// Places the ramp gave up that are still out: each is kept as it comes back.
     owed: usize,
-    waiting: VecDeque<oneshot::Sender<Slot>>,
+    /// Who waits for a place, by order and then arrival: the most urgent first.
+    waiting: BTreeMap<(u64, u64), oneshot::Sender<Slot>>,
+    arrivals: u64,
 }
 
 /// A place among the requests in flight.
@@ -544,7 +551,8 @@ impl Slots {
         Arc::new(Slots(Mutex::new(Places { free, ..Places::default() })))
     }
 
-    async fn take(self: &Arc<Self>) -> Slot {
+    /// A place for a range at `order`.
+    async fn take(self: &Arc<Self>, order: u64) -> Slot {
         let waiting = {
             let mut places = lock(&self.0);
             if places.free > 0 {
@@ -552,29 +560,49 @@ impl Slots {
                 return Slot(Arc::clone(self));
             }
             let (sent, waiting) = oneshot::channel();
-            places.waiting.push_back(sent);
+            places.arrivals += 1;
+            let arrival = places.arrivals;
+            places.waiting.insert((order, arrival), sent);
             waiting
         };
         waiting.await.expect("a place's sender lives as long as its queue")
     }
 
+    /// Whether a range in flight at `order` gives its place up: every place is taken, and a range waits for one at an
+    /// earlier job's order, or at 0 (what a running call reads now).
+    fn outranked(&self, order: u64) -> bool {
+        let mut places = lock(&self.0);
+        if places.free > 0 {
+            return false;
+        }
+        while let Some(first) = places.waiting.first_entry() {
+            if first.get().is_closed() {
+                first.remove();
+                continue;
+            }
+            let urgent = first.key().0;
+            return urgent < order && (urgent == 0 || job(urgent) < job(order));
+        }
+        false
+    }
+
     /// A free place, when nothing waits for one.
     fn idle(self: &Arc<Self>) -> Option<Slot> {
         let mut places = lock(&self.0);
-        places.waiting.retain(|waiter| !waiter.is_closed());
+        places.waiting.retain(|_, waiter| !waiter.is_closed());
         (places.free > 0 && places.waiting.is_empty()).then(|| {
             places.free -= 1;
             Slot(Arc::clone(self))
         })
     }
 
-    /// A place back: owed to the ramp, else to the first waiter still waiting, else free.
+    /// A place back: owed to the ramp, else to the most urgent waiter still waiting, else free.
     fn give(self: &Arc<Self>, places: &mut Places) {
         if places.owed > 0 {
             places.owed -= 1;
             return;
         }
-        while let Some(waiter) = places.waiting.pop_front() {
+        while let Some((_, waiter)) = places.waiting.pop_first() {
             match waiter.send(Slot(Arc::clone(self))) {
                 Ok(()) => return,
                 // Its waiter left: the same place goes on to the next.
@@ -989,9 +1017,16 @@ impl Shared {
     /// Starts tasks as requests come free, most urgent first: the request it was started with is its first.
     pub(crate) async fn dispatch(self: Arc<Self>) {
         loop {
-            let permit = tokio::select! {
-                slot = self.slots.take() => slot,
-                () = self.closed() => return,
+            // A place at the order of what is next, asked again as something more urgent comes.
+            let permit = loop {
+                let notified = self.queued.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                tokio::select! {
+                    slot = self.slots.take(self.next().unwrap_or(u64::MAX)) => break slot,
+                    () = notified => {}
+                    () = self.closed() => return,
+                }
             };
             let notified = self.queued.notified();
             tokio::pin!(notified);
@@ -1179,16 +1214,23 @@ impl Shared {
 
     /// One range in a place among the requests in flight (`slot` when it has one: the task's first, or
     /// the free place that took it).
+    /// Given way to a more urgent range (`Slots::outranked`), it asks for a place again at its own order.
     async fn part(&self, task: &Task, mut part: Part<'_>, here: &HttpLocation<'_>, slot: Option<Slot>) -> Result<()> {
-        let _slot = match slot {
-            Some(slot) => slot,
-            None => self.slots.take().await,
-        };
-        self.range(task, here, &mut part).await
+        let mut slot = slot;
+        loop {
+            let _place = match slot.take() {
+                Some(place) => place,
+                None => self.slots.take(task.priority.load(Ordering::Acquire)).await,
+            };
+            if self.range(task, here, &mut part).await? {
+                return Ok(());
+            }
+        }
     }
 
-    /// One range, asked again by the one rule (`ask`) from the byte reached, to its end.
-    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>) -> Result<()> {
+    /// One range, asked again by the one rule (`ask`) from the byte reached, to its end. False: it gave its place up
+    /// (`Failed::GaveWay`), its bytes so far written.
+    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>) -> Result<bool> {
         let (mut backoff, mut attempt, mut still) = (Backoff::transfer(), 0, 0);
         let (began, first) = (Instant::now(), part.reached);
         loop {
@@ -1199,7 +1241,7 @@ impl Shared {
                 Ok(()) => {
                     part.flush().await?;
                     if part.flight.stopped() {
-                        return Ok(());
+                        return Ok(true);
                     }
                     // Its race's others stop: what they lack, it has.
                     part.flight.race.won(&part.flight);
@@ -1215,7 +1257,11 @@ impl Shared {
                         let mut typical = lock(&self.typical);
                         *typical = Some(typical.map_or(rate, |was| 0.8 * was + 0.2 * rate));
                     }
-                    return Ok(());
+                    return Ok(true);
+                }
+                Err(Failed::GaveWay) => {
+                    part.flush().await?;
+                    return Ok(false);
                 }
                 Err(Failed::Fatal(refusal)) => return Err(refusal),
                 Err(Failed::Again(why, wait)) => (why, wait, part.reached > from),
@@ -1329,6 +1375,9 @@ impl Shared {
                     // A steal moved the end back: what is past it is another request's.
                     if !part.push(task, &data).await? {
                         break;
+                    }
+                    if self.slots.outranked(task.priority.load(Ordering::Acquire)) {
+                        return Err(Failed::GaveWay);
                     }
                 }
                 Ok(None) => break,
