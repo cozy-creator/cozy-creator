@@ -129,8 +129,8 @@ project_api "$DB024" '' > /dev/null || check "0.24 deletes: first open"
 sleep 5
 held_024 "$a" || check "0.24 deletes: the first 0.25 open deleted kept_024's file"
 held_024 "$b" || check "0.24 deletes: the first 0.25 open deleted gone_024's file"
-[ "$(sql "$DB024" "SELECT record FROM lock_assets WHERE key LIKE '%#%'" | jq -s '[.[] | .[0] | fromjson | select(.deleted_ms == null)] | length')" = 0 ] \
-  || check "0.24 deletes: a set-aside row has no time after the first open"
+sql "$DB024" "SELECT record FROM lock_assets WHERE key LIKE '%#%'" | jq -se '[.[] | .[0] | fromjson] | length >= 2 and all(.deleted_ms != null)' > /dev/null \
+  || check "0.24 deletes: not both boxes set aside, each with a time, after the first open: $(sql "$DB024" "SELECT key, record FROM lock_assets WHERE key LIKE '%#%'" | head -c 400)"
 [ "$(sql1 "$DB024" "SELECT count(*) FROM run_files WHERE run = 0 AND output = 'deleted'")" = 0 ] || check "0.24 deletes: 0.24's deleted rows are still on record"
 project_api "$DB024" /history > "$OUT/db-024-history.json" || check "0.24 deletes: history"
 entry=$(jq -r '[.entries[] | select((.names // []) | index("kept_024"))][0].id // empty' "$OUT/db-024-history.json")
