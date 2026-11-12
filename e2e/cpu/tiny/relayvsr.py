@@ -1,8 +1,11 @@
-"""RelayVSR's own Wan and Flash constructors at two blocks and one attention head.
+"""RelayVSR's own Wan and Flash constructors at two blocks and one attention head, built from configs laid out as
+kopper/relayvsr@0.2.0's are (xs-183): a `model` component naming the architecture, and `wan` and `flash` each holding
+upstream's own `config` (its file's `__metadata__`: crates/tensorfs/vectors/relayvsr-headers), only release geometry
+shrunk.
 
-Only release geometry shrinks: Wan keeps its 128-channel head and 48 latent channels, Flash its
-64-channel head, and the package runs its real keyframe ring, eager attentions and video stream.
-The output remains the public 1080p canvas. CUDA/Triton kernels remain a GPU qualification.
+Wan keeps its 128-channel head and 48 latent channels, Flash its 64-channel head, and the package runs its real keyframe
+ring, eager attentions and video stream. The output remains the public 1080p canvas. CUDA/Triton kernels remain a GPU
+qualification.
 """
 
 from __future__ import annotations
@@ -11,37 +14,61 @@ from collections.abc import Callable
 from pathlib import Path
 
 import av
+import msgspec
 import numpy as np
 import tensorfs
 import torch
 from relayvsr import flash, wan
+from relayvsr.flash import FlashConfig
 from relayvsr.model import ARCHITECTURE
+from relayvsr.wan import WanConfig
 
 from cell import Cell, Json, defined
 
-_WAN = (128, 1, 2, 256, 32, 8, (16, 32))
-_FLASH = (64, 2, 1, 1)
-PATCH: dict[str, object] = {
-    "relayvsr.wan:WanVSR.__init__.__defaults__": _WAN,
-    "relayvsr.flash:FlashVSR.__init__.__defaults__": _FLASH,
-    "relayvsr.flash:ENCODER": (8, 8, 8),
-    "relayvsr.flash:HEAD_WIDTH": 64,
+#: `wan.safetensors`' config (`refvsr-wan-v1`) at one 128-channel head, 2 layers, a 256-wide FFN, 32 text channels and
+#: a 16/32 LQ projection.
+_WAN: dict[str, Json] = {
+    "patch_size": [1, 2, 2], "num_attention_heads": 1, "attention_head_dim": 128, "in_channels": 48, "out_channels": 48,
+    "text_dim": 32, "freq_dim": 256, "ffn_dim": 256, "num_layers": 2, "cross_attn_norm": True,
+    "qk_norm": "rms_norm_across_heads", "eps": 1e-06, "image_dim": None, "rope_max_seq_len": 1024,
+    "pos_embed_seq_len": None, "lq_proj_hidden_dim1": 16, "lq_proj_hidden_dim2": 32, "use_block_causal_attention": True,
+    "num_frames_per_block": 1, "local_attn_size": -1, "sink_size": 0, "flex_attention_block_size": 128,
+    "spatial_window_size": [22, 40], "spatial_attention_backend": "triton", "spatial_attention_mode": "local",
+    "temporal_context_frames": 4, "temporal_rope": {"policy": "fixed_end", "training_frames": 8},
 }
+#: `flash.safetensors`' config (`refvsr-flash-v1`, variant S) with an 8-channel frame encoder and a 64-wide head.
+_FLASH: dict[str, Json] = {
+    "condition_channels": 48, "encoder_channels": [8, 8, 8], "gradient_checkpointing": "none",
+    "mlp_ratio": 2.6666666666666665, "norm_eps": 1e-05, "rope_theta": 10000.0,
+    "spatial_attention": {"backend": "auto", "boundary": "truncated", "condition_self_window_size": [48, 48],
+                          "end_condition_window_size": [48, 48], "interval": "half_open",
+                          "start_condition_window_size": [48, 48], "type": "query_centered",
+                          "video_window_size": [24, 24]},
+    "spatial_head_dim": 64, "temporal_rope_policy": "current_relative", "training_execution": "streaming",
+    "upscale_factor": 4, "variant": "S", "window_size": 2, "condition_mode": "endpoints",
+}
+#: The release geometries the package states as constants: Flash's variant S (depth, width, heads, K/V heads) at two
+#: blocks, 64 wide, one head; Wan's prompt at 8 tokens, not 512.
+_VARIANTS = {**flash.VARIANTS, "S": (2, 64, 1, 1)}
+_PROMPT = 8
+PATCH: dict[str, object] = {"relayvsr.flash:VARIANTS": _VARIANTS, "relayvsr.wan:PROMPT": _PROMPT}
 _DTYPES = {torch.bfloat16: "BF16", torch.float32: "F32"}
 
 
 def models(root: Path, store: Path) -> dict[str, Path | str]:
     torch.manual_seed(0)
-    flash.ENCODER, flash.HEAD_WIDTH = (8, 8, 8), 64  # this process; executors take PATCH
+    flash.VARIANTS, wan.PROMPT = _VARIANTS, _PROMPT  # this process; executors take PATCH
+    configs = {"wan": _WAN, "flash": _FLASH}
     with defined():
         built: dict[str, torch.nn.Module] = {
-            "wan": wan.WanVSR(dim=128, heads=1, layers=2, ffn=256, text=32, prompt=8, lq=(16, 32)).to(torch.bfloat16),
-            "flash": flash.FlashVSR(dim=64, depth=2, heads=1, kv_heads=1),
+            "wan": wan.WanVSR(msgspec.convert(_WAN, WanConfig)).to(torch.bfloat16),
+            "flash": flash.FlashVSR(msgspec.convert(_FLASH, FlashConfig)),
         }
     writer = tensorfs.Writer(cache_dir=store)
+    writer.component("model", config={"architecture": ARCHITECTURE})
     generator = torch.Generator().manual_seed(1)
     for name, module in built.items():
-        component = writer.component(name, config={"architecture": ARCHITECTURE} if name == "wan" else None)
+        component = writer.component(name, config=configs[name])
         for key, tensor in module.state_dict().items():
             data = tensor.detach()
             if not bool(torch.isfinite(data).all()):
@@ -49,7 +76,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
             data = data.contiguous()
             component.put(key, memoryview(data.view(torch.uint8).numpy()).cast("B"),
                           dtype=_DTYPES[data.dtype], shape=list(data.shape))
-    return {"kopper/relayvsr@0.1.1": writer.commit().id}
+    return {"kopper/relayvsr@0.2.0": writer.commit().id}
 
 
 def clip(frames: int, sound: bool = False) -> Callable[[Path], Path]:

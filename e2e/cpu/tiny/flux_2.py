@@ -3,7 +3,8 @@ guidance, a bf16 VAE), each a Diffusers folder of the pipeline's real classes at
 and a byte-level Mistral one. The text encoders keep the depth the conditioning taps (30 and 27 layers) at 32 wide.
 
 `generate` runs [dev]; `generate_turbo` and the `image` tool are bound to the [klein] (`model=`), which runs distilled
-(4 steps) or as Base (CFG), and `generate_turbo` once to [dev] with fal's Turbo LoRA (its geometry PATCHed)."""
+(4 steps) or as Base (CFG), and `generate_turbo` once to [dev] with fal's Turbo LoRA, laid out as its 0.2.0 is (xs-183):
+one `transformer` component of PEFT factors, its adapter config at the root, its sites the stored factors' shapes."""
 
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from transformers import AutoModelForImageTextToText, Mistral3Config, Qwen3Confi
 from cell import NARROW, Cell, Json, module, qwen_tokenizer, save, size
 from tiny import _shared
 
-DEV, KLEIN, TURBO = "black-forest-labs/flux-2-dev@0.1.0", "tiny/flux-2-klein", "fal/flux-2-dev-turbo@0.1.0"
+DEV, KLEIN, TURBO = "black-forest-labs/flux-2-dev@0.1.0", "tiny/flux-2-klein", "fal/flux-2-dev-turbo@0.2.0"
 #: 128² px: the smallest canvas a test reads, on the 16 px grid.
 MEGAPIXELS = 128 * 128 / (1 << 20)
 TEXT_WIDTH = 32
@@ -31,9 +32,6 @@ GEOMETRY: dict[str, object] = {
     "num_attention_heads": 2, "joint_attention_dim": 3 * TEXT_WIDTH, "timestep_guidance_channels": 32,
     "axes_dims_rope": (2, 2, 2, 2),
 }
-#: fal's Turbo LoRA builds its sites at [dev]'s class-default geometry (`TurboGraph(config, geometry=None)`): the
-#: executor's TurboGraph takes the tiny [dev]'s instead, and the release geometry stays GPU-only.
-PATCH: dict[str, object] = {"flux_2.turbo:TurboGraph.__init__.__defaults__": ({**GEOMETRY, "guidance_embeds": True},)}
 
 
 def _transformer(guidance: bool) -> torch.nn.Module:
@@ -95,13 +93,14 @@ def _klein(out: Path) -> None:
 
 
 def _turbo(store: Path) -> str:
-    """fal's LoRA layout (PEFT factors at `r` over named linears) over the tiny [dev]'s sites."""
+    """fal's LoRA as TensorFS's `flux2.lora` stores it (PEFT factors at `r` under [dev]'s module names, one
+    `transformer` component with its adapter config) over the tiny [dev]'s sites."""
     rank = 4
     with torch.device("meta"):
         dev = _transformer(guidance=True)
     writer = tensorfs.Writer(cache_dir=store)
     sites: list[Json] = list(_TURBO_SITES)
-    component = writer.component("model", cls=None, config={"r": rank, "lora_alpha": rank, "target_modules": sites})
+    component = writer.component("transformer", cls=None, config={"r": rank, "lora_alpha": rank, "target_modules": sites})
     generator = torch.Generator().manual_seed(3)
     for site in _TURBO_SITES:
         linear = dev.get_submodule(site)
@@ -152,9 +151,6 @@ CELLS: list[Cell] = [
     {"entry": "image", "name": "klein-base", "payload": {"instructions": _prompt("a red fox"), "seed": 7, "turbo": False,
                                                          "prompt_upsampling": False}, "check": size(1024, 1024)},
     {"entry": "generate_turbo", "name": "dev-turbo-lora", "payload": {"prompt": _prompt("a red fox"), **_SMALL},
-     "models": {"generate_turbo.models.model": DEV}, "check": size(128, 128),
-     "skip": "turbo.py reads config.section('model'), and a one-component LoRA's construction config is that component's "
-             "own (Runtime model_config): config_missing here. Whether fal's release has one component is not on this "
-             "computer; a GPU run of generate_turbo on [dev] settles it"},
+     "models": {"generate_turbo.models.model": DEV}, "check": size(128, 128)},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]
