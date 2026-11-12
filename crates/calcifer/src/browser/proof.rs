@@ -135,10 +135,13 @@ mod linux {
                     Action::Media { path, range, conditional } => json!({ "kind": "media", "project": project, "path": path, "range": range, "conditional": conditional }),
                     Action::Edit { asset, field, value } => {
                         let at = fixed(live, session, json!({ "kind": "locate", "asset": asset })).await?;
-                        if at["found"] != true { return Err(unavailable()); }
-                        for kind in ["mousePressed", "mouseReleased"] { live.pipe.call("Input.dispatchMouseEvent", json!({ "type": kind, "button": "left", "clickCount": 1, "x": at["x"], "y": at["y"] }), Some(session)).await?; }
+                        if at["found"] != true { return Ok(json!({ "typed": false, "located": false, "focused": false })); }
+                        // A single click only selects a box; a person opens it for writing with a double click.
+                        for count in [1, 2] {
+                            for kind in ["mousePressed", "mouseReleased"] { live.pipe.call("Input.dispatchMouseEvent", json!({ "type": kind, "button": "left", "clickCount": count, "x": at["x"], "y": at["y"] }), Some(session)).await?; }
+                        }
                         let focused = fixed(live, session, json!({ "kind": "focus", "asset": asset, "field": field })).await?;
-                        if focused["found"] != true { return Err(unavailable()); }
+                        if focused["found"] != true { return Ok(json!({ "typed": false, "located": true, "focused": false })); }
                         for kind in ["keyDown", "keyUp"] { live.pipe.call("Input.dispatchKeyEvent", json!({ "type": kind, "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 2 }), Some(session)).await?; }
                         live.pipe.call("Input.insertText", json!({ "text": value }), Some(session)).await?;
                         for kind in ["keyDown", "keyUp"] { live.pipe.call("Input.dispatchKeyEvent", json!({ "type": kind, "key": "Tab", "code": "Tab", "windowsVirtualKeyCode": 9 }), Some(session)).await?; }

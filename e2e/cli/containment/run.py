@@ -177,6 +177,7 @@ def main() -> int:
     development: Development | None = None
     projects: list[dict] = []
     readiness = {"slot": -1, "ready_errors": 0, "last_page_ready": False, "last_cards": -1}
+    editing: dict[str, bool] = {}
     phase = "start"
     try:
         if ready.get("development_web") is True:
@@ -292,7 +293,11 @@ def main() -> int:
         held.execute("BEGIN IMMEDIATE")
         locking = None
         try:
-            until(lambda: proof.exercise(b["id"], "edit", asset=b["asset"], field="text", value=b["edit"]), lambda value: value.get("typed"), "real_browser_edit")
+            def edit_b() -> dict:
+                value = proof.exercise(b["id"], "edit", asset=b["asset"], field="text", value=b["edit"])
+                editing.update(located=value.get("located") is True, focused=value.get("focused") is True)
+                return value
+            until(edit_b, lambda value: value.get("typed"), "real_browser_edit")
             require(proof.exercise(b["id"], "observe", needle=b["edit"]).get("visible"), "browser_edit_not_visible")
             locking = subprocess.Popen([str(cli), "--json", "vault", "lock"], cwd=a["folder"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             time.sleep(0.5)
@@ -401,6 +406,8 @@ def main() -> int:
                 receipt.add("cli_failure", **native.failure)
             except Failure:
                 receipt.value["diagnostic_rejected"] = True
+        if editing:
+            receipt.add("browser_edit_observation", **editing)
         if phase == "browser_open" and proof is not None and alive(proof.birth):
             try:
                 observed = proof.ask("snapshot")
