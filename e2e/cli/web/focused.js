@@ -1,5 +1,5 @@
-// Focus is a viewport workspace, independent of Wander's camera. Real imported image states
-// exercise full-fit viewing, preview versus approval, an independent image camera and explicit exits.
+// Focus animates the canvas into the asset, then uses its own image camera. Explicit exits restore Wander.
+// Real imported states exercise full-fit viewing, preview versus approval, image pan/zoom and exits.
 // A weightless local image render, where available, proves editing an older state prunes nothing.
 const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
@@ -107,6 +107,7 @@ async function died(error) {
     });
     await page.mouse.click(point.x, point.y);
     await focus.waitFor();
+    await page.locator(`[data-focused-asset="${NAME}"]:not([data-entering])`).waitFor();
     await card.waitFor();
   };
   // A tap looks at a state; a double tap makes it current (630309269, explicit variant approval).
@@ -149,9 +150,10 @@ async function died(error) {
   const wander = await camera();
   const expanded = await palette();
   await focusByClick();
+  const focusedCanvas = await camera();
   const wide = await expectFit(4);
   check('node_click_opens_one_focus_workspace', await page.locator('[data-focused-asset]').count() === 1 && await card.count() === 1);
-  check('focus_preserves_wander_camera', sameCamera(wander, await camera()), { before: wander, after: await camera() });
+  check('entry_animates_the_canvas_into_the_selected_asset', !sameCamera(wander, focusedCanvas), { before: wander, after: focusedCanvas });
   check('focus_keeps_temporary_palette_collapse_out_of_saved_settings', (await palette()).saved === expanded.saved);
   const background = await focus.evaluate((element) => ({ color: getComputedStyle(element).backgroundColor, image: getComputedStyle(element).backgroundImage }));
   check('focus_keeps_the_canvas_background_visible', background.image === 'none' && /^(transparent|rgba\(.*[,/]\s*0\))$/.test(background.color), background);
@@ -172,7 +174,7 @@ async function died(error) {
   check('wide_and_tall_states_fit_the_same_viewport_room', sameRect(wide.viewer, tall.viewer) && fits(wide, 4) && fits(tall, 0.25), { wide, tall });
   check('tool_controls_stay_pinned_when_state_ratio_changes', sameRect(wide.controls, tall.controls), { wide: wide.controls, tall: tall.controls });
   check('thumbnail_click_previews_without_approving', (await asset()).version === 1 && (await asset()).approved === 1 && await focus.getByLabel('Image version', { exact: true }).innerText() === 'v2');
-  check('state_preview_does_not_zoom_wander', sameCamera(wander, await camera()));
+  check('state_preview_does_not_change_the_focused_canvas_camera', sameCamera(focusedCanvas, await camera()));
   await approve(2);
   check('double_click_approves_the_preview_separately', (await asset()).version === 2 && (await asset()).approved === 2);
   await shot('tall');
@@ -183,7 +185,7 @@ async function died(error) {
   await page.mouse.move(side.x + 30, side.y + 35);
   await page.mouse.wheel(0, 400);
   await until('right previews scroll', () => history.evaluate((element) => element.scrollTop), (top) => top > beforeScroll);
-  check('scrolling_previews_keeps_focus_and_wander_camera', await focus.isVisible() && sameCamera(wander, await camera()));
+  check('scrolling_previews_keeps_focus_and_the_focused_canvas_camera', await focus.isVisible() && sameCamera(focusedCanvas, await camera()));
   await choose(1);
   await expectFit(4);
   check('previewing_another_state_keeps_approval', (await asset()).version === 2 && (await asset()).approved === 2);
@@ -239,6 +241,7 @@ async function died(error) {
   await expectFit(0.25);
   await focus.getByRole('button', { name: 'Back to canvas', exact: true }).click();
   await focus.waitFor({ state: 'detached' });
+  await until('Back animates to the original Wander camera', camera, (position) => sameCamera(wander, position));
   await settled(page);
   check('back_restores_the_expanded_palette_and_wander_camera', (await palette()).shut === expanded.shut && (await palette()).saved === expanded.saved && sameCamera(wander, await camera()));
   if (!(await palette()).shut) await tools.getByLabel('Hide the tools', { exact: true }).click();
@@ -246,13 +249,14 @@ async function died(error) {
   const beforeGestures = await camera();
   await focusByClick();
   await expectFit(0.25);
+  const gestureCanvas = await camera();
   await focus.getByRole('button', { name: 'Zoom in image', exact: true }).click();
   const zoomed = await until('the Focus image camera zooms in', imageCamera, (position) => position.zoom > 1);
   const wheelRoom = await card.locator('.focus-viewer').boundingBox();
   await page.mouse.move(wheelRoom.x + wheelRoom.width / 2, wheelRoom.y + wheelRoom.height / 2);
   await page.mouse.wheel(0, -120);
   const wheeled = await until('wheel zoom stays inside the Focus image camera', imageCamera, (position) => position.zoom > zoomed.zoom);
-  check('wheel_zoom_keeps_focus_and_wander_unchanged', await focus.isVisible() && sameCamera(beforeGestures, await camera()), { zoomed, wheeled });
+  check('wheel_zoom_keeps_focus_and_its_canvas_camera_unchanged', await focus.isVisible() && sameCamera(gestureCanvas, await camera()), { zoomed, wheeled });
   const namesBeforePan = (await state()).assets.map((item) => item.name).sort();
   const panRoom = await card.locator('.focus-viewer').boundingBox();
   await page.mouse.move(panRoom.x + panRoom.width / 2, panRoom.y + panRoom.height / 2);
@@ -260,16 +264,41 @@ async function died(error) {
   await page.mouse.move(panRoom.x + panRoom.width / 2 + 40, panRoom.y + panRoom.height / 2 + 80, { steps: 8 });
   await page.mouse.up();
   const panned = await until('the Focus image camera pans', imageCamera, (position) => Math.abs(position.x - wheeled.x) > 1 || Math.abs(position.y - wheeled.y) > 1);
-  check('panning_keeps_focus_and_does_not_move_the_wander_camera', await focus.isVisible() && sameCamera(beforeGestures, await camera()), { wheeled, panned });
+  check('panning_keeps_focus_and_does_not_move_its_canvas_camera', await focus.isVisible() && sameCamera(gestureCanvas, await camera()), { wheeled, panned });
   check('panning_an_image_does_not_drag_out_a_new_asset', await page.locator('.carry-ghost').count() === 0 && JSON.stringify((await state()).assets.map((item) => item.name).sort()) === JSON.stringify(namesBeforePan));
-  await focus.getByRole('button', { name: 'Fit image', exact: true }).click();
-  await until('Fit resets the image camera', imageCamera, (position) => Math.abs(position.zoom - 1) < 0.0001 && Math.abs(position.x) < 0.5 && Math.abs(position.y) < 0.5);
+  check('Fit_button_is_removed', await focus.getByRole('button', { name: 'Fit image', exact: true }).count() === 0);
+  const zoomOut = focus.getByRole('button', { name: 'Zoom out image', exact: true });
+  for (let step = 0; step < 20 && (await imageCamera()).zoom > 1.0001; step++) {
+    const before = (await imageCamera()).zoom;
+    await zoomOut.click();
+    await until('zoom out approaches the fitted minimum', imageCamera, (position) => position.zoom < before);
+  }
+  await page.mouse.move(panRoom.x + panRoom.width / 2, panRoom.y + panRoom.height / 2);
+  await page.mouse.wheel(0, 600);
+  await until('zoom cannot go below the fitted full image', imageCamera, (position) => Math.abs(position.zoom - 1) < 0.0001 && Math.abs(position.x) < 0.5 && Math.abs(position.y) < 0.5);
   await expectFit(0.25);
-  check('Fit_keeps_focus_open_and_wander_unchanged', await focus.isVisible() && sameCamera(beforeGestures, await camera()));
+  check('fitted_minimum_keeps_focus_open_and_its_canvas_camera_unchanged', await focus.isVisible() && sameCamera(gestureCanvas, await camera()));
   await page.keyboard.press('Escape');
   await focus.waitFor({ state: 'detached' });
+  await until('Escape animates to the original Wander camera', camera, (position) => sameCamera(beforeGestures, position));
   await settled(page);
   check('Escape_explicitly_exits_focus_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
+  await focusByClick();
+  await expectFit(0.25);
+  const mainImage = (await measure()).media;
+  await page.mouse.click(mainImage.x + mainImage.width / 2, mainImage.y + mainImage.height / 2);
+  check('clicking_the_main_image_does_not_exit_focus', await focus.isVisible());
+  const backgroundPoint = await focus.evaluate((element) => {
+    const viewport = element.getBoundingClientRect();
+    const heading = element.querySelector('.focus-heading').getBoundingClientRect();
+    const body = element.querySelector('.focus-body').getBoundingClientRect();
+    return { x: viewport.right - 4, y: (heading.bottom + body.top) / 2 };
+  });
+  await page.mouse.click(backgroundPoint.x, backgroundPoint.y);
+  await focus.waitFor({ state: 'detached' });
+  await until('background exit animates to the original Wander camera', camera, (position) => sameCamera(beforeGestures, position));
+  await settled(page);
+  check('clicking_the_empty_focus_background_exits_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
 
   // An unrendered video tool gets a large editable Beats-first workspace and a New tile.
   const videoTool = metadata.tools.find((item) => item.makes === 'video' && item.id !== 'cozy/edit'
@@ -285,6 +314,8 @@ async function died(error) {
   await page.mouse.click(videoTile.x + videoTile.width / 2, videoTile.y + videoTile.height / 2);
   const videoFocus = page.locator(`[data-focused-asset="${VIDEO}"]`);
   await videoFocus.waitFor();
+  await page.locator(`[data-focused-asset="${VIDEO}"]:not([data-entering])`).waitFor();
+  const videoFocusedCanvas = await camera();
   const videoForm = videoFocus.locator('.focus-parameter-tool > .here-under');
   await videoForm.waitFor();
   const beatPrompt = videoForm.locator('[data-field="beats"] .beat .mention-text').first();
@@ -300,9 +331,10 @@ async function died(error) {
   check('video_has_a_new_state_tile', await newVideo.isVisible());
   await newVideo.click();
   check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 0);
-  check('video_focus_preserves_wander_camera', sameCamera(videoWander, await camera()));
+  check('video_parameters_do_not_move_the_focused_canvas_camera', sameCamera(videoFocusedCanvas, await camera()));
   await videoFocus.getByRole('button', { name: 'Back to canvas', exact: true }).click();
   await videoFocus.waitFor({ state: 'detached' });
+  await until('video exit restores its original Wander camera', camera, (position) => sameCamera(videoWander, position));
   check('no_focus_workspace_or_carry_ghost_remains', await page.locator('[data-focused-asset], .carry-ghost').count() === 0);
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();
