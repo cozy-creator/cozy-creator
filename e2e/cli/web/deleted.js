@@ -2,8 +2,8 @@
 // undo window is $UNDO_S seconds (config.toml's calcifer.undo_seconds, for tests): a picture dropped and its box deleted; `<` in another
 // box doesn't offer it; its mention typed anyway is struck as deleted, a render of what mentions it and the CLI's run both fail free naming
 // it, and no view shows its picture (no chip's thumbnail, no Files row). Undo: it resolves again. Deleted again with the page closed, once
-// the window ends its file is gone from files/ and Calcifer's thumbnails, its Undo says it can't come back, and a file a box still shows
-// stays. One deleted with Calcifer stopped across its window is gone once Calcifer starts.
+// the window ends its file is gone from files/ and Calcifer's thumbnails, its Undo brings the box back without it and says so, and a file a
+// box still shows stays. One deleted with Calcifer stopped across its window is gone once Calcifer starts.
 //   node deleted.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $STOP: a shell
 // command that stops this Calcifer, and $START one that brings it back. Prints what it saw as JSON and exits 1 if anything failed.
@@ -215,14 +215,17 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   check('thumbnails_gone', await until('its thumbnails gone', async () => thumbsOf(pic.sha256), (held) => held.length === 0, 10_000).then(() => true, () => thumbsOf(pic.sha256)));
   check('no_record_of_it', rowsOf(folder, `SELECT count(*) FROM lock_files WHERE sha256 = '${pic.sha256}'`)[0][0] === 0);
   check('shared_file_stays', inFiles((await asset('twin_b')).sha256));
+  // Undo then brings the box back without its files, saying so (projectdb-purged is the page's own Undo of it, past the real window).
   const history = (await api(`${at}/history?limit=50`)).body.entries;
   const entry = history.find((held) => held.words === 'Deleted pic' && !held.undone);
-  const refused = await api(`${at}/history/undo`, { method: 'POST', body: JSON.stringify({ entry: entry?.id }) });
-  seen.undo_refused = refused.body;
-  check('undo_says_it_cannot_come_back', refused.status === 409 && /can no longer be restored/.test(refused.body?.error?.message ?? ''), refused);
-  check('undo_brings_nothing_back', (await asset('pic')) === null);
+  const bare = await api(`${at}/history/undo`, { method: 'POST', body: JSON.stringify({ entry: entry?.id }) });
+  seen.undo_after_the_window = bare.body;
+  check('undo_says_its_files_were_removed', bare.status === 200 && (bare.body?.lost ?? []).some((said) => said.startsWith("pic's files were removed (deleted more than ")), bare);
+  const bareBox = await asset('pic');
+  check('undo_brings_the_box_back_without_them', bareBox !== null && !bareBox.sha256, bareBox);
+  check('undo_brings_no_file_back', !inFiles(pic.sha256));
   const twin = await api(`${at}/history/undo`, { method: 'POST', body: JSON.stringify({ entry: history.find((held) => held.words === 'Deleted twin_a')?.id }) });
-  check('shared_box_cannot_come_back_either', twin.status === 409, twin);
+  check('shared_box_back_without_its_files_too', twin.status === 200 && (twin.body?.lost ?? []).some((said) => said.startsWith("twin_a's files were removed")), twin);
 
   // With Calcifer stopped across the window: gone once it starts.
   const late = picture('late', 110);

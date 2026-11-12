@@ -935,7 +935,11 @@ export type HistoryStepped = { entries: Array<HistoryEntry>, already?: boolean,
 /**
  * What refused the next of a `to`, short of it.
  */
-stopped?: ErrorBody | null, undo?: number | null, redo?: number | null, };
+stopped?: ErrorBody | null,
+/**
+ * What came back without its files, as a person says it: a box whose undo window ended (cl-919).
+ */
+lost?: Array<string>, undo?: number | null, redo?: number | null, };
 
 /**
  * When a Hub last answered a machine listing.

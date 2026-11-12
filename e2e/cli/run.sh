@@ -541,6 +541,7 @@ case $SHARD in
     focusfinish
     takeids
     failedtakes
+    purged
     old_takes
     prepares
     db_migrate

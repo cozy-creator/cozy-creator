@@ -1446,6 +1446,9 @@ pub struct HistoryStepped {
     /// What refused the next of a `to`, short of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped: Option<Error>,
+    /// What came back without its files, as a person says it: a box whose undo window ended (cl-919).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lost: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
