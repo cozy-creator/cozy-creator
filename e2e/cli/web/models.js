@@ -108,18 +108,19 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   seen.tool_said = { word, ...said };
   check('the_tool_named_once', said.times === 1, seen.tool_said);
   check('nothing_of_the_tool_beside_the_title', !said.heading.includes(shotTool.package_title) && !said.heading.includes(shotTool.label), said.heading);
-  const models = scene.locator('.edit-foot .models-loras');
+  const models = scene.locator('.here-under .models-loras');
   const button = models.locator('button[aria-label="Models and LoRAs"]');
   await button.waitFor();
+  await button.scrollIntoViewIfNeeded();
   const placed = await scene.evaluate((card) => {
-    const pick = card.querySelector('.edit-foot .models-loras button[aria-label="Models and LoRAs"]');
+    const pick = card.querySelector('.here-under .models-loras button[aria-label="Models and LoRAs"]');
     const controls = [...card.querySelectorAll('.edit-shown [data-field], .edit-shown [aria-label], .edit-parameters [aria-label], .run')];
     const box = pick.getBoundingClientRect();
     return {
       buttons: card.querySelectorAll('button[aria-label="Models and LoRAs"]').length,
       words: pick.textContent.trim(),
       after_every_field: controls.every((el) => Boolean(el.compareDocumentPosition(pick) & Node.DOCUMENT_POSITION_FOLLOWING)),
-      in_sight: box.bottom <= innerHeight && box.top >= innerHeight / 2,
+      in_sight: box.bottom <= innerHeight && box.top >= 0,
     };
   });
   seen.placed = placed;

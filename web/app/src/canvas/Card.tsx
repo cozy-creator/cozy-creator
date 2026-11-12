@@ -794,11 +794,9 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const canFlip = asset?.kind !== "image" && makes(view)
   // On the canvas a box is its name, its picture or its text, its state and an X. All else comes with a click, so 300 boxes cost little.
   const editing = here && (asset?.kind === "image" || (asset?.kind === "video" && !asset.timeline) ? Boolean(view.hereWords) : asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
-  const parameterTool = focused && asset?.kind === "video" && Boolean(asset.tool) && !asset.timeline && editing
-  const looking = !parameterTool && here && asset?.kind !== "image" && !view.hereWords && paints(view, tools)
+  const looking = here && asset?.kind !== "image" && !view.hereWords && paints(view, tools)
   // Its fields show under it, Models & LoRAs at their bottom; with none, Models & LoRAs is beside its tool (cl-934).
   const fielded = here && Boolean(asset?.tool) && (asset?.kind !== "image" || editing) && !(asset?.kind === "video" && !asset.timeline && !editing) && !looking
-  const hasFocusMedia = Boolean(shown || asset?.making?.length || view.queued || view.asked !== undefined)
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   // Looking at a take, nothing of its tool: its warnings and state are the next take's too.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media") && !looking
@@ -809,12 +807,12 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const imageHeight = width / originalAspect
   const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
   const style: CSSProperties & Record<`--${string}`, string | number> = focused
-    ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 320 : 64 : asset?.kind === "video" && !editing ? 64 : asset?.tool ? 220 : 0}px` }
+    ? { width: "100%", "--focus-footer-room": `${!fielded ? 0 : (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline ? 320 : 220}px` }
     : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
   return (
     <div
       ref={self}
-      className={`card ${focused ? "focus-card" : ""} ${parameterTool ? "focus-parameter-tool focus-new-video" : ""} ${hasFocusMedia ? "has-focus-media" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
       style={style}
@@ -890,7 +888,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         <TimelineControl name={name} />
       ) : (
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
-          {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : !parameterTool ? <InFrame name={name} view={view} /> : null)}
+          {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && !focused && !view.hereWords && asset && shownVersion?.main && (
             <div
               className="take-out nodrag nopan"
@@ -918,7 +916,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {here && asset && asset.kind !== "text" && !asset.timeline && <Takes view={view} name={name} width={width} side />}
       {here && asset && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
         <div className="here-under nodrag nopan nowheel">
-          {parameterTool && <div className="authoring-ratio"><ShapeLine name={name} view={view} /></div>}
           <div className="here-all">
             {(asset.kind !== "text" || asset.tool) && <>
               {asset.timeline && <Takes view={view} name={name} width={width} />}
@@ -927,7 +924,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
               {/* With no tool, a picture or a video asks nothing and has nothing to render (Paul, 11-12). */}
-              {!looking && (asset.kind !== "image" || editing) && Boolean(asset.tool) && <AssetEdit name={name} view={view} editing={editing} prominent={parameterTool} actions={editing && <RenderButton name={name} view={view} />} />}
+              {!looking && (asset.kind !== "image" || editing) && Boolean(asset.tool) && <AssetEdit name={name} view={view} editing={editing} focused={focused} actions={editing && <RenderButton name={name} view={view} />} />}
               {asset.kind !== "image" && !view.hereWords && <TakeName view={view} />}
               {view.warned && warned ? (
                 <div className="warned-lines">
