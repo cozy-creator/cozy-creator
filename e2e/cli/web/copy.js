@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readdirSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, projectUrl, signIn, STEP_MS, until, upload } = require('./page');
+const { boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, projectUrl, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -161,8 +161,13 @@ async function died(why) {
   seen.entry = entry;
   check('one_entry_of_the_history', ['hei_2', 'words_2'].every((name) => entry?.names?.includes(name)), entry);
   check('copy_shows_the_picture', await shows('hei_2'), await boxOf(page, 'hei_2').innerHTML().catch(() => null));
-  check('copies_selected', (await selected()).join() === 'hei_2,words_2', await selected());
   await shot('pasted');
+  // Zoomed to what's selected, both are drawn: a box off the view isn't.
+  await quiet();
+  await page.keyboard.press('Shift+2');
+  await settled(page);
+  check('copies_selected', (await selected()).join() === 'hei_2,words_2', await selected());
+  await fitCanvas(page);
 
   // Undo takes both back, at once.
   await quiet();
@@ -235,7 +240,7 @@ async function died(why) {
   const count = (await names()).length;
   // Opened by its address, as a reload or Back finds it: how a click opens a box is another cell's.
   await page.goto(await projectUrl(id, '/assets/words'));
-  await page.locator('.card.here[data-asset="words"]').waitFor();
+  await page.locator('.card.here[data-asset="words"]').first().waitFor();
   const field = boxOf(page, 'words').locator('.mention-text[data-field=text]').first();
   await field.waitFor();
   await field.click();
