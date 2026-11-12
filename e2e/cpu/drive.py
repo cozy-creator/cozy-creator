@@ -447,6 +447,7 @@ class Broker:
     def receive(self, reply: Reply, spool: Path, index: int) -> tuple[str, list[Grant]]:
         result_file = spool / "result.canonical"
         value = cast(Json, json.loads(result_file.read_bytes())) if result_file.exists() else reply.get("result")
+        encode(spool, cast(list[dict[str, Json]], reply.get("frames") or []))
         directory = self.spool / "child-results" / str(index)
         directory.mkdir(parents=True, exist_ok=True)
         grants: list[Grant] = []
@@ -470,6 +471,20 @@ class Broker:
                            "content_bytes": len(data), "media_type": media_type, "local": str(local)})
             self.held[digest] = local
         return json.dumps(value, separators=(",", ":"), sort_keys=True), grants
+
+
+def encode(spool: Path, frames: list[dict[str, Json]]) -> None:
+    """An attempt's raw frames encoded into its spool by the Runtime's own encoder, as TensorD does before it grants an
+    output (`device_executor.rs` Codec): each `<kind>-<name>` beside its `.raw`."""
+    if not frames:
+        return
+    named = [{**frame, "name": "-".join(str(frame["handle"]).rsplit("/", 2)[-2:])} for frame in frames]
+    env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "TMPDIR", "VIRTUAL_ENV")}
+    done = subprocess.run([sys.executable, "-I", "-m", "cozy_runtime.cli.main", "frame-codec"], env=env, text=True,
+                          input=json.dumps({"spool": str(spool), "frames": named}) + "\n", capture_output=True, timeout=600)
+    answer = json.loads(done.stdout.splitlines()[0]) if done.stdout.strip() else {}
+    if "media" not in answer:
+        raise Failed(f"the frame codec encoded nothing: {answer.get('error') or done.stderr[-300:]}")
 
 
 def spooled(spool: Path, asset_ref: str) -> Path:
