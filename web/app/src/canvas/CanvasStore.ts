@@ -1440,9 +1440,13 @@ export class CanvasStore {
     }
   }
 
-  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. */
-  private giveWay(name: string, field: Field, box: Box, give: Give): Box {
-    const { pushed, ...fitted } = fit(box, field, give)
+  /** It gives way: it stays and pushes aside what it lies on, or moves or shrinks, as `give` says. Where it is now. With `bare`, the boxes
+   *  themselves without the room each keeps: where nowhere near has its room but the box itself lies on none of them, it stays, closer than
+   *  its room, as a project laid out closer stays when it's opened (`separate`), not sent beside everything, off past a crowd's edge. */
+  private giveWay(name: string, field: Field, box: Box, give: Give, bare?: Field): Box {
+    const { pushed, beside, ...fitted } = fit(box, field, give)
+    const itself = beside && bare ? this.boxOf(name, true) : null
+    if (itself && !bare!.under(itself).size) return box
     this.push(field, pushed)
     if (fitted.x === box.x && fitted.y === box.y && fitted.w === box.w) return box
     this.slide(name, fitted)
@@ -1464,10 +1468,14 @@ export class CanvasStore {
     this.unsettled.clear()
     if (!batch.length) return
     const names = new Set(batch.map(([name]) => name))
-    const field = this.field(names)
+    const [field, bare] = [this.field(names), this.field(names, true)]
     for (const [name, sized] of batch) {
       const box = this.boxOf(name)
-      if (box) field.add(name, this.giveWay(name, field, box, sized ? { pushes: this.pushable(names) } : { tall: this.tallOf(name) }))
+      if (!box) continue
+      const placed = this.giveWay(name, field, box, sized ? { pushes: this.pushable(names) } : { tall: this.tallOf(name) }, bare)
+      field.add(name, placed)
+      const itself = placed === box ? this.boxOf(name, true) : null
+      if (itself) bare.add(name, itself)
     }
   }
 

@@ -552,6 +552,7 @@ case $SHARD in
     old_takes
     prepares
     db_migrate
+    db_opens
     db_waits
     agent_render
     logs
@@ -566,6 +567,8 @@ case $SHARD in
   projectdb-migrate) parts="db_migrate logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).
   projectdb-waits) parts="db_waits logs" ;;
+  # A project opened and read again, across Calcifer's restart, with nothing in it changed (cl-885).
+  projectdb-opens) parts="db_opens logs" ;;
   # A run watched across Calcifer restarts, one whose lock record lands late (cl-885).
   follow-watch) parts="watch_restart logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
