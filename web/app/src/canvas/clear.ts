@@ -109,6 +109,8 @@ export interface Give {
 /** Where it goes, how wide, and the boxes pushed aside for it, by name. */
 export interface Fitted extends Box {
   pushed: Map<string, Box>
+  /** Nowhere near had room: it's beside everything. */
+  beside?: true
 }
 
 interface Size {
@@ -164,7 +166,7 @@ export function fit(box: Box, field: Field, { tall, pushes, was }: Give = {}): F
       look(at.x, hit.y + hit.h + GAP, at.size)
     }
   }
-  return { ...field.beside(box), pushed: new Map() }
+  return { ...field.beside(box), pushed: new Map(), beside: true }
 }
 
 /** What `box`, growing from `was` where it is, pushes aside, as `fit` would: none if something that can't be pushed is in the way. */
