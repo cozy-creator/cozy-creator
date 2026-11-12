@@ -2720,13 +2720,11 @@ export class CanvasStore {
     this.reshape(name)
   }
 
-  /** Where a pulled corner lands: what its tool makes, at the width it was pulled to. Let go at its auto shape, none set, it stays auto. */
+  /** A dragged output shape is explicit; only resetting it returns control to automatic sizing. */
   setShape(name: string, control: BoxField, width: number | undefined, shape: string) {
     const held = this.valueOf(name, control.field)
-    const auto = this.get(name)?.auto
-    const kept = ratioOf(held) === undefined && auto !== undefined && ratioOf(shape) === auto
     const edit = this.step(`Reshaped ${this.resolveName(name)}`, [name])
-    if (held !== shape && !kept) void this.setField(name, control.field, shape, edit)
+    if (held !== shape) void this.setField(name, control.field, shape, edit)
     this.patch(name, { shape: undefined })
     if (width !== undefined) this.setWidth(name, width, true, edit)
     else this.reshape(name)
