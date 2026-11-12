@@ -15,7 +15,7 @@ import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { aspectOf, faceOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf } from "./shown"
+import { aspectOf, faceOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
 import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
@@ -645,10 +645,13 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   // Being worked on, a take can be played and scrubbed, unless its words are over it.
   const open = Boolean(view.here && !view.hereWords)
   const shown = shownOf(view)
+  const watch = watched(view)
+  const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined)
+  const bufferedImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watchRun: undefined, watchFrom: undefined }) : null
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
-  const busy = making || Boolean(view.queued) || view.asked !== undefined
+  const busy = (making || Boolean(view.queued) || view.asked !== undefined) && (asset?.kind !== "image" || pendingImage || !shown)
   const run = busy ? makingRun(view) : undefined
   const here = shown && !shown.absent ? shown : null
   // A video whose file says `orbit` turns, not plays: open, a drag turns it from the file here.
@@ -663,7 +666,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const clips = asset?.timeline?.tracks[0]?.clips
   const firstClip = clips?.find((clip) => clip.sha256 && !clip.missing)?.sha256
   const imageVersions = (asset?.prefixes ?? []).filter((version) => version.main?.field === "image")
-  const imageAt = imageVersions.findIndex((version) => version.main?.sha256 === shown?.sha256)
+  const imageAt = imageVersions.findIndex((version) => version.main?.sha256 === bufferedImage?.sha256)
   const neighbors = [1, -1, 2, -2].flatMap((offset) => {
     const next = imageVersions[imageAt + offset]?.main
     return next && !next.absent ? [next.sha256] : []
@@ -675,7 +678,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !view.glimpse
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   return (
-    <div className={`media ${asset?.kind === "image" ? "image-asset" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
+    <div className={`media ${asset?.kind === "image" ? "image-asset" : ""} ${pendingImage ? "pending-image" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
       <div className="media-pixels" data-image-reference={asset?.kind === "image" && shown && !view.hereWords ? "" : undefined}>
         {preview && (
           <img
@@ -689,7 +692,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           />
         )}
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-        {here && field === "image" && <BufferedImage sha256={here.sha256} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {bufferedImage && field === "image" && <BufferedImage sha256={bufferedImage.sha256} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}

@@ -2730,6 +2730,9 @@ a.tab:hover {
 .media.image-editing .media-pixels {
   opacity: 0.22;
 }
+.media.pending-image .media-pixels {
+  visibility: hidden;
+}
 .media.image-editing:has(.ghosts img) .media-pixels {
   opacity: 0;
 }
