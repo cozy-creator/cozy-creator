@@ -7,13 +7,11 @@ pub(super) const MARKER: &str = ".cozy-apfs-v1";
 const MAGIC: &[u8] = b"cozy-encrypted-apfs-sparsebundle-v1\n";
 const IMAGE: &str = "project.sparsebundle";
 const NORMAL_DETACH_ACK: Duration = Duration::from_secs(2);
-const MONITOR_POLL: Duration = Duration::from_millis(100);
 // EOF can arrive during a control probe. A detach pass can then use its initial
 // probe, normal detach, confirmation probe, forced detach and final probe.
 pub(super) const SHUTDOWN_ACK: Duration = CONTROL_ACK
     .saturating_mul(5)
-    .saturating_add(NORMAL_DETACH_ACK)
-    .saturating_add(MONITOR_POLL);
+    .saturating_add(NORMAL_DETACH_ACK);
 
 pub(super) fn validate(backing: &Path) -> Result<PathBuf> {
     let marker = backing.join(MARKER);
@@ -354,7 +352,7 @@ pub(super) fn serve(request: Request) -> Result<()> {
         view,
         secret,
         parent,
-        mut input,
+        input,
         guard,
         read_only,
     } = request;
@@ -402,29 +400,17 @@ pub(super) fn serve(request: Request) -> Result<()> {
     ))?);
     guard.seal()?;
     acknowledge()?;
-    let (ended, stop) = mpsc::channel();
-    thread::spawn(move || {
-        let mut byte = [0];
-        let _ = input.read(&mut byte);
-        let _ = ended.send(());
-    });
-    let mut next_status = Instant::now() + Duration::from_secs(1);
+    let (heard, _) = listen(input, parent, None)?;
     loop {
-        if stop.try_recv().is_ok() || parent.wait_for(MONITOR_POLL)? {
-            while !lease.finish()? {
-                thread::sleep(Duration::from_secs(1));
-            }
-            return Ok(());
+        // A volume mounting or unmounting asks whether this one is still mounted: an external eject must also release the image's
+        // unlocked kernel attachment.
+        match heard.recv() {
+            Ok(Heard::Mounts | Heard::Child) if provider.is_mounted(&view)? => continue,
+            _ => {}
         }
-        if Instant::now() >= next_status {
-            next_status = Instant::now() + Duration::from_secs(1);
-            if !provider.is_mounted(&view)? {
-                // An external eject must also release the image's unlocked kernel attachment.
-                while !lease.finish()? {
-                    thread::sleep(Duration::from_secs(1));
-                }
-                return Ok(());
-            }
+        while !lease.finish()? {
+            thread::sleep(Duration::from_secs(1));
         }
+        return Ok(());
     }
 }
