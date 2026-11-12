@@ -25,7 +25,7 @@ import time
 from urllib.parse import quote
 
 from common import Failure, Native, Proof, Receipt, alive, birth, kill_exact, project_route, require, sha, until
-from scan import Scanner, tmpfs
+from scan import Scanner, places, tmpfs
 from native_execution import qualify as qualify_native
 from development import Development
 from remote_cpu import qualify as qualify_remote
@@ -85,8 +85,9 @@ class ForeignBrowsers:
             shutil.rmtree(profile)
 
 
-def scan_case(scanner: Scanner, receipt: Receipt, case: str, roots: list[Path], exclusions: list[Path]) -> None:
-    result = scanner.scan(roots, exclusions, receipt.path)
+def scan_case(scanner: Scanner, receipt: Receipt, case: str, roots: list[Path], exclusions: list[Path], located: dict[str, Path]) -> None:
+    result = scanner.scan_privileged(roots, exclusions, receipt.path, located)
+    require(result is not None, "scan_process")
     receipt.add(case, **result)
     require(result["matches"] == 0, "outside_project_canary")
     require(not any(result.get(key, 0) for key in ("unreadable", "sqlite_unreadable", "archive_unreadable", "archive_oversize", "leveldb_unreadable", "images_unreadable")), "scan_decoder_unavailable")
@@ -119,6 +120,7 @@ def main() -> int:
     for name in ("TMPDIR", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"):
         if os.environ.get(name):
             roots.append(Path(os.environ[name]))
+    located = places(Path.home(), Path(os.environ["RUNNER_TEMP"]), projects=root, calcifer_vaults=Path.home() / ".cozy/calcifer/vaults")
     proof: Proof | None = None
     foreign: ForeignBrowsers | None = None
     development: Development | None = None
@@ -206,7 +208,7 @@ def main() -> int:
         require(refused.status == 403 and "no-store" in refused.headers.get("cache-control", ""), "csrf_no_store_refusal")
         unauthenticated = native.raw("GET", project_route(a["id"]), auth=False)
         require(unauthenticated.status == 401, "native_auth_required")
-        scan_case(scanner, receipt, "live_outside_scan", roots, [a["view"], b["view"], profile])
+        scan_case(scanner, receipt, "live_outside_scan", roots, [a["view"], b["view"], profile], located)
         if development is not None:
             phase = "development_hmr"
             development.no_api_bridge()
@@ -254,7 +256,7 @@ def main() -> int:
         until(lambda: [alive(process) for process in snapshot["processes"]], lambda live: not any(live), "owned_browser_tree_not_retired")
         require(not profile.exists() and foreign.preserved() and not (a["view"] / "root-data.txt").exists(), "whole_browser_retirement")
         receipt.add("queued_b_edit_then_a_lock", saved=True, owned_retired=True, profile_removed=True, unrelated_preserved=True, busy_refusal=busy)
-        scan_case(scanner, receipt, "a_locked_outside_scan", roots, [b["view"]])
+        scan_case(scanner, receipt, "a_locked_outside_scan", roots, [b["view"]], located)
         phase = "last_window_close"
         native.document("open", cwd=b["folder"])
         until(lambda: proof.exercise(b["id"], "ready"), lambda value: value.get("page_ready"), "reopened_page_ready")
@@ -317,7 +319,7 @@ def main() -> int:
             receipt.add("native_lock_restart_retention", file_retained=True, history_retained=True, output_sha256=a["native_allowed_sha256"])
         native.document("vault", "lock", cwd=b["folder"])
         receipt.add("cold_restart", new_authority=True, new_browser=True, unrelated_preserved=foreign.preserved())
-        scan_case(scanner, receipt, "all_locked_outside_scan", roots, [])
+        scan_case(scanner, receipt, "all_locked_outside_scan", roots, [], located)
         health = (Path.home() / ".cozy/calcifer/health.log").read_bytes()
         require(b"started" in health and all(marker not in health for marker in scanner.markers), "closed_health_sink")
         receipt.add("health_sink", events=health.count(b"INFO"), canaries=0)

@@ -19,13 +19,13 @@ import socket
 import ssl
 import sqlite3
 import subprocess
-import sys
 import tempfile
 import time
 from urllib.parse import quote
 
-from common import Failure, Native, Receipt, alive, birth, kill_exact, require, sha, until, project_route
+from common import Failure, Native, Receipt, alive, birth, kill_exact, project_run_ids, require, sha, until, project_route
 from legacy_seed import publish_old
+from scan import Scanner, places
 
 HOME = Path.home()
 COZY = HOME / ".cozy"
@@ -65,7 +65,8 @@ ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_f
     "migration_source_retired", "old_installed", "old_version", "old_project_created",
     "old_retry_prepared", "input_retained", "retry_replayed", "retry_journal_exact",
     "retry_worker_exact", "old_client_refused", "old_client_journal_exact", "encrypted_identity",
-    "moved_identity", "moved_retry_replayed", "moved_worker_exact", "scan_process"})
+    "moved_identity", "moved_retry_replayed", "moved_worker_exact", "scan_process",
+    "outside_project_canary", "scan_decoder_unavailable"})
 
 
 class Failed(Failure):
@@ -592,20 +593,9 @@ def output_bytes(native: Native, run: dict, *, old: bool) -> list[bytes]:
     return bodies
 
 
-def history_ids(native: Native, reference: str) -> set[str]:
-    # The API clamps `limit` to 1..1000 newest first; page by `before` as `cozy run ls` does.
-    found, before = set(), ""
-    while True:
-        page = call(native, "GET", project_route(reference, "/runs?limit=1000" + before))
-        check(not page.get("unreadable"), "history_readable", unreadable=len(page.get("unreadable") or []))
-        found.update(run["id"] for run in page["runs"])
-        if not page.get("older") or not page["runs"]:
-            return found
-        before = "&before=" + str(page["runs"][-1]["number"])
-
-
 def assert_history(native: Native, reference: str, project: Path, baseline: dict, results: dict) -> None:
-    listed = history_ids(native, reference)
+    listed, unreadable = project_run_ids(lambda path: call(native, "GET", path), reference)
+    check(not unreadable, "history_readable", unreadable=unreadable)
     check(set(baseline).issubset(listed), "history_listed", listed=len(listed), expected=len(baseline),
           missing=len(set(baseline) - listed))
     for identifier, expected in results.items():
@@ -634,26 +624,17 @@ def complete_migration(native: Native, reference: str, project: Path) -> None:
 
 
 def outside_scan(markers: list[bytes], allowed: list[Path], receipt: Receipt, project: Path) -> dict:
+    scanner = Scanner()
+    for marker in markers:
+        scanner.add(marker)
     temp = Path(os.environ["RUNNER_TEMP"])
-    state, engine = MACHINE / "var/lib/cozy/machine", MACHINE / "var/lib/cozy/tensord"
-    classes = {"home": HOME, "user_cache": HOME / ".cache", "tensorfs_cache": HOME / ".cache/tensorfs", "cozy": COZY,
-               "cozy_cache": COZY / "cache", "calcifer": CALCIFER, "machine": MACHINE, "machine_state": state,
-               "machine_start_log": state / "start.log", "machine_logs": state / "logs", "engine": engine,
-               "engine_execution": engine / "execution", "engine_triage": engine / "execution/triage",
-               "engine_gpu": engine / "gpu", "runner_temp": temp, "hub": temp / "e2e/hub", "project": project,
-               "tmp": Path("/tmp"), "var_tmp": Path("/var/tmp"), "dev_shm": Path("/dev/shm")}
-    request = {"markers": [marker.hex() for marker in markers], "excluded": [str(path) for path in allowed],
-               "roots": [str(path) for path in (HOME, Path("/tmp"), Path("/var/tmp"), Path("/dev/shm"), temp)],
-               "receipt": str(receipt.path), "classes": {name: str(path) for name, path in classes.items()}}
-    # Root reads OS-private folders (systemd PrivateTmp, sudo apt state) an unprivileged walk
-    # cannot. Markers travel on stdin; only numeric counts come back.
-    scanned = subprocess.run(["sudo", "-n", sys.executable, "-E", "-s", str(Path(__file__).with_name("scan.py"))],
-                             input=json.dumps(request).encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    check(scanned.returncode == 0, "scan_process", returncode=scanned.returncode)
-    counts = {key: value for key, value in json.loads(scanned.stdout).items() if type(value) is int}
+    result = scanner.scan_privileged([HOME, Path("/tmp"), Path("/var/tmp"), Path("/dev/shm"), temp], allowed,
+                                     receipt.path, places(HOME, temp, project=project))
+    check(result is not None, "scan_process")
+    counts = {key: value for key, value in result.items() if type(value) is int}
     CONTEXT["scan"] = counts
-    require(not counts.get("matches"), "outside_project_canary")
-    require(not any(counts.get(key) for key in ("unreadable", "sqlite_unreadable", "archive_unreadable", "archive_oversize", "leveldb_unreadable", "images_unreadable")), "scan_decoder_unavailable")
+    check(not counts.get("matches"), "outside_project_canary")
+    check(not any(counts.get(key) for key in ("unreadable", "sqlite_unreadable", "archive_unreadable", "archive_oversize", "leveldb_unreadable", "images_unreadable")), "scan_decoder_unavailable")
     # A matched path hash would itself identify private source custody. Keep
     # numeric boundaries only in this fixture's outside evidence receipt.
     return counts

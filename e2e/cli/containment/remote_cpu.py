@@ -15,7 +15,7 @@ import sqlite3
 import subprocess
 from urllib.parse import quote, urlsplit
 
-from common import Failure, Native, Receipt, require, sha, until, project_route
+from common import Failure, Native, Receipt, project_run_ids, require, sha, until, project_route
 from native_execution import _documents
 
 TEXT = "Cozy public remote CPU fixture v1"
@@ -283,8 +283,8 @@ def qualify(native: Native, project: dict, receipt: Receipt, ready: dict) -> Non
         worker.close(); worker.created = False
         worker.stage("retained_history")
         retained = native.call("GET", project_route(project["id"], "/runs/" + quote(identifier, safe="") + "?detail=full"))
-        listed = native.call("GET", project_route(project["id"], "/runs?limit=0"))
-        require(retained.get("status") == "completed" and any(row.get("id") == identifier for row in listed["runs"]), "fixture_failure")
+        listed, _ = project_run_ids(lambda path: native.call("GET", path), project["id"])
+        require(retained.get("status") == "completed" and identifier in listed, "fixture_failure")
         require(history(project["view"], identifier) == before and native.raw("GET", output).body == expected, "fixture_failure")
         receipt.add("remote_cpu_execution", explicit_remote=True, actual_cli=True, input_in_project=True, output_matches=True,
                     local_history_retained=True, remote_invocation_unscoped=True, local_view_absent=True, local_proof_absent=True,
