@@ -73,7 +73,8 @@ function plate(path, color, seconds, hz) {
   const read = async () => (await call('GET', `/v1/projects/${id}`)).body;
   const folder = (await read()).path;
   seen.project = { id, folder };
-  const edit = async () => (await read()).assets.find((asset) => asset.name === 'Timeline');
+  let timelineName;
+  const edit = async () => (await read()).assets.find((asset) => asset.name === timelineName);
 
   // Real clips, each one color and one tone, and a still with its left half transparent.
   const dir = mkdtempSync(join(tmpdir(), 'web-timeline-'));
@@ -91,9 +92,11 @@ function plate(path, color, seconds, hz) {
   const tool = tools.find((held) => held.id === 'cozy/edit');
   check('edit_is_a_tool', tool?.id === 'cozy/edit' && tool.makes === 'video' && tool.fields[0]?.type === 'timeline', tool);
   // By its id: a package's tool can be titled Edit too (minimax-h3/edit, 11-10).
+  const beforeTimeline = new Set((await read()).assets.map((asset) => asset.name));
   await carry(page, await implementationRow(page, 'timeline', 'cozy/edit'), { x: 1208, y: 144 });
+  timelineName = (await until('new Video Timeline asset is named', async () => (await read()).assets.find((asset) => asset.tool === 'cozy/edit' && !beforeTimeline.has(asset.name)), Boolean)).name;
   const card = (name) => boxOf(page, name);
-  await card('Timeline').waitFor();
+  await card(timelineName).waitFor();
   // A box shows as it's dropped, ahead of Calcifer's answer: it's the project that's asked.
   check('its_name', Boolean(await until('the Edit in the project', edit, Boolean)));
   // At rest it's its picture, or what it's for: on a hover, its filmstrip, in the same place, and still no video.
@@ -102,23 +105,23 @@ function plate(path, color, seconds, hz) {
     await page.mouse.move(2, 500);
   };
   const openEdit = async () => {
-    await openBox(page, 'Timeline');
-    const words = card('Timeline').locator('.take.add[aria-label="Its words"]:not(.on)');
-    if (!(await card('Timeline').locator('.tl-clips').count()) && await words.count()) await words.click();
+    await openBox(page, timelineName);
+    const words = card(timelineName).locator('.take.add[aria-label="Its words"]:not(.on)');
+    if (!(await card(timelineName).locator('.tl-clips').count()) && await words.count()) await words.click();
     await page.waitForSelector('.tl-clips');
   };
-  await openBox(page, 'Timeline');
+  await openBox(page, timelineName);
   await away();
-  await until('an Edit at rest', () => card('Timeline').locator('.tl').count(), (n) => n === 0);
-  check('at_rest_says_what_it_is_for', (await card('Timeline').locator('.media-note').textContent()) === 'Drag videos and stills here');
+  await until('an Edit at rest', () => card(timelineName).locator('.tl').count(), (n) => n === 0);
+  check('at_rest_says_what_it_is_for', (await card(timelineName).locator('.media-note').textContent()) === 'Drag videos and stills here');
   // A box that just arrived is still landing, a little bigger than it rests.
   await until('it has landed', () => page.locator('.card.landing').count(), (n) => n === 0);
-  const atRest = await card('Timeline').locator('.media').boundingBox();
+  const atRest = await card(timelineName).locator('.media').boundingBox();
   await openEdit();
-  const onHover = await card('Timeline').locator('.tl').boundingBox();
+  const onHover = await card(timelineName).locator('.tl').boundingBox();
   check('opened_it_has_the_room', onHover.width > atRest.width, { atRest, onHover });
   check('hover_opens_no_video', (await page.locator('video').count()) === 0);
-  check('edit_has_no_project_picture_gallery', (await card('Timeline').locator('.pictures').count()) === 0);
+  check('edit_has_no_project_picture_gallery', (await card(timelineName).locator('.pictures').count()) === 0);
   // Keep the source boxes and the open Edit in reach for real canvas-to-track drags.
   await page.click('.zoom-at');
   await page.getByRole('menuitem', { name: 'Zoom to 50%', exact: true }).click();
@@ -155,9 +158,9 @@ function plate(path, color, seconds, hz) {
   await until('the file holds them', () => Promise.resolve(yamlOf(folder)), (text) => /<title>[\s\S]*<red>[\s\S]*<blue>/.test(text));
   check('a_filmstrip_each', await until('its frames', () => page.locator('.tl-clip img').count(), (n) => n >= 3));
   await away();
-  check('at_rest_its_first_clip', await until('its first clip\'s picture', () => card('Timeline').locator('.media img').count(), (n) => n === 1));
+  check('at_rest_its_first_clip', await until('its first clip\'s picture', () => card(timelineName).locator('.media img').count(), (n) => n === 1));
   // The built-in composition tool is removable, but its editor stays closed at rest.
-  check('at_rest_timeline_is_closed_and_removable', await card('Timeline').locator('.tl').count() === 0 && await card('Timeline').getByRole('button', { name: /^Take .* off Timeline$/ }).isVisible(), await card('Timeline').innerText());
+  check('at_rest_timeline_is_closed_and_removable', await card(timelineName).locator('.tl').count() === 0 && await card(timelineName).getByRole('button', { name: new RegExp(`^Take .* off ${timelineName}$`) }).isVisible(), await card(timelineName).innerText());
   await openEdit();
 
   // Pull an end: the bubble says the timecode, the clips stay snapped. What's taken hold of has stopped: the canvas too, which draws in on
@@ -234,13 +237,13 @@ function plate(path, color, seconds, hz) {
   // Render: free, with no machine, showing how far it is on the box it left, and a version like any other.
   const render = async () => {
     await openEdit();
-    await card('Timeline').locator('button[aria-label="Render"]').click();
+    await card(timelineName).locator('button[aria-label="Render"]').click();
   };
   await page.evaluate(() => { window.rendering = 0; new MutationObserver(() => { if (document.querySelector('[role="progressbar"][aria-label="Rendering"]')) window.rendering += 1; }).observe(document.body, { subtree: true, childList: true, attributes: true }); });
   await render();
   const landed = (count) => until(`${count} versions`, async () => (await edit()).versions, (n) => n === count, 180_000);
   await landed(1);
-  const film = join(folder, 'Timeline.mp4');
+  const film = join(folder, `${timelineName}.mp4`);
   await until('its film', () => existsSync(film), Boolean);
   check('frames_exact', countFrames(film) === expected, { film: countFrames(film), expected });
   const sound = streamSeconds(film, 'a'), picture = streamSeconds(film, 'v');
@@ -258,7 +261,7 @@ function plate(path, color, seconds, hz) {
   const assets = (await read()).assets;
   const file = (name) => assets.find((asset) => asset.name === name).path;
   const otioClip = (clip) => (clip.name === 'title' ? `title:0:${clip.frames}:${file('title')}:still` : `${clip.name}:${clip.in}:${clip.out}:${file(clip.name)}`);
-  const otio = spawnSync('uv', ['run', '-q', '--no-project', '--with', 'opentimelineio==0.17.0', 'python', '-I', join(__dirname, '..', 'project', 'otio_check.py'), join(folder, 'Timeline.otio'), String(FPS), ...placed.map(otioClip)], { encoding: 'utf8' });
+  const otio = spawnSync('uv', ['run', '-q', '--no-project', '--with', 'opentimelineio==0.17.0', 'python', '-I', join(__dirname, '..', 'project', 'otio_check.py'), join(folder, `${timelineName}.otio`), String(FPS), ...placed.map(otioClip)], { encoding: 'utf8' });
   check('otio_reads_back', otio.status === 0 && /otio PASS/.test(otio.stdout), `${otio.stdout}${otio.stderr}`.slice(-1500));
 
   // The same edit again renders nothing.
@@ -282,38 +285,38 @@ function plate(path, color, seconds, hz) {
   check('second_frames_exact', countFrames(film) === second.reduce((sum, clip) => sum + clip.frames, 0), { film: countFrames(film), second });
 
   // Back to the first: its arrangement shows, and an edit carries on from there.
-  await openBox(page, 'Timeline');
-  await card('Timeline').locator('.take[aria-label$=" 1"]').click();
+  await openBox(page, timelineName);
+  await card(timelineName).locator('.take[aria-label$=" 1"]').click();
   await until('version 1\'s clips', clips, (now) => now[0].out === placed[0].out);
   await pull('blue', 'in', 10);
   await until('carried on from it', async () => (await edit()).fields.timeline.tracks[0].clips[0].out, (out) => out === placed[0].out);
   check('carried_on', (await edit()).fields.timeline.tracks[0].clips[0].in > placed[0].in, (await edit()).fields.timeline);
 
   // Dragged out, a version is an asset of its own with the same file, and no new bytes.
-  await openBox(page, 'Timeline');
+  await openBox(page, timelineName);
   // Its takes are a row under it, which drags across: one leaves it up or down.
-  await carry(page, card('Timeline').locator('.take[data-take][aria-label$=" 1"]'), await openCanvas(page), 'y');
-  const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== 'Timeline'), Boolean);
+  await carry(page, card(timelineName).locator('.take[data-take][aria-label$=" 1"]'), await openCanvas(page), 'y');
+  const dragged = await until('its own asset', async () => (await read()).assets.find((asset) => asset.sha256 === versions[0].main.sha256 && asset.name !== timelineName), Boolean);
   check('dragged_out', Boolean(dragged), (await read()).assets.map((asset) => asset.name));
 
   // Approved by a double tap, that version is what the Edit is, and its film follows.
-  await openBox(page, 'Timeline');
-  await card('Timeline').locator('.take[aria-label$=" 2"]').dblclick();
+  await openBox(page, timelineName);
+  await card(timelineName).locator('.take[aria-label$=" 2"]').dblclick();
   await until('approved', async () => (await edit()).approved, (number) => number === versions[1].number);
   check('film_follows_the_approved', await until('its film', () => spawnSync('ffprobe', ['-v', 'error', film]).status === 0 && countFrames(film), (n) => n === second.reduce((sum, clip) => sum + clip.frames, 0)));
-  await openBox(page, 'Timeline');
+  await openBox(page, timelineName);
   // Approved, it shows its film, and only an Edit has + for its words.
-  check('an_edit_has_its_words', (await card('Timeline').locator('.take.add[aria-label="Its words"]').count()) === 1, await card('Timeline').innerText());
+  check('an_edit_has_its_words', (await card(timelineName).locator('.take.add[aria-label="Its words"]').count()) === 1, await card(timelineName).innerText());
   // Unapproved, it has no film of what it holds now, so it's cut there and then, and the call answers when that's done: what's counted below is what's asked below.
   // Again on it, unapproved.
-  await Promise.all([page.waitForResponse((answer) => answer.url().endsWith('/unpin')), card('Timeline').locator('.take.approved').dblclick()]);
+  await Promise.all([page.waitForResponse((answer) => answer.url().endsWith('/unpin')), card(timelineName).locator('.take.approved').dblclick()]);
   await until('unapproved', async () => (await edit()).pinned, (pinned) => !pinned);
   await openEdit();
 
   // Its right click: the film's shape and size, as a render makes them, and a rate that keeps every clip's times.
   const setting = async (label, value) => {
-    await openBox(page, 'Timeline');
-    await card('Timeline').locator('.nm').click({ button: 'right' });
+    await openBox(page, timelineName);
+    await card(timelineName).locator('.nm').click({ button: 'right' });
     await page.selectOption(`.asset-menu select[aria-label="${label}"]`, value);
     await page.keyboard.press('Escape');
   };
@@ -432,7 +435,7 @@ function plate(path, color, seconds, hz) {
 
   if (process.env.COZY) {
     const status = projectJson(folder);
-    check('api_sees_its_versions', status.assets.find((asset) => asset.name === 'Timeline')?.versions === before + 1, status.assets.find((asset) => asset.name === 'Timeline'));
+    check('api_sees_its_versions', status.assets.find((asset) => asset.name === timelineName)?.versions === before + 1, status.assets.find((asset) => asset.name === timelineName));
   }
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   check('no_page_errors', errors.length === 0, errors);

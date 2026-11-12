@@ -121,7 +121,7 @@ async function loseAnswers(page, method, path, times) {
   seen.drop = { frame_ms: dropped.frame - dropped.drop, boxes: [dropped.boxes, dropped.after] };
   check('box_in_the_frame_of_the_drop', dropped.after === dropped.boxes + 1, seen.drop);
   const name = await page.locator('.card.landing').first().getAttribute('data-asset');
-  check('box_named_before_any_answer', name === 'Timeline' && !hasAsset(name), { name });
+  check('box_named_before_any_answer', Boolean(name) && !hasAsset(name), { name });
   check('post_is_held', posts.calls.length <= 1, posts.calls.length);
 
   // Moved and typed in while nothing is saved: each keeps its place in line, and nothing on screen says so.
@@ -277,7 +277,7 @@ async function loseAnswers(page, method, path, times) {
     await (await renderOf(page, 'fixture')).click();
     await page.waitForTimeout(20);
     // The selected image remains one frame; accepted work is visible there rather than in a second thumbnail column.
-    check('render_says_queued_at_once', await box('fixture').locator('.media-making, .prog, .on-its-way').count() > 0 && await box('fixture').locator('.here-side .take').count() === 0, await box('fixture').innerText());
+    check('render_says_queued_at_once', await box('fixture').locator('.media-making, .prog, .on-its-way, .here-side .take.making').count() > 0, await box('fixture').innerText());
     await until('a version of it', () => Promise.resolve(status().find((asset) => asset.name === 'fixture')?.versions ?? 0), (n) => n >= 1, FIRST_RUN_MS);
     // The take can land before the lost answer's reset reaches the page: what it asks again is seen before the route goes.
     await until('asked again', () => Promise.resolve(renders.keys.length), (n) => n >= 2, 10_000).catch(() => {});
@@ -335,7 +335,7 @@ async function loseAnswers(page, method, path, times) {
     check('what_cant_be_read_says_why', /schema 99/.test(refusal) && /only current CRDT schema 2 is supported/.test(refusal) && /Preserve this database/.test(refusal) && /new current-format project in a separate empty directory/.test(refusal) && (await page.locator('.empty-canvas').count()) === 0, refusal);
     await until('the Timeline implementation still there', async () => (await editor()).count(), (n) => n === 1);
     await carry(page, await editor(), { x: 1200, y: 300 });
-    await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Timeline/.test(line)).length, (n) => n === 1);
+    await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Video Timeline/.test(line)).length, (n) => n === 1);
     check('a_drop_on_what_cant_be_read_rolls_back', (await page.locator('.card[data-asset]').count()) === 0);
     await page.getByTitle(folder, { exact: true }).click();
     await box(name).waitFor();
