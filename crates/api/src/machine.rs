@@ -1220,6 +1220,10 @@ pub struct Gpu {
     /// TensorD's page accounting of its memory manager on it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<GpuMemory>,
+    /// Why nothing is placed on it now (cl-935): its memory held by a process stuck in the kernel, or in use at the
+    /// machine's start by processes it doesn't run. Empty: in service.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub out_of_service: String,
 }
 
 /// A GPU's page accounting, as its memory manager holds it now.

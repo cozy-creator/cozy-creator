@@ -808,7 +808,11 @@ memory_limit_bytes?: number,
 /**
  * It draws a screen now: a render on it makes the screen lag.
  */
-display?: boolean, };
+display?: boolean,
+/**
+ * Why nothing is placed on it now (cl-935); empty: in service.
+ */
+out_of_service?: string, };
 
 /**
  * A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's

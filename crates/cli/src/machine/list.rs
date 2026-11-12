@@ -336,14 +336,14 @@ pub(crate) fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
         if !gpu.driver.is_empty() {
             cell += &format!(" · driver {}", gpu.driver);
         }
-        if let Some(stuck) = status.stuck.iter().find(|s| s.gpus.contains(&gpu.index)) {
-            cell += &format!(" · out of service: pid {} holds its memory, stuck in the kernel", stuck.pid);
+        if !gpu.out_of_service.is_empty() {
+            cell += &format!(" · out of service: {}", gpu.out_of_service);
         }
         fields.push((format!("GPU {}", gpu.index), cell));
     }
     // A process that never leaves the kernel holds its GPUs until the computer restarts (cl-935).
-    if !status.gpus.is_empty() && status.gpus.iter().all(|g| status.stuck.iter().any(|s| s.gpus.contains(&g.index))) {
-        fields.push(("no gpu serves".into(), "each is held by a process stuck in the kernel: `cozy machine end` this machine, and `--on new` rents another".into()));
+    if !status.gpus.is_empty() && status.gpus.iter().all(|g| !g.out_of_service.is_empty()) {
+        fields.push(("no gpu serves".into(), "none is in service: if that lasts, `cozy machine end` this machine, and `--on new` rents another".into()));
     }
     // Beside each card's own size, so a limited card is not mistaken for a smaller one.
     let limited: Vec<_> = status.gpus.iter().filter(|g| g.memory_limit_bytes > 0).collect();

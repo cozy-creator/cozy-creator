@@ -653,6 +653,10 @@ impl Runs {
     pub(crate) fn lost(&self) -> BTreeMap<u32, crate::gpu_service::Lost> {
         self.service.gpu().map(|gpu| gpu.lost()).unwrap_or_default()
     }
+    /// Why each GPU out of service is, by UUID (cl-935).
+    pub(crate) fn out_of_service(&self) -> BTreeMap<String, String> {
+        self.service.gpu().map(|gpu| gpu.out_reasons()).unwrap_or_default()
+    }
     /// The caller's warm set, each member with what it holds now (`StatusFrame.warm`).
     pub(crate) fn warm(&self, actor: VerifiedActor) -> Result<Vec<v1::WarmItem>, Error> {
         let actor = actor_id(actor);

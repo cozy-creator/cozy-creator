@@ -208,6 +208,8 @@ impl Service {
         if pool.width() > 0 {
             pool.watch_faults();
             pool.watch_stuck();
+            // Before this run's first GPU process (its kernel boot): what is in use now isn't its own.
+            pool.foreign_at_start();
             // The current image may prepare ahead. Historical environments stay cold;
             // requested installs and executions use their existing kernel preparation paths.
             pool.image_kernel_boot();

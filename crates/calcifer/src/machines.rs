@@ -1166,7 +1166,7 @@ impl Machines {
         let seen = lock(&self.seen);
         let count = |row: &MachineRow| match seen.get(&row.name).and_then(|s| s.frame.as_ref()) {
             // GPUs out of service (cl-935) don't count.
-            Some(frame) if frame.phase == "ready" => Some(frame.gpus.iter().filter(|g| !frame.stuck.iter().any(|s| s.gpus.contains(&g.index))).count() as u32),
+            Some(frame) if frame.phase == "ready" => Some(frame.gpus.iter().filter(|g| g.out_of_service.is_empty()).count() as u32),
             _ => self.hubs.gpus(row),
         };
         Ok(rows
@@ -1764,6 +1764,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
                 memory_class: Some(gpu.memory_class.clone()).filter(|c| !c.is_empty()),
                 memory_limit_bytes: gpu.memory_limit_bytes,
                 display: gpu.display,
+                out_of_service: gpu.out_of_service.clone(),
             })
             .collect(),
         mode: frame.mode.clone(),
