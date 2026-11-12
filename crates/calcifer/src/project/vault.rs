@@ -730,6 +730,9 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             }
             let completing = receipt_path(root).is_file();
             if completing || journal_cleanup_pending(root)? {
+                if api.calcifer.maintenance_store().migration_required().map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))? {
+                    return Err(error("project_migration_pending", "the project is open; verified legacy ownership is still required before storage cleanup"));
+                }
                 progress.phase("compacting_history");
                 api.calcifer.maintenance_store().cleanup_private_journal().map_err(|_| error("project_migration_pending", "the project is open, but legacy journal cleanup is still pending"))?;
                 progress.phase("cleaning_up");
@@ -1101,6 +1104,9 @@ fn finish_conversion(root: &FsPath) -> Result<(), Error> {
     if record.internal {
         let view = work_view(root)?;
         verify_snapshot(&view)?;
+    }
+    if !record.remove_source && record.saved.exists() {
+        return Err(error("vault_cleanup_pending", "an older conversion kept a separate plaintext copy; resolve that copy before completing the storage update"));
     }
     if record.remove_source && record.saved.exists() {
         fs::remove_dir_all(&record.saved).map_err(|e| error("vault_cleanup_pending", format!("replacement verified, but old source cleanup is pending at {}: {e}", record.saved.display())))?;
