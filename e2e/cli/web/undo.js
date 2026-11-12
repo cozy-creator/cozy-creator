@@ -122,10 +122,16 @@ function check(name, ok, detail) {
   for (const name of ['shot', 'red', 'green', 'spare', 'words', 'tooled']) await box(name).waitFor();
   await page.keyboard.press('f');
   await settled(page);
-  check('undo_redo_in_the_top_bar_left', await page.evaluate(() => {
-    const [undo, tabs] = [document.querySelector('.top .history [aria-label=Undo]'), document.querySelector('.top .ptabs')];
-    return Boolean(undo && tabs && undo.getBoundingClientRect().right <= tabs.getBoundingClientRect().left && undo.getBoundingClientRect().left < 40);
-  }));
+  // Undo and Redo sit immediately right of the logo, which leads the top bar (Paul, 11-12, #3021), before the project's tabs.
+  const bar = await page.evaluate(() => {
+    const at = (selector) => {
+      const r = document.querySelector(selector)?.getBoundingClientRect();
+      return r && { left: Math.round(r.left), right: Math.round(r.right) };
+    };
+    return { logo: at('.top > .brand'), undo: at('.top .history [aria-label=Undo]'), redo: at('.top .history [aria-label=Redo]'), tabs: at('.top .ptabs') };
+  });
+  const { logo, undo: back, redo: forth, tabs } = bar;
+  check('undo_redo_just_right_of_the_logo', Boolean(logo && back && forth && tabs && logo.left < 40 && back.left >= logo.right && back.left - logo.right <= 16 && forth.left >= back.right && forth.left - back.right <= 16 && forth.right <= tabs.left), bar);
   await shot('top-bar');
 
   // A delete: gone at once, back at once on Ctrl+Z, gone again on Ctrl+Shift+Z.
@@ -351,8 +357,11 @@ function check(name, ok, detail) {
   await says('toolbar_undo_restores_red', () => lines('red'), Boolean);
   await page.locator('.top .history [aria-label="Undo"]').click();
   await says('toolbar_undo_removes_spare', () => lines('spare'), (spare) => spare === null);
+  const listed = async () => (await history()).entries.slice(0, 4).map((entry) => ({ id: entry.id, words: entry.words, undone: Boolean(entry.undone) }));
+  seen.before_toolbar_redo = { entries: await listed(), redo: await page.locator('.top .history [aria-label="Redo"]').getAttribute('title') };
   await page.locator('.top .history [aria-label="Redo"]').click();
   await says('toolbar_redo_restores_spare', () => lines('spare')?.approved ?? '', (spare) => String(spare).startsWith(theirs.sha256.slice(7, 19)));
+  seen.after_toolbar_redo = { entries: await listed(), spare: lines('spare'), asset: await asset('spare'), notes: await notes() };
   await page.locator('.top .history [aria-label="Redo"]').click();
   await says('toolbar_redo_deletes_red', () => lines('red'), (red) => red === null);
   check('history_in_project_db', rowsOf(folder, 'SELECT count(*) FROM ops')[0][0] > 0 && !existsSync(join(folder, '.history.json')) && !/history|undone/.test(JSON.stringify(storedOf(folder))));
