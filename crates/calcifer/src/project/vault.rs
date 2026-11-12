@@ -431,6 +431,7 @@ fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resu
             return Err(Error::new(Kind::Conflict, "project_busy", "the project's work is still stopping; retry after it settles"));
         }
     }
+    if available { crate::local_code::retire_private_processes(root)?; }
     let projects = api.projects.now_open();
     for project in projects {
         if project.root != root { continue; }
@@ -803,6 +804,7 @@ fn working(api: &Arc<Api>, root: &FsPath) -> bool {
 /// Request cancellation in the owning journal before the exclusive close gate,
 /// so existing drivers can still settle their bounded work transactions.
 fn end_work(api: &Arc<Api>, root: &FsPath) -> Result<Vec<u64>, Error> {
+    crate::local_code::cancel_private_processes(root);
     let mut ended = BTreeSet::new();
     let all = [super::format::ALL.to_owned()];
     for project in api.projects.now_open().iter().filter(|project| project.root == root) {

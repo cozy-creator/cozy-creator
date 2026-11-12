@@ -92,23 +92,16 @@ prompt/export journey and a managed-service capture/panic journey require their 
 cases before those boundaries are marked qualified; this sequence does not substitute a CDP
 download override or a fake panic and call either one complete.
 
-## Optional actual native execution extension
+## Actual managed execution storage
 
-The coordinator may set `native_execution: true` and
-`allow_host_core_pattern_change: true` in the same exact-candidate ready file. This additionally
-requires `RUNNER_ENVIRONMENT=github-hosted`; it refuses a self-hosted runner. No local execution
-is authorized by preparing this extension.
+`native_execution: true` invokes a real weightless function through the installed CLI,
+worker and Runtime. It verifies project-owned source, environment, HOME, cache, temporary
+files, output bytes and history retained across lock and cold restart. It checks Cozy's
+requested core limit is zero; it never changes the host's kernel core handler.
 
-The extension invokes real weightless project code through the installed CLI/worker/Runtime.
-It verifies an allowed project write, actual denied absolute HOME and `/tmp` creates (after
-proving those parents writable with data-free fixture files), hard+soft core limit zero,
-denial of attempts to restore dumpability/core limits, and a real aborting Python child with
-no core file. It changes the owned VM's kernel core handler to an actual pipe and requires
-an explicit native refusal before project code executes, then switches to a regular handler
-for actual successful private execution and the media/browser sequence. The original host
-setting is retained only in RAM and restored in `finally`; restoration failure clears the
-receipt's completion flag. No production CLI flag, mock, request canary in argv/environment,
-or raw captured output artifact is introduced.
+This fixture does not claim an OS sandbox. Deliberate external writes made by custom
+Python and exports are outside the automatic-storage guarantee. Older failed sandbox
+receipts remain failures and are not relabeled as managed-storage passes.
 
 ## Optional real development/HMR case
 
