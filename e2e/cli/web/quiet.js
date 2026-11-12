@@ -3,12 +3,14 @@
 // take lands, its box shows no warning (no `.face-warning` line, no Warnings icon), no failure, and no note of an error.
 //   node quiet.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: on a shared computer,
-// so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
+// so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed. Its box on the canvas is kept as a PNG each time its
+// face's phase or state line changes, `phases/<n>-<phase>.png` beside $SHOT, and its Focus view once (Paul, 11-12: the box at each
+// phase, cl-921).
 const { chromium } = require(process.env.PLAYWRIGHT);
-const { writeFileSync } = require('fs');
-const { join } = require('path');
+const { mkdirSync, writeFileSync } = require('fs');
+const { dirname, join } = require('path');
 const { tmpdir } = require('os');
-const { calcifer, lastLook, lookAt, png, projectAction, projectFromPage, signIn, STEP_MS, until } = require('./page');
+const { calcifer, closeBox, lastLook, lookAt, openBox, png, projectAction, projectFromPage, renderOf, signIn, STEP_MS, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -92,12 +94,30 @@ const LOOK = (name) => {
   if (put.status >= 300) throw new Error(`BiRefNet on ${NAME}: ${put.status} ${JSON.stringify(put.body)}`);
 
   // Rendered on this computer, looked at as it goes: every warning, failure or error note it shows on the way is kept.
+  // Rendered from its Render, as a person does (an image tool renders from its Edit), its Focus view kept once its face shows.
   during = 'its render';
   const had = await versions();
-  await project('render', NAME, '--on', 'local', '--queue');
+  const phases = process.env.SHOT ? join(dirname(process.env.SHOT), 'phases') : null;
+  if (phases) mkdirSync(phases, { recursive: true });
+  await openBox(page, NAME);
+  await (await renderOf(page, NAME)).click();
+  const focus = page.locator(`.card.here[data-asset="${NAME}"]`).first();
+  const faced = await focus.locator('.run-face').first().waitFor({ timeout: 60_000 }).then(() => true, () => false);
+  if (phases) await focus.screenshot({ path: join(phases, '00-focus.png') }).catch(() => {});
+  seen.focus_face = faced;
+  await closeBox(page);
+  const box = page.locator('.react-flow__node').filter({ has: page.locator(`.card[data-asset="${NAME}"]`) }).first();
+  let last = '';
+  let kept = 0;
   const said = { warnings: new Set(), notes: new Set(), faces: new Set(), warned: false, failed: false };
   const landed = await until('its new take, quietly', async () => {
     const now = await look();
+    const state = `${now.face}|${now.says}`;
+    if (now.face && state !== last && phases) {
+      kept += 1;
+      await box.screenshot({ path: join(phases, `${String(kept).padStart(2, '0')}-${now.face}.png`) }).catch(() => {});
+    }
+    last = state;
     now.warnings.forEach((line) => said.warnings.add(line));
     now.notes.forEach((line) => said.notes.add(line));
     if (now.face) said.faces.add(`${now.face}: ${now.says}`);
@@ -108,7 +128,7 @@ const LOOK = (name) => {
   await page.waitForTimeout(1500);
   const after = await look();
   await shot('landed');
-  seen.render = { landed, after, faces: [...said.faces], warnings: [...said.warnings], notes: [...said.notes] };
+  seen.render = { landed, after, faces: [...said.faces], warnings: [...said.warnings], notes: [...said.notes], screenshots: kept };
   check('its_take_lands', landed.versions > had && landed.take, landed);
   check('its_box_said_how_it_went', said.faces.size > 0, [...said.faces]);
   check('no_warning_line_while_it_renders', said.warnings.size === 0, [...said.warnings]);
