@@ -290,7 +290,8 @@ for name, c in summary.items():
 failing: KnownFailing
 for failing in (json.load(open(KNOWN_FAILING)) if os.path.exists(KNOWN_FAILING) else []):
     if failing['sku'] in (sku, '*'):
-        notes.append(f"known failing, not run: {failing['cell']} ({failing['issue']}: {failing['what']})")
+        notes.append(f"known failing, not run: {', '.join(failing.get('cells') or [failing.get('cell', '?')])} ({failing['issue']}"
+                     f"{': ' + failing['what'] if failing.get('what') else ''})")
 # The host: a slow driver makes every first pass slow and must read as the host, not the code (lead 10-23).
 for leg in ('cuda_init', 'measure_device'):
     vals = [l[leg] for l in host_legs.values() if leg in l]
