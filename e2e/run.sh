@@ -148,10 +148,11 @@ run_wait() {
 }
 
 # run_show <dir> <name> <number>: the run's record now, into <name>.json (kept as it was when the read fails). `run
-# show` exits non-zero for a run that failed or was canceled: the record is what it printed.
+# show` exits non-zero for a run that failed or was canceled: the record is what it printed. A number names a run of
+# the project it was asked in: read where run_start asked it.
 
 run_show() {
-  "$RUN_CLI" --json --full run watch "$3" --once > "$1/$2.json.new" 2> /dev/null || true
+  (cd "${RUN_PROJECT:-$PWD}" && "$RUN_CLI" --json --full run watch "$3" --once) > "$1/$2.json.new" 2> /dev/null || true
   if jq -e .status "$1/$2.json.new" > /dev/null 2>&1; then
     mv "$1/$2.json.new" "$1/$2.json"
   else
@@ -182,11 +183,12 @@ run_get() { jq -r "($3) // empty" "$1/$2.json" 2> /dev/null || true; }
 # run_outputs <dir> <name>: each landed output of the run, downloaded into <dir>/<name>.out by its digest, in its record's
 # order, one path a line.
 run_outputs() {
-  local n name line path
+  local n name line path out
   n=$(cat "$1/$2.number" 2> /dev/null || true)
   [ -n "$n" ] && [ "$n" != none ] || return 0
   # JSON's paths belong to Calcifer and are not sent; the CLI says each downloaded path on stderr.
-  "$RUN_CLI" run watch "$n" --once -o "$1/$2.out" > /dev/null 2> "$1/$2.export.err" || true
+  out=$(cd "$1" && pwd)/$2.out
+  (cd "${RUN_PROJECT:-$PWD}" && "$RUN_CLI" run watch "$n" --once -o "$out") > /dev/null 2> "$1/$2.export.err" || true
   while IFS= read -r line; do
     while IFS= read -r name; do
       case "$line" in
