@@ -16,6 +16,12 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const AREA: &str = ".vault-machine";
 
+/// The partial legacy namespace must not advertise the stronger project contract.
+pub(crate) fn require_project_execution() -> io::Result<()> {
+    Err(io::Error::new(io::ErrorKind::Unsupported,
+        "Protected project execution is not available on this worker yet."))
+}
+
 struct Verified {
     descriptor: LocalPrivateStorage,
     actor: String,

@@ -134,7 +134,14 @@ impl Machine {
 
     /// Feature/authentication probe before any private file bytes cross the wire.
     pub(crate) async fn probe_private(&self) -> Result<(), Error> {
-        send(self.request(Method::GET, path::HEALTH, &[])).await.map(|_| ())
+        let capability: api::machine::ProjectExecutionCapabilities =
+            json(send(self.request(Method::GET, path::HEALTH, &[])).await?).await?;
+        if !capability.ready() {
+            return Err(Error::Refused { status: 409, error: Box::new(api::error::Error::new(
+                Kind::Conflict, "project_execution_unavailable", "This worker cannot protect project execution storage.",
+            ).next("cozy doctor")) });
+        }
+        Ok(())
     }
 
     pub(crate) async fn close_private(&self) -> Result<(), Error> {
@@ -339,9 +346,9 @@ impl Machine {
         let mut args = args.iter();
         let mut segments = url.path_segments_mut().expect("an https URL has a path");
         segments.clear();
-        let selected = self.private.as_ref().filter(|_| !template.starts_with(api::machine::LOCAL_PRIVATE_PREFIX));
+        let selected = self.private.as_ref().filter(|_| !template.starts_with(api::machine::PROJECT_EXECUTION_PREFIX));
         let path = if let Some(scope) = selected {
-            segments.extend(["v1", "local-private", scope.storage.project_id.as_str()]);
+            segments.extend(["v1", "project-execution", scope.storage.project_id.as_str()]);
             template.strip_prefix("/v1/").unwrap_or(template.trim_start_matches('/'))
         } else { template.trim_start_matches('/') };
         segments.extend(path.split('/').map(|part| {
