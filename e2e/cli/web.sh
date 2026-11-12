@@ -125,6 +125,9 @@ PATH=${own:+$(dirname "$own"):}$PATH web_proof timeline "$chrome" "$pw" ''
 step "web-live: the real CLI and a hand's saves on an open canvas: each within a second, what's typed kept, 200 edits, the stream fallen behind"
 web_proof live "$chrome" "$pw" ''
 jq -c '{times: .seen.times_ms, burst: .seen.burst, behind: .seen.behind}' "$OUT/web-live.json" 2> /dev/null || true
+step "web-previews: a rendering box shows what its run is making, faded under how far it's got, and its take replaces it"
+web_proof previews "$chrome" "$pw" ''
+jq -c '.seen.previews // empty' "$OUT/web-previews.json" 2> /dev/null || true
 if [ "$scope" = full ]; then
   step "web-scale: 5,000 assets: status, opening it, one edit, a landing, panning, memory"
   web_proof scale "$chrome" "$pw" ''
