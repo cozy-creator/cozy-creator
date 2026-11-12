@@ -8,7 +8,7 @@ const { execFile } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectAction, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, addBoxes } = require('./page');
+const { projectFromPage, projectAction, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, addBoxes, settled } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -100,19 +100,21 @@ const WATCH = () => {
     const node = box(one.name ?? one.gone);
     return { wanted: one, drawn: Boolean(node), text: node?.textContent.slice(0, 160), place: node && placeOf(node) };
   });
-  /** Each place its progress reached, until it has none. */
+  /** Each place its progress reached, until it has none. At rest how far the whole job is, is the meter along its top (cl-928, cl-932);
+   *  its lines say the stage. */
   window.progressOf = (name) => new Promise((done) => {
     const places = [];
     window.progressSaid = [];
     const look = () => {
       const bar = box(name)?.querySelector('.prog');
-      if (bar) {
-        const place = bar.querySelector('i')?.style.transform || 'unknown';
+      const meter = box(name)?.querySelector('.tile-meter i');
+      if (bar || meter) {
+        const place = meter?.style.transform || 'unknown';
         if (places.at(-1) !== place) places.push(place);
-        const says = bar.querySelector('.face-stage')?.textContent || bar.querySelector('b')?.textContent;
+        const says = bar?.querySelector('.face-stage')?.textContent || bar?.querySelector('b')?.textContent;
         if (says && window.progressSaid.at(-1) !== says) window.progressSaid.push(says);
       }
-      if (!bar && places.length) done(places);
+      if (!bar && !meter && places.length) done(places);
       else requestAnimationFrame(look);
     };
     look();
@@ -270,11 +272,22 @@ function replaceFile(at, text) {
   };
   const open = (name) => openBox(page, name);
   /** A place on screen that's clear, as what lands on a box is moved off it: right of where the page puts what has none. */
+  const clearOf = (boxes) => (x, y) => boxes.every((box) => x + 360 <= box.x || box.x + (box.w ?? 720) <= x || y + 400 <= box.y || box.y + 400 <= y);
   const spot = async () => {
-    const boxes = Object.values((await rows()) ?? {});
-    const clear = (x, y) => boxes.every((box) => x + 360 <= box.x || box.x + (box.w ?? 720) <= x || y + 400 <= box.y || box.y + 400 <= y);
+    const clear = clearOf(Object.values((await rows()) ?? {}));
     // Left of 1060: an Edit open is 720 wide, its X at its right, and the canvas never scrolls to reach it.
     for (let y = 90; ; y += 170) for (const x of [700, 1040]) if (clear(x, y)) return { x, y };
+  };
+  /** A clear spot wholly in the canvas's view, whole pixels on the canvas. */
+  const spotInView = async () => {
+    const clear = clearOf(Object.values((await rows()) ?? {}));
+    const view = await page.evaluate(() => {
+      const at = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+      const pane = document.querySelector('.react-flow').getBoundingClientRect();
+      return { x: -at.e / at.a, y: -at.f / at.a, w: pane.width / at.a, h: pane.height / at.a };
+    });
+    for (let y = Math.ceil(view.y); y + 400 <= view.y + view.h; y += 20) for (let x = Math.ceil(view.x); x + 360 <= view.x + view.w; x += 20) if (clear(x, y)) return { x, y };
+    throw new Error(`no clear spot in view: ${JSON.stringify(view)}`);
   };
   const overlaps = () => page.evaluate(() => {
     const rects = [...document.querySelectorAll('.react-flow__node')].map((node) => ({ name: node.querySelector('.nm')?.textContent, rect: node.getBoundingClientRect() }));
@@ -687,10 +700,12 @@ function replaceFile(at, text) {
   // never reaches it as events. A real text, a move and a new box are in there, and only `resync` can tell it of them.
   const streamsBefore = streams;
   const canvasBefore2 = reads.canvas;
+  // Somewhere clear in view: the canvas draws only the boxes in view, so a move past its edge would never show.
   await page.keyboard.press('f');
+  await settled(page);
+  const clearOfAll = await spotInView();
   await cdp.send('Debugger.enable');
   await cdp.send('Debugger.pause');
-  const clearOfAll = await spot();
   const stalled = Date.now();
   const fill = 'f'.repeat(200);
   const big = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`${fill}_${i}`, { x: i, y: 0 }]));

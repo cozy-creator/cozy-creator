@@ -160,6 +160,8 @@ function replaceFile(at, text) {
   check('edit_image_available_for_reference_capable_models', availability.some((row) => row.operation === 'edit_image' && !row.disabled), availability);
   const qwen = metadata.find((tool) => defaults(tool).some((model) => model?.startsWith('qwen/qwen-image-2.1@')));
   const editQwen = await implementationRow(page, 'edit_image', qwen.id);
+  // Left a moment ago, Focus's canvas is still on its way back: measured mid-way, the drop lands on another box.
+  await require('./page').settled(page);
   const target = await box(choosing.name).locator('.media').boundingBox();
   await require('./page').carry(page, editQwen, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   await until('dragged tool attaches to image holder', () => of(choosing.name), (asset) => asset.tool === qwen.id);

@@ -306,7 +306,12 @@ async function died(why) {
 
   // A category click only opens implementations; clicking an implementation also creates nothing.
   const namesBeforePalette = (await state()).assets.map((row) => row.name).sort();
-  const toolRow = await implementationRow(page, 'edit_image');
+  // Of Edit Image's tools, the first that edits from words: BiRefNet, listed first on this Hub (f2ccc98ef), takes no prompt.
+  await implementationRow(page, 'edit_image');
+  const listedTools = (await api(`/v1/tools?project=${id}`)).body?.tools ?? [];
+  const takesWords = (toolId) => listedTools.find((one) => one.id === toolId)?.fields?.some((field) => field.type === 'prompt');
+  const editIds = await page.locator('.tools [data-implementation][data-tool-operation="edit_image"]').evaluateAll((rows) => rows.map((row) => row.dataset.tool));
+  const toolRow = await implementationRow(page, 'edit_image', editIds.find(takesWords));
   await toolRow.click();
   await page.waitForTimeout(250);
   check('clicking_a_tool_creates_no_node', JSON.stringify((await state()).assets.map((row) => row.name).sort()) === JSON.stringify(namesBeforePalette));
@@ -339,18 +344,22 @@ async function died(why) {
   await prompt.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' beside <Ada.2> ');
-  const reference = box('other').locator('.ghosts[data-image-reference]');
+  // Behind the words, every picture they use, the backdrop's spread (cl-949).
+  const reference = box('other').locator('.in-frame .backdrop');
   await until('all referenced image previews load behind editor', () => reference.locator('img').evaluateAll((images) => images.length === 2 && images.every((image) => image.complete && image.naturalWidth > 0)), Boolean);
   const referenceGeometry = () => reference.evaluate((element) => {
+    const frame = element.getBoundingClientRect();
     return [...element.querySelectorAll('img')].map((image) => {
       const rect = image.getBoundingClientRect();
       let opacity = 1;
       for (let node = image; node && !node.classList.contains('card'); node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
-      return { width: rect.width, height: rect.height, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity };
+      return { width: rect.width, height: rect.height, share: (rect.width * rect.height) / (frame.width * frame.height), naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity };
     });
   });
   const beforeShape = await referenceGeometry();
-  check('edit_mode_shows_all_faded_references_without_cropping', beforeShape.length === 2 && beforeShape.every((image) => image.opacity > 0 && image.opacity < 1 && image.fit === 'contain'), beforeShape);
+  // Full-bleed, as large as they can (Paul 11-12, cl-949): each covers its share, together the frame.
+  const fills = (shape) => shape.length === 2 && shape.every((image) => image.opacity > 0 && image.opacity < 1 && image.fit === 'cover' && image.share >= 0.12) && shape.reduce((sum, image) => sum + image.share, 0) >= 0.93;
+  check('edit_mode_shows_all_faded_references_full_bleed', fills(beforeShape), beforeShape);
   const ratioBefore = (await asset('other')).fields?.aspect_ratio;
   check('output_ratio_uses_the_corner_not_a_new_dropdown', await box('other').getByRole('combobox', { name: 'Output aspect ratio', exact: true }).count() === 0);
   const corner = await box('other').getByRole('slider', { name: 'Its size', exact: true }).boundingBox();
@@ -360,7 +369,7 @@ async function died(why) {
   await page.mouse.up();
   await until('output aspect ratio changed in edit mode', () => asset('other'), (row) => Boolean(row.fields?.aspect_ratio) && row.fields.aspect_ratio !== ratioBefore);
   const afterShape = await referenceGeometry();
-  check('output_ratio_keeps_all_reference_previews_fixed_and_uncropped', afterShape.length === beforeShape.length && afterShape.every((image, index) => image.fit === 'contain' && Math.abs(image.width - beforeShape[index].width) < 2 && Math.abs(image.height - beforeShape[index].height) < 2), { beforeShape, afterShape });
+  check('output_ratio_keeps_all_references_filling_the_frame', fills(afterShape), { beforeShape, afterShape });
   await previewVersion(page, 'other', 1);
   check('view_mode_leaves_editor_and_keeps_selection', await box('other').locator('.in-frame .mention-text').count() === 0 && await current('other') === 1);
   await box('other').getByRole('button', { name: 'Remove image tool', exact: true }).click();
