@@ -46,9 +46,10 @@ class Bridge {
   private privateBlocked = new Set<string>()
   private privacyEpoch = new Map<string, number>()
 
-  allowProject(id: string) { this.privateBlocked.delete(id) }
+  allowProject(id: string) { this.privateBlocked.delete(id); this.client.allowProject(id) }
 
   forgetProject(id: string) {
+    this.client.retireProject(id)
     this.privateBlocked.add(id)
     this.privacyEpoch.set(id, (this.privacyEpoch.get(id) ?? 0) + 1)
     const held = this.owed.get(id)
@@ -301,7 +302,7 @@ export async function connect(): Promise<Boot> {
     forgetProjectView(id)
     revokeProjectMedia(id)
     const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-      (["project", "project-view", "canvas", "yaml", "history", "project-run", "project-runs"].includes(String(queryKey[0])) && queryKey[1] === id)
+      ((["canvas", "yaml", "history"].includes(String(queryKey[0])) || String(queryKey[0]).startsWith("project")) && queryKey[1] === id)
       || queryKey[0] === "tools"
     void queries.cancelQueries({ predicate: privateData })
     void queries.resetQueries({ predicate: privateData })

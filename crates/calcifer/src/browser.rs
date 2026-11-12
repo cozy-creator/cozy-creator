@@ -155,7 +155,7 @@ impl OwnedBrowser {
                         Err(_) => false,
                     }
                 };
-                if !pages_gone || live.targets.is_empty() { continue; }
+                if !pages_gone { continue; }
                 // Every page was explicitly closed (or the process crashed). This retires the
                 // remaining owned process; it makes no claim that an interrupted edit was saved.
                 incomplete.store(true, Ordering::Release);
@@ -168,12 +168,12 @@ impl OwnedBrowser {
     }
 
     async fn retire_closed(mut live: Live) -> Result<(), Refusal> {
-        let processes = platform::process::tree(live.birth.pid);
+        let processes = if platform::process::Birth::of(live.birth.pid).is_ok_and(|birth| birth == live.birth) { platform::process::tree(live.birth.pid) } else { Vec::new() };
         tokio::task::spawn_blocking(move || {
             live.tree.kill().map_err(|_| unavailable())?;
             platform::process::end_tree(&processes).map_err(|_| unavailable())?;
             live.tree.wait().map_err(|_| unavailable())?;
-            if !platform::process::group_members(&live.birth).is_empty() { return Err(unavailable()); }
+            if platform::process::group_members(&live.birth).iter().any(|birth| !birth.ended().unwrap_or(false)) { return Err(unavailable()); }
             let proof = BrowserRetired { profile: live.profile.identity(), birth: live.birth.clone(), session: live.authority.id().to_owned() };
             drop(live.authority);
             live.profile.retire(proof)
@@ -217,14 +217,14 @@ impl OwnedBrowser {
         if !Arc::ptr_eq(&self.live, &prepared.owner) { return Err(unavailable()); }
         let Some(live) = prepared.live.take() else { return Ok(()) };
         self.retirement_incomplete.store(true, Ordering::Release);
-        let processes = platform::process::tree(live.birth.pid);
+        let processes = if platform::process::Birth::of(live.birth.pid).is_ok_and(|birth| birth == live.birth) { platform::process::tree(live.birth.pid) } else { Vec::new() };
         let (live, ended) = tokio::task::spawn_blocking(move || {
             let mut live = live;
             let ended = (|| {
                 live.tree.kill().map_err(|_| unavailable())?;
                 platform::process::end_tree(&processes).map_err(|_| unavailable())?;
                 live.tree.wait().map_err(|_| unavailable())?;
-                if !platform::process::group_members(&live.birth).is_empty() { return Err(unavailable()); }
+                if platform::process::group_members(&live.birth).iter().any(|birth| !birth.ended().unwrap_or(false)) { return Err(unavailable()); }
                 Ok::<_, Refusal>(())
             })();
             (live, ended)

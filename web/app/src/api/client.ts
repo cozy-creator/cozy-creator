@@ -190,6 +190,8 @@ export class Client {
     this.hooks = hooks
   }
 
+  retireProject(id: string) { this.transport.retireProject(id) }
+  allowProject(id: string) { this.transport.allowProject(id) }
   freezeWrites() { this.frozen = true }
   resumeWrites() { this.frozen = false }
   async savedWrites() {
@@ -197,7 +199,7 @@ export class Client {
   }
 
   private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
-    const writing = !["GET", "HEAD"].includes(init.method ?? "GET")
+    const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && path !== "/v1/down"
     if (writing && this.frozen && !options.action && !path.startsWith("/v1/events/")) {
       throw new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving its edits before closing" })
     }
