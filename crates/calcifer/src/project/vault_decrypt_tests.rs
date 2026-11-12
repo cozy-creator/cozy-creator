@@ -108,7 +108,7 @@ fn encrypted_cleanup_preserves_good_sources_and_recorded_policy() {
         native_project(&saved, &id);
         fs::write(saved.join("retained.txt"), b"sole good original").unwrap();
         let record = Conversion { root: root.clone(), staged: temp.path().join(format!(".cozy-vault-stage-{name}")),
-            saved: saved.clone(), key_id: created.keybag.info().key_id, remove_source, plain: None };
+            saved: saved.clone(), key_id: created.keybag.info().key_id, remove_source, internal: false, source_key: None, backing_id: None, plain: None };
         let mut wrong = record.clone();
         wrong.key_id.push_str("-mismatch");
         save_conversion(&wrong).unwrap();
@@ -136,7 +136,7 @@ fn encrypted_cleanup_preserves_good_sources_and_recorded_policy() {
     created.keybag.save(&staged.join(KEYBAG_FILE)).unwrap();
     fs::create_dir(staged.join(BACKING)).unwrap();
     save_conversion(&Conversion { root: root.clone(), staged: staged.clone(), saved: temp.path().join(".cozy-project-source-cancelled"),
-        key_id: created.keybag.info().key_id, remove_source: true, plain: None }).unwrap();
+        key_id: created.keybag.info().key_id, remove_source: true, internal: false, source_key: None, backing_id: None, plain: None }).unwrap();
     recover_conversion(&root).unwrap();
     assert_eq!(hash(&root.join(db::DB)).unwrap(), before);
     assert!(!staged.exists() && !receipt_path(&root).exists());
@@ -155,7 +155,7 @@ fn staged(root: &FsPath, name: &str, bag: &Keybag) -> Conversion {
     fs::write(stage.join("retained.txt"), b"unchanged retained bytes").unwrap();
     Conversion {
         root: directory.clone(), staged: stage.clone(), saved: root.join(format!(".cozy-project-source-{suffix}")),
-        key_id: bag.info().key_id, remove_source: true,
+        key_id: bag.info().key_id, remove_source: true, internal: false, source_key: None, backing_id: None,
         plain: Some(PlainConversion { project_id: bag.info().project_id, generation: bag.info().generation,
             ready: false, source_id: directory_id(&directory).unwrap(), staged_id: directory_id(&stage).unwrap(), cleanup_started: false }),
     }
