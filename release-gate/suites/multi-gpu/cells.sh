@@ -4,3 +4,6 @@
 # qwen-replicas needs four GPUs and stays a --cells run when sharding changes, as does h3-ulysses.sh's 15 s and 30-step.
 source "$HERE/suites/execution/multi-gpu/h3-group.sh"
 h3_group h3-u2-short 100 prompt="<$NAME> $MOTION" seed:=$((R + 353)) duration_s:=5
+# The same group again, warm (cr-268): Sol's per-length object built by the first call serves every sparse step, none
+# dense (`*warm*` in h3_group). Runtime 0.45.0 ran them all dense over two H100s, cold and warm (46678, 46703).
+h3_group h3-u2-warm 100 prompt="<$NAME> $SCENE" seed:=$((R + 354)) duration_s:=5

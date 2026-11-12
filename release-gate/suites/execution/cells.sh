@@ -1,11 +1,12 @@
 # Suite `execution`: every proof that reports `passed` and belongs to no other suite, so none goes unrun; analyze.py fails a
-# completed run that says passed: false. The native loop and kernel readiness (core-cells.sh), capture, LoRA overlays and
-# child calls (also in `runtime`: a cell one suite ran does not run again), TensorFS's producers and decoders, and SDXL's
-# cold and warm qualification. varena's mechanisms are suite `varena`'s (core, faults, ledger, public API).
+# completed run that says passed: false. The native loop and kernel readiness (core-cells.sh), capture, prompt LMs decoding
+# after other models (prompt-lm), LoRA overlays and child calls (also in `runtime`: a cell one suite ran does not run again),
+# TensorFS's producers and decoders, and SDXL's cold and warm qualification. varena's mechanisms are suite `varena`'s (core,
+# faults, ledger, public API).
 # What needs the Runtime's internals is a Runtime built-in (`cozy_runtime.bench`) that drive/ calls (xs-174).
 EXEC_DIR=$HERE/suites/execution TFS_DIR=$HERE/suites/tensorfs
 source "$EXEC_DIR/core-cells.sh"
-for part in first-warm-capture capture-refusal lora-overlay-refill overlay-replay child-lora-stacks child-saved-file; do
+for part in first-warm-capture capture-refusal prompt-lm lora-overlay-refill overlay-replay child-lora-stacks child-saved-file; do
   source "$EXEC_DIR/$part/cells.sh"
 done
 

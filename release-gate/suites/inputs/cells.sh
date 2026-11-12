@@ -70,7 +70,7 @@ run_inputs() {  # run_inputs <suffix> <seed offset>: every cell, named with <suf
     megapixels:=16 prompt_upsampling:=false seed:=$((R + 904 + o))
   fits "ph3-edit-noup$x"
   pictures k 10 4
-  cell "klein-max$x" "$(pkg flux.3 generate_turbo)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
+  cell "klein-max$x" "$(pkg flux.3-klein generate_turbo)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
     megapixels:=4 prompt_upsampling:=true seed:=$((R + 905 + o))
   fits "klein-max$x"
   cell "qwen2-max$x" "$(pkg qwen-image-2 generate)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
