@@ -23,7 +23,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
-from common import Native, Receipt, alive, birth, kill_exact, require, sha, until, project_route
+from common import Failure, Native, Receipt, alive, birth, kill_exact, require, sha, until, project_route
 from legacy_seed import publish_old
 from scan import Scanner
 
@@ -32,6 +32,62 @@ COZY = HOME / ".cozy"
 CALCIFER = COZY / "calcifer"
 MACHINE = COZY / "machine"
 INSTALLED = COZY / "bin/cozy"
+
+PHASES = frozenset({
+    "startup", "public_bootstrap", "public_reset", "old_subject_create",
+    "old_subject_success", "old_subject_failure", "old_subject_retry",
+    "old_subject_snapshot", "old_subject_stop", "candidate_install",
+    "candidate_update", "candidate_doctor", "wrong_binding", "native_adoption",
+    "calcifer_crash", "calcifer_restart", "rehistory", "encrypt", "lock_scan",
+    "move_cold_retry", "complete",
+})
+ERROR_KINDS = frozenset({"usage", "validation", "not_found", "credential", "forbidden",
+                         "conflict", "capacity", "unavailable", "internal"})
+# Attached to the receipt in main; command bodies and exception messages never enter it.
+CONTEXT: dict = {}
+
+
+def checkpoint(receipt: Receipt, phase: str) -> None:
+    require(phase in PHASES, "receipt_schema")
+    CONTEXT.clear()
+    receipt.value["phase"] = phase
+    receipt.save()
+
+
+def command_failure(result: subprocess.CompletedProcess, expected: bool) -> dict:
+    failure = {"class": "signal" if result.returncode < 0 else "exit", "returncode": result.returncode,
+               "expected": expected, "kind": None, "code_sha256": None, "cause_sha256": None}
+    try:
+        documents = [json.loads(result.stdout)]
+    except (ValueError, TypeError):
+        documents = []
+        for line in result.stdout.splitlines():
+            try:
+                documents.append(json.loads(line))
+            except (ValueError, TypeError):
+                continue
+    for document in documents:
+        error = document.get("error") if isinstance(document, dict) else None
+        if not isinstance(error, dict):
+            continue
+        kind = error.get("kind")
+        failure["kind"] = kind if isinstance(kind, str) and kind in ERROR_KINDS else None
+        for key in ("code", "cause"):
+            value = error.get(key)
+            failure[key + "_sha256"] = sha(value.encode()) if isinstance(value, str) else None
+    return failure
+
+
+def exception_failure(error: BaseException) -> dict:
+    # Closed classes only: even a custom exception's class name may contain user data.
+    classes = ((Failure, "fixture_assertion"), (subprocess.TimeoutExpired, "timeout"),
+               (subprocess.CalledProcessError, "process"), (FileNotFoundError, "not_found"),
+               (PermissionError, "permission"), (json.JSONDecodeError, "json"),
+               (sqlite3.Error, "sqlite"), (ConnectionError, "connection"),
+               (OSError, "io"), (KeyError, "key"), (TypeError, "type"),
+               (ValueError, "value"), (KeyboardInterrupt, "interrupted"))
+    return {"class": next((name for kind, name in classes if isinstance(error, kind)), "unclassified"),
+            "code_sha256": sha(error.code.encode()) if isinstance(error, Failure) else None}
 
 
 def digest(path: Path) -> str:
@@ -58,8 +114,17 @@ def schema() -> int:
 def command(cli: Path, *words: str, cwd: Path | None = None, stdin: bytes | None = None, ok: bool = True) -> bytes:
     deadline = time.monotonic() + 90
     while True:
-        result = subprocess.run([str(cli), "--json", *words], cwd=cwd, input=stdin,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1200)
+        try:
+            result = subprocess.run([str(cli), "--json", *words], cwd=cwd, input=stdin,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=1200)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            CONTEXT["command"] = {**exception_failure(error), "kind": "unavailable",
+                                  "cause_sha256": None, "returncode": None, "expected": not ok}
+            raise
+        if result.returncode:
+            CONTEXT["command"] = command_failure(result, expected=not ok)
+        else:
+            CONTEXT.pop("command", None)
         if ok and result.returncode and words[:1] == ("vault",) and words[-1:] == ("lock",):
             try:
                 busy = json.loads(result.stdout).get("error", {}).get("code") == "project_busy"
@@ -295,10 +360,11 @@ def wrong_binding_stays_pending(native: Native, reference: str, project: Path, o
     return [value["binding"] for value in lookup]
 
 
-def crash_before_controller_receipt(native: Native, project: Path, bindings: list[dict]) -> None:
+def crash_before_controller_receipt(native: Native, project: Path, bindings: list[dict], receipt: Receipt) -> None:
     # An actual worker completes its durable copy/retirement, then the exact Caf
     # dies before any controller history read can keep that receipt. The next
     # holder must recover real bindings from the inside receipt, not resubmit.
+    checkpoint(receipt, "native_adoption")
     status, _ = worker_request(project, "POST", "migrate", {"legacy_requests": bindings})
     require(status == 204, "fixture_failure")
     status, body = worker_request(project, "GET", "migrate", {})
@@ -306,11 +372,13 @@ def crash_before_controller_receipt(native: Native, project: Path, bindings: lis
     require(status == 200 and all(binding in covered for binding in bindings), "fixture_failure")
     with read_db(project / "project.db") as connection:
         require(connection.execute("SELECT count(*) FROM runs WHERE custody='legacy_pending'").fetchone()[0] >= len(bindings), "fixture_failure")
+    checkpoint(receipt, "calcifer_crash")
     holder = native.holder()
     exact = birth(holder["pid"])
     kill_exact(exact)
     until(lambda: alive(exact), lambda value: not value, "fixture_failure", 90)
     exclusive_free(CALCIFER / "calcifer.lock")
+    checkpoint(receipt, "calcifer_restart")
     command(INSTALLED, "doctor")
 
 
@@ -360,6 +428,7 @@ def outside_scan(markers: list[bytes], allowed: list[Path], receipt: Receipt) ->
 
 
 def qualify(args, receipt: Receipt) -> None:
+    checkpoint(receipt, "startup")
     require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_OS") == "Linux"
             and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "hosted_linux_only")
     ready = json.loads(args.ready_file.read_bytes())
@@ -374,12 +443,15 @@ def qualify(args, receipt: Receipt) -> None:
     old_copy.chmod(0o755)
     args.old = old_copy
     old = Native(args.old)
+    checkpoint(receipt, "public_bootstrap")
     provenance = publish_old(args.old, work)
+    checkpoint(receipt, "public_reset")
     reset_public_bootstrap(old, provenance)
     receipt.add("old_public_bootstrap", passed=True, old_binary_sha256=digest(args.old), source_sha256=provenance["source_sha256"])
 
     # No reset is legal after this point. Every following byte is real old
     # application data and must be migrated or explicitly remain pending.
+    checkpoint(receipt, "old_subject_create")
     project = Path(tempfile.mkdtemp(prefix="cozy-legacy-project-", dir=os.environ["RUNNER_TEMP"]))
     opened = json.loads(command(args.old, "new", str(project)))
     reference = opened["id"]
@@ -391,6 +463,7 @@ def qualify(args, receipt: Receipt) -> None:
     source_sha = sha(source_bytes)
     results = {}
     for fail in (False, True):
+        checkpoint(receipt, "old_subject_failure" if fail else "old_subject_success")
         request = project / ("failure.json" if fail else "success.json")
         request.write_text(json.dumps({"text": marker.decode() + ("-failed" if fail else "-success"), "fail": fail}))
         # The released CLI rejects --gpus 0; the public callable's actual
@@ -406,6 +479,7 @@ def qualify(args, receipt: Receipt) -> None:
     require(all(value["row"][0] > 0 for value in baseline.values()), "fixture_failure")
     # Keep a known real old HTTP request/key too, so a byte-identical retry after
     # move can establish old digest compatibility without reconstructing a CLI ask.
+    checkpoint(receipt, "old_subject_retry")
     retry_key = "legacy-retry-" + os.urandom(16).hex()
     retry_ask = {"target": provenance["target"], "on": "local", "project": str(project),
                  "input": {"source": "sha256:" + source_sha, "text": marker.decode() + "-retry"}}
@@ -414,14 +488,17 @@ def qualify(args, receipt: Receipt) -> None:
     run = settled(old, response["run"]["id"], old=True, reference=reference)
     run["bodies"] = output_bytes(old, run, old=True)
     results[run["id"]] = run
+    checkpoint(receipt, "old_subject_snapshot")
     baseline = journal(CALCIFER / "state.db", list(results))
     original_worker, worker_baseline = worker_journal(MACHINE, list(results))
     require(schema() == 7, "fixture_failure")
     receipt.add("released_v7_subject", passed=True, runs=len(results), logs=sum(len(value["logs"]) for value in baseline.values()), outputs=sum(len(value["outputs"]) for value in baseline.values()))
+    checkpoint(receipt, "old_subject_stop")
     stop(old, old=True)
 
     # The installed default is also the worker launcher. Replace it only after
     # both exact old process cohorts and native writer locks are gone.
+    checkpoint(receipt, "candidate_install")
     temporary_binary = INSTALLED.with_name("cozy.legacy-candidate")
     shutil.copy2(args.candidate, temporary_binary)
     temporary_binary.chmod(0o755)
@@ -432,11 +509,15 @@ def qualify(args, receipt: Receipt) -> None:
         updates += ["--runtime", args.runtime]
     if args.tensorfs:
         updates += ["--tensorfs", args.tensorfs]
+    checkpoint(receipt, "candidate_update")
     command(INSTALLED, *updates, "-y")
+    checkpoint(receipt, "candidate_doctor")
     command(INSTALLED, "doctor")
     require(schema() == 8, "fixture_failure")
+    checkpoint(receipt, "wrong_binding")
     bindings = wrong_binding_stays_pending(native, reference, project, original_worker, list(results), receipt)
-    crash_before_controller_receipt(native, project, bindings)
+    crash_before_controller_receipt(native, project, bindings, receipt)
+    checkpoint(receipt, "rehistory")
     complete_migration(native, reference, project)
     receipt.add("legacy_worker_receipt_crash_recovery", passed=True, no_resubmission=True, runs=len(results))
     require(worker_journal(project / ".vault-machine", list(results))[1] == worker_baseline, "fixture_failure")
@@ -455,12 +536,14 @@ def qualify(args, receipt: Receipt) -> None:
     require(journal(project / "project.db", list(results)) == baseline, "fixture_failure")
     receipt.add("canonical_legacy_migration", passed=True, runs=len(results), same_keys_and_numbers=True, exact_log_and_output_rows=True, old_retry_replayed=True, old_client_refused=True)
 
+    checkpoint(receipt, "encrypt")
     secret = os.urandom(32).hex().encode() + b"\n"
     changed = json.loads(command(INSTALLED, "vault", "--directory", str(project), "encrypt", "--passphrase-file", "-", stdin=secret))
     view = Path(changed["vault"]["view"])
     identity = native.call("GET", project_route(str(project), "/address"))
     require(identity["id"] == reference, "fixture_failure")
     assert_history(native, reference, view, baseline, results)
+    checkpoint(receipt, "lock_scan")
     command(INSTALLED, "vault", "--directory", str(project), "lock")
     markers = [marker, source_sha.encode(), *(item[3].removeprefix("sha256:").encode() for value in baseline.values() for item in value["outputs"]),
                *(identifier.encode() for identifier in baseline),
@@ -471,6 +554,7 @@ def qualify(args, receipt: Receipt) -> None:
     # keybag and any leftover conversion files along with every outside root.
     scan = outside_scan(markers, [], receipt)
     receipt.add("legacy_encrypted_retirement", passed=True, **scan)
+    checkpoint(receipt, "move_cold_retry")
     stop(native, old=False)
     moved = project.with_name(project.name + "-moved")
     project.rename(moved)
@@ -487,6 +571,7 @@ def qualify(args, receipt: Receipt) -> None:
     command(INSTALLED, "vault", "--directory", str(moved), "lock")
     stop(native, old=False)
     receipt.add("legacy_move_cold_retry", passed=True, runs=len(results), **outside_scan(markers, [], receipt))
+    checkpoint(receipt, "complete")
     receipt.value["complete"] = True
     receipt.save()
 
@@ -502,10 +587,12 @@ def main() -> int:
     args = parser.parse_args()
     args.old, args.candidate = args.old.resolve(), args.candidate.resolve()
     receipt = Receipt(args.out / "legacy-receipt.json", digest(args.candidate))
+    receipt.value["context"] = CONTEXT
     try:
         qualify(args, receipt)
         return 0
-    except BaseException:
+    except BaseException as error:
+        CONTEXT["exception"] = exception_failure(error)
         receipt.value["complete"] = False
         receipt.save()
         # Exception text, subprocess output and paths can carry private content.

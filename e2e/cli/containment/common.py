@@ -150,6 +150,73 @@ class Reply:
 class Native:
     def __init__(self, cli: Path):
         self.cli = cli
+        self.failure: dict[str, object] | None = None
+
+    @staticmethod
+    def failure_facts(completed: subprocess.CompletedProcess, words: tuple[str, ...]) -> dict[str, object]:
+        # Closed classifications or hashes only. Never return messages, metadata, argv,
+        # response bodies, stderr text, project references or credentials to a receipt.
+        facts: dict[str, object] = {
+            "exit_code": completed.returncode,
+            "stdout_sha256": sha(completed.stdout),
+            "stderr_sha256": sha(completed.stderr),
+            "action_open": words[:1] == ("open",),
+            "action_vault": words[:1] == ("vault",),
+        }
+        error = None
+        try:
+            document = json.loads(completed.stdout)
+            if isinstance(document, dict) and isinstance(document.get("error"), dict):
+                error = document["error"]
+        except (ValueError, TypeError):
+            pass
+        if error is None:
+            for line in reversed(completed.stdout.splitlines()):
+                try:
+                    document = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(document, dict) and isinstance(document.get("error"), dict):
+                    error = document["error"]
+                    break
+        facts["error_envelope"] = error is not None
+        if error is None:
+            return facts
+        allowed = {
+            "code": {"project_busy", "project_locked", "project_storage_update_required", "project_storage_migration_pending",
+                     "private_browser_unavailable", "private_browser_profile", "private_browser_recovery_pending",
+                     "private_browser_retirement_incomplete", "browser_open_needs_bearer", "project_not_found",
+                     "project_required", "project_storage_unsupported", "calcifer_unreachable", "unauthenticated"},
+            "cause": {"browser_executable", "browser_home", "browser_profile_setup", "browser_capture", "browser_seal", "browser_pipe", "browser_spawn",
+                      "browser_birth", "browser_ownership", "browser_context", "browser_target", "browser_attach",
+                      "browser_inject", "browser_navigate", "browser_activate"},
+            "kind": {"usage", "validation", "not_found", "credential", "forbidden", "conflict", "capacity", "unavailable", "internal"},
+        }
+        for field, values in allowed.items():
+            value = error.get(field)
+            if isinstance(value, str):
+                if value in values:
+                    facts[field + "_" + value] = True
+                else:
+                    facts[field + "_sha256"] = sha(value.encode())
+        metadata = error.get("metadata")
+        if isinstance(metadata, dict):
+            protocol = metadata.get("browser_protocol_code")
+            if isinstance(protocol, int) and not isinstance(protocol, bool) and protocol in {-32700, -32600, -32601, -32602, -32603, -32000}:
+                facts["browser_protocol_code"] = protocol
+            for field in ("browser_startup_unreadable", "browser_startup_bounded", "browser_startup_no_sandbox", "browser_startup_no_display",
+                          "browser_startup_permission_denied", "browser_startup_invalid_descriptor", "browser_startup_no_space",
+                          "browser_startup_namespace", "browser_startup_crashpad", "browser_process_exited", "browser_exit_before_retirement", "browser_startup_retired"):
+                if isinstance(metadata.get(field), bool):
+                    facts[field] = metadata[field]
+            for field in ("browser_startup_bytes", "browser_exit_code", "browser_exit_signal"):
+                value = metadata.get(field)
+                if value is None or isinstance(value, int) and not isinstance(value, bool):
+                    facts[field] = value
+            digest = metadata.get("browser_startup_sha256")
+            if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
+                facts["browser_startup_sha256"] = digest
+        return facts
 
     def command(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None, success: bool = True) -> bytes:
         # Do not use e2e's argv.log/raw .ndjson wrappers for private qualification data.
@@ -164,7 +231,10 @@ class Native:
                 if busy and time.monotonic() < deadline:
                     time.sleep(0.1)
                     continue
-            require((completed.returncode == 0) == success, "cli_exit")
+            if (completed.returncode == 0) != success:
+                if self.failure is None:
+                    self.failure = self.failure_facts(completed, words)
+                raise Failure("cli_exit")
             return completed.stdout
 
     def document(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None) -> dict:
