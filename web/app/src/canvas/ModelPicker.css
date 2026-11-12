@@ -71,7 +71,8 @@
 .model-picker-choices .model-picker-lora-option > span { flex: 1; min-width: 0; }
 /* A name is never cut off; a description wraps to two lines and ends in an ellipsis, all of it on hover (Paul, 11-12). */
 .model-picker-choices .model-picker-lora-option > span > span { display: block; overflow-wrap: anywhere; }
-.model-picker-lora-description { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+/* As the choices' other small words are blocks (.model-picker-choices small), this one must say it's a clamped box at their weight. */
+.model-picker-choices .model-picker-lora-description { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 .model-picker-choice-mark { flex: none; width: 12px; height: 12px; border: 1px solid var(--line2); border-radius: 50%; }
 .model-picker-choices [aria-checked="true"] .model-picker-choice-mark { border-color: var(--ember); background: var(--ember); box-shadow: inset 0 0 0 3px var(--panel); }
 .model-picker-choices .icon { flex: none; width: 14px; height: 14px; }
