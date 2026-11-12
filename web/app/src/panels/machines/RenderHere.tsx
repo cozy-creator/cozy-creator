@@ -36,22 +36,21 @@ export function useRenderMachines() {
   return { project: id, chosen, toggle }
 }
 
-/** A selected machine's button: its project's renders go here too, and pressed again, no longer. */
+/** A machine's toggle, on its chip top right and in its drawer: the open project's renders go here too, and pressed again, no longer.
+ *  Several can be on: the project's preferred machines (Paul 11-12). */
 export function RenderHere({ name }: { name: string }) {
   const { project, chosen, toggle } = useRenderMachines()
   if (!project) return null
   const on = chosen.includes(name)
   return (
-    <div className="row center">
-      <button
-        type="button"
-        className={`tb render-here ${on ? "on" : ""}`}
-        aria-pressed={on}
-        title={on ? "This project renders here. Press again to stop." : "This project's renders go here, or to another green machine if it finishes first."}
-        onClick={() => toggle(name)}
-      >
-        Render here
-      </button>
-    </div>
+    <button
+      type="button"
+      className={`tb render-here ${on ? "on" : ""}`}
+      aria-pressed={on}
+      title={on ? "This project renders here. Press again to stop." : "This project's renders go here, or to another green machine if it finishes first."}
+      onClick={() => toggle(name)}
+    >
+      Render here
+    </button>
   )
 }

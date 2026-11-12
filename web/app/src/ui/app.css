@@ -2149,8 +2149,24 @@ button:disabled {
   color: var(--mute);
   font-size: var(--small);
 }
-.keep-up:empty {
-  display: none;
+/* A machine's drawer: what it's doing and when it ends, then what to do with it, Render here first. */
+.doing-now {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 6px 0;
+}
+.machine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+.machine-actions > p,
+.machine-actions > .failure {
+  flex-basis: 100%;
+  margin: 0;
 }
 .kv {
   margin: 8px 0;
@@ -2351,12 +2367,6 @@ button:disabled {
 }
 .order p {
   margin: 0 0 8px;
-}
-.ending {
-  margin: 8px 0;
-}
-.ending p {
-  margin: 0 0 6px;
 }
 .stack {
   display: grid;
@@ -3882,8 +3892,11 @@ input[type="checkbox"] {
 }
 
 /* Each machine, top right: what it's doing, its name, and how many things. */
+/* Every machine shows: past its width the chips wrap to another row. */
 .mtabs {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: stretch;
   gap: calc(2px * var(--ui));
   min-width: 0;
@@ -3979,7 +3992,7 @@ input[type="checkbox"] {
 }
 .activity header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding: 2px 4px 8px;
   border-bottom: 1px solid var(--line);
@@ -3991,7 +4004,8 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.activity .more {
+.activity .more,
+.activity .render-here {
   flex: none;
 }
 .activity ul {
