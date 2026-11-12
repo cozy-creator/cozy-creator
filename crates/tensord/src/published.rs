@@ -685,18 +685,11 @@ impl Publisher {
         }))
     }
 
-    /// Each Hub checkpoint's header, landed at once: which of its chunks come, and when, its
-    /// calls direct (`access`). A held header asks the Hub nothing.
-    fn structure(&self, source: &hub::Source, checkpoints: &[Named], job: &Job) -> Result<(), Failure> {
-        if checkpoints.is_empty() {
-            return Ok(());
-        }
-        let names: Vec<String> = checkpoints.iter().map(Named::shown).collect();
-        job.stage(format!("resolving {}", names.join(" and ")));
-        for named in checkpoints {
-            self.pull(source, named, Some(&[]), priority::NOW, job.stop.as_ref(), &|_, _| ())?;
-        }
-        Ok(())
+    /// A Hub checkpoint's header, landed at once: which of its chunks come, and when, its calls
+    /// direct (`access`). A held header asks the Hub nothing.
+    fn structure(&self, source: &hub::Source, named: &Named, job: &Job) -> Result<(), Failure> {
+        job.stage(format!("resolving {}", named.shown()));
+        self.pull(source, named, Some(&[]), priority::NOW, job.stop.as_ref(), &|_, _| ()).map(drop)
     }
 
     /// The checkpoint `named` is: one by hash as given, a name as the Hub resolves its release and
@@ -1339,7 +1332,8 @@ impl Publisher {
     /// choice names it (th-241), else in the first lane of the rule's order its release
     /// publishes (`precision`). The request's GPU
     /// count chooses the group independently of the weight lane; 0 uses the widest group every
-    /// slot supports on the machine. A slot with neither is refused.
+    /// slot supports on the machine. A slot with neither is refused; an on-demand slot that does
+    /// not bind, for any reason, is the plan's `unbound` instead (xs-186).
     fn model(
         &self,
         service: &Service,
@@ -1371,12 +1365,8 @@ impl Publisher {
         // One slot's grant, its Hub checkpoint and its warnings.
         let pick = |slot: &Value| -> Result<(ModelGrant, Option<Named>, Vec<String>), Failure> {
             let path = slot.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
-            let parameter = path.rsplit('.').next().unwrap_or_default().to_string();
             job.stage(format!("choosing the model for {path}"));
-            let asked = request.choices.iter().find(|c| c.parameter == path || c.parameter == parameter)
-                .filter(|c| !c.model.is_empty() || c.manifest.is_some() || !c.source.is_empty());
-            let declared = default_choice(slot, &path);
-            let choice = asked.or(declared.as_ref()).ok_or_else(|| choice_absent(&path, &installation.package))?;
+            let choice = &slot_choice(slot, &request.choices).ok_or_else(|| choice_absent(&path, &installation.package))?;
             if !choice.source.is_empty() {
                 return Ok((self.source_grant(installation, &path, choice, &request.providers, job)?, None, vec![]));
             }
@@ -1421,47 +1411,45 @@ impl Publisher {
             };
             Ok((grant, (!named.model.starts_with("local/")).then_some(named), warnings))
         };
-        // Each checkpoint lands as its structure: what of it comes, and when, its calls direct.
-        // Only a Hub names a checkpoint here (`pick` refused it without the run's access).
-        let land = |picked: &[(ModelGrant, Option<Named>, Vec<String>)]| {
-            let named = distinct(picked.iter().filter_map(|(_, named, _)| named.as_ref()));
-            match named.is_empty() {
-                true => Ok(()),
-                false => self.structure(request.hub("a Hub model")?, &named, job),
+        // One slot bound: its grant, its checkpoint's structure landed (what of it comes, and when,
+        // its calls direct), its components and its adapters; and its warnings.
+        let bind = |slot: &Value| -> Result<(ModelGrant, Vec<String>), Failure> {
+            let (mut grant, named, mut warnings) = pick(slot)?;
+            // Only a Hub names a checkpoint here (`pick` refused it without the run's access).
+            if let Some(named) = named {
+                self.structure(request.hub("a Hub model")?, &named, job)?;
             }
-        };
-        let picked: Vec<_> = slots.iter().map(pick).collect::<Result<_, _>>()?;
-        land(&picked)?;
-        let (mut grants, mut warnings) = (vec![], gpu.problems());
-        for (grant, _, said) in picked {
-            grants.push(grant);
-            warnings.extend(said);
-        }
-        for grant in grants.iter_mut().filter(|g| g.components.is_empty() && !g.model.is_empty()) {
-            grant.components = self.components(&grant.manifest)?;
-        }
-        for grant in &mut grants {
-            let parameter = grant
-                .slot
-                .rsplit('.')
-                .next()
-                .unwrap_or_default()
-                .to_string();
-            if let Some(choice) = request
-                .choices
-                .iter()
-                .find(|c| c.parameter == grant.slot || c.parameter == parameter)
-            {
+            if grant.components.is_empty() && !grant.model.is_empty() {
+                grant.components = self.components(&grant.manifest)?;
+            }
+            let parameter = grant.slot.rsplit('.').next().unwrap_or_default().to_string();
+            if let Some(choice) = request.choices.iter().find(|c| c.parameter == grant.slot || c.parameter == parameter) {
                 // An adapter resolves for the run's hardware: `--lane` is the main model's.
                 let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware);
                 // It adapts a component this call runs (`components=`; none declared: any).
-                let runs: Vec<String> = (slots.iter())
-                    .find(|slot| slot["path"] == grant.slot.as_str())
-                    .and_then(|slot| slot["components"].as_array())
+                let runs: Vec<String> = (slot["components"].as_array())
                     .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
                     .unwrap_or_default();
                 opens_views(service, installation, choice)?;
-                warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &runs, &request.providers, job)?);
+                warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, &mut grant, &runs, &request.providers, job)?);
+            }
+            Ok((grant, warnings))
+        };
+        let (mut grants, mut warnings, mut unbound) = (vec![], gpu.problems(), BTreeMap::new());
+        for slot in &slots {
+            match bind(slot) {
+                Ok((grant, said)) => {
+                    grants.push(grant);
+                    warnings.extend(said);
+                }
+                // A slot the call may never read: why it did not bind fails the call only when its
+                // function reads it.
+                Err(failure) if slot["on_demand"] == true && failure.0 != CANCELED => {
+                    let (parameter, refusal) = unbound_slot(slot, &request.choices, failure);
+                    tracing::info!(slot = %parameter, code = %refusal.0, "an on-demand slot is unbound: {}", refusal.1);
+                    unbound.insert(parameter, refusal);
+                }
+                Err(failure) => return Err(failure),
             }
         }
         job.stage(match request.package.is_empty() {
@@ -1474,6 +1462,7 @@ impl Publisher {
                 &request.entrypoint,
                 &request.choices,
                 &grants,
+                unbound,
                 request.gpus,
             )
             .map_err(|e| ("model_preparation_failed", e.to_string()))?;
@@ -1486,15 +1475,18 @@ impl Publisher {
                 document: serde_json::to_vec(&plan).map_err(|e| io_failure(io::Error::other(e)))?,
             })
             .map_err(io_failure)?;
-        let key = Self::resolution_key(installation, request, &machine_row(gpu), catalog).map_err(io_failure)?;
-        let said = Value::from(warnings.clone()).to_string();
-        service
-            .engine
-            .with_journal(|j| {
-                j.bind_resolution(actor, &key, &installation.package, &plan.id)?;
-                j.bind_named(&warnings_key(&key), &said)
-            })
-            .map_err(io_failure)?;
+        // One that left a slot unbound is made again by the next run: a model published since binds then.
+        if plan.unbound.is_empty() {
+            let key = Self::resolution_key(installation, request, &machine_row(gpu), catalog).map_err(io_failure)?;
+            let said = Value::from(warnings.clone()).to_string();
+            service
+                .engine
+                .with_journal(|j| {
+                    j.bind_resolution(actor, &key, &installation.package, &plan.id)?;
+                    j.bind_named(&warnings_key(&key), &said)
+                })
+                .map_err(io_failure)?;
+        }
         Ok((plan, warnings))
     }
 }
@@ -1534,17 +1526,6 @@ fn forward(source: &hub::Source, named: Named) -> (Named, Option<String>) {
 /// their own choice's lane, else the Hub's pick.
 fn main_model(slots: &[Value]) -> Option<&Value> {
     slots.iter().find(|slot| crate::gpu_service::constructed(slot) && slot["on_demand"] != true)
-}
-
-/// Each checkpoint once.
-fn distinct<'a>(named: impl Iterator<Item = &'a Named>) -> Vec<Named> {
-    let mut checkpoints = Vec::<Named>::new();
-    for named in named {
-        if !checkpoints.iter().any(|c| c.header == named.header) {
-            checkpoints.push(named.clone());
-        }
-    }
-    checkpoints
 }
 
 /// Whether a held answer read at `read_ms` is older than `FRESH`.
@@ -2015,15 +1996,41 @@ pub(crate) fn default_choice(slot: &Value, path: &str) -> Option<stored::ModelCh
     Some(stored::ModelChoice { parameter: path.into(), model, release: release.into(), lane, ..Default::default() })
 }
 
+/// The model a run's `slot` takes: the run's choice for it, else its declared default.
+fn slot_choice(slot: &Value, choices: &[stored::ModelChoice]) -> Option<stored::ModelChoice> {
+    let path = slot["path"].as_str().unwrap_or_default();
+    let parameter = path.rsplit('.').next().unwrap_or_default();
+    let asked = choices.iter().find(|c| c.parameter == path || c.parameter == parameter)
+        .filter(|c| !c.model.is_empty() || c.manifest.is_some() || !c.source.is_empty());
+    asked.cloned().or_else(|| default_choice(slot, path))
+}
+
+/// An on-demand slot that did not bind, by its parameter, and what a call reading it fails with
+/// (xs-186): `failure`'s code, and one line naming the slot, the model it takes and why.
+fn unbound_slot(slot: &Value, choices: &[stored::ModelChoice], (code, why): Failure) -> (String, (String, String)) {
+    let parameter = slot["path"].as_str().unwrap_or_default().rsplit('.').next().unwrap_or_default().to_owned();
+    let model = slot_choice(slot, choices).map(|choice| {
+        if !choice.source.is_empty() {
+            choice.source
+        } else if choice.model.is_empty() {
+            choice.manifest.map(|by| format!("sha256:{}", sha256::hex(&by.digest))).unwrap_or_default()
+        } else if choice.release.is_empty() {
+            choice.model
+        } else {
+            format!("{}@{}", choice.model, choice.release)
+        }
+    });
+    let said = match model.filter(|model| !model.is_empty()) {
+        Some(model) => format!("{parameter}: {model}: {why}"),
+        None => format!("{parameter}: {why}"),
+    };
+    (parameter, (code.to_owned(), said))
+}
+
 fn local_aliases(installation: &Installation, request: &Request) -> io::Result<bool> {
     let interface: Value = serde_json::from_slice(&installation.interface).map_err(io::Error::other)?;
     Ok(model_slots(&interface, &request.entrypoint).unwrap_or_default().iter().any(|slot| {
-        let path = slot["path"].as_str().unwrap_or_default();
-        let parameter = path.rsplit('.').next().unwrap_or_default();
-        let asked = request.choices.iter().find(|c| c.parameter == path || c.parameter == parameter)
-            .filter(|c| !c.model.is_empty() || c.manifest.is_some() || !c.source.is_empty());
-        let declared = default_choice(slot, path);
-        asked.or(declared.as_ref()).is_some_and(|choice| choice.source.is_empty()
+        slot_choice(slot, &request.choices).is_some_and(|choice| choice.source.is_empty()
             && choice.manifest.is_none() && choice.model.starts_with("local/"))
     }))
 }

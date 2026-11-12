@@ -230,6 +230,10 @@ pub struct Invoke {
     /// opens from the store itself.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sources: BTreeMap<String, String>,
+    /// Each on-demand model parameter that bound no checkpoint, and what reading it fails with:
+    /// a code, and one line naming the slot, its model and why (xs-186).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unbound: BTreeMap<String, (String, String)>,
     /// The weights outputs this attempt may write, and each one's granted new bytes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub weights: BTreeMap<String, u64>,
