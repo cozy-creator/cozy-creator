@@ -240,6 +240,25 @@ const RECORD = () => {
   const face = () => page.evaluate(() => document.querySelector('[data-focused-asset="card"] .run-face')?.getAttribute('data-run') ?? null);
   const runOf = async (take) => (await asset()).takes?.find((held) => held.id === take)?.run ?? null;
   const picked = () => page.evaluate(() => document.querySelector('[data-focused-asset="card"] .here-side .take.on')?.getAttribute('data-take-id') ?? null);
+  // A press on a tile, as a person's: what's at its middle must be the tile. Something else there is said (with every tile's place), and
+  // the tile is pressed in place so the rest is still seen.
+  const covered = [];
+  const pickTile = async (take) => {
+    const at = tile(take);
+    await at.scrollIntoViewIfNeeded();
+    const hit = await at.evaluate((element) => {
+      const r = element.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { ok: Boolean(top && (top === element || element.contains(top))), top: top ? `${top.tagName.toLowerCase()}.${String(top.className)}` : null, its: top?.closest('[data-take-id]')?.getAttribute('data-take-id') ?? top?.querySelector?.('[data-take-id]')?.getAttribute('data-take-id') ?? null, at: [r.left, r.top, r.width, r.height].map(Math.round) };
+    });
+    if (hit.ok) return at.click();
+    covered.push({ take, ...hit, tiles: await page.evaluate(() => [...document.querySelectorAll('[data-focused-asset="card"] .take-at, [data-focused-asset="card"] .take.add')].map((element) => {
+      const r = element.getBoundingClientRect();
+      return { cls: String(element.className), take: element.querySelector('[data-take-id]')?.getAttribute('data-take-id') ?? null, at: [r.left, r.top, r.width, r.height].map(Math.round) };
+    })) });
+    await shot(`e-covered-${covered.length}`);
+    return at.dispatchEvent('click');
+  };
   const e1 = await press();
   await until('the first take listed', asset, (row) => row.takes?.some((take) => take.id === e1.take), 30_000);
   const e2 = await press();
@@ -247,21 +266,21 @@ const RECORD = () => {
   const dots = await page.evaluate((ids) => ids.map((id) => document.querySelectorAll(`[data-focused-asset="card"] .here-side .take.making[data-take-id="${id}"] .state-dot`).length), [e1.take, e2.take]);
   check('e_each_its_own_tile_and_dot', both.making.includes(e1.take) && both.making.includes(e2.take) && dots.every((n) => n === 1), { both, dots });
   const r1 = await until('the first take running', () => runOf(e1.take), Boolean, 60_000);
-  await tile(e1.take).click();
+  await pickTile(e1.take);
   const f1 = await until('the frame on the first', face, (now) => now === String(r1), 10_000).catch(() => null);
   check('e_selected_shows_its_own_run', f1 === String(r1) && (await picked()) === e1.take, { f1, r1, picked: await picked() });
-  await tile(e2.take).click();
+  await pickTile(e2.take);
   await page.waitForTimeout(500);
   const [f2, r2] = [await face(), await runOf(e2.take)];
   check('e_other_never_shows_the_first', (await picked()) === e2.take && f2 !== String(r1) && (r2 === null || f2 === String(r2)), { f2, r1, r2 });
-  await tile(e1.take).click();
+  await pickTile(e1.take);
   const firstDone = await until('the first lands', asset, (row) => row.prefixes.some((version) => version.id === e1.take), FIRST_RUN_MS);
   const v1 = versionOf(firstDone, e1.take);
   const drawn1 = await until('the first drawn', now, (look) => look.drawn === v1.main.sha256.replace(/^sha256:/, ''), 20_000).catch(() => null);
   check('e_finished_while_selected_is_drawn', drawn1 !== null, await now());
   const left = await now();
   if (left.making.includes(e2.take)) {
-    await tile(e2.take).click();
+    await pickTile(e2.take);
     check('e_other_still_selectable', (await until('the second picked', picked, (id) => id === e2.take, 5_000).catch(() => null)) === e2.take, await picked());
     // Looked away, at the first's version, so the second's landing is said.
     await page.locator(`[data-focused-asset="card"] .here-side .take[data-take-id="${e1.take}"]`).click();
@@ -273,6 +292,7 @@ const RECORD = () => {
   if (said) await note.locator('button:text-is("View")').click();
   const drawn2 = said ? await until('the second drawn by View', now, (look) => look.drawn === v2.main.sha256.replace(/^sha256:/, ''), 20_000).catch(() => null) : null;
   check('e_view_opens_the_right_take', drawn2 !== null, { said, look: await now(), v2: v2.number });
+  check('e_tiles_pressable', covered.length === 0, covered);
   await shot('e-two');
 
   check('no_page_errors', errors.length === 0, errors);
