@@ -5,8 +5,9 @@ use super::{auth::VerifiedActor, http::blocking, v1, MachineIdentity};
 use crate::runs::Runs;
 use api::error::Error;
 use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
+    collections::HashMap,
+    sync::{Arc, LazyLock, Mutex},
+    time::{Duration, Instant},
 };
 use futures_util::{future::ready, Stream, StreamExt};
 
@@ -124,6 +125,18 @@ async fn pictured(identity: Arc<MachineIdentity>, runs: &Arc<Runs>, held: Held) 
     blocking(runs, move |_| Ok(picture(&identity, held))).await
 }
 
+/// Whether a GPU drives a display, read from the driver at most every 10 s: a monitor is plugged in rarely, and each read opens NVML.
+fn drives_display(uuid: &str) -> bool {
+    static READ: LazyLock<Mutex<HashMap<String, (Instant, bool)>>> = LazyLock::new(Mutex::default);
+    let mut read = READ.lock().unwrap();
+    if let Some((_, display)) = read.get(uuid).filter(|(at, _)| at.elapsed() < Duration::from_secs(10)) {
+        return *display;
+    }
+    let display = platform::gpu::Device::open(uuid).and_then(|device| device.display_active()).unwrap_or(false);
+    read.insert(uuid.to_owned(), (Instant::now(), display));
+    display
+}
+
 fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
     let Held { runs, environments, warm, models, mut memory } = held;
     let (updates, lifecycle) = (&identity.updates, &identity.lifecycle);
@@ -158,6 +171,7 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
                 },
                 memory_class: g.memory_class.clone(),
                 memory_limit_bytes: identity.gpu_memory_limit.filter(|&l| l < g.memory_bytes).unwrap_or(0),
+                display: drives_display(&g.device_uuid),
                 memory: memory.remove(&g.device_uuid),
             })
             .collect(),

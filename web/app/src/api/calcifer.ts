@@ -759,7 +759,11 @@ export type Gpu = { index: number, name: string, memory_bytes: number, driver: s
 /**
  * The most of `memory_bytes` the machine uses; 0: all of it.
  */
-memory_limit_bytes?: number, };
+memory_limit_bytes?: number, 
+/**
+ * It draws a screen now: a render on it makes the screen lag.
+ */
+display?: boolean, };
 
 /**
  * `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.

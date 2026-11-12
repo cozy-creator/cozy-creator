@@ -1347,6 +1347,9 @@ pub struct Gpu {
     /// The most of `memory_bytes` the machine uses; 0: all of it.
     #[serde(default, skip_serializing_if = "unlimited")]
     pub memory_limit_bytes: u64,
+    /// It draws a screen now: a render on it makes the screen lag.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub display: bool,
 }
 
 fn unlimited(bytes: &u64) -> bool {
