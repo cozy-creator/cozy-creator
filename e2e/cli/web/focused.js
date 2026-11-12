@@ -315,7 +315,7 @@ async function died(error) {
   check('opening_edit_does_not_approve_the_preview', (await asset()).version === 2 && (await asset()).approved === 2);
   await choose(10);
 
-  const newImage = history.locator('.take.add[aria-label="Its next take"]');
+  const newImage = card.locator('.take.add[aria-label="Its next take"]');
   await newImage.scrollIntoViewIfNeeded();
   await newImage.click();
   await prompt.waitFor();
@@ -336,7 +336,7 @@ async function died(error) {
   const afterReferenceDrop = await until('dropping an image onto an image tool appends an explicit reference', asset,
     (item) => /<self\.1>/i.test(item.fields?.[promptField] ?? '') && /<(?:self|focus_image)\.2>/i.test(item.fields[promptField]) && item.fields[promptField].includes('make her smile'));
   // The New tile stays active while editing; the source state is the explicit self.1 reference above.
-  check('dropping_an_image_into_the_editor_keeps_its_source_and_approval', afterReferenceDrop.version === beforeReferenceDrop.version && afterReferenceDrop.approved === beforeReferenceDrop.approved && afterReferenceDrop.sha256 === beforeReferenceDrop.sha256 && JSON.stringify(afterReferenceDrop.prefixes.map((version) => [version.number, version.main.sha256])) === JSON.stringify(beforeReferenceDrop.prefixes.map((version) => [version.number, version.main.sha256])) && await history.locator('.take.add.on[aria-label="Its next take"]').count() === 1 && await prompt.isVisible());
+  check('dropping_an_image_into_the_editor_keeps_its_source_and_approval', afterReferenceDrop.version === beforeReferenceDrop.version && afterReferenceDrop.approved === beforeReferenceDrop.approved && afterReferenceDrop.sha256 === beforeReferenceDrop.sha256 && JSON.stringify(afterReferenceDrop.prefixes.map((version) => [version.number, version.main.sha256])) === JSON.stringify(beforeReferenceDrop.prefixes.map((version) => [version.number, version.main.sha256])) && await card.locator('.take.add.on[aria-label="Its next take"]').count() === 1 && await prompt.isVisible());
   check('dropping_an_image_into_the_editor_does_not_create_a_node', JSON.stringify((await state()).assets.map((item) => item.name).sort()) === JSON.stringify(namesBeforeReferenceDrop));
 
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;

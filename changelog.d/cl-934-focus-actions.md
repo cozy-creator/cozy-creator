@@ -1,0 +1,1 @@
+In Focus, Render and New take sit in one spot on the title row for every tool, never hidden while a take renders. The title row says which take is shown, "Rendering" while one is made from its words, or "New take" once New is pressed, its last take faded behind. Cmd/Ctrl+Enter in any prompt renders.

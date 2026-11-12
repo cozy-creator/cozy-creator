@@ -953,7 +953,7 @@ ${local ? `  card:
         await settled(page);
         await look(`open-${asset}-warnings`, true);
       }
-      const next = here.locator('.here-side .take.add');
+      const next = here.locator('.take.add');
       if (await next.count()) {
         await (await renderOf(page, asset)).waitFor();
         await settled(page);
@@ -1090,7 +1090,7 @@ ${local ? `  card:
       await settled(page);
       await edges(`open-${many}-zoomed-${step}`);
     }
-    const next = page.locator(`.card.here[data-asset="${many}"] .here-side .take.add`);
+    const next = page.locator(`.card.here[data-asset="${many}"] .take.add`);
     if (await next.count()) {
       await (await renderOf(page, many)).waitFor();
       await settled(page);

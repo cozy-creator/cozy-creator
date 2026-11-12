@@ -5,7 +5,7 @@ import { Icon } from "../ui/Icon"
 import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
 import { NameField } from "./NameField"
-import { makingRun, shownOf } from "./shown"
+import { makingRun, shownOf, watched } from "./shown"
 import { RunFace, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
 import { noHash } from "./text"
@@ -55,6 +55,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   const arriving = useArriving(view)
   if (!view?.asset && !view?.entity) return null
   const version = shownOf(view)?.number
+  const writing = Boolean(view.hereWords) && !watched(view)
   // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
   const onItsWay = view.asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
   // What its runs said (a slow run, a hot GPU: cl-913), as an open box's head says it: a ! that shows the lines.
@@ -76,7 +77,8 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         <div className="focus-title">
           {view.draft === undefined && <StateDot state={viewState(view)} unseen={view.asset?.unseen?.length ?? 0} noun={view.asset?.noun ?? "take"} />}
           {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename node" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
-          {view.asset?.kind === "image" && (version !== undefined || Boolean(view.asset.prefixes?.length) || Boolean(view.asset.sha256)) && <span className="focus-version-label" aria-label="Image version">{version === undefined ? "New" : `v${version}`}</span>}
+          {/* Which take it is, a picture's or a video's: being written, "New take", unmistakably; none with no takes (cl-925). */}
+          {(view.asset?.kind === "image" || view.asset?.kind === "video") && (version !== undefined || Boolean(view.asset.prefixes?.length) || Boolean(view.asset.sha256) || Boolean(view.asset.making?.length)) && <span className={`focus-version-label ${writing ? "writing" : ""}`} aria-label="Take">{writing ? "New take" : version === undefined ? "Rendering" : `v${version}`}</span>}
           {warnings.length > 0 && (
             <button type="button" className="iconb warned" aria-label="Warnings" aria-expanded={Boolean(view.warned)} title={noHash(warnings.join("\n"))} onClick={() => store.patch(name, { warned: !view.warned })}>
               !

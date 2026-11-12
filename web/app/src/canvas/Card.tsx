@@ -6,7 +6,7 @@ import { flushSync } from "react-dom"
 import { machinesQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
-import type { MainFile, ToolField } from "../api/calcifer"
+import type { MainFile, Tool, ToolField } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -122,11 +122,66 @@ function TakeThumb({ main, width, onShown }: { main: MainFile; width: number; on
   )
 }
 
+/** Its next take, offered once it has any, made, on its way or failed: only a box with none hides it, its words being what's asked (Paul,
+ *  11-12, cl-925 and cl-941). An Edit's + is its words. */
+function nextTake(store: CanvasStore, view: ElementView, name: string, tools: Map<string, Tool>) {
+  const asset = view.asset!
+  const making = asset.making ?? []
+  const waiting = !making.length && (view.queued || view.asked !== undefined)
+  const writes = paints(view, tools)
+  const any = Boolean(asset.prefixes?.length) || Boolean(asset.sha256) || Boolean(asset.timeline) || making.length > 0 || Boolean(waiting) || Boolean(asset.failure)
+  const adds = (writes || (asset.kind === "video" && Boolean(asset.tool))) && any
+  const write = () => {
+    // Already on them, the caret goes back in.
+    const prompt = view.hereWords ? document.querySelector<HTMLElement>(`.card.here[data-asset="${CSS.escape(name)}"] .in-frame .mention-text`) : null
+    if (writes && prompt) {
+      prompt.focus()
+      window.getSelection()?.selectAllChildren(prompt)
+      window.getSelection()?.collapseToEnd()
+      return
+    }
+    if (writes) return store.writeNext(name)
+    store.focusFit?.()
+    store.focusing = name
+    store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watchRun: undefined, watchFrom: undefined })
+  }
+  const label = writes ? "Its next take" : asset.timeline ? "Its words" : "New video"
+  return { adds, write, label, title: writes ? "New image" : "New video", tool: tools.get(asset.tool ?? "")?.label, on: Boolean(view.hereWords), word: writes || asset.kind === "video" }
+}
+
+function NewTake({ next }: { next: ReturnType<typeof nextTake> }) {
+  return (
+    <button type="button" className={`take add ${next.on ? "on" : ""}`} aria-label={next.label} title={next.title} onClick={next.write}>
+      +{next.word && <small className="take-new">New · {next.tool}</small>}
+    </button>
+  )
+}
+
+/** In Focus, on the title row above the frame's right edge, the same for every tool (Paul, 11-12): New, then Render, never hidden while a
+ *  take renders, so another can be queued. */
+function FocusActions({ view, name }: { view: ElementView; name: string }) {
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  if (!view.asset?.tool) return null
+  const next = nextTake(store, view, name, tools)
+  return (
+    <div className="focus-actions nodrag nopan">
+      {next.adds && (
+        <button type="button" className={`tb take add focus-new ${next.on && !watched(view) ? "on" : ""}`} aria-label={next.label} title={next.title} onClick={next.write}>
+          <Icon name="plus" />
+          {next.label === "Its words" ? "Its words" : "New take"}
+        </button>
+      )}
+      <RenderButton name={name} view={view} />
+    </div>
+  )
+}
+
 /** Each take or version, the newest first and what's still being made before that: a click previews it; a double tap approves an image.
  *  Beside an open box they're a column, and a drag up or down scrolls it; an Edit's are a row under it, which drags across. A drag any other way carries a
  *  take out. + first goes to its words: an Edit's, or the next take an image tool writes in the frame. An Edit's clips are what a take holds, so they stay
  *  with it unless it's approved. */
-function Takes({ view, name, width, side }: { view: ElementView; name: string; width: number; side?: boolean }) {
+function Takes({ view, name, width, side, focused = false }: { view: ElementView; name: string; width: number; side?: boolean; focused?: boolean }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const asset = view.asset!
@@ -145,29 +200,11 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
   const versions = [...(asset.prefixes ?? [])].reverse()
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
-  const writes = paints(view, tools)
   // The newest take, once its tile's up, is made ready at the size it's looked at, before it's clicked.
   const { client } = useConnection()
   const newest = asset.prefixes?.at(-1)
-  // Its next take is offered once it has any, made, on its way or failed: only a box with none hides it, its words being what's asked
-  // (Paul, 11-12, cl-925 and cl-941). An Edit's + is its words.
-  const any = versions.length > 0 || Boolean(asset.sha256) || Boolean(asset.timeline) || making.length > 0 || Boolean(waiting) || Boolean(asset.failure)
-  const adds = (writes || (asset.kind === "video" && Boolean(asset.tool))) && any
-  if (!adds && !versions.length && !view.joining && !making.length && !waiting) return null
-  const words = () => {
-    // Already on them, the caret goes back in.
-    const prompt = view.hereWords ? document.querySelector<HTMLElement>(`.card.here[data-asset="${CSS.escape(name)}"] .in-frame .mention-text`) : null
-    if (writes && prompt) {
-      prompt.focus()
-      window.getSelection()?.selectAllChildren(prompt)
-      window.getSelection()?.collapseToEnd()
-      return
-    }
-    if (writes) return store.writeNext(name)
-    store.focusFit?.()
-    store.focusing = name
-    store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watchRun: undefined, watchFrom: undefined })
-  }
+  const next = nextTake(store, view, name, tools)
+  if (!next.adds && !versions.length && !view.joining && !making.length && !waiting) return null
   const pick = (number: number) => {
     store.pickTake(name, number)
     if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined, watchRun: undefined })
@@ -180,11 +217,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
         if (!side) event.currentTarget.scrollLeft += event.deltaX || event.deltaY
       }}
     >
-      {adds && (
-        <button type="button" className={`take add ${view.hereWords ? "on" : ""}`} aria-label={writes ? "Its next take" : asset.timeline ? "Its words" : "New video"} title={writes ? "New image" : "New video"} onClick={words}>
-          +{(writes || asset.kind === "video") && <small className="take-new">New · {tools.get(asset.tool ?? "")?.label}</small>}
-        </button>
-      )}
+      {next.adds && !focused && <NewTake next={next} />}
       {waiting && (
         <span className="take-at">
           <button type="button" className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued" onClick={() => store.watchTake(name)}>
@@ -905,6 +938,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         )}
       </div>
       )}
+      {focused && !view.placing && <FocusActions view={view} name={name} />}
       <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text" && !(asset?.timeline && editing)}>{asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
@@ -934,7 +968,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           <Asking name={name} fit={view.asking.fit} />
         </div>
       )}
-      {here && asset && asset.kind !== "text" && !asset.timeline && <Takes view={view} name={name} width={width} side />}
+      {here && asset && asset.kind !== "text" && !asset.timeline && <Takes view={view} name={name} width={width} side focused={focused} />}
       {here && asset && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
@@ -945,7 +979,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
               {/* With no tool, a picture or a video asks nothing and has nothing to render (Paul, 11-12). */}
-              {!looking && (asset.kind !== "image" || editing) && Boolean(asset.tool) && <AssetEdit name={name} view={view} editing={editing} focused={focused} actions={editing && <RenderButton name={name} view={view} />} />}
+              {!looking && (asset.kind !== "image" || editing) && Boolean(asset.tool) && <AssetEdit name={name} view={view} editing={editing} focused={focused} actions={editing && !focused && <RenderButton name={name} view={view} />} />}
               {asset.kind !== "image" && !view.hereWords && <TakeName view={view} />}
               {view.warned && warned ? (
                 <div className="warned-lines">

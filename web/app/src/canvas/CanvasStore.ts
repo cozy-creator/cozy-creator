@@ -1352,7 +1352,8 @@ export class CanvasStore {
     const asset = this.get(name)?.asset
     if (!asset) return
     const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
-    // A render asked of a video's words stays on them; a take being made, picked, is looked at: what of it has landed plays (cl-907).
+    // A render asked of a video's words stays on them; a take being made, picked, is looked at: what of it has landed plays (cl-907). On its
+    // words while one renders, the title row says so, and New is a draft: "New take", its last take behind (cl-934).
     this.patch(name, { hereWords: (asset.kind === "video" && run === undefined) || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
   }
 
