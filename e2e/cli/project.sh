@@ -73,12 +73,20 @@ version_skew() {
   fi
 }
 
+# held <field>: the running Calcifer's lock record's field, after a command made sure one runs (a candidate's update may have just
+# restarted it); empty when there is none.
+held() {
+  cozy --json machine ls > /dev/null 2>&1 || true
+  jq -r ".$1 // empty" "$HOME/.cozy/calcifer/calcifer.lock.holder" 2> /dev/null || true
+}
+
 # open_page: a page as the browser makes one, against the running Calcifer: a sign-in code traded for a session, its events
 # stream held open in the background ($PAGE_PID, writing $OUT/page.sse). close_page ends it.
 open_page() {
-  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder address code session
-  address=$(jq -r .address "$holder")
-  code=$(curl -fsS -X POST -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$address/v1/session-codes" | jq -r .code) &&
+  local address code session token
+  address=$(held address) token=$(held token)
+  [ -n "$address" ] || { check "page: no Calcifer runs"; return 1; }
+  code=$(curl -fsS -X POST -H "Authorization: Bearer $token" "http://$address/v1/session-codes" | jq -r .code) &&
     session=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg c "$code" '{code: $c}')" "http://$address/v1/session" | jq -r .token) ||
     { check "page: no browser session from $address"; return 1; }
   curl -sSN -H "Authorization: Bearer $session" -H 'Accept: text/event-stream' "http://$address/v1/events" > "$OUT/page.sse" 2>&1 & PAGE_PID=$!
@@ -94,7 +102,7 @@ busy_skew() {
   [ -f "$CAND_COZY" ] || return 0
   step "version skew: the candidate CLI leaves a Calcifer with an open page running"
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pid code=0 release candidate
-  pid=$(jq -r .pid "$holder") release=$(cozy --version) candidate=$("$CAND_COZY" --version)
+  pid=$(held pid) release=$(cozy --version) candidate=$("$CAND_COZY" --version)
   open_page || return
   (cd "$OUT/project" && "$CAND_COZY" machine use local) > "$OUT/skew-busy.txt" 2>&1 || code=$?
   cat "$OUT/skew-busy.txt"
@@ -108,12 +116,34 @@ busy_skew() {
   close_page
 }
 
+# cl-962: the installed cozy that finds a Calcifer of another version (an install swapped under it; here its lock's record says
+# 0.0.0-skew) keeps it running while a page's stream is open, and says so. A real skew is busy_skew's; this one runs wherever the
+# installed cozy is the candidate (isolated CI).
+kept_calcifer() {
+  step "the installed cozy keeps a Calcifer of another version that a page uses"
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pid code=0
+  pid=$(held pid)
+  open_page || return
+  cp "$holder" "$OUT/holder.saved"
+  jq -c '.version = "0.0.0-skew"' "$OUT/holder.saved" > "$holder.skew" && mv -f "$holder.skew" "$holder"
+  cozy machine ls > "$OUT/kept.txt" 2>&1 || code=$?
+  cp "$OUT/holder.saved" "$holder"
+  cat "$OUT/kept.txt"
+  [ "$code" = 0 ] || check "kept: cozy machine ls failed against a Calcifer of another version (exit $code)"
+  grep -q 'Calcifer here is 0.0.0-skew, this cozy is .*: it keeps running (a page is open' "$OUT/kept.txt" \
+    || check "kept: the installed cozy did not say it keeps a Calcifer a page uses"
+  ! grep -q 'restarting it' "$OUT/kept.txt" || check "kept: the installed cozy said it restarts Calcifer"
+  [ "$(held pid)" = "$pid" ] || check "kept: Calcifer was restarted under an open page (pid $pid is now $(held pid))"
+  kill -0 "$PAGE_PID" 2> /dev/null || check "kept: the page's events stream was cut"
+  close_page
+}
+
 # cl-962: `cozy restart` is the one way to switch a Calcifer in use: with a page open, Calcifer comes back on the installed cozy
 # under a new pid, the page's stream ends (its page reconnects), and the next command is served.
 explicit_restart() {
   step "cozy restart"
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder pid
-  pid=$(jq -r .pid "$holder")
+  pid=$(held pid)
   open_page || return
   cozy --json restart > "$OUT/restart.json" 2> "$OUT/restart.err" || { check "cozy restart failed: $(tail -c 300 "$OUT/restart.err")"; close_page; return; }
   J --argjson old "$pid" '.restarted and .pid != $old' "$OUT/restart.json" || check "cozy restart: $(cat "$OUT/restart.json")"
@@ -127,11 +157,12 @@ explicit_restart() {
 # slow_upload <bytes>: a PUT /v1/files of that many random bytes at 200 KB/s to the running Calcifer, in the background ($UP),
 # its status in $OUT/slow.code.
 slow_upload() {
-  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder digest
+  local digest address token
+  address=$(held address) token=$(held token)
   head -c "$1" /dev/urandom > "$OUT/slow.bin"
   digest=sha256:$(sha "$OUT/slow.bin")
-  curl -sS -o "$OUT/slow.json" -w '%{http_code}' --limit-rate 200k -T "$OUT/slow.bin" -H "Authorization: Bearer $(jq -r .token "$holder")" \
-    "http://$(jq -r .address "$holder")/v1/files/$digest" > "$OUT/slow.code" 2> "$OUT/slow.err" & UP=$!
+  curl -sS -o "$OUT/slow.json" -w '%{http_code}' --limit-rate 200k -T "$OUT/slow.bin" -H "Authorization: Bearer $token" \
+    "http://$address/v1/files/$digest" > "$OUT/slow.code" 2> "$OUT/slow.err" & UP=$!
   sleep 2
 }
 
@@ -142,26 +173,27 @@ idle_restart() {
   [ "$RUNNER_OS" = Linux ] || return 0
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder restart=$E2E/../scripts/restart-calcifer-when-idle.py pid code t0
   step "a Calcifer restart waits for an upload in flight"
-  pid=$(jq -r .pid "$holder") t0=$SECONDS
+  pid=$(held pid) t0=$SECONDS
   slow_upload 3000000
   python3 "$restart" --wait 120 --every 1 > "$OUT/idle-restart.txt" 2>&1 || check "idle restart failed: $(tail -c 300 "$OUT/idle-restart.txt")"
-  wait "$UP"; code=$(cat "$OUT/slow.code")
+  wait "$UP" || true
+  code=$(cat "$OUT/slow.code")
   cat "$OUT/idle-restart.txt"
   { grep -q 'restart waits: [0-9]* request' "$OUT/idle-restart.txt" && grep -q 'restarted idle' "$OUT/idle-restart.txt"; } \
     || check "idle restart: it did not wait for the upload in flight"
   [ "$code" = 201 ] || [ "$code" = 200 ] || check "idle restart: the upload in flight was cut ($code: $(tail -c 300 "$OUT/slow.err" "$OUT/slow.json"))"
   [ $((SECONDS - t0)) -ge 10 ] || check "idle restart: Calcifer restarted after $((SECONDS - t0))s, before a 15 s upload landed"
   cozy --json machine ls > /dev/null || check "idle restart: the next command was not served"
-  [ "$(jq -r .pid "$holder")" != "$pid" ] || check "idle restart: Calcifer kept pid $pid"
+  [ "$(held pid)" != "$pid" ] || check "idle restart: Calcifer kept pid $pid"
   step "past its bound a Calcifer restart goes ahead and says so"
-  pid=$(jq -r .pid "$holder")
+  pid=$(held pid)
   slow_upload 6000000
   python3 "$restart" --wait 3 --every 1 > "$OUT/idle-bound.txt" 2>&1 || check "bounded restart failed: $(tail -c 300 "$OUT/idle-bound.txt")"
-  wait "$UP"
+  wait "$UP" || true
   cat "$OUT/idle-bound.txt"
   grep -q 'restarted while busy after [0-9]*s, the most it waits: [0-9]* request' "$OUT/idle-bound.txt" || check "bounded restart: it did not say it restarted busy"
   cozy --json machine ls > /dev/null || check "bounded restart: the next command was not served"
-  [ "$(jq -r .pid "$holder")" != "$pid" ] || check "bounded restart: Calcifer kept pid $pid"
+  [ "$(held pid)" != "$pid" ] || check "bounded restart: Calcifer kept pid $pid"
 }
 
 sha() { { sha256sum "$1" 2> /dev/null || shasum -a 256 "$1"; } | cut -c1-64; }
