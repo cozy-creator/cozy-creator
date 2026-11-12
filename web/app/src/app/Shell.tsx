@@ -90,6 +90,7 @@ function tabsOf(order: KnownProject[], id: string | null, count: number): KnownP
 function ProjectTabs({ id, readable, children }: { id: string | null; readable: boolean; children: ReactNode }) {
   const { client, stream } = useConnection()
   const to = useTo()
+  const navigate = useNavigate()
   const { data: heldProject } = useQuery({ ...projectQuery(client, stream, id ?? ""), enabled: Boolean(id) && readable })
   const data = readable ? heldProject : undefined
   const { data: list } = useQuery(projectsQuery(client))
@@ -122,10 +123,9 @@ function ProjectTabs({ id, readable, children }: { id: string | null; readable: 
       const alone = lone === null ? [] : [widths.pop() ?? 0]
       const more = widths.pop() ?? 0
       const width = new Map(order.map((row, at) => [row, widths[at]]))
-      const plus = held.lastElementChild?.getBoundingClientRect().width ?? 0
       const fits = (n: number) => {
         const shown = tabsOf(order, id, n)
-        const items = [...shown.map((row) => width.get(row) ?? 0), ...alone, ...(shown.length < order.length ? [more] : []), plus]
+        const items = [...shown.map((row) => width.get(row) ?? 0), ...alone, ...(shown.length < order.length ? [more] : [])]
         return Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight) + items.reduce((sum, each) => sum + each + gap, -gap) <= space
       }
       if (fits(order.length)) return order.length
@@ -146,7 +146,19 @@ function ProjectTabs({ id, readable, children }: { id: string | null; readable: 
     <div className="ptabs-room" ref={room}>
       <nav className="ptabs" aria-label="Projects" ref={strip}>
         {tabs.map((tab) => (
-          <Link key={tab.id} className={`ptab ${tab.id === id ? "on" : ""}`} to={projectPath(tab)} title={tab.path} aria-current={tab.id === id ? "page" : undefined}>
+          // The open project's name opens Projects, ready for a new one's name (web-ui.md §1; cl-958: the one + in the bar is Add files).
+          <Link
+            key={tab.id}
+            className={`ptab ${tab.id === id ? "on" : ""}`}
+            to={projectPath(tab)}
+            title={tab.id === id ? `${tab.path}\nProjects, and a new one` : tab.path}
+            aria-current={tab.id === id ? "page" : undefined}
+            onClick={(event) => {
+              if (tab.id !== id) return
+              event.preventDefault()
+              navigate(to("projects"), { state: { new: true } satisfies ProjectsAsk })
+            }}
+          >
             {tab.name}
           </Link>
         ))}
@@ -156,9 +168,6 @@ function ProjectTabs({ id, readable, children }: { id: string | null; readable: 
             {hidden.length} more
           </Link>
         )}
-        <Link className="ptab new" to={to("projects")} state={{ new: true } satisfies ProjectsAsk} title="New project" aria-label="New project">
-          <Icon name="plus" />
-        </Link>
       </nav>
       <span className="ptabs-said" ref={beside}>
         {saidOfFile.length > 0 && (

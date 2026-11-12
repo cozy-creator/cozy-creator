@@ -2614,6 +2614,9 @@ button:disabled {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.runrow .under.fn {
+  font-family: var(--mono);
+}
 .runrow .under.warn {
   color: var(--ood);
 }
@@ -4489,12 +4492,6 @@ input[type="checkbox"] {
 .ptab.more {
   flex: none;
 }
-.ptab.new {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  padding: calc(4px * var(--ui)) calc(8px * var(--ui));
-}
 /* What each tab takes at its full width, laid out where no one sees it: a row as wide as all of them, so a font arriving resizes it. */
 .ptabs-ghost {
   position: absolute;
@@ -4759,12 +4756,6 @@ p.warn.slow {
   border-top: 1px solid var(--line);
 }
 /* Where a project is, so a person can find it. */
-.project-path {
-  display: block;
-  color: var(--mute);
-  font: var(--small) var(--mono);
-  overflow-wrap: anywhere;
-}
 
 /* Zoom, in the canvas's bottom right corner (FigJam's): − the zoom +, sized like the top bar's buttons. The zoom opens its menu above it. */
 .zoom {
