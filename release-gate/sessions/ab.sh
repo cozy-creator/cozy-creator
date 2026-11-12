@@ -116,13 +116,15 @@ weights() { jq -r '[.calls[]? | select(.measurements.memory.stats.varena? != nul
 hold() {
   local script
   if [ "$2" = off ]; then
-    script='[ -s /var/tmp/ab-vram.ready ] && kill "$(cut -d" " -f1 /var/tmp/ab-vram.ready)"; rm -f /var/tmp/ab-vram.ready; sleep 2'
+    script='pgrep -f /var/tmp/ab-vram.py | xargs -r kill; rm -f /var/tmp/ab-vram.ready; sleep 2'
   else
     script=$(cat <<EOS
 [ -s /var/tmp/ab-vram.ready ] && kill -0 "\$(cut -d' ' -f1 /var/tmp/ab-vram.ready)" 2> /dev/null && { cat /var/tmp/ab-vram.ready; exit 0; }
-echo $(base64 -w0 "$VRAM") | base64 -d > /var/tmp/ab-vram.py && rm -f /var/tmp/ab-vram.ready
-setsid nohup python3 /var/tmp/ab-vram.py $(awk -v g="$FREE_GIB" 'BEGIN { printf "%d", g * 1073741824 }') /var/tmp/ab-vram.ready > /var/tmp/ab-vram.out 2>&1 < /dev/null &
-i=0; while [ ! -s /var/tmp/ab-vram.ready ] && kill -0 \$! 2> /dev/null && [ \$i -lt 240 ]; do sleep 0.5; i=\$((i + 1)); done
+if ! pgrep -f /var/tmp/ab-vram.py > /dev/null; then
+  echo $(base64 -w0 "$VRAM") | base64 -d > /var/tmp/ab-vram.py && rm -f /var/tmp/ab-vram.ready
+  setsid nohup python3 /var/tmp/ab-vram.py $(awk -v g="$FREE_GIB" 'BEGIN { printf "%d", g * 1073741824 }') /var/tmp/ab-vram.ready > /var/tmp/ab-vram.out 2>&1 < /dev/null &
+fi
+i=0; while [ ! -s /var/tmp/ab-vram.ready ] && [ \$i -lt 240 ]; do sleep 0.5; i=\$((i + 1)); done
 cat /var/tmp/ab-vram.ready 2> /dev/null || tail -c 300 /var/tmp/ab-vram.out
 EOS
 )
