@@ -2292,7 +2292,7 @@ video.preview.on {
   height: 18px;
 }
 /* Far out a box is its picture and its name (web-ui.md §2), the name and its dot at the body step on screen, held there by --name-zoom
-   (CanvasHost.tsx); its version and trash can, too small to read or hit, go (cl-958). */
+   (CanvasHost.tsx); its version and trash can, too small there to read or hit, go (cl-958). */
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.nm, .state-dot) {
   font-size: calc(var(--t-body) * var(--ui) * var(--name-zoom, 1));
 }
@@ -2303,10 +2303,10 @@ video.preview.on {
   -webkit-line-clamp: 2;
   line-clamp: 2;
   white-space: normal;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   line-height: 1.1;
 }
-.stage[data-lod="2"] .react-flow__node .card > .head :is(.node-version-label, .iconb) {
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
   display: none;
 }
 
