@@ -36,7 +36,7 @@ export function VideoScrub({ name, view }: { name: string; view: ElementView }) 
         </button>
         <span className="sp" />
         {picks && (
-          <button type="button" className="tb pick-up" onClick={() => void store.beginVideoPickup(name, frame / fps)}>
+          <button type="button" className="pick-up" onClick={() => void store.beginVideoPickup(name, frame / fps)}>
             Pick up from here
           </button>
         )}
