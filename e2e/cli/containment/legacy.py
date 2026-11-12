@@ -525,7 +525,9 @@ def qualify(args, receipt: Receipt) -> None:
     baseline = journal(CALCIFER / "state.db", list(results))
     checkpoint(receipt, "old_subject_verify_logs")
     marker_logs = sum(marker in log[3].encode() for value in baseline.values() for log in value["logs"])
-    check(marker_logs > 0, "old_subject_log_marker", logs=sum(len(value["logs"]) for value in baseline.values()), marker_logs=marker_logs)
+    logged_runs = sum(any(marker in log[3].encode() for log in value["logs"]) for value in baseline.values())
+    check(logged_runs == len(baseline), "old_subject_log_marker", runs=len(baseline), logged_runs=logged_runs,
+          logs=sum(len(value["logs"]) for value in baseline.values()), marker_logs=marker_logs)
     checkpoint(receipt, "old_subject_verify_numbers")
     check(all(value["row"][0] > 0 for value in baseline.values()), "old_subject_numbers", runs=len(baseline))
     # Keep a known real old HTTP request/key too, so a byte-identical retry after

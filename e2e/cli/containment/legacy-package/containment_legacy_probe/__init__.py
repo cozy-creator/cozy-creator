@@ -1,7 +1,7 @@
 """Public software fixture. Private subjects enter only as later runtime requests."""
 import msgspec
 
-from cozy_runtime.author import App, Outputs
+from cozy_runtime.author import App, Outputs, Telemetry
 from cozy_runtime.media import File
 
 app = App()
@@ -19,9 +19,12 @@ class Answer(msgspec.Struct):
 
 
 @app.entrypoint(accelerator=False)
-def echo(payload: Request, out: Outputs) -> Answer:
+def echo(payload: Request, out: Outputs, tel: Telemetry) -> Answer:
     content = payload.source.read_bytes() + b"\n" + payload.text.encode()
     print(payload.text, flush=True)
+    # stdout is a raw executor diagnostic in the released cohort. The supported
+    # telemetry service creates its actual durable worker/controller run log.
+    tel.log(payload.text, level="info")
     if payload.fail:
         raise RuntimeError(payload.text)
     target = out.temporary_file(".txt")
