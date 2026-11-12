@@ -10,6 +10,7 @@ import { countsOf, countWords, stageName, workWords } from "../panels/runs/words
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
+import { shownOf } from "./shown"
 
 /** Where a render is, for its box's face: what it's doing in words, how far the whole of it is and how long it has left, where it runs,
  *  the detail of what it's doing with its numbers, and what it warned of. Every phase says something: nothing on it is wordless. */
@@ -29,6 +30,9 @@ export interface Face {
 }
 
 const sentence = (said: string) => said.charAt(0).toUpperCase() + said.slice(1)
+
+/** What Calcifer calls a run's result coming here (`outputs::ARRIVING`). */
+const ARRIVING = "downloading the result"
 
 /** A GPU as people say it: `NVIDIA GeForce RTX 4090` is `RTX 4090`. */
 const gpuWords = (name: string) => name.replace(/^NVIDIA\s+/i, "").replace(/^GeForce\s+/i, "").replace(/\s+Laptop GPU$/i, " Laptop")
@@ -72,6 +76,16 @@ function fetched(operation: Operation): string {
   if (operation.bytes_per_s) parts.push(`${bytes(operation.bytes_per_s)}/s`)
   if (operation.bytes_here) parts.push(`${bytes(operation.bytes_here)} already here`)
   return parts.join(" · ")
+}
+
+/** The run whose take is shown before its file is here, while that file comes: its box says so (Paul, 11-12: no take looks done before
+ *  it's here). None for a file a machine keeps. */
+export function useArriving(view: ElementView | undefined): number | undefined {
+  const { client } = useConnection()
+  const shown = view ? shownOf(view) : null
+  const number = shown?.absent ? shown.run : undefined
+  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: number !== undefined })
+  return data && data.status === "completed" && owed(data) !== undefined ? number : undefined
 }
 
 /** Its results not here yet: their bytes. */
@@ -134,7 +148,13 @@ export function faceOf(seen: Seen): Face {
     return face("download", `Downloading weights · ${fetched(on)}`, { stageFraction: fraction, left: own ?? (on.eta_s != null ? `at least ${leftWords(on.eta_s)}` : undefined) })
   }
   if (run.queue_position != null) return face("queued", `Queued on ${run.machine}`, { detail: [`number ${run.queue_position} in line`, waiting].filter(Boolean).join(" · ") })
+  // Made, and on its way here (Calcifer's `downloading the result`): its own phase, by its bytes and their rate, its take not here yet.
   if (run.status === "completed") {
+    const arriving = run.progress?.stage === ARRIVING && run.progress.bytes_total ? run.progress : undefined
+    if (arriving) {
+      const detail = [`${bytes(arriving.bytes_done)} of ${bytes(arriving.bytes_total)}`, arriving.bytes_per_s ? `${bytes(arriving.bytes_per_s)}/s` : ""].filter(Boolean).join(" · ")
+      return face("result", "Downloading the result", { detail, fraction: arriving.bytes_done / arriving.bytes_total })
+    }
     const left = owed(run)
     return face("result", left ? "Downloading the result" : "Saving", { detail: left ? bytes(left) : undefined })
   }

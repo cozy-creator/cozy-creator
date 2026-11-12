@@ -563,6 +563,12 @@ impl Calcifer {
                 .collect();
             run.warnings.extend(said);
         }
+        // Its result coming here once it ended: what it is doing now, as its progress.
+        if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled)
+            && let Some(arriving) = self.arriving(&row.id)
+        {
+            run.progress = Some(arriving);
+        }
         if queued(&run) {
             // Its machine's count, else the runs waiting ahead of it for that machine.
             let told = (run.waiting.as_deref())
@@ -1918,7 +1924,7 @@ fn done_fraction(progress: &Progress) -> Option<f64> {
 
 /// A stage's bytes a second over its last 10 s (and at least its last two counts), once a second
 /// of them is seen. A new stage, or a count that went back, starts again.
-fn rate(moving: &mut (String, VecDeque<(Instant, u64)>), stage: &str, done: u64, now: Instant) -> Option<f64> {
+pub(crate) fn rate(moving: &mut (String, VecDeque<(Instant, u64)>), stage: &str, done: u64, now: Instant) -> Option<f64> {
     let (name, seen) = moving;
     if name != stage || seen.back().is_some_and(|(_, last)| done < *last) {
         (*name, *seen) = (stage.to_owned(), VecDeque::new());
