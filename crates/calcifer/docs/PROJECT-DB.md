@@ -28,7 +28,7 @@ an `edited-*` side copy. The retained version's media and timeline stay in `file
 |---|---|
 | `crdt_document(id, format, snapshot, heads)` | The complete native Automerge snapshot and causal heads; logical schema 1 |
 | `crdt_changes(hash, seq, actor, bytes)` | Original immutable native changes, keyed by native change hash |
-| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on, and whose (a copy's or another Calcifer's isn't shown); `rows_at`: the document's heads and stream length the rows were written at; `conflicts`: the document's concurrent alternatives |
+| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on, and whose (a copy's or another Calcifer's isn't shown); `rows_at`: the document's heads and stream length the rows were written at, and their digest; `conflicts`: the document's concurrent alternatives |
 | `head(key, value)` | A top-level section other than `assets` (`defaults`), as JSON |
 | `boxes(key, name, ord, id)` | One box: its name key, its name as written, its place in the list, its permanent id |
 | `fields(box, ord, field, value)` | One field of a box, as JSON (`tool`, `approved`, `description`, `models`, `lora`, every input) |
@@ -45,9 +45,10 @@ an `edited-*` side copy. The retained version's media and timeline stay in `file
 | `ops(id, seq, at_ms, by, words, edits, changes, undone)` | One history entry: undo/redo |
 
 Schema 4 (cl-885): a read takes the `head`, `boxes`, `fields` and `canvas` rows, the heads and `meta` `conflicts`, which each commit
-writes with the document; the document is decoded only to write, for history, or when `rows_at` doesn't match `crdt_document` (a
-document set in place by another writer, cut short, or holding two boxes of one name, which rows can't say). Then the document is read,
-and the next write rewrites the rows whole. `GET /v1/projects/{id}/integrity` lists where the rows differ from the document; e2e checks
+writes with the document; the document is decoded only to write, for history, or when the rows don't stand at it. `rows_at` keeps the
+document's heads and stream length the rows were written at, and a digest of the rows (each row's SHA-256, XORed, moved by every row a
+commit takes out or puts in). A read checks both: a document set in place by another writer, cut short, holding two boxes of one name
+(which rows can't say), or rows changed past Calcifer, and the document is read instead; the next write rewrites the rows whole. `GET /v1/projects/{id}/integrity` lists where the rows differ from the document; e2e checks
 it after every write. History reads the document, never `ops`.
 `walk`, `asked`, `measured` and request keys remain local SQL bookkeeping. A render's temporary `asked` text is dropped at settlement;
 its retained versions keep original text, input digest, files, seed, tool, pickup/clips, warnings and actual global run identity.

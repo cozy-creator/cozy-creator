@@ -443,17 +443,18 @@ grep -q project_db_version "$OUT/crdt-v1-refusal.json" "$OUT/crdt-v1-refusal.err
 [ "$(sha "$V/project.db")" = "$old_digest" ] && [ "$(sql1 "$V" 'PRAGMA user_version')" = 1 ] || check "CRDT: refusal changed schema 1 data"
 [ ! -e "$V/project.db.v1" ] && [ ! -e "$V/project.db.new" ] || check "CRDT: refusal made a migration backup/stage"
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_changes')" -ge 4 ] || check "CRDT: original change journal absent"
-# A read takes the rows each commit writes with the document (cl-885): rows damaged outside Calcifer are a fault the rows' check names
-# in full, and history is the document's, never the ops rows'. Put back, the next real HTTP edit commits on the document as it was.
+# Relational graph/history rows are now projections: damaging them must not become a logical
+# project edit when the next real HTTP edit commits. A read takes the rows only as their last commit left them (cl-885): damaged, it
+# reads the document, and the rows' check names the damage.
 db_sql "$P" "UPDATE fields SET value = '\"QUERY_CACHE_ONLY\"' WHERE box = 'whale' AND field = 'instructions'; UPDATE ops SET words = 'QUERY_CACHE_ONLY';"
-project_api "$P" /integrity > "$OUT/crdt-damage.json" || check "CRDT: the rows' check after damage"
-J '[.differences[] | select(contains("QUERY_CACHE_ONLY"))] | length > 0' "$OUT/crdt-damage.json" || check "CRDT: damaged rows not named: $(cat "$OUT/crdt-damage.json")"
-project_api "$P" /history > "$OUT/crdt-cache-history.json" || check "CRDT: history after projection damage"
-! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json" || check "CRDT: history read the ops rows, not the document"
-db_sql "$P" "UPDATE fields SET value = '\"Before the rename.\"' WHERE box = 'whale' AND field = 'instructions';"
+project_api "$P" /integrity > "$OUT/crdt-damage.json" || check "CRDT: the rows' check after projection damage"
+J '[.differences[] | select(contains("QUERY_CACHE_ONLY"))] | length > 0' "$OUT/crdt-damage.json" || check "CRDT: projection damage not named: $(cat "$OUT/crdt-damage.json")"
+project_api "$P" '' > "$OUT/crdt-damaged-state.json" || check "CRDT: read before a write after projection damage"
+! grep -q QUERY_CACHE_ONLY "$OUT/crdt-damaged-state.json" || check "CRDT: a read served damaged projection rows"
 project_api "$P" /assets/groudon -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"description":"A canonical-store check."}}' > "$OUT/crdt-cache-set.txt" 2>&1 || check "CRDT: write after projection damage"
 project_api "$P" '' > "$OUT/crdt-cache-state.json" || check "CRDT: read after projection damage"
-! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-state.json" || check "CRDT: rows put back still read damaged"
+project_api "$P" /history > "$OUT/crdt-cache-history.json" || check "CRDT: history after projection damage"
+{ ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-state.json" && ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json"; } || check "CRDT: a relational projection overrode canonical state/history"
 # Cargo consumes the same published native library as the product. This is a format/merge proof,
 # not another daemon or a substitute project storage implementation.
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- "$OUT/crdt-before.am" "$OUT/crdt-renamed.am" > "$OUT/crdt-native.json" 2> "$OUT/crdt-native.err" \
