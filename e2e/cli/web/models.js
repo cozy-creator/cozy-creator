@@ -137,6 +137,35 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   const offered = await picker.locator('.model-picker-lora-option').allInnerTexts();
   seen.offered = offered;
   if (!offered.length) throw new Error(`H3's Base Model offers no LoRA (seeded by isolated.sh's loras?): ${await picker.innerText()}`);
+  // Wide enough, and nothing cut off sideways: a name wraps, a description takes at most two lines and ends in an ellipsis, all of it on
+  // hover; on a narrow window too (Paul, 11-12: "it's not wide enough. All of the information is getting cropped off to the side").
+  const fits = () => picker.evaluate((dialog) => {
+    const body = dialog.querySelector('.model-picker-body');
+    const box = dialog.getBoundingClientRect();
+    const options = [...dialog.querySelectorAll('.model-picker-lora-option')].map((option) => {
+      const label = option.querySelector(':scope > span > span');
+      const about = option.querySelector('small');
+      const line = Number.parseFloat(getComputedStyle(about).lineHeight) || Number.parseFloat(getComputedStyle(about).fontSize) * 1.4;
+      return {
+        name: label.textContent, about: about.textContent, title: about.title,
+        name_whole: label.scrollWidth <= label.clientWidth + 1 && option.scrollWidth <= option.clientWidth + 1,
+        lines: Math.round(about.clientHeight / line), cut: about.scrollHeight > about.clientHeight + 1,
+      };
+    });
+    return { width: box.width, inside: box.left >= 0 && box.right <= innerWidth + 0.5, sideways: body.scrollWidth > body.clientWidth + 1, options };
+  });
+  const wide = await fits();
+  seen.picker_wide = wide;
+  const whole = (one) => one.inside && !one.sideways && one.options.every((option) => option.name_whole && option.lines <= 2 && option.title === option.about);
+  check('the_picker_is_wide_and_cuts_nothing_off', wide.width >= 700 && whole(wide), wide);
+  await page.setViewportSize({ width: 420, height: 900 });
+  await page.waitForTimeout(300);
+  const narrow = await fits();
+  seen.picker_narrow = narrow;
+  check('on_a_narrow_window_it_fits_and_wraps', whole(narrow) && narrow.options.some((option) => option.lines === 2), narrow);
+  await shot('picker-narrow');
+  await page.setViewportSize({ width: 1600, height: 1100 });
+  await page.waitForTimeout(300);
   await option.click();
   const keys = bases.map((slot) => slot.slot);
   const after = await until('the LoRA on every segment', () => fieldsOf('scene'), (fields) => keys.every((key) => fields.models?.[key]?.lora?.length === 1)).catch(() => fieldsOf('scene'));

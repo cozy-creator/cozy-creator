@@ -209,7 +209,7 @@ if [ -n "$needs" ]; then
     rm -f "$seed"/*.safetensors
   fi
   if [[ " $needs " == *" loras "* ]]; then
-    # What H3's Models & LoRAs lists (web-models, cl-934): its default model, a stand-in its family names, and an edit LoRA of that family.
+    # What H3's Models & LoRAs lists (web-models, cl-934): its default model, a stand-in its family names, and LoRAs of that family.
     h3=$(sed -n 's/^_MODEL = "\(.*\)"$/\1/p' "$packages/minimax-h3/h3.py")
     [ -n "$h3" ] || { echo "minimax-h3/h3.py names no _MODEL" >&2; exit 1; }
     random_weights "$seed/minimax-h3.safetensors" 1
@@ -233,16 +233,18 @@ raw = json.dumps(header).encode()
 raw += b" " * (-len(raw) % 8)
 open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + data)
 PYH3
-    lora=alissonerdx/minimax-h3-vfx-edit
-    cozy --json lora upload "$seed/vfx-edit.safetensors" "$lora" --lane f16 --mirror https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI --on local -y \
-      > "$seed/upload-vfx-edit.json" 2>&1 || { echo "uploading $lora failed: $(tail -c 600 "$seed/upload-vfx-edit.json")" >&2; exit 1; }
-    commit=$(python3 "$here/model-details.py" "$lora" | jq -r '.checkpoints[0].checkpoint // empty')
-    [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; exit 1; }
-    cozy --json lora publish "$lora" 0.1.0 "$commit" -y > "$seed/publish-vfx-edit.json" 2>&1 \
-      || { echo "publishing $lora failed: $(tail -c 600 "$seed/publish-vfx-edit.json")" >&2; exit 1; }
-    cozy --json lora edit "$lora" --family minimax-h3 > "$seed/edit-vfx-edit.json" 2>&1 \
-      || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-vfx-edit.json")" >&2; exit 1; }
-    log "published ${h3%@*}@${h3#*@} (a stand-in) and $lora@0.1.0, family minimax-h3"
+    # Two of its family: an edit LoRA, and one whose card note is long (loraNotes.ts), which the picker wraps.
+    for lora in alissonerdx/minimax-h3-vfx-edit nrdx/bfs-body-swap-selective-lora; do
+      cozy --json lora upload "$seed/vfx-edit.safetensors" "$lora" --lane f16 --mirror https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI --on local -y \
+        > "$seed/upload-${lora##*/}.json" 2>&1 || { echo "uploading $lora failed: $(tail -c 600 "$seed/upload-${lora##*/}.json")" >&2; exit 1; }
+      commit=$(python3 "$here/model-details.py" "$lora" | jq -r '.checkpoints[0].checkpoint // empty')
+      [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; exit 1; }
+      cozy --json lora publish "$lora" 0.1.0 "$commit" -y > "$seed/publish-${lora##*/}.json" 2>&1 \
+        || { echo "publishing $lora failed: $(tail -c 600 "$seed/publish-${lora##*/}.json")" >&2; exit 1; }
+      cozy --json lora edit "$lora" --family minimax-h3 > "$seed/edit-${lora##*/}.json" 2>&1 \
+        || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; exit 1; }
+    done
+    log "published ${h3%@*}@${h3#*@} (a stand-in) and two LoRAs of family minimax-h3"
     rm -f "$seed"/*.safetensors
   fi
   cd "$start"
