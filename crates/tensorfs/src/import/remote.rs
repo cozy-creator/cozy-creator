@@ -287,6 +287,8 @@ impl<'a> Scope<'a> {
         let mut work = std::pin::pin!(work);
         let idle = tokio::sync::Notify::new();
         let notify = self.cancel_notify.as_deref().unwrap_or(&idle);
+        // A caller's `stop` has no wake of its own: it's asked this often. `cancelled` with `cancel_notify` wakes the wait.
+        let asked = self.stop.is_some();
         loop {
             let wake = notify.notified();
             let mut wake = std::pin::pin!(wake);
@@ -298,7 +300,7 @@ impl<'a> Scope<'a> {
                 biased;
                 _ = &mut wake => {},
                 answer = &mut work => { self.check()?; return answer; },
-                _ = tokio::time::sleep(Duration::from_millis(25)) => {},
+                _ = tokio::time::sleep(Duration::from_millis(25)), if asked => {},
             }
         }
     }

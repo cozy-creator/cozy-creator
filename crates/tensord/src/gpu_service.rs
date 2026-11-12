@@ -2184,13 +2184,18 @@ impl Pool {
         if crate::private_io::current().is_some() || crate::private_io::is_private_path(&held.record.python) { return None; }
         self.prespawn(held.clone());
         let parent = self.zygotes.lock().unwrap().get(&parent_app(held))?.clone();
-        // Package code runs here, and may not end: the install's cancel still does.
+        // Package code runs here, and may not end: the install's cancel still does, and wakes the wait.
+        let woken = parent.clone();
+        let _woken = stop.on_cancel(move || {
+            drop(woken.state.lock());
+            woken.changed.notify_all();
+        });
         let mut state = parent.state.lock().unwrap();
         while matches!(*state, ZygoteState::Starting) {
             if stop.is_cancelled() {
                 return None;
             }
-            state = parent.changed.wait_timeout(state, std::time::Duration::from_millis(250)).unwrap().0;
+            state = parent.changed.wait(state).unwrap();
         }
         let ZygoteState::Failed(reason) = &*state else { return None };
         let reason = reason.clone();
