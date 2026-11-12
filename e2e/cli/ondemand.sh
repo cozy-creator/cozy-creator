@@ -70,7 +70,7 @@ sudo tc qdisc add dev lo root handle 1: prio && sudo tc qdisc add dev lo parent 
   && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:3 \
   || { sudo tc qdisc del dev lo root 2> /dev/null; check "ondemand-need: the store's link wasn't slowed"; return; }
 began=$(date -u +%s%3N)
-run_submit "$OUT" ondemand-need run "$here/script/ondemand.py/hold" seconds:=25 read:=true --on local > /dev/null
+run_submit "$OUT" ondemand-need run "$here/script/ondemand.py/hold" seconds:=10 read:=true --on local > /dev/null
 for _ in $(seq 900); do grep -q '"holding"' "$OUT/ondemand-need.ndjson" 2> /dev/null && break; sleep 0.2; done
 run_submit "$OUT" ondemand-queued model install qwen/qwen3.5-0.8b --on local > /dev/null
 for name in ondemand-need ondemand-queued; do
