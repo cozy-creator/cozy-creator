@@ -483,12 +483,12 @@ impl Codec {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr);
-        // The retained generation hold stays open in the codec.
-        #[cfg(unix)]
-        platform::process::keep_open(&mut command, hold.into_iter().collect());
         let mut private_io = crate::private_io::command_io(&mut command, true, true, false)?;
         let process_scope = crate::private_io::current().map(|_| crate::private_io::new_process_scope()).transpose()?;
         crate::private_io::apply_native(&mut command, private_io.as_mut(), process_scope.as_ref())?;
+        // Preserve the reviewed generation lock after managed-child descriptor cleanup.
+        #[cfg(unix)]
+        platform::process::keep_open(&mut command, hold.into_iter().collect());
         let mut child = command.spawn()?;
         drop(command);
         let input: Box<dyn Write + Send> = match private_io.as_mut().and_then(|pipes| pipes.input.take()) { Some(file) => Box::new(file), None => Box::new(child.stdin.take().ok_or_else(|| io::Error::other("codec stdin missing"))?) };
