@@ -212,6 +212,7 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
     let home = api.machines.hubs.home();
     if let Some(code) = &code {
         let source = crate::local_code::source(home, code, &api.machines.hubs, hub).await.map_err(Refusal)?;
+        crate::maintenance_source::keep_derived(api,code,&source).map_err(Refusal)?;
         let mut submit = crate::local_code::install_run(home, hub.as_str(), on, &source);
         submit.agreed = agreed;
         return Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Keep(source.filed())), notes: vec![], mirror: None });

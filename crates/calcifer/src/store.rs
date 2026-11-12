@@ -1653,7 +1653,7 @@ impl Store {
     pub(crate) fn migration_required(&self) -> Result<bool> {
         // These are old authoritative sources, not an invitation to sweep a
         // home directory. Unreadable and unattributed files stay pending.
-        for name in ["projects.json", "files"] {
+        for name in ["projects.json", "files", "here.json", "checkpoints.json"] {
             match std::fs::symlink_metadata(self.legacy_home.join(name)) {
                 Ok(_) => return Ok(true),
                 Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
@@ -1677,12 +1677,24 @@ impl Store {
             // Older source caches have no explicit owner. Do not silently call
             // them independent maintenance merely because the SQL rows moved.
             if conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_runs')",[],|row|row.get::<_,bool>(0))? {
-                for directory in [self.legacy_home.join("local"),self.legacy_home.parent().unwrap_or(&self.legacy_home).join("cache").join("digests")] {
-                    match std::fs::read_dir(directory) {
-                        Ok(mut entries)=>{ if entries.next().is_some() {return Ok(true);} },
-                        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
-                        Err(_)=>return Ok(true),
-                    }
+                match std::fs::read_dir(self.legacy_home.parent().unwrap_or(&self.legacy_home).join("cache").join("digests")) {
+                    Ok(mut entries)=>if entries.next().is_some() {return Ok(true);},
+                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                    Err(_)=>return Ok(true),
+                }
+                match std::fs::read_dir(self.legacy_home.join("local")) {
+                    Ok(entries)=>for entry in entries {
+                        let Ok(entry)=entry else {return Ok(true);};
+                        let Some(name)=entry.file_name().to_str().map(str::to_owned) else {return Ok(true);};
+                        let Some(hex)=name.strip_suffix(".json").filter(|hex|hex.len()==64&&hex.bytes().all(|byte|byte.is_ascii_hexdigit())) else {return Ok(true);};
+                        let digest=format!("sha256:{hex}");
+                        let admitted=conn.query_row("SELECT EXISTS(SELECT 1 FROM maintenance_source_objects WHERE digest=?1)",[&digest],|row|row.get::<_,bool>(0))?;
+                        if !admitted {return Ok(true);}
+                        let Ok(bytes)=std::fs::read(entry.path()) else {return Ok(true);};
+                        if Digest::of(&bytes).to_string()!=digest {return Ok(true);}
+                    },
+                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                    Err(_)=>return Ok(true),
                 }
                 match std::fs::read_dir(self.legacy_home.join("code")) {
                     Ok(entries)=>for entry in entries {

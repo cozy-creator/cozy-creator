@@ -248,6 +248,21 @@ impl Store {
 
     fn migrate_legacy_files(&self, project:&Destination<'_,'_>)->Result<()> {
         let _source_files=self.writer.lock().unwrap_or_else(|error|error.into_inner());
+        for name in ["here.json","checkpoints.json"] {
+            let path=self.legacy_home.join(name);
+            match std::fs::read(&path) {
+                Ok(bytes)=>{
+                    let valid=if name=="here.json" {serde_json::from_slice::<crate::state::OldHere>(&bytes).is_ok()} else {serde_json::from_slice::<crate::state::OldHeaders>(&bytes).is_ok()};
+                    if !valid || std::fs::read(&path).ok().as_deref()!=Some(bytes.as_slice()) {return Err(StoreError::Protected("legacy_cache_migration_pending".into()));}
+                    // These two documented caches are wholly recomputable. No
+                    // request key, after step or source/input bytes are swept.
+                    std::fs::remove_file(&path).map_err(|_|StoreError::Protected("legacy_cache_migration_pending".into()))?;
+                    platform::durable::sync_dir(&self.legacy_home).map_err(|_|StoreError::Protected("legacy_cache_migration_pending".into()))?;
+                },
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                Err(_)=>return Err(StoreError::Protected("legacy_cache_migration_pending".into())),
+            }
+        }
         // Keep each original JSON project record in its own durable project receipt.
         // Other projects and malformed/unknown source files remain untouched.
         let index_path=self.legacy_home.join("projects.json");

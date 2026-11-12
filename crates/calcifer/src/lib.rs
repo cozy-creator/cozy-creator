@@ -474,6 +474,22 @@ impl Calcifer {
         for behind in lock(&self.behind).values_mut() { behind.retain(|id,_|!ids.contains(id)); }
     }
 
+    /// Existing accepted work can settle after viewing closes. This never
+    /// constructs a public run response or admits another execution.
+    pub(crate) fn cancel_for_lock(&self,project:&str)->Result<Vec<u64>,Error> {
+        let owner=lock(&self.project_owners).get(project).cloned();
+        let Some(owner)=owner else {return Ok(vec![]);};
+        let store=owner.store()?;
+        let ids=store.unsettled()?.into_iter().chain(store.unsettled_here()?).collect::<Vec<_>>();
+        let mut canceled=vec![];
+        for id in ids {
+            let Some(row)=store.run(id.as_str())? else {continue;};
+            let events=store.request_cancel(id.as_str())?;
+            self.publish(&id,events); self.wake(&id); canceled.push(row.number);
+        }
+        Ok(canceled)
+    }
+
     /// What Calcifer still owes, which a next Calcifer would resume: every unsettled run's id,
     /// each run with an output still to land, and every ask of a Hub not yet answered. A store it
     /// cannot read owes its error.
@@ -533,7 +549,9 @@ impl Calcifer {
 
     fn submission_store(&self, submit: &SubmitRun) -> Result<store::RunStore<'_>, Error> {
         if let Some(project) = submit.project.as_deref() {
-            return self.project_store(project).map(store::RunStore::Project).map_err(Error::from);
+            let store=self.project_store(project)?;
+            store.admit_new_work()?;
+            return Ok(store::RunStore::Project(store));
         }
         if submit.kind == ::api::calcifer::Kind::Call || submit.spec.kind == v1::RunKind::Call
             || submit.out.is_some() || !submit.inputs.is_empty() || !submit.spec.inputs.is_empty()
