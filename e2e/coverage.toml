@@ -162,6 +162,7 @@ test = "release: adapter weights uploaded without inference"
 "--trigger" = "manual: shared LoRA metadata handler"
 "--strength" = "manual: shared LoRA metadata handler"
 "--base" = "manual: shared model upload handler"
+"--add" = "release: a LoRA uploaded with a file added, the upload naming it"
 ["lora publish"]
 test = "pending: shared model publish handler"
 ["lora delete"]
@@ -178,6 +179,7 @@ test = "release: throwaway model, uploaded from a file, from a held file, from a
 "--source-format" = "release: throwaway model, its files kept as-is"
 "--mirror" = "manual: an admin mirrors a real author's model into its parked org (xs-131, proved on the dev Hub); a CI run would park a real author's org on tensorhub.com"
 "--base" = "none: a community DiT (66 GB) on a Hub model's header, on a rental; proven by hand"
+"--add" = "release: throwaway model, a Hub commit with a file added: only headers move, the file a new component's asset"
 ["model publish"]
 test = "release: throwaway model, published with two lanes"
 ["model delete"]
