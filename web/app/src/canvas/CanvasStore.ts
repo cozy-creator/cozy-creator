@@ -1712,7 +1712,6 @@ export class CanvasStore {
     if (!view?.asset) return
     if (view.asset.tool === tool.id) {
       if (operation) this.patch(key, { operation })
-      this.openHere(key)
       return
     }
     const wont = wontGoOn(tool, view.asset, key)
@@ -1722,7 +1721,6 @@ export class CanvasStore {
     this.retool(key, step, step.lost.length ? `${name} runs ${toolName(tool)} now, which can't take ${step.lost.join(" or ")}` : undefined)
     if (operation) this.patch(key, { operation })
     if (tool.makes === "image" && holdsPictures(view.asset)) this.patch(key, { hereWords: undefined })
-    this.openHere(key)
   }
 
   /** Its tool's X leaves a typed container and its words. A note offers Undo for a while. */

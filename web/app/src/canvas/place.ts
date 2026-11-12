@@ -66,24 +66,20 @@ export class Placer {
   }
 
   /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says, `fields` with what it starts with
-   *  (a checkpoint dropped is on it). A tool's box opens on its words, the caret in them; a text box takes the keys where it stands, and an Edit stays shut. */
+   *  (a checkpoint dropped is on it). Dropping keeps the current canvas interaction mode. */
   addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>, operation?: Operation) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const timeline = tool.fields.some((field) => field.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
     const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
-    this.store.focusing = name
     if (operation) this.store.patch(name, { operation })
-    if (!text && !timeline) this.store.openHere(name)
   }
 
   /** Basic media nodes retain their type before a model or file is assigned. */
   addNode(kind: BasicNodeKind, point: { x: number; y: number }) {
     if (kind === "text") return this.addTool(TEXT_TOOL, point)
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
-    const name = this.box(kind, { kind, fields: { node_kind: kind } }, at, `Couldn't create ${kind}`)
-    this.store.focusing = name
-    this.store.openHere(name)
+    this.box(kind, { kind, fields: { node_kind: kind } }, at, `Couldn't create ${kind}`)
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */
