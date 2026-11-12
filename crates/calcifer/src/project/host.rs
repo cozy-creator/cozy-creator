@@ -37,8 +37,8 @@ pub(crate) struct Package {
     pub local: Option<PathBuf>,
     /// Local code's manifest, `sha256:<hex>`, as it was made ready.
     pub manifest: String,
-    /// A yanked release this walk moved off, said once.
-    pub moved: Option<String>,
+    /// What this walk moved to and from, said once: off a yanked release (a warning), onto a newer one than its machine's.
+    pub moved: Option<api::calcifer::Note>,
     /// The function its tool names; none: the package alone.
     pub named: Option<String>,
     document: Value,

@@ -4258,7 +4258,10 @@ impl Walk {
             let with = doc.target(i);
             let package = self.again(|| self.host.package(&target.hub, &with, &self.folder().dir, &target.on)).await?;
             if let Some(moved) = &package.moved {
-                self.say(Told::Warning { message: moved.clone(), name: None });
+                self.say(match moved.level {
+                    api::calcifer::NoteLevel::Warning => Told::Warning { message: moved.message.clone(), name: None },
+                    api::calcifer::NoteLevel::Info => Told::Said { message: moved.message.clone(), name: None },
+                });
             }
             // What it outputs says what `defaults` fill, and so its key: planned again knowing that.
             if read_tags(doc, self.folder(), lock, i, &package) {

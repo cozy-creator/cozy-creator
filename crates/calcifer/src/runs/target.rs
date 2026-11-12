@@ -4,22 +4,19 @@
 use std::{
     collections::HashMap,
     path::Path,
-    str::FromStr,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use ::api::hub::cards::{self, Card};
 use api::{
-    calcifer::{On, ReleaseFrom, Target, TargetFunction},
+    calcifer::{Note, NoteLevel, On, ReleaseFrom, Target, TargetFunction},
     code::LocalCode,
     config::Origin,
     error::{Error, Kind},
     interface::Interface,
     target::Published,
 };
-
-use tensorfs::format::newest_by;
 
 use crate::api::Api;
 
@@ -33,8 +30,8 @@ pub(crate) enum Resolved {
         /// The release the target named, if it named one.
         release: Option<String>,
         from: ReleaseFrom,
-        /// A yanked release the run moved off, in a line.
-        moved: Option<String>,
+        /// What the run moved to and from, in a line: off a yanked release (a warning), or onto one newer than its machine's (said).
+        moved: Option<Note>,
     },
     Local {
         local: Box<crate::local_code::Prepared>,
@@ -239,16 +236,6 @@ struct Held {
     rc: bool,
 }
 
-/// Of `releases`, the newest a machine runs: on the RC's Runtime (`rc`), by PEP 440 alone, so a prerelease built for it
-/// (`0.10.0rc1`) is newer than the last final; elsewhere a final before any prerelease. The tool list reads a machine's
-/// packages by the same rule, so a box offers the fields its run will take (se-128).
-pub(crate) fn newest_on<'a>(rc: bool, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-    match rc {
-        true => releases.into_iter().filter_map(|r| Some((pep440_rs::Version::from_str(r).ok()?, r))).max_by(|a, b| a.0.cmp(&b.0)).map(|(_, r)| r),
-        false => newest_by(releases, |release| release),
-    }
-}
-
 impl Held {
     /// The machine `on` names, or the rental `any` would take now, as it answers now (`wake`: `local` starts for it);
     /// nothing for a machine still to come.
@@ -258,18 +245,31 @@ impl Held {
         Self { machine, environments, hub: canonical(hub), rc }
     }
 
-    /// Of `releases`, the newest this machine runs (`newest_on`).
+    /// Of `releases`, the newest this machine runs (`api::release::newest`: prereleases only on the RC).
     fn newest<'a>(&self, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-        newest_on(self.rc, releases)
+        api::release::newest(releases, self.rc)
     }
 
-    /// The Hub's newest release of `read` for this machine: a prerelease included on the RC's Runtime, never a yanked one.
+    /// The Hub's newest release of `read` for this machine, never a yanked one: a prerelease included on the RC's Runtime;
+    /// elsewhere the Hub's newest final, and with none, a refusal that says how to run the prerelease (cl-952).
     fn newest_released(&self, read: &cards::Releases, package: &str) -> Result<String, Error> {
         let open = read.released.iter().map(String::as_str).filter(|release| !read.yanked.contains(*release));
-        match self.newest(open).filter(|_| self.rc) {
-            Some(release) => Ok(release.to_owned()),
-            None => read.newest(package),
+        if self.rc {
+            return self.newest(open).map_or_else(|| read.newest(package), |release| Ok(release.to_owned()));
         }
+        let latest = read.newest(package)?;
+        if !api::release::prerelease(&latest) {
+            return Ok(latest);
+        }
+        let machine = if self.machine.is_empty() { "<machine>" } else { self.machine.as_str() };
+        self.newest(open).map(str::to_owned).ok_or_else(|| {
+            Error::new(
+                Kind::Conflict,
+                "package_rc_only",
+                format!("{package} has only {latest}, built for the open RC's Runtime, which {machine} doesn't run"),
+            )
+            .next(format!("cozy machine update {machine}"))
+        })
     }
 
     /// The releases of `package` from this run's Hub.
@@ -279,18 +279,16 @@ impl Held {
     }
 }
 
-/// Which release a run binds against and runs, once, before binding, and why, with a line when it
-/// moved off a yanked one: the one asked; else the newest its machine holds that the Hub still has and
-/// hasn't yanked; else the Hub's newest, which the machine installs. So inputs bind against what will run, the run is
-/// pinned to it, and a release moves under a machine only by `cozy package install`. With no machine
-/// (`held`), the newest as this computer last read it.
+/// Which release a run binds against and runs, once, before binding, and why, with a line when it moved: the one asked;
+/// else the Hub's newest its machine runs (`unversioned`), which it installs if it holds an older one. So inputs bind
+/// against what will run and the run is pinned to it. With no machine (`held`), the newest as this computer last read it.
 async fn release_of(
     api: &Arc<Api>,
     hub: &str,
     package: &str,
     release: Option<&str>,
     held: Option<&Held>,
-) -> Result<(Card, ReleaseFrom, Option<String>), Error> {
+) -> Result<(Card, ReleaseFrom, Option<Note>), Error> {
     let hubs = &api.machines.hubs;
     let root = hubs.home().root();
     let client = || hubs.reader(hub);
@@ -307,46 +305,34 @@ async fn release_of(
     Ok((card, from, moved))
 }
 
-/// An unversioned run's release on the machine that holds `held`. Only a machine holding none reads
-/// the Hub for it; one holding only yanked ones moves to the newest and says so, and stays on what
-/// it holds when the Hub names nothing else.
-async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> Result<(String, ReleaseFrom, Option<String>), Error> {
+/// An unversioned run's release on the machine that holds `held`: the Hub's newest that machine runs (finals off the RC,
+/// prereleases on it, never a yanked one), read at most a minute ago; installed there if it holds an older one, and the
+/// run says so ("minimax-h3 0.12.0rc2, newer than rabou's 0.11.1"). Unversioned means newest, so a fix reaches machines that
+/// already hold a release (se-128, cl-952). With the Hub unanswering, what the machine holds runs.
+async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> Result<(String, ReleaseFrom, Option<Note>), Error> {
     let holds = held.releases(package);
-    let Some(top) = held.newest(holds.iter().copied()).map(str::to_owned) else {
-        return Ok((held.newest_released(&*api.releases.now(api, hub, package).await?, package)?, ReleaseFrom::Latest, None));
-    };
-    let yanked = match api.releases.kept(api, hub, package).await {
+    let read = match api.releases.fresh(api, hub, package).await {
         Ok(read) => read,
-        // Unknown: what it holds runs.
-        Err(_) => return Ok((top, ReleaseFrom::Installed, None)),
+        Err(why) => {
+            return match held.newest(holds.iter().copied()) {
+                Some(top) => Ok((top.to_owned(), ReleaseFrom::Installed, None)),
+                None => Err(why),
+            };
+        }
     };
-    // A release the read doesn't name was published since it, or the Hub no longer has it: which, is read again, not on every run.
-    let unnamed = holds.iter().any(|release| !yanked.released.contains(*release));
-    let yanked = match unnamed && api.releases.read_before(hub, package, RECHECK) {
-        true => api.releases.now(api, hub, package).await.unwrap_or(yanked),
-        false => yanked,
-    };
-    // An old installation of a release the Hub no longer has can't be chosen: nothing can install or describe it.
-    let holds: Vec<&str> = holds.into_iter().filter(|release| yanked.released.contains(*release)).collect();
-    let Some(top) = held.newest(holds.iter().copied()).map(str::to_owned) else {
-        return Ok((held.newest_released(&yanked, package)?, ReleaseFrom::Latest, None));
-    };
+    let newest = held.newest_released(&read, package)?;
+    if holds.contains(&newest.as_str()) {
+        return Ok((newest, ReleaseFrom::Installed, None));
+    }
     let shown = package.trim_start_matches("_/");
     let machine = &held.machine;
-    if let Some(open) = held.newest(holds.iter().copied().filter(|release| !yanked.yanked.contains(*release))) {
-        let moved = (open != top).then(|| format!("{shown}@{top} on {machine} is yanked: this run uses {open}, also installed there"));
-        return Ok((open.to_owned(), ReleaseFrom::Installed, moved));
-    }
-    Ok(match api.releases.now(api, hub, package).await.and_then(|read| held.newest_released(&read, package)) {
-        Ok(newest) => {
-            let moved = format!("{shown}@{top} on {machine} is yanked: this run moves it to {newest}, the newest");
-            (newest, ReleaseFrom::Latest, Some(moved))
-        }
-        Err(why) => {
-            let moved = format!("{shown}@{top} on {machine} is yanked and nothing else can be read ({}): this run uses it", why.message);
-            (top, ReleaseFrom::Installed, Some(moved))
-        }
-    })
+    // What it holds that the Hub still has: an older one is said; a yanked one is said as moved off.
+    let had = held.newest(holds.iter().copied().filter(|release| read.released.contains(*release)));
+    let said = had.map(|had| match read.yanked.contains(had) {
+        true => Note { level: NoteLevel::Warning, message: format!("{shown}@{had} on {machine} is yanked: this run moves it to {newest}, the newest") },
+        false => Note { level: NoteLevel::Info, message: format!("{shown} {newest}, newer than {machine}'s {had}") },
+    });
+    Ok((newest, ReleaseFrom::Latest, said))
 }
 
 /// A Hub's one spelling.
@@ -363,8 +349,8 @@ pub(crate) struct Releases(Mutex<HashMap<(String, String), (Instant, Arc<cards::
 
 /// A read this old is read again, behind the run that found it.
 const RECENT: Duration = Duration::from_secs(600);
-/// How often a release its machine holds and the read doesn't name sends a run to the Hub.
-const RECHECK: Duration = Duration::from_secs(60);
+/// How old a read of a package's releases an unversioned run takes: newer releases reach it within this.
+const FRESH: Duration = Duration::from_secs(60);
 /// How long a run waits on a package's first read: it holds up a run, so a Hub slower than this
 /// leaves the run with what its machine holds.
 const LATE: Duration = Duration::from_secs(5);
@@ -414,10 +400,20 @@ impl Releases {
         }
     }
 
-    /// Whether `package`'s releases were last read longer ago than `age`, or never.
-    fn read_before(&self, hub: &str, package: &str, age: Duration) -> bool {
-        let kept = self.0.lock().expect("releases lock");
-        kept.get(&(canonical(hub), package.to_owned())).is_none_or(|(at, _)| at.elapsed() >= age)
+    /// As read at most [`FRESH`] ago; else read now, and if the Hub doesn't answer in [`LATE`], as last read.
+    async fn fresh(&self, api: &Arc<Api>, hub: &str, package: &str) -> Result<Arc<cards::Releases>, Error> {
+        let key = (canonical(hub), package.to_owned());
+        let kept = self.0.lock().expect("releases lock").get(&key).map(|(at, read)| (at.elapsed() < FRESH, read.clone()));
+        if let Some((true, read)) = &kept {
+            return Ok(read.clone());
+        }
+        match (tokio::time::timeout(LATE, self.now(api, hub, package)).await, kept) {
+            (Ok(Ok(read)), _) => Ok(read),
+            (_, Some((_, read))) => Ok(read),
+            (Ok(Err(e)), None) => Err(e),
+            (Err(_), None) => Err(Error::new(Kind::Unavailable, "hub_slow", format!("{package}'s releases: no answer in {}s", LATE.as_secs()))
+                .remedy("run it again, or name a release: <package>@<release>")),
+        }
     }
 
     /// Yanked, un-yanked or published here: the next run reads it, not one read later.

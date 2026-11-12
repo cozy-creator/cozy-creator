@@ -634,6 +634,43 @@ echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing
 [ "$callee" = _/minimax-h3-tools ] || check "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing}, not _/minimax-h3-tools"
 }
 
+# cl-952, se-128: an unversioned run takes the Hub's newest release its machine runs, installing it when the machine holds
+# an older one, and says so; a machine off the RC never takes a prerelease built for the RC's Runtime. isolated.sh publishes
+# e2e-held 0.1.0 and 0.2.0rc1, and e2e-newer 0.1.0 and 0.1.1. On the candidate, an RC build (`+dev`), local takes e2e-held
+# 0.2.0rc1 and holds only that. Put on a released Runtime by hand, it runs 0.1.0, never the prerelease it holds (sdxl
+# 0.10.0rc1 failed to import on 0.45.0, 47170). Holding e2e-newer 0.1.0 (asked by name), an unversioned run takes 0.1.1
+# and says it's newer (47617 stayed on minimax-h3 0.11.1 after 0.12.0rc2).
+held_prerelease() {
+step "an unversioned run takes the newest release its machine runs; off the RC never a prerelease (cl-952, se-128)"
+[ -n "$LOCAL" ] || return 0
+[ -n "${E2E_HELD:-}" ] || { check "held prerelease: isolated.sh published no e2e-held: ${E2E_HELD_REFUSED:-not seeded}"; return; }
+local released=${HELD_RUNTIME:-0.45.1} was
+machine_ready
+case $(jq -r '.status.runtime // empty' "$OUT/machine.json") in *+dev*) ;; *) echo "held prerelease: local isn't on an RC build"; return 0 ;; esac
+was=${CAND_RT:-$(jq -r '.status.runtime // empty' "$OUT/machine.json")}
+if cell held-prerelease-rc "$E2E_HELD/relay" "text=on the RC"; then
+  grep -q '0\.2\.0rc1' "$OUT/held-prerelease-rc.ndjson" \
+    || check "held prerelease: local on an RC build didn't take 0.2.0rc1: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease-rc.ndjson" | head -1)"
+fi
+cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.json" 2>&1 \
+  || { check "held prerelease: local refused Runtime $released: $(tail -c 300 "$OUT/held-update.json")"; return; }
+machine_ready
+if cell held-prerelease "$E2E_HELD/relay" "text=off the RC"; then
+  grep -q 'relay@0\.1\.0"' "$OUT/held-prerelease.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/held-prerelease.ndjson" \
+    || check "held prerelease: local on Runtime $released didn't run e2e-held 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease.ndjson" | head -1)"
+fi
+# Unversioned, in words as a person reads it: the run says what it moved to.
+if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
+  in_project "$RUN_PROJECT" run "$E2E_NEWER/relay" text=newer --on local > "$OUT/held-newer.out" 2> "$OUT/held-newer.err" \
+    || check "held prerelease: the unversioned e2e-newer run failed: $(tail -c 300 "$OUT/held-newer.err")"
+  grep -q 'e2e-newer 0.1.1, newer than local.s 0.1.0' "$OUT/held-newer.err" \
+    || check "held prerelease: holding e2e-newer 0.1.0, the run didn't say it takes 0.1.1: $(tail -c 300 "$OUT/held-newer.err")"
+fi
+cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
+  || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
+machine_ready
+}
+
 # cr-276: a package calling another package's function whose result holds a `Latents` field, as orbit calls minimax-h3's
 # `generate` for its `ShotResult`: the callee, a path dependency, fills the field with a file it saved. The caller gets that
 # field as a `Latents` holding the callee's bytes, and the `File` beside it as a `File`. Runtime 0.45.0 failed the call in the

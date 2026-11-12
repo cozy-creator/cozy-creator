@@ -1520,7 +1520,7 @@ fn forward(source: &hub::Source, named: Named) -> (Named, Option<String>) {
             releases
         }
     };
-    match api::model_ref::newest_fix(&named.release, releases.iter().map(String::as_str)).map(str::to_owned) {
+    match api::release::newest_fix(&named.release, releases.iter().map(String::as_str), false).map(str::to_owned) {
         Some(newer) => {
             let said = format!("{} resolves to {newer}, its newest fix", named.release);
             (Named { release: newer, ..named }, Some(said))

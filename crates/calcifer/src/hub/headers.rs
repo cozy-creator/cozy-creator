@@ -12,7 +12,7 @@ use ::api::hub::types;
 use api::{
     calcifer::hub::{ComponentHeader, LaneHeader, LoraModules, ModelHeaders},
     error::{Error, Kind},
-    model_ref::{ModelId, ReleaseVisibility, newest_fix},
+    model_ref::{ModelId, ReleaseVisibility},
 };
 use serde::Deserialize;
 use tensorfs::{
@@ -205,7 +205,7 @@ pub(super) async fn show(
         family: checkpoints::family(card.model.family.clone(), lanes.first().and_then(|lane| lane.family.as_deref())).0,
         release: release.map(|r| r.version.clone()),
         visibility: release.map(|r| r.visibility),
-        resolves_to: release.and_then(|r| newest_fix(&r.version, public)).map(str::to_owned),
+        resolves_to: release.and_then(|r| api::release::newest_fix(&r.version, public, false)).map(str::to_owned),
         lanes,
     }))
 }
