@@ -288,6 +288,8 @@ case $SHARD in
   # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path, the page too.
   slow) parts="slow_runs logs" ;;
   project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
+  # A box from Render to its take, each phase of its face kept as a picture (cl-921).
+  web-activity) export DB_WEB=activity; parts="tools_read db_existing_web logs" ;;
   web-core) parts="tools_read web_core page_resend logs" ;;
   web-firefox) parts="tools_read web_firefox logs" ;;
   # The palette against a Hub holding every first-party package (e2e/isolated.sh), and with none (cl-896).

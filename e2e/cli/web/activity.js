@@ -8,8 +8,8 @@
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
-const { writeFileSync } = require('fs');
-const { join } = require('path');
+const { mkdirSync, writeFileSync } = require('fs');
+const { dirname, join } = require('path');
 const { projectFromPage, projectAction, calcifer, importYaml, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, until } = require('./page');
 
 const failures = [];
@@ -134,6 +134,26 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
       for (const mark of document.querySelectorAll('.mtab[data-machine="local"] .mark, .mtab[data-machine="local"] .dot')) keep(said.marks, mark.className);
     }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
   });
+  // Its box kept as a picture each time its face's phase or first line changes, from Render to its take (Paul, 11-12, cl-921: the box at
+  // each phase): `phases/<n>-<phase>.png` beside $SHOT, in the run's artifact.
+  const phases = process.env.SHOT ? join(dirname(process.env.SHOT), 'phases') : null;
+  if (phases) mkdirSync(phases, { recursive: true });
+  const pictured = { n: 0, last: '', done: !phases };
+  const picturing = (async () => {
+    const box = page.locator('.react-flow__node:has(.card[data-asset="waits"])').first();
+    while (!pictured.done) {
+      const now = await page.evaluate(() => {
+        const face = document.querySelector('.card[data-asset="waits"] .run-face');
+        return face ? `${face.dataset.phase}|${face.querySelector('.face-state b')?.textContent ?? ''}` : '';
+      }).catch(() => '');
+      if (now && now !== pictured.last) {
+        pictured.n += 1;
+        await box.screenshot({ path: join(phases, `${String(pictured.n).padStart(2, '0')}-${now.split('|')[0]}.png`) }).catch(() => {});
+      }
+      pictured.last = now;
+      await page.waitForTimeout(100);
+    }
+  })();
   await openBox(page, 'waits');
   await (await renderOf(page, 'waits')).click();
   await page.keyboard.press('Escape');
@@ -143,6 +163,9 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   // A render that fails ends the wait with its own words.
   const waits = async () => (await api(`/v1/projects/${id}`)).assets.find((asset) => asset.name === 'waits');
   const first = await until('its first take', waits, (asset) => asset?.version || asset?.failure, 180_000);
+  pictured.done = true;
+  await picturing;
+  seen.phase_pictures = pictured.n;
   if (!first.version) throw new Error(`its render failed: ${first.failure.message}`);
   const said = await page.evaluate(() => window.said);
   seen.said = said;
@@ -269,6 +292,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   });
   seen.focus = focus;
   await shot('face-focus');
+  if (phases) await page.locator('.focus-viewport[data-focused-asset="slow"]').first().screenshot({ path: join(phases, '00-focus.png') }).catch(() => {});
   check('focus_progress_between_name_and_picture', focus.top >= focus.head - 1 && focus.bottom <= focus.media + 1 && focus.width > 0.9 && focus.over === 0, focus);
   check('focus_progress_normal_size', focus.size >= 14 && focus.size <= 32, focus);
   // Its bar is the whole render's; the part it's in and that stage's count are on the line under it.
