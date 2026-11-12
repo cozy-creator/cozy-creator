@@ -149,7 +149,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
     }
     if (writes) return store.writeNext(name)
     store.focusing = name
-    store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined })
+    store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watchRun: undefined, watchFrom: undefined })
   }
   const pick = (number: number) => {
     store.pickTake(name, number)

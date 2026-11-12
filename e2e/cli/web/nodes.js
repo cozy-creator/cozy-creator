@@ -431,7 +431,7 @@ function linesOf(text, name) {
   const field = async (re) => (linesOf(yaml(), 'knobs') ?? '').match(re)?.[1];
   check('summary_is_its_prompt', (await knobs.locator('.in-frame .mention-text').getAttribute('data-field')) === 'summary');
   // Its description has a field of its own, always open.
-  check('words_and_beats_shown', (await knobs.locator('.mention-text:not([data-field=description])').count()) === 2 && (await knobs.locator('.desc-field .mention-text').count()) === ((await of('knobs')).kind === 'image' ? 0 : 1) && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=Megapixels]').count()) === 0, await knobs.innerText());
+  check('words_and_beats_shown_without_an_asset_description', (await knobs.locator('.mention-text:not([data-field=description])').count()) === 2 && (await knobs.locator('.desc-field').count()) === 0 && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=Megapixels]').count()) === 0, await knobs.innerText());
   check('no_line_beside_more', (await knobs.locator('.more-marks').count()) === 0 && (await knobs.locator('.more-toggle').innerText()).trim() === 'More', await knobs.locator('.more-toggle').innerText());
   await more('knobs');
   check('what_it_holds_behind_more', (await knobs.locator('input[aria-label=Megapixels]').inputValue()) === '1' && (await knobs.locator('label:has-text("turbo") input').isChecked()), await knobs.locator('.edit-more').innerText());
