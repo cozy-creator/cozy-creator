@@ -340,6 +340,154 @@ fn footprint(
     }
     Ok(found)
 }
+fn copy_run_directory(source: &Path, target: &Path) -> io::Result<()> {
+    use sha2::Digest as _;
+    use std::io::{Read as _, Write as _};
+    let metadata = match fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(db_error(
+            "legacy run directory is not a proven regular directory",
+        ));
+    }
+    if let Ok(metadata) = fs::symlink_metadata(target) {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(db_error("project run directory has an unsafe type"));
+        }
+    }
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let destination = target.join(entry.file_name());
+        let kind = fs::symlink_metadata(&path)?;
+        if kind.file_type().is_symlink() {
+            return Err(db_error(
+                "legacy run closure contains an unproven symbolic link",
+            ));
+        }
+        if kind.is_dir() {
+            copy_run_directory(&path, &destination)?;
+        } else if kind.is_file() {
+            let mut input =
+                platform::durable::open_nofollow(&path, fs::OpenOptions::new().read(true))?;
+            let mut output = if destination.exists() {
+                None
+            } else {
+                Some(platform::durable::open_nofollow(
+                    &destination,
+                    fs::OpenOptions::new().write(true).create_new(true),
+                )?)
+            };
+            let mut hash = sha2::Sha256::new();
+            let mut total = 0u64;
+            let mut buffer = [0u8; 65536];
+            loop {
+                let count = input.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                hash.update(&buffer[..count]);
+                total += count as u64;
+                if let Some(output) = output.as_mut() {
+                    output.write_all(&buffer[..count])?;
+                }
+            }
+            if let Some(output) = output {
+                output.sync_all()?;
+            }
+            let mut copied =
+                platform::durable::open_nofollow(&destination, fs::OpenOptions::new().read(true))?;
+            let mut verified = sha2::Sha256::new();
+            let mut length = 0u64;
+            loop {
+                let count = copied.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                verified.update(&buffer[..count]);
+                length += count as u64;
+            }
+            if total != length || hash.finalize() != verified.finalize() {
+                return Err(db_error(
+                    "project run file conflicts with canonical legacy bytes",
+                ));
+            }
+        } else {
+            return Err(db_error("legacy run closure contains an unknown object"));
+        }
+    }
+    platform::durable::sync_dir(target)?;
+    Ok(())
+}
+fn retire_run_directory(source: &Path) -> io::Result<()> {
+    fn pin(path: &Path, files: &mut Vec<fs::File>) -> io::Result<()> {
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(db_error("legacy run source changed to a link"));
+        }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path)? {
+                pin(&entry?.path(), files)?;
+            }
+        } else if metadata.is_file() {
+            let file = platform::durable::open_nofollow(path, fs::OpenOptions::new().read(true))?;
+            match file.try_lock() {
+                Ok(()) => files.push(file),
+                Err(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ResourceBusy,
+                        "a canonical legacy run file still has an active reader",
+                    ))
+                }
+            }
+        } else {
+            return Err(db_error("unknown legacy source object"));
+        }
+        Ok(())
+    }
+    let mut files = vec![];
+    pin(source, &mut files)?;
+    fs::remove_dir_all(source)?;
+    if let Some(parent) = source.parent() {
+        platform::durable::sync_dir(parent)?;
+    }
+    Ok(())
+}
+fn copy_attributed_run_files(
+    source_engine: &Path,
+    scope: &LocalPrivateStorage,
+    ids: &[u64],
+    retire: bool,
+) -> io::Result<Vec<String>> {
+    let target = crate::private_io::root(scope)?;
+    let mut pending = vec![];
+    for id in ids {
+        for kind in ["results", "staging"] {
+            let source = source_engine.join(kind).join(id.to_string());
+            if source.exists() {
+                copy_run_directory(&source, &target.join(kind).join(id.to_string()))?;
+                if retire {
+                    if let Err(error) = retire_run_directory(&source) {
+                        if error.kind() == io::ErrorKind::ResourceBusy {
+                            pending.push(format!(
+                                "legacy_run_files_reader_pending:{}",
+                                source.display()
+                            ));
+                        } else {
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(pending)
+}
+
 fn copy_attributed_objects(
     tables: &[Table],
     scope: &LocalPrivateStorage,
@@ -490,6 +638,8 @@ fn inventory(
             item.starts_with("legacy_required_")
                 || item.starts_with("legacy_code_member_")
                 || item.starts_with("legacy_tree_member_")
+                || item.starts_with("legacy_run_files_")
+                || item.starts_with("legacy_unscoped_dependency_")
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -788,6 +938,7 @@ impl Journal {
                                 pending.starts_with("legacy_required_")
                                     || pending.starts_with("legacy_code_member_")
                                     || pending.starts_with("legacy_tree_member_")
+                                    || pending.starts_with("legacy_run_files_")
                             })
                             .collect::<Vec<_>>()
                             .is_empty()
@@ -803,6 +954,23 @@ impl Journal {
                         .connection
                         .transaction_with_behavior(TransactionBehavior::Immediate)
                         .map_err(db_error)?;
+                    if !receipt.attributed_ids.is_empty() {
+                        let pending = copy_attributed_run_files(
+                            &engine.join("execution"),
+                            scope,
+                            &receipt.attributed_ids,
+                            true,
+                        )?;
+                        if !pending.is_empty() {
+                            receipt.pending.extend(pending);
+                            save(&target.connection, &receipt)?;
+                            checkpoint(&target.connection)?;
+                            return Err(io::Error::new(
+                                io::ErrorKind::ResourceBusy,
+                                "legacy file readers prevent source retirement",
+                            ));
+                        }
+                    }
                     for table in receipt.original.iter().rev() {
                         table.retire(&transaction)?;
                     }
@@ -1163,6 +1331,7 @@ impl Journal {
                 }
             }
         }
+        let raw_dependencies: Vec<String> = vec![];
         let mut references = BTreeMap::new();
         for table in &mut owned {
             for row in &mut table.rows {
@@ -1190,11 +1359,18 @@ impl Journal {
         }
         let execution_ids = selected.into_iter().collect::<Vec<_>>();
         let footprint = footprint(&owned, scope, requests.clone(), execution_ids.clone())?;
-        let object_pending = if attributed_ids.is_empty() {
+        let mut object_pending = if attributed_ids.is_empty() {
             vec![]
         } else {
             copy_attributed_objects(&owned, scope, store, &transaction, actor)?
         };
+        if !attributed_ids.is_empty() {
+            object_pending.extend(copy_attributed_run_files(
+                &engine.join("execution"),
+                scope,
+                &attributed_ids,
+            )?);
+        }
         let mut receipt = Receipt {
             source_workspace: self.workspace_id.clone(),
             digest: digest(&original)?,
@@ -1203,7 +1379,7 @@ impl Journal {
             owned,
             requests,
             execution_ids,
-            pending: object_pending,
+            pending: object_pending.into_iter().chain(raw_dependencies).collect(),
             footprint,
             inventory: InventoryReport::default(),
             bindings,
@@ -1237,7 +1413,13 @@ impl Journal {
         checkpoint(&target.connection)?;
         // The target and full required object closure/inventory are verified before source retirement.
         let required = verify_request_objects(&receipt.owned, scope)?;
-        if !required.is_empty() || !receipt.pending.is_empty() {
+        if !required.is_empty()
+            || receipt.pending.iter().any(|pending| {
+                pending.starts_with("legacy_required_")
+                    || pending.starts_with("legacy_code_member_")
+                    || pending.starts_with("legacy_tree_member_")
+            })
+        {
             receipt.pending.extend(required);
             save(&target.connection, &receipt)?;
             checkpoint(&target.connection)?;
@@ -1245,6 +1427,23 @@ impl Journal {
                 io::ErrorKind::WouldBlock,
                 "legacy required payload closure is incomplete",
             ));
+        }
+        if !receipt.attributed_ids.is_empty() {
+            let pending = copy_attributed_run_files(
+                &engine.join("execution"),
+                scope,
+                &receipt.attributed_ids,
+                true,
+            )?;
+            if !pending.is_empty() {
+                receipt.pending.extend(pending);
+                save(&target.connection, &receipt)?;
+                checkpoint(&target.connection)?;
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    "legacy file readers prevent source retirement",
+                ));
+            }
         }
         for table in receipt.original.iter().rev() {
             table.retire(&transaction)?;

@@ -472,7 +472,7 @@ impl Publisher {
 
 /// A builder's own group and inherited ownership, supervised while its stderr is drained.
 fn run_builder(command: &mut Command, namespace: &str, stop: Option<&crate::stop::Stop>, wrote: &dyn Fn(u64)) -> Result<(Supervised, Vec<u8>), Failure> {
-    let scope = match if crate::private_io::current().is_some() { platform::contain::Scope::create(namespace) } else { platform::contain::Scope::inherited(namespace) } {
+    let scope = match platform::contain::Scope::inherited(namespace) {
         Ok(scope) => Some(Arc::new(scope)),
         Err(error) if error.is_unsupported() => None,
         Err(error) => return Err(io_failure(io::Error::other(error))),

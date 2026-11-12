@@ -35,14 +35,15 @@ pub type ProjectExecutionScope = LocalPrivateStorage;
 pub struct ProjectExecutionCapabilities {
     pub protected_journal: bool,
     pub protected_objects_and_scratch: bool,
+    /// Reserved broader sandbox capability; managed-storage readiness does not require it.
+    #[serde(default)]
     pub filesystem_write_confinement: bool,
     pub quiescent_seal: bool,
 }
 
 impl ProjectExecutionCapabilities {
     pub fn ready(&self) -> bool {
-        self.protected_journal && self.protected_objects_and_scratch
-            && self.filesystem_write_confinement && self.quiescent_seal
+        self.protected_journal && self.protected_objects_and_scratch && self.quiescent_seal
     }
 }
 

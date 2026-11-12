@@ -204,7 +204,7 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     let m = Machine { identity: m.identity, runs };
     if rest == "health" && request.method() == axum::http::Method::GET {
         return Json(v1::ProjectExecutionCapabilities { protected_journal: true, protected_objects_and_scratch: true,
-            filesystem_write_confinement: true, quiescent_seal: true }).into_response();
+            filesystem_write_confinement: false, quiescent_seal: true }).into_response();
     }
     // A private scope is data execution, never software updates or global machine log access.
     if rest.starts_with("logs/") || rest == "keepalive" || (rest == "runs" && request.method() != axum::http::Method::GET) {

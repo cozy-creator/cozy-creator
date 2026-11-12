@@ -1522,9 +1522,9 @@ pub(crate) fn open_artifact(root: &Path, path: &Path) -> io::Result<File> {
                 }
                 // Reopen this exact, retained regular inode through our descriptor, not its name.
                 #[cfg(target_os = "linux")]
-                return File::open(format!("/proc/self/fd/{}", file.as_raw_fd()));
+                return File::open(format!("/proc/self/fd/{}", file.as_raw_fd())).and_then(|file| { file.lock_shared()?; Ok(file) });
                 #[cfg(not(target_os = "linux"))]
-                return Ok(file);
+                return { file.lock_shared()?; Ok(file) };
             }
             directory = file;
         }

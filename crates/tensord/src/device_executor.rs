@@ -777,7 +777,7 @@ impl DeviceExecutor {
         let (mut listener, environment) = endpoint(&config)?;
         let scope = scope(&config)?;
         let mut command =
-            if config.private { crate::launch_identity::private_trampoline(&config.python)? } else { crate::launch_identity::trampoline(&config.python, scope.as_deref())? };
+            if config.private { crate::launch_identity::private_trampoline(&config.python, scope.as_deref())? } else { crate::launch_identity::trampoline(&config.python, scope.as_deref())? };
         if config.private { command.args(["-I", "-S", "-c", crate::launch_identity::MODULE_BOOTSTRAP, "cozy_runtime.internal.executor"]); }
         else { command.args(["-I", "-m", "cozy_runtime.internal.executor"]); }
         let mut private_io = if let Some(child) = listener.child.take() {
