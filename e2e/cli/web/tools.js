@@ -114,9 +114,11 @@ function linesOf(text, name) {
   // picture, a video, a sound, a box with a tool; a stored one stays in the file.
   await api(`/v1/projects/${id}/assets/walk`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'A walk by the sea' } }) });
   await until('walk described', () => fieldsOf('walk'), (fields) => fields.description === 'A walk by the sea');
+  // Open, a picture fills the page (Focus) and anything else stands on the canvas: nowhere on the page is there a description field.
   for (const name of ['coast', 'walk', 'hum', 'shot']) {
     await open(name);
-    check(`${name}_shows_no_description`, (await box(name).locator('.desc-field, [aria-label="Description"]').count()) === 0, await box(name).innerText());
+    const shown = await page.locator('.desc-field, [aria-label="Description"], .mention-text[data-field="description"]').count();
+    check(`${name}_shows_no_description`, shown === 0, shown);
   }
   check('a_stored_description_stays', (await fieldsOf('walk')).description === 'A walk by the sea', await fieldsOf('walk'));
   await shot('no-description');
