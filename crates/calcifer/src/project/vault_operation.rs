@@ -138,10 +138,17 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path((named, id)): Path<(
             };
             // Publish under the same short critical section as lock/expiry/ACK.
             // A late worker must not reinstall a secret after it was revoked.
-            let _registry = OPERATIONS.lock().expect("vault operations");
-            sanitize(&mut event, &completed);
-            *completed.finished.lock().expect("vault result age") = Some(Instant::now());
-            completed.events.send_replace(event);
+            {
+                let _registry = OPERATIONS.lock().expect("vault operations");
+                sanitize(&mut event, &completed);
+                *completed.finished.lock().expect("vault result age") = Some(Instant::now());
+                completed.events.send_replace(event);
+            }
+            // Its reply goes once its lifetime is up, if no one acknowledged it first.
+            tokio::spawn(async {
+                tokio::time::sleep(RESULT_LIFETIME).await;
+                expire();
+            });
         });
     }
     let mut receiver = operation.events.subscribe();

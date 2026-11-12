@@ -630,9 +630,10 @@ impl Calcifer {
     }
 
     /// Says once, on its record, that a run stopped moving: where, and what that costs. The run
-    /// goes on: only its owner ends it.
-    pub(crate) fn notice_stalled(&self) {
-        let Ok(unsettled) = self.store.unsettled() else { return };
+    /// goes on: only its owner ends it. False when no run is unsettled, so none can stall.
+    pub(crate) fn notice_stalled(&self) -> bool {
+        let Ok(unsettled) = self.store.unsettled() else { return true };
+        let any = !unsettled.is_empty();
         for id in unsettled {
             let Ok(Some(row)) = self.store.run(id.as_str()) else { continue };
             let Ok(run) = self.record(&row) else { continue };
@@ -654,6 +655,7 @@ impl Calcifer {
                 warn!(run = %id, "{e}");
             }
         }
+        any
     }
 
     /// The live events a stream opening now starts with.

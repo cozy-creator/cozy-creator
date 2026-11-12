@@ -30,6 +30,8 @@ static ROOTS: LazyLock<Mutex<BTreeMap<PathBuf, PathBuf>>> = LazyLock::new(Mutex:
 static OPERATIONS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
 static ACCESS: LazyLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::RwLock<()>>>>>= LazyLock::new(Mutex::default);
 static CONVERTING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
+/// A session began: its clocks and mount are watched from now on.
+static HELD: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 struct Session {
     identity: MountIdentity,
@@ -288,6 +290,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let maximum = ask.max_duration_s.unwrap_or(0);
     let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, runtime: runtime.keep(), secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
+    HELD.notify_one();
     crate::events::project_vault(&project_id, "unlocked");
     Ok(())
 }
@@ -375,9 +378,12 @@ pub(crate) fn start(api: &Arc<Api>) {
         // A provider an earlier Calcifer left can take a moment to let its view go.
         let mut sweeping = 120;
         loop {
+            // Each second while a vault is open, its idle and maximum clocks and its mount; nothing at all with none.
+            while sweeping == 0 && SESSIONS.lock().expect("vault sessions").is_empty() {
+                HELD.notified().await;
+            }
             tokio::time::sleep(Duration::from_secs(1)).await;
             let Some(api) = api.upgrade() else { return };
-            vault_operation::expire();
             if sweeping > 0 { sweeping = if sweep_runtime(&calcifer) { 0 } else { sweeping - 1 }; }
             let roots: Vec<PathBuf> = SESSIONS.lock().expect("vault sessions").keys().cloned().collect();
             for root in roots {
