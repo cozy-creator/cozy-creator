@@ -53,30 +53,41 @@ if "$CLI" --json model upload "local/ci-e2e-q8-$R" "$q" --lane bf16 --on "$M" > 
 fi
 "$CLI" --json model delete "$q" -y > /dev/null 2>&1 || cli_fail "model delete $q failed: delete it by hand"
 
-# cli-project (xs-136, cl-716): a project through every verb (`cozy project new|ls|render|approve|status|rename`), its
-# renders on $M and its pictures' cleans and the edit on this computer. The project is found from a folder inside it
-# and named with -p from elsewhere, and `ls` lists it; a node renamed in project.yaml keeps its versions through
-# `rename`, which status suggests. Two entities that mention each other warn and both render.
+# cli-project (xs-136, cl-716): a project as 0.24 has one, the folder: `cozy new` makes it, `cozy status` finds it from a folder
+# inside it and says what it holds, and its boxes render on $M as the page renders them (e2e/page.py; no CLI verb renders a
+# box), pictures' cleans and the edit on this computer. Two entities that mention each other warn and both render.
 # `--approve` with -n 2 is refused before anything runs; a re-rolled character, as the newest, puts what reads it out of
-# date and nothing else; `--approve` approves its new version; a person's save during a render stands (cozy writes
-# only project.lock); the re-cut is timed; the edit cuts by frame and writes edit.otio beside edit.mp4.
-project_status() { "$CLI" --json --full project -p "$1" status > "$2" 2> "$2.err" || cli_fail "project status of $1: $(tail -c 300 "$2.err")"; }
+# date and nothing else; `--approve` approves its new version; a node renamed in project.yaml stands orphaned in status and
+# keeps its versions through the page's rename; a person's save during a render stands; the edit cuts by frame and writes
+# edit.otio beside edit.mp4. Gone by design with 0.24's verbs: naming a project from elsewhere (`-p`) and listing projects
+# (`project ls`): the folder you're in is the project.
+cli_page() { python3 "$RUN_PAGE" "$@"; }
+# cli_tool <package> <function>: its target as a project in another folder reads it (a checkout's ./pkg by its path).
+cli_tool() { local t; t=$(pkg "$1" "$2"); [[ $t != ./* ]] || t=$OUT/${t#./}; echo "$t"; }
+# cli_new <folder>: `cozy new`, plain (rc/0.25.0 encrypts unless --unencrypted; 0.24.0 has no such flag and makes plain ones).
+cli_new() {
+  local plain=''
+  grep -q -- --unencrypted <<< "$("$CLI" new --help 2>&1)" && plain=--unencrypted
+  rm -rf "$1" "$1.yaml"; "$CLI" new "$1" $plain > "$2" 2>&1
+}
+project_status() { (cd "$1" && "$CLI" --json --full status) > "$2" 2> "$2.err" || cli_fail "status of $1: $(tail -c 300 "$2.err")"; }
 project_cell() {
-  local P=$PWD/project ok
-  rm -rf "$P"; "$CLI" project new "$P" > project-new.log 2>&1 || { cli_fail "project new: $(tail -c 300 project-new.log)"; return; }
-  [ -f "$P/project.yaml" ] || cli_fail "project new made no project.yaml"; mkdir -p "$P/notes"
-  cat > "$P/project.yaml" <<YAML
-version: 3
+  local P=$PWD/project ok STILL H3
+  STILL=$(cli_tool qwen-image-2 image) H3=$(cli_tool minimax-h3 generate)
+  cli_new "$P" project-new.log || { cli_fail "cozy new: $(tail -c 300 project-new.log)"; return; }
+  [ -f "$P/project.db" ] || cli_fail "cozy new made no project.db"; mkdir -p "$P/notes"
+  cat > "$P.yaml" <<YAML
+version: 4
 assets:
-  lead: {tool: $(pkg qwen-image-2 generate), instructions: "$CHAR", asset_type: character}
-  place: {tool: $(pkg qwen-image-2 generate), instructions: "$SCENE, wide from one end: the nearest objects large on the left, the far end small on the right", asset_type: environment}
+  lead: {tool: $STILL, instructions: "$CHAR"}
+  place: {tool: $STILL, instructions: "$SCENE, wide from one end: the nearest objects large on the left, the far end small on the right"}
   one:
-    tool: $(pkg minimax-h3 generate)
+    tool: $H3
     summary: "<lead> in <place>. $MOTION"
     beats: [{duration: 5}]
   start: {tool: cozy/frame, video: <one>, at: 4}
   two:
-    tool: $(pkg minimax-h3 generate)
+    tool: $H3
     summary: "<lead> looks back over one shoulder, after <start>, lead in the middle, facing the camera."
     beats: [{duration: 5}]
   edit:
@@ -86,92 +97,89 @@ assets:
           - {video: <one>, out: 96}
           - {video: <two>, in: 24}
 YAML
+  cli_page yaml "$P" "$P.yaml" > project-yaml.log 2>&1 || cli_fail "project.yaml: $(tail -c 300 project-yaml.log)"
   # Two assets that mention each other: the mention that closes the cycle stays plain text, said, and both render.
   local C=$PWD/project-cycle
-  rm -rf "$C"; "$CLI" project new "$C" > project-cycle-new.log 2>&1 || cli_fail "project new for the cycle: $(tail -c 300 project-cycle-new.log)"
-  cat > "$C/project.yaml" <<YAML
-version: 3
+  cli_new "$C" project-cycle-new.log || cli_fail "cozy new for the cycle: $(tail -c 300 project-cycle-new.log)"
+  cat > "$C.yaml" <<YAML
+version: 4
 assets:
   hut:
-    tool: $(pkg qwen-image-2 generate)
+    tool: $STILL
     instructions: A red hut at the end of a wooden pier, as in <pier>.
   pier:
-    tool: $(pkg qwen-image-2 generate)
+    tool: $STILL
     instructions: A wooden pier with a red hut at its end, as in <hut>.
 YAML
-  "$CLI" project -p "$C" status > project-cycle.log 2>&1 || cli_fail "project status refused a cycle of mentions: $(tail -c 300 project-cycle.log)"
+  cli_page yaml "$C" "$C.yaml" > project-cycle-yaml.log 2>&1 || cli_fail "the cycle's project.yaml: $(tail -c 300 project-cycle-yaml.log)"
+  (cd "$C" && "$CLI" status) > project-cycle.log 2>&1 || cli_fail "status refused a cycle of mentions: $(tail -c 300 project-cycle.log)"
   grep -q "pier mentions hut, which is made from it: that mention stays plain text" project-cycle.log \
-    || cli_fail "project status did not warn of the cycle: $(tail -c 300 project-cycle.log)"
-  "$CLI" project -p "$C" render all --on "$M" > project-cycle-render.log 2>&1 || cli_fail "render all with a cycle of mentions: $(tail -c 400 project-cycle-render.log)"
+    || cli_fail "status did not warn of the cycle: $(tail -c 300 project-cycle.log)"
+  cli_page render "$C" --on "$M" --wait hut,pier all > project-cycle-render.log 2>&1 || cli_fail "render all with a cycle of mentions: $(tail -c 400 project-cycle-render.log)"
   project_status "$C" project-cycle.json
-  jq -e '[.assets[] | select(.standing != "current")] | length == 0' project-cycle.json > /dev/null \
+  jq -e '[.project.assets[] | select(.standing != "current")] | length == 0' project-cycle.json > /dev/null \
     || cli_fail "after render all, a cycle's assets are not current: $(tail -c 400 project-cycle.json)"
-  if "$CLI" project -p "$P" render lead -n 2 --approve --on "$M" > project-approve-n.log 2>&1 || ! grep -q approve_one project-approve-n.log; then
+  if cli_page render "$P" --on "$M" --n 2 --approve lead > project-approve-n.log 2>&1 || ! grep -q approve_one project-approve-n.log; then
     cli_fail "--approve with -n 2 was not refused: $(tail -c 300 project-approve-n.log)"
   fi
-  ( cd "$P/notes" && "$CLI" project render all --on "$M" ) > project-render.log 2>&1 || cli_fail "render all from notes/: $(tail -c 400 project-render.log)"
-  project_status "$P" project-status.json
-  ok=$(jq -r '[.assets[] | select(.standing != "current")] | length' project-status.json)
+  cli_page render "$P" --on "$M" --wait lead,place,one,start,two,edit all > project-render.log 2>&1 || cli_fail "render all: $(tail -c 400 project-render.log)"
+  project_status "$P/notes" project-status.json  # found from a folder inside it
+  ok=$(jq -r '[.project.assets[] | select(.standing != "current")] | length' project-status.json)
   [ "$ok" = 0 ] || cli_fail "after render all, $ok assets are not current: $(tail -c 400 project-status.json)"
   [ -s "$P/edit.mp4" ] || cli_fail "render all cut no edit.mp4"
   jq -e '.tracks.children[] | select(.kind == "Video") | .children[0].source_range | .start_time.value == 0 and .duration.value == 96' \
     "$P/edit.otio" > /dev/null 2>&1 || cli_fail "edit.otio does not cut one's frames 0-96: $(head -c 300 "$P/edit.otio" 2>&1)"
-  "$CLI" --json project ls > project-ls.json 2>&1
-  jq -e --arg p "$P" '.projects | any(.path == $p and (.missing | not))' project-ls.json > /dev/null \
-    || cli_fail "project ls does not list $P: $(tail -c 300 project-ls.json)"
-  "$CLI" project -p "$P" render lead --new --on "$M" > project-run.log 2>&1 || cli_fail "render lead: $(tail -c 400 project-run.log)"
+  cli_page render "$P" --on "$M" lead > project-run.log 2>&1 || cli_fail "render lead: $(tail -c 400 project-run.log)"
   project_status "$P" project-newest.json
-  jq -e '[.stale[].name] | sort == ["one", "start", "two"]' project-newest.json > /dev/null \
-    || cli_fail "a new newest lead put out of date other than one, start, two: $(jq -c .stale project-newest.json)"
-  "$CLI" project -p "$P" approve lead 2 > project-approve.log 2>&1 || cli_fail "project approve lead 2: $(tail -c 300 project-approve.log)"
-  "$CLI" project -p "$P" render place --new --approve --on "$M" > project-approve-new.log 2>&1 || cli_fail "render place --approve: $(tail -c 400 project-approve-new.log)"
+  jq -e '[.project.stale[].name] | sort == ["one", "start", "two"]' project-newest.json > /dev/null \
+    || cli_fail "a new newest lead put out of date other than one, start, two: $(jq -c .project.stale project-newest.json)"
+  cli_page approve "$P" lead 2 > project-approve.log 2>&1 || cli_fail "approve lead 2: $(tail -c 300 project-approve.log)"
+  cli_page render "$P" --on "$M" --approve place > project-approve-new.log 2>&1 || cli_fail "render place --approve: $(tail -c 400 project-approve-new.log)"
   project_status "$P" project-status-2.json
-  jq -e '.assets[] | select(.name == "place") | .approved == 2' project-status-2.json > /dev/null \
-    || cli_fail "render place --approve did not approve version 2: $(jq -c '.assets[] | select(.name == "place")' project-status-2.json)"
-  # place renamed yard in project.yaml (and its mentions): status suggests the rename, which keeps its versions.
-  sed -i 's/^  place: /  yard: /; s/<place>/<yard>/g' "$P/project.yaml"
-  "$CLI" project -p "$P" status > project-orphan.log 2>&1
-  grep -q "cozy project rename place yard" project-orphan.log || cli_fail "status did not suggest the rename: $(tail -c 300 project-orphan.log)"
-  "$CLI" project -p "$P" rename place yard > project-rename.log 2>&1 || cli_fail "project rename: $(tail -c 300 project-rename.log)"
+  jq -e '.project.assets[] | select(.name == "place") | .approved == 2' project-status-2.json > /dev/null \
+    || cli_fail "render place --approve did not approve version 2: $(jq -c '.project.assets[] | select(.name == "place")' project-status-2.json)"
+  # place renamed yard in project.yaml (and its mentions): status names place an orphan; the page's rename keeps its versions.
+  sed -i 's/^  place: /  yard: /; s/<place>/<yard>/g' "$P.yaml"
+  cli_page yaml "$P" "$P.yaml" > project-yaml-2.log 2>&1 || cli_fail "the renamed project.yaml: $(tail -c 300 project-yaml-2.log)"
+  project_status "$P" project-orphan.json
+  jq -e '[.project.orphans[]?.name] | index("place")' project-orphan.json > /dev/null || cli_fail "status does not name place an orphan: $(jq -c .project.orphans project-orphan.json)"
+  cli_page rename "$P" place yard > project-rename.log 2>&1 || cli_fail "rename: $(tail -c 300 project-rename.log)"
   project_status "$P" project-renamed.json
-  jq -e '(.orphans // []) == [] and (.assets[] | select(.name == "yard") | .approved == 2 and .versions == 2)' project-renamed.json > /dev/null \
-    || cli_fail "after rename, yard does not hold place's versions: $(jq -c '[.orphans, (.assets[] | select(.name == "yard"))]' project-renamed.json)"
-  # A person's save while a run is in flight stands: cozy writes only project.lock.
-  ( "$CLI" project -p "$P" render all --on "$M" > project-race.log 2>&1; echo $? > project-race.exit ) &
-  for _ in $(seq 1 1800); do grep -q '"pending"' "$P/project.lock" 2>/dev/null && break; sleep 1; done
-  sed -i 's/lead in the middle, facing the camera\./lead in the middle, facing the camera, hands in pockets./' "$P/project.yaml"
-  wait
-  [ "$(cat project-race.exit)" = 0 ] || cli_fail "render all during a save: $(tail -c 400 project-race.log)"
-  grep -q "hands in pockets" "$P/project.yaml" || cli_fail "a save made during render all was lost"
-  grep -o "cut .* in [0-9.]* s" project-race.log | tail -1 >> project-recut.txt
+  jq -e '(.project.orphans // []) == [] and (.project.assets[] | select(.name == "yard") | .approved == 2 and .versions == 2)' project-renamed.json > /dev/null \
+    || cli_fail "after rename, yard does not hold place's versions: $(jq -c '[.project.orphans, (.project.assets[] | select(.name == "yard"))]' project-renamed.json)"
+  # A person's save while a render is under way stands.
+  cli_page render "$P" --on "$M" --queue all > project-race.log 2>&1 || cli_fail "render all: $(tail -c 300 project-race.log)"
+  for _ in $(seq 1 600); do cli_page board "$P" | jq -e '(.jobs // []) | length > 0' > /dev/null 2>&1 && break; sleep 1; done
+  sed -i 's/lead in the middle, facing the camera\./lead in the middle, facing the camera, hands in pockets./' "$P.yaml"
+  cli_page yaml "$P" "$P.yaml" > project-save.log 2>&1 || cli_fail "a save during render all: $(tail -c 300 project-save.log)"
+  for _ in $(seq 1 1800); do cli_page board "$P" | jq -e '[.jobs[]? | select(.state == "running" or .state == "waiting")] | length == 0' > /dev/null 2>&1 && break; sleep 2; done
+  grep -q "hands in pockets" <<< "$(cli_page yaml "$P")" || cli_fail "a save made during render all was lost"
 }
 [ -z "$ONLY" ] || [[ $ONLY == *",cli-project,"* ]] && project_cell
 
-# A render and a run that stop moving (cl-783): `project wait` and a followed `cozy run` each end with 4 once Calcifer says
-# so (10 minutes with no progress), each naming how to end it, and both go on until they're canceled. The job stands
-# stalled after `wait` left, in status and on the page's stream (`job.updated`), and a real move clears it. About 13
-# minutes, the two at once. Weightless: tool.py's `slow` sleeps 700 s a step, weightless `silent` 20 minutes.
+# A render and a run that stop moving (cl-783): a followed `cozy run` ends with 4 once Calcifer says so (10 minutes with no
+# progress), naming how to follow it, and goes on until it's canceled. The render's job stands stalled on the page's board and
+# stream (`job.updated`) and a real move clears it. About 13 minutes, the two at once. Weightless: tool.py's `slow` sleeps 700 s
+# a step, weightless `silent` 20 minutes. Gone by design with 0.24's verbs: `cozy project wait` (the page shows a render).
 stall_cell() {
-  local S=$PWD/stall e2e=$HERE/../e2e/cli n waiting running lock=$HOME/.cozy/calcifer/calcifer.lock.holder stream=$PWD/stall-events.sse page
-  held_job() { "$CLI" --json --full project -p "$S" status | jq -c '[.board.jobs[]? | select(.asset == "held")][-1] // {}'; }
+  local S=$PWD/stall e2e=$HERE/../e2e/cli n running lock=$HOME/.cozy/calcifer/calcifer.lock.holder stream=$PWD/stall-events.sse page
+  held_job() { cli_page board "$S" | jq -c '[.jobs[]? | select(.asset == "held")][-1] // {}'; }
   # What the cell needs, in seconds, before its 10-minute wait: a test's own cause shows here, not at the end.
   for tool in curl jq; do command -v "$tool" > /dev/null || { cli_fail "stall: no $tool here"; return; }; done
   [ -s "$lock" ] || { cli_fail "stall: no Calcifer lock record at $lock"; return; }
-  rm -rf "$S"; "$CLI" project new "$S" > stall-new.log 2>&1 || { cli_fail "stall: project new: $(tail -c 300 stall-new.log)"; return; }
-  printf 'version: 4\nassets:\n  held:\n    tool: %s/project/tool.py/slow\n    instructions: A still that stops moving, %s.\n    seconds: 7000\n' "$e2e" "$R" > "$S/project.yaml"
+  cli_new "$S" stall-new.log || { cli_fail "stall: cozy new: $(tail -c 300 stall-new.log)"; return; }
+  printf 'version: 4\nassets:\n  held:\n    tool: %s/project/tool.py/slow\n    instructions: A still that stops moving, %s.\n    seconds: 7000\n' "$e2e" "$R" > "$S.yaml"
+  cli_page yaml "$S" "$S.yaml" > stall-yaml.log 2>&1 || { cli_fail "stall: project.yaml: $(tail -c 300 stall-yaml.log)"; return; }
   # What the page hears, from before the render.
   curl -sS -N --max-time 1500 -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/events" < /dev/null > "$stream" 2> stall-events.err & page=$!
   for _ in $(seq 50); do [ -s "$stream" ] && break; sleep 0.2; done
   [ -s "$stream" ] || { cli_fail "stall: the page's stream said nothing: $(tail -c 200 stall-events.err)"; kill "$page" 2> /dev/null; return; }
-  "$CLI" project -p "$S" render held --on "$M" --queue > stall-render.log 2>&1 || cli_fail "stall: render --queue: $(tail -c 300 stall-render.log)"
-  # Each exit kept whether or not the shell stops at a command that fails (`set -e`); nothing in the background reads stdin.
-  ( code=0; "$CLI" project -p "$S" wait > stall-wait.log 2>&1 || code=$?; echo "$code" > stall-wait.exit ) < /dev/null & waiting=$!
-  ( code=0; "$CLI" --json run -p "$S" "$e2e/weightless/silent" seconds:=1200 --on "$M" > stall-run.ndjson 2> stall-run.err || code=$?; echo "$code" > stall-run.exit ) < /dev/null & running=$!
-  wait "$waiting" "$running"
-  [ "$(cat stall-wait.exit)" = 4 ] || cli_fail "stall: project wait exited $(cat stall-wait.exit), not 4: $(tail -c 300 stall-wait.log)"
-  grep -q 'cozy project cancel held' stall-wait.log || cli_fail "stall: wait didn't say how to end it: $(tail -c 300 stall-wait.log)"
+  cli_page render "$S" --on "$M" --queue held > stall-render.log 2>&1 || cli_fail "stall: render --queue: $(tail -c 300 stall-render.log)"
+  # Its exit kept whether or not the shell stops at a command that fails (`set -e`); nothing in the background reads stdin.
+  ( code=0; cd "$S" && "$CLI" --json run "$e2e/weightless/silent" seconds:=1200 --on "$M" > "$OLDPWD/stall-run.ndjson" 2> "$OLDPWD/stall-run.err" || code=$?; echo "$code" > "$OLDPWD/stall-run.exit" ) < /dev/null & running=$!
+  wait "$running"
   [ "$(cat stall-run.exit)" = 4 ] || cli_fail "stall: cozy run exited $(cat stall-run.exit), not 4: $(tail -c 300 stall-run.err)"
-  held_job | jq -e '.stalled != null' > /dev/null || cli_fail "stall: held doesn't stand stalled after wait left: $(held_job)"
+  held_job | jq -e '.stalled != null' > /dev/null || cli_fail "stall: held doesn't stand stalled: $(held_job)"
   grep '"type":"job.updated"' "$stream" | grep '"asset":"held"' | grep -q '"stalled"' || cli_fail "stall: the page heard no job.updated with held stalled"
   # A real move clears it: slow's next step, 700 s after its last.
   for _ in $(seq 60); do held_job | jq -e '.stalled == null' > /dev/null && break; sleep 5; done
@@ -180,7 +188,7 @@ stall_cell() {
   kill "$page" 2> /dev/null || true
   n=$(run_number stall-run.ndjson)
   [ -n "$n" ] && [ "$("$CLI" --json run watch "$n" --once | jq -r .status)" = in_progress ] || cli_fail "stall: run ${n:-?} isn't going on after its follower left"
-  "$CLI" project -p "$S" cancel held > stall-cancel.log 2>&1 || cli_fail "stall: project cancel held: $(tail -c 300 stall-cancel.log)"
+  cli_page cancel "$S" held > stall-cancel.log 2>&1 || cli_fail "stall: cancel held: $(tail -c 300 stall-cancel.log)"
   [ -z "$n" ] || "$CLI" run cancel "$n" > stall-run-cancel.log 2>&1 || cli_fail "stall: run cancel $n: $(tail -c 300 stall-run-cancel.log)"
 }
 [ -z "$ONLY" ] || [[ $ONLY == *",cli-stall,"* ]] && stall_cell
