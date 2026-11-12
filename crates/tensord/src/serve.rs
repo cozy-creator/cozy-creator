@@ -134,7 +134,7 @@ pub fn version() -> io::Result<()> {
 /// Runs the machine from its grant: identity and readiness under the machine root, the engine
 /// under `var/lib/cozy/tensord`, the API on the granted port.
 fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Ready) -> io::Result<()> {
-    let config::Config { grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, .. } = config;
+    let config::Config { grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, gpu_samples, .. } = config;
     // A shared computer's own programs come first: from this thread, before the runtime's, the
     // background priority reaches every thread and process the machine starts (executors too).
     if mode == ::api::config::MachineMode::Shared {
@@ -268,6 +268,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             "host": {"mode": mode.name()},
             "image_kernels": (!gpus.is_empty()).then(|| image_kernels(&layout.root, &paths.sdk())).flatten(),
             "toolchain": crate::machine::toolchain::dir(&engine),
+            "gpu_samples": gpu_samples,
         });
         let config = serde_json::from_value::<crate::gpu_service::GpuConfig>(config)
             .map_err(io::Error::other)?

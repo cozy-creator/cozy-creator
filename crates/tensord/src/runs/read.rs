@@ -1133,6 +1133,7 @@ impl Log {
                 None => v1::Event::Log(v1::LogLine {
                     level: body["level"].as_str().unwrap_or("info").into(),
                     text: body["text"].as_str().unwrap_or_default().into(),
+                    code: body["code"].as_str().unwrap_or_default().into(),
                 }),
             },
             "product" => {

@@ -583,6 +583,9 @@ pub struct Frame {
     pub prepared: Option<bool>,
     /// `start` of a group (degree > 1): the follower ranks' pids, rank 1 first.
     pub follower_pids: Vec<u32>,
+    /// `start` on a CUDA device: why its Runtime serves it none of its native kernels (the pure wheel, or kernels that don't
+    /// load); empty: it does (cl-913).
+    pub kernels_absent: String,
     pub result_ref: Option<ResultRef>,
     pub outputs: Vec<Output>,
     pub frames: Vec<HostFrame>,

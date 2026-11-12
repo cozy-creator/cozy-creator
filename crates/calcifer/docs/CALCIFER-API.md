@@ -321,6 +321,16 @@ The machine owns its GPU width (cl-816): a lone job runs wide, several queued jo
 A running run with no progress for 10 minutes carries `stalled {since_ms, machine, usd_micros_per_hour?}` until it
 moves, and its record gets one `no_progress` warning naming the machine and its price. Nothing ends it: only its owner does.
 
+### A run that is slow (cl-913)
+
+What a machine says of a run itself, a log line with a `code`, is kept among its warnings: `gpu_throttled` (a GPU held back for heat
+more than half of a run that loaded it 20 s or more) and `runtime_without_kernels` (its Runtime serves its GPUs none of its native
+kernels). Each run is held to its bar: what its function took at its lane on this machine, else on other machines of its card, else
+on another card scaled by the Hub's per-SKU speeds, never in a run that warned of either or was itself slow; scaled to what it asks
+(megapixels and steps, frames, tokens, its media's `duration`s) and timed from its first stage where the bar's runs have stages. Over
+1.4× its bar and 20 s more, its record gets one `slow_run` warning naming the likely cause (heat, missing kernels, Sol dense while its
+kernel built, kernels compiled, another degree): as soon as its time so far is and a cause is known, else at its end, before it settles. A machine's Status says `heat` and `runtime_kernels` while either holds; the page marks it red.
+
 ### Machines on this minor
 
 Work goes only to a machine whose TensorD is on this cozy's major and minor (Paul, 11-07: pre-launch, no support for older

@@ -115,6 +115,9 @@ pub struct MachineConfig {
     /// A shared machine's calls on a GPU that also drives the display pause for it, so the
     /// desktop stays smooth: `[machine.display_pace]` `work_ms` (80) and `pause_ms` (16, 0: never).
     pub display_pace: Option<executor_api::DisplayPace>,
+    /// Tests only: recorded GPU readings (JSON lines of `platform::gpu::Sample`) every call reads in place of its GPUs' own,
+    /// so a throttling host's go through the real path (cl-913). The Hub is never told of them.
+    pub gpu_samples: Option<PathBuf>,
 }
 
 /// How a machine shares its computer (`machine.mode`).

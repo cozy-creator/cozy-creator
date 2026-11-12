@@ -4190,6 +4190,13 @@ input[type="checkbox"] {
 .dot.idle {
   background: #9a9a9a;
 }
+/* Something makes its runs slow (cl-913): steady red. */
+.dot.slow {
+  background: #d93025;
+}
+p.warn.slow {
+  color: #d93025;
+}
 /* Weights arriving: an arrow that glows. A package installing: a box. */
 .mark {
   display: inline-flex;

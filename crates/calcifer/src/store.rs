@@ -440,11 +440,14 @@ pub(crate) struct Batch {
     pub machine_state: Option<String>,
     /// When the machine says it began executing the run.
     pub started_at_ms: Option<i64>,
+    /// What the machine says of the run itself, by code (cl-913): kept among its warnings, each code once.
+    pub warnings: Vec<Warning>,
 }
 
 impl Batch {
     pub(crate) fn is_empty(&self) -> bool {
         self.cursor == 0 && self.logs.is_empty() && self.products.is_empty() && self.machine_state.is_none() && self.started_at_ms.is_none()
+            && self.warnings.is_empty()
     }
 }
 
@@ -1574,9 +1577,24 @@ impl Store {
             if let Some(at) = batch.started_at_ms.filter(|_| row.started_at_ms.is_none()) {
                 tx.execute("UPDATE runs SET started_at = ?2 WHERE id = ?1", params![id, at])?;
             }
-            if let Some(state) = batch.machine_state.filter(|s| row.machine_state.as_ref() != Some(s)) {
-                tx.execute("UPDATE runs SET machine_state = ?2 WHERE id = ?1", params![id, state])?;
-                events.push(lifecycle(tx, id)?);
+            let mut warnings = row.warnings.clone();
+            for warning in batch.warnings {
+                if !warnings.iter().any(|had| had.code == warning.code) {
+                    warnings.push(warning);
+                }
+            }
+            let warned = warnings.len() > row.warnings.len();
+            if warned {
+                let text = serde_json::to_string(&warnings).expect("serializes");
+                tx.execute("UPDATE runs SET warnings = ?2 WHERE id = ?1", params![id, seal_run_text(tx, id, &run_context(id, "warnings"), &text)?])?;
+            }
+            match batch.machine_state.filter(|s| row.machine_state.as_ref() != Some(s)) {
+                Some(state) => {
+                    tx.execute("UPDATE runs SET machine_state = ?2 WHERE id = ?1", params![id, state])?;
+                    events.push(lifecycle(tx, id)?);
+                }
+                None if warned => events.push(lifecycle(tx, id)?),
+                None => {}
             }
             tx.execute(
                 "UPDATE runs SET cursor = MAX(cursor, ?2) WHERE id = ?1",

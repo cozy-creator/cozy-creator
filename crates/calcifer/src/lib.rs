@@ -38,6 +38,7 @@ mod rentals;
 mod runs;
 pub mod serve;
 mod sessions;
+mod slow;
 mod state;
 mod store;
 mod tool_ui;
@@ -143,6 +144,14 @@ struct Live {
     quoted: Option<eta::Quoted>,
     /// What its log has warned of while it goes, each once: its record says them with its own warnings.
     warned: Vec<String>,
+    /// What its function is known to take on its card and lane (`slow`), once worked out; the stages it entered and when, on its
+    /// machine's clock; the GPUs it was granted; whether it said it is slow, and when that was last asked.
+    bar: Option<slow::Bar>,
+    barred: bool,
+    entered: Vec<(String, i64)>,
+    width: u32,
+    slow_said: bool,
+    slow_asked: Option<Instant>,
 }
 
 /// A log line at a level its followers are warned at, as `cozy run` says it.
@@ -152,6 +161,8 @@ pub(crate) fn warns(level: &str) -> bool {
 
 /// How often a running run's time left is said again as it counts down.
 const ETA_EVERY: Duration = Duration::from_secs(1);
+/// How often a running run is held to its bar (`slow`).
+const SLOW_EVERY: Duration = Duration::from_secs(10);
 
 /// A machine's connection, shared by its runs' drivers.
 struct Machine {
@@ -886,6 +897,19 @@ impl Calcifer {
 
     /// Its time left as it counts down between reports: said again when its second moves.
     fn tick(&self, id: &RunId) {
+        let ask = {
+            let mut live = lock(&self.live);
+            live.get_mut(id).is_some_and(|live| {
+                let due = live.bar.is_some() && !live.slow_said && live.slow_asked.is_none_or(|at| at.elapsed() >= SLOW_EVERY);
+                if due {
+                    live.slow_asked = Some(Instant::now());
+                }
+                due
+            })
+        };
+        if ask {
+            self.slow_so_far(id);
+        }
         let progress = {
             let mut live = lock(&self.live);
             let Some(Live { progress: Some(progress), clock: Some(clock), .. }) = live.get_mut(id) else { return };
@@ -1467,8 +1491,12 @@ impl Calcifer {
             None => link.events(id, 0).await?,
         };
         self.clock(run, machine);
-        // What the Hub says of other cards comes while it's followed, never ahead of its events.
-        let ((), followed) = tokio::join!(self.fill_clock(run, machine), self.follow(&run.id, stream, link, wake, canceled, state_now));
+        // What the Hub says of other cards comes while it's followed, never ahead of its events; so does its bar (`slow`).
+        let ((), (), followed) = tokio::join!(
+            self.fill_clock(run, machine),
+            self.set_bar(run, machine),
+            self.follow(&run.id, stream, link, wake, canceled, state_now)
+        );
         followed
     }
 
@@ -1629,7 +1657,13 @@ impl Calcifer {
             frames += 1;
             let durable = frame.sequence;
             match frame.event {
-                Frame::Log(line) => {
+                Frame::Log(mut line) => {
+                    // A warning the machine says of the run itself is the run's (cl-913), the machine named as this computer names it.
+                    if !line.code.is_empty() && line.level == "warning" {
+                        let machine = self.store.run(id.as_str()).ok().flatten().and_then(|row| row.machine).unwrap_or_default();
+                        line.text = line.text.replace("<machine>", &machine);
+                        batch.warnings.push(Warning { code: line.code.clone(), message: line.text.clone() });
+                    }
                     if warns(&line.level) {
                         let mut live = lock(&self.live);
                         let warned = &mut live.entry(id.clone()).or_default().warned;
@@ -1674,13 +1708,19 @@ impl Calcifer {
                     };
                     self.waiting(id, format!("waiting for {gpus}, held by {holder}"));
                 }
-                Frame::Gpu(_) => self.not_waiting(id),
+                Frame::Gpu(gpu) => {
+                    if gpu.state == "grant" {
+                        lock(&self.live).entry(id.clone()).or_default().width = gpu.width;
+                    }
+                    self.not_waiting(id)
+                }
                 Frame::Progress(p) => {
                     // Each stage it enters is kept with the run, so a run whose machine is lost
                     // still says where it got to and when (run 14868, `encoding prompt`).
                     let stage = p.stage.clone();
                     let entered = self.progress(id, progress_of(p, frame.at_ms));
                     if entered {
+                        self.staged(id, &stage, frame.at_ms);
                         batch.logs.push((frame.at_ms, "stage".into(), stage));
                     }
                     continue;
@@ -1735,6 +1775,8 @@ impl Calcifer {
                         (Some(machines), Some(row)) => machines.verified(&row, outcome).await,
                         _ => outcome,
                     };
+                    // Far slower than its function is known to take: said before it settles, so what lands of it says so too.
+                    self.slow_at_end(id, &outcome);
                     let prior_batch_ms = received.elapsed().as_secs_f64() * 1000.0;
                     let store_began = Instant::now();
                     let events = self.store.settle(id.as_str(), &outcome, durable)?;

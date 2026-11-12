@@ -7,12 +7,13 @@ import type { CarriedFile } from "./CanvasStore"
 import { NameField } from "./NameField"
 import { makingRun, shownOf } from "./shown"
 import { RunFace, useArriving } from "./RunFace"
+import { noHash } from "./text"
 import { useSignal } from "../ui/signal"
 import { pressBeganOutside } from "../ui/press"
 import "./FocusedViewport.css"
 
 /** What's on a focused item rather than its background. */
-const OWN = ".media, .tl, .focus-heading, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
+const OWN = ".media, .tl, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
 
 /** A workspace for one item. The Wander camera stays behind it, unchanged. */
 export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string; onClose(): void; onCopyVersion(file: CarriedFile, x: number, y: number): void }) {
@@ -55,6 +56,8 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   const version = shownOf(view)?.number
   // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
   const onItsWay = view.asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
+  // What its runs said (a slow run, a hot GPU: cl-913), as an open box's head says it: a ! that shows the lines.
+  const warnings = view.warnings ?? []
   return (
     <section ref={element} className="focus-viewport" aria-label="Focused asset" data-focused-asset={name} data-entering={entering || undefined}
       onClick={(event) => {
@@ -72,10 +75,22 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         <div className="focus-title">
           {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename node" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
           {view.asset?.kind === "image" && (version !== undefined || Boolean(view.asset.prefixes?.length) || Boolean(view.asset.sha256)) && <span className="focus-version-label" aria-label="Image version">{version === undefined ? "New" : `v${version}`}</span>}
+          {warnings.length > 0 && (
+            <button type="button" className="iconb warned" aria-label="Warnings" aria-expanded={Boolean(view.warned)} title={noHash(warnings.join("\n"))} onClick={() => store.patch(name, { warned: !view.warned })}>
+              !
+            </button>
+          )}
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
       {(onItsWay || arriving !== undefined) && view.asset?.rendering == null && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above />}
+      {view.warned && warnings.length > 0 && (
+        <div className="warned-lines focus-warnings">
+          {warnings.map((warning) => (
+            <p key={warning}>{noHash(warning)}</p>
+          ))}
+        </div>
+      )}
       <div className="focus-body"><FocusedCard name={name} /></div>
     </section>
   )

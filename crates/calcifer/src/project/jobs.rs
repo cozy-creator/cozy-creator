@@ -385,7 +385,17 @@ impl Jobs {
             | RunEvent::InProgress { run, .. }
             | RunEvent::Completed { run, .. }
             | RunEvent::Failed { run, .. }
-            | RunEvent::Canceled { run, .. } => live.apply(run),
+            | RunEvent::Canceled { run, .. } => {
+                live.apply(run);
+                // What made it slow, as its record says (cl-913), is said on its box too.
+                let asset = live.job.asset.clone();
+                let slowed = run.warnings.iter().filter(|warning| crate::slow::ON_BOX.contains(&warning.code.as_str()));
+                for message in slowed.map(|warning| warning.message.clone()).collect::<Vec<_>>() {
+                    if held.warned.insert((asset.clone(), message.clone())) {
+                        held.warn(message, Some(asset.clone()));
+                    }
+                }
+            }
             RunEvent::Progress { progress } => live.progress(progress),
             RunEvent::Waiting { reason } => live.job.why = Some(reason.clone()).filter(|reason| !reason.is_empty()),
             RunEvent::OutputLanded { item, .. } => {
