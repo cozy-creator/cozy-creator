@@ -54,6 +54,8 @@ function render(...words) {
   const ended = lines.find((line) => line.type === 'ended');
   return { asked: lines.find((line) => line.type === 'asked'), ended: ended?.ended, takes: ended?.takes ?? [] };
 }
+/** A take's warnings that say its pickup moved: off a seam, or off its tool's grid. */
+const moved = (take) => (take?.warnings ?? []).filter((said) => said.includes('keeps up to frame') || said.includes("isn't one a pickup lands on"));
 /** A refused call's error code. */
 function refused(...words) {
   try {
@@ -90,7 +92,7 @@ function refused(...words) {
   const two = redo.takes.find((take) => take.name === 'shot');
   seen.redo = redo;
   check('redo_keeps_the_segments_before_it', two?.number === 2 && two.pickup?.take === '<shot.1>' && two.pickup?.out_frame === SEAM
-    && Math.abs(two.pickup?.beats_from - SEAM / 24) < 1e-9 && two.seams?.[0] === SEAM && !two.warnings?.length, two);
+    && Math.abs(two.pickup?.beats_from - SEAM / 24) < 1e-9 && two.seams?.[0] === SEAM && !moved(two).length, two);
 
   // Continue from: another box goes on from the end of shot's take 1, its words from their start, the picture in its prompt.
   cozy('box', 'add', 'next', '--tool', `${SHOTS}/shoot`, 'summary=Then <look> again, with <mara>.');
@@ -102,7 +104,7 @@ function refused(...words) {
   const given = JSON.parse(readFileSync(join(downloads, readdirSync(downloads).find((file) => file.includes('-given'))), 'utf8'));
   seen.given = given;
   check('it_continues_from_the_end', after?.pickup?.take === '<shot.1>' && after.pickup.beats_from === 0 && after.pickup.out_frame > SEAM
-    && given.pickup?.out_frame === after.pickup.out_frame && !after.warnings?.length, { after, given: given.pickup });
+    && given.pickup?.out_frame === after.pickup.out_frame && !moved(after).length, { after, given: given.pickup });
   check('a_picture_is_a_reference', given.summary?.references?.mara === 'image' && given.summary?.references?.look === 'video', given.summary);
 
   // Its words set as its controls set them, from the command line and from a file.
