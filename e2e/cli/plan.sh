@@ -8,7 +8,8 @@ estimate_line() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "estimate line (cl-967): a job's download waits behind the one ahead of it, and its quote says so"
 local dog target model n left asked quoted finished took off bound
-dog=$(picture dog2.jpg); target=$(birefnet)
+# BiRefNet as its isolated Hub publishes it: run-estimates quotes published code, as the page asks.
+dog=$(picture dog2.jpg); target=birefnet/remove_background
 run_cell "$OUT" line-first "$target" --file "image=$dog" --on local || { check "estimate line: the first BiRefNet run: $(run_get "$OUT" line-first .reason.message)"; return; }
 cozy --json machine show local > "$OUT/line-models.json" || { check "estimate line: machine show local"; return; }
 model=$(jq -r '[.status.models[]?.repository] | map(select(test("birefnet"; "i"))) | first // empty' "$OUT/line-models.json")
