@@ -1092,6 +1092,7 @@ impl Runs {
     /// resumes, a private one waits for its owner's next run.
     fn member(&self, held: HeldGeneration, installation: &Installation, plan: Option<Plan>, level: Level,
         hub: Option<hub::Source>, payload: Option<api::machine::Json>) -> Arc<Member> {
+        let plan = plan.map(|plan| plan.in_scope(crate::private_io::current().as_ref()));
         let hub = hub.or_else(|| {
             let own = self.own_hub.clone().filter(|own| {
                 installation.hub.is_empty() || hub::origin_key(&own.origin).as_deref() == Some(installation.hub.as_str())
