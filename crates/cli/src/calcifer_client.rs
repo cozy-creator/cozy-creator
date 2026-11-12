@@ -595,6 +595,25 @@ impl Client {
         self.get_query("/v1/runs", query).await
     }
 
+    /// A running run's newest preview when it isn't `held` (its `ETag`): its tag, its step and its
+    /// picture (cr-282); none while there is no newer one. Asking keeps its machine making them.
+    pub(crate) async fn preview(&self, id: &str, held: &str) -> Result<Option<(String, String, bytes::Bytes)>, Error> {
+        let path = path(&["v1", "runs", id, "preview"]);
+        let answer = self
+            .send(Ask::Read, |c, base| match held {
+                "" => c.get(format!("{base}{path}")),
+                held => c.get(format!("{base}{path}")).header(header::IF_NONE_MATCH, held),
+            })
+            .await?;
+        if answer.status() != StatusCode::OK {
+            return Ok(None);
+        }
+        let text = |name: &str| answer.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+        let (tag, step) = (text("etag"), text(api::machine::PREVIEW_STEP));
+        let picture = answer.bytes().await.map_err(unreachable)?;
+        Ok(Some((tag, step, picture)))
+    }
+
     /// Asks for a run's cancel; its machine's own outcome ends it.
     pub(crate) async fn cancel(&self, id: &str) -> Result<Run, Error> {
         let path = path(&["v1", "runs", id, "cancel"]);

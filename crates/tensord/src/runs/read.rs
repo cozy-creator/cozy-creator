@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashMap},
     io::{self, Read},
+    sync::Arc,
     time::Duration,
 };
 use tensorfs::format::ObjectRef;
@@ -121,6 +122,15 @@ impl Runs {
             .actor_page(reader(actor).as_deref(), 0, before, newest, states, limit)
             .map_err(problem)?;
         records.iter().filter(|record| scope_allows(record)).map(|record| self.state_of(record)).collect()
+    }
+    /// `actor`'s run `id`'s newest preview, if it has one yet (cr-282). Asking makes its executor
+    /// make them for a while; an ended run has none.
+    pub(crate) fn preview(&self, actor: VerifiedActor, id: &str) -> Result<Option<Arc<crate::execution::Preview>>, Error> {
+        let record = self.record(actor, id)?;
+        if record.state.terminal() {
+            return Ok(None);
+        }
+        Ok(self.service.engine.want_preview(&record.id))
     }
     /// The runs `actor` reads, newest first, before the run numbered `before` (0: the newest).
     pub(crate) fn list(&self, actor: VerifiedActor, before: u64, limit: u32) -> Result<v1::RunList, Error> {
@@ -1074,6 +1084,7 @@ impl Log {
                     bytes_done: payload["bytes_done"].as_u64().unwrap_or(0),
                     bytes_total: payload["bytes_total"].as_u64().unwrap_or(0),
                     stage_fraction: payload["stage_fraction"].as_f64(),
+                    preview: payload["preview"].as_u64().unwrap_or(0),
                 })
             }
             "call" => v1::Event::Call(v1::Call {

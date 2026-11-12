@@ -3616,6 +3616,7 @@ impl Pool {
             .unwrap_or_default();
         session.executor.codec().prestart();
         let invoking = session.executor.lookahead().invoking(id);
+        engine.watch_previews(id, session.executor.previews(id));
         engine.notify_activity(); // Queued work may have arrived before this executor became ready.
         let reply = session.executor.command(
             &Command::Invoke(Box::new(Invoke {
@@ -3644,6 +3645,7 @@ impl Pool {
             &mut callbacks,
         );
         drop(invoking);
+        engine.watch_previews(id, None);
         let reply = reply?;
         // When the reply came (with the executor's handler and device-lease times) and when it
         // was recorded: the executor's tail after its last stage and TensorD's before
@@ -4499,6 +4501,14 @@ impl Services for Callbacks<'_> {
         }
         if let Some(host) = self.host {
             host.nudge();
+        }
+        if let (device_executor::Kind::Preview, Some(preview)) = (frame.kind, &frame.preview) {
+            if frame.request_id.is_empty() || frame.request_id == self.id {
+                if let Err(error) = self.engine.observe_preview(self.id, preview) {
+                    tracing::warn!("run {}: its preview: {error}", self.id);
+                }
+            }
+            return;
         }
         crate::calls::observe(self.engine, self.id, &mut self.seen, frame, self.caller);
     }

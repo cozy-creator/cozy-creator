@@ -70,6 +70,9 @@ pub mod path {
     pub const CANCEL: &str = "/v1/runs/{id}/cancel";
     /// `GET` with `Range` and `If-Match`; `?index=&member=`.
     pub const OUTPUT: &str = "/v1/runs/{id}/outputs/{output}";
+    /// `GET`: the run's newest preview (cr-282), `ETag: "p<n>"`, its step in `Cozy-Preview-Step`; 204
+    /// while it has none. Each ask makes the run's executor make them for a while.
+    pub const PREVIEW: &str = "/v1/runs/{id}/preview";
     /// `GET` with `?tail=`.
     pub const LOG: &str = "/v1/logs/{name}";
     /// `PUT` with `Content-Range`; `GET` as SSE, what its upload holds; `{digest}` is `sha256:<hex>`.
@@ -81,6 +84,9 @@ pub mod path {
     /// Remove one repository's locally cached model copies; never changes its origin.
     pub const MODELS_REMOVE: &str = "/v1/models/remove";
 }
+
+/// A preview's step, `<position>/<total>` (`path::PREVIEW`).
+pub const PREVIEW_STEP: &str = "cozy-preview-step";
 
 /// Remove all locally cached releases and lanes of one model repository.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -649,6 +655,13 @@ pub struct Progress {
     /// How far this stage is, when it says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_fraction: Option<f64>,
+    /// The number of the run's newest preview (`path::PREVIEW`), from 1; 0: none.
+    #[serde(skip_serializing_if = "no_preview")]
+    pub preview: u64,
+}
+
+fn no_preview(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A weights output's commit: `revision` (`sha256:<tree>`) of `repo_id`, in `lane`.

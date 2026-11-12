@@ -648,6 +648,9 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
     if let Some(overall) = seen.overall(engine, id, frame) {
         payload["overall_fraction"] = overall.into();
     }
+    if let Some(preview) = engine.preview_number(id) {
+        payload["preview"] = preview.into();
+    }
     let call = frame.call_request.as_deref().filter(|call| !call.is_empty());
     match (call, frame.position, frame.step_ms.filter(|ms| *ms > 0.0)) {
         (Some(call), ..) => {

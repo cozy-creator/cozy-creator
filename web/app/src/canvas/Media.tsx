@@ -530,6 +530,59 @@ function OnItsWay({ view, name, number }: { view: ElementView; name: string; num
   return <Progress veil={making} fraction={run?.progress?.done_fraction ?? undefined} says={says || undefined} />
 }
 
+/** How often a rendering box asks its run's machine for a preview while none comes: the machine makes them only while asked. */
+const PREVIEW_ASK_MS = 8000
+
+/** What its run is making, faded under how far it's got (cr-282): the newest picture its machine made of the latents. Asked for as
+ *  each new one is made, and every few seconds while none is, which is what keeps the machine making them; an answer with no new
+ *  one leaves the last in place. The take replaces it. */
+function LatentPreview({ view, number }: { view: ElementView; number: number }) {
+  const { client } = useConnection()
+  const later = number !== view.run?.number
+  const { data } = useQuery({ ...runQuery(client, number), enabled: later })
+  const run = later ? data : view.run
+  const running = run?.status === "in_progress" && run.machine_state !== "queued"
+  const newest = run?.progress?.preview ?? 0
+  const [ask, setAsk] = useState(0)
+  const [shown, setShown] = useState<{ url: string; tag: string }>()
+  const held = useRef<{ url: string; tag: string }>(undefined)
+  useEffect(() => {
+    if (running) setAsk((n) => n + 1)
+  }, [running, newest])
+  useEffect(() => {
+    if (!running) return
+    const timer = setInterval(() => setAsk((n) => n + 1), PREVIEW_ASK_MS)
+    return () => clearInterval(timer)
+  }, [running])
+  useEffect(() => {
+    if (!running || !ask) return
+    const asked = new AbortController()
+    const tag = held.current?.tag
+    void (async () => {
+      const response = await client.transport.fetch(client.runPreview(number), { signal: asked.signal, headers: tag ? { "If-None-Match": tag } : {} })
+      const now = response.headers.get("etag")
+      if (response.status !== 200 || !now || now === tag) return
+      const picture = { url: URL.createObjectURL(await response.blob()), tag: now }
+      if (held.current) URL.revokeObjectURL(held.current.url)
+      held.current = picture
+      setShown(picture)
+    })().catch(() => {})
+    return () => asked.abort()
+  }, [client, number, running, ask])
+  useEffect(
+    () => () => {
+      if (held.current) URL.revokeObjectURL(held.current.url)
+    },
+    [],
+  )
+  if (!shown) return null
+  return (
+    <div className="latent-preview" data-preview={shown.tag}>
+      <img src={shown.url} alt="" draggable={false} />
+    </div>
+  )
+}
+
 /** The picture in a box's frame, one take's alone. At rest, as wide as it's drawn, in line with the rest. Open, its small thumbnail at once, the one
  *  its tile and its box at rest already have, scaled up, and its own resolution over it as soon as that's decoded. Another take's picture is
  *  never what stands in. */
@@ -705,6 +758,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {view.glimpse && !(asset?.kind === "image" && shown) && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
       {busy && view.viewed === undefined && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
+      {busy && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {busy && <OnItsWay view={view} name={name} number={run} />}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
