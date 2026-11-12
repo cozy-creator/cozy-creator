@@ -370,12 +370,13 @@ pub(crate) fn module(python: &Path, module: &str) -> io::Result<Command> {
 }
 
 #[cfg(unix)]
-pub(crate) fn private_trampoline(python: &Path) -> io::Result<Command> {
+pub(crate) fn private_trampoline(python: &Path, scope: Option<&platform::contain::Scope>) -> io::Result<Command> {
     let mut command = module(python, "cozy_runtime.internal.trampoline")?;
-    command.args(["--expect-parent", &std::process::id().to_string(), "--oom-adj", "1000", "--scope-backend", "inherit", "--"]).arg(python).process_group(0);
+    command.args(["--expect-parent", &std::process::id().to_string(), "--oom-adj", "1000"]);
+    command.args(scope.map_or_else(|| vec!["--scope-backend".into(), "inherit".into()], platform::contain::Scope::trampoline_args)).arg("--").arg(python).process_group(0);
     Ok(command)
 }
 #[cfg(windows)]
-pub(crate) fn private_trampoline(_: &Path) -> io::Result<Command> {
+pub(crate) fn private_trampoline(_: &Path, _: Option<&platform::contain::Scope>) -> io::Result<Command> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "protected Runtime launch requires the native Linux backend"))
 }

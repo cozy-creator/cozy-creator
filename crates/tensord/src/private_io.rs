@@ -30,11 +30,8 @@ struct Verified {
     roots: Mutex<crate::storage::Roots>,
     execution: Mutex<Option<Arc<ProjectExecution>>>,
     sealed: std::sync::atomic::AtomicBool,
-    prepared: std::sync::atomic::AtomicBool,
     transport_prepared: std::sync::atomic::AtomicBool,
     activated: std::sync::atomic::AtomicBool,
-    public_trees: Mutex<Vec<PathBuf>>,
-    executables: Mutex<Vec<PathBuf>>,
     process_scopes: Mutex<Vec<Arc<platform::contain::Scope>>>,
     process_namespace: Mutex<Option<String>>,
 }
@@ -262,11 +259,8 @@ pub(crate) fn register(
             roots: Mutex::default(),
             execution: Mutex::default(),
             sealed: std::sync::atomic::AtomicBool::new(false),
-            prepared: std::sync::atomic::AtomicBool::new(false),
             transport_prepared: std::sync::atomic::AtomicBool::new(false),
             activated: std::sync::atomic::AtomicBool::new(false),
-            public_trees: Mutex::default(),
-            executables: Mutex::default(),
             process_scopes: Mutex::default(),
             process_namespace: Mutex::default(),
         }),
@@ -558,7 +552,7 @@ pub(crate) fn new_process_scope() -> io::Result<Arc<platform::contain::Scope>> {
     let scope = current().ok_or_else(denied)?;
     let verified = verified_scope(&scope)?;
     let namespace = verified.process_namespace.lock().unwrap().clone().ok_or_else(denied)?;
-    Ok(Arc::new(platform::contain::Scope::create(&namespace)?))
+    Ok(Arc::new(platform::contain::Scope::inherited(&namespace)?))
 }
 
 /// Known IPC endpoints exist before spawn, so the policy can review their native identity.
@@ -591,58 +585,19 @@ pub(crate) fn command_io(command: &mut std::process::Command, input: bool, outpu
     Ok(Some(pipes))
 }
 
-/// Only machine-owned SDK resources are granted beside the project's tree. Provider model
-/// paths and source JSON never grant global filesystem authority.
-fn native_resources(scope: &LocalPrivateStorage, command: &std::process::Command, inherited: Vec<platform::private_exec::PrivateDescriptor>) -> io::Result<platform::private_exec::PrivateResources> {
-    use platform::private_exec::PrivateResources;
-    let verified = verified_scope(scope)?;
-    let root = resolve(scope)?.view_root;
-    let mut resources = PrivateResources { project_root: File::open(&root)?, read_only_trees: vec![], read_only_files: vec![], executables: vec![], devices: vec![], inherited };
-    for path in ["/usr/lib", "/usr/lib64", "/lib", "/lib64", "/usr/local/lib", "/usr/share/zoneinfo", "/usr/share/ca-certificates", "/etc/ssl/certs", "/sys/devices/system/cpu"] {
-        if std::path::Path::new(path).is_dir() { resources.read_only_trees.push(File::open(path)?); }
-    }
-    for path in ["/etc/ld.so.cache", "/etc/localtime", "/etc/nsswitch.conf", "/etc/resolv.conf", "/etc/hosts", "/etc/gai.conf", "/proc/cpuinfo", "/proc/meminfo"] {
-        if std::path::Path::new(path).is_file() { resources.read_only_files.push(File::open(path)?); }
-    }
-    let public = verified.public_trees.lock().unwrap().clone();
-    for path in &public { if path.is_dir() { resources.read_only_trees.push(File::open(path)?); } else if path.is_file() { resources.read_only_files.push(File::open(path)?); } }
-    let mut executables: Vec<PathBuf> = ["/usr/bin/true", "/bin/true", "/bin/sh", "/usr/bin/env", "/lib64/ld-linux-x86-64.so.2", "/lib/ld-linux-aarch64.so.1"].into_iter().filter_map(|path| fs::canonicalize(path).ok()).collect();
-    executables.extend(verified.executables.lock().unwrap().clone());
-    let program = fs::canonicalize(command.get_program())?;
-    if !program.starts_with(&root) && !executables.contains(&program) && !public.iter().any(|tree| program.starts_with(tree)) {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the executable is not a reviewed project or SDK resource"));
-    }
-    executables.push(program);
-    for path in executables { resources.executables.push(File::open(path)?); }
-    for path in ["/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"] { resources.devices.push(File::options().read(true).write(true).open(path)?); }
-    Ok(resources)
-}
-
+/// Managed process setup only: descriptor inheritance and basic no-Cozy-core defense.
+/// Deliberate custom Python exports and OS-owned core/swap are not an OS sandbox guarantee.
 pub(crate) fn apply_native(command: &mut std::process::Command, io: Option<&mut CommandIo>, process_scope: Option<&Arc<platform::contain::Scope>>) -> io::Result<()> {
-    let Some(scope) = current() else { return Ok(()) };
+    if current().is_none() { return Ok(()); }
     let inherited = io.map(|pipes| std::mem::take(&mut pipes.inherited)).unwrap_or_default();
-    let policy = platform::private_exec::prepare_project_writes(native_resources(&scope, command, inherited)?)?;
-    let process_scope = process_scope.ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "project command has no kernel lifecycle scope"))?;
-    policy.apply_in_scope(command, process_scope)?;
-    verified_scope(&scope)?.process_scopes.lock().unwrap().push(process_scope.clone());
+    if let Some(scope) = process_scope { command.envs(scope.environment()); }
+    platform::private_exec::prepare_managed_child(command, inherited)?;
+    if let Some(process_scope) = process_scope { let scope=current().ok_or_else(denied)?; verified_scope(&scope)?.process_scopes.lock().unwrap().push(process_scope.clone()); }
     Ok(())
 }
-
-/// The no-payload helper proves installation, including seccomp, before any input is accepted.
-pub(crate) fn probe_native(scope: &LocalPrivateStorage) -> io::Result<()> {
-    let verified = verified_scope(scope)?;
-    if verified.prepared.load(std::sync::atomic::Ordering::Acquire) { return Ok(()); }
-    let mut command = std::process::Command::new("/usr/bin/true");
-    command.env_clear().stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    let process_scope = new_process_scope()?;
-    apply_native(&mut command, None, Some(&process_scope))?;
-    let status = command.status()?;
-    drop(command);
-    process_scope.end()?;
-    if !platform::private_exec::project_scope_quiescent(&process_scope)? { return Err(io::Error::new(io::ErrorKind::ResourceBusy, "project lifecycle probe has not exited")); }
-    if !status.success() { return Err(io::Error::new(io::ErrorKind::Unsupported, "native project policy installation failed")); }
-    verified.prepared.store(true, std::sync::atomic::Ordering::Release);
-    Ok(())
+/// Parent/process semantics only; no filesystem-ABI or piped-kernel-handler admission gate.
+pub(crate) fn probe_native(_: &LocalPrivateStorage) -> io::Result<()> {
+    platform::private_exec::disable_project_parent_dumps().map_err(io::Error::from)
 }
 
 pub(crate) fn transport_capabilities(bytes: &[u8]) -> io::Result<()> {
@@ -679,17 +634,6 @@ pub(crate) fn probe_runtime(python: &std::path::Path) -> io::Result<()> {
 pub(crate) fn probe_transport(scope: &LocalPrivateStorage, ordinary: &crate::published::Publisher, python: &std::path::Path) -> io::Result<()> {
     let verified = verified_scope(scope)?;
     if verified.transport_prepared.load(std::sync::atomic::Ordering::Acquire) { return Ok(()); }
-    let mut public = ordinary.public_sdk_trees();
-    let environment = python.parent().and_then(std::path::Path::parent).ok_or_else(denied)?.to_owned();
-    public.push(environment);
-    let real_python = fs::canonicalize(python)?;
-    if let Some(base) = real_python.parent().and_then(std::path::Path::parent) {
-        if base.join("lib").is_dir() { public.push(base.join("lib")); }
-    }
-    *verified.public_trees.lock().unwrap() = public;
-    let mut executables = ordinary.sdk_executables();
-    executables.push(real_python);
-    *verified.executables.lock().unwrap() = executables;
     let root = root(scope)?;
     let probe_root = root.join("probes").join(crate::uuid::simple());
     let mut seal = crate::launch_identity::Seal::prepare(&root, &crate::uuid::simple(), "project-probe", "")?;

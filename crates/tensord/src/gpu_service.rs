@@ -963,7 +963,7 @@ impl Pool {
         // Weight sources and output transport can retain many descriptors; executors inherit
         // this process limit even though GPU handles no longer cross the seam.
         platform::process::raise_fd_limit();
-        crate::process::keep_cores();
+        // Cozy does not enable or collect executor cores; OS crash policy is external.
         let envelope = config.envelope();
         let incarnation = crate::uuid::simple();
         crate::launch_identity::remove_stale_jit(root, &incarnation);
@@ -4002,7 +4002,7 @@ fn with_end(error: io::Error, ended: &device_executor::Ended, stderr: &str) -> i
     let oom = false;
     let crash = signal.and_then(|signal| crashed(signal, stderr));
     if crash.is_some() {
-        crate::process::kept_core(&ended.status);
+        // No automatic Cozy core capture or rotation.
     }
     let why = match (oom, &crash) {
         (true, _) => host_out_of_memory(),

@@ -409,8 +409,6 @@ impl Publisher {
         Ok(python)
     }
     pub(crate) fn process_namespace(&self) -> &str { &self.scope_namespace }
-    pub(crate) fn public_sdk_trees(&self) -> Vec<PathBuf> { self.sdk.find_links.iter().cloned().chain(self.sdk.torch.base()).collect() }
-    pub(crate) fn sdk_executables(&self) -> Vec<PathBuf> { std::fs::canonicalize(self.sdk.uv.executable()).into_iter().collect() }
     pub(crate) fn origin_machine(&self) -> Arc<Machine> { self.machine.clone() }
     /// This machine's PyTorch layer: its base's, read once. A machine with no image installs its
     /// own base the first time a package needs one, at the version `hub` names (`follow`), else
