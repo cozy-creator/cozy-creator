@@ -97,7 +97,8 @@ impl Rc {
             return Ok(sums.clone());
         }
         let rc = open();
-        let (runtime, creator) = tokio::try_join!(text(&prerelease::rc("cozy-runtime", &rc)), text(&prerelease::rc("cozy-creator", &rc)))?;
+        let (runtime, creator) = (prerelease::rc("cozy-runtime", &rc), prerelease::rc("cozy-creator", &rc));
+        let (runtime, creator) = tokio::try_join!(text(&runtime), text(&creator))?;
         let sums = Arc::new(Sums { rc, runtime, creator });
         *read = Some((Instant::now(), sums.clone()));
         *self.last.lock().expect("rc lock") = Some(sums.clone());
