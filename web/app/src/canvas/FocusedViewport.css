@@ -71,6 +71,16 @@
   padding: 8px 14px;
   font-size: 19px;
 }
+/* Its × as tall as Back to canvas, its cross readable (cl-963). */
+.focus-heading > .iconb {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+}
+.focus-heading > .iconb .icon {
+  width: 24px;
+  height: 24px;
+}
 .focus-body {
   flex: 1;
   min-width: 0;
@@ -162,6 +172,18 @@
 }
 .focus-card .image-tool-name {
   font-size: 20px;
+}
+/* Its trash can a control of its own: 36 square, the can readable (cl-963). */
+.focus-card .image-tool > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+}
+.focus-card .image-tool .icon {
+  width: 20px;
+  height: 20px;
 }
 .focus-card .image-models {
   min-height: 40px;

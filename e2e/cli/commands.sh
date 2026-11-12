@@ -85,9 +85,12 @@ cozy --json model show zhengpeng7/birefnet --lane "$lane" > "$OUT/model-show-lan
   && J --arg lane "$lane" '(.lanes | length) == 1 and .lanes[0].lane == $lane' "$OUT/model-show-lane.json" || check "model show --lane $lane: not that one lane"
 cozy model show zhengpeng7/birefnet > "$OUT/model-show.txt" 2>&1 && grep -Eq '^checkpoint +sha256:' "$OUT/model-show.txt" \
   || check "model show: no checkpoint line: $(head -c 300 "$OUT/model-show.txt")"
-lora=$(cozy --json lora ls --limit 1 | jq -r '.models[0].model // empty') || true
+# The H3 LoRA isolated.sh seeds as musubi-tuner writes it: lora_down/lora_up and .alpha of one block.
+lora=alissonerdx/minimax-h3-vfx-edit
+cozy --json lora ls --limit 100 > "$OUT/lora-ls.json" && J --arg m "$lora" 'any(.models[]; .model == $m)' "$OUT/lora-ls.json" \
+  || check "lora ls: $lora not listed: $(head -c 300 "$OUT/lora-ls.json")"
 cozy --json lora show "$lora" > "$OUT/lora-show.json" && J 'any(.lanes[].components[]; .lora.modules > 0)' "$OUT/lora-show.json" \
-  || check "lora show ${lora:-<none listed>}: no component with LoRA modules: $(head -c 300 "$OUT/lora-show.json")"
+  || check "lora show $lora: no component with LoRA modules: $(head -c 300 "$OUT/lora-show.json")"
 lora_lane=$(jq -r '.lanes[0].lane // empty' "$OUT/lora-show.json") || true
 cozy --json lora show "$lora" --lane "$lora_lane" > "$OUT/lora-show-lane.json" && J '(.lanes | length) == 1' "$OUT/lora-show-lane.json" \
   || check "lora show $lora --lane $lora_lane: not one lane"

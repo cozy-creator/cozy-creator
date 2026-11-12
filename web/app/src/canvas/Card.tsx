@@ -23,7 +23,7 @@ import { PickUpHere } from "./PickUpHere"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
 import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
-import { TimelineControl } from "./timeline/TimelineControl"
+import { VideoEditor } from "./timeline/VideoEditor"
 import { AddOns } from "./AddOns"
 import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
@@ -871,6 +871,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   // On the canvas a box is its name, its picture or its text, its state and an X. All else comes with a click, so 300 boxes cost little.
   const editing = here && (asset?.kind === "image" || (asset?.kind === "video" && !asset.timeline) ? Boolean(view.hereWords) : asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
   const looking = here && asset?.kind !== "image" && !view.hereWords && paints(view, tools)
+  // An Edit in Focus is a video editor: its cut playing in the frame, its timeline under it, its versions beside it (cl-957).
+  const cut = focused && Boolean(asset?.timeline)
   // Its fields show under it, Render first (cl-938).
   const fielded = here && Boolean(asset?.tool) && (asset?.kind !== "image" || editing) && !(asset?.kind === "video" && !asset.timeline && !editing) && !looking
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
@@ -883,12 +885,12 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const imageHeight = width / originalAspect
   const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
   const style: CSSProperties & Record<`--${string}`, string | number> = focused
-    ? { width: "100%", "--focus-footer-room": `${!fielded ? 0 : (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline ? 320 : 220}px` }
+    ? { width: "100%", "--focus-footer-room": `${!fielded || cut ? 0 : (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline ? 320 : 220}px` }
     : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
   return (
     <div
       ref={self}
-      className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${cut ? "edits" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
       style={style}
@@ -960,10 +962,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         )}
       </div>
       )}
-      {focused && !view.placing && <FocusActions view={view} name={name} />}
-      <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text" && !(asset?.timeline && editing)} under={focused && asset?.kind === "video" && !asset.timeline && !editing ? <PickUpHere name={name} view={view} /> : undefined}>{asset?.timeline && editing ? (
-        <TimelineControl name={name} />
-      ) : (
+      {focused && !view.placing && !cut && <FocusActions view={view} name={name} />}
+      {cut ? <VideoEditor name={name} /> : <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text"} under={focused && asset?.kind === "video" && !asset.timeline && !editing ? <PickUpHere name={name} view={view} /> : undefined}>
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
           {here && !focused && !view.hereWords && asset && shownVersion?.main && (
@@ -977,7 +977,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           )}
           {asset && !view.placing && !lite && (!focused || view.hereWords) && <Corner name={name} view={view} width={width} focused={focused} />}
         </Media>
-      )}</FocusFrame>
+      </FocusFrame>}
       {rendering && <span className="render-wave" aria-hidden="true" />}
       {/* Watched, not written: orbit viewing turns on and off here too (xs-180), as in a take being written. */}
       {focused && asset?.kind === "video" && !asset.timeline && !editing && <OrbitToggle view={view} name={name} />}
@@ -991,12 +991,11 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           <Asking name={name} fit={view.asking.fit} />
         </div>
       )}
-      {here && asset && asset.kind !== "text" && !asset.timeline && <Takes view={view} name={name} width={width} side focused={focused} />}
-      {here && asset && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
+      {here && asset && asset.kind !== "text" && (!asset.timeline || cut) && <Takes view={view} name={name} width={width} side focused={focused} />}
+      {here && asset && !cut && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
             {(asset.kind !== "text" || asset.tool) && <>
-              {asset.timeline && <Takes view={view} name={name} width={width} />}
               {asset.kind !== "image" && !asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}
               {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}

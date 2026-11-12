@@ -113,6 +113,7 @@ export function Thumb({
   sha256,
   cardWidth,
   strip,
+  wave,
   exact,
   className,
   frame,
@@ -123,6 +124,8 @@ export function Thumb({
   sha256: string
   cardWidth: number
   strip?: number
+  /** A video's sound as a waveform, rather than its picture. */
+  wave?: boolean
   /** `cardWidth` is the size wanted, not a card's: a small strip stays small. */
   exact?: boolean
   className?: string
@@ -140,7 +143,7 @@ export function Thumb({
   const projectId = store.projectId
   const zoom = useSignal(store.sharpness)
   const width = exact ? cardWidth : Math.max(thumbWidth(cardWidth, zoom), strip ? 0 : (widest.get(sha256) ?? 0))
-  const path = projectId ? client.thumb(projectId, sha256, width, strip) : undefined
+  const path = projectId ? client.thumb(projectId, sha256, width, strip, wave) : undefined
   useEffect(() => {
     if (!path) return
     let live = true
@@ -162,7 +165,7 @@ export function Thumb({
     }
   }, [client, path])
   // A strip that can't be made leaves the poster under it as it was.
-  if (path && failedPath === path) return strip ? null : <span className="media-note">No preview</span>
+  if (path && failedPath === path) return strip || wave ? null : <span className="media-note">No preview</span>
   if (!image || failedPath === image.path) return null
   return (
     <img
@@ -183,7 +186,7 @@ export function Thumb({
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
         arrived.add(`${sha256}:${width}`)
-        if (!strip) widest.set(sha256, Math.max(width, widest.get(sha256) ?? 0))
+        if (!strip && !wave) widest.set(sha256, Math.max(width, widest.get(sha256) ?? 0))
         onShown?.()
       }}
     />
