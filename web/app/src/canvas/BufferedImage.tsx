@@ -10,8 +10,11 @@ const LOADING = 2
 const requests: { urgent(): boolean; start(): void }[] = []
 let loading = 0
 function nextRequest() {
-  requests.sort((a, b) => Number(b.urgent()) - Number(a.urgent()))
-  while (loading < LOADING && requests.length) requests.shift()!.start()
+  // The urgent first, else the oldest: one pass a start, never a sort of every waiting request each time one comes or goes.
+  while (loading < LOADING && requests.length) {
+    const at = requests.findIndex((request) => request.urgent())
+    requests.splice(Math.max(at, 0), 1)[0].start()
+  }
 }
 function schedule(start: (done: () => void) => void, urgent: () => boolean): () => void {
   let running = false
@@ -119,7 +122,9 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
     const unwatch = store.sharpness.subscribe(scheduleMeasure)
     window.addEventListener("resize", scheduleMeasure)
     window.visualViewport?.addEventListener("resize", scheduleMeasure)
-    measure()
+    // Measured in the next frame with every other box's, never here: a layout read in each mount's effect, between other boxes'
+    // style writes, laid the page out again once a box.
+    scheduleMeasure()
     return () => {
       if (frame) cancelAnimationFrame(frame)
       resize.disconnect()
