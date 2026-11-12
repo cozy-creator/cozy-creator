@@ -10,7 +10,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { mkdirSync, writeFileSync } = require('fs');
 const { dirname, join } = require('path');
 const { tmpdir } = require('os');
-const { calcifer, closeBox, lastLook, lookAt, openBox, png, projectAction, projectFromPage, renderOf, signIn, STEP_MS, until } = require('./page');
+const { boxOf, calcifer, closeBox, lastLook, lookAt, openBox, png, projectAction, projectFromPage, renderOf, signIn, STEP_MS, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -99,17 +99,22 @@ const LOOK = (name) => {
   const had = await versions();
   const phases = process.env.SHOT ? join(dirname(process.env.SHOT), 'phases') : null;
   if (phases) mkdirSync(phases, { recursive: true });
+  // Asked on a computer with no GPU (cl-897), Rent a GPU or Run here anyway: as localfit.js does, left, then Run here anyway on the box.
   await openBox(page, NAME);
-  await (await renderOf(page, NAME)).click();
-  const focus = page.locator(`.card.here[data-asset="${NAME}"]`).first();
-  // A runner has no GPU: the box asks once, Rent a GPU or Run here anyway (cl-897); here, as a person on it would.
-  const anyway = page.locator('button:has-text("Run here anyway")').first();
-  if (await anyway.waitFor({ timeout: 15_000 }).then(() => true, () => false)) await anyway.click();
-  const faced = await focus.locator('.run-face').first().waitFor({ timeout: 60_000 }).then(() => true, () => false);
-  if (phases) await focus.screenshot({ path: join(phases, '00-focus.png') }).catch(() => {});
-  seen.focus_face = faced;
+  await until('its Render pressed', async () => (await renderOf(page, NAME)).click({ timeout: 5000 }).then(() => true, () => false), Boolean);
+  const asked = await page.locator('.status.asking').first().waitFor({ timeout: 60_000 }).then(() => true, () => false);
   await closeBox(page);
-  const box = page.locator('.react-flow__node').filter({ has: page.locator(`.card[data-asset="${NAME}"]`) }).first();
+  const box = boxOf(page, NAME);
+  if (asked) await box.locator('button:has-text("Run here anyway")').first().click();
+  seen.asked = asked;
+  // Its Focus view once, as soon as its face shows: then back on the canvas, where each phase is kept.
+  const faced = await until('its face', look, (now) => Boolean(now.face), 120_000).then(() => true, () => false);
+  seen.focus_face = faced;
+  if (faced && phases) {
+    await openBox(page, NAME);
+    await page.locator(`.card.here[data-asset="${NAME}"]`).first().screenshot({ path: join(phases, '00-focus.png') }).catch(() => {});
+    await closeBox(page);
+  }
   let last = '';
   let kept = 0;
   const said = { warnings: new Set(), notes: new Set(), faces: new Set(), warned: false, failed: false };
