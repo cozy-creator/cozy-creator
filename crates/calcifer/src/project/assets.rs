@@ -94,6 +94,9 @@ pub(super) async fn create(
     let said = said.or(read_kind).or_else(|| plain.as_ref().and_then(|plain| folder.reading_lock(|lock| lock.makes.get(plain).cloned()).ok().flatten()));
     let kind = if intrinsic_edit { Some("video") } else if text_asset { Some(format::TEXT) } else { said.as_deref() };
     if let Some(kind) = kind { asked.fields.insert(format::NODE_KIND.to_owned(), Value::String(kind.to_owned())); }
+    if !no_tool && ["models", "lora"].iter().any(|field| asked.fields.get(*field).is_some_and(|value| !value.is_null())) {
+        crate::toolbox::validate_models(&api, &asked.tool, &folder.dir, &asked.fields).await.map_err(Refusal)?;
+    }
     let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| read_name.as_deref().and_then(format::plain_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { said.as_deref().unwrap_or("asset") }.to_owned());
     let made = folder.act(|| {
         // Chosen in the transaction that writes it: no other write comes between.
@@ -195,6 +198,23 @@ pub(super) async fn patch(
     format::node_kind(asked.fields.get(format::NODE_KIND)).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
+    let validated_tool = if ["models", "lora"].iter().any(|field| asked.fields.get(*field).is_some_and(|value| !value.is_null())) {
+        let written = folder.written().map_err(Refusal)?;
+        let held = written.get(&name).ok_or_else(|| Refusal(own_lines(&name)))?;
+        let current = held.get("tool").and_then(Value::as_str).unwrap_or_default();
+        let target = asked.tool.as_deref().unwrap_or(current);
+        if target.is_empty() {
+            None
+        } else {
+            let mut fields = held.map();
+            for (field, value) in &asked.fields {
+                if value.is_null() { fields.remove(field); }
+                else { fields.insert(field.clone(), value.clone()); }
+            }
+            crate::toolbox::validate_models(&api, target, &folder.dir, &fields).await.map_err(Refusal)?;
+            Some(target.to_owned())
+        }
+    } else { None };
     let holds = match &asked.tool {
         Some(tool) => Some(pictures(folder, &name, tool, false).map_err(Refusal)?),
         None => None,
@@ -220,6 +240,9 @@ pub(super) async fn patch(
             None => None,
         };
         let written = folder.written()?;
+        if asked.tool.is_none() && validated_tool.as_ref().is_some_and(|target| written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str) != Some(target.as_str())) {
+            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name}'s tool changed while its model choices were checked")).remedy("read the node again before choosing its models"));
+        }
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
