@@ -36,7 +36,7 @@ if [ "$SHARD" = containment ] || [ "$SHARD" = containment-web ]; then
 import hashlib, json, sys
 from pathlib import Path
 binary, ready = map(Path, sys.argv[1:3])
-ready.write_text(json.dumps({"ready": True, "native_execution": sys.argv[3] == "containment", "development_web": True, "allow_host_core_pattern_change": True, "sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest()}))
+ready.write_text(json.dumps({"ready": True, "native_execution": sys.argv[3] == "containment", "development_web": True, "sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest()}))
 PY
   exec xvfb-run -a uv run --no-project "$here/containment/run.py" \
     --ready-file "$OUT/containment/ready.json" --out "$OUT/containment"

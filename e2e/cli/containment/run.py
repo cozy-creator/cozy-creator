@@ -26,7 +26,7 @@ from urllib.parse import quote
 
 from common import Failure, Native, Proof, Receipt, alive, birth, kill_exact, project_route, require, sha, until
 from scan import Scanner, tmpfs
-from native_execution import CorePattern, qualify as qualify_native
+from native_execution import qualify as qualify_native
 from development import Development
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -120,14 +120,10 @@ def main() -> int:
             roots.append(Path(os.environ[name]))
     proof: Proof | None = None
     foreign: ForeignBrowsers | None = None
-    core: CorePattern | None = None
     development: Development | None = None
     projects: list[dict] = []
     phase = "start"
     try:
-        if ready.get("allow_host_core_pattern_change") is True:
-            core = CorePattern(ready)
-            core.set(b"core")
         if ready.get("development_web") is True:
             phase = "development_start"
             development = Development()
@@ -168,9 +164,9 @@ def main() -> int:
             imported = native.call("POST", base + "/imports", {"source": digest, "name": picture_asset, "exact": True, "at": {"x": 400, "y": 0, "w": 320}})
             projects.append({"folder": folder, "view": view, "id": opened["id"], "credential": credential, "marker": marker, "edit": edited, "asset": asset, "path": imported["path"], "digest": digest})
         a, b = projects
-        if core is not None:
-            phase = "native_execution"
-            qualify_native(native, scanner, a, receipt, core)
+        if ready.get("native_execution") is True:
+            phase = "managed_execution"
+            qualify_native(native, scanner, a, receipt)
         phase = "browser_open"
         foreign = ForeignBrowsers()
         for project in projects:
@@ -339,16 +335,7 @@ def main() -> int:
                 receipt.value["complete"] = False
                 receipt.save()
                 raise
-            finally:
-                if core is not None:
-                    try:
-                        core.restore()
-                        receipt.add("host_core_restoration", restored=True)
-                    except BaseException:
-                        receipt.value["host_core_restore_failed"] = True
-                        receipt.value["complete"] = False
-                        receipt.save()
-                        raise
+
 
 
 if __name__ == "__main__":
