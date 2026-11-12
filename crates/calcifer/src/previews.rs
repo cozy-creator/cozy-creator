@@ -43,9 +43,10 @@ pub(crate) async fn serve(
     let link = match project {
         Some(project) => {
             let owner = api.projects.store(&api, project).await.map_err(Refusal)?;
-            crate::private_io::check_project_placement(owner.project_id(), owner.root(), &[::api::calcifer::On::Machine(machine)])
+            let (project_id, root) = owner.execution_scope();
+            crate::private_io::check_project_placement(project_id, root, &[::api::calcifer::On::Machine(machine)])
                 .map_err(Refusal)?;
-            let scope = crate::private_io::scope_for_project(owner.project_id(), owner.root()).map_err(Refusal)?;
+            let scope = crate::private_io::scope_for_project(project_id, root).map_err(Refusal)?;
             link.with_private(scope)
         }
         None => link,
