@@ -27,6 +27,7 @@ struct Verified {
     actor: String,
     token_hash: [u8; 32],
     store: Mutex<Option<Arc<Store>>>,
+    area: Mutex<Option<File>>,
     roots: Mutex<crate::storage::Roots>,
     execution: Mutex<Option<Arc<ProjectExecution>>>,
     sealed: std::sync::atomic::AtomicBool,
@@ -256,6 +257,7 @@ pub(crate) fn register(
             actor: actor.to_owned(),
             token_hash,
             store: Mutex::new(None),
+            area: Mutex::new(None),
             roots: Mutex::default(),
             execution: Mutex::default(),
             sealed: std::sync::atomic::AtomicBool::new(false),
@@ -285,10 +287,26 @@ pub(crate) fn is_private_path(path: &std::path::Path) -> bool {
 }
 
 pub(crate) fn root(descriptor: &LocalPrivateStorage) -> io::Result<PathBuf> {
-    let root = resolve(descriptor)?.view_root.join(AREA);
-    fs::create_dir_all(&root)?;
-    platform::durable::set_mode(&root, 0o700)?;
+    let scope = verified_scope(descriptor)?;
+    let root = scope.descriptor.view_root.join(AREA);
+    match fs::create_dir(&root) { Ok(()) => (), Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (), Err(error) => return Err(error) }
+    let metadata = fs::symlink_metadata(&root)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() || platform::durable::canonical(&root)? != root { return Err(denied()); }
+    let file = platform::durable::open_nofollow(&root, &fs::OpenOptions::new().read(true))?;
+    platform::durable::set_file_mode(&file, 0o700)?;
+    let mut pinned = scope.area.lock().unwrap();
+    if let Some(known) = pinned.as_ref() {
+        if platform::durable::FileId::of(known)? != platform::durable::FileId::of(&file)? { return Err(denied()); }
+    } else { *pinned = Some(file); }
     Ok(root)
+}
+fn owned_directory(path: &std::path::Path) -> io::Result<()> {
+    match fs::create_dir(path) { Ok(()) => (), Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (), Err(error) => return Err(error) }
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || platform::durable::canonical(path)? != path { return Err(denied()); }
+    let directory = platform::durable::open_nofollow(path, &fs::OpenOptions::new().read(true))?;
+    platform::durable::set_file_mode(&directory, 0o700)?;
+    Ok(())
 }
 
 /// Project objects, provider imports and derived views use this owned store. A source is
@@ -296,6 +314,7 @@ pub(crate) fn root(descriptor: &LocalPrivateStorage) -> io::Result<PathBuf> {
 pub(crate) fn store(descriptor: &LocalPrivateStorage) -> io::Result<Arc<Store>> {
     let scope = verified_scope(descriptor)?;
     let path = root(&scope.descriptor)?.join("objects");
+    owned_directory(&path)?;
     let mut held = scope.store.lock().unwrap();
     if let Some(store) = held.as_ref() {
         return Ok(store.clone());
@@ -361,6 +380,7 @@ pub(crate) fn close(descriptor: &LocalPrivateStorage, actor: &str) -> io::Result
     *scope.roots.lock().unwrap() = crate::storage::Roots::default();
     *store = None;
     drop(store);
+    *scope.area.lock().unwrap() = None;
     scope.sealed.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
 }
@@ -470,7 +490,7 @@ pub(crate) fn unscoped_key(key: &str) -> String {
 pub(crate) fn cache_root(ordinary: PathBuf, name: &str) -> io::Result<PathBuf> {
     let Some(scope) = current() else { return Ok(ordinary) };
     let path = root(&scope)?.join(name);
-    fs::create_dir_all(&path)?;
+    owned_directory(&path)?;
     Ok(path)
 }
 

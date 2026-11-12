@@ -264,7 +264,7 @@ fn footprint(
             match key {
                 "generation" => found.generations.push(text.into()),
                 "construction" | "executor" => found.constructions.push(text.into()),
-                "manifest" | "snapshot" | "checkpoint" | "header"
+                "manifest" | "snapshot" | "checkpoint" | "header" | "sha256"
                     if text.trim_start_matches("sha256:").len() == 64 =>
                 {
                     found.manifests.push(text.into())
@@ -305,6 +305,15 @@ fn footprint(
     let mut found = LegacyFootprint::default();
     found.request_ids = requests;
     found.execution_ids = execution_ids;
+    for table in tables.iter().filter(|table| table.name == "run_objects") {
+        let sha = table.column("sha256")?;
+        found.manifests.extend(
+            table
+                .rows
+                .iter()
+                .filter_map(|row| row[sha].text().map(str::to_owned)),
+        );
+    }
     for table in tables {
         for row in &table.rows {
             for cell in row {
