@@ -1,5 +1,5 @@
 # render-placement (cl-774, Paul 11-05: "If the end user rented a GPU, presumably they want to use it" and "Place it on whatever machine
-# will get the job done as fast as possible"): a render the page asks with its Run on at Automatically (e2e/page.py `--on auto`), on a
+# will get the job done as fast as possible"): a render the page asks with no machine green (e2e/page.py `--on auto`), on a
 # runner with no GPU and one rental: the rental and this computer, this computer last. Weightless local code, so the walk's choice is all
 # that's measured:
 #   - idle, nothing measured anywhere: a tie, which the rental takes;

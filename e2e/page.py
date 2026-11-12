@@ -68,7 +68,7 @@ def read(folder: str) -> Json:
 
 
 def automatic(folder: str) -> list[str]:
-    """What the page sends when its Run on says Automatically (web/app CanvasHost.tsx `useMachines`): the project's machines, else every
+    """What the page sends with no machine green in its machines panel (web/app CanvasHost.tsx `useMachines`): the project's machines, else every
     rental this computer ordered that's up or booting, another computer's that's up, and this one last where it runs models."""
     chosen = cast(list[str], read(folder).get("machines", []))
     if chosen:

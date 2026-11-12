@@ -2779,57 +2779,6 @@ a.tab:hover {
   font-size: var(--small);
   color: var(--mute);
 }
-.run-on {
-  position: relative;
-  pointer-events: none;
-}
-.run-on > summary,
-.run-on > div {
-  pointer-events: auto;
-}
-.run-on > summary {
-  list-style: none;
-  cursor: pointer;
-  padding: 3px 8px;
-  border-radius: 6px;
-  background: var(--float);
-  white-space: nowrap;
-}
-.run-on > summary::-webkit-details-marker {
-  display: none;
-}
-.run-on > summary b {
-  color: var(--ink);
-  font-weight: inherit;
-}
-.run-on > div {
-  position: absolute;
-  right: 0;
-  top: calc(100% + var(--s2));
-  min-width: 160px;
-  padding: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  background: var(--float);
-  border: 1px solid var(--line);
-  border-radius: var(--round2);
-  box-shadow: 0 10px 28px var(--shadow);
-  z-index: 40;
-}
-.run-on label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 6px;
-  border-radius: 6px;
-  white-space: nowrap;
-  color: var(--ink);
-  cursor: pointer;
-}
-.run-on label:hover {
-  background: var(--tint);
-}
 /* Undo, Redo and the project's history, at the top bar's left. */
 .history-controls:empty {
   display: none;
@@ -4186,4 +4135,24 @@ input[type="checkbox"] {
   to {
     fill-opacity: 0.2;
   }
+}
+
+/* The open project's machines (Render here, cl-887): green wherever the machines panel lists them. */
+.runrow.render-here > a,
+.run-head.render-here,
+.mtab.render-here {
+  background: color-mix(in srgb, var(--cur) 14%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--cur);
+}
+.runrow.render-here > a {
+  margin: 2px 0;
+}
+.run-head.render-here {
+  padding: 4px 8px;
+  border-radius: 5px;
+}
+.tb.render-here.on {
+  background: var(--cur);
+  border-color: var(--cur);
+  color: var(--on-ember);
 }
