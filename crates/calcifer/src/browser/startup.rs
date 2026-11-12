@@ -30,13 +30,13 @@ impl Capture {
         facts.insert("browser_startup_bounded".into(), json!(metadata.len() > bytes.len() as u64));
         facts.insert("browser_startup_sha256".into(), json!(hex::encode(Sha256::digest(&bytes))));
         for (name, literals) in [
-            ("browser_startup_no_sandbox", &["No usable sandbox", "Running as root without --no-sandbox"] as &[_]),
-            ("browser_startup_no_display", &["Missing X server", "cannot open display", "Failed to open display"] as &[_]),
-            ("browser_startup_permission_denied", &["Permission denied", "Operation not permitted"] as &[_]),
-            ("browser_startup_invalid_descriptor", &["Invalid file descriptor", "Bad file descriptor", "Remote debugging pipe file descriptors are not open"] as &[_]),
-            ("browser_startup_no_space", &["No space left on device"] as &[_]),
-            ("browser_startup_namespace", &["Failed to move to new namespace", "Failed to unshare"] as &[_]),
-            ("browser_startup_crashpad", &["chrome_crashpad_handler: --database is required"] as &[_]),
+            ("browser_startup_no_sandbox", &["No usable sandbox", "Running as root without --no-sandbox"] as &[&str]),
+            ("browser_startup_no_display", &["Missing X server", "cannot open display", "Failed to open display"] as &[&str]),
+            ("browser_startup_permission_denied", &["Permission denied", "Operation not permitted"] as &[&str]),
+            ("browser_startup_invalid_descriptor", &["Invalid file descriptor", "Bad file descriptor", "Remote debugging pipe file descriptors are not open"] as &[&str]),
+            ("browser_startup_no_space", &["No space left on device"] as &[&str]),
+            ("browser_startup_namespace", &["Failed to move to new namespace", "Failed to unshare"] as &[&str]),
+            ("browser_startup_crashpad", &["chrome_crashpad_handler: --database is required"] as &[&str]),
         ] {
             facts.insert(name.into(), json!(literals.iter().any(|literal| bytes.windows(literal.len()).any(|window| window == literal.as_bytes()))));
         }
