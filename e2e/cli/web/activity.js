@@ -123,7 +123,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
       const face = document.querySelector(`.card[data-asset="${name}"] .run-face`);
       if (!face) return;
       const text = (selector) => face.querySelector(selector)?.textContent ?? '';
-      const now = { phase: face.dataset.phase, says: text('.face-state b'), stage: text('.face-stage'), left: text('.face-left'), where: text('.face-where'), detail: text('.face-detail'), bar: face.querySelector('.face-track i')?.style.transform ?? '' };
+      const now = { phase: face.dataset.phase, says: text('.face-state b'), stage: text('.face-state b'), left: text('.face-left'), where: text('.face-where'), detail: text('.face-detail'), bar: face.querySelector('.face-track i')?.style.transform ?? '' };
       const list = (said.faces[name] ??= []);
       if (JSON.stringify(list.at(-1)) !== JSON.stringify(now)) list.push(now);
     };
@@ -152,15 +152,15 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const faces = said.faces.waits ?? [];
   const firstOf = (test) => faces.findIndex(test);
   const installs = firstOf((face) => /^Installing activity_\d+/.test(face.says));
-  const tokens = firstOf((face) => face.says === 'Rewriting the prompt' && /^Rewriting the prompt · \d+ tokens$/.test(face.stage));
-  const steps = firstOf((face) => face.says === 'Denoising' && /^Segment 1 of 2 · Denoising · step \d of 4$/.test(face.stage));
-  const frames = firstOf((face) => face.says === 'Decoding video' && /^Segment 2 of 2 · Decoding video · frame \d+ of 12$/.test(face.stage));
+  const tokens = firstOf((face) => /^Rewriting the prompt · \d+ tokens$/.test(face.stage));
+  const steps = firstOf((face) => /^Segment 1 of 2 · Denoising · step \d of 4$/.test(face.stage));
+  const frames = firstOf((face) => /^Segment 2 of 2 · Decoding video · frame \d+ of 12$/.test(face.stage));
   const fraction = (face) => (face.bar ? 1 + Number(face.bar.match(/-?[\d.]+/)?.[0]) / 100 : null);
   check('face_never_wordless', faces.length > 0 && faces.every((face) => face.says.trim()), faces);
   check('face_phases_in_order', installs >= 0 && tokens > installs && steps > tokens && frames > steps, { installs, tokens, steps, frames, faces });
   // Each stage says what it counts: a decode's tokens, never steps; frames; steps only where it denoises (Paul, 11-12).
   check('face_counts_tokens_not_steps', faces.filter((face) => /Rewriting the prompt/.test(face.stage)).every((face) => /^Rewriting the prompt · \d+ tokens$/.test(face.stage)), faces);
-  check('face_denoise_only_denoising', faces.every((face) => !/denois/i.test(`${face.says} ${face.stage}`) || (face.says === 'Denoising' && /^Segment [12] of 2 · Denoising( · step \d of 4)?$/.test(face.stage || 'Segment 1 of 2 · Denoising'))), faces.filter((face) => /denois/i.test(`${face.says} ${face.stage}`)));
+  check('face_denoise_only_denoising', faces.every((face) => !/denois/i.test(`${face.says} ${face.stage}`) || /^Segment [12] of 2 · Denoising( · step \d of 4)?$/.test(face.stage)), faces.filter((face) => /denois/i.test(`${face.says} ${face.stage}`)));
   check('face_decodes_frames', faces.some((face) => /^Segment [12] of 2 · Decoding video · frame \d+ of 12$/.test(face.stage)) && !faces.some((face) => /Decoding video.*step/.test(face.stage)), faces);
   // The bar and the time left are the whole render's: in its second part the bar is past half of it, never back to a part's start.
   const second = faces.filter((face) => /^Segment 2 of 2/.test(face.stage));
@@ -241,9 +241,9 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const sayOf = (asset) => page.locator(`.card[data-asset="${asset}"] .run-face .face-state b`).first().textContent().catch(() => '');
   await projectAction(folder, 'render', 'slow', 'after', '--on', 'local', '--queue');
   const waited = await until('after waits its turn', () => sayOf('after'), (text) => /^Waits for <slow>/.test(text ?? ''), 60_000).catch((why) => String(why));
-  const rendering = await until('slow renders its steps', () => sayOf('slow'), (text) => text === 'Denoising', 120_000).catch((why) => String(why));
+  const rendering = await until('slow renders its steps', () => sayOf('slow'), (text) => /^Segment 1 of 2 · Denoising/.test(text ?? ''), 120_000).catch((why) => String(why));
   seen.cancel = { waited, rendering };
-  // Open (focus), its progress is between its name and its picture, large, and covers none of it (Paul, 11-12).
+  // Open (focus), its progress is between its name and its picture, at normal size, and covers none of it (Paul, 11-12).
   await openBox(page, 'slow');
   const above = page.locator('.focus-viewport[data-focused-asset="slow"] > .run-face.above');
   await above.waitFor().catch(() => {});
@@ -252,14 +252,14 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
     const box = (selector) => viewport?.querySelector(selector)?.getBoundingClientRect();
     const [head, face, media] = [box(':scope > .focus-heading'), box(':scope > .run-face.above'), box('.focus-body .media')];
     const says = viewport?.querySelector(':scope > .run-face.above .face-state b');
-    const stage = viewport?.querySelector(':scope > .run-face.above .face-stage')?.textContent ?? '';
+    const stage = viewport?.querySelector(':scope > .run-face.above .face-state b')?.textContent ?? '';
     const bar = viewport?.querySelector(':scope > .run-face.above .face-bar .face-track')?.getBoundingClientRect().height;
     return { head: head?.bottom, top: face?.top, bottom: face?.bottom, media: media?.top, width: face && viewport && face.width / viewport.getBoundingClientRect().width, size: says && says.getBoundingClientRect().height, bar, stage, over: viewport?.querySelectorAll('.media .run-face').length };
   });
   seen.focus = focus;
   await shot('face-focus');
   check('focus_progress_between_name_and_picture', focus.top >= focus.head - 1 && focus.bottom <= focus.media + 1 && focus.width > 0.9 && focus.over === 0, focus);
-  check('focus_progress_large', focus.size >= 24 && focus.bar >= 8, focus);
+  check('focus_progress_normal_size', focus.size >= 14 && focus.size <= 32, focus);
   // Its bar is the whole render's; the part it's in and that stage's count are on the line under it.
   check('focus_part_under_the_bar', /^Segment [12] of 2 · (Denoising|Decoding video)/.test(focus.stage), focus);
   await page.keyboard.press('Escape');
