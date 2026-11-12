@@ -1,0 +1,24 @@
+name: rc-nightly
+# Nightly, every e2e suite on the open RC's head, on Linux, macOS and Windows (Paul, 11-12; tracker cl-885): it dispatches
+# rc-e2e.yaml on the newest rc/<x.y.z>, whose pushes run it too. A schedule runs only from the default branch, so this lives
+# here.
+on:
+  schedule:
+    - cron: '0 10 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rc=$(gh api "repos/$GITHUB_REPOSITORY/branches?per_page=100" --paginate -q '.[].name' | grep -E '^rc/[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          [ -n "$rc" ] || { echo "no open rc/<x.y.z>"; exit 0; }
+          gh workflow run rc-e2e.yaml -R "$GITHUB_REPOSITORY" --ref "$rc" -f select='cli imports cpu model os:macos os:windows'
+          echo "dispatched rc-e2e.yaml on $rc" | tee -a "$GITHUB_STEP_SUMMARY"
