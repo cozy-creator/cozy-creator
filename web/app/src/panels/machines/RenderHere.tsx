@@ -48,15 +48,17 @@ export function RenderCheck({ name, called = name }: { name: string; called?: st
   const { project, known, chosen, toggle } = useRenderMachines()
   if (!project) return null
   return (
-    <input
-      type="checkbox"
-      className="render-check"
-      disabled={!known}
-      aria-label={`Render on ${called}`}
-      title="This project renders here (any checked machine, whichever finishes first)"
-      checked={chosen.includes(name)}
-      onChange={() => toggle(name)}
-    />
+    <label className="render-prefer" title="This project renders here (any checked machine, whichever finishes first)">
+      <input
+        type="checkbox"
+        className="render-check"
+        disabled={!known}
+        aria-label={`Render on ${called}`}
+        checked={chosen.includes(name)}
+        onChange={() => toggle(name)}
+      />
+      Prefer
+    </label>
   )
 }
 

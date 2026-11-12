@@ -4718,6 +4718,13 @@ p.warn.slow {
   gap: 4px 12px;
   margin-top: 4px;
 }
+/* "Prefer" with its checkbox, then Details, on one row (Paul 11-12). */
+.render-prefer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
 .checks button.more {
   padding: 0;
   border: 0;
