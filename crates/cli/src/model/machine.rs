@@ -36,6 +36,14 @@ fn made(ctx: &Context, run: &Run) {
     for (name, from) in model["components"].as_object().into_iter().flatten() {
         record = record.field(name, from.as_str().unwrap_or_default());
     }
+    // A Hub checkpoint made complete: what it took from its base.
+    let took: Vec<&str> = (["components", "files"].iter())
+        .flat_map(|key| model["took"][key].as_array().into_iter().flatten())
+        .filter_map(|value| value.as_str())
+        .collect();
+    if !took.is_empty() {
+        record = record.field("took", took.join(", "));
+    }
     if let Some(bytes) = model["published"]["sent"]["bytes"].as_u64() {
         record = record.field("sent", output::bytes(bytes));
     }

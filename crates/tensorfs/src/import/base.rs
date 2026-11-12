@@ -1,12 +1,14 @@
 //! A model composed by reference on another's header (`cozy model upload <source> <org/name>
 //! --base <model>[:<component>,…]`): which of the source's components go where, the header
 //! metadata that records it, and the header itself (`format::compose`). Only the base's header
-//! is read: the components it keeps stay its objects, wherever they are held.
+//! is read: the components it keeps stay its objects, wherever they are held. A Hub checkpoint on a
+//! base is made complete instead: it takes only what it lacks ([`inherit`]).
 use std::collections::BTreeMap;
 
 use crate::err::{refuse, Code, Result};
 use crate::family::{self, Record, Stored};
 use super::compose::{compose, Supply};
+pub use super::compose::{inherit, Inherited, INHERITED};
 use crate::format::{Header, ObjectRef, Provenance, Value};
 use crate::store::Store;
 

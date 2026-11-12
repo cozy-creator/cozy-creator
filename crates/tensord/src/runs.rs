@@ -600,13 +600,45 @@ impl Runs {
                     header: on.header.id(),
                 };
                 observe("composing", 0, 0);
-                let composed = tensorfs::import::base::on_base(publisher.store(), &on.header, &header, names, &record)
-                    .map_err(|e| refused("model_compose_refused", e.to_string()))?;
-                row["base"] = on.row;
-                row["source_checkpoint"] = row["checkpoint"].take();
-                row["checkpoint"] = json!(composed.header.id());
-                row["components"] = json!(composed.components);
-                (header, tree) = (composed.header, on.tree);
+                // A Hub checkpoint is a model already: its own data stands, and the base gives only what it
+                // lacks (xs-183). A converted source's parts go into the base, under its classes, configs and files.
+                let checkpoint = choice.source.is_empty() && !choice.model.is_empty() && !choice.model.starts_with("local/");
+                if checkpoint && names.is_empty() {
+                    let read = |object: &ObjectRef| {
+                        publisher.store().read(object).map_err(|e| e.to_string())
+                            .and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).map_err(|e| e.to_string()))
+                            .map_err(|e| refused("model_resolution_failed", format!("{}: {e}", object.id())))
+                    };
+                    let text = |s: &str| tensorfs::format::Value::Str(s.to_owned());
+                    let from = std::collections::BTreeMap::from([
+                        ("model".to_owned(), text(&record.model)),
+                        ("release".to_owned(), text(&record.release)),
+                        ("lane".to_owned(), text(&record.lane)),
+                        ("header".to_owned(), text(&record.header)),
+                    ]);
+                    let made = tensorfs::import::base::inherit(&read(&header)?, &header, &read(&on.header)?, from)
+                        .map_err(|e| refused("model_compose_refused", format!("{} on {}: {e}", choice.model, base.model)))?;
+                    let source = row["checkpoint"].take();
+                    match made {
+                        Some((complete, took)) => {
+                            let bytes = complete.to_cbor().map_err(|e| refused("model_compose_refused", e.to_string()))?;
+                            header = publisher.store().put_bytes(&bytes).map_err(|e| refused("model_compose_refused", e.to_string()))?;
+                            row["took"] = json!({"components": took.components, "files": took.files});
+                        }
+                        None => observe(&format!("{} lacks nothing of {}", choice.model, base.model), 0, 0),
+                    }
+                    row["base"] = on.row;
+                    row["source_checkpoint"] = source;
+                    row["checkpoint"] = json!(header.id());
+                } else {
+                    let composed = tensorfs::import::base::on_base(publisher.store(), &on.header, &header, names, &record)
+                        .map_err(|e| refused("model_compose_refused", e.to_string()))?;
+                    row["base"] = on.row;
+                    row["source_checkpoint"] = row["checkpoint"].take();
+                    row["checkpoint"] = json!(composed.header.id());
+                    row["components"] = json!(composed.components);
+                    (header, tree) = (composed.header, on.tree);
+                }
             }
             // A commit's repo files (configs, a tokenizer) go with its header: the base's, for a composition.
             let files = repo_files(upload_store, tree.as_ref())?;
