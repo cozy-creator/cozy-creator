@@ -49,7 +49,7 @@ enum LoraVerb {
 
 pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode, Error> {
     match args.verb {
-        LoraVerb::Ls(args) => list(ctx, args, "lora").await,
+        LoraVerb::Ls(args) => list(ctx, args, "lora", None).await,
         LoraVerb::Install(args) => machine::download(ctx, args).await,
         LoraVerb::Uninstall(args) => machine::remove(ctx, &args.model).await,
         LoraVerb::Edit(mut args) => {
@@ -73,7 +73,7 @@ pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode,
 enum Verb {
     /// Search models on the Hub, or list downloaded models with --on.
     #[command(alias = "list")]
-    Ls(Ls),
+    Ls(ModelLs),
     /// Update a model's family or tags.
     Edit(Edit),
     /// Install a model on a machine.
@@ -117,6 +117,15 @@ pub(crate) struct Ls {
     /// List cached models on local, a named machine, or all machines.
     #[arg(long, value_name = "MACHINE")]
     on: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub(crate) struct ModelLs {
+    #[command(flatten)]
+    ls: Ls,
+    /// Only models a tool's model slot loads, judged by their headers against its default (qwen-image-2/generate:rewriter).
+    #[arg(long, value_name = "TOOL:SLOT")]
+    fits: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -283,11 +292,11 @@ pub(crate) struct Delete {
     model: String,
 }
 
-async fn list(ctx: &Context, mut args: Ls, role: &str) -> Result<ExitCode, Error> {
+async fn list(ctx: &Context, mut args: Ls, role: &str, fits: Option<String>) -> Result<ExitCode, Error> {
     match args.on.clone() {
         Some(on) => {
-            if args.family.is_some() || !args.tags.is_empty() || !args.no_tags.is_empty() {
-                output::warn("--family, --tag and --no-tag search the Hub; with --on they are ignored");
+            if args.family.is_some() || !args.tags.is_empty() || !args.no_tags.is_empty() || fits.is_some() {
+                output::warn("--family, --fits, --tag and --no-tag search the Hub; with --on they are ignored");
                 args.family = None;
                 args.tags.clear();
                 args.no_tags.clear();
@@ -298,13 +307,13 @@ async fn list(ctx: &Context, mut args: Ls, role: &str) -> Result<ExitCode, Error
                 machine::list(ctx, (on != "all").then_some(on), &args.query, role, args.limit, args.offset).await
             }
         }
-        None => catalog::search(ctx, args, role).await,
+        None => catalog::search(ctx, args, role, fits).await,
     }
 }
 
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
-        Verb::Ls(args) => list(ctx, args, "model").await,
+        Verb::Ls(args) => list(ctx, args.ls, "model", args.fits).await,
         Verb::Edit(args) => catalog::edit(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args, "model").await,
         Verb::Unpublish(args) => releases::unpublish(ctx, args, "model").await,
@@ -329,7 +338,7 @@ mod tests {
     #[test]
     fn catalog_paging_and_filters_parse_together() {
         let parsed = ModelCommand::try_parse_from(["model", "ls", "fox", "--family", "sdxl", "--tag", "art", "--no-tag", "nsfw", "--offset", "20", "--limit", "10"]).unwrap();
-        let Verb::Ls(args) = parsed.args.verb else { panic!("expected catalog") };
+        let Verb::Ls(ModelLs { ls: args, .. }) = parsed.args.verb else { panic!("expected catalog") };
         assert_eq!((args.offset, args.limit), (20, 10));
         assert_eq!(args.query, ["fox"]);
         assert_eq!(args.family.as_deref(), Some("sdxl"));

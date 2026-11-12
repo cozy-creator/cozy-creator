@@ -26,9 +26,12 @@ pub(super) struct Searching {
     pub(super) limit: u32,
     pub(super) offset: u32,
     pub(super) role: String,
+    /// `<tool>:<slot>`: only models that slot loads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) fits: Option<String>,
 }
 
-pub(crate) async fn search(ctx: &Context, args: Ls, role: &str) -> Result<ExitCode, Error> {
+pub(crate) async fn search(ctx: &Context, args: Ls, role: &str, fits: Option<String>) -> Result<ExitCode, Error> {
     let query = args.query.join(" ");
     let ask = Searching {
         hub: ctx.hub().to_string(),
@@ -39,6 +42,7 @@ pub(crate) async fn search(ctx: &Context, args: Ls, role: &str) -> Result<ExitCo
         limit: output::at_most("--limit", args.limit, 100),
         offset: args.offset,
         role: role.to_owned(),
+        fits,
     };
     let view = read(ctx, &ask).await?;
 
@@ -56,14 +60,14 @@ pub(crate) async fn search(ctx: &Context, args: Ls, role: &str) -> Result<ExitCo
         table.note(title).print();
     }
     output::say(ctx, &browser.title());
-    if ask.family.is_some() || !ask.tag.is_empty() || !ask.no_tag.is_empty() {
-        output::say(ctx, "Family and tag filters apply to the Hub page; local copies use the name query.");
+    if ask.family.is_some() || ask.fits.is_some() || !ask.tag.is_empty() || !ask.no_tag.is_empty() {
+        output::say(ctx, "Family, fits and tag filters apply to the Hub page; local copies use the name query.");
     }
     Ok(ExitCode::SUCCESS)
 }
 
 pub(super) async fn local(ctx: &Context, args: Ls, role: &str) -> Result<ExitCode, Error> {
-    let query = Searching { hub: ctx.hub().to_string(), q: args.query.join(" "), family: None, tag: String::new(), no_tag: String::new(), limit: output::at_most("--limit", args.limit, 100), offset: args.offset, role: role.into() };
+    let query = Searching { hub: ctx.hub().to_string(), q: args.query.join(" "), family: None, tag: String::new(), no_tag: String::new(), limit: output::at_most("--limit", args.limit, 100), offset: args.offset, role: role.into(), fits: None };
     let inventory: api::calcifer::MachineModels = ctx.calcifer().await?.get("/v1/machines/local/models").await?;
     if inventory.silent {
         return Err(Error::new(Kind::Unavailable, "local_inventory_unavailable", "The local machine has not reported its model inventory yet").next("cozy machine ls"));

@@ -161,7 +161,7 @@ function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot
 function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: string; slot: PickerSlot; restricted: boolean; funAcc: boolean; showNsfw: boolean; legacy: unknown[] }) {
   const store = useCanvasStore()
   const { client } = useConnection()
-  useElement(name)
+  const view = useElement(name)
   const held = entryOf(entryOf(store.valueOf(name, "models"))[slot.slot])
   const selected = typeof held.ref === "string" ? held.ref : ""
   const malformed = held.ref != null && typeof held.ref !== "string"
@@ -175,21 +175,48 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
   const q = useDeferredValue(typed.trim())
   const [limit, setLimit] = useState(50)
   const [tab, setTab] = useState<"models" | "loras">("models")
-  const { data, error, isPending } = useQuery({
-    queryKey: ["models", "picker", slot.family, q, limit, showNsfw],
-    queryFn: ({ signal }) => client.models(q, limit, signal, { family: slot.family ?? undefined, noTag: showNsfw ? undefined : NSFW }),
-    enabled: Boolean(slot.family) && !restricted, staleTime: 60_000,
+  // A model slot offers what it loads, as Calcifer reads their headers against its default's (cl-943); a LoRA slot, LoRAs of its family.
+  const fits = view?.asset?.tool ? `${view.asset.tool}:${slot.slot}` : undefined
+  const byHeader = Boolean(slot.default && fits) && slot.kind !== "lora"
+  const noTag = showNsfw ? undefined : NSFW
+  const project = store.projectId ?? undefined
+  const { data: loading, error: loadError, isPending: loadPending } = useQuery({
+    queryKey: ["models", "fits", fits, project, q, limit, showNsfw],
+    queryFn: ({ signal }) => client.models(q, limit, signal, { fits, project, noTag }),
+    enabled: byHeader && !restricted && tab === "models", staleTime: 60_000,
   })
-  const found: PickerModel[] = data?.models.filter((model) => model.family === slot.family && (showNsfw || !isNsfw(model.tags))) ?? []
-  const listed = found.find((model) => model.model === identityOf(selected))
+  const { data: kin, error: kinError, isPending: kinPending } = useQuery({
+    queryKey: ["models", "picker", slot.family, q, limit, showNsfw],
+    queryFn: ({ signal }) => client.models(q, limit, signal, { family: slot.family ?? undefined, noTag }),
+    enabled: Boolean(slot.family) && !restricted && (!byHeader || tab === "loras"), staleTime: 60_000,
+  })
+  const shown = (model: PickerModel) => showNsfw || !isNsfw(model.tags)
+  const found: PickerModel[] = kin?.models.filter((model) => model.family === slot.family && shown(model)) ?? []
+  const loads: PickerModel[] = loading?.models.filter(shown) ?? []
+  const { data: fitting, isPending: fitChecking } = useQuery({
+    queryKey: ["models", "fits", fits, project, identityOf(selected)],
+    queryFn: ({ signal }) => client.models(identityOf(selected), 1, signal, { fits, project }),
+    enabled: byHeader && Boolean(selected) && !restricted && !loads.some((model) => model.model === identityOf(selected)), staleTime: 60_000, retry: false,
+  })
+  const listed = byHeader ? loads.find((model) => model.model === identityOf(selected)) ?? fitting?.models.find((model) => model.model === identityOf(selected)) : found.find((model) => model.model === identityOf(selected))
   const { data: detail, isPending: checking } = useQuery({
     queryKey: ["model", identityOf(selected)],
     queryFn: ({ signal }) => client.model(identityOf(selected), signal),
     enabled: Boolean(selected && !listed && (!restricted || !showNsfw)), staleTime: 60_000, retry: false,
   })
-  const selectedValid = restricted ? selected === slot.default : fitsSlot(listed ?? detail, selected, slot, kind, funAcc)
-  const selectionState = selectedValid ? "" : restricted ? " (compatibility unverified)" : checking && !listed ? " (checking compatibility)" : !(listed ?? detail) ? " (compatibility unavailable)" : " (incompatible)"
-  const alternatives = restricted ? [] : found.filter((model) => fitsSlot(model, model.model, slot, kind, funAcc) && model.model !== identityOf(selected))
+  const turboBlocked = (ref: string) => funAcc && slot.slot === "model" && identityOf(ref) === "qwen/qwen-image-2.1-turbo"
+  const selectedValid = restricted ? selected === slot.default
+    : byHeader ? identityOf(selected) === identityOf(slot.default ?? "") || (Boolean(listed) && !turboBlocked(selected))
+    : fitsSlot(listed ?? detail, selected, slot, kind, funAcc)
+  const pending = byHeader ? fitChecking : checking
+  const selectionState = selectedValid ? "" : restricted ? " (compatibility unverified)" : pending && !listed ? " (checking compatibility)" : !byHeader && !(listed ?? detail) ? " (compatibility unavailable)" : " (incompatible)"
+  const alternatives = restricted ? [] : byHeader ? loads.filter((model) => !turboBlocked(model.model) && model.model !== identityOf(selected))
+    : found.filter((model) => fitsSlot(model, model.model, slot, kind, funAcc) && model.model !== identityOf(selected))
+  const searchable = byHeader || Boolean(slot.family)
+  const offering = byHeader && tab === "models"
+  const data = offering ? loading : kin
+  const error = offering ? loadError : kinError
+  const isPending = offering ? loadPending : kinPending
   const adapters = adaptersOf(held.lora)
   const defaultVisible = !slot.default || showNsfw || Boolean(defaultModel && !isNsfw(defaultModel.tags))
   const selectedMeta = listed ?? detail ?? (identityOf(selected) === identityOf(slot.default ?? "") ? defaultModel : undefined)
@@ -214,10 +241,10 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
       <button type="button" aria-pressed={tab === "models"} onClick={() => { setTab("models"); setTyped(""); setLimit(50) }}>Models</button>
       <button type="button" aria-pressed={tab === "loras"} onClick={() => { setTab("loras"); setTyped(""); setLimit(50) }}>LoRAs</button>
     </div>}
-    {!restricted && <input type="search" className="field model-picker-search" aria-label={`Search models for ${slot.slot}`} placeholder={tab === "models" ? "Find a model" : "Find a LoRA"} value={typed} disabled={!slot.family} onChange={(event) => { setTyped(event.target.value); setLimit(50) }} />}
-    {!restricted && !slot.family && <p className="muted">Compatible choices aren't available for this slot.</p>}
-    {!restricted && slot.family && !kind && <p className="muted">Model compatibility is not available yet.</p>}
-    {!restricted && Boolean(slot.family) && isPending && <p className="muted">Loading choices…</p>}
+    {!restricted && <input type="search" className="field model-picker-search" aria-label={`Search models for ${slot.slot}`} placeholder={tab === "models" ? "Find a model" : "Find a LoRA"} value={typed} disabled={!searchable} onChange={(event) => { setTyped(event.target.value); setLimit(50) }} />}
+    {!restricted && !searchable && <p className="muted">Compatible choices aren't available for this slot.</p>}
+    {!restricted && !byHeader && slot.family && !kind && <p className="muted">Model compatibility is not available yet.</p>}
+    {!restricted && (tab === "models" ? byHeader : Boolean(slot.family)) && isPending && <p className="muted">Loading choices…</p>}
     {!restricted && error && <p className="warn">Couldn't load models.</p>}
     {tab === "models" || restricted ? <>
       <ul className="model-picker-choices" aria-label={`Base model for ${slot.slot}`}>
