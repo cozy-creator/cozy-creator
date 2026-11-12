@@ -326,7 +326,8 @@ done
 in_project "$RUN_PROJECT" --json package uninstall local/one_script --on local > "$OUT/uninstall-one-script.json" 2>&1 \
   || check "package uninstall local/one_script failed: $(tail -c 300 "$OUT/uninstall-one-script.json")"
 # Outside any project, a local package is refused typed, naming where to go.
-code=0; cozy --json package uninstall local/one_script --on local > "$OUT/uninstall-outside.json" 2> "$OUT/uninstall-outside.err" || code=$?
+mkdir -p "$OUT/outside-projects"
+code=0; (cd "$OUT/outside-projects" && cozy --json package uninstall local/one_script --on local) > "$OUT/uninstall-outside.json" 2> "$OUT/uninstall-outside.err" || code=$?
 [ "$code" != 0 ] && J '.error.code == "project_required" and (.error.next | index("cozy new"))' "$OUT/uninstall-outside.json" \
   || check "package uninstall outside a project: exit $code, not project_required naming cozy new: $(tail -c 300 "$OUT/uninstall-outside.json")"
 }

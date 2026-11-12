@@ -276,6 +276,13 @@ pub(super) struct Removal {
 pub(super) async fn removal(api: &Arc<Api>, hub: &Origin, on: &On, ask: PackageRemove) -> Result<Planned, Refusal> {
     let machine = super::jobs::machine(on, "a removal")?;
     let held = crate::machines::fresh(&api.machines, &machine).await.map_err(Refusal)?;
+    // A project's packages live in its own environments, which the machine's status never lists:
+    // its remove runs answer for them, and a name none removed is refused after them.
+    if crate::private_io::current().is_some() {
+        let targets = ask.packages.iter().map(|name| (name.clone(), hub.to_string())).collect();
+        let target = format!("remove {}", ask.packages.join(", "));
+        return Ok(Planned::Here { target, work: Work::Remove(Removal { machine: held.name, targets }) });
+    }
     let envs: Vec<&Environment> = held.status.iter().flat_map(|s| &s.environments).collect();
     if let Some(name) = ask.packages.iter().find(|name| !envs.iter().any(|env| &&env.package == name)) {
         return Err(Refusal(
@@ -339,6 +346,13 @@ impl Removal {
                 Ok(run) => done.failed.push(format!("{package}: {}", failure(&run))),
                 Err(e) => done.failed.push(format!("{package}: {e}")),
             }
+        }
+        if crate::private_io::current().is_some()
+            && let Some((name, _)) = self.targets.iter().find(|(name, _)| !done.removed.iter().any(|gone| &gone.package == name))
+            && done.failed.is_empty()
+        {
+            return Err(Error::not_found("package_not_installed", format!("{name} is not installed in this project on {}", done.machine))
+                .next(format!("cozy package ls --on {}", done.machine)));
         }
         if done.failed.is_empty() {
             return Ok(done);

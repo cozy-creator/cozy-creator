@@ -464,9 +464,10 @@ AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless LOCK_FIXTURE=
 # Locked in Calcifer's copy of the tree, which it holds by the tree's digest.
 # Local code is project data: Calcifer's copy is the project's own (.vault-calcifer).
 ls -d "$seen"/project/.vault-calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package in the project: $(ls "$seen/project/.vault-calcifer/code" 2> /dev/null | head -3)"
-DIR=weightless refused_inside publish not_logged_in package publish
-inside model --json model install ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
-  && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"
+# A project's package source is project data: publishing it is refused until a separate copy is exported.
+DIR=weightless refused_inside publish project_source_scope package publish
+# A file in a project is project data: it is not staged as a machine-wide model.
+refused_inside model project_source_scope model install ./tiny.safetensors local/e2e-unseen --source-format as-is --on local
 if [ -f "${CAND_RT:-}" ]; then
   inside runtime --json machine update local --runtime "/wheels/$(basename "$CAND_RT")" -y || true
 fi
