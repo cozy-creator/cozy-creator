@@ -1074,7 +1074,7 @@ def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow],
         for key, (_, shape) in keys.items():
             c = max((c for c in components if key.startswith(c["prefix"])), key=lambda c: len(c["prefix"]))
             local = key[len(c["prefix"]):]
-            if any(local == r[1] and tuple(shape[1:]) == tuple(r[2]["io"][::-1]) for r in c.get("keep", [])):
+            if any(local == r[1] and ("io" not in r[2] or tuple(shape[1:]) == tuple(r[2]["io"][::-1])) for r in c.get("keep", [])):
                 known += 1
                 continue
             spelling = (("a", DIT_A), ("b", DIT_B), ("m", MAGNITUDE), ("alpha", (".alpha",)))
@@ -1136,7 +1136,9 @@ def moss_lora() -> Table[LoraRow]:
     """MOSS-Image's DiT keeps upstream's module names (Diffusers has no port), and so do its LoRAs: ComfyUI's and
     AI-Toolkit's under `diffusion_model.`, kohya's flattened under `lora_unet_` (Fizgig). ComfyUI's model may fuse a
     block's Q/K/V into `proj.qkv`, `[q; k; v]` (comfy/ldm/moss_image/model.py `fused_qkv`), and LoRAs trained on it
-    (AI-Toolkit's) adapt that: A as is, B in thirds."""
+    (AI-Toolkit's) adapt that: A as is, B in thirds. The color/depth control adapter (darask0's) widens the image input
+    to take the control maps' latents beside the image's, `video_embedder` `[3072, 384]`: kept whole as
+    `video_embedder.modules_to_save`."""
     census = family_linears("moss")
     native: list[LoraRow] = []
     for d, (fan_in, fan_out) in census.items():
@@ -1149,8 +1151,9 @@ def moss_lora() -> Table[LoraRow]:
             native.append((f"{block}.{p}", f"{block}.qkv", {"io": [fan_in, 3 * fan_out], "b": third}))
     vectors = {f"moss-lora-headers/{v}.safetensors.header": True for v in (
         "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI", "sagging-moss-v0.4", "lenovo_moss", "moss_pussy_lora_v3.0_8steps",
-        "moss_image_sft_4step_v2.0")}
-    return dit_lora("moss.lora", "moss", native, [], vectors)
+        "moss_image_sft_4step_v2.0", "moss_image_color_depth_control", "moss_image_sft_pose_control_lora")}
+    keep: list[LoraRow] = [(f"video_embedder.modules_to_save.{p}", f"video_embedder.{p}", {}) for p in ("weight", "bias")]
+    return dit_lora("moss.lora", "moss", native, keep, vectors)
 
 
 def anima_lora(single: Table[TableRow]) -> Table[LoraRow]:
