@@ -307,8 +307,9 @@ impl Service {
     /// pages are read ahead; a shared one reads ahead its few most recently used
     /// (`Pool::import_recent`).
     pub(crate) fn import_installed(&self) -> io::Result<()> {
+        if crate::private_io::current().is_some() {return Ok(());}
         let Some(gpu) = self.gpu() else { return Ok(()) };
-        let bound = self.engine.with_journal(|journal| journal.bound_generations())?;
+        let bound = self.engine.with_journal(|journal| journal.auto_import_generations())?;
         gpu.import_recent(self.catalog.recent(bound));
         Ok(())
     }

@@ -834,6 +834,13 @@ impl Journal {
         Ok(bound)
     }
     /// Every generation an unfinished run names.
+    /// Startup may import independently published software, never local source or an
+    /// environment already observed in a protected legacy invocation. Historical absence of
+    /// a project tag is not permission to resume a saved warm payload.
+    pub(crate) fn auto_import_generations(&self) -> io::Result<std::collections::HashSet<String>> {
+        self.generations("SELECT json_extract(i.record,'$.generation') FROM installations i WHERE i.actor NOT LIKE 'local-private:%' AND json_extract(i.record,'$.package') NOT LIKE 'local/%' AND NOT EXISTS(SELECT 1 FROM executions e WHERE json_extract(e.invocation,'$.local_private.project_id') IS NOT NULL AND json_extract(e.invocation,'$.generation')=json_extract(i.record,'$.generation'))")
+    }
+
     pub(crate) fn running_generations(&self) -> io::Result<std::collections::HashSet<String>> {
         self.generations(
             "SELECT json_extract(invocation,'$.generation') FROM executions
