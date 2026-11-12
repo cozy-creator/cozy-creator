@@ -59,7 +59,7 @@ _FAILURE_CODES = frozenset({
     'proof_handshake', 'proof_process_birth', 'real_browser_edit',
     'receipt_schema', 'regular_core_native_execution_failed', 'reopened_page_ready',
     'response_object', 'restart_holder_ready', 'scan_decoder_unavailable',
-    'scan_markers_missing', 'shared_owned_browser', 'whole_browser_retirement',
+    'scan_markers_missing', 'scan_process', 'shared_owned_browser', 'whole_browser_retirement',
 })
 
 class Failure(Exception):
@@ -282,6 +282,19 @@ class Native:
 
 def project_route(reference: str, suffix: str = "") -> str:
     return "/v1/projects/" + quote(reference, safe="") + suffix
+
+
+def project_run_ids(get, reference: str) -> tuple[set[str], int]:
+    """Every listed run id and how many were unreadable. The API clamps `limit` to 1..1000,
+    newest first (so `limit=0` is one run); page by `before` as `cozy run ls` does."""
+    found, unreadable, before = set(), 0, ""
+    while True:
+        page = get(project_route(reference, "/runs?limit=1000" + before))
+        found.update(run.get("id") for run in page["runs"])
+        unreadable += len(page.get("unreadable") or [])
+        if not page.get("older") or not page["runs"]:
+            return found, unreadable
+        before = "&before=" + str(page["runs"][-1]["number"])
 
 
 class Proof:

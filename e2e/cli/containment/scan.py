@@ -12,11 +12,25 @@ from pathlib import Path
 import sqlite3
 import stat
 import struct
+import subprocess
+import sys
 from urllib.parse import quote
 import zipfile
 import zlib
 
 from common import Failure, require, sha
+
+
+def places(home: Path, temp: Path, **extra: Path) -> dict[str, Path]:
+    """Fixed product locations whose match/unreadable counts a scan reports by name."""
+    cozy, machine = home / ".cozy", home / ".cozy/machine"
+    state, engine = machine / "var/lib/cozy/machine", machine / "var/lib/cozy/tensord"
+    return {"home": home, "user_cache": home / ".cache", "tensorfs_cache": home / ".cache/tensorfs", "cozy": cozy,
+            "cozy_cache": cozy / "cache", "calcifer": cozy / "calcifer", "machine": machine, "machine_state": state,
+            "machine_start_log": state / "start.log", "machine_logs": state / "logs", "engine": engine,
+            "engine_execution": engine / "execution", "engine_triage": engine / "execution/triage",
+            "engine_gpu": engine / "gpu", "runner_temp": temp, "hub": temp / "e2e/hub",
+            "tmp": Path("/tmp"), "var_tmp": Path("/var/tmp"), "dev_shm": Path("/dev/shm"), **extra}
 
 
 class Scanner:
@@ -61,8 +75,13 @@ class Scanner:
         if data.startswith(b"SQLite format 3\0"):
             # Deserialize into RAM. No temporary copy, journal or SHM is created by this scanner.
             database = sqlite3.connect(":memory:")
+            image = bytearray(data)
+            if image[18:20] == b"\x02\x02":
+                # sqlite3_deserialize cannot open a WAL-mode image (SQLITE_CANTOPEN). Its documented
+                # workaround: mark this RAM copy rollback mode. The -wal file is still scanned raw.
+                image[18:20] = b"\x01\x01"
             try:
-                database.deserialize(data)
+                database.deserialize(bytes(image))
                 for (table,) in database.execute("SELECT name FROM sqlite_schema WHERE type='table'"):
                     name = '"' + table.replace('"', '""') + '"'
                     for row in database.execute("SELECT * FROM " + name):
@@ -135,18 +154,35 @@ class Scanner:
             except (ImportError, OSError, ValueError):
                 self.counts["images_unreadable"] += 1
 
-    def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path) -> dict:
+    def scan_privileged(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path]) -> dict | None:
+        """`scan` as root, which reads OS-private folders (systemd PrivateTmp, sudo apt state) an
+        unprivileged walk cannot. Markers travel on stdin; None if the scan process failed."""
+        request = {"markers": [marker.hex() for marker in self.markers], "images": [image.hex() for image in self.images],
+                   "roots": [str(root) for root in roots], "excluded": [str(root) for root in excluded_roots],
+                   "receipt": str(receipt), "classes": {name: str(root) for name, root in classes.items()}}
+        done = subprocess.run(["sudo", "-n", sys.executable, "-E", "-s", str(Path(__file__).resolve())],
+                              input=json.dumps(request).encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        return json.loads(done.stdout) if done.returncode == 0 else None
+
+    def scan(self, roots: list[Path], excluded_roots: list[Path], receipt: Path, classes: dict[str, Path] | None = None) -> dict:
         self.counts.clear(); self.matches.clear()
         patterns = self.patterns()
         require(patterns, "scan_markers_missing")
         excluded = [path.resolve() for path in excluded_roots]
+        # Caller-fixed product locations only: counts per closed class name, never a path.
+        places = sorted((classes or {}).items(), key=lambda item: len(item[1].parts), reverse=True)
+        def place(path: Path) -> str:
+            return next((name for name, root in places if path.absolute().is_relative_to(root)), "other")
+        labels: dict[str, str] = {}
         seen: set[tuple[int, int]] = set()
         overlap = max(map(len, patterns)) - 1
         for root in roots:
             if not root.exists():
                 continue
-            def unreadable(_error):
+            def unreadable(error):
                 self.counts["unreadable"] += 1
+                if places:
+                    self.counts["unreadable_" + place(Path(error.filename or root))] += 1
             for directory, dirs, names in os.walk(root, followlinks=False, onerror=unreadable):
                 parent = Path(directory)
                 dirs[:] = [name for name in dirs if not any((parent / name).absolute().is_relative_to(skip) for skip in excluded)]
@@ -155,6 +191,7 @@ class Scanner:
                     if path == receipt or any(path.absolute().is_relative_to(skip) for skip in excluded):
                         continue
                     label = sha(os.fsencode(path))
+                    labels.setdefault(label, place(path) if places else "other")
                     self.found(os.fsencode(path), label, patterns)
                     try:
                         metadata = path.lstat()
@@ -182,6 +219,11 @@ class Scanner:
                         self.counts["vanished"] += 1
                     except PermissionError:
                         self.counts["unreadable"] += 1
+                        if places:
+                            self.counts["unreadable_" + labels[label]] += 1
+        if places:
+            for label in self.matches:
+                self.counts["match_" + labels.get(label, "other")] += 1
         return {**dict(self.counts), "matches": len(self.matches), "path_sha256": sorted(self.matches)}
 
 
@@ -194,3 +236,15 @@ def tmpfs(path: Path) -> bool:
         if resolved.is_relative_to(mount):
             mounts.append((len(mount.parts), after.split()[0]))
     return bool(mounts) and max(mounts)[1] == "tmpfs"
+
+
+if __name__ == "__main__":
+    # `Scanner.scan_privileged`'s root process: markers arrive on stdin; counts and path hashes leave.
+    request = json.loads(sys.stdin.buffer.read())
+    scanner = Scanner()
+    for marker in request["markers"]:
+        scanner.add(bytes.fromhex(marker))
+    scanner.images.update(bytes.fromhex(image) for image in request["images"])
+    result = scanner.scan([Path(root) for root in request["roots"]], [Path(root) for root in request["excluded"]],
+                          Path(request["receipt"]), {name: Path(root) for name, root in request["classes"].items()})
+    sys.stdout.write(json.dumps(result))

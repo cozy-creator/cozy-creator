@@ -367,9 +367,57 @@ fn footprint(
     }
     Ok(found)
 }
-fn copy_run_directory(source: &Path, target: &Path) -> io::Result<()> {
+/// One legacy run file into the project, verified byte for byte; an existing copy must match.
+fn copy_run_file(path: &Path, destination: &Path) -> io::Result<()> {
     use sha2::Digest as _;
     use std::io::{Read as _, Write as _};
+    let mut input =
+        platform::durable::open_nofollow(path, fs::OpenOptions::new().read(true))?;
+    let mut output = if destination.exists() {
+        None
+    } else {
+        Some(platform::durable::open_nofollow(
+            destination,
+            fs::OpenOptions::new().write(true).create_new(true),
+        )?)
+    };
+    let mut hash = sha2::Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 65536];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+        total += count as u64;
+        if let Some(output) = output.as_mut() {
+            output.write_all(&buffer[..count])?;
+        }
+    }
+    if let Some(output) = output {
+        output.sync_all()?;
+    }
+    let mut copied =
+        platform::durable::open_nofollow(destination, fs::OpenOptions::new().read(true))?;
+    let mut verified = sha2::Sha256::new();
+    let mut length = 0u64;
+    loop {
+        let count = copied.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        verified.update(&buffer[..count]);
+        length += count as u64;
+    }
+    if total != length || hash.finalize() != verified.finalize() {
+        return Err(db_error(
+            "project run file conflicts with canonical legacy bytes",
+        ));
+    }
+    Ok(())
+}
+fn copy_run_directory(source: &Path, target: &Path) -> io::Result<()> {
     let metadata = match fs::symlink_metadata(source) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -399,50 +447,7 @@ fn copy_run_directory(source: &Path, target: &Path) -> io::Result<()> {
         if kind.is_dir() {
             copy_run_directory(&path, &destination)?;
         } else if kind.is_file() {
-            let mut input =
-                platform::durable::open_nofollow(&path, fs::OpenOptions::new().read(true))?;
-            let mut output = if destination.exists() {
-                None
-            } else {
-                Some(platform::durable::open_nofollow(
-                    &destination,
-                    fs::OpenOptions::new().write(true).create_new(true),
-                )?)
-            };
-            let mut hash = sha2::Sha256::new();
-            let mut total = 0u64;
-            let mut buffer = [0u8; 65536];
-            loop {
-                let count = input.read(&mut buffer)?;
-                if count == 0 {
-                    break;
-                }
-                hash.update(&buffer[..count]);
-                total += count as u64;
-                if let Some(output) = output.as_mut() {
-                    output.write_all(&buffer[..count])?;
-                }
-            }
-            if let Some(output) = output {
-                output.sync_all()?;
-            }
-            let mut copied =
-                platform::durable::open_nofollow(&destination, fs::OpenOptions::new().read(true))?;
-            let mut verified = sha2::Sha256::new();
-            let mut length = 0u64;
-            loop {
-                let count = copied.read(&mut buffer)?;
-                if count == 0 {
-                    break;
-                }
-                verified.update(&buffer[..count]);
-                length += count as u64;
-            }
-            if total != length || hash.finalize() != verified.finalize() {
-                return Err(db_error(
-                    "project run file conflicts with canonical legacy bytes",
-                ));
-            }
+            copy_run_file(&path, &destination)?;
         } else {
             return Err(db_error("legacy run closure contains an unknown object"));
         }
@@ -488,31 +493,81 @@ fn copy_attributed_run_files(
     source_engine: &Path,
     scope: &LocalPrivateStorage,
     ids: &[u64],
+    requests: &[String],
     retire: bool,
 ) -> io::Result<Vec<String>> {
     let target = crate::private_io::root(scope)?;
     let mut pending = vec![];
+    let mut retired = |source: &Path, result: io::Result<()>| match result {
+        Err(error) if error.kind() == io::ErrorKind::ResourceBusy => {
+            pending.push(format!("legacy_run_files_reader_pending:{}", source.display()));
+            Ok(())
+        }
+        other => other,
+    };
     for id in ids {
         for kind in ["results", "staging"] {
             let source = source_engine.join(kind).join(id.to_string());
             if source.exists() {
                 copy_run_directory(&source, &target.join(kind).join(id.to_string()))?;
                 if retire {
-                    if let Err(error) = retire_run_directory(&source) {
-                        if error.kind() == io::ErrorKind::ResourceBusy {
-                            pending.push(format!(
-                                "legacy_run_files_reader_pending:{}",
-                                source.display()
-                            ));
-                        } else {
-                            return Err(error);
-                        }
-                    }
+                    retired(&source, retire_run_directory(&source))?;
                 }
             }
         }
     }
+    // A failed attempt's triage bundle names its request; it joins that run's project
+    // where `triage::read` finds it through the project's custody root.
+    let triage = source_engine.join("triage");
+    let entries = match fs::read_dir(&triage) {
+        Ok(entries) => entries.collect::<io::Result<Vec<_>>>()?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => vec![],
+        Err(error) => return Err(error),
+    };
+    if entries.len() > 4096 {
+        return Err(db_error("legacy triage inventory limit"));
+    }
+    for entry in entries {
+        let name = entry.file_name();
+        let bundle = name.to_str().and_then(|name| name.strip_prefix("trb-")?.strip_suffix(".json"))
+            .is_some_and(|stem| !stem.is_empty() && stem.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+        if !bundle || !entry.file_type()?.is_file() {
+            continue;
+        }
+        let source = entry.path();
+        let mut bytes = vec![];
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(platform::durable::open_nofollow(&source, fs::OpenOptions::new().read(true))?, 4 << 20),
+            &mut bytes,
+        )?;
+        let owner = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+            .and_then(|bundle| bundle.get("request_id").and_then(serde_json::Value::as_str).map(str::to_owned));
+        if !owner.is_some_and(|owner| requests.contains(&owner)) {
+            continue;
+        }
+        let directory = target.join("triage");
+        fs::create_dir_all(&directory)?;
+        let metadata = fs::symlink_metadata(&directory)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(db_error("project triage directory has an unsafe type"));
+        }
+        copy_run_file(&source, &directory.join(&name))?;
+        platform::durable::sync_dir(&directory)?;
+        if retire {
+            retired(&source, retire_run_file(&source))?;
+        }
+    }
     Ok(pending)
+}
+fn retire_run_file(source: &Path) -> io::Result<()> {
+    let file = platform::durable::open_nofollow(source, fs::OpenOptions::new().read(true))?;
+    if file.try_lock().is_err() {
+        return Err(io::Error::new(io::ErrorKind::ResourceBusy, "a canonical legacy run file still has an active reader"));
+    }
+    fs::remove_file(source)?;
+    platform::durable::sync_dir(source.parent().expect("a run file has a folder"))?;
+    drop(file);
+    Ok(())
 }
 
 fn copy_attributed_objects(
@@ -1198,6 +1253,7 @@ impl Journal {
                             &engine.join("execution"),
                             scope,
                             &receipt.attributed_ids,
+                            &receipt.requests,
                             true,
                         )?;
                         if !pending.is_empty() {
@@ -1620,6 +1676,7 @@ impl Journal {
                 &engine.join("execution"),
                 scope,
                 &attributed_ids,
+                &requests,
                 false,
             )?);
         }
@@ -1690,6 +1747,7 @@ impl Journal {
                 &engine.join("execution"),
                 scope,
                 &receipt.attributed_ids,
+                &receipt.requests,
                 true,
             )?;
             if !pending.is_empty() {

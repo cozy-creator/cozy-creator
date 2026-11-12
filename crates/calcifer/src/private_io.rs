@@ -291,9 +291,10 @@ pub(crate) fn input_root(out_dir: &Path, ordinary: &Path) -> Result<PathBuf, Err
     Ok(path)
 }
 
-/// No machine is started merely to lock a project. Root calls this before unmount,
-/// without holding the vault-session mutex; the server refuses live work and reaps only
-/// this namespace's idle executors before releasing private store handles.
+/// Root calls this before unmount, without holding the vault-session mutex; the server
+/// finishes any custody it still owes this project, refuses live work and reaps only this
+/// namespace's idle executors before releasing private store handles. A project with worker
+/// storage starts the local worker for this seal alone when none runs.
 pub(crate) async fn close_private_project(
     api: &Arc<crate::api::Api>,
     root: &Path,
@@ -301,7 +302,8 @@ pub(crate) async fn close_private_project(
     let view = crate::project::vault::resolve_path(root)?;
     if !view.join(".vault-machine").exists() { let mut scopes = SCOPES.lock().unwrap(); scopes.remove(root); scopes.remove(&view); return Ok(()); }
     if !api.machines.local.running() {
-        return Err(Error::new(Kind::Unavailable, "project_seal_pending", "The local worker is offline; its previous project custody has not been sealed.").next("cozy doctor"));
+        api.machines.local_up().await.map_err(|why| Error::new(Kind::Unavailable, "project_seal_pending",
+            format!("The local worker could not start to seal the project's execution custody: {}", why.message)).next("cozy doctor"))?;
     }
     let scope = match SCOPES.lock().unwrap().get(root).cloned() {
         Some(scope) => scope,
