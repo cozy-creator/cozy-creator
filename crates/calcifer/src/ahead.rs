@@ -87,8 +87,10 @@ impl Lists {
     /// Each machine's lists as they stand, each sent where it differs from what that machine was last sent.
     fn send(&self, machines: &Arc<Machines>) {
         let planned = lock(&self.planned).clone();
+        // Each machine planned on, sent before, or able to run what's planned: an idle one may prepare it.
         let mut names: Vec<String> = planned.keys().cloned().collect();
         names.extend(lock(&self.sent).keys().cloned());
+        names.extend(planned.values().flat_map(|lists| lists.values().flatten()).flat_map(|listed| listed.fits.iter().cloned()));
         names.sort();
         names.dedup();
         for name in names {
