@@ -869,22 +869,6 @@ impl Store {
             _ => Some(Box::new(Claim(file, path))),
         }
     }
-
-    /// Whether another process sharing this store is fetching an object now: it holds that object's
-    /// claim (`claim`), one `mine` doesn't name. An executor's on-demand read is one, which its run
-    /// waits on.
-    pub fn others_fetching(&self, mine: &dyn Fn(&str) -> bool) -> bool {
-        let Ok(entries) = fs::read_dir(self.root.join("tmp")) else { return false };
-        entries.flatten().any(|entry| {
-            let name = entry.file_name();
-            let Some(sha256) = name.to_str().and_then(|name| name.strip_prefix("fetching-")) else { return false };
-            if mine(sha256) {
-                return false;
-            }
-            // Open and closed at once: a claim taken meanwhile waits a poll, never fails.
-            OpenOptions::new().write(true).open(entry.path()).is_ok_and(|file| matches!(platform::lock::try_claim(&file), Ok(false)))
-        })
-    }
 }
 
 /// Makes an existing file young for GC; `None` when it is absent.

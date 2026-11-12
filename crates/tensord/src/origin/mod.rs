@@ -47,11 +47,6 @@ pub(crate) mod priority {
     pub(crate) fn next(run: u64, rank: u32) -> u64 {
         at(0, run, rank)
     }
-    /// Where queued runs' orders begin: everything from here on waits while a started run's executor
-    /// fetches what it reads on demand (`Fetcher::hold_from`).
-    pub(crate) fn queued() -> u64 {
-        at(0, 1, 0)
-    }
     /// What a job waiting on another's output reads, fetched ahead by `run` (a project's warm run):
     /// behind every run's, as that job's own run will be when it is sent.
     pub(crate) fn ahead(run: u64, rank: u32) -> u64 {
@@ -130,9 +125,6 @@ impl Machine {
         let _entered = self.runtime.enter();
         let store = self.store.clone();
         let fetcher = Arc::new(Fetcher::new(store, client, self.volume.clone(), Config::default()));
-        // An executor's on-demand read (its own fetch, sharing the store) comes before every queued run's
-        // download, a fetch ahead's and a guess: a later job never takes the link from a running one (cl-905).
-        fetcher.hold_from(priority::queued());
         fetchers.push((key.clone(), fetcher.clone()));
         Ok(fetcher)
     }
