@@ -56,7 +56,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
 
 
 #: 512², MOSS-Image's smallest canvas (0.25 MP).
-_SMALL: dict[str, Json] = {"prompt": "a red fox in fresh snow", "seed": 7, "megapixels": 0.25, "steps": 2}
+_SMALL: dict[str, Json] = {"prompt": {"text": "a red fox in fresh snow"}, "seed": 7, "megapixels": 0.25, "steps": 2}
 
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": dict(_SMALL), "check": size(512, 512)},
@@ -65,7 +65,7 @@ CELLS: list[Cell] = [
         **_SMALL, "aspect_ratio": "3:2", "regions": [
             {"box": [0.1, 0.1, 0.5, 0.6], "prompt": "a red fox"},
             {"box": [0.55, 0.7, 0.95, 0.9], "prompt": "a wooden sign", "text": "SNOW"}]}},
-    {"entry": "image", "name": "tool", "payload": {"instructions": "a red fox in fresh snow", "seed": 7,
+    {"entry": "image", "name": "tool", "payload": {"instructions": {"text": "a red fox in fresh snow"}, "seed": 7,
                                                    "negative_prompt": "blurry"}, "check": size(1024, 1024)},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]
