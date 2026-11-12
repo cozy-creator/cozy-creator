@@ -89,7 +89,12 @@
   background: var(--paper);
   background-size: calc(1024px * var(--rung)), calc(2048px * var(--rung)), calc(2048px * var(--rung)), calc(512px * var(--rung));
 }
-:root[data-theme="dark"] .paper-world {
+/* Paper with its sky faded out (Sheet.tsx), and ink: neither has the sky's wash or clouds. */
+.paper-world.paper-world-plain {
+  background: var(--paper-cream);
+}
+:root[data-theme="dark"] .paper-world,
+.paper-world.paper-world-plain {
   background-size: calc(1024px * var(--rung)), calc(2048px * var(--rung)), calc(512px * var(--rung));
 }
 .paper-world::after {
@@ -102,7 +107,8 @@
     transform: translate3d(calc(-2048px * var(--rung)), 0, 0);
   }
 }
-:root[data-theme="dark"] .paper-world::after {
+:root[data-theme="dark"] .paper-world::after,
+.paper-world.paper-world-plain::after {
   content: none;
 }
 @media (prefers-reduced-motion: reduce) {

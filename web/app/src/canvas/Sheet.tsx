@@ -16,23 +16,34 @@ const rungOf = (scale: number) => RUNG ** Math.ceil(Math.log(scale) / Math.log(R
 /** What the canvas is drawn on: on paper a landscape unless it's hidden, else a sheet that goes where the canvas goes. */
 export function Sheet() {
   const [now, shown] = [useSignal(theme), useSignal(landscape)]
-  return now === "paper" && shown ? <Landscape /> : <World />
+  return now === "paper" && shown ? <Landscape /> : <World key={now} washed={now === "paper"} />
 }
 
-/** The sheet, which goes where the canvas goes, at every zoom. The store is read here and the transform set by hand, so a pan renders nothing, and the sheet is on a layer of its own, so it repaints nothing. */
-function World() {
+/** Paper's sky comes and goes down the sheet every 2048 px, and its clouds repeat on that: far out they'd be stripes. It's all on from here in, and gone from here out, the plain sheet under it. */
+const WASHED = 0.6
+const UNWASHED = 0.3
+
+/**
+ * The sheet, which goes where the canvas goes, at every zoom. The store is read here and the transform set by hand, so a pan renders nothing, and the sheet is on a
+ * layer of its own, so it repaints nothing. On paper, a plain sheet is under it, the same but its sky's: a zoom out fades the sky away by its layer's opacity.
+ */
+function World({ washed }: { washed: boolean }) {
   const flow = useStoreApi()
+  const plain = useRef<HTMLDivElement>(null)
   const sheet = useRef<HTMLDivElement>(null)
   useEffect(() => {
     let [last, held] = [flow.getState().transform, 0]
     const place = ([x, y, zoom]: typeof last) => {
-      const element = sheet.current
-      if (!element) return
       const rung = rungOf(zoom)
-      if (rung !== held) element.style.setProperty("--rung", String((held = rung)))
       const period = PERIOD * zoom
       const wrap = (value: number) => (((value % period) + period) % period) - period
-      element.style.transform = `translate3d(${wrap(x)}px, ${wrap(y)}px, 0) scale(${zoom / rung})`
+      for (const element of [plain.current, sheet.current]) {
+        if (!element) continue
+        if (rung !== held) element.style.setProperty("--rung", String(rung))
+        element.style.transform = `translate3d(${wrap(x)}px, ${wrap(y)}px, 0) scale(${zoom / rung})`
+      }
+      held = rung
+      if (plain.current && sheet.current) sheet.current.style.opacity = String(Math.min(1, Math.max(0, (zoom - UNWASHED) / (WASHED - UNWASHED))))
     }
     place(last)
     return flow.subscribe(({ transform }) => {
@@ -41,7 +52,12 @@ function World() {
       place(transform)
     })
   }, [flow])
-  return <div ref={sheet} className="paper-world" aria-hidden="true" />
+  return (
+    <>
+      {washed && <div ref={plain} className="paper-world paper-world-plain" aria-hidden="true" />}
+      <div ref={sheet} className="paper-world" aria-hidden="true" />
+    </>
+  )
 }
 
 /**
@@ -124,7 +140,10 @@ function Landscape() {
   )
 }
 
-/** The dots' step on the canvas, their size on screen, and the least step on screen: a step smaller doubles, so far out every 2nd, 4th… is drawn. */
+/**
+ * The dots' step on the canvas, their size on screen, and the least step on screen: a step smaller doubles, so far out every 2nd, 4th… is drawn, each one
+ * of the dots nearer in. They're half a step off the canvas's origin, so not on the round numbers boxes are put at.
+ */
 const GAP = 24
 const DOT = 2
 const LEAST = 12
@@ -150,9 +169,10 @@ export function Dots() {
         for (const at of ["width", "height"]) cell.current.setAttribute(at, String(gap))
         for (const at of ["cx", "cy"]) dot.current.setAttribute(at, String(gap / 2))
       }
-      // A dot on the canvas's origin, and on every step from it, each on a whole pixel's edge so a pan doesn't soften it.
+      // The layer on a whole pixel, so a pan doesn't soften the dots.
       const wrap = (value: number) => Math.round(devicePixelRatio * ((((value % gap) + gap) % gap) - gap)) / devicePixelRatio
-      layer.current.style.transform = `translate3d(${wrap(x - gap / 2)}px, ${wrap(y - gap / 2)}px, 0)`
+      const off = (GAP / 2) * zoom - gap / 2
+      layer.current.style.transform = `translate3d(${wrap(x + off)}px, ${wrap(y + off)}px, 0)`
     }
     place(last)
     return flow.subscribe(({ transform }) => {

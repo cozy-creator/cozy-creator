@@ -4,7 +4,7 @@
 // person's does (page.js GPU): each layer of the landscape scaled by the zoom to its `--rate`, the sheet by the zoom, each laid out at a
 // rung and drawn at 0.75 to 1 of it (Sheet.tsx), so Chrome neither enlarges a raster nor leaves part of it blank; the dots found in the
 // picture over the background and never over a box, a step apart, small and faint; and in a 4K window, no part of the bare background left
-// blank. A picture of each is kept. Then a pan's and a zoom's frames at 1 and 0.1 on each, held to rc/0.25.0's (BEFORE).
+// blank; paper's sky, whose wash comes and goes every 2048 px, faded out far out. A picture of each is kept. Then a pan's and a zoom's frames at 1 and 0.1 on each, held to rc/0.25.0's (BEFORE).
 //   node canvas.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT as see.js. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -30,6 +30,8 @@ const FOUR_K = { viewport: { width: 3840, height: 2160 }, deviceScaleFactor: 1 }
 /** The boxes, four pictures 240 wide round the point the view is on, so at 3 a corner of each is in it, and at 0.1 all four. */
 const SPOT = { x: 320, y: 275 };
 const near = (a, b, by) => Math.abs(a - b) <= by;
+// The page's own (ZoomControl.tsx's ZOOMS).
+const STEPS = [0.05, 0.1, 0.15, 0.2, 0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.25, 1.5, 2, 2.5, 3, 4];
 
 /**
  * rc/0.25.0's frames (e2e <run>, its page at 8c1b92461 under this cell), on a runner whose speed.js read `speed_ms`: a frame now may take no
@@ -57,7 +59,8 @@ const geometryOf = (page) => page.evaluate(`(() => {
     rung: element.matches('.paper-landscape-sky') ? 1 : number(element, '--landscape-scale') / base,
   })) : [];
   const sheet = document.querySelector('.paper-world');
-  const world = sheet && { drawn: scaleOf(sheet), rung: number(sheet, '--rung') || 1 };
+  const sky = document.querySelector('.paper-world:not(.paper-world-plain)');
+  const world = sheet && { drawn: scaleOf(sheet), rung: number(sheet, '--rung') || 1, sky: sky && Number(getComputedStyle(sky).opacity) };
   const dots = document.querySelector('.canvas-dots');
   const style = dots && getComputedStyle(dots);
   return {
@@ -89,16 +92,17 @@ const samplesOf = (page) => page.evaluate(() => {
   const first = (from, step) => from - Math.floor(from / step) * step;
   for (let y = first(cy, gap * down); y < innerHeight; y += gap * down) {
     for (let x = first(cx, gap * across); x < innerWidth; x += gap * across) {
-      const what = kind(x, y);
-      if (what) out[what].push([x, y]);
-      if (what === 'open' && kind(x + gap / 2, y + gap / 2) === 'open') out.between.push([x + gap / 2, y + gap / 2]);
+      if (kind(x, y) !== 'open') continue;
+      out.open.push([x, y]);
+      if (kind(x + gap / 2, y + gap / 2) === 'open') out.between.push([x + gap / 2, y + gap / 2]);
     }
   }
-  // Boxes are small far out: every point of their pictures on the step's grid counts.
+  // Boxes are small far out: every point of their pictures on the step's grid counts, 3 px in from its edge, past what a dot beside it draws.
   for (const media of document.querySelectorAll('.react-flow__node .media')) {
     const box = media.getBoundingClientRect();
-    for (let y = first(cy - box.top, gap) + box.top; y < box.bottom; y += gap) {
-      for (let x = first(cx - box.left, gap) + box.left; x < box.right; x += gap) if (kind(x, y) === 'box') out.box.push([x, y]);
+    const [left, top, right, bottom] = [box.left + 3, box.top + 3, box.right - 3, box.bottom - 3];
+    for (let y = first(cy - top, gap) + top; y < bottom; y += gap) {
+      for (let x = first(cx - left, gap) + left; x < right; x += gap) if (kind(x, y) === 'box') out.box.push([x, y]);
     }
   }
   out.box = out.box.slice(0, 400);
@@ -112,6 +116,9 @@ const hide = (page, selector, hidden) => page.evaluate(([selector, hidden]) => {
     else element.style.removeProperty('visibility');
   }
 }, [selector, hidden]);
+
+/** Every animation held where it is (paper's clouds drift), or let go: two pictures of one moment differ only by what's hidden between them. */
+const still = (page, held) => page.evaluate((held) => { for (const animation of document.getAnimations()) held ? animation.pause() : animation.play(); }, held);
 
 /** Two frames, then a moment for the raster: a picture after a zoom shows what a person sees once it's still. */
 const drawn = async (page) => {
@@ -208,6 +215,7 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
   const speed = runnerSpeed();
   seen.runner = speed;
   const browser = await launch(playwright, GPU);
+  const software = await launch(playwright);
   const decoder = await (await browser.newContext()).newPage();
   const errors = [];
   const watch = (tab) => {
@@ -267,8 +275,11 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
       for (let i = 0; i < 20; i++) {
         const now = (await tab.evaluate(VIEW)).zoom;
         if (near(now, zoom, 0.001)) break;
-        if (zoom > now && now < 1 && zoom >= 1) await tab.keyboard.press('Shift+Digit0');
+        if (zoom >= 1 && now < 1) await tab.keyboard.press('Shift+Digit0');
         else await tab.click(`.zoom button[aria-label="${zoom < now ? 'Zoom out' : 'Zoom in'}"]`);
+        // A slow frame holds the view still part way: it's there once it has left where it was and is on one of the control's steps.
+        await until('the zoom moved', async () => (await tab.evaluate(VIEW)).zoom, (at) => !near(at, now, 0.0005));
+        await until('the zoom on a step', async () => (await tab.evaluate(VIEW)).zoom, (at) => STEPS.some((step) => near(at, step, 0.0005)));
         await settled(tab);
       }
       await drawn(tab);
@@ -284,14 +295,17 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
       return { ok: each.length > 0 && wrong.length === 0, each: each.map(({ name, want, got, drawn }) => ({ name, want: +want.toFixed(3), got: +got.toFixed(3), drawn: +drawn.toFixed(3) })) };
     };
     const pictureOf = async (tab) => (await tab.screenshot()).toString('base64');
-    /** A picture of the background alone: the page hidden but for it. */
+    /** A picture of the background alone: everything beside it on its way up to the page, at no opacity (what sets its own visibility shows past a hidden parent). */
     const bareOf = async (tab) => {
-      await hide(tab, 'body', true);
-      await tab.evaluate(() => { for (const element of document.querySelectorAll('.paper-landscape, .paper-world')) element.style.setProperty('visibility', 'visible', 'important'); });
+      await tab.evaluate(() => {
+        const kept = [...document.querySelectorAll('.paper-landscape, .paper-world')];
+        const path = new Set(kept.flatMap((element) => { const up = []; for (let at = element.parentElement; at; at = at.parentElement) up.push(at); return up; }));
+        window.bare = [...path].flatMap((at) => [...at.children].filter((child) => !path.has(child) && !kept.includes(child)));
+        for (const element of window.bare) element.style.setProperty('opacity', '0', 'important');
+      });
       await drawn(tab);
       const picture = await tab.screenshot();
-      await tab.evaluate(() => { for (const element of document.querySelectorAll('.paper-landscape, .paper-world')) element.style.removeProperty('visibility'); });
-      await hide(tab, 'body', false);
+      await tab.evaluate(() => { for (const element of window.bare) element.style.removeProperty('opacity'); });
       return picture;
     };
 
@@ -304,10 +318,13 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
       for (const zoom of ZOOMS) {
         const at = await zoomTo(tab, zoom);
         const name = `${theme}_${zoom}`;
+        await still(tab, true);
         const geometry = await geometryOf(tab);
         const scaled = scaledRight(geometry, theme);
         check(`${name}_background_scaled`, near(at, zoom, 0.001) && scaled.ok, { at, ...scaled });
-        let gap = 24 * zoom;
+        // Paper's sky comes and goes down the sheet every 2048 px: in close it's on, far out it's faded to the plain sheet under it.
+        if (theme === 'paper') check(`${name}_sky_faded_far_out`, geometry.world?.sky === (at >= 0.6 ? 1 : at <= 0.3 ? 0 : geometry.world?.sky), geometry.world);
+        let gap = 24 * at;
         while (gap < 12) gap *= 2;
         check(`${name}_dots_shown`, geometry.dots?.shown && near(geometry.dots.gap, gap, 0.01) && geometry.dots.r === 1, geometry.dots);
         const samples = await samplesOf(tab);
@@ -329,7 +346,8 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
           const blanks = await decoder.evaluate(blanksIn, { picture: (await bareOf(tab)).toString('base64'), k: WINDOW.deviceScaleFactor });
           check(`${name}_no_blank`, blanks.flat === 0, blanks);
         }
-        seen.zooms[name] = { at, geometry: scaled.each, dots };
+        await still(tab, false);
+        seen.zooms[name] = { at, geometry: scaled.each, sky: geometry.world?.sky, dots };
       }
       await tab.close();
 
@@ -352,10 +370,14 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
       }
       await large.close();
 
-      // A pan's and a zoom's frames, at 1 and at 0.1.
+      // A pan's and a zoom's frames, at 1 and at 0.1, in Chrome compositing as headless does by itself (as see.js and zoom.js time a pan):
+      // SwiftShader draws each layer in software, a fifth of a second a frame here, and so few frames tell nothing.
       seen.frames ??= {};
+      const timing = await software.newContext(WINDOW);
+      contexts.push(timing);
+      await signIn(await timing.newPage());
       for (const zoom of [1, 0.1]) {
-        const timed = await open(context, theme, zoom);
+        const timed = await open(timing, theme, zoom);
         for (const kind of ['pan', 'zoom']) {
           const { frames, views } = await moving(timed, kind, 3000);
           const name = `${theme}_${zoom}_${kind}`;
@@ -365,6 +387,7 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
         }
         await timed.close();
       }
+      await timing.close();
     }
 
     // No slower than before: each run of frames against rc/0.25.0's on its runner, by this runner's speed against that one's.
@@ -389,6 +412,7 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
   check('no_page_errors', errors.length === 0, errors);
   console.log(JSON.stringify({ failures, seen }, null, 2));
   await browser.close();
+  await software.close();
   process.exit(failures.length ? 1 : 0);
 })().catch(died);
 
