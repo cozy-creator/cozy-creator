@@ -168,8 +168,8 @@ class Cancel:
     def json(self) -> str: ...
     def replace(self, /, **changes: Unpack[_CancelChanges]) -> Self: ...
 
-_InvokeFields = TypedDict("_InvokeFields", {'tensorfs': NotRequired[TensorFSOptions | None], 'max_output_bytes': NotRequired[int], 'request_id': str, 'construction': str, 'entrypoint': str, 'spool': _StrPath, 'deadline_s': NotRequired[float | None], 'attention_kernel': NotRequired[str], 'attention_capture': NotRequired[str], 'bits': NotRequired[int], 'inputs': NotRequired[Mapping[str, InputFile]], 'trees': NotRequired[Mapping[str, tuple[_StrPath, str]]], 'sources': NotRequired[Mapping[str, str]], 'weights': NotRequired[Mapping[str, int]], 'destination': NotRequired[str], 'actor': NotRequired[str], 'operation': NotRequired[str], 'family': NotRequired[str], 'display_limit': NotRequired[Sequence[int]]})
-_InvokeChanges = TypedDict("_InvokeChanges", {'tensorfs': TensorFSOptions | None, 'max_output_bytes': int, 'request_id': str, 'construction': str, 'entrypoint': str, 'spool': _StrPath, 'deadline_s': float | None, 'attention_kernel': str, 'attention_capture': str, 'bits': int, 'inputs': Mapping[str, InputFile], 'trees': Mapping[str, tuple[_StrPath, str]], 'sources': Mapping[str, str], 'weights': Mapping[str, int], 'destination': str, 'actor': str, 'operation': str, 'family': str, 'display_limit': Sequence[int]}, total=False)
+_InvokeFields = TypedDict("_InvokeFields", {'tensorfs': NotRequired[TensorFSOptions | None], 'max_output_bytes': NotRequired[int], 'request_id': str, 'construction': str, 'entrypoint': str, 'spool': _StrPath, 'deadline_s': NotRequired[float | None], 'attention_kernel': NotRequired[str], 'attention_capture': NotRequired[str], 'bits': NotRequired[int], 'inputs': NotRequired[Mapping[str, InputFile]], 'trees': NotRequired[Mapping[str, tuple[_StrPath, str]]], 'sources': NotRequired[Mapping[str, str]], 'unbound': NotRequired[Mapping[str, tuple[str, str]]], 'weights': NotRequired[Mapping[str, int]], 'destination': NotRequired[str], 'actor': NotRequired[str], 'operation': NotRequired[str], 'family': NotRequired[str], 'display_limit': NotRequired[Sequence[int]]})
+_InvokeChanges = TypedDict("_InvokeChanges", {'tensorfs': TensorFSOptions | None, 'max_output_bytes': int, 'request_id': str, 'construction': str, 'entrypoint': str, 'spool': _StrPath, 'deadline_s': float | None, 'attention_kernel': str, 'attention_capture': str, 'bits': int, 'inputs': Mapping[str, InputFile], 'trees': Mapping[str, tuple[_StrPath, str]], 'sources': Mapping[str, str], 'unbound': Mapping[str, tuple[str, str]], 'weights': Mapping[str, int], 'destination': str, 'actor': str, 'operation': str, 'family': str, 'display_limit': Sequence[int]}, total=False)
 
 @final
 class Invoke:
@@ -199,6 +199,8 @@ class Invoke:
     def trees(self) -> dict[str, tuple[Path, str]]: ...
     @property
     def sources(self) -> dict[str, str]: ...
+    @property
+    def unbound(self) -> dict[str, tuple[str, str]]: ...
     @property
     def weights(self) -> dict[str, int]: ...
     @property

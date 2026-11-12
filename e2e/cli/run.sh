@@ -148,6 +148,21 @@ if cell ratio-unknown "$ratio" "prompt=ratio $RANDOM" negative_prompt=blurry gui
 fi
 }
 
+# An on-demand model slot whose model the Hub doesn't have (xs-186): a request that never reads it completes, and one that
+# reads it is refused with one line naming the slot, the model and why.
+lazy_slots() {
+step "an on-demand slot whose model the Hub lacks"
+local lazy=$here/script/lazy.py said
+if cell lazy-unused "$lazy" use:=false; then
+  grep -q '"used": *false' "$OUT/lazy-unused.ndjson" || check "lazy-unused: the reply is not used=false"
+fi
+ALLOW='extra: e2e/absent@0.1.0: ' cell lazy-read "$lazy" use:=true || return 0
+said=$(run_get "$OUT" lazy-read '[.reason.code, .reason.message] | join(" ")')
+echo "lazy-read: $(run_get "$OUT" lazy-read .status): $said"
+[ -f "$OUT/lazy-read.refused" ] && [[ $said == *" extra: e2e/absent@0.1.0: "* ]] \
+  || check "lazy-read: reading the slot did not fail naming it, its model and why: ${said:-nothing}"
+}
+
 # Describe reads a checkout's editable install statically (direct_url.json and .pth paths, never their code).
 describe() {
 step "describe"
@@ -318,6 +333,7 @@ case $SHARD in
     script_package
     one_name_two_paths
     image_ratio
+    lazy_slots
     describe
     first_run
     previews
@@ -476,6 +492,7 @@ case $SHARD in
     script_package
     one_name_two_paths
     image_ratio
+    lazy_slots
     run_follow
     time_left
     broken_answers

@@ -23,6 +23,11 @@ use crate::storage;
 pub(crate) const FORMAT: &str = "cozy.model.lora/1";
 /// A graph with a DoRA layer: a Runtime that reads only [`FORMAT`] refuses it, never applies it as a LoRA.
 pub(crate) const DORA_FORMAT: &str = "cozy.model.lora/2";
+/// A graph with a LoKr layer (`Kron`), DoRAs or not: a Runtime before it refuses it.
+pub(crate) const KRON_FORMAT: &str = "cozy.model.lora/3";
+/// A LoKr's factor roles (LyCORIS' Kronecker adapter, `ΔW = kron(W1, W2)`, each factor whole or an `_a @ _b` pair),
+/// grafted as `<path>.lokr_<role>.<adapter>.weight`.
+const KRON: [&str; 6] = ["w1", "w2", "w1_a", "w1_b", "w2_a", "w2_b"];
 /// The graph's asset in each adapted component of the view.
 pub(crate) const GRAPH_FILE: &str = "model_adapters.json";
 
@@ -109,6 +114,19 @@ struct Layer {
     /// The layer is a DoRA: its magnitude is grafted beside its factors.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     dora: bool,
+    /// The layer is a LoKr: its factors, in place of `lora_A`/`lora_B`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kron: Option<Kron>,
+}
+
+/// A LoKr layer's update, `kron(W1, W2)` times α / r: each factor grafted by its role with its shape `[rows, cols]`
+/// (`factors`), and the runs `[start, stop)` of its rows the target takes, in order (`rows`; none: all of them, a
+/// fused module's third or a SwiGLU's swapped halves otherwise). r is a decomposed factor's rank, else α = r = 1.
+#[derive(Serialize)]
+struct Kron {
+    factors: BTreeMap<&'static str, Vec<u64>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    rows: Vec<[u64; 2]>,
 }
 
 #[derive(Serialize)]
@@ -173,6 +191,10 @@ fn pairs(factors: &BTreeMap<String, Tensor>) -> (Pairs<'_>, Vec<String>) {
     for (key, tensor) in factors {
         let found = [(".lora_A.weight", "a"), (".lora_B.weight", "b"), (".alpha", "alpha"), (".lora_magnitude_vector", "magnitude")]
             .into_iter()
+            .chain([
+                (".lokr_w1", "w1"), (".lokr_w2", "w2"), (".lokr_w1_a", "w1_a"), (".lokr_w1_b", "w1_b"),
+                (".lokr_w2_a", "w2_a"), (".lokr_w2_b", "w2_b"), (".lokr_rows", "rows"),
+            ])
             .find_map(|(suffix, role)| key.strip_suffix(suffix).map(|path| (path, role)))
             .filter(|(path, _)| !path.is_empty());
         match found {
@@ -185,6 +207,9 @@ fn pairs(factors: &BTreeMap<String, Tensor>) -> (Pairs<'_>, Vec<String>) {
 
 /// Why a layer's factors cannot adapt the base; none when they can.
 fn unfit(pair: &BTreeMap<&'static str, (String, &Tensor)>, base: &BTreeMap<String, Tensor>, path: &str) -> Option<&'static str> {
+    if pair.contains_key("rows") || KRON.iter().any(|r| pair.contains_key(*r)) {
+        return kron_unfit(pair, base, path);
+    }
     let (Some((_, a)), Some((_, b))) = (pair.get("a"), pair.get("b")) else {
         return Some("incomplete A/B pair");
     };
@@ -207,6 +232,68 @@ fn unfit(pair: &BTreeMap<&'static str, (String, &Tensor)>, base: &BTreeMap<Strin
         }
         _ => None,
     }
+}
+
+/// A LoKr's `W1` `[a, b]` and `W2` `[c, d]` as `[a, b, c, d]`, each whole or an `_a @ _b` pair, and its rank: the
+/// decomposed `W2`'s inner size, else the decomposed `W1`'s (ComfyUI's and LyCORIS' `dim`), else none.
+fn kron_dims(pair: &BTreeMap<&'static str, (String, &Tensor)>) -> Option<([u64; 4], Option<u64>)> {
+    let dims = |w: &str, wa: &str, wb: &str| match (pair.get(w), pair.get(wa), pair.get(wb)) {
+        (Some((_, t)), None, None) if t.shape.len() == 2 => Some(((t.shape[0], t.shape[1]), None)),
+        (None, Some((_, a)), Some((_, b))) if a.shape.len() == 2 && b.shape.len() == 2 && a.shape[1] == b.shape[0] => {
+            Some(((a.shape[0], b.shape[1]), Some(a.shape[1])))
+        }
+        _ => None,
+    };
+    let ((a, b), r1) = dims("w1", "w1_a", "w1_b")?;
+    let ((c, d), r2) = dims("w2", "w2_a", "w2_b")?;
+    Some(([a, b, c, d], r2.or(r1)))
+}
+
+/// Why a LoKr's factors cannot adapt the base; none when they can: `kron(W1, W2)` (its `rows`, when it has them) is
+/// the linear's `[out, in]`.
+fn kron_unfit(pair: &BTreeMap<&'static str, (String, &Tensor)>, base: &BTreeMap<String, Tensor>, path: &str) -> Option<&'static str> {
+    if ["a", "b", "magnitude"].iter().any(|r| pair.contains_key(*r)) {
+        return Some("LoRA and LoKr factors for one layer");
+    }
+    let Some(([a, b, c, d], _)) = kron_dims(pair) else {
+        return Some("not a LoKr's W1 and W2, each whole or an _a/_b pair");
+    };
+    let Some(weight) = base.get(&format!("{path}.weight")) else {
+        return Some("the base has no such layer");
+    };
+    let factors: Vec<&Tensor> = KRON.iter().filter_map(|r| pair.get(*r).map(|(_, t)| *t)).collect();
+    if weight.shape.len() != 2 {
+        return Some("a LoKr adapts a linear, and this is not one");
+    }
+    if !factors.iter().all(|t| plain(t) && t.dtype == factors[0].dtype) || !matches!(weight.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) {
+        return Some("not plain f16, bf16 or f32 factors");
+    }
+    let out = match pair.get("rows") {
+        Some((_, rows)) if rows.dtype == Dtype::I32 && rows.shape.len() == 1 && matches!(rows.body, Body::Data(_)) => rows.shape[0],
+        Some(_) => return Some("its rows are not one I32 vector"),
+        None => a * c,
+    };
+    if b * d != weight.shape[1] || out != weight.shape[0] || out > a * c {
+        return Some("its Kronecker product does not fit the base projection");
+    }
+    None
+}
+
+/// The rows of `kron(W1, W2)` a LoKr's `rows` tensor takes, as runs `[start, stop)`; each below `total`.
+fn kron_rows(checkpoint: &Checkpoint, component: &str, key: &str, total: u64) -> io::Result<Vec<[u64; 2]>> {
+    let bytes = checkpoint.read(component, key).map_err(storage::io_error)?;
+    let mut runs: Vec<[u64; 2]> = vec![];
+    for word in bytes.chunks_exact(4) {
+        let row = u64::try_from(i32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .ok()
+            .filter(|row| *row < total)
+            .ok_or_else(|| refuse("lokr_rows", format!("{component}.{key}: a row outside its {total}")))?;
+        match runs.last_mut() {
+            Some(run) if run[1] == row => run[1] += 1,
+            _ => runs.push([row, row + 1]),
+        }
+    }
+    Ok(runs)
 }
 
 /// Whether factors `a` and `b` adapt base `weight`: a linear's `[out, in]` as A `[r, in]` and B
@@ -349,6 +436,58 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
                     skipped.push(format!("{path} ({why})"));
                     continue;
                 }
+                if let Some(([a, _, c, _], decomposed)) = kron_dims(pair) {
+                    let mut factors = BTreeMap::new();
+                    for role in KRON {
+                        let Some((key, tensor)) = pair.get(role) else { continue };
+                        validate(adapter, source_component, key, tensor)?;
+                        factors.insert(role, tensor.shape.clone());
+                    }
+                    // ComfyUI's and LyCORIS' scale: α / r for a decomposed factor's rank r, else 1 (α unused).
+                    let (rank, alpha) = match (decomposed, pair.get("alpha")) {
+                        (Some(r), Some((key, tensor))) if plain(tensor) => {
+                            (r, validate(adapter, source_component, key, tensor)?.unwrap_or(r as f64))
+                        }
+                        (Some(r), _) => (r, r as f64),
+                        (None, _) => (1, 1.0),
+                    };
+                    let rows = match pair.get("rows") {
+                        Some((key, _)) => kron_rows(adapter, source_component, key, a * c)?,
+                        None => vec![],
+                    };
+                    if !(alpha / rank as f64 * selection.strength).is_finite() {
+                        skipped.push(format!("{path} (its effective scale is not finite)"));
+                        continue;
+                    }
+                    taken += 1;
+                    if selection.strength == 0.0 {
+                        continue;
+                    }
+                    for suffix in ["weight", "bias"] {
+                        let key = format!("{path}.{suffix}");
+                        if base_tensors.contains_key(&key) {
+                            renamed.entry((component.clone(), key)).or_insert(format!("{path}.base_layer.{suffix}"));
+                        }
+                    }
+                    let dtype = KRON.iter().find_map(|r| pair.get(*r)).map(|(_, t)| t.dtype.name().to_owned()).unwrap_or_default();
+                    for role in KRON {
+                        let Some((key, _)) = pair.get(role) else { continue };
+                        let grafted = format!("{path}.lokr_{role}.{alias}.weight");
+                        grafts.entry(component.clone()).or_default().push((component.clone(), grafted, index + 1, source_component.clone(), key.clone()));
+                    }
+                    graph.layers.push(Layer {
+                        component: component.clone(),
+                        target: path.clone(),
+                        adapter: alias.clone(),
+                        rank,
+                        alpha,
+                        strength: selection.strength,
+                        dtype,
+                        dora: false,
+                        kron: Some(Kron { factors, rows }),
+                    });
+                    continue;
+                }
                 let ((a_key, a), (b_key, b)) = (&pair["a"], &pair["b"]);
                 validate(adapter, source_component, a_key, a)?;
                 validate(adapter, source_component, b_key, b)?;
@@ -392,6 +531,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
                     strength: selection.strength,
                     dtype: a.dtype.name().into(),
                     dora: magnitude.is_some(),
+                    kron: None,
                 });
             }
             if taken > 0 {
@@ -457,6 +597,9 @@ pub(crate) fn compose(store: &Store, base: &ObjectRef, selections: &[Selection])
     let adapted: BTreeSet<&str> = graph.adapters.iter().map(|a| a.component.as_str()).collect();
     if graph.layers.iter().any(|l| l.dora) {
         graph.format = DORA_FORMAT;
+    }
+    if graph.layers.iter().any(|l| l.kron.is_some()) {
+        graph.format = KRON_FORMAT;
     }
     let graph = serde_json_canonicalizer::to_vec(&graph).map_err(io::Error::other)?;
     let sources: Vec<&Header> = std::iter::once(base.header()).chain(adapters.iter().map(|(_, a)| a.header())).collect();

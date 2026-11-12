@@ -222,6 +222,10 @@ pub(crate) struct Plan {
     pub slots: Vec<PlanSlot>,
     #[serde(default)]
     pub sources: Vec<PlanSource>,
+    /// The on-demand slots it binds no checkpoint, by parameter, each with what a call reading
+    /// one fails with: a code, and one line naming the slot, its model and why (xs-186).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unbound: BTreeMap<String, (String, String)>,
     /// GPUs it runs on (a group's are the first `degree` envelope devices); 0: deviceless.
     pub degree: u32,
 }
@@ -240,6 +244,7 @@ impl Plan {
             entrypoint: entrypoint.into(),
             slots: vec![],
             sources: vec![],
+            unbound: BTreeMap::new(),
             degree,
         }
     }
@@ -2311,14 +2316,16 @@ impl Pool {
     /// Derive each model slot's binding from the installed SDK's real static interface and
     /// the model the run's preparation resolved for it (`grants`, one per slot, `published`):
     /// a constructed slot becomes the plan's construction, a `Weights[M]` one its source.
-    /// `degree` 0 takes the widest group every constructed slot declares on this machine. No
-    /// model code executes during description/preparation.
+    /// `unbound` are the on-demand slots that did not bind, by parameter; one whose model it
+    /// can't load joins them (xs-186). `degree` 0 takes the widest group every constructed slot
+    /// declares on this machine. No model code executes during description/preparation.
     pub(crate) fn prepare_root(
         &self,
         installed: &crate::journal::Installation,
         entrypoint: &str,
         choices: &[crate::stored::ModelChoice],
         grants: &[ModelGrant],
+        mut unbound: BTreeMap<String, (String, String)>,
         degree: u32,
     ) -> io::Result<Plan> {
         let store = self.selected_store()?;
@@ -2356,6 +2363,9 @@ impl Pool {
         let degree = self.degree(entry, degree);
         let (mut planned, mut sources) = (vec![], vec![]);
         for (model, (path, parameter)) in models.iter().zip(&slots) {
+            if unbound.contains_key(parameter) {
+                continue;
+            }
             let class = model
                 .get("class")
                 .and_then(serde_json::Value::as_str)
@@ -2385,26 +2395,12 @@ impl Pool {
                 });
                 continue;
             }
-            let mut wanted = std::collections::BTreeSet::new();
-            // The components this callable declares it uses, else every one its methods use.
-            if let Some(declared) = model.get("components").and_then(serde_json::Value::as_array) {
-                for component in declared {
-                    wanted.insert(
-                        component
-                            .as_str()
-                            .ok_or_else(|| invalid("declared component is not a name"))?
-                            .to_string(),
-                    );
-                }
-            } else if let Some(use_map) = model
-                .get("component_use")
-                .and_then(serde_json::Value::as_object)
-            {
-                for components in use_map.values() {
-                    for component in components
-                        .as_array()
-                        .ok_or_else(|| invalid("declared component use is not an array"))?
-                    {
+            let on_demand = model.get("on_demand").and_then(serde_json::Value::as_bool) == Some(true);
+            let bind = || -> io::Result<PlanSlot> {
+                let mut wanted = std::collections::BTreeSet::new();
+                // The components this callable declares it uses, else every one its methods use.
+                if let Some(declared) = model.get("components").and_then(serde_json::Value::as_array) {
+                    for component in declared {
                         wanted.insert(
                             component
                                 .as_str()
@@ -2412,68 +2408,97 @@ impl Pool {
                                 .to_string(),
                         );
                     }
+                } else if let Some(use_map) = model
+                    .get("component_use")
+                    .and_then(serde_json::Value::as_object)
+                {
+                    for components in use_map.values() {
+                        for component in components
+                            .as_array()
+                            .ok_or_else(|| invalid("declared component use is not an array"))?
+                        {
+                            wanted.insert(
+                                component
+                                    .as_str()
+                                    .ok_or_else(|| invalid("declared component is not a name"))?
+                                    .to_string(),
+                            );
+                        }
+                    }
                 }
-            }
-            let components: Vec<_> = grant
-                .components
-                .iter()
-                .filter(|c| wanted.is_empty() || wanted.contains(*c))
-                .cloned()
-                .collect();
-            let missing: Vec<&str> = wanted.iter().filter(|c| !components.contains(c)).map(String::as_str).collect();
-            if components.is_empty() || !missing.is_empty() {
-                let model = if grant.model.is_empty() { grant.manifest.clone() } else { grant.model.clone() };
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!(
-                        "{path} uses {} that its model {model} does not hold (it holds {})",
-                        if missing.is_empty() { "components".to_string() } else { missing.join(", ") },
-                        if grant.components.is_empty() { "none".to_string() } else { grant.components.join(", ") }
-                    ),
-                ));
-            }
-            let (selected_encoded_bytes, length) = selected_bytes(&store, &grant.manifest, &components)?;
-            if chosen
-                .and_then(|c| c.manifest.as_ref())
-                .is_some_and(|r| r.length != 0 && r.length != length)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "selected manifest length differs from cached bytes",
-                ));
-            }
-            let binding = Binding {
-                application: application.into(),
-                model_class: class.into(),
-                model_binding_path: path.clone(),
-                model_parameter_name: parameter.clone(),
-                components,
-                snapshot: grant.manifest.clone(),
-                release: format!("{}@{}", installed.package, installed.release),
-                package: installed.package.clone(),
-                model: format!("{}@{}", grant.model, grant.release),
-                ..Default::default()
+                let components: Vec<_> = grant
+                    .components
+                    .iter()
+                    .filter(|c| wanted.is_empty() || wanted.contains(*c))
+                    .cloned()
+                    .collect();
+                let missing: Vec<&str> = wanted.iter().filter(|c| !components.contains(c)).map(String::as_str).collect();
+                if components.is_empty() || !missing.is_empty() {
+                    let model = if grant.model.is_empty() { grant.manifest.clone() } else { grant.model.clone() };
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!(
+                            "{path} uses {} that its model {model} does not hold (it holds {})",
+                            if missing.is_empty() { "components".to_string() } else { missing.join(", ") },
+                            if grant.components.is_empty() { "none".to_string() } else { grant.components.join(", ") }
+                        ),
+                    ));
+                }
+                let (selected_encoded_bytes, length) = selected_bytes(&store, &grant.manifest, &components)?;
+                if chosen
+                    .and_then(|c| c.manifest.as_ref())
+                    .is_some_and(|r| r.length != 0 && r.length != length)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "selected manifest length differs from cached bytes",
+                    ));
+                }
+                let binding = Binding {
+                    application: application.into(),
+                    model_class: class.into(),
+                    model_binding_path: path.clone(),
+                    model_parameter_name: parameter.clone(),
+                    components,
+                    snapshot: grant.manifest.clone(),
+                    release: format!("{}@{}", installed.package, installed.release),
+                    package: installed.package.clone(),
+                    model: format!("{}@{}", grant.model, grant.release),
+                    ..Default::default()
+                };
+                let placeable = model.get("placeable").and_then(serde_json::Value::as_array).into_iter().flatten()
+                    .map(|c| c.as_str().map(str::to_owned).ok_or_else(|| invalid("declared placeable component is not a name")))
+                    .collect::<io::Result<Vec<_>>>()?;
+                if placeable.iter().any(|c| !binding.components.contains(c)) {
+                    return Err(invalid(&format!("a placeable component of {path} is not one it loads")));
+                }
+                Ok(PlanSlot {
+                    binding,
+                    lane: grant.lane.clone(),
+                    precision: precision(&store, &grant.manifest),
+                    selected_encoded_bytes,
+                    on_demand,
+                    placeable,
+                    adapted: grant.adapted.clone(),
+                    view: crate::storage::view(&grant.manifest).map(|view| view.recipe.clone()),
+                })
             };
-            let placeable = model.get("placeable").and_then(serde_json::Value::as_array).into_iter().flatten()
-                .map(|c| c.as_str().map(str::to_owned).ok_or_else(|| invalid("declared placeable component is not a name")))
-                .collect::<io::Result<Vec<_>>>()?;
-            if placeable.iter().any(|c| !binding.components.contains(c)) {
-                return Err(invalid(&format!("a placeable component of {path} is not one it loads")));
+            match bind() {
+                Ok(slot) => planned.push(slot),
+                // An on-demand slot its model can't fill fails a call only when its function reads it.
+                Err(e) if on_demand => {
+                    let named = if grant.model.is_empty() { grant.manifest.clone() } else { format!("{}@{}", grant.model, grant.release) };
+                    unbound.insert(parameter.clone(), ("model_preparation_failed".into(), format!("{parameter}: {named}: {e}")));
+                }
+                Err(e) => return Err(e),
             }
-            planned.push(PlanSlot {
-                binding,
-                lane: grant.lane.clone(),
-                precision: precision(&store, &grant.manifest),
-                selected_encoded_bytes,
-                on_demand: model.get("on_demand").and_then(serde_json::Value::as_bool) == Some(true),
-                placeable,
-                adapted: grant.adapted.clone(),
-                view: crate::storage::view(&grant.manifest).map(|view| view.recipe.clone()),
-            });
         }
         let construction = construction(&installed.generation, application, &planned, degree)?;
-        let id = format!("plan-{}", canonical_digest(serde_json::json!({"construction": construction,
-            "entrypoint": entrypoint, "slots": planned, "sources": sources}))?);
+        let mut identity = serde_json::json!({"construction": construction, "entrypoint": entrypoint, "slots": planned, "sources": sources});
+        if !unbound.is_empty() {
+            identity["unbound"] = serde_json::json!(unbound);
+        }
+        let id = format!("plan-{}", canonical_digest(identity)?);
         let executor = match planned.is_empty() {
             true => construction.clone(),
             false => environment(&installed.generation, application, degree)?,
@@ -2487,6 +2512,7 @@ impl Pool {
             entrypoint: entrypoint.into(),
             slots: planned,
             sources,
+            unbound,
             degree,
         })
     }
@@ -4037,6 +4063,7 @@ impl Pool {
                 inputs: inputs.inputs,
                 trees: inputs.trees,
                 sources: plan.sources.iter().map(|s| (s.parameter.clone(), s.manifest.clone())).collect(),
+                unbound: plan.unbound.clone(),
                 weights,
                 display_limit: self.display_limit(&lane),
             })),
