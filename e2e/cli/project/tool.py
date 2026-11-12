@@ -56,7 +56,7 @@ def still(payload: StillBox, out: Outputs) -> Picture:
 
 class SlowBox(msgspec.Struct, kw_only=True):
     instructions: Prompt[Image] = Prompt()
-    seconds: Annotated[float, Range(0, 60)] = 4.0
+    seconds: Annotated[float, Range(0, 7000)] = 4.0  # the cli gate's stall cell steps 700 s, past a 10-minute stall
     seed: Seed | None = None
 
 
