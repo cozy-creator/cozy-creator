@@ -468,11 +468,11 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     Ok(result)
 }
 
-/// The Runtime that reads a prerelease's interface in a dev home: the open RC's, which it is built for and runs on (cl-922),
-/// so it may declare what only that Runtime has (`When`). None: its lock's.
+/// The Runtime that reads a prerelease's interface from a dev home or an RC build of cozy (the e2e's candidates): the open
+/// RC's, which it is built for and runs on (cl-922), so it may declare what only that Runtime has (`When`). None: its lock's.
 async fn rc_reader(api: &Api, version: &str) -> Result<Option<String>, Error> {
     let prerelease = version.parse::<pep440_rs::Version>().is_ok_and(|version| version.any_prerelease());
-    if !api.machines.dev || !prerelease {
+    if !(api.machines.dev || crate::update::dev_build()) || !prerelease {
         return Ok(None);
     }
     let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);

@@ -34,7 +34,7 @@ pub(crate) fn this_release() -> &'static str {
 }
 
 /// Whether this cozy is a dev build (`+dev.g…`): no release of it to fetch.
-fn dev_build() -> bool {
+pub(crate) fn dev_build() -> bool {
     env!("CARGO_PKG_VERSION").contains('+')
 }
 
