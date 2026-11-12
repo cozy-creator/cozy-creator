@@ -389,6 +389,7 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
                 for event in protocol.receive_data(incoming):
                     if isinstance(event, h2.events.ResponseReceived):
                         status = int(dict(event.headers)[":status"])
+                        CONTEXT["worker_http_status"] = status
                     elif isinstance(event, h2.events.DataReceived):
                         answer.extend(event.data)
                         require(len(answer) <= 4 << 20, "fixture_failure")
