@@ -108,7 +108,10 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     }
     let closed=(|| {
         tree.kill().map_err(error)?;
-        if process_scope.end().map_err(error)?!=0 {return Err(error("tool descendants still hold the project"));}
+        process_scope.end().map_err(error)?;
+        if !platform::private_exec::project_scope_quiescent(&process_scope).map_err(error)? {
+            return Err(error("tool descendants still hold the project"));
+        }
         let followers=followers.into_values().collect::<Vec<_>>();
         platform::process::end_tree(&followers).map_err(error)?;
         let status=tree.wait().map_err(error)?;

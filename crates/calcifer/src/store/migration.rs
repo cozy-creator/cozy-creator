@@ -381,7 +381,7 @@ fn legacy_input_source(root:&Path,inputs:&Path,digest:&Digest,length:u64)->Resul
         Ok(entries)=>for entry in entries {
             let entry=entry.map_err(|_|StoreError::Protected("project_input_migration_pending".into()))?;
             let file=entry.file_name();
-            if file.to_str().is_some_and(|file|file==name||file.strip_prefix(&name).is_some_and(|tail|tail.starts_with('.'))) && entry.path().is_file() {
+            if file.to_str().is_some_and(|file|file==name.as_str()||file.strip_prefix(name.as_str()).is_some_and(|tail|tail.starts_with('.'))) && entry.path().is_file() {
                 return Ok(entry.path());
             }
         },
