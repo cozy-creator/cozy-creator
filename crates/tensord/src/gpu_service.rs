@@ -1564,7 +1564,7 @@ impl Pool {
             // From `downloaded` up, all its calls may read comes behind every call's.
             if let (Some(plan), Some(fetch), true) = (&member.plan, &member.fetch, member.level >= Level::Downloaded) {
                 if let Err(error) = fetch.keep(&plan.read()) {
-                    tracing::warn!("warm set: downloading {}: {error}", plan.construction);
+                    crate::private_io::warning(engine,preparation.map_or("warm",Stoppable::id),format_args!("warm set: downloading {}: {error}",plan.construction));
                 }
             }
             let held_back = match (&member.plan, member.level) {
@@ -1634,7 +1634,7 @@ impl Pool {
             Ok("loaded" | "already loaded" | "mapped") => "",
             Ok(held_back) => held_back,
             Err(error) => {
-                tracing::warn!("warm set: loading {}: {error}", plan.construction);
+                crate::private_io::warning(engine,preparation.map_or("warm",Stoppable::id),format_args!("warm set: loading {}: {error}",plan.construction));
                 "its load failed (the machine's log says why)"
             }
         }
@@ -1718,7 +1718,7 @@ impl Pool {
         }
         let reply = reply?;
         if !reply.ok {
-            tracing::warn!("warm set: mapping {}: {} {}", plan.construction, reply.code, reply.detail);
+            crate::private_io::warning(engine,preparation.map_or("warm",Stoppable::id),format_args!("warm set: mapping {}: {} {}",plan.construction,reply.code,reply.detail));
             return Ok("its warm preparation failed (the machine's log says why)");
         }
         if !usable {
@@ -1761,6 +1761,7 @@ impl Pool {
             executor.map(|level| level.min(Level::Host))
         } else { executor };
         let imported = || {
+            if crate::private_io::current().is_some() {return None;}
             let zygotes = self.zygotes.lock().unwrap();
             zygotes.get(&parent_app(&member.held)).cloned()
         };
@@ -2930,6 +2931,7 @@ impl Pool {
     /// when this pool spawns every executor (no GPU, or no fork here) or the generation
     /// constructs no model.
     fn zygote(&self, held: &HeldGeneration) -> Option<(Arc<Zygote>, bool)> {
+        if crate::private_io::current().is_some() || crate::private_io::is_private_path(&held.record.python) { return None; }
         let stopped = self.stopped.load(Ordering::Acquire);
         if stopped || !FORKS || self.devices.is_empty() || !binds_models(&held.record.interface) {
             return None;
