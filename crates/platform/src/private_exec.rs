@@ -203,6 +203,30 @@ mod imp {
         })?;
         Ok(())
     }
+    fn reject_external_links(root: &Path) -> Result<()> {
+        let mut pending = vec![root.to_owned()];
+        let mut files = std::collections::BTreeMap::<(u64, u64), (u64, u64)>::new();
+        while let Some(dir) = pending.pop() {
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                let stat = fs::symlink_metadata(entry.path())?;
+                if stat.is_dir() {
+                    pending.push(entry.path());
+                } else if stat.is_file() && stat.nlink() > 1 {
+                    let counted = files
+                        .entry((stat.dev(), stat.ino()))
+                        .or_insert((stat.nlink(), 0));
+                    counted.1 += 1;
+                }
+            }
+        }
+        if files.values().any(|(links, seen)| links != seen) {
+            return Err(invalid(
+                "project contains a regular file hard-linked outside its owned tree",
+            ));
+        }
+        Ok(())
+    }
     pub(super) fn prepare(resources: PrivateResources) -> Result<Policy> {
         core_pattern()?;
         let root = path(&resources.project_root)?;
@@ -211,6 +235,7 @@ mod imp {
         if !stat.is_dir() || stat.uid() != unsafe { libc::geteuid() } || root == Path::new("/") {
             return Err(invalid("project root is not an owned native directory"));
         }
+        reject_external_links(&root)?;
         // SAFETY: the ABI query takes a null attribute, zero size and VERSION flag.
         let abi = syscall_result(unsafe {
             libc::syscall(
@@ -244,6 +269,15 @@ mod imp {
         rule(&ruleset, &resources.project_root, MUTATE | READ | READ_DIR)?;
         for file in &resources.read_only_trees {
             read_only(file, true)?;
+            let read_root = path(file)?;
+            if read_root == Path::new("/")
+                || root.starts_with(&read_root)
+                || std::env::home_dir().as_ref() == Some(&read_root)
+            {
+                return Err(invalid(
+                    "read-only tree is an overbroad project or credential ancestor",
+                ));
+            }
             rule(&ruleset, file, READ | READ_DIR)?;
         }
         for file in &resources.read_only_files {
@@ -347,6 +381,31 @@ mod imp {
             libc::SYS_io_uring_setup,
             libc::SYS_recvmsg,
             libc::SYS_recvmmsg,
+            // Landlock ABI3 does not mediate inode metadata mutation. Deny these paths too;
+            // callers requiring them must fail, rather than gain writes outside the project.
+            libc::SYS_fchmod,
+            libc::SYS_fchmodat,
+            libc::SYS_fchmodat2,
+            libc::SYS_fchown,
+            libc::SYS_fchownat,
+            libc::SYS_utimensat,
+            libc::SYS_setxattr,
+            libc::SYS_lsetxattr,
+            libc::SYS_fsetxattr,
+            libc::SYS_removexattr,
+            libc::SYS_lremovexattr,
+            libc::SYS_fremovexattr,
+        ] {
+            code.extend([jump(syscall as u32, 0, 1), statement(0x06, DENY)]);
+        }
+        #[cfg(target_arch = "x86_64")]
+        for syscall in [
+            libc::SYS_chmod,
+            libc::SYS_chown,
+            libc::SYS_lchown,
+            libc::SYS_utime,
+            libc::SYS_utimes,
+            libc::SYS_futimesat,
         ] {
             code.extend([jump(syscall as u32, 0, 1), statement(0x06, DENY)]);
         }
@@ -447,6 +506,23 @@ mod imp {
                 // close_range leaves Rust's exec-error pipe alive until exec, preserving spawn errors.
                 if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) < 0 {
                     return Err(io::Error::last_os_error());
+                }
+                for target in [3, 4] {
+                    let mut actual = std::mem::zeroed::<libc::stat>();
+                    if libc::fstat(target, &mut actual) == 0
+                        && policy._resources.inherited.iter().any(|resource| {
+                            let PrivateDescriptor::KernelIpc(file) = resource else {
+                                return false;
+                            };
+                            let mut expected = std::mem::zeroed::<libc::stat>();
+                            libc::fstat(file.as_raw_fd(), &mut expected) == 0
+                                && actual.st_dev == expected.st_dev
+                                && actual.st_ino == expected.st_ino
+                        })
+                        && libc::fcntl(target, libc::F_SETFD, 0) < 0
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
                 }
                 for fd in &policy.kept {
                     if libc::fcntl(*fd, libc::F_SETFD, 0) < 0 {
