@@ -856,7 +856,9 @@ pub(crate) struct Prepared {
 
 /// `code` made callable `on` a machine, never waiting for an install: the install it
 /// needs is sent under `{key}/install` and returned, and once it has settled the same `key` finds
-/// its answer. `warm` installs again whatever is kept: a warm set names the machine's
+/// its answer. Meanwhile a call needn't wait for it (cl-905): it is bound to what the static describer
+/// reads and carries its source, so it goes at once and its machine builds it behind that install, in
+/// its install line. `warm` installs again whatever is kept: a warm set names the machine's
 /// installation, which only an install answers.
 pub(crate) async fn prepare(
     api: &Arc<Api>,
@@ -891,7 +893,13 @@ pub(crate) async fn prepare(
     let submit = || SubmitRun { agreed: agreed.clone(), ..install_run(&home, origin.as_str(), on.clone(), &code) };
     let after = crate::private_io::current().is_none().then(|| crate::hub::after::After::Keep(code.filed()));
     match install_through(api, &key, after.as_ref(), submit).await? {
-        Install::Going(run) => Ok(prepared(None, None, None, Some(run))),
+        Install::Going(run) => {
+            let read = match warm {
+                true => None,
+                false => describe(api, local, on, hub).await.ok().map(|(_, interface)| interface),
+            };
+            Ok(prepared(read, None, None, Some(run)))
+        }
         Install::Ended(run) => {
             let installed = installed(run)?;
             if let Some(runtime) = &runtime {
@@ -924,11 +932,12 @@ pub(crate) async fn install_through(api: &Arc<Api>, key: &str, after: Option<&cr
     }
 }
 
-/// `prepare`, waiting out the install it needs: what Calcifer's own callers (a project's render blocks) use.
+/// `prepare`, waiting out the install it needs only when nothing reads what it calls without it: what Calcifer's own callers (a
+/// project's render blocks) use.
 pub(crate) async fn ready(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, key: &str) -> Result<Prepared, Error> {
     loop {
         let prepared = prepare(api, code, on, hub, false, key, None).await?;
-        let Some(run) = &prepared.install else { return Ok(prepared) };
+        let Some(run) = prepared.install.as_ref().filter(|_| prepared.interface.is_none()) else { return Ok(prepared) };
         crate::project::host::Host::new(api).wait(&run.id).await?;
     }
 }
