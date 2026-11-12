@@ -303,9 +303,11 @@ export async function connect(): Promise<Boot> {
     canvases.delete(id)
     forgetProjectView(id)
     revokeProjectMedia(id)
-    const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-      ((["canvas", "history"].includes(String(queryKey[0])) || String(queryKey[0]).startsWith("project")) && queryKey[1] === id)
-      || queryKey[0] === "tools"
+    // Its protection status stays: it is what the locked page shows. Dropped, it is asked again, and the lock it
+    // answers retires the project again, and again.
+    const privateData = ({ queryKey: [kind, project] }: { queryKey: readonly unknown[] }) =>
+      (project === id && kind !== "project-vault" && (["canvas", "history"].includes(String(kind)) || String(kind).startsWith("project")))
+      || kind === "tools"
     void queries.cancelQueries({ predicate: privateData })
     void queries.resetQueries({ predicate: privateData })
     queries.removeQueries({ predicate: privateData })
