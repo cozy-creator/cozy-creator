@@ -156,8 +156,7 @@ export const carrying = (found: FoundModel, tools: Map<string, Tool>): Carried =
     // The slot as the picker writes it (H3's segments' base_model as one), its one model replaced.
     const slot = pickerSlots(store.tools.get().get(store.get(name)?.asset?.tool ?? "")).find((model) => model.family === found.family && model.kind !== "lora")
     if (found.kind === "lora") {
-      const strength = found.strength
-      store.putOn(name, { lora: [...(Array.isArray(lora) ? lora : []), { ref: found.model, ...(typeof strength === "number" && Number.isFinite(strength) ? { strength } : {}) }] })
+      store.putOn(name, { lora: [...(Array.isArray(lora) ? lora : []), { ref: found.model }] })
     }
     else if (slot) chooseModel(store, name, slot, found.model)
   },

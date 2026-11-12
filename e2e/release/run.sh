@@ -199,10 +199,15 @@ cozy --json run ls --on "$M" > "$OUT/runs-rental.json" && J --arg m "$M" '(.runs
 
 step "SDXL on $M: a LoRA, then the package's other function"
 # The executor protocol (xs-081): a LoRA reaches the executor as an adapter view; a second function is served by the same release.
-if run_cell "$OUT" sdxl-lora "$(pinned sdxl generate)" prompt="a red armchair as flat-pack furniture, catalog photo" seed:=$RANDOM \
-    --lora ostris/ikea-lora-sdxl --on "$M"; then
+# Given without a strength, a LoRA runs at its recommended one, its Hub card's (0.9 here): `cozy run --lora` as a box's LoRA does.
+lora=proomptengineer/balloon-lora-sdxl
+if run_cell "$OUT" sdxl-lora "$(pinned sdxl generate)" prompt="PEBalloonStyle, a red armchair made of balloons, catalog photo" seed:=$RANDOM \
+    --lora "$lora" --on "$M"; then
   [ -s "$(run_output "$OUT" sdxl-lora 'png|webp|jpg')" ] || check "sdxl-lora: no image came down"
-  grep -q 'ikea-lora-sdxl' "$OUT/sdxl-lora.json" || check "sdxl-lora: its record names no LoRA"
+  grep -q 'balloon-lora-sdxl' "$OUT/sdxl-lora.json" || check "sdxl-lora: its record names no LoRA"
+  want=$(cozy --json lora ls "$lora" | jq --arg m "$lora" '[.models[] | select(.model == $m) | .strength][0]')
+  got=$(cozy --json --full run watch "$(cat "$OUT/sdxl-lora.number")" --once | jq '[.request.input.models[]?.lora[]?.strength][0]')
+  [[ $want =~ ^[0-9.]+$ && $got == "$want" ]] || check "sdxl-lora: --lora $lora ran at strength $got; its card recommends $want"
 else check "sdxl-lora: cozy run $(pinned sdxl generate) --lora --on $M did not complete: $(run_get "$OUT" sdxl-lora '.reason.message' | head -c 300)"; fi
 if run_cell "$OUT" sdxl-image "$(pinned sdxl image)" instructions="a lighthouse at dusk, oil painting" seed:=$RANDOM --on "$M"; then
   [ -s "$(run_output "$OUT" sdxl-image 'png|webp|jpg')" ] || check "sdxl-image: no image came down"

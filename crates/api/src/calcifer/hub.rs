@@ -227,7 +227,7 @@ pub struct FoundModel {
     pub private: bool,
     /// Who made it: the org it credits, or the parked org it mirrors into.
     pub author: Option<ModelAuthor>,
-    /// Its owner's recommended LoRA strength, when provided; not applied by a render automatically.
+    /// Its owner's recommended LoRA strength, when provided: what it runs at when given without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strength: Option<f64>,
     /// What its header says it is. None: it couldn't be read.
@@ -305,7 +305,7 @@ pub struct ModelDetail {
     /// The pinned upstream source.
     pub source: Option<String>,
     pub author: Option<ModelAuthor>,
-    /// Words a LoRA's prompt uses, and its recommended strength (a run's default stays 1.0).
+    /// Words a LoRA's prompt uses, and its recommended strength: what it runs at when given without one.
     pub trigger: Option<String>,
     pub strength: Option<f64>,
     /// Its labels, sorted: filled once from its source, then its owner's.
@@ -619,8 +619,8 @@ pub struct AfterRun {
     pub retired: Vec<Retired>,
 }
 
-/// A model's display metadata as set at the Hub: shown in the model browser, never applied (a
-/// run's LoRA strength stays 1.0).
+/// A model's display metadata as set at the Hub: shown in the model browser; a LoRA given without a
+/// strength runs at its recommended one.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Displayed {
