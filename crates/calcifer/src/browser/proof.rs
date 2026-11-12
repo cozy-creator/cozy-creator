@@ -96,7 +96,7 @@ mod linux {
     async fn exercise(api: &Arc<Api>, request: Request) -> Result<Value, crate::api::Refusal> {
         let mut held = api.browser.live.lock().await;
         let Some(live) = held.as_mut() else {
-            return match request { Request::Snapshot => Ok(json!({ "present": false })), _ => Err(unavailable()) };
+            return match request { Request::Snapshot => Ok(json!({ "present": false, "retirement_incomplete": api.browser.retirement_incomplete.load(std::sync::atomic::Ordering::Acquire) })), _ => Err(unavailable()) };
         };
         match request {
             Request::Snapshot => {
@@ -104,7 +104,8 @@ mod linux {
                 live.profile.observe(&live.birth)?;
                 let pages = targets["targetInfos"].as_array().ok_or_else(unavailable)?.iter().filter(|target| target["type"] == "page" && target["browserContextId"] == live.context).count();
                 let processes = super::super::OwnedBrowser::processes(&live.birth).into_iter().map(|process| process.birth().clone()).collect::<Vec<_>>();
-                Ok(json!({ "present": true, "birth": live.birth, "profile": live.profile.path(), "pages": pages, "processes": processes }))
+                Ok(json!({ "present": true, "birth": live.birth, "profile": live.profile.path(), "pages": pages, "processes": processes,
+                    "retirement_incomplete": api.browser.retirement_incomplete.load(std::sync::atomic::Ordering::Acquire) }))
             }
             Request::CloseOwned => {
                 let targets = live.pipe.call("Target.getTargets", json!({}), None).await?;

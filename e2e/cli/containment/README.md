@@ -60,6 +60,12 @@ it must not substitute a second browser and call that an OwnedBrowser pass.
    scan without naming that deliberate export. Bookmarks inside the owned volatile profile
    retire with the profile; this differs from a normal Chrome profile's Incognito behavior.
 
+On an unexpected CLI exit the receipt keeps only allowlisted code/kind/cause booleans,
+exit status and hashes. Real Chrome startup stderr goes to an anonymous RAM memfd;
+only fixed startup-literal flags and a bounded hash can leave it. The memfd is sealed
+against further writes before any owned credential is injected or app page navigates.
+No raw CLI output, Chrome stderr, path, project reference or credential is evidence.
+
 Receipts retain fixed case names, checks, counts, hashes, status codes and timing boundaries.
 They never retain raw response/error bodies, SQL values, canaries, project-derived filenames,
 HARs, screenshots or browser console output. On failure, write sanitized counts/hashes and

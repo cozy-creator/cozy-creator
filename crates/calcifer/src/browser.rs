@@ -2,6 +2,8 @@
 //! URL, durable session map, or disk-backed temporary profile is a fallback.
 mod profile;
 mod proof;
+#[cfg(target_os = "linux")]
+mod startup;
 
 /// Start only after the native listener/holder is ready; the inherited channel is otherwise inert.
 pub(crate) fn hosted_proof(api: Arc<Api>) { proof::start(api); }
@@ -29,6 +31,22 @@ pub(crate) async fn project_storage(State(api): State<Arc<Api>>, headers: Header
 
 fn unavailable() -> Refusal { api::refuse(Kind::Unavailable, "private_browser_unavailable", "Cozy could not establish its owned private browser; no default browser was opened") }
 fn busy() -> Refusal { api::refuse(Kind::Conflict, "project_busy", "The Cozy browser has not confirmed that all edits are saved; keep it open and finish saving before locking") }
+
+#[derive(Clone, Copy)]
+enum Step { Executable, Home, ProfileSetup, Capture, Pipe, Spawn, Birth, Ownership, Context, Target, Attach, Seal, Inject, Navigate, Activate }
+impl Step {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Executable => "browser_executable", Self::Home => "browser_home", Self::ProfileSetup => "browser_profile_setup",
+            Self::Capture => "browser_capture", Self::Pipe => "browser_pipe", Self::Spawn => "browser_spawn", Self::Birth => "browser_birth",
+            Self::Ownership => "browser_ownership", Self::Context => "browser_context", Self::Target => "browser_target",
+            Self::Attach => "browser_attach", Self::Seal => "browser_seal", Self::Inject => "browser_inject",
+            Self::Navigate => "browser_navigate", Self::Activate => "browser_activate",
+        }
+    }
+    fn failed(self, mut error: Refusal) -> Refusal { error.0.cause = Some(self.code().into()); error }
+    fn unavailable(self) -> Refusal { self.failed(unavailable()) }
+}
 
 struct Pipe { birth: platform::process::Birth, send: tokio::fs::File, receive: BufReader<tokio::fs::File>, next: u64 }
 impl Pipe {
@@ -58,7 +76,13 @@ impl Pipe {
             bytes.pop();
             let mut answer: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
             if answer["id"] != id { continue; }
-            if answer.get("error").is_some() { return Err(unavailable()); }
+            if let Some(error) = answer.get("error") {
+                let mut refused = unavailable();
+                if let Some(code) = error["code"].as_i64().filter(|code| matches!(*code, -32700 | -32600 | -32601 | -32602 | -32603 | -32000)) {
+                    refused.0.metadata = Some(json!({ "browser_protocol_code": code }));
+                }
+                return Err(refused);
+            }
             return Ok(answer["result"].take());
         }
     }
@@ -74,6 +98,31 @@ struct Live {
     pipe: Pipe,
     context: String,
     targets: HashMap<String, String>,
+    #[cfg(target_os = "linux")]
+    startup: Option<startup::Capture>,
+}
+
+impl Live {
+    fn failed(&self, error: Refusal, step: Step) -> Refusal {
+        let mut error = step.failed(error);
+        #[cfg(target_os = "linux")]
+        if let Some(capture) = &self.startup {
+            let mut facts = error.0.metadata.take().and_then(|value| value.as_object().cloned()).unwrap_or_default();
+            facts.extend(capture.facts());
+            facts.insert("browser_process_exited".into(), json!(self.birth.ended().unwrap_or(false)));
+            error.0.metadata = Some(Value::Object(facts));
+        }
+        error
+    }
+
+    fn seal_startup(&mut self) -> Result<(), Refusal> {
+        #[cfg(target_os = "linux")]
+        if let Some(capture) = &self.startup {
+            capture.seal().map_err(|_| self.failed(unavailable(), Step::Seal))?;
+            self.startup.take();
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct OwnedBrowser { live: Arc<Mutex<Option<Live>>>, retirement_incomplete: Arc<AtomicBool> }
@@ -111,24 +160,24 @@ impl OwnedBrowser {
     async fn launch(sessions: &Sessions, address: SocketAddr) -> Result<Live, Refusal> {
         use std::process::{Command, Stdio};
         let path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
-        let program = ["google-chrome", "chromium", "chromium-browser"].into_iter().find_map(|name| platform::tools::on_path(name, &path)).ok_or_else(unavailable)?;
+        let program = ["google-chrome", "chromium", "chromium-browser"].into_iter().find_map(|name| platform::tools::on_path(name, &path)).ok_or_else(|| Step::Executable.unavailable())?;
         let profile = VolatileProfileLease::create()?;
         let mut command = Command::new(program.path);
-        let original_home = std::env::home_dir().ok_or_else(unavailable)?;
+        let original_home = std::env::home_dir().ok_or_else(|| Step::Home.unavailable())?;
         let original_runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
         let original_authority = std::env::var_os("XAUTHORITY").map(std::path::PathBuf::from)
             .or_else(|| std::env::home_dir().map(|home| home.join(".Xauthority")));
         for directory in ["tmp", "cache", "config", "data", "state", "runtime"] {
-            std::fs::create_dir(profile.path().join(directory)).map_err(|_| unavailable())?;
+            std::fs::create_dir(profile.path().join(directory)).map_err(|_| Step::ProfileSetup.unavailable())?;
         }
         // A deliberate Save must choose an external destination, rather than silently landing
         // in the volatile profile that a later project lock removes.
         let defaults = profile.path().join("Default");
-        std::fs::create_dir(&defaults).map_err(|_| unavailable())?;
+        std::fs::create_dir(&defaults).map_err(|_| Step::ProfileSetup.unavailable())?;
         let preferences = serde_json::to_vec(&json!({ "download": {
             "prompt_for_download": true, "default_directory": original_home.join("Downloads"), "directory_upgrade": true
         }, "session": { "restore_on_startup": 5 } })).map_err(|_| unavailable())?;
-        platform::durable::replace(&defaults.join("Preferences"), &preferences, 0o600).map_err(|_| unavailable())?;
+        platform::durable::replace(&defaults.join("Preferences"), &preferences, 0o600).map_err(|_| Step::ProfileSetup.unavailable())?;
         if let Some(authority) = original_authority.filter(|path| path.is_absolute() && path.is_file()) { command.env("XAUTHORITY", authority); }
         if let (Some(runtime), Some(display)) = (original_runtime, std::env::var_os("WAYLAND_DISPLAY")) {
             let display = std::path::PathBuf::from(display);
@@ -143,17 +192,54 @@ impl OwnedBrowser {
             .env("XDG_CACHE_HOME", profile.path().join("cache")).env("XDG_CONFIG_HOME", profile.path().join("config"))
             .env("XDG_DATA_HOME", profile.path().join("data")).env("XDG_STATE_HOME", profile.path().join("state"))
             .env("XDG_RUNTIME_DIR", profile.path().join("runtime"));
-        let (send, receive) = platform::process::private_browser_pipe(&mut command).map_err(|_| unavailable())?;
-        let tree = platform::process::spawn(command).map_err(|_| unavailable())?;
-        let birth = platform::process::Birth::of(tree.pid()).map_err(|_| unavailable())?;
+        let capture = startup::Capture::create().map_err(|_| Step::Capture.unavailable())?;
+        command.stderr(capture.stdio().map_err(|_| Step::Capture.unavailable())?);
+        let (send, receive) = platform::process::private_browser_pipe(&mut command).map_err(|_| Step::Pipe.unavailable())?;
+        let tree = platform::process::spawn(command).map_err(|_| Step::Spawn.unavailable())?;
+        let birth = platform::process::Birth::of(tree.pid()).map_err(|_| Step::Birth.unavailable())?;
         let (authority, credential) = sessions.begin_owned();
         let mut live = Live { tree, birth: birth.clone(), profile, authority, credential, address,
             pipe: Pipe { birth, send: tokio::fs::File::from_std(send), receive: BufReader::new(tokio::fs::File::from_std(receive)), next: 0 },
-            context: String::new(), targets: HashMap::new() };
-        live.profile.observe(&live.birth)?;
-        let context = live.pipe.call("Target.createBrowserContext", json!({ "disposeOnDetach": true }), None).await?;
-        live.context = context["browserContextId"].as_str().ok_or_else(unavailable)?.into();
+            context: String::new(), targets: HashMap::new(), startup: Some(capture) };
+        if let Err(error) = live.profile.observe(&live.birth) { return Err(Self::launch_failed(live, error, Step::Ownership).await); }
+        let context = match live.pipe.call("Target.createBrowserContext", json!({ "disposeOnDetach": true }), None).await {
+            Ok(context) => context,
+            Err(error) => return Err(Self::launch_failed(live, error, Step::Context).await),
+        };
+        let Some(context) = context["browserContextId"].as_str() else { return Err(Self::launch_failed(live, unavailable(), Step::Context).await) };
+        live.context = context.into();
         Ok(live)
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn launch_failed(mut live: Live, error: Refusal, step: Step) -> Refusal {
+        // No page or credential was installed. Keep the real pre-cleanup exit status and
+        // closed startup observations, then retire only this newly owned process/profile.
+        let error = live.failed(error, step);
+        tokio::task::spawn_blocking(move || {
+            use std::os::unix::process::ExitStatusExt as _;
+            let mut error = error;
+            let processes = Self::processes(&live.birth);
+            let already_exited = live.birth.ended().unwrap_or(false);
+            let killed = already_exited || live.tree.kill().is_ok();
+            let status = killed.then(|| live.tree.wait().ok()).flatten();
+            let ended = killed && platform::process::end_tree(&processes).is_ok()
+                && platform::process::group_members(&live.birth).is_empty();
+            let mut facts = error.0.metadata.take().and_then(|value| value.as_object().cloned()).unwrap_or_default();
+            facts.insert("browser_exit_before_retirement".into(), json!(already_exited));
+            if let Some(status) = status {
+                facts.insert("browser_exit_code".into(), json!(status.code()));
+                facts.insert("browser_exit_signal".into(), json!(status.signal()));
+            }
+            let retired = if ended {
+                let proof = BrowserRetired { profile: live.profile.identity(), birth: live.birth.clone(), session: live.profile.nonce().to_owned() };
+                drop(live.authority);
+                live.profile.retire(proof).is_ok()
+            } else { false };
+            facts.insert("browser_startup_retired".into(), json!(retired));
+            error.0.metadata = Some(Value::Object(facts));
+            error
+        }).await.unwrap_or_else(|_| step.unavailable())
     }
     #[cfg(not(target_os = "linux"))]
     async fn launch(_sessions: &Sessions, _address: SocketAddr) -> Result<Live, Refusal> { Err(unavailable()) }
@@ -166,7 +252,13 @@ impl OwnedBrowser {
         if self.retirement_incomplete.load(Ordering::Acquire) { return Err(unavailable()); }
         if held.is_none() {
             self.retirement_incomplete.store(true, Ordering::Release);
-            *held = Some(Self::launch(sessions, address).await?);
+            match Self::launch(sessions, address).await {
+                Ok(live) => *held = Some(live),
+                Err(error) => {
+                    if error.0.metadata.as_ref().is_some_and(|facts| facts["browser_startup_retired"] == true) { self.retirement_incomplete.store(false, Ordering::Release); }
+                    return Err(error);
+                }
+            }
             self.retirement_incomplete.store(false, Ordering::Release);
             self.watch_windows();
         }
@@ -175,21 +267,22 @@ impl OwnedBrowser {
             return Err(api::refuse(Kind::Conflict, "private_browser_retirement_incomplete", "The previous Cozy browser must be retired before another session can open"));
         }
         if let Some(target) = live.targets.get(project_ref) {
-            live.pipe.call("Target.activateTarget", json!({ "targetId": target }), None).await?;
+            live.pipe.call("Target.activateTarget", json!({ "targetId": target }), None).await.map_err(|error| live.failed(error, Step::Activate))?;
             return Ok(());
         }
-        let created = live.pipe.call("Target.createTarget", json!({ "url": "about:blank", "browserContextId": live.context }), None).await?;
+        let created = live.pipe.call("Target.createTarget", json!({ "url": "about:blank", "browserContextId": live.context }), None).await.map_err(|error| live.failed(error, Step::Target))?;
         let target = created["targetId"].as_str().ok_or_else(unavailable)?.to_owned();
-        let attached = live.pipe.call("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None).await?;
+        let attached = live.pipe.call("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None).await.map_err(|error| live.failed(error, Step::Attach))?;
         let session = attached["sessionId"].as_str().ok_or_else(unavailable)?;
         live.profile.observe(&live.birth)?;
+        live.seal_startup()?;
         let owned = json!({ "session": live.credential, "birth": daemon_birth()? });
         let origin = serde_json::to_string(&format!("http://{address}")).map_err(|_| unavailable())?;
         let source = format!("if(location.origin==={origin})Object.defineProperty(globalThis,'__cozyOwned',{{value:{owned},writable:false,configurable:false}});");
-        live.pipe.call("Page.addScriptToEvaluateOnNewDocument", json!({ "source": source }), Some(session)).await?;
+        live.pipe.call("Page.addScriptToEvaluateOnNewDocument", json!({ "source": source }), Some(session)).await.map_err(|error| live.failed(error, Step::Inject))?;
         let mut url = url::Url::parse(&format!("http://{address}/")).map_err(|_| unavailable())?;
         url.path_segments_mut().map_err(|_| unavailable())?.extend(["projects", project_ref]);
-        live.pipe.call("Page.navigate", json!({ "url": url.as_str() }), Some(session)).await?;
+        live.pipe.call("Page.navigate", json!({ "url": url.as_str() }), Some(session)).await.map_err(|error| live.failed(error, Step::Navigate))?;
         live.profile.observe(&live.birth)?;
         live.targets.insert(project_ref.to_owned(), target);
         Ok(())
