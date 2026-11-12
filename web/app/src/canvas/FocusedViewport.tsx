@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useLayoutEffect, useRef } from "react"
 import { useCanvasStore, useElement } from "./context"
 import { FocusedCard } from "./Card"
 import { Icon } from "../ui/Icon"
@@ -6,6 +6,7 @@ import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
 import { NameField } from "./NameField"
 import { shownOf } from "./shown"
+import { useSignal } from "../ui/signal"
 import "./FocusedViewport.css"
 
 /** A workspace for one item. The Wander camera stays behind it, unchanged. */
@@ -13,6 +14,21 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   const store = useCanvasStore()
   const view = useElement(name)
   const element = useRef<HTMLElement>(null)
+  const entering = useSignal(store.focusEntering)
+  useLayoutEffect(() => {
+    if (!entering) return
+    const frame = requestAnimationFrame(() => {
+      const viewer = element.current?.querySelector<HTMLElement>(".focus-viewer")
+      const room = viewer?.clientWidth && viewer.clientHeight ? viewer : element.current?.querySelector<HTMLElement>(".focus-body")
+      if (!room) return
+      const rect = room.getBoundingClientRect()
+      store.enterFocus({ x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [entering, name, store])
+  useEffect(() => {
+    if (!entering && store.get(name)?.hereWords) element.current?.querySelector<HTMLElement>(".focus-body [contenteditable=true], .focus-body textarea")?.focus({ preventScroll: true })
+  }, [entering, name, store])
   useEffect(() => {
     const held = element.current
     if (!held) return
@@ -27,7 +43,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   if (!view?.asset && !view?.entity) return null
   const version = shownOf(view)?.number
   return (
-    <section ref={element} className="focus-viewport" aria-label="Focused asset" data-focused-asset={name}
+    <section ref={element} className="focus-viewport" aria-label="Focused asset" data-focused-asset={name} data-entering={entering || undefined}
       onClick={(event) => {
         if (!(event.target as Element).closest(".media, .tl, .focus-heading, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]")) onClose()
       }}
