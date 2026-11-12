@@ -329,7 +329,7 @@ step "project CRDT: canonical state, stable identities, old-schema refusal and n
 local P=$OUT/crdt-project V=$OUT/crdt-v1 before after source
 cozy --json new --unencrypted "$P" > "$OUT/crdt-new.json" 2> "$OUT/crdt-new.err" || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.err")"; return; }
 J '.created == true and (.id | length > 0)' "$OUT/crdt-new.json" || check "CRDT: new did not create a project"
-[ "$(sql1 "$P" 'PRAGMA user_version')" = 2 ] || { check "CRDT: project.db is not schema 2"; return; }
+[ "$(sql1 "$P" 'PRAGMA user_version')" = 3 ] || { check "CRDT: project.db is not schema 3"; return; }
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_document WHERE format = 1 AND length(snapshot) > 0')" = 1 ] || check "CRDT: no native snapshot"
 boxes_in "$P" <<'JSON' || { check "CRDT: seed the editable graph"; return; }
 [{"name": "kyogre", "tool": "qwen-image-2/image", "kind": "image", "fields": {"instructions": "A whale."}},
@@ -377,7 +377,7 @@ project_api "$P" /history > "$OUT/crdt-cache-history.json" || check "CRDT: histo
 # not another daemon or a substitute project storage implementation.
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- "$OUT/crdt-before.am" "$OUT/crdt-renamed.am" > "$OUT/crdt-native.json" 2> "$OUT/crdt-native.err" \
   || check "CRDT: native format/replica proof: $(tail -c 400 "$OUT/crdt-native.err")"
-J '.passed and .native_replicas == 3 and .original_versions == 2 and .same_number_versions_preserved == 2 and (.prompt_alternatives == ["dawn","dusk","noon"])' "$OUT/crdt-native.json" \
+J '.passed and .native_replicas == 3 and .no_files_versions_runs and (.prompt_alternatives == ["dawn","dusk","noon"])' "$OUT/crdt-native.json" \
   || check "CRDT: native merge report: $(cat "$OUT/crdt-native.json")"
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- --history-fixture "$OUT/crdt-renamed.am" "$OUT/crdt-history-merged.am" > "$OUT/crdt-history-fixture.json" 2> "$OUT/crdt-history-fixture.err" \
   || { check "CRDT: history merge fixture: $(tail -c 300 "$OUT/crdt-history-fixture.err")"; return; }
