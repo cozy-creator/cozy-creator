@@ -60,7 +60,13 @@ fn directory(path: &Path) -> Result<std::fs::File, Refusal> {
 
 #[cfg(target_os = "linux")]
 fn parents() -> Vec<PathBuf> {
-    let candidates = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).into_iter().chain([PathBuf::from("/dev/shm")]);
+    use std::os::unix::fs::MetadataExt as _;
+    // XDG_RUNTIME_DIR is ours only as this user's own 0700 directory (XDG Base Directory spec). One
+    // inherited from another user (`su`, an environment-keeping `sudo`) holds none of our profiles.
+    let own = |path: &PathBuf| std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_dir() && meta.uid() == rustix::process::geteuid().as_raw() && meta.mode() & 0o777 == 0o700);
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|path| path.is_absolute() && own(path));
+    let candidates = runtime.into_iter().chain([PathBuf::from("/dev/shm")]);
     let mut parents = Vec::new();
     for parent in candidates {
         if !parent.is_absolute() { continue; }
