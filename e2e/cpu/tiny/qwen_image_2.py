@@ -1,8 +1,8 @@
 """Tiny Qwen-Image-2.1: the Diffusers folder Qwen ships (the causal-condition DiT, Qwen3-VL as its text encoder with
 Qwen3-VL's processor, the 16x RGBA VAE in F32) at a few channels, and Qwen's two prompt enhancers (Qwen3.5 VLMs, as-is
-uploads) at 32 wide. The DiT has 2 blocks; Alibaba PAI's Fun Acc overlay builds at the release geometry (`model.py`
-SITES: 4096 wide, 32 blocks), so the executor takes the tiny DiT's (PATCH). The abliterated text encoder and both
-enhancers are bound to these same tiny weights."""
+uploads, each with its `system_prompt.txt`) at 32 wide. The DiT has 2 blocks; Alibaba PAI's Fun Acc overlay builds at the
+release geometry (`model.py` SITES: 4096 wide, 32 blocks), so the executor takes the tiny DiT's (PATCH), and carries its
+`pdd_config.json`. The abliterated text encoder and both enhancers are bound to these same tiny weights."""
 
 from __future__ import annotations
 
@@ -19,7 +19,11 @@ from tiny import _shared
 
 MODEL, ENCODER = "qwen/qwen-image-2.1@0.1.0", "atomicchat/qwen-image-2.1-text-encoder-abliterated@0.1.0"
 ENHANCERS = ("pottokao/qwen-image-2.1-pe-t2i-abliterated@0.1.0", "darrellbest/qwen-image-2.1-pe-i2i-abliterated@0.1.0")
-FUN_ACC = "alibaba-pai/qwen-image-2.1-fun-acc@0.1.0"
+#: 0.1.1 carries `pdd_config.json` (xs-183); qwen-image-2 before 0.10.0rc2 names 0.1.0.
+FUN_ACC = ("alibaba-pai/qwen-image-2.1-fun-acc@0.1.0", "alibaba-pai/qwen-image-2.1-fun-acc@0.1.1")
+#: Fun Acc's `pdd_config.json`: the 4-step grid, already shifted, and its terminal 0.
+PDD = {"pdd_num_steps": 4, "pdd_block_size": 1,
+       "pdd_sigmas": [1.0, 0.9169867038726807, 0.7861579060554504, 0.5494909882545471, 0.0]}
 TEXT_WIDTH, Z = 32, 64
 
 
@@ -73,14 +77,16 @@ def _enhancer(out: Path) -> None:
     """A Qwen3.5 VLM as its as-is upload: the Transformers folder with its processor files at the root."""
     save(module(Qwen3_5ForConditionalGeneration(_shared.qwen3_5_vl())).to(torch.bfloat16), out)
     _shared.qwen_processor(out)
+    (out / "system_prompt.txt").write_text("Rewrite the request as one JSON object with `rewritten_prompt`.\n")
 
 
 def _fun_acc(store: Path) -> str:
     """Fun Acc's layout (TensorFS's `qwenimage21.lora`): rank-4 factors on every adapted linear and the four per-step
-    output projections (`proj_out.heads`)."""
+    output projections (`proj_out.heads`), and its `pdd_config.json`."""
     rank = 4
     writer = tensorfs.Writer(cache_dir=store)
     component = writer.component("transformer", cls=None, config={"r": rank, "lora_alpha": rank})
+    component.asset("pdd_config.json", json.dumps(PDD).encode())
     generator = torch.Generator().manual_seed(2)
     shapes = {f"{site}.{factor}.weight": shape for site, (inputs, outputs) in SITES.items()
               for factor, shape in (("lora_A", [rank, inputs]), ("lora_B", [outputs, rank]))}
@@ -95,8 +101,9 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     _image(root / "qwen-image-2.1")
     torch.manual_seed(1)
     _enhancer(root / "enhancer")
+    fun_acc = _fun_acc(store)
     return {MODEL: root / "qwen-image-2.1", ENCODER: root / "qwen-image-2.1", ENHANCERS[0]: root / "enhancer",
-            ENHANCERS[1]: root / "enhancer", FUN_ACC: _fun_acc(store)}
+            ENHANCERS[1]: root / "enhancer", **dict.fromkeys(FUN_ACC, fun_acc)}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:
