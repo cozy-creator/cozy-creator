@@ -2093,6 +2093,21 @@ unsent?: Array<ErrorBody>,
 machines?: Array<string>, covered?: ProjectEventCursor | null, };
 
 /**
+ * The canvas view, saved inside its project's database.
+ */
+export type ProjectView = { viewport: ProjectViewport | null, selection: Array<string>, more: Array<string>, };
+
+/**
+ * Supplied view fields replace the corresponding saved fields.
+ */
+export type ProjectViewPatch = { viewport?: ProjectViewport | null, selection?: Array<string> | null, more?: Array<string> | null, };
+
+/**
+ * A canvas position and zoom level.
+ */
+export type ProjectViewport = { x: number, y: number, zoom: number, };
+
+/**
  * What reading a project said: of the asset or entity `name`, or of the file as a whole.
  */
 export type ProjectWarning = { name?: string | null, message: string, };
