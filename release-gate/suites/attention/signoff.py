@@ -29,7 +29,7 @@ MICRO = {16: 0.01, 8: 0.04}
 LOOKS = {'ssim': [(0.98, 'the same picture'), (0.93, 'the same picture, details changed'), (0.85, 'a changed picture'),
                   (0.0, 'a different picture (toward the another-seed range, 0.35-0.70)')],
          'worst_eighth': [(0.05, 'the same video'), (0.085, 'the same video, details changed'), (0.15, 'a changed video'),
-                          (math.inf, 'a different video (the another-seed range, 0.23-0.24)')]}
+                          (math.inf, 'a different video (toward the another-seed range, 0.23-0.24)')]}
 # The corpus's model names (attention-corpus cells) and the packages the arms run.
 PACKAGE = {'h3-15s': 'minimax-h3', 'qwen4mp': 'qwen-image-2', 'moss': 'moss-image', 'klein': 'flux-3-klein'}
 
