@@ -55,7 +55,8 @@ cat "$OUT/ondemand-ahead.timeline.json"
 while read -r why; do check "ondemand-ahead: $why"; done < "$OUT/ondemand-ahead.failed"
 }
 
-# While `cozy model install` downloads Qwen3.5 0.8B's 1.6 GB, a call reads its on-demand BiRefNet (446 MB) at once: its executor
+# A call holds (resolved, its on-demand BiRefNet guessed behind every run's needs), then `cozy model install` downloads Qwen3.5
+# 0.8B's 1.6 GB, and while it does the call reads its on-demand BiRefNet (446 MB): its executor
 # asks TensorD for it (`model_need`), which fetches it before every other download (order 0) and answers once it's here, and the
 # install goes on after. The isolated Hub's store is slowed to 30 MB/s (tc on the loopback, from its MinIO's port), so the link is
 # the bottleneck, as on a pod.
@@ -69,10 +70,13 @@ sudo tc qdisc add dev lo root handle 1: prio && sudo tc qdisc add dev lo parent 
   && sudo tc filter add dev lo parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:3 \
   || { sudo tc qdisc del dev lo root 2> /dev/null; check "ondemand-need: the store's link wasn't slowed"; return; }
 began=$(date -u +%s%3N)
+run_submit "$OUT" ondemand-need run "$here/script/ondemand.py/hold" seconds:=25 read:=true --on local > /dev/null
+for _ in $(seq 900); do grep -q '"holding"' "$OUT/ondemand-need.ndjson" 2> /dev/null && break; sleep 0.2; done
 run_submit "$OUT" ondemand-queued model install qwen/qwen3.5-0.8b --on local > /dev/null
-for _ in $(seq 900); do grep -qE '"bytes_done": *[1-9][0-9]{8}' "$OUT/ondemand-queued.ndjson" 2> /dev/null && break; sleep 0.2; done
-cell ondemand-need "$here/script/ondemand.py/hold" seconds:=0 read:=true
-run_wait "$OUT" ondemand-queued || check "ondemand-need: the queued install did not end: $(tail -c 300 "$OUT/ondemand-queued.ndjson")"
+for name in ondemand-need ondemand-queued; do
+  run_wait "$OUT" "$name" || check "ondemand-need: $name did not end: $(tail -c 300 "$OUT/$name.ndjson")"
+  [ "$(run_get "$OUT" "$name" .status)" = completed ] || check "ondemand-need: $name $(run_get "$OUT" "$name" .status): $(run_get "$OUT" "$name" .reason.message | head -c 300)"
+done
 sudo tc qdisc del dev lo root || check "ondemand-need: the store's link wasn't restored"
 cozy machine logs local --lines 0 --since 1h > "$OUT/ondemand-need.tensord.log" 2>&1 || check "ondemand-need: machine logs local failed"
 python3 - "$OUT" "$began" <<'JUDGE' > "$OUT/ondemand-need.timeline.json" 2> "$OUT/ondemand-need.failed" || true
