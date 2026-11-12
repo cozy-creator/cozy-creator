@@ -44,9 +44,9 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
 
@@ -128,9 +128,9 @@ async function died(why) {
     'chips under a box at rest (cl-932): open, its models and LoRAs are listed',
   ];
   check('sidebar_has_only_nodes_and_tools', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools input, .tools .browse, .tools .box-shelf-head').count() === 0);
-  const madeHere = async () => ((await api('/v1/runs?limit=100')).body?.runs ?? []).filter((run) => run.project_id === id).length;
+  const madeHere = async () => ((await api(`/v1/projects/${id}/runs?limit=100`)).body?.runs ?? []).filter((run) => run.project_id === id).length;
   const fetched = async (names) => {
-    const answer = await fetch(`${base}/v1/machines/local/models`, { headers: { Authorization: `Bearer ${held?.token}` } });
+    const answer = await fetch(`${base}/v1/machines/local/models`, { headers: { Authorization: `Bearer ${held?.token}`, 'cozy-project-storage': '3' } });
     return ((await answer.json().catch(() => null))?.models ?? []).filter((one) => names.includes(one.model));
   };
   const cardRect = (name) => box(name).locator('.card').boundingBox();
@@ -254,7 +254,7 @@ async function died(why) {
     await until('both on it', () => Promise.resolve(JSON.stringify(storedOf(folder).still ?? {})), (text) => text.includes(lora.model) && text.includes(fine.model));
     await shot('both-on');
 
-    const runs = async () => (await Promise.all(['in_progress', 'queued'].map((status) => api(`/v1/runs?status=${status}&limit=100`)))).flatMap((answer) => answer.body?.runs ?? []).filter((run) => run.machine === process.env.RENDER || !run.machine);
+    const runs = async (scope = '/v1') => (await Promise.all(['in_progress', 'queued'].map((status) => api(`${scope}/runs?status=${status}&limit=100`)))).flatMap((answer) => answer.body?.runs ?? []).filter((run) => run.machine === process.env.RENDER || !run.machine);
     const others = async () => (await runs()).filter((run) => run.kind === 'call' && run.project_id !== id);
     const pause = (ms) => new Promise((done) => setTimeout(done, ms));
     const idle = async () => {
@@ -280,8 +280,8 @@ async function died(why) {
         if (asset.versions > had) { made = asset; break; }
         if (asset.failure) { made = asset; break; }
         if ((await others()).length) {
-          const mine = (await runs()).filter((run) => run.project_id === id);
-          for (const run of mine) await api(`/v1/runs/${run.id}/cancel`, { method: 'POST', body: '{}' });
+          const mine = (await runs(`/v1/projects/${id}`)).filter((run) => run.project_id === id);
+          for (const run of mine) await api(`/v1/projects/${id}/runs/${run.id}/cancel`, { method: 'POST', body: '{}' });
           seen.yielded = [...(seen.yielded ?? []), ...mine.map((run) => run.number)];
           break;
         }
@@ -289,7 +289,7 @@ async function died(why) {
     }
     check('render_landed', made?.versions > 0, made?.failure ?? 'it never had a turn');
     const number = made?.prefixes?.at(-1)?.run;
-    const run = (await api(`/v1/runs/${number}?detail=full`)).body;
+    const run = (await api(`/v1/projects/${id}/runs/${number}?detail=full`)).body;
     const asked = run?.request?.input?.models;
     const applied = run?.measurements?.models;
     seen.render_run = { number, target: run?.target, machine: run?.machine, asked, applied, warnings: run?.warnings };

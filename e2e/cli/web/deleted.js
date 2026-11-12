@@ -42,9 +42,9 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
-  const token = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token);
+  const token = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token);
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   const at = `/v1/projects/${id}`;
@@ -72,7 +72,7 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
     writeFileSync(path, png(shade));
     return path;
   };
-  const imported = async (name, path, x) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, path), name, exact: true, at: { x, y: 560 } }) });
+  const imported = async (name, path, x) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, path, id), name, exact: true, at: { x, y: 560 } }) });
 
   // What reads it: a picture tool's prompt, and a box of words, clear of the tools on the left. Two boxes share one file, one of which is
   // deleted later.

@@ -45,11 +45,11 @@ async function died(why) {
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const { id } = await projectFromPage(page);
-  const session = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = async (path, method = 'GET', body) => {
     const answer = await fetch(base + path, {
       method,
-      headers: { Authorization: `Bearer ${session.token}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${session.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const value = await answer.json().catch(() => null);
@@ -65,7 +65,7 @@ async function died(why) {
   for (const [i, name] of ['first', 'second'].entries()) {
     const path = join(pictures, `${name}.png`);
     writeFileSync(path, png(40 + i * 60, 320, 200));
-    await api(`${at}/imports`, 'POST', { source: await upload(session.token, path), name, exact: true, at: { x: 100 + i * 420, y: 100 } });
+    await api(`${at}/imports`, 'POST', { source: await upload(session.token, path, id), name, exact: true, at: { x: 100 + i * 420, y: 100 } });
   }
   await api(`${at}/assets`, 'POST', { tool: '', kind: 'text', name: 'words', exact: true, fields: { text: 'hello there', node_kind: 'text' }, at: { x: 100, y: 500 } });
   for (const name of ['first', 'second', 'words']) await boxOf(page, name).waitFor();

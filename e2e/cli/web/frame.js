@@ -49,9 +49,9 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
   const post = async (path, body) => {
@@ -79,16 +79,16 @@ async function died(why) {
   writeFileSync(join(folder, 'amy.png'), png(20));
   writeFileSync(join(folder, 'boat.png'), png(200));
   writeFileSync(join(folder, 'take.mp4'), MP4);
-  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'amy.png')), name: 'amy', exact: true, at: { x: 100, y: 600 } });
-  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'boat.png')), name: 'boat', exact: true, at: { x: 400, y: 600 } });
+  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'amy.png'), id), name: 'amy', exact: true, at: { x: 100, y: 600 } });
+  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'boat.png'), id), name: 'boat', exact: true, at: { x: 400, y: 600 } });
   const beats = [{ description: 'Waves roll in.', duration: 5 }, { description: '<boat> sails past the lighthouse.', duration: 5 }];
   await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'scene', exact: true, fields: { summary: '<amy> watches the harbour at dusk.', beats }, at: { x: 100, y: 100 } });
   await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'again', exact: true, fields: { summary: '<amy> on the pier.', beats: [{ description: 'She waves.', duration: 5 }] }, at: { x: 700, y: 100 } });
-  await post(`${at}/assets/again/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
+  await post(`${at}/assets/again/versions`, { source: await upload(held?.token, join(folder, 'take.mp4'), id) });
   await post(`${at}/assets`, { tool: imageTool.id, kind: 'image', name: 'still', exact: true, fields: { instructions: '<amy> in a red coat.' }, at: { x: 1300, y: 100 } });
   // A shot this computer renders itself (`project/shots.py`), with a take: what Render and Cmd/Ctrl+Enter start.
   await post(`${at}/assets`, { tool: `${SHOTS}/shot`, kind: 'video', name: 'local', exact: true, fields: { summary: 'A walk by the sea.', beats: [{ description: 'Waves.', duration: 2 }] }, at: { x: 100, y: 1000 } });
-  await post(`${at}/assets/local/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
+  await post(`${at}/assets/local/versions`, { source: await upload(held?.token, join(folder, 'take.mp4'), id) });
   for (const name of ['amy', 'boat', 'scene', 'again', 'still', 'local']) await boxOf(page, name).waitFor();
   await fitCanvas(page);
 

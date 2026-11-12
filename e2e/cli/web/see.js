@@ -137,9 +137,9 @@ async function rest(page, handle) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', ...init.headers } });
     return answer.json();
   };
 
@@ -489,8 +489,8 @@ async function rest(page, handle) {
       scalePages.add(tab);
       watch(tab);
       tab.setDefaultTimeout(STEP_MS);
-      await tab.addInitScript(([id, zoom, x]) => localStorage.setItem(`cozy.view:${id}`, JSON.stringify({ x, y: 60, zoom })), [made.id, zoom, x]);
-      await tab.goto(await projectUrl(made.id));
+      projectJson(made.id, 'PATCH', '/view', { viewport: { x, y: 60, zoom } });
+      await signIn(tab, await projectUrl(made.id));
       await tab.waitForSelector('.react-flow__node');
       await until('every card its thumbnail', () => tab.evaluate(() => {
         const images = [...document.querySelectorAll('.react-flow__node .media img')];
@@ -628,7 +628,7 @@ async function rest(page, handle) {
     // By name: an earlier pass's forest is deleted, so its names are free (cl-842).
     const selected = ours.find((row) => row.name === 'spruce');
     const spruce = await projectUrl(selected.id);
-    await tab.goto(spruce);
+    await signIn(tab, spruce);
     await loaded('nav.ptabs a.ptab.on', '.top .history', '.top .render-all');
     // What the bar is as each frame is painted: a ResizeObserver made after the page's hears of a resize after the page has answered it.
     await tab.evaluate(() => {

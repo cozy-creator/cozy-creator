@@ -46,8 +46,8 @@ const AUTOMATIC = /Nothing checked: this project's renders are placed automatica
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
-  const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}` } })).json();
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
 
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-renderhere-${Date.now()}`);
@@ -145,7 +145,7 @@ const AUTOMATIC = /Nothing checked: this project's renders are placed automatica
   const settled = (held) => held && (held.versions >= 1 || held.failure);
   const made = await until('every box made or failed', state, (now) => !now.busy && names.every((name) => settled(now.assets.find((held) => held.name === name))), RENDER_MS);
   seen.failed = made.assets.filter((held) => names.includes(held.name) && held.failure).map((held) => `${held.name}: ${held.failure.message}`);
-  const runs = ((await api(`/v1/runs?project=${id}&limit=100`)).runs ?? []).filter((run) => /\/still(@\S+)?$/.test(run.target ?? ''));
+  const runs = ((await api(`/v1/projects/${id}/runs?limit=100`)).runs ?? []).filter((run) => /\/still(@\S+)?$/.test(run.target ?? ''));
   seen.placed = runs.map((run) => `${run.number} ${run.machine} ${run.status}`);
   check('rendered', runs.length >= names.length && runs.every((run) => run.status === 'completed'), seen.placed);
   check('inside_the_set', runs.every((run) => run.machine === 'local' || run.machine === IN), seen.placed);

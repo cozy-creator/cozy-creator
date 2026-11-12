@@ -35,7 +35,7 @@ import uuid
 
 Json = dict[str, object]
 HOLDER = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
-BASE, AUTH = "http://" + HOLDER["address"], {"Authorization": "Bearer " + HOLDER["token"]}
+BASE, AUTH = "http://" + HOLDER["address"], {"Authorization": "Bearer " + HOLDER["token"], "cozy-project-storage": "3"}
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # A render whose names show no run and no new version for this long made nothing.
 IDLE_S = 600

@@ -91,7 +91,7 @@ id=$(status "$P" | jq -r '.id // empty')
 addr=$(jq -r .address < "$lock") token=$(jq -r .token < "$lock")
 [ -n "$id" ] || { check "once: the project has no id"; return; }
 for try in first second; do
-  curl -sS -D "$OUT/once-$try.headers" -o "$OUT/once-$try.json" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+  curl -sS -D "$OUT/once-$try.headers" -o "$OUT/once-$try.json" -H "Authorization: Bearer $token" -H 'cozy-project-storage: 3' -H 'Content-Type: application/json' \
     -H "Idempotency-Key: $key" -X POST -d '{}' "http://$addr/v1/projects/$id/history/undo" || check "once: the $try undo got no answer"
 done
 first=$(jq -c '[.entries[].id]' "$OUT/once-first.json") second=$(jq -c '[.entries[].id]' "$OUT/once-second.json")

@@ -229,7 +229,7 @@ async function nativeMemory(base, folder) {
     catch (error) { sample.physical_error = error.message; }
   }
   try {
-    const reply = await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}` } });
+    const reply = await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3' } });
     const status = await reply.json();
     if (!reply.ok || !Number.isFinite(status.heap_bytes)) throw new Error(`status ${reply.status} carries no native heap counter`);
     sample.heap_bytes = status.heap_bytes;
@@ -291,7 +291,7 @@ async function nativeMemory(base, folder) {
   // computer runs models its tool is read by this machine's Runtime, from a run of it there, as tools.js primes its fixture.
   let keyed = await status(keying);
   numbers.status_first_s = seconds(keyed.ms);
-  const local = (await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}` } })).json()).local_usable;
+  const local = (await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}`, 'cozy-project-storage': '3' } })).json()).local_usable;
   if (local) {
     await cozyAt(keying, '--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local');
     keyed = await status(keying);
@@ -391,7 +391,7 @@ async function nativeMemory(base, folder) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
 
   // The 95th percentile of half a second's frames. None in that half second is one longer than all of it: not short yet (macOS, 42022159182).
   const shortFrames = async () => {
@@ -630,7 +630,7 @@ async function nativeMemory(base, folder) {
   const writes = { post: [], patch: [], move: [], delete: [] };
   const write = async (held, path, method, body, headers = {}) => {
     const from = performance.now();
-    const answer = await fetch(`${base}/v1/projects/${id}${path}`, { method, body: JSON.stringify(body), headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...headers } });
+    const answer = await fetch(`${base}/v1/projects/${id}${path}`, { method, body: JSON.stringify(body), headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...headers } });
     if (!answer.ok) throw new Error(`${method} ${path}: ${answer.status} ${await answer.text()}`);
     held.push(performance.now() - from);
     return answer.json();
@@ -648,7 +648,7 @@ async function nativeMemory(base, folder) {
   check('writes_leave_the_project_whole', (await status()).state.assets.length === ASSETS, 'assets count changed');
 
   // A render from the API, on the fixture tool, landing on the open canvas.
-  if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } })).json()).local_usable && !process.env.ALONE) {
+  if ((await (await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).local_usable && !process.env.ALONE) {
     await cozy('--json', 'run', `${TOOL}/still`, 'prompt=primed', '--on', 'local');
     await project('add', `${TOOL}/still`, 'scale_shot', `at=${HOLE.col * 300},${HOLE.row * 320},200`, 'instructions=A landing at scale');
     await box('scale_shot').waitFor();

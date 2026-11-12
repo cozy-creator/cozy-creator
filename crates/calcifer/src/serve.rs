@@ -151,11 +151,14 @@ fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
         .map_err(|e| Error::new(Kind::Internal, "calcifer_runtime", e.to_string()))
 }
 
-/// Logs why Calcifer cannot start and leaves it in `<home>/calcifer/refused.json` for the CLI.
+/// Logs why Calcifer cannot start and leaves it in `<home>/calcifer/refused.json` for the CLI: the
+/// failed step's code as its cause, never its message.
 fn refuse(home: &Home, error: Error) -> Error {
     crate::health::service_health(crate::health::HealthEvent::StartRefused);
     let envelope = serde_json::to_vec(&Envelope {
-        error: Error::new(Kind::Unavailable, "calcifer_start_failed", "Calcifer could not start").next("cozy doctor"),
+        error: Error::new(Kind::Unavailable, "calcifer_start_failed", "Calcifer could not start")
+            .cause(error.code.clone())
+            .next("cozy doctor"),
     })
     .expect("serializes");
     let written = home

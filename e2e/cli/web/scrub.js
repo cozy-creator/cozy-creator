@@ -51,9 +51,9 @@ const clock = (seconds) => `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
 
@@ -80,7 +80,7 @@ const clock = (seconds) => `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed
   seen.tool = shotTool && { id: shotTool.id, pickup: shotTool.pickup };
   if (!shotTool?.pickup) throw new Error(`the Hub lists no H3 tool that picks up: ${JSON.stringify(tools.map((tool) => [tool.id, tool.pickup]))}`);
   await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 4 }] }, at: { x: 100, y: 100 } });
-  await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, clip) });
+  await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, clip, id) });
   // An empty picture and an empty video with no tool.
   await post(`${at}/assets`, { tool: '', kind: 'image', name: 'blank_pic', exact: true, fields: { node_kind: 'image' }, at: { x: 600, y: 100 } });
   await post(`${at}/assets`, { tool: '', kind: 'video', name: 'blank_clip', exact: true, fields: { node_kind: 'video' }, at: { x: 1000, y: 100 } });

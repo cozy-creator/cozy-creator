@@ -40,9 +40,9 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
 
@@ -61,7 +61,7 @@ async function died(why) {
   const folder = mkdtempSync(join(tmpdir(), 'web-legible-'));
   const colours = [[0, 0, 0], [255, 255, 255], [255, 210, 0], [30, 90, 255], [240, 40, 40], [250, 245, 235]];
   writeFileSync(join(folder, 'busy.png'), png(0, 640, 400, false, (x, y) => colours[(((x >> 3) ^ (y >> 4)) + (x >> 5)) % colours.length]));
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, 'busy.png')), name: 'busy', exact: true, at: { x: 100, y: 100 } }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, 'busy.png'), id), name: 'busy', exact: true, at: { x: 100, y: 100 } }) });
   await box('busy').waitFor();
 
   // Qwen's Image on it starts from it, and Edit puts its prompt over the picture.

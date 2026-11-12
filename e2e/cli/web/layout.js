@@ -637,7 +637,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
   const signedIn = async (page) => {
     await signIn(page);
     await page.waitForSelector('.top');
-    return page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')).token);
+    return page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')).token);
   };
   const errors = [];
   const watch = (page) => {
@@ -651,7 +651,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
   watch(page);
   lookAt(page);
   const token = await signedIn(page);
-  const api = async (path, init = {}) => (await fetch(`http://${holder.address}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers } })).json();
+  const api = async (path, init = {}) => (await fetch(`http://${holder.address}${path}`, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', ...init.headers } })).json();
   const shots = [];
   // $PROJECT: one an earlier pass made, measured again as it is.
   let id = process.env.PROJECT;
