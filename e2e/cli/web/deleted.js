@@ -84,6 +84,8 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
 
   // 1. A picture dropped: its own box.
   await drop(page, [{ name: 'pic.png', type: 'image/png', bytes: png(30) }], 1100, 300);
+  await page.waitForSelector('.nm-field');
+  await page.keyboard.press('Enter');
   await box('pic').waitFor();
   const pic = await until('pic held', () => asset('pic'), (held) => Boolean(held?.sha256));
   seen.pic = pic.sha256;
