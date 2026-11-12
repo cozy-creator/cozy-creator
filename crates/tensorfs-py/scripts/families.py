@@ -260,7 +260,7 @@ FAMILIES: list[Spec] = [
         "reference": "hf://circlestone-labs/Anima-Base-v1.0-Diffusers@073c3a9db359c31ad0e8aa268d15775473c2176c",
         "classes": ["AnimaTextConditioner"],
         "folders": ["transformer", "text_conditioner", "text_encoder", "vae"],
-        "sources": ["anima.single_file", "anima.lora"],
+        "sources": ["anima.single_file", "anima.diffusion_model", "anima.lora"],
     },
     {
         "name": "qwen-image",
