@@ -95,14 +95,16 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   check('dropped_file_in_files', inFiles(pic.sha256));
 
   // 2. Its box deleted as Paul did: a click opens it in Focus, where the ✕ on its picture is its only one. On the RC before cl-919 that
-  // discarded its one version and left the box, empty, in the project (e2e 43159619369). From here, what's asked for its picture is counted.
-  const asked = [];
-  page.on('request', (request) => { if (request.url().includes(hexOf(pic.sha256))) asked.push(new URL(request.url()).pathname); });
+  // discarded its one version and left the box, empty, in the project (e2e 43159619369).
   await openBox(page, 'pic');
   await page.locator('[data-focused-asset="pic"] [aria-label="Discard version 1"]').click();
   await until('pic gone', () => asset('pic'), (held) => held === null).catch(() => null);
   check('deleted_box_gone', (await asset('pic')) === null && (await box('pic').count()) === 0, await asset('pic'));
   check('focus_left', await until('back on the canvas', () => Promise.resolve(page.url()), (url) => !url.includes('/assets/'), 5000).then(() => true, () => false), page.url());
+  // From here, whatever is asked of its picture is counted: Focus drew it at several sizes before.
+  await page.waitForTimeout(500);
+  const asked = [];
+  page.on('request', (request) => { if (request.url().includes(hexOf(pic.sha256))) asked.push(new URL(request.url()).pathname); });
 
   // 3. `<` in another box's prompt, a picture tool's, offers the rest, not it; nor does a box of words.
   const prompt = box('reader').locator('.mention-text[data-field=instructions]');
