@@ -93,6 +93,8 @@ pub(crate) struct Machines {
     pub(crate) rc_ready: Notify,
     /// What each machine is told to have ready (cl-967).
     pub(crate) lists: crate::ahead::Lists,
+    /// Moves when a machine becomes ready or ends: what plans re-plan on (cl-967).
+    pub(crate) arrivals: tokio::sync::watch::Sender<u64>,
 }
 
 /// What Calcifer last heard of a machine, never stored.
@@ -150,6 +152,7 @@ impl Machines {
             rc: crate::rc::Rc::default(),
             rc_ready: Notify::new(),
             lists: crate::ahead::Lists::default(),
+            arrivals: tokio::sync::watch::channel(0).0,
             calcifer,
         });
         me.calcifer.serve_with(&me);
@@ -829,6 +832,7 @@ impl Machines {
         if let Some(seen) = lock(&self.seen).get_mut(name) {
             (seen.boot, seen.attempt) = (None, None);
         }
+        self.arrivals.send_modify(|n| *n += 1);
         self.calcifer.machine_changed();
     }
 
@@ -938,6 +942,10 @@ impl Machines {
             if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready") {
                 self.placing.notify_one();
                 self.rc_ready.notify_one();
+            }
+            // Ready on a boot not seen ready before (it came up, or started again on new software): plans count it now.
+            if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready" || f.boot_id != frame.boot_id) {
+                self.arrivals.send_modify(|n| *n += 1);
             }
             seen.stopped &= frame.phase == "releasing";
             seen.frame = Some(frame);

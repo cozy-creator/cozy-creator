@@ -3355,6 +3355,8 @@ impl Walk {
         edits.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // A machine's Status moved (a run started or ended, bytes came, a machine came or went): a job held for a machine is placed again.
         let mut machines = self.host.api().calcifer.machines_changed();
+        // A machine became ready or ended: what isn't sent yet is placed again.
+        let mut arrivals = self.host.api().machines.arrivals.subscribe();
         // A walk before this one's versions whose files are on their way: it isn't over until they're here, or never come.
         let walk = self.folder().walk_now()?;
         for (number, coming) in walk.walk.runs {
@@ -3447,6 +3449,7 @@ impl Walk {
                             break;
                         }
                     }
+                    Ok(()) = arrivals.changed() => break,
                     _ = edits.tick() => {
                         if self.deletions()? {
                             break;

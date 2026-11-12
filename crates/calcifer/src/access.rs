@@ -279,14 +279,14 @@ impl Machines {
     }
 
     /// The Hub access a machine's list (`PUT /v1/upcoming`, `/v1/prepare`) of `specs` at `hub` carries: what this computer's
-    /// unsettled runs there and they read, signed for its workload key; none signed out.
+    /// unsettled runs there and they read, signed for its workload key; signed out, the Hub's origin alone, as a run's.
     pub(crate) async fn list_access(&self, hub: &str, machine: &str, specs: &[v1::RunSpec]) -> Result<Option<v1::HubAccess>, String> {
         let origin = match Origin::parse(hub) {
             Ok(origin) => self.hubs.resolve(&origin).await,
             Err(_) => self.hubs.hub.clone(),
         };
         if self.hubs.client(&origin).is_err() {
-            return Ok(None);
+            return Ok(Some(v1::HubAccess { origin: origin.to_string(), ..Default::default() }));
         }
         let denied = |denied: Denied| match denied {
             Denied::Refused(reason) => reason.message,

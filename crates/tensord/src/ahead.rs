@@ -37,6 +37,9 @@ pub(crate) fn hidden(id: &str) -> bool {
 pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, items: Vec<v1::Ahead>) -> Result<v1::AheadAnswer, Error> {
     let requests: Vec<v1::RunRequest> = (items.into_iter())
         .map(|item| {
+            // Its Hub's transport for TensorFS too, as a run's spec carries it.
+            let tensorfs = (item.hub.as_ref().filter(|hub| !hub.origin.is_empty()))
+                .map(|hub| v1::TensorFSOptions { endpoint: hub.origin.clone(), ca_der: hub.ca_der.clone(), ..Default::default() });
             let spec = v1::RunSpec {
                 kind: v1::RunKind::Warm,
                 source: item.source,
@@ -44,6 +47,7 @@ pub(crate) fn put(runs: &Arc<Runs>, actor: VerifiedActor, prefix: &'static str, 
                 models: item.models,
                 lane: item.lane,
                 hub: item.hub,
+                tensorfs,
                 ..Default::default()
             };
             v1::RunRequest { id: format!("{prefix}{}", item.key), spec }
