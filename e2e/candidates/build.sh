@@ -75,7 +75,7 @@ elif [ "$what" = cozy ]; then
       esac
     fi
     cargo fetch --locked
-    # A release's version gets +dev.g<sha8>; the RC's dev version (0.26.0-dev) gets +g<sha8> from crates/api/build.rs (cl-973).
+    # A release's version gets +dev.g<sha8>; the RC's dev version (0.26.0-dev) gets +g<sha8> from crates/api/build.rs (cl-976).
     uv run -q --no-project python -c 'import re,sys; p="Cargo.toml"; s=open(p).read(); open(p,"w").write(re.sub(r"(?m)^version = \"([^\"]+)\"$", lambda m: m[0] if "-" in m[1] else f"version = \"{m[1]}+dev.g{sys.argv[1][:8]}\"", s, count=1))' "$sha"
     cargo update -w --offline
     COZY_COMMIT=$sha cargo build --release --locked --offline -p cozy --bin cozy

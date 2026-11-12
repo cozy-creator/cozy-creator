@@ -117,7 +117,7 @@ jobs:
         if: contains(inputs.build, 'cozy') && hashFiles('web/app/package.json') != ''
         run: web/build.sh
       # Both stamped with their commit: a release's <version>+dev.g<sha8> here, the RC's dev version (0.26.0-dev) +g<sha8> by
-      # crates/api/build.rs from COZY_COMMIT (cl-973). Both packages are selected whichever binaries are asked for, so every
+      # crates/api/build.rs from COZY_COMMIT (cl-976). Both packages are selected whichever binaries are asked for, so every
       # build resolves cozy's features and the cache holds one set of dependencies.
       - name: Build cozy and tensord
         env:

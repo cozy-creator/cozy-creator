@@ -1,6 +1,6 @@
 //! `COZY_COMMIT`: the commit this build is from, which `machine show` reports. A build input
 //! `COZY_COMMIT` wins (a container build without the repository), then git's HEAD, then CI's
-//! `GITHUB_SHA`. `COZY_VERSION`: the version every part of cozy says (cl-973), the workspace's,
+//! `GITHUB_SHA`. `COZY_VERSION`: the version every part of cozy says (cl-976), the workspace's,
 //! with the commit for the open RC's dev version (`0.26.0-dev+g1a2b3c4d`).
 use std::{path::Path, process::Command};
 

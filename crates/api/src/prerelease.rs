@@ -4,7 +4,7 @@
 //! `cozy` a machine runs (`cozy-<version>-linux-<arch>`): its Runtime as a dev release of the minor it makes
 //! (`0.47.0.dev2260+g1a2b3c4d`, cl-952), so a package's floor can name it, and pure wheels kept for
 //! locks; TensorFS as `<version>+dev.g<sha8>`; cozy as the dev version of that minor with its commit (`0.26.0-dev+g1a2b3c4d`,
-//! cl-973).
+//! cl-976).
 
 fn repo_and_prefix(distribution: &str) -> (&'static str, &'static str) {
     let repo = repo(distribution);

@@ -38,7 +38,7 @@ pub(crate) fn dev_build() -> bool {
     ::api::prerelease::dev(::api::VERSION)
 }
 
-/// Whether this cozy is the open RC's dev version (`0.26.0-dev+g…`, cl-973): a minor no release or worker image is on yet.
+/// Whether this cozy is the open RC's dev version (`0.26.0-dev+g…`, cl-976): a minor no release or worker image is on yet.
 pub(crate) fn rc_version() -> bool {
     this_release().contains('-')
 }
@@ -89,7 +89,7 @@ impl Machines {
         };
         let own = this_release();
         // The open RC's dev version moves no released machine to its minor: work goes to one as it runs, as when the RC's builds
-        // said the last release (cl-973). A dev home's rental moves to the open RC first, when it is behind it and has no work
+        // said the last release (cl-976). A dev home's rental moves to the open RC first, when it is behind it and has no work
         // going (cl-922).
         if same_minor(&frame.version, own) || rc_version() {
             return Ok(self.follow_rc(name, true).await);
