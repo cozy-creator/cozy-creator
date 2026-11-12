@@ -75,6 +75,8 @@ const AUTOMATIC = /Nothing checked: this project's renders are placed automatica
   };
   /** Clicks `box` and waits for it to turn: whether it's checked now. */
   const turn = async (box, what) => {
+    // Disabled until its project is read: until then what it holds isn't known.
+    await until(`${what}: enabled`, () => box.isEnabled(), Boolean);
     const was = await box.isChecked();
     await box.click();
     await until(what, () => box.isChecked(), (now) => now !== was, 5000).catch(() => {});

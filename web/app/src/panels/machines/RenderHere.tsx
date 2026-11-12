@@ -24,8 +24,10 @@ export function useRenderMachines() {
   const chosen = data?.machines ?? []
   const keep = (machines: string[]) => id && queries.setQueryData<Project>(["project", id], (state) => state && { ...state, machines })
   const toggle = (name: string) => {
-    if (!id) return
-    const now = queries.getQueryData<Project>(["project", id])?.machines ?? []
+    const held = id ? queries.getQueryData<Project>(["project", id]) : undefined
+    // Not read yet, what it holds isn't known: a click would replace it.
+    if (!id || !held) return
+    const now = held.machines ?? []
     const next = now.includes(name) ? now.filter((other) => other !== name) : [...now, name]
     const mine = ++asked
     keep(next)
@@ -37,18 +39,19 @@ export function useRenderMachines() {
       },
     )
   }
-  return { project: id, chosen, toggle }
+  return { project: id, known: data !== undefined, chosen, toggle }
 }
 
 /** A machine's checkbox, beside it wherever it's listed (Paul 11-12: "Just make it a checkbox"): checked, the open project's renders
  *  go here too, and it's green; several can be checked, the project's preferred machines; none is automatic. */
 export function RenderCheck({ name, called = name }: { name: string; called?: string }) {
-  const { project, chosen, toggle } = useRenderMachines()
+  const { project, known, chosen, toggle } = useRenderMachines()
   if (!project) return null
   return (
     <input
       type="checkbox"
       className="render-check"
+      disabled={!known}
       aria-label={`Render on ${called}`}
       title="This project renders here (any checked machine, whichever finishes first)"
       checked={chosen.includes(name)}
