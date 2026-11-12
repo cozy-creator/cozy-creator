@@ -10,7 +10,7 @@ use std::{
     fs::OpenOptions,
     io::{self, Write as _},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -28,7 +28,8 @@ use api::{
     machine::{HELD, LogLines, Ranges, parse_held},
 };
 use reqwest::{RequestBuilder, Response, StatusCode, header};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest as _, Sha256};
 use tensorfs::fetch::Backoff;
 
 /// `calcifer::api::IGNORED_FIELDS`: the request fields Calcifer did not read.
@@ -84,6 +85,28 @@ pub(crate) enum VaultProgress<'a> {
     Notice { message: &'a str },
 }
 
+/// A run number is meaningful only inside the explicit project that owns it. `None` is
+/// independent maintenance, never a fallback after a project lookup failed.
+#[derive(Clone)]
+pub(crate) struct RunAddress { pub project: Option<String>, pub run: String }
+impl RunAddress {
+    pub(crate) fn of(run: &Run) -> Self { Self { project: run.project_id.clone(), run: run.id.to_string() } }
+    pub(crate) async fn current(ctx: &Context, run: &str) -> Result<Self, Error> {
+        let project = match crate::project::identity(ctx).await {
+            Ok(project) => Some(project.id),
+            Err(error) if error.code == "not_in_a_project" => None,
+            Err(error) => return Err(error),
+        };
+        Ok(Self { project, run: run.into() })
+    }
+    pub(crate) fn path(&self) -> String {
+        match &self.project {
+            Some(project) => path(&["v1", "projects", project, "runs", &self.run]),
+            None => path(&["v1", "runs", &self.run]),
+        }
+    }
+}
+
 struct Inner {
     http: reqwest::Client,
     home: Home,
@@ -111,7 +134,10 @@ impl Client {
 
     fn new(ctx: &Context) -> Result<Self, Error> {
         // Who a project's history says made an edit.
-        let said = header::HeaderMap::from_iter([(header::HeaderName::from_static("cozy-client"), header::HeaderValue::from_static("cli"))]);
+        let said = header::HeaderMap::from_iter([
+            (header::HeaderName::from_static("cozy-client"), header::HeaderValue::from_static("cli")),
+            (header::HeaderName::from_static(api::calcifer::project::PROJECT_STORAGE_HEADER), header::HeaderValue::from_static(api::calcifer::project::PROJECT_STORAGE_VERSION)),
+        ]);
         let http = tensorfs::fetch::http(&[]).expect("the webpki roots alone")
             .no_proxy()
             .default_headers(said)
@@ -208,7 +234,7 @@ impl Client {
     /// One vault operation ID for the command's lifetime. Reconnecting the same PUT attaches to
     /// that operation; the server acknowledges receipt immediately and records admission before
     /// changing storage, so an accepted operation is never run twice.
-    /// A controller without this route gets one legacy POST, whose uncertain result is not retried.
+    /// Protocol 3 is negotiated before each wire attempt; older vault routes are never used.
     pub(crate) async fn vault(
         &self,
         path: &str,
@@ -216,14 +242,12 @@ impl Client {
         mut progress: impl FnMut(VaultProgress<'_>),
     ) -> Result<VaultChanged, Error> {
         let body = json_body(request)?;
-        let operation = format!("{path}/operations/{}", write_key());
-        let attempts = AtomicUsize::new(0);
+        let operation = format!("{path}/operations/p3_{}", write_key());
         let mut reconnects = Backoff::transfer();
-        let (mut can_use_legacy, mut accepted) = (true, false);
+        let mut accepted = false;
         let mut last_progress = None;
         loop {
             let mut answer = self.send(Ask::Write, |c, base| {
-                attempts.fetch_add(1, Ordering::Relaxed);
                 json(c.put(format!("{base}{operation}")), &body).header(header::ACCEPT, "text/event-stream")
             }).await.map_err(vault_uncertain)?;
             if !answer.status().is_success() {
@@ -236,18 +260,8 @@ impl Client {
                     }
                 };
                 let error = vault_refusal(status, &bytes);
-                // A hidden transport retry may follow an admitted PUT whose headers were lost.
-                // Only the very first wire attempt can prove that an old route never accepted it.
-                if can_use_legacy && attempts.load(Ordering::Relaxed) == 1
-                    && status == StatusCode::NOT_FOUND && matches!(error.code.as_str(), "unknown_route" | UNTYPED)
-                {
-                    return self.legacy_vault(path, &body).await;
-                }
                 return Err(error);
             }
-            // Even without an Accepted event, a successful operation response may have admitted it.
-            // A later missing/expired operation must never turn into a new legacy mutation.
-            can_use_legacy = false;
             let content_type = answer.headers().get(header::CONTENT_TYPE).and_then(|value| value.to_str().ok())
                 .and_then(|value| value.split(';').next()).map(str::trim).unwrap_or("");
             if content_type != "text/event-stream" {
@@ -300,16 +314,6 @@ impl Client {
         progress(VaultProgress::Notice { message: &said });
         tokio::time::sleep(pause).await;
         Ok(())
-    }
-
-    async fn legacy_vault(&self, path: &str, body: &bytes::Bytes) -> Result<VaultChanged, Error> {
-        let answer = self.send(Ask::Unkeyed, |c, base| {
-            json(c.post(format!("{base}{path}")), body).header(header::ACCEPT, "application/json")
-        }).await.map_err(vault_uncertain)?;
-        let status = answer.status();
-        let body = answer.bytes().await.map_err(|_| vault_interrupted("the legacy response was interrupted"))?;
-        if !status.is_success() { return Err(vault_refusal(status, &body)); }
-        serde_json::from_slice(&body).map_err(|_| vault_interrupted("the legacy response could not be read"))
     }
 
     /// A PUT: idempotent by its path, and under its call's key too.
@@ -586,18 +590,18 @@ impl Client {
     }
 
     /// A run by its id or number.
-    pub(crate) async fn run(&self, id: &str) -> Result<Run, Error> {
-        self.get(&path(&["v1", "runs", id])).await
+    pub(crate) async fn run(&self, address: &RunAddress) -> Result<Run, Error> {
+        self.get(&address.path()).await
     }
 
     /// Runs, newest first; `query` is the route's filters.
-    pub(crate) async fn runs<Q: Serialize + ?Sized>(&self, query: &Q) -> Result<RunList, Error> {
-        self.get_query("/v1/runs", query).await
+    pub(crate) async fn runs<Q: Serialize + ?Sized>(&self, project: &str, query: &Q) -> Result<RunList, Error> {
+        self.get_query(&path(&["v1", "projects", project, "runs"]), query).await
     }
 
     /// Asks for a run's cancel; its machine's own outcome ends it.
-    pub(crate) async fn cancel(&self, id: &str) -> Result<Run, Error> {
-        let path = path(&["v1", "runs", id, "cancel"]);
+    pub(crate) async fn cancel(&self, address: &RunAddress) -> Result<Run, Error> {
+        let path = format!("{}/cancel", address.path());
         self.post(&path, &serde_json::json!({}), None).await
     }
 
@@ -621,10 +625,10 @@ impl Client {
     }
 
     /// A run's events after `starting_after`, to its terminal one.
-    pub(crate) fn events(&self, id: &str, starting_after: u64) -> Events {
+    pub(crate) fn events(&self, address: &RunAddress, starting_after: u64) -> Events {
         Events {
             client: self.clone(),
-            path: path(&["v1", "runs", id, "events"]),
+            path: format!("{}/events", address.path()),
             cursor: starting_after,
             stream: None,
             sse: Sse::default(),
@@ -640,10 +644,10 @@ impl Client {
 
     /// A run's events after `starting_after` past its terminal one, until Calcifer ends the
     /// stream: once each output's last revision landed or failed (or Calcifer stopped).
-    pub(crate) fn events_until_landed(&self, id: &str, starting_after: u64) -> Events {
+    pub(crate) fn events_until_landed(&self, address: &RunAddress, starting_after: u64) -> Events {
         Events {
             landing: true,
-            ..self.events(id, starting_after)
+            ..self.events(address, starting_after)
         }
     }
 
@@ -786,7 +790,7 @@ impl Client {
             }));
         }
         let services = Services::new(home, &self.0.user_home);
-        let mut steps = Steps::new(home.calcifer_log());
+        let mut steps = Steps::new(home.calcifer_health());
         // Another cozy (a build, a copy) never writes the service: it starts it only as already
         // defined for the installed cozy, else runs the installed one detached.
         let exe = std::env::current_exe().and_then(|exe| exe.canonicalize());
@@ -874,7 +878,7 @@ impl Client {
             name: "calcifer".into(),
             program: installed,
             args: vec!["calcifer".into()],
-            log: Some(self.0.home.calcifer_log()),
+            log: None,
         }
     }
 
@@ -901,6 +905,16 @@ impl Client {
             let holder = self.endpoint().await?;
             let base = format!("http://{}", holder.address);
             let request = build(&self.0.http, &base).bearer_auth(&holder.token);
+            let probe = request.try_clone().ok_or_else(|| Error::new(Kind::Internal, "request_unrepeatable", "The request cannot be inspected before transmission"))?
+                .build().map_err(unreachable)?;
+            if needs_project_storage(probe.url().path()) {
+                self.project_storage(&holder).await?;
+                // No old daemon can receive the project request after a restarted holder was probed.
+                if self.record().as_ref() != Some(&holder) || !self.holds(&holder) {
+                    self.remember(None);
+                    continue;
+                }
+            }
             let sent = self.heard(holder.pid, Instant::now(), REPORT, request.send()).await;
             let (error, stated, restarting) = match sent {
                 // A restart minted a new token: asked again once under the record it published. The same
@@ -949,6 +963,24 @@ impl Client {
                 }
             }
         }
+    }
+
+    /// A header alone is insufficient: old controllers ignore unknown headers. This response is
+    /// bound to both this exact process birth and its current bearer before any project bytes go.
+    async fn project_storage(&self, holder: &Holder) -> Result<(), Error> {
+        #[derive(Deserialize)]
+        struct Capability { version: u32, daemon_birth: String, principal: String }
+        let refused = || Error::new(Kind::Unavailable, "project_storage_unsupported", "Calcifer cannot prove project storage protocol 3; no project request was sent").next("cozy update");
+        let birth = process::Birth::of(holder.pid).map_err(|_| refused())?;
+        let expected_birth = hex::encode(Sha256::digest(serde_json::to_vec(&birth).map_err(|_| refused())?));
+        let answer = self.0.http.get(format!("http://{}/v1/project-storage", holder.address)).bearer_auth(&holder.token)
+            .send().await.map_err(|_| refused())?;
+        if !answer.status().is_success() { return Err(refused()); }
+        let capability: Capability = answer.json().await.map_err(|_| refused())?;
+        if capability.version != 3 || capability.daemon_birth != expected_birth || capability.principal != hex::encode(Sha256::digest(&holder.token)) {
+            return Err(refused());
+        }
+        Ok(())
     }
 
     /// Samples `done` until it holds, saying what it waits for every few seconds.
@@ -1463,3 +1495,8 @@ mod tests;
 #[cfg(test)]
 #[path = "calcifer_restart_tests.rs"]
 mod restart_tests;
+
+/// Global service/account diagnostics remain available to diagnose an old controller.
+fn needs_project_storage(path: &str) -> bool {
+    ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/browser/", "/v1/maintenance/source", "/v1/events"].iter().any(|prefix| path.starts_with(prefix))
+}

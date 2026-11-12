@@ -89,16 +89,28 @@ const arrived = new Set<string>()
 const FULL = 2048
 
 /** A just-landed take's picture, at the size an open box draws it, asked once and decoded ahead, so a click on it shows it at once. */
-const preloaded = new Set<string>()
+const preloaded = new Map<string, HTMLImageElement>()
+const mediaEpoch = new Map<string, number>()
+const mediaKey = (project: string | null, key: string) => `${project ?? ""}\0${key}`
+export function revokeProjectMedia(project: string) {
+  mediaEpoch.set(project, (mediaEpoch.get(project) ?? 0) + 1)
+  const prefix = `${project}\0`
+  for (const [key, image] of preloaded) if (key.startsWith(prefix)) { image.removeAttribute("src"); preloaded.delete(key) }
+  for (const key of arrived) if (key.startsWith(prefix)) arrived.delete(key)
+  for (const key of widest.keys()) if (key.startsWith(prefix)) widest.delete(key)
+}
 export function preload(client: Client, projectId: string | null, sha256: string) {
-  const key = `${sha256}:${FULL}`
+  const key = mediaKey(projectId, `${sha256}:${FULL}`)
   if (!projectId || preloaded.has(key)) return
-  preloaded.add(key)
+  const epoch = mediaEpoch.get(projectId) ?? 0
+  const img = new Image()
+  preloaded.set(key, img)
+  const live = () => preloaded.get(key) === img && (mediaEpoch.get(projectId) ?? 0) === epoch
   void client.transport.src(client.thumb(projectId, sha256, FULL)).then((url) => {
-    const img = new Image()
+    if (!live()) { if (url.startsWith("blob:")) URL.revokeObjectURL(url); return }
     img.src = url
-    img.decode().then(() => arrived.add(key), () => preloaded.delete(key))
-  })
+    void img.decode().then(() => { if (live()) arrived.add(key) }, () => { if (live()) preloaded.delete(key) })
+  }, () => { if (live()) preloaded.delete(key) })
 }
 
 /** Thumbnails come in these widths, so a file has few sizes in Calcifer's cache: as wide as it's drawn on screen, the canvas's zoom and the
@@ -140,17 +152,19 @@ export function Thumb({
   const [failedPath, setFailedPath] = useState<string>()
   const projectId = store.projectId
   const zoom = useSignal(store.sharpness)
-  const width = exact ? cardWidth : Math.max(thumbWidth(cardWidth, zoom), strip ? 0 : (widest.get(sha256) ?? 0))
+  const width = exact ? cardWidth : Math.max(thumbWidth(cardWidth, zoom), strip ? 0 : (widest.get(mediaKey(projectId, sha256)) ?? 0))
   const path = projectId ? client.thumb(projectId, sha256, width, strip) : undefined
   useEffect(() => {
     if (!path) return
     let live = true
+    const epoch = projectId ? mediaEpoch.get(projectId) ?? 0 : 0
+    const current = () => live && (!projectId || (mediaEpoch.get(projectId) ?? 0) === epoch)
     const request = ++nextRequest.current
     const leave = thumbLine(path, (complete) => {
       void client.transport.src(path).then((src) => {
-        if (!live) return
+        if (!current()) { if (src.startsWith("blob:")) URL.revokeObjectURL(src); return }
         setFailedPath(undefined)
-        setImage({ path, src, request, complete, live: () => live })
+        setImage({ path, src, request, complete, live: current })
       }, () => {
         if (!live) return
         leave()
@@ -170,7 +184,7 @@ export function Thumb({
       key={image.request}
       src={image.src}
       alt=""
-      className={`${className ?? ""} ${arrived.has(`${sha256}:${width}`) ? "" : "arrives"}`}
+      className={`${className ?? ""} ${arrived.has(mediaKey(projectId, `${sha256}:${width}`)) ? "" : "arrives"}`}
       draggable={false}
       style={frame === undefined ? undefined : { transform: `translateX(${(-frame * 100) / (strip ?? 1)}%)` }}
       onError={() => {
@@ -183,8 +197,8 @@ export function Thumb({
         image.complete()
         const { naturalWidth, naturalHeight } = event.currentTarget
         if (naturalWidth && naturalHeight) onSize?.(naturalWidth / naturalHeight)
-        arrived.add(`${sha256}:${width}`)
-        if (!strip) widest.set(sha256, Math.max(width, widest.get(sha256) ?? 0))
+        arrived.add(mediaKey(projectId, `${sha256}:${width}`))
+        if (!strip) widest.set(mediaKey(projectId, sha256), Math.max(width, widest.get(sha256) ?? 0))
         onShown?.()
       }}
     />
@@ -320,9 +334,9 @@ export function sourceOf(view: ElementView, shown: Shown | null): Source | null 
 }
 
 /** Straight from the machine: `play` says where and signs a cap for this output alone, and the shared browser player follows it. */
-async function fromMachine(client: Client, source: { run: number; output: string }, el: HTMLMediaElement, failed: (why: string) => void): Promise<Playback> {
+async function fromMachine(client: Client, source: { project: string; run: number; output: string }, el: HTMLMediaElement, failed: (why: string) => void): Promise<Playback> {
   const [name, index] = source.output.split("/")
-  const answer = await client.play(String(source.run), name, Number(index ?? 0))
+  const answer = await client.play({ project: source.project, run: source.run }, name, Number(index ?? 0))
   const player = new MachinePlayer(el, parseLink(new URL(answer.url).hash))
   let stopping = false
   player.addEventListener("status", (event) => {
@@ -348,7 +362,7 @@ export function viewable(view: ElementView | undefined): boolean {
 }
 
 /** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
-export function Player({ field, path, machine, seek, auto }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean }) {
+export function Player({ field, path, machine, seek, auto }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean }) {
   const { client, stream } = useConnection()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const [why, setWhy] = useState("This browser can't play it")
@@ -421,7 +435,7 @@ export function Player({ field, path, machine, seek, auto }: { field: string; pa
       .catch((error: unknown) => {
         if (!waiting.signal.aborted) failed(error instanceof Error ? error.message : String(error))
       })
-  }, [state, client, path, machine?.run, machine?.output])
+  }, [state, client, path, machine?.project, machine?.run, machine?.output])
 
   if (state === "unplayable") return <span className="media-note over">{why}</span>
   if (state === "idle") {
@@ -492,15 +506,15 @@ function OnItsWay({ view, name, number }: { view: ElementView; name: string; num
   const asset = view.asset
   const making = asset?.standing === "making"
   const later = number !== undefined && number !== view.run?.number
-  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: later })
+  const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && later) })
   const run = later ? data : view.run
   const on = useWaitsOn(run)
   // Waiting for what it reads, it says that, and nothing of a machine's work for another box.
   const waits = making ? null : store.waitsFor(name)
   const installing = useInstalling(run || waits ? undefined : installsOf(asset?.tool ? tools.get(asset.tool) : undefined))
   const read = useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
-  const going = useQuery({ ...runsQuery(client, { status: "in_progress" }, 100), enabled: !run })
-  const lined = useQuery({ ...runsQuery(client, { status: "queued" }, 100), enabled: !run })
+  const going = useQuery({ ...runsQuery(client, store.projectId ?? "", { status: "in_progress" }, 100), enabled: Boolean(store.projectId && !run) })
+  const lined = useQuery({ ...runsQuery(client, store.projectId ?? "", { status: "queued" }, 100), enabled: Boolean(store.projectId && !run) })
   if (asset?.rendering != null) return <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />
   if (waits && !on) {
     const theirs = read?.asset?.making?.length ? read.run : undefined
@@ -607,7 +621,7 @@ function MadeFrom({ view, name, run, cardWidth }: { view: ElementView; name: str
   const { client } = useConnection()
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const { data, isError } = useQuery({ ...runFullQuery(client, run ?? 0, 0), enabled: run !== undefined })
+  const { data, isError } = useQuery({ ...runFullQuery(client, store.projectId ?? "", run ?? 0, 0), enabled: Boolean(store.projectId && run !== undefined) })
   const control = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "prompt")
   if (!control) return null
   const own = valueIn(view, control.field)
@@ -697,7 +711,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           key={JSON.stringify(source)}
           field={field}
           path={"path" in source ? client.file(store.projectId, source.path) : undefined}
-          machine={"run" in source ? source : undefined}
+          machine={"run" in source ? { ...source, project: store.projectId } : undefined}
           seek={view.seek}
         />
       )}
@@ -709,16 +723,18 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 /** What a render has shown so far, as it lands: over the box, and kept dimmed when it fails. */
 function Glimpse({ glimpse, failed }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean }) {
   const { client } = useConnection()
+  const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
   useEffect(() => {
+    if (!store.projectId) { setSrc(undefined); return }
     let live = true
-    void client.transport.src(client.output(glimpse.run, glimpse.output, glimpse.index)).then((url) => {
+    void client.transport.src(client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index)).then((url) => {
       if (live) setSrc(url)
     })
     return () => {
       live = false
     }
-  }, [client, glimpse.run, glimpse.output, glimpse.index])
+  }, [client, store.projectId, glimpse.run, glimpse.output, glimpse.index])
   return (
     <div className={`glimpse ${failed ? "failed" : ""}`} data-label={glimpse.label ?? ""}>
       {src && (glimpse.media === "video" ? <video src={src} muted loop autoPlay playsInline /> : <img src={src} alt="" draggable={false} />)}

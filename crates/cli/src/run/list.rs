@@ -100,6 +100,10 @@ pub(crate) fn table(ctx: &Context, runs: &[&Run], projects: bool) -> output::Tab
 /// The runs `query` asks for, page by page.
 pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error> {
     let calcifer = ctx.calcifer().await?;
+    let projects = if let Some(project) = &query.project { vec![Some(project.clone())] } else {
+        let known: api::calcifer::project::Projects = calcifer.get_query("/v1/projects", &[("limit", "0")]).await?;
+        std::iter::once(None).chain(known.projects.into_iter().map(|project| Some(project.id))).collect::<Vec<_>>()
+    };
     let mut out = RunList {
         runs: vec![],
         older: 0,
@@ -111,23 +115,43 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
         limit: Some(query.limit.unwrap_or(500).min(500)),
         ..query.clone()
     };
-    loop {
-        let list = calcifer.runs(&page).await?;
+    for project in projects {
+      page.before = query.before;
+      let began = out.runs.len();
+      loop {
+        let list = match &project {
+            Some(project) => calcifer.runs(project, &page).await,
+            None => calcifer.get_query("/v1/runs", &page).await,
+        };
+        let list = match list {
+            Err(error) if query.project.is_none() && matches!(error.code.as_str(), "project_locked" | "project_busy" | "project_unknown") => continue_list(&mut out, error),
+            other => other?,
+        };
         let last = list.runs.last().map(|r| r.number);
         let more = list.older > 0;
-        out.older = list.older;
+        if !more { out.older += list.older; }
         out.machine = list.machine;
         out.unreadable.extend(list.unreadable);
         out.runs.extend(list.runs);
         out.others.extend(list.others);
         let wanted = query
             .limit
-            .is_none_or(|limit| (out.runs.len() as u64) < limit);
+            .is_none_or(|limit| ((out.runs.len() - began) as u64) < limit);
         match last {
             Some(number) if more && wanted => page.before = Some(number),
-            _ => return Ok(out),
+            _ => { out.older += list.older; break; },
         }
+      }
     }
+    out.runs.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms).then_with(|| a.project_id.cmp(&b.project_id)).then_with(|| b.number.cmp(&a.number)));
+    if let Some(limit) = query.limit { out.runs.truncate(limit as usize); }
+    Ok(out)
+}
+
+/// A locked scope is reported transiently, without rebuilding an outside run mapping.
+fn continue_list(out: &mut RunList, error: Error) -> RunList {
+    out.unreadable.push(error.message);
+    RunList { runs: vec![], older: 0, machine: None, unreadable: vec![], others: vec![] }
 }
 
 /// Whether `run` is one `query` lists: its state, package and machine.

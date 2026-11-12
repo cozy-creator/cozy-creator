@@ -8,6 +8,7 @@ import { runsAfter, withAssets } from "../api/queries"
 import { sameOrigin } from "../api/transport"
 import type { Machine, MachineList, Run, RunList, StreamEvent, CalciferStatus, ProjectEventCursor } from "../api/calcifer"
 import type { Project } from "../types"
+import { revokeProjectMedia } from "../canvas/Media"
 import type { CanvasStore } from "../canvas/CanvasStore"
 import { signal } from "../ui/signal"
 import { readSession } from "./session"
@@ -39,7 +40,7 @@ class Bridge {
   private version: string | null = null
   private revs = new Map<string, string>()
   private owed = new Map<string, Owed>()
-  private runs = new Map<number, Run>()
+  private runs = new Map<string, Run>()
   private runListeners = new Set<(run: Run) => void>()
   private flushing = false
   private privateBlocked = new Set<string>()
@@ -166,7 +167,7 @@ class Bridge {
     const batch = [...this.runs.values()].filter((run) => !run.project_id || !this.privateBlocked.has(run.project_id))
     this.runs.clear()
     for (const run of batch) {
-      this.queries.setQueryData(["run", run.number], run)
+      this.queries.setQueryData(run.project_id ? ["project-run", run.project_id, run.number] : ["maintenance-run", run.number], run)
       for (const listener of this.runListeners) listener(run)
     }
     const ended = batch.some((run) => run.status !== "queued" && run.status !== "in_progress")
@@ -174,9 +175,11 @@ class Bridge {
     // of an install is kept as its call is asked, after the install's own end. The list is read again.
     if (batch.some((run) => run.status === "completed" && (run.kind !== "call" || run.target.startsWith("local/")))) void this.queries.invalidateQueries({ queryKey: ["tools"] })
     // A list shows a run it holds as it changes; one it doesn't hold may be new to it, so it's read again.
-    for (const [key, list] of this.queries.getQueriesData<RunList>({ queryKey: ["runs"] })) {
+    for (const [key, list] of this.queries.getQueriesData<RunList>({ predicate: ({ queryKey }) => queryKey[0] === "project-runs" || queryKey[0] === "maintenance-runs" })) {
       if (!list) continue
-      const after = runsAfter(list, key[1] as RunFilter, batch)
+      const scoped = key[0] === "project-runs" ? batch.filter((run) => run.project_id === key[1]) : batch.filter((run) => !run.project_id)
+      if (!scoped.length) continue
+      const after = runsAfter(list, key[key[0] === "project-runs" ? 2 : 1] as RunFilter, scoped)
       this.queries.setQueryData<RunList>(key, after.list)
       // A read begun before a run ended answers with it still going, and nothing after it says otherwise.
       const stale = ended && this.queries.isFetching({ queryKey: key, exact: true }) > 0
@@ -205,7 +208,7 @@ class Bridge {
         break
       case "run.updated":
         if (event.run.project_id && this.privateBlocked.has(event.run.project_id)) break
-        this.runs.set(event.run.number, event.run)
+        this.runs.set(`${event.run.project_id ?? "maintenance"}\0${event.run.id}`, event.run)
         if (!this.flushing) {
           this.flushing = true
           setTimeout(this.flushRuns, 16)
@@ -260,6 +263,7 @@ export interface Connection {
   /** Each project's canvas as it was last shown, by its id. */
   canvases: Map<string, CanvasStore>
   /** Remount mixed-project drawers after a lock, dropping their local logs and snapshots. */
+  retireProject(id: string): void
   privateViewEpoch: ReturnType<typeof signal<number>>
   /** Which try a call is on, when it isn't the first; 0 otherwise. */
   attempt: ReturnType<typeof signal<number>>
@@ -289,32 +293,56 @@ export async function connect(): Promise<Boot> {
   const outbox = new Outbox()
   const canvases = new Map<string, CanvasStore>()
   const privateViewEpoch = signal(0)
+  const retireProject = (id: string) => {
+    bridge.forgetProject(id)
+    outbox.discardProject(id)
+    canvases.get(id)?.retire()
+    canvases.delete(id)
+    forgetProjectView(id)
+    revokeProjectMedia(id)
+    const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
+      (["project", "project-view", "canvas", "yaml", "history", "project-run", "project-runs"].includes(String(queryKey[0])) && queryKey[1] === id)
+      || queryKey[0] === "tools"
+    void queries.cancelQueries({ predicate: privateData })
+    void queries.resetQueries({ predicate: privateData })
+    queries.removeQueries({ predicate: privateData })
+    notes.set([])
+    privateViewEpoch.set(privateViewEpoch.get() + 1)
+  }
   const bridge = new Bridge(queries, client, (id, state) => {
     if (id) protectProjectView(id, true)
     if (state === "unlocked") { outbox.allowProject(id); return }
-    if (id) {
-      outbox.discardProject(id)
-      canvases.get(id)?.revokePrivateView()
-      canvases.delete(id)
-      forgetProjectView(id)
-    }
-    const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-      (Boolean(id) && ["project", "project-view", "canvas", "yaml", "history"].includes(String(queryKey[0])) && queryKey[1] === id)
-      || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
-    void queries.cancelQueries({ predicate: privateData })
-    // Reset active observers too: merely removing the cache can leave a mounted drawer's old data.
-    void queries.resetQueries({ predicate: privateData })
-    queries.removeQueries({ predicate: privateData, type: "inactive" })
-    notes.set([])
-    privateViewEpoch.set(privateViewEpoch.get() + 1)
+    if (id) retireProject(id)
+    else privateViewEpoch.set(privateViewEpoch.get() + 1)
   })
+  const stopEdit = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation() }
+  const editEvents = ["pointerdown", "keydown", "beforeinput", "input", "drop", "paste", "submit"]
+  const hooks = globalThis as typeof globalThis & { __cozyFreeze?: () => boolean; __cozyPrepareClose?: () => Promise<void>; __cozyResume?: () => void }
+  hooks.__cozyFreeze = () => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    document.documentElement.inert = true
+    for (const name of editEvents) document.addEventListener(name, stopEdit, true)
+    return true
+  }
+  hooks.__cozyPrepareClose = async () => {
+    await Promise.all([...canvases.values()].map((canvas) => canvas.prepareClose()))
+    await outbox.saved()
+    await client.savedWrites()
+    await outbox.saved()
+    outbox.freeze(); client.freezeWrites()
+  }
+  hooks.__cozyResume = () => {
+    for (const name of editEvents) document.removeEventListener(name, stopEdit, true)
+    document.documentElement.inert = false
+    outbox.resume(); client.resumeWrites()
+  }
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
   stream.subscribe((event) => {
     if (event.type === "hello") outbox.back()
   })
   stream.start()
-  return { connection: { client, queries, stream, bridge, outbox, canvases, privateViewEpoch, attempt, signedOut, status } }
+  return { connection: { client, queries, stream, bridge, outbox, canvases, retireProject, privateViewEpoch, attempt, signedOut, status } }
 }
 
 const Context = createContext<Connection | null>(null)

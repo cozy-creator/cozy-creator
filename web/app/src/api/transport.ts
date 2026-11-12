@@ -1,4 +1,6 @@
+import { ownedBirth } from "../app/session"
 import type { BrowserSession } from "./calcifer"
+import { PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION } from "./calcifer"
 
 export interface Playback {
   stop(): void
@@ -31,20 +33,36 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     if (held) url.searchParams.set("media", held)
     return url.pathname + url.search
   }
+  const storage = async (signal?: AbortSignal | null) => {
+    const token = session()?.token
+    if (!token || !ownedBirth) throw new Error("An owned private browser session is required before opening project data")
+    const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { Authorization: `Bearer ${token}` } })
+    const capability = response.ok ? await response.json() : null
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+    const principal = [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("")
+    if (session()?.token !== token || capability?.version !== 3 || capability?.daemon_birth !== ownedBirth || capability?.principal !== principal) {
+      throw new Error("Calcifer cannot prove project storage protocol 3 for this private session")
+    }
+  }
+  const needsStorage = (path: string) => ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/events"].some((prefix) => path.startsWith(prefix))
   return {
     channel: false,
-    fetch(path, init = {}) {
+    async fetch(path, init = {}) {
+      if (needsStorage(path)) await storage(init.signal)
       const headers = new Headers(init.headers)
       const token = session()?.token
       if (token) headers.set("Authorization", `Bearer ${token}`)
       headers.set("Cozy-Client", `page ${TAB}`)
+      headers.set(PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION)
       return fetch(resolve(path), { ...init, headers })
     },
-    src: async (path) => media(path),
+    src: async (path) => { await storage(); return media(path) },
     play(path, el) {
-      el.src = media(path)
+      let live = true
+      void storage().then(() => { if (live) el.src = media(path) }, () => { if (live) el.dispatchEvent(new Event("error")) })
       return {
         stop() {
+          live = false
           el.pause()
           el.removeAttribute("src")
           el.load()

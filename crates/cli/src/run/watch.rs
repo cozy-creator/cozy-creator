@@ -20,9 +20,10 @@ use crate::{Context, output};
 /// `once`: a snapshot instead. The exit code is the run's: 1 when it failed or was canceled.
 pub(crate) async fn exec(ctx: &Context, id: &str, once: bool, download: Option<&std::path::Path>) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
+    let address = crate::calcifer_client::RunAddress::current(ctx, id).await?;
     // `--full`: what it measured, its calls and what it was asked; a person's view and `--json` hold the rest.
     let detail: &[(&str, &str)] = if ctx.full { &[("detail", "full")] } else { &[] };
-    let mut run: Run = calcifer.get_query(&crate::calcifer_client::path(&["v1", "runs", id]), detail).await?;
+    let mut run: Run = calcifer.get_query(&address.path(), detail).await?;
     if !once && !follow::settled(&run) {
         let ended = follow::follow(ctx, run).await?;
         if let Some(dir) = download {
@@ -31,7 +32,7 @@ pub(crate) async fn exec(ctx: &Context, id: &str, once: bool, download: Option<&
         if !ctx.json {
             return Ok(follow::exit_code(&ended));
         }
-        run = calcifer.get_query(&crate::calcifer_client::path(&["v1", "runs", ended.id.as_str()]), detail).await?;
+        run = calcifer.get_query(&crate::calcifer_client::RunAddress::of(&ended).path(), detail).await?;
         output::ndjson(&run);
         return Ok(follow::exit_code(&run));
     }
@@ -103,7 +104,7 @@ pub(crate) async fn exec(ctx: &Context, id: &str, once: bool, download: Option<&
     }
     if follow::settled(&run) {
         // A settled run's stream replays its log and closes.
-        let mut events = calcifer.events(run.id.as_str(), 0);
+        let mut events = calcifer.events(&crate::calcifer_client::RunAddress::of(&run), 0);
         let mut lines = Vec::new();
         // Each stage the run entered, at its time since the run was accepted: what a run whose
         // machine was lost has to say about where it got to.

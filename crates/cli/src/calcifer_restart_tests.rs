@@ -272,7 +272,7 @@ async fn follower_reconnects_with_the_same_run_and_durable_cursor() {
             }})),
         })
     });
-    let mut events = fixture.client.events("same-run", 0);
+    let mut events = fixture.client.events(&crate::calcifer_client::RunAddress { project: None, run: "same-run".into() }, 0);
     assert_eq!(events.next().await.unwrap().unwrap().sequence_number(), Some(7));
     assert!(matches!(events.next().await.unwrap().unwrap(), Event::Completed { sequence_number: 8, .. }));
     assert!(events.next().await.is_none());

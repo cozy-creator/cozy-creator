@@ -49,6 +49,7 @@ export class PageHistory<S> {
   private redos: Target[] = []
   /** What Calcifer's Redo would take, as last read. */
   private redo?: number
+  private retired = false
   private reading = false
   private again = false
   private client: Client
@@ -59,6 +60,13 @@ export class PageHistory<S> {
     this.project = project
   }
 
+  retire() {
+    this.retired = true
+    this.steps = []; this.asked.clear(); this.redos = []; this.redo = undefined; this.again = false
+    this.entries.set([])
+    this.tell()
+  }
+
   private tell() {
     this.moved.set(this.moved.get() + 1)
   }
@@ -66,7 +74,7 @@ export class PageHistory<S> {
   /** Read again, once at a time: what comes meanwhile reads once more after. */
   read() {
     const id = this.project()
-    if (!id) return
+    if (!id || this.retired) return
     if (this.reading) {
       this.again = true
       return
@@ -74,6 +82,7 @@ export class PageHistory<S> {
     this.reading = true
     this.client.history(id, LISTED).then(
       (history) => {
+        if (this.retired) return
         this.redo = history.redo ?? undefined
         for (const entry of history.entries) {
           for (const edit of entry.edits ?? []) {
@@ -107,6 +116,7 @@ export class PageHistory<S> {
 
   /** This page did something new: Redo no longer takes what came before it. */
   did(step: Step<S>) {
+    if (this.retired) return
     this.steps.push(step)
     if (this.steps.length > STEPS) this.steps.shift()
     this.redos = []
