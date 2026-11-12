@@ -669,8 +669,8 @@ def qualify(args, receipt: Receipt) -> None:
     crash_before_controller_receipt(native, project, bindings, receipt)
     checkpoint(receipt, "rehistory")
     complete_migration(native, reference, project)
-    receipt.add("legacy_worker_receipt_crash_recovery", passed=True, no_resubmission=True, runs=len(results))
     check(worker_journal(project / ".vault-machine", list(results))[1] == worker_baseline, "worker_execution_preserved", runs=len(results))
+    receipt.add("legacy_worker_receipt_crash_recovery", passed=True, no_resubmission=True, runs=len(results))
     assert_history(native, reference, project, baseline, results)
     # Input closure is required after settlement too; this is not just an API
     # view over a retained outside journal or a currently warm worker.
