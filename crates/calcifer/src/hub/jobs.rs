@@ -71,6 +71,7 @@ fn code(ask: &RunRequest) -> Result<LocalCode, Refusal> {
 }
 
 async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) -> Result<Planned, Refusal> {
+    if ask.project.is_none() { if let Some(code)=&ask.code { crate::maintenance_source::require(api,code).map_err(Refusal)?; } }
     // Unnamed, where it is made present: this computer's machine, else any rental there is.
     let on = match ask.on.as_slice() {
         [] => crate::runs::default_on(api),
@@ -108,9 +109,7 @@ async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) -> Resu
 /// again answers the recorded run.
 pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunRequest) -> Result<Submitted, Error> {
     let calcifer = &api.calcifer;
-    if ask.project.is_none() && ask.code.is_some() {
-        return Err(Error::new(Kind::Validation, "source_scope_required", "local code requires project scope or verified project-independent source admission"));
-    }
+    if ask.project.is_none() { if let Some(code)=&ask.code { crate::maintenance_source::require(api,code)?; } }
     let project = match ask.project.as_deref() {
         Some(named) => Some({ let store = api.projects.store(api, named).await?; store.project_id().to_owned() }),
         None => None,

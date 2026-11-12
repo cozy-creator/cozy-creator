@@ -59,6 +59,7 @@ pub(crate) struct Api {
     pub(crate) codes: crate::hub::Codes,
     pub(crate) sessions: crate::sessions::Sessions,
     pub(crate) browser: crate::browser::OwnedBrowser,
+    pub(crate) browser_address: std::sync::OnceLock<std::net::SocketAddr>,
     /// The components packages ship, as read for the page.
     pub(crate) tool_uis: crate::tool_ui::Held,
     bearer: [u8; 32],
@@ -88,6 +89,7 @@ impl Api {
         let api = Arc::new(Self {
             sessions: crate::sessions::Sessions::open(calcifer.maintenance_store()),
             browser: crate::browser::OwnedBrowser::new(),
+            browser_address: std::sync::OnceLock::new(),
             calcifer,
             machines,
             projects: Default::default(),
