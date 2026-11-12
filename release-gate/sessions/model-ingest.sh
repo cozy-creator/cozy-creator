@@ -39,8 +39,9 @@ FUNCTION=$(param function ask) SLOT=$(param slot model)
 REQUEST=$(param request '{"prompt": "First, what is 17 + 25? Give just the number. Then describe this picture in two sentences.", "max_tokens": 160, "temperature": 0.7, "top_p": 0.8, "presence_penalty": 1.5, "seed": 0}')
 EXPECT=$(param expect 42) ASSET=$(param asset images) IMG=$REF/seed.jpg GATE=$(param gate true)
 MIRRORS=$(param mirrors '')
+printf 'checkpoint  sha256:%064d\ncheckpoint  _/x@sha256:%064d\nrun 5 · x\nrun      17999\n' 1 7 > "$OUT/probe.txt"
+[ "$(made probe)" = "sha256:$(printf '%064d' 7)" ] && [ "$(runno probe)" = 17999 ] || fail "parsers"
 trees=("$PACKAGES"/*/)
-made() { awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
 lane_of() { model_details "$1" 2>/dev/null | jq -r --arg c "$2" '.checkpoints[]? | select(.checkpoint==$c) | .lane'; }
 # released <model> <release> <lane>: that release's checkpoint in that lane.
 released() {
@@ -183,8 +184,6 @@ for p in $GIVEN; do
   if [ "$l" = bf16 ]; then BF16[$m]=$c; else LANE[$m/$l]=$c; fi
   say "$m $l $c (have)"
 done
-printf 'commit   _/x@sha256:%064d\nrun 5 · x\nrun      17999\n' 7 > "$OUT/probe.txt"
-[ "$(made probe)" = "sha256:$(printf '%064d' 7)" ] && [ "$(runno probe)" = 17999 ] || fail "parsers"
 quote 7200
 rent
 
