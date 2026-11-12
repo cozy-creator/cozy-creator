@@ -327,9 +327,10 @@ body:has(.focus-viewport) .zoom {
   border-color: var(--line2);
 }
 .segment.here {
-  border-color: var(--ember);
-  background: color-mix(in srgb, var(--ember) 22%, var(--card));
+  border: 2px solid var(--ember);
+  background: color-mix(in srgb, var(--ember) 40%, var(--card));
   color: var(--ink);
+  font-weight: 600;
 }
 .segments .continues {
   flex: none;
