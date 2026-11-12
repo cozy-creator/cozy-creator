@@ -99,3 +99,38 @@
   gap: 12px;
 }
 
+
+/* A LoRA's trigger words (cl-968, Paul 11-12): in a prompt, plain text drawn in a token colour, never a chip; beneath the box, the same
+   colour, each one put at the prompt's caret when clicked. */
+::highlight(lora-trigger) {
+  color: var(--mak);
+  background-color: color-mix(in srgb, var(--mak) 16%, transparent);
+}
+.lora-triggers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-basis: 100%;
+  min-width: 0;
+}
+.lora-trigger,
+.lora-trigger-more {
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--round);
+  background: color-mix(in srgb, var(--mak) 16%, transparent);
+  color: var(--mak);
+  font: inherit;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.lora-trigger:hover,
+.lora-trigger-more:hover {
+  background: color-mix(in srgb, var(--mak) 28%, transparent);
+}
+.lora-trigger-more {
+  font-family: inherit;
+  color: var(--mute);
+}

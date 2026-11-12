@@ -4,7 +4,7 @@ import { signal } from "../ui/signal"
 import { isNsfw } from "../ui/Tags"
 import type { CanvasStore, ElementView } from "./CanvasStore"
 import { madeHere } from "./shown"
-import { chooseModel, slotsOf as pickerSlots } from "./ModelPicker"
+import { chooseModel, slotsOf as pickerSlots, withTrigger } from "./ModelPicker"
 
 /** What a box can be given by a drag: whether this one takes it, and what taking it does. A checkpoint is one; anything else goes by this same path. */
 export interface Carried {
@@ -156,7 +156,11 @@ export const carrying = (found: FoundModel, tools: Map<string, Tool>): Carried =
     // The slot as the picker writes it (H3's segments' base_model as one), its one model replaced.
     const slot = pickerSlots(store.tools.get().get(store.get(name)?.asset?.tool ?? "")).find((model) => model.family === found.family && model.kind !== "lora")
     if (found.kind === "lora") {
-      store.putOn(name, { lora: [...(Array.isArray(lora) ? lora : []), { ref: found.model }] })
+      // Its trigger words go after the box's prompt, in the same step (cl-968).
+      void store.modelDetail(found.model).then((detail) => detail.trigger, () => null).then((trigger) => {
+        const now = store.valueOf(name, "lora")
+        store.putOn(name, { lora: [...(Array.isArray(now) ? now : []), { ref: found.model }], ...withTrigger(store, name, trigger) })
+      })
     }
     else if (slot) chooseModel(store, name, slot, found.model)
   },

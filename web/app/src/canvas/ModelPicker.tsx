@@ -7,6 +7,7 @@ import { NSFW, isNsfw, useShowNsfw } from "../ui/Tags"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { loraNote } from "./loraNotes"
+import { appended, promptOf, triggersOf } from "./triggers"
 import "./ModelPicker.css"
 
 type Entry = Record<string, unknown>
@@ -154,7 +155,7 @@ const covers = (key: string, slot: PickerSlot) => key !== slot.slot && (slot.slo
 export const chooseModel = (store: ReturnType<typeof useCanvasStore>, name: string, slot: PickerSlot, ref: string) => changeSlot(store, name, slot, (held) => ({ ...held, ref }))
 
 /** A slot holds one model (Paul, 11-12): writing it drops any model another key holds for the same slot; LoRAs stay. */
-function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot: PickerSlot, change: (held: Entry) => Entry) {
+function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot: PickerSlot, change: (held: Entry) => Entry, also: Entry = {}) {
   const models = { ...entryOf(store.valueOf(name, "models")) }
   const kept = (entry: Entry) => Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== undefined && value !== null && !(Array.isArray(value) && !value.length)))
   const next = kept(change(entryOf(models[slot.slot])))
@@ -165,7 +166,15 @@ function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot
     if (Object.keys(kept(rest)).length) models[key] = kept(rest)
     else delete models[key]
   }
-  store.putOn(name, { models: Object.keys(models).length ? models : null })
+  store.putOn(name, { models: Object.keys(models).length ? models : null, ...also })
+}
+
+/** Box `name`'s prompt with `trigger`'s words it doesn't say yet after it (cl-968, Paul 11-12), as fields to write; none when it says them. */
+export function withTrigger(store: ReturnType<typeof useCanvasStore>, name: string, trigger: string | null | undefined): Entry {
+  const field = promptOf(store.tools.get().get(store.get(name)?.asset?.tool ?? ""))
+  const said = field ? store.valueOf(name, field) : undefined
+  const text = field && appended(typeof said === "string" ? said : "", triggersOf(trigger))
+  return field && text ? { [field]: text } : {}
 }
 
 function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: string; slot: PickerSlot; restricted: boolean; funAcc: boolean; showNsfw: boolean; legacy: unknown[] }) {
@@ -211,9 +220,13 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
     return rest
   })
   // Without a strength it runs at its recommended one, which Calcifer reads from its card.
-  const addLora = (model: PickerModel) => {
+  // Added, its trigger words go after the box's prompt, in the same step (cl-968).
+  const addLora = async (model: PickerModel) => {
     const adapter = { ref: model.model }
-    changeSlot(store, name, slot, (held) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model)) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }))
+    const on = (held: Entry) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model))
+    if (on(entryOf(entryOf(store.valueOf(name, "models"))[slot.slot]))) return
+    const trigger = await client.model(model.model).then((detail) => detail.trigger, () => null)
+    changeSlot(store, name, slot, (held) => on(held) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }), withTrigger(store, name, trigger))
   }
   return <section className="model-picker-slot" data-model-slot={slot.slot}>
     {!restricted && <div className="model-picker-tabs" role="group" aria-label={`Choices for ${slot.slot}`}>
@@ -246,7 +259,7 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
       {legacy.length > 0 && <div className="model-picker-legacy"><h4>Existing LoRAs</h4><AdapterList name={name} slot={null} families={slot.family ? [slot.family] : []} adapters={legacy} /></div>}
       <h4>Available LoRAs</h4>
       <ul className="model-picker-choices" aria-label={`Add LoRA for ${slot.slot}`}>
-        {availableLoras.map((model) => <li key={model.model}><button type="button" className="model-picker-lora-option" onClick={() => addLora(model)}><span><span>{modelChoiceLabel(model.model)}</span><small className="model-picker-lora-description" title={descriptionOf(model)}>{descriptionOf(model)}</small></span></button></li>)}
+        {availableLoras.map((model) => <li key={model.model}><button type="button" className="model-picker-lora-option" onClick={() => void addLora(model)}><span><span>{modelChoiceLabel(model.model)}</span><small className="model-picker-lora-description" title={descriptionOf(model)}>{descriptionOf(model)}</small></span></button></li>)}
       </ul>
       {!availableLoras.length && !isPending && <p className="muted model-picker-empty">No compatible LoRAs found.</p>}
     </>}
