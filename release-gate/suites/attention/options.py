@@ -152,7 +152,9 @@ def main(argv: list[str]) -> int:
              'the 16-bit reference, today\'s choice, and each 8-bit kernel pinned. (a) runs about as the arm of its heads, (b) '
              'as (a) with its flagged layers at 16 bits, (c) as the 16-bit arm where its 8-bit heads are 16-bit kernels.', '',
              'Note: the sparse route\'s own loss against dense FP32 (H3 block 0 at a sparse step: about 0.26 for BF16 Sol) is the '
-             'model\'s choice of sparsity, reported, not judged.', '']
+             'model\'s choice of sparsity, reported, not judged.', '',
+             'The flagged layers\' errors, which operand carries the outlier, and their models\' picture pairs beside them: '
+             '`real-data.md`; every output with its plain label: `manifest.json`.', '']
     for klass in sorted({k for t in tables.values() for k, _, _ in t}):
         lines += [f'## {klass}', '']
         for layout in ('dense', 'sparse'):
