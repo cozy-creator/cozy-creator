@@ -143,6 +143,7 @@ mod linux {
                         let mut focused = fixed(live, session, json!({ "kind": "focus", "asset": asset, "field": field })).await?;
                         if focused["found"] != true {
                             for (key, value) in [("typed", false), ("located", true), ("focused", false)] { focused[key] = json!(value); }
+                            for key in ["hit_target", "hit_node"] { focused[key] = json!(at[key] == true); }
                             return Ok(focused);
                         }
                         for kind in ["keyDown", "keyUp"] { live.pipe.call("Input.dispatchKeyEvent", json!({ "type": kind, "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 2 }), Some(session)).await?; }

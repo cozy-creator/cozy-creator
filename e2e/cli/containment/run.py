@@ -89,7 +89,8 @@ class ForeignBrowsers:
 
 EDIT_FACTS = frozenset({
     "located", "focused", "editor_present", "editor_rendered", "here_cards", "focus_viewport", "focus_entering",
-    "visible", "has_focus", "animation_frame", "inert",
+    "visible", "has_focus", "animation_frame", "inert", "hit_target", "hit_node",
+    "mousedown", "click", "dblclick", "mousedown_in_node", "click_in_node", "dblclick_in_node",
 })
 PAGE_FACTS = frozenset({
     "blank", "error_page", "loopback", "reloaded", "navigation_status", "owned_injected", "vite_client", "refresh_preamble",

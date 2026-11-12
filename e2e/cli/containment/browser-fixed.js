@@ -27,8 +27,15 @@ async function containmentProof(input) {
     case 'locate': {
       const box = card(), target = box?.classList.contains('here') ? box : box?.querySelector('.media');
       if (!target) return { found: false };
-      const rect = target.getBoundingClientRect();
-      return { found: rect.width > 0 && rect.height > 0, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      const rect = target.getBoundingClientRect(), x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+      // Closed facts for an edit that never opens: what is on top at the press, and which events reach the box.
+      const node = box.closest('.react-flow__node'), hit = document.elementFromPoint(x, y);
+      if (!globalThis.__cozyProofClicks) {
+        const seen = globalThis.__cozyProofClicks = { node: null };
+        for (const type of ['mousedown', 'click', 'dblclick']) document.addEventListener(type, (event) => { seen[type] = true; seen[`${type}_in_node`] ||= Boolean(seen.node?.contains(event.target)); }, true);
+      }
+      Object.assign(globalThis.__cozyProofClicks, { node, mousedown: false, click: false, dblclick: false, mousedown_in_node: false, click_in_node: false, dblclick_in_node: false });
+      return { found: rect.width > 0 && rect.height > 0, x, y, hit_target: Boolean(hit && target.contains(hit)), hit_node: Boolean(hit && node?.contains(hit)) };
     }
     case 'focus': {
       const editor = card()?.querySelector(`.mention-text[data-field="${CSS.escape(input.field)}"]`);
@@ -42,6 +49,7 @@ async function containmentProof(input) {
         here_cards: document.querySelectorAll(`.card.here[data-asset="${CSS.escape(input.asset)}"]`).length,
         focus_viewport: document.querySelector('.focus-viewport') !== null, focus_entering: document.querySelector('.focus-viewport[data-entering]') !== null,
         visible: document.visibilityState === 'visible', has_focus: document.hasFocus(), animation_frame: frame, inert: document.documentElement.inert,
+        ...Object.fromEntries(['mousedown', 'click', 'dblclick'].flatMap((type) => [[type, globalThis.__cozyProofClicks?.[type] === true], [`${type}_in_node`, globalThis.__cozyProofClicks?.[`${type}_in_node`] === true]])),
       };
     }
     case 'observe':
