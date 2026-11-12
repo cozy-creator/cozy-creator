@@ -9,8 +9,19 @@
 # is a pure wheel built from source, with none: a pod on it runs slowly and says nothing). params:
 #   picture   the picture's tool (default qwen-image-2/image), at `megapixels` (default 1)
 #   video     the video's tool (default minimax-h3/generate, its default lane and turbo), `seconds` long (default 15)
+#   update    `cozy machine update` flags for the pod after its TensorD: a candidate's Runtime and TensorFS, each a dev build's
+#             wheel with its kernels (["--runtime", "artifact:<run id>:<artifact>:cozy-runtime", "--tensorfs",
+#             "artifact:<run id>:<artifact>"]), fetched here before renting ([]: its image's)
 . "$(dirname "$0")/lib.sh"
 PICTURE=$(param picture qwen-image-2/image) MP=$(param megapixels 1) VIDEO=$(param video minimax-h3/generate) SECONDS_LONG=$(param seconds 15)
+mapfile -t update < <(param update '[]' | jq -r '.[]')
+for i in "${!update[@]}"; do
+  v=${update[$i]}; [[ $v == artifact:* ]] || continue
+  IFS=: read -r _ rid name repo <<<"$v"; d=$OUT/update/$i; mkdir -p "$d"
+  gh run download "$rid" -R "cozy-creator/${repo:-cozy-creator}" -n "$name" -D "$d" > /dev/null 2>&1 || fail "no artifact $v"
+  w=$(ls "$d"/*.whl 2> /dev/null | grep -m1 'manylinux.*x86_64') || fail "$v has no Linux x86_64 wheel"
+  update[$i]=$w
+done
 jq -n --arg picture "$PICTURE" --argjson mp "$MP" --arg video "$VIDEO" --argjson seconds "$SECONDS_LONG" '[
   {name: "pier", tool: $picture, kind: "image", fields: {megapixels: $mp, aspect_ratio: "16:9",
     instructions: "A weathered wooden pier at dusk, warm lamps along its rail, gulls overhead and a calm grey sea. Photo.",
@@ -27,7 +38,8 @@ rent
 step tensord machine update "$NAME" --tensord "$(command -v cozy)" -y || fail "the pod refused the session's TensorD"
 v=$(cozy machine show "$NAME" --json | jq -r .status.version)
 [ "$v" = "$(cozy --version | awk '{print $2}')" ] || fail "the pod runs TensorD $v, not the session's"
-say "pod TensorD $v, its image's Runtime $(cozy machine show "$NAME" --json | jq -r '.status.runtime // empty')"
+[ ${#update[@]} -eq 0 ] || step candidate machine update "$NAME" "${update[@]}" -y || fail "the pod refused the candidate's Runtime and TensorFS"
+say "pod TensorD $v, Runtime $(cozy machine show "$NAME" --json | jq -r '.status.runtime // empty')"
 
 # The board as the page sees it, every 5 s: when the video's fetch ahead began, and what each box said.
 ( while :; do printf '{"at_ms":%s,"board":%s}\n' "$(date +%s%3N)" "$(run_page board 2> /dev/null || echo null)" >> "$OUT/board.ndjson"; sleep 5; done ) & BG=$!
