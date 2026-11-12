@@ -613,8 +613,11 @@ impl Runs {
     ) -> Result<Vec<Value>, Refused> {
         let destination = spec.weights_destination.trim_start_matches("model://");
         // A composition by reference: choice `base[:<component>,…]` is the model the one upload starts from.
+        // Files it adds to the checkpoint: choice `add:<component>/<path>`, an `object://` input each.
+        let (adds, models): (Vec<&stored::ModelChoice>, Vec<&stored::ModelChoice>) =
+            spec.models.iter().partition(|choice| choice.parameter.starts_with(api::machine::ADD));
         let (bases, choices): (Vec<&stored::ModelChoice>, Vec<&stored::ModelChoice>) =
-            spec.models.iter().partition(|choice| choice.parameter.split(':').next() == Some(api::machine::BASE));
+            models.into_iter().partition(|choice| choice.parameter.split(':').next() == Some(api::machine::BASE));
         if !destination.is_empty() && choices.len() != 1 {
             return Err(refused("invalid_request", "a weights destination takes one model"));
         }
@@ -647,7 +650,7 @@ impl Runs {
         let mut models = vec![];
         for choice in choices {
             // On a base, a Hub checkpoint is referenced too: its header and tree are enough.
-            let Present { mut header, mut tree, mut row, folder } = self.present(actor, id, spec, choice, base.is_some(), observe, stoppable)?;
+            let Present { mut header, mut tree, mut row, folder } = self.present(actor, id, spec, choice, base.is_some() || !adds.is_empty(), observe, stoppable)?;
             let upload_store = folder.as_ref().map_or(publisher.store().as_ref(), |folder| &folder.store);
             if let Some((base, names)) = &base {
                 if folder.is_some() {
@@ -702,6 +705,30 @@ impl Runs {
                     row["components"] = json!(composed.components);
                     (header, tree) = (composed.header, on.tree);
                 }
+            }
+            if !adds.is_empty() {
+                if folder.is_some() || destination.is_empty() || destination.starts_with("local/") {
+                    return Err(refused("invalid_request", "files are added to a checkpoint uploaded to a Hub model; a CozyTensors folder uploads as it is"));
+                }
+                let mut added = vec![];
+                for add in &adds {
+                    let at = add.parameter.trim_start_matches(api::machine::ADD);
+                    let Some((component, path)) = at.split_once('/') else {
+                        return Err(refused("model_add_invalid", format!("{at}: name it <component>/<path>")));
+                    };
+                    let bytes = std::fs::read(self.written_source(actor, &add.source)?)?;
+                    let object = publisher.store().put_bytes(&bytes).map_err(|e| refused("model_add_invalid", e.to_string()))?;
+                    added.push((component.to_owned(), path.to_owned(), object));
+                }
+                let read = publisher.store().read(&header).map_err(|e| e.to_string())
+                    .and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).map_err(|e| e.to_string()))
+                    .map_err(|e| refused("model_resolution_failed", format!("{}: {e}", header.id())))?;
+                let with = tensorfs::import::base::with_assets(&read, &added)
+                    .map_err(|e| refused("model_add_invalid", e.to_string()))?;
+                let bytes = with.to_cbor().map_err(|e| refused("model_add_invalid", e.to_string()))?;
+                header = publisher.store().put_bytes(&bytes).map_err(|e| refused("model_add_invalid", e.to_string()))?;
+                row["added"] = json!(added.iter().map(|(c, p, _)| format!("{c}/{p}")).collect::<Vec<_>>());
+                row["checkpoint"] = json!(header.id());
             }
             // A commit's repo files (configs, a tokenizer) go with its header: the base's, for a composition.
             let files = repo_files(upload_store, tree.as_ref())?;

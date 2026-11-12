@@ -203,12 +203,13 @@ function check(name, ok, detail) {
   await undo();
   await says('green_back', () => lines('green'), Boolean);
 
-  // A tool taken off: its X, then the tool back, and off again.
-  await away();
-  await box('tooled').locator('button[aria-label="Take undo-e2e off tooled"]').click();
+  // A tool taken off: its X beside the tool in Focus (a box at rest has no tool strip: cl-932), then the tool back, said under its picture
+  // at rest at once, and off again.
+  await openBox(page, 'tooled');
+  await box('tooled').getByRole('button', { name: 'Remove image tool', exact: true }).click();
   await says('tool_off_written', () => lines('tooled'), (held) => held && held.tool === undefined);
   await undo();
-  check('tool_back_at_once', (await box('tooled').locator('button[aria-label="Take undo-e2e off tooled"]').count()) === 1);
+  check('tool_back_at_once', (await box('tooled').locator('.node-tool').count()) === 1);
   await says('tool_undone_in_the_file', () => lines('tooled'), (held) => held?.tool === 'undo-e2e/still' && held.instructions?.includes('a lighthouse'));
   await redo();
   await says('tool_redone', () => lines('tooled'), (held) => held && held.tool === undefined);
@@ -262,8 +263,9 @@ function check(name, ok, detail) {
   await says('approve_undone', approvedLine, (held) => held === first);
   await redo();
   await says('approve_redone', approvedLine, (held) => held === approved);
-  await openBox(page, 'shot');
-  await page.locator(`.card.here .take[data-take="${other}"]`).dblclick();
+  // Unapproved as the CLI does it: on a picture a double tap only approves (06718eb3a; whether it should toggle is Paul's,
+  // cl-908), and what's checked here is the undo of it.
+  await edit('unapprove', 'shot');
   await says('unapprove_written', approvedLine, (held) => held === null);
   await undo();
   await says('unapprove_undone', approvedLine, (held) => held === approved);

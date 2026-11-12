@@ -653,6 +653,10 @@ pub struct ModelUpload {
     /// `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// Files added to the checkpoint, `<component>/<path>` → a held file's `sha256:<hex>`: each becomes that component's asset
+    /// (a component of none but these when the checkpoint has no such component).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub add: std::collections::BTreeMap<String, String>,
 }
 
 /// A Hub checkpoint recorded as a checkpoint of another model when the caller may read its whole closure: nothing uploaded.

@@ -12,18 +12,21 @@ pub mod host_pressure;
 #[cfg_attr(not(any(target_os = "linux", windows)), path = "scope_unsupported.rs")]
 mod scope;
 
-pub use scope::{Budget, MachineFacts, Scope, all_stuck, budget, contain, follow, stuck};
+pub use scope::{Budget, MachineFacts, STALL, Scope, all_stuck, budget, contain, follow, on_stuck, stuck};
 
-/// A killed scope member stuck in the kernel (Linux `D`: a driver after an Xid, a hung network
-/// filesystem). It acts on its kill only once that wait ends, and nothing waits on it meanwhile.
+/// A killed process stuck in the kernel (Linux `D`: a driver after an Xid, a hung network
+/// filesystem), no killed process having moved for [`STALL`]. It acts on its kill only once that
+/// wait ends, and nothing waits on it meanwhile.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stuck {
     pub pid: u32,
     pub command: String,
     /// The kernel function it sleeps in; empty when the kernel hides it.
     pub wchan: String,
-    /// When an end found it stuck.
+    /// When it was killed (first waited on).
     pub since_unix_ms: i64,
+    /// Its resident host bytes then.
+    pub resident_bytes: u64,
 }
 
 /// Runtime `child_env.EXECUTOR_SCOPE_ENV`: one complete inherited environment entry.

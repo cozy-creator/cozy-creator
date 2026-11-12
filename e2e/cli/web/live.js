@@ -63,22 +63,26 @@ const WATCH = () => {
   for (const type of ['pointerdown', 'pointerup', 'click', 'dblclick']) {
     window.addEventListener(type, ({ target }) => window.clicks.push(`${type} ${target.tagName}.${target.className} ${location.pathname}`.slice(0, 160)), true);
   }
-  /** All it says, at rest or worked on where it stands. */
-  const wordsOf = (name) => box(name)?.textContent ?? '';
+  // An open box is Focus over the canvas (cl-893): what it says is there, and its node on the canvas only keeps its place.
+  const focusedBox = (name) => document.querySelector(`[data-focused-asset="${CSS.escape(name)}"]`);
+  /** All it says, at rest or open. */
+  const wordsOf = (name) => (focusedBox(name) ?? box(name))?.textContent ?? '';
   const placeOf = (node) => {
     const m = new DOMMatrix(getComputedStyle(node).transform);
     return { x: m.e, y: m.f };
   };
   const holds = (spec) => {
     if (spec.all) return spec.all.every(holds);
-    if (spec.gone) return !box(spec.gone);
-    const node = box(spec.name);
+    if (spec.gone) return !box(spec.gone) && !focusedBox(spec.gone);
+    const node = box(spec.name) ?? (spec.x === undefined && spec.w === undefined ? focusedBox(spec.name) : null);
     if (!node) return false;
     if (spec.has !== undefined && !wordsOf(spec.name).includes(spec.has)) return false;
     if (spec.lacks !== undefined && wordsOf(spec.name).includes(spec.lacks)) return false;
     if (spec.x !== undefined && (Math.abs(placeOf(node).x - spec.x) > 0.5 || Math.abs(placeOf(node).y - spec.y) > 0.5)) return false;
     if (spec.w !== undefined && Math.abs(node.offsetWidth - spec.w) > 0.5) return false;
-    if (spec.dot && !node.querySelector(`.dot.${spec.dot}`)) return false;
+    // Its state dot (cl-932): `busy`, queued or running; `none`, nothing to say.
+    if (spec.dot === 'busy' && !node.querySelector('.state-dot.queued, .state-dot.running')) return false;
+    if (spec.dot === 'none' && node.querySelector('.state-dot')) return false;
     if (spec.picture !== undefined && Boolean(node.querySelector('.media img')) !== spec.picture) return false;
     return true;
   };
@@ -491,7 +495,7 @@ function replaceFile(at, text) {
     // landed, its box shows that run whole. Progress sampled from here is the next render's alone.
     await until('the first render over on the page', () => page.evaluate((name) => !window.boxOf(name)?.querySelector('.prog'), 'live_shot'), Boolean);
     const moving = bounded(page.evaluate((name) => window.progressOf(name), 'live_shot'), FIRST_RUN_MS, () => 'its progress never ended');
-    await timed('render_starts', { name: 'live_shot', dot: 's-making' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
+    await timed('render_starts', { name: 'live_shot', dot: 'busy' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
     const landed = until('two takes', async () => (await held('live_shot')).versions, (versions) => versions === 2, FIRST_RUN_MS).then(() => Date.now());
     const places = await moving;
     const shownAt = Date.now();
@@ -508,7 +512,7 @@ function replaceFile(at, text) {
     const fileAt = await landed;
     times.render_lands = shownAt - fileAt;
     check('render_lands_live', times.render_lands <= LIVE_MS, times.render_lands);
-    check('render_lands_a_second_take', (await box('live_shot').locator('.dot.s-making').count()) === 0);
+    check('render_lands_a_second_take', (await box('live_shot').locator('.state-dot.queued, .state-dot.running').count()) === 0);
     await timed('approve_a_take', { name: 'live_shot', picture: true }, () => project('approve', 'live_shot', '2'));
     check('approve_a_take_in_the_status', (await held('live_shot')).approved === 2);
     await project('unapprove', 'live_shot');
@@ -519,8 +523,8 @@ function replaceFile(at, text) {
     await project('add', 'text', 'live_mood', 'text=Soft morning light.');
     await project('add', `${TOOL}/still`, 'live_styled', `at=${place.x},${place.y},260`, 'instructions=A still in <live_mood>.');
     await project('render', 'live_styled', '--on', 'local');
-    await shows({ name: 'live_styled', dot: 's-current' });
-    await timed('text_asset_outdates', { all: [{ name: 'live_mood', has: 'Hard evening light.' }, { name: 'live_styled', dot: 's-current' }] }, () => project('set', 'live_mood', 'text=Hard evening light.'));
+    await shows({ name: 'live_styled', dot: 'none' });
+    await timed('text_asset_outdates', { all: [{ name: 'live_mood', has: 'Hard evening light.' }, { name: 'live_styled', dot: 'none' }] }, () => project('set', 'live_mood', 'text=Hard evening light.'));
     check('what_mentions_it_is_out_of_date', (await held('live_styled')).standing === 'out_of_date', await held('live_styled'));
     await project('delete', 'live_styled', 'live_mood');
 
@@ -528,18 +532,18 @@ function replaceFile(at, text) {
     await project('set', 'live_shot', 'seconds:=3');
     place = await spot();
     await project('add', `${TOOL}/still`, 'live_after', `at=${place.x},${place.y},260`, 'instructions=After <live_shot>.');
-    const waiting = shows({ name: 'live_after', dot: 's-making' });
+    const waiting = shows({ name: 'live_after', dot: 'busy' });
     await project('render', 'live_shot', 'live_after', '--on', 'local', '--queue');
     await waiting;
     const afterAt = await until('what waited landed', async () => (await held('live_after')).versions, (versions) => versions === 1, FIRST_RUN_MS).then(() => Date.now());
-    const afterDone = await shows({ name: 'live_after', dot: 's-current' });
+    const afterDone = await shows({ name: 'live_after', dot: 'none' });
     times.queued_goes = afterDone.when - afterAt;
     check('queued_goes_when_it_lands', times.queued_goes <= LIVE_MS, times.queued_goes);
     await project('delete', 'live_after');
 
     // Deleted while it renders: its run stops, nothing's left queued, and the box goes. The line it printed brings it back with its takes.
     await project('set', 'live_shot', 'seconds:=60');
-    await timed('long_render_starts', { name: 'live_shot', dot: 's-making' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
+    await timed('long_render_starts', { name: 'live_shot', dot: 'busy' }, () => project('render', 'live_shot', '--on', 'local', '--queue'));
     await until('it running', async () => (await held('live_shot')).making?.length, Boolean);
     const stopped = await timed('delete_while_rendering', { gone: 'live_shot' }, () => project('delete', 'live_shot'));
     const going = await until('nothing owed', async () => (await status()).queue ?? [], (queue) => queue.length === 0, 30_000);

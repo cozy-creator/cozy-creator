@@ -40,6 +40,8 @@ struct Gpu {
     running: Option<u64>,
     /// How many of its calls are prefetch prewarms, which end with their owner (`GpuPool::prefetch`).
     hints: usize,
+    /// Out of service: a killed executor stuck in the kernel holds its memory (cl-935).
+    out: bool,
 }
 struct Root {
     width: usize,
@@ -79,13 +81,13 @@ pub(crate) struct Permit {
 impl Table {
     fn free(&self, device: usize, root: u64, claims: &Claims) -> bool {
         let gpu = &self.gpus[device];
-        gpu.root.is_none() && gpu.calling == 0
+        !gpu.out && gpu.root.is_none() && gpu.calling == 0
             && claims.get(device).copied().flatten().is_none_or(|claimer| claimer == root)
     }
     /// `root` gets `device` at the latest at its holder's next step boundary: no other request
     /// waits for it first, and it is free or (for a root's first step) a younger root holds it.
     fn obtainable(&self, device: usize, root: u64, first: bool, claims: &Claims) -> bool {
-        self.gpus[device].root.is_none_or(|holder| first && holder > root)
+        !self.gpus[device].out && self.gpus[device].root.is_none_or(|holder| first && holder > root)
             && claims.get(device).copied().flatten().is_none_or(|claimer| claimer == root)
     }
     /// The oldest request besides `root` that claims, holds or still calls on a GPU of `lane`;
@@ -276,7 +278,7 @@ impl Allocations {
                 false => gpu.root.is_none() && claims.get(d).copied().flatten().is_none_or(|c| Some(c) == root),
             };
             let shared = family.is_some() && gpu.caller.as_deref() == family;
-            placed && (gpu.calling == 0 || shared)
+            !gpu.out && placed && (gpu.calling == 0 || shared)
         }) && !(registered && root.is_some_and(|root| table.yielding(root, claims)) && !table.continuing(family));
         if !usable {
             return None;
@@ -286,6 +288,26 @@ impl Allocations {
             (gpu.calling, gpu.caller, gpu.running) = (gpu.calling + 1, family.map(String::from), root);
         }
         Some(Permit { table: self.clone(), devices, hint: false })
+    }
+    /// Takes `devices` out of service (`out`) or puts them back (cl-935); back, dispatch wakes.
+    pub(crate) fn set_out(&self, devices: &[usize], out: bool) {
+        let mut table = self.table.lock().unwrap();
+        for d in devices {
+            if let Some(gpu) = table.gpus.get_mut(*d) {
+                gpu.out = out;
+            }
+        }
+        drop(table);
+        self.freed();
+    }
+    /// The widest lane of GPUs in service.
+    pub(crate) fn serving(&self) -> usize {
+        let table = self.table.lock().unwrap();
+        table.gpus.split(|gpu| gpu.out).map(<[Gpu]>::len).max().unwrap_or(0)
+    }
+    /// Whether a GPU of `lane` is out of service.
+    pub(crate) fn out(&self, lane: Range<usize>) -> bool {
+        self.table.lock().unwrap().gpus.get(lane).is_some_and(|gpus| gpus.iter().any(|gpu| gpu.out))
     }
     /// Whether request `seq` still holds a lane or a call slot anywhere.
     pub(crate) fn holds(&self, seq: u64) -> bool {

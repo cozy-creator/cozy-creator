@@ -1501,6 +1501,9 @@ pub struct Gpu {
     /// It draws a screen now: a render on it makes the screen lag.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub display: bool,
+    /// Why nothing is placed on it now (cl-935); empty: in service.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub out_of_service: String,
 }
 
 fn unlimited(bytes: &u64) -> bool {

@@ -35,7 +35,7 @@ pub(crate) async fn serve(
         _ => None,
     };
     let link = private.as_ref().unwrap_or(&link);
-    let preview = match link.preview(row.id.as_str()).await {
+    let preview = match link.preview(&row.sent_id()).await {
         Ok(Some(preview)) => preview,
         // Not on the machine (yet), or a machine older than previews.
         Ok(None) | Err(LinkError::NoRun | LinkError::NotFound) => return none(),

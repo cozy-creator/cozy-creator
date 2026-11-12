@@ -808,7 +808,11 @@ memory_limit_bytes?: number,
 /**
  * It draws a screen now: a render on it makes the screen lag.
  */
-display?: boolean, };
+display?: boolean,
+/**
+ * Why nothing is placed on it now (cl-935); empty: in service.
+ */
+out_of_service?: string, };
 
 /**
  * A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
@@ -1724,7 +1728,12 @@ trained_on?: string | null, trigger?: string | null, strength?: number | null,
 /**
  * `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
  */
-base?: string | null, };
+base?: string | null,
+/**
+ * Files added to the checkpoint, `<component>/<path>` → a held file's `sha256:<hex>`: each becomes that component's asset
+ * (a component of none but these when the checkpoint has no such component).
+ */
+add?: { [key in string]: string }, };
 
 /**
  * Bytes moved and, when they took time, their rate and its share of the measured ceiling.
@@ -2971,9 +2980,21 @@ export type StuckProcess = { pid: number, command: string,
  */
 wchan: string,
 /**
- * When the machine found it stuck.
+ * When it was killed.
  */
-since_unix_ms: number, };
+since_unix_ms: number,
+/**
+ * Its resident host memory then.
+ */
+resident_bytes: number,
+/**
+ * The GPUs (by index) out of service while it holds their memory, nothing placed on them until it exits (cl-935).
+ */
+gpus: Array<number>,
+/**
+ * What the driver showed it holding on them.
+ */
+gpu_bytes: number, };
 
 /**
  * The answer to a submit: 202 when this call recorded the run, 200 (`replay`) when the key had.
@@ -3124,6 +3145,10 @@ auto?: boolean, placeholder?: string | null,
  * `Advanced()`: drawn in a collapsed Advanced section under More.
  */
 advanced?: boolean,
+/**
+ * `When()`: it applies only while a field beside it has a value; else the box dulls it and keeps its value.
+ */
+when?: When | null,
 /**
  * A prompt that takes only these kinds of file.
  */
@@ -3527,3 +3552,8 @@ export type WarmLevel = "off" | "installed" | "downloaded" | "imported" | "host"
  * Something noticed about a run that did not stop it: a stable code and a message.
  */
 export type Warning = { code: string, message: string, };
+
+/**
+ * `When(field, *values)`: a field that applies only while its sibling `field` is truthy, or is one of `values`.
+ */
+export type When = { field: string, values?: Array<JsonValue>, };

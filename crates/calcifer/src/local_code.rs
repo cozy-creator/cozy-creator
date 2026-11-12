@@ -1134,10 +1134,13 @@ pub(crate) fn locked_runtime(root: &Path) -> Option<String> {
     lock.package.into_iter().find(|p| p.name == "cozy-runtime").map(|p| p.version)
 }
 
-/// The SDK is always cozy-runtime: an authoritative lock, else plain unconditional version
-/// bounds. URLs, markers and unspecified versions retain the newest-SDK fallback; extras
+/// The SDK is always cozy-runtime: the one named (a version, or an RC build's wheel URL), an authoritative lock, else
+/// plain unconditional version bounds. URLs, markers and unspecified versions retain the newest-SDK fallback; extras
 /// belong to the package, not its static reader. Never forward a project's source as the SDK.
 fn describer_requirement(dir: &Path, runtime: Option<&str>) -> Result<String, Error> {
+    if let Some(wheel) = runtime.filter(|runtime| runtime.starts_with("https://")) {
+        return Ok(format!("cozy-runtime @ {wheel}"));
+    }
     if let Some(version) = runtime {
         return Ok(format!("cozy-runtime=={version}"));
     }

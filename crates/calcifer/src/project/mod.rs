@@ -1547,6 +1547,14 @@ fn no_function(name: &str, package: &str) -> String {
     format!("{name}: a tool is a function, and {package} has no one function that makes it, so name one: `{package}/<function>`")
 }
 
+/// The version of cut `asset` that cutting it again from `inputs` would only make again: those inputs, nothing left out, and its film
+/// here and as long as its pieces.
+fn same_cut<'a>(folder: &Folder, lock: &'a Lock, asset: &format::Asset, reads: &[format::ReadNow], inputs: &str) -> Option<&'a Version> {
+    let film_stands = |old: &Version| old.files.get("video").and_then(|sha256| lock.files.get(sha256)).is_some_and(|film| folder.path(&film.path).is_file());
+    lock.asset(&asset.name)?.versions.iter().rev()
+        .find(|old| old.inputs == inputs && old.without.is_empty() && film_stands(old) && tools::film_off(&asset.inputs, reads, lock, old).is_none())
+}
+
 /// What a cut of asset `i` is at the root: `<name>.mp4`.
 fn cut_name(name: &str) -> String {
     format!("{}.mp4", name.replace(['/', '\\'], "_"))
@@ -2267,11 +2275,29 @@ async fn runs(
     let mut takes = vec![];
     let one = !all && asked.names.len() == 1 && named.len() == 1;
     let approve = asked.approve && one;
+    let asked_of: HashSet<usize> = named.iter().copied().collect();
+    // Whether anything `i` reads, all the way up, is asked of here too: then what it reads is about to change.
+    let reads_asked = |i: usize| {
+        let (mut up, mut seen) = (doc.upstream[i].clone(), HashSet::new());
+        while let Some(j) = up.pop() {
+            if seen.insert(j) {
+                up.extend(&doc.upstream[j]);
+            }
+        }
+        !seen.is_disjoint(&asked_of)
+    };
     for i in named {
         let asset = &doc.assets[i];
         let name = asset.name.clone();
         if asset.pin.is_some() && asset.hollow {
             said(&name, format!("{name} is a constant, one file: nothing is made of it"));
+            continue;
+        }
+        // A cut that stands on what it reads now would only be cut the same again: answered now, with nothing queued (cl-910).
+        if doc.tool(i) == Some(Tool::Cut) && !missing && !reads_asked(i)
+            && let Some(version) = stand[i].inputs.as_deref().and_then(|inputs| same_cut(&project.folder, &lock, asset, &stand[i].reads, inputs))
+        {
+            said(&name, format!("{name} is current, version {}: what it cuts hasn't changed, so cutting it again makes the same film", version.number));
             continue;
         }
         if doc.tool(i).is_some() {
@@ -4972,9 +4998,7 @@ impl Walk {
             without.push(folder::Without { piece, why: why.into(), absent: false });
         }
         // The same edit, with everything it took here and its film right, isn't rendered again.
-        let film_stands = |old: &Version| old.files.get("video").and_then(|sha256| lock.files.get(sha256)).is_some_and(|film| folder.path(&film.path).is_file());
-        let again = |old: &Version| old.inputs == inputs && old.without.is_empty() && film_stands(old) && tools::film_off(&asset.inputs, &standing.reads, &lock, old).is_none();
-        if without.is_empty() && lock.asset(&asset.name).is_some_and(|held| held.versions.iter().any(again)) {
+        if without.is_empty() && same_cut(folder, &lock, asset, &standing.reads, inputs).is_some() {
             return Ok(None);
         }
         self.leave_out(&name, &on, tools::unreadable(&ffprobe, &pieces)?, &mut without);

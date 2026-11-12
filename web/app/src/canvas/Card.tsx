@@ -960,6 +960,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         </Media>
       )}</FocusFrame>
       {rendering && <span className="render-wave" aria-hidden="true" />}
+      {/* Watched, not written: orbit viewing turns on and off here too (xs-180), as in a take being written. */}
+      {focused && asset?.kind === "video" && !asset.timeline && !editing && <OrbitToggle view={view} name={name} />}
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {!here && !focused && <Under view={view} name={name} lite={lite} />}
@@ -1008,9 +1010,11 @@ export function Card({ data }: NodeProps<ElementNode>) {
   const resting = useRef(view)
   if (focused !== data.name) resting.current = view
   if (focused === data.name && !entering) return <div className="focus-placeholder" style={{ width: view ? bodyWidth(view, data.width) : data.width, height: view ? heightFor(view, data.width) : 1 }} />
+  // While the canvas draws in on it, the box as it rested: the open box is Focus's alone.
+  const atRest = focused === data.name && entering && resting.current ? { ...resting.current, here: undefined, hereWords: undefined } : undefined
   return (
     <>
-      <CardBody name={data.name} width={data.width} snapshot={focused === data.name && entering ? resting.current : undefined} />
+      <CardBody name={data.name} width={data.width} snapshot={atRest} />
       <AddOns name={data.name} />
     </>
   )
