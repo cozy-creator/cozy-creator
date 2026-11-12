@@ -61,8 +61,13 @@ class Scanner:
         if data.startswith(b"SQLite format 3\0"):
             # Deserialize into RAM. No temporary copy, journal or SHM is created by this scanner.
             database = sqlite3.connect(":memory:")
+            image = bytearray(data)
+            if image[18:20] == b"\x02\x02":
+                # sqlite3_deserialize cannot open a WAL-mode image (SQLITE_CANTOPEN). Its documented
+                # workaround: mark this RAM copy rollback mode. The -wal file is still scanned raw.
+                image[18:20] = b"\x01\x01"
             try:
-                database.deserialize(data)
+                database.deserialize(bytes(image))
                 for (table,) in database.execute("SELECT name FROM sqlite_schema WHERE type='table'"):
                     name = '"' + table.replace('"', '""') + '"'
                     for row in database.execute("SELECT * FROM " + name):
