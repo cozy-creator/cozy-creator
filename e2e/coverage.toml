@@ -225,6 +225,14 @@ test = "pr: agent_render, a chain from what it reads, nothing to render, -n forc
 "--outdated" = "pr: agent_render, an approved shot out of date rendered again, its approval kept"
 "--pickup" = "pr: agent_render, a take kept to its seam and the rest rendered; refused for two nodes"
 
+[get]
+test = "pr: web-agent (web-core), 0 nodes, one line per node, and named nodes whole with every default, their takes and rev; a typo refused"
+"--all" = "pr: web-agent, every node whole, in the project's order"
+"--takes" = "pr: web-agent, every take of a node; alone, refused"
+[explain]
+test = "pr: web-agent, the file, a kind, a tool's block and one field of it in words; a field's typo refused with its fix"
+"--schema" = "pr: web-agent, JSON Schema 2020-12 of the file and of a tool's block"
+
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
 "machine rent --provider" = "pending: dev-only (`dev = true`, crates/cli/DEV.md); release-gate/suites/hub rents cpu once per provider where the config has it, ended and checked gone"

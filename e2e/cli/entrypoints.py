@@ -17,6 +17,8 @@ PUBLIC = {
     "new",
     "open",
     "run",
+    "get",
+    "explain",
     "render",
     "status",
     "vault",

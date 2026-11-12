@@ -26,6 +26,7 @@ pub(crate) mod host;
 mod jobs;
 mod keyed;
 pub(crate) mod model;
+mod nodes;
 mod remote;
 mod thumbs;
 mod binder;
@@ -196,6 +197,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/assets/{name}/versions/{number}/seen", post(unseen::seen))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
+        .route("/v1/projects/{id}/nodes", get(nodes::read))
         .route("/v1/projects/{id}/history", get(history::list))
         .route("/v1/projects/{id}/history/undo", post(history::undo))
         .route("/v1/projects/{id}/history/redo", post(history::redo))
