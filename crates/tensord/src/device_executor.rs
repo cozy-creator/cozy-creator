@@ -335,20 +335,32 @@ pub(crate) fn socket_path(root: &Path, name: &str) -> io::Result<PathBuf> {
     #[cfg(unix)]
     if natural.as_os_str().len() > 100 {
         if crate::private_io::is_private_path(root) { return Err(io::Error::new(io::ErrorKind::Unsupported, "project path is too long for protected local IPC")); }
-        use std::os::unix::fs::MetadataExt;
-        let dir = PathBuf::from(format!("/tmp/cozy-{}", crate::launch_identity::euid()));
-        platform::durable::private_dir(&dir)?;
-        let metadata = fs::symlink_metadata(&dir)?;
-        if !metadata.is_dir() || metadata.uid() != crate::launch_identity::euid() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "the short socket directory belongs to another user",
-            ));
-        }
         let digest = tensorfs::sha256::hex_digest(natural.as_os_str().as_encoded_bytes());
-        return Ok(dir.join(&digest[..24]));
+        return Ok(short_sockets()?.join(&digest[..24]));
     }
     Ok(natural)
+}
+
+/// An unencrypted project's executor socket: a random name in the short socket directory, so its
+/// project's long path fits and nothing of that path is named outside it. A Windows pipe takes any path.
+pub(crate) fn ordinary_project_socket(root: &Path, name: &str) -> io::Result<PathBuf> {
+    #[cfg(unix)]
+    { let _ = (root, name); Ok(short_sockets()?.join(&crate::uuid::simple()[..24])) }
+    #[cfg(not(unix))]
+    { Ok(root.join(name)) }
+}
+
+/// This user's private directory under /tmp for sockets whose natural path is too long.
+#[cfg(unix)]
+fn short_sockets() -> io::Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let dir = PathBuf::from(format!("/tmp/cozy-{}", crate::launch_identity::euid()));
+    platform::durable::private_dir(&dir)?;
+    let metadata = fs::symlink_metadata(&dir)?;
+    if !metadata.is_dir() || metadata.uid() != crate::launch_identity::euid() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the short socket directory belongs to another user"));
+    }
+    Ok(dir)
 }
 
 /// The executor's containment scope, when its config names one. No scopes on this OS (macOS,
