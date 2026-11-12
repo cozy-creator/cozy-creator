@@ -935,7 +935,8 @@ code {
   color: var(--ink);
   font: var(--face-font) / 1.35 var(--sans);
 }
-.run-face.strip .face {
+.run-face.strip .face,
+.run-face.full .face {
   background: color-mix(in srgb, var(--card) 86%, transparent);
 }
 .run-face .face-state {
@@ -1050,41 +1051,44 @@ code {
 }
 /* Open (focus), between its name and its picture, across its width and large: its state and time left read as a heading over a thick
    bar, the numbers first. Its picture stays below, uncovered. */
-.card.here .run-face.above {
+.focus-viewport > .run-face.above {
   position: relative;
   inset: auto;
   z-index: auto;
+  flex: none;
   pointer-events: auto;
-  border-bottom: 1px solid var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--round2);
   background: var(--card);
-  --face-font: var(--body);
+  /* The Focus card's body step (FocusedViewport.css). */
+  --face-font: 20px;
 }
-.card.here .run-face.above .face {
+.focus-viewport > .run-face.above .face {
   gap: calc(0.5 * var(--face-font));
   padding: calc(0.9 * var(--face-font)) calc(1.1 * var(--face-font));
 }
-.card.here .run-face.above .face-state b {
+.focus-viewport > .run-face.above .face-state b {
   font-size: calc(2 * var(--face-font));
   font-weight: var(--w-title);
   line-height: 1.2;
 }
-.card.here .run-face.above .face-left {
+.focus-viewport > .run-face.above .face-left {
   color: var(--ink);
   font-size: calc(1.6 * var(--face-font));
   font-weight: var(--w-heading);
   font-variant-numeric: tabular-nums;
 }
-.card.here .run-face.above .face-track {
+.focus-viewport > .run-face.above .face-track {
   height: calc(0.9 * var(--face-font));
 }
-.card.here .run-face.above .face-track.thin {
+.focus-viewport > .run-face.above .face-track.thin {
   height: calc(0.3 * var(--face-font));
 }
-.card.here .run-face.above .face-stage {
+.focus-viewport > .run-face.above .face-stage {
   font-size: calc(1.2 * var(--face-font));
   font-variant-numeric: tabular-nums;
 }
-.card.here .run-face.above .face-cancel {
+.focus-viewport > .run-face.above .face-cancel {
   font-size: var(--face-font);
   line-height: 2;
 }
@@ -2094,8 +2098,32 @@ video.preview.on {
   pointer-events: none;
 }
 .note button,
-.note code {
+.note code,
+.note .line {
   pointer-events: auto;
+}
+/* An error is text to select and copy (Paul, 11-12): selecting it drags, opens and dismisses nothing. */
+.error-text,
+.note .line {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.run-face .error-text {
+  pointer-events: auto;
+}
+.copy-error {
+  flex: none;
+  padding: 0 calc(0.6em);
+  border: 1px solid var(--line2);
+  border-radius: var(--round);
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9em;
+  line-height: 1.6;
+  pointer-events: auto;
+  cursor: pointer;
 }
 .note {
   display: flex;

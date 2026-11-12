@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
-import { runFullQuery } from "../api/queries"
+import { runFullQuery, runQuery } from "../api/queries"
 import { holdMedia, playingHere } from "../api/events"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
@@ -18,6 +18,7 @@ import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
 import { BufferedImage } from "./BufferedImage"
 import { RunFace } from "./RunFace"
+import { bodyText, CopyError } from "../ui/CopyError"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
 const STRIP_FRAMES = 8
@@ -718,7 +719,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
       {onItsWay && asset?.rendering == null && !view.here && <RunFace view={view} name={name} number={run} full={full} />}
-      {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} />}
+      {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {asset?.kind === "video" && tools.get(asset.tool ?? "")?.pickup && !view.hereWords && shown && <button type="button" className="image-edit-action video-pickup-action nodrag nopan" onClick={(event) => {
         event.stopPropagation()
@@ -747,12 +748,13 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 }
 
 /** Why its last render failed, along its bottom, until it's tried again. */
-function FailedHere({ message }: { message: string }) {
+function FailedHere({ message, copy }: { message: string; copy: string }) {
   return (
     <div className="run-face strip failed" data-phase="failed">
       <div className="face">
-        <div className="face-state">
+        <div className="face-state error-text nodrag nopan">
           <b title={message}>Didn't render: {message}</b>
+          <CopyError text={copy} />
         </div>
       </div>
     </div>

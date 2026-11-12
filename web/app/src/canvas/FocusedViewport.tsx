@@ -5,7 +5,8 @@ import { Icon } from "../ui/Icon"
 import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
 import { NameField } from "./NameField"
-import { shownOf } from "./shown"
+import { makingRun, shownOf } from "./shown"
+import { RunFace } from "./RunFace"
 import { useSignal } from "../ui/signal"
 import "./FocusedViewport.css"
 
@@ -46,10 +47,12 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   }, [name, store, onCopyVersion])
   if (!view?.asset && !view?.entity) return null
   const version = shownOf(view)?.number
+  // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
+  const onItsWay = view.asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
   return (
     <section ref={element} className="focus-viewport" aria-label="Focused asset" data-focused-asset={name} data-entering={entering || undefined}
       onClick={(event) => {
-        if (!(event.target as Element).closest(".media, .tl, .focus-heading, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]")) onClose()
+        if (!(event.target as Element).closest(".media, .tl, .focus-heading, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]")) onClose()
       }}
       onContextMenu={(event) => {
         if ((event.target as Element).closest("input, textarea, [contenteditable]")) return
@@ -64,6 +67,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
+      {onItsWay && view.asset?.rendering == null && <RunFace view={view} name={name} number={makingRun(view)} full above />}
       <div className="focus-body"><FocusedCard name={name} /></div>
     </section>
   )

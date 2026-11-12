@@ -245,20 +245,20 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   seen.cancel = { waited, rendering };
   // Open (focus), its progress is between its name and its picture, large, and covers none of it (Paul, 11-12).
   await openBox(page, 'slow');
-  const above = page.locator('.card.here[data-asset="slow"] > .run-face.above');
+  const above = page.locator('.focus-viewport[data-focused-asset="slow"] > .run-face.above');
   await above.waitFor().catch(() => {});
   const focus = await page.evaluate(() => {
-    const card = document.querySelector('.card.here[data-asset="slow"]');
-    const box = (selector) => card?.querySelector(selector)?.getBoundingClientRect();
-    const [head, face, media] = [box(':scope > .head'), box(':scope > .run-face.above'), box(':scope > .media')];
-    const says = card?.querySelector(':scope > .run-face.above .face-state b');
-    const stage = card?.querySelector(':scope > .run-face.above .face-stage')?.textContent ?? '';
-    const bar = card?.querySelector(':scope > .run-face.above .face-bar .face-track')?.getBoundingClientRect().height;
-    return { head: head?.bottom, top: face?.top, bottom: face?.bottom, media: media?.top, width: face && media && face.width / media.width, size: says && says.getBoundingClientRect().height, bar, stage, over: card?.querySelectorAll('.media .run-face').length };
+    const viewport = document.querySelector('.focus-viewport[data-focused-asset="slow"]');
+    const box = (selector) => viewport?.querySelector(selector)?.getBoundingClientRect();
+    const [head, face, media] = [box(':scope > .focus-heading'), box(':scope > .run-face.above'), box('.focus-body .media')];
+    const says = viewport?.querySelector(':scope > .run-face.above .face-state b');
+    const stage = viewport?.querySelector(':scope > .run-face.above .face-stage')?.textContent ?? '';
+    const bar = viewport?.querySelector(':scope > .run-face.above .face-bar .face-track')?.getBoundingClientRect().height;
+    return { head: head?.bottom, top: face?.top, bottom: face?.bottom, media: media?.top, width: face && viewport && face.width / viewport.getBoundingClientRect().width, size: says && says.getBoundingClientRect().height, bar, stage, over: viewport?.querySelectorAll('.media .run-face').length };
   });
   seen.focus = focus;
   await shot('face-focus');
-  check('focus_progress_between_name_and_picture', focus.top >= focus.head - 1 && focus.bottom <= focus.media + 1 && focus.width > 0.95 && focus.over === 0, focus);
+  check('focus_progress_between_name_and_picture', focus.top >= focus.head - 1 && focus.bottom <= focus.media + 1 && focus.width > 0.9 && focus.over === 0, focus);
   check('focus_progress_large', focus.size >= 24 && focus.bar >= 8, focus);
   // Its bar is the whole render's; the part it's in and that stage's count are on the line under it.
   check('focus_part_under_the_bar', /^Segment [12] of 2 · (Denoising|Decoding video)/.test(focus.stage), focus);
