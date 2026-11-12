@@ -79,7 +79,7 @@ export const faceOf = (view: ElementView): "edit" | "media" => view.asset?.kind 
 /** No box is narrower: its corner stops here, and nothing shrinks one past it. */
 export const NARROWEST = 160
 
-export const widthFor = (view: ElementView | undefined): number => (view?.asset?.timeline ? 720 : view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
+export const widthFor = (view: ElementView | undefined): number => (view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
 
 /** `16:9` as a number, if it's one. */
 export function ratioOf(value: unknown): number | undefined {
@@ -222,8 +222,6 @@ export function heightFor(view: ElementView, width: number): number {
     const subs = view.entity.subs ?? []
     return HEAD + ENTITY_DESC + (hasSlots(view.entity.links) ? ENTITY_SLOTS : 0) + subs.length * SUB_ROW
   }
-  // An Edit on its controls: a picture over a filmstrip.
-  if (view.asset?.timeline && faceOf(view) === "edit") return HEAD + 332
   return HEAD + Math.round(imageViewHeight(view, width) ?? width / aspectOf(view)) + (isPicture(view) ? 40 : 0)
 }
 

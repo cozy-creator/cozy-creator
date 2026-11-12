@@ -675,6 +675,10 @@ function Canvas({
     [flow],
   )
   store.duplicate = (names) => selectOnly(placer.duplicate(names))
+  store.placeFiles = (files, then, near) => {
+    const by = near ? store.position(near) : null
+    placer.add(files, by ? { x: by.x + (by.w ?? CARD_WIDTH) + CARD_WIDTH, y: by.y } : visibleCentre(), then)
+  }
 
   const draggedEls = (nodes: ElementNode[]) => nodes.flatMap((node) => document.querySelector(`.react-flow__node[data-id="${CSS.escape(node.id)}"]`) ?? [])
 
