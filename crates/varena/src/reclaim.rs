@@ -26,6 +26,15 @@ pub(crate) const PHASE_USED: u8 = 5;
 pub(crate) const PHASE_NEXT: u8 = 6;
 pub(crate) const HIGH: u8 = 7;
 
+/// What a fill ahead may take room from: what its demand would take, but no other guess and nothing
+/// this pass has yet to use. Each is needed again only after the Region being filled, so taking it is
+/// that demand's eviction done early; in a loop, the first is the Region just used, the one needed
+/// furthest ahead.
+const AHEAD: RangeInclusive<u8> = UNPLANNED..=PHASE_USED;
+
+/// How often a fill ahead looks whether the GPU is done with what it waits to take.
+const AHEAD_POLL: Duration = Duration::from_micros(250);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wait {
     /// Peer service, owner collection and prefetch: completed memory only.
@@ -48,8 +57,6 @@ pub(crate) struct Protect<'a> {
     /// A weight's demand, or a loop's working one, leaves the free pages the rest of this phase
     /// will use again: they would only map straight back. It takes weights first, these pages last.
     pub(crate) keep_phase: bool,
-    /// A guess must not take another guess.
-    pub(crate) speculative: bool,
     /// The caller's retry takes free working pages in place: what a wait completes is tried
     /// once before any working page goes.
     pub(crate) reuse_working: bool,
@@ -237,9 +244,7 @@ impl<'a> Sequence<'a> {
                         }
                     }
                 }
-                // A guess takes no other guess and no region this phase still needs.
-                let classes = if self.protect.speculative { UNPLANNED..=PHASE_FRESH } else { PREFETCHED..=PHASE_NEXT };
-                self.weights(want, classes, waiting, waiting)
+                self.weights(want, PREFETCHED..=PHASE_NEXT, waiting, waiting)
             }
             Step::PendingWorking if waiting => {
                 if self.protect.keep_phase && working::phase_known(self.device)? {
@@ -499,53 +504,113 @@ pub(crate) fn release_high(device: i32, want: usize) -> Result<()> {
     Ok(())
 }
 
-/// The prefetch rule: free >= bytes + what this phase's last pass still needs of working
-/// memory, where free counts completed free working pages and completed idle regions that
-/// reclaim would take anyway. With nothing measured yet, a first pass, it reads ahead only
-/// into room already free, and so does `free_only`: a fill past the one a use asked for. False
-/// declines with no IO and no waiting.
-pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, free_only: bool) -> Result<bool> {
+/// The prefetch rule: free >= bytes + what this phase's last pass still needs of working memory,
+/// mapped reusable working pages covering that need first. Short of it, a phase with a measure makes
+/// the room: working pages beyond its need, then `AHEAD`'s regions in demand's order, waiting here on
+/// the worker, never on a caller, for the GPU to finish with them. It takes none while a Region's
+/// worth is already filled ahead and unused, nor in a pass where a fill ahead that took room went
+/// unused. With nothing measured yet, a first pass, it reads ahead only into room already free.
+/// False declines, counted unless it only waits for the use ahead of it.
+pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>) -> Result<bool> {
+    let declined = || working::prefetch_declined(device).map(|()| false);
     let Some((gap, reusable, excess, known)) = working::prefetch_gap(device)? else {
-        return Ok(false);
+        return Ok(false); // Counted there.
     };
     // Mapped free pages serve the phase's working demand first.
     let needed = bytes + gap.saturating_sub(reusable);
     let gpu = crate::gpu(device)?;
-    let into = group.first().copied();
-    let protect = Protect { regions: Some(group), speculative: true, keep_working: true, into, ..Default::default() };
-    let (room, idle) = {
+    let (room, takeable, full, wasted) = {
         let order = plan::order(device)?;
         let gate = crate::gate(device)?;
         if gate.not_capturing().is_err() {
-            return Ok(false);
+            return declined();
         }
         let _context = gpu.driver().enter()?;
         let room = gpu.driver().memory_info()?.0.min(gpu.headroom());
         let state = gpu.lock()?;
         let prefix = state.prefix(&order);
-        let idle = state.entries.iter()
-            .filter(|(id, entry)| {
-                let class = state.rank(**id, entry, &order, prefix).0;
-                entry.idle() && (UNPLANNED..=PHASE_FRESH).contains(&class) && !group.contains(id)
-                    && gpu.completion(&state, **id) == Completion::Done
-            })
-            .map(|(_, entry)| entry.bytes)
-            .sum::<usize>();
-        (room, idle)
+        let (mut takeable, mut ahead, mut largest) = (0usize, 0usize, bytes);
+        for (id, entry) in state.entries.iter().filter(|(id, entry)| !group.contains(id) && entry.handle.is_some()) {
+            if entry.prefetched {
+                (ahead, largest) = (ahead + entry.bytes, largest.max(entry.bytes));
+            } else if entry.idle() && AHEAD.contains(&state.rank(*id, entry, &order, prefix).0)
+                && gpu.completion(&state, *id) != Completion::Unjoined
+            {
+                takeable += entry.bytes;
+            }
+        }
+        // One Region ahead, and what is small beside it: past that, its use evicts the next guess first.
+        let full = ahead != 0 && ahead + bytes >= 2 * largest;
+        (room, takeable, full, state.wasted > state.phase_boundary.unwrap_or(0))
     };
     if needed <= room {
         return Ok(true);
     }
+    if full {
+        return Ok(false); // Its turn comes with the next use.
+    }
     let short = needed - room;
-    if !known || free_only || short > idle + excess {
-        return Ok(false);
+    if !known || wasted || short > takeable + excess {
+        return declined();
     }
     let trimmed = working::release_beyond_phase(device, short.min(excess), usize::MAX, None)?;
-    if trimmed < short {
-        let mut released = 0;
-        release(device, short - trimmed, usize::MAX, Wait::No, protect, ReclaimReason::Allocator, &mut released)?;
+    if trimmed < short && !room_ahead(device, short - trimmed, group)? {
+        return declined();
     }
+    gpu.lock()?.took.extend(group);
     Ok(true)
+}
+
+/// `want` bytes for a fill ahead from `AHEAD`'s regions, in demand's order, waiting for the GPU to
+/// finish with the first still in use. False: stopped, or nothing left to take.
+fn room_ahead(device: i32, want: usize, group: &BTreeSet<u64>) -> Result<bool> {
+    // Nor another fill ahead that took room: it ranks as its demand would.
+    let mut kept = crate::gpu(device)?.lock()?.took.clone();
+    kept.extend(group);
+    let protect = Protect { regions: Some(&kept), keep_working: true, into: group.first().copied(), ..Default::default() };
+    let mut sequence = Sequence::new(device, usize::MAX, Wait::No, protect, ReclaimReason::Allocator)?;
+    // A region used again while this waits is no longer idle: a few rounds settle it either way.
+    for _ in 0..8 {
+        let pass = sequence.weight_pass(want - sequence.released, &AHEAD)?;
+        if sequence.released >= want {
+            return Ok(true);
+        }
+        if pass.events.is_empty() || !finished_ahead(sequence.gpu, &pass.events)? {
+            return Ok(false);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether the GPU finished `events`, polled so that a stop (a capture, a demand) ends the wait at
+/// once. The worker's producer guard keeps capture out meanwhile.
+fn finished_ahead(gpu: &Device, events: &[usize]) -> Result<bool> {
+    let driver = gpu.driver();
+    loop {
+        if crate::source::halted(gpu) {
+            return Ok(false);
+        }
+        let finished = (|| -> Result<bool> {
+            let _context = driver.enter()?;
+            for event in events {
+                if !driver.query(*event)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })();
+        match finished {
+            Ok(true) => return Ok(true),
+            Ok(false) => std::thread::sleep(AHEAD_POLL),
+            Err(error) => {
+                // A failed query is a device fault, as a failed wait is.
+                if let Ok(mut state) = gpu.state.lock() {
+                    state.poison.get_or_insert_with(|| error.to_string());
+                }
+                return Err(error);
+            }
+        }
+    }
 }
 
 /// Wait for this region's own abandoned users, outside every lock.

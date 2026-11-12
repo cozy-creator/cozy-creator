@@ -391,7 +391,8 @@ impl State {
         if entry.high {
             return (reclaim::HIGH, entry.last_use);
         }
-        if entry.prefetched {
+        // A fill ahead that took room is the next Region's demand fill, done early: it ranks as that.
+        if entry.prefetched && !self.took.contains(&id) {
             // Of unused fills, what the plan needs last goes first: the nearest is about to be used.
             let next = order.next_use(id).map_or(0, |(phases, position)| phases << 32 | position);
             return (reclaim::PREFETCHED, u64::MAX - next);
@@ -837,9 +838,14 @@ impl Device {
     /// later fallible address retirement.
     fn evict(&self, state: &mut State, id: u64, reason: ReclaimReason, completed: &mut usize, into: Option<u64>) -> Result<()> {
         let prefetched = state.entries[&id].prefetched;
+        let took = state.took.contains(&id);
         let bytes = state.entries[&id].bytes;
         let into = into.filter(|to| state.entries.get(to).is_some_and(|to| to.handle.is_none() && to.bytes == bytes));
         let size = self.release_backing_counted(state, id, completed, into)?;
+        if took && prefetched {
+            // A fill ahead that took room was read for nothing: no more of those this pass.
+            state.wasted = self.clock.load(Ordering::Relaxed);
+        }
         if prefetched {
             state.prefetch_unused_bytes = state.prefetch_unused_bytes.saturating_add(size as u64);
             if let Some(entry) = state.entries.get(&id) {
@@ -877,6 +883,7 @@ impl Device {
             self.released.fetch_add(size as u64, Ordering::AcqRel);
         }
         *completed += size;
+        state.took.remove(&id);
         let entry = state.entries.get_mut(&id).expect("candidate in the table");
         entry.uses.waits().clear();
         entry.prefetched = false;
@@ -1279,6 +1286,8 @@ impl Region {
     /// `consumer` is live in this primary context and reads nothing before this returns.
     #[allow(unsafe_code)]
     pub unsafe fn use_on(self: &Arc<Self>, consumer: u64) -> Result<Pin> {
+        // The worker filling this very Region is ahead of this use: it finishes, as demand would.
+        source::wait_for(self);
         let pin = loop {
             // SAFETY: this method's own contract.
             match unsafe { self.prepare_on(consumer) } {
@@ -1302,9 +1311,9 @@ impl Region {
     }
 
     /// A fill ahead of demand, if the rule allows (`reclaim::prefetch_room`). A wrong guess costs
-    /// a read, never a refusal: None declines without IO or waiting.
+    /// a read, never a refusal: None declines without IO.
     #[allow(unsafe_code)]
-    fn prepare_ahead(self: &Arc<Self>, free_only: bool) -> Result<Option<Fill>> {
+    fn prepare_ahead(self: &Arc<Self>) -> Result<Option<Fill>> {
         let (device, arena) = (self.device(), self.gpu);
         let missing = {
             let gate = gate(device)?;
@@ -1321,8 +1330,7 @@ impl Region {
             }
             if entry.handle.is_none() { self.rounded } else { 0 }
         };
-        if !reclaim::prefetch_room(device, missing, &std::collections::BTreeSet::from([self.id]), free_only)? {
-            working::prefetch_declined(device)?;
+        if !reclaim::prefetch_room(device, missing, &std::collections::BTreeSet::from([self.id]))? {
             return Ok(None);
         }
         let gate = gate(device)?;
@@ -1427,8 +1435,12 @@ impl Region {
             return Ok(None);
         }
         let prefetched = entry.prefetched;
+        let took = state.took.contains(&self.id);
         let pin = self.pin_locked(&mut state)?;
         state.entries.get_mut(&self.id).expect("live region").prefetched = prefetched;
+        if took {
+            state.took.insert(self.id);
+        }
         Ok(Some(pin))
     }
 
@@ -1443,6 +1455,7 @@ impl Region {
             .map_err(|_| Error::Invalid("pin count overflow"))
             .map(|prior| if prior == 0 { self.gpu.held.fetch_add(self.rounded, Ordering::AcqRel); })?;
         entry.prefetched = false;
+        state.took.remove(&self.id);
         Ok(Pin {
             region: Some(Arc::clone(self)),
             submission: None,

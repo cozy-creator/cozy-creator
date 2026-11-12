@@ -41,8 +41,8 @@ owners and peers under a 2 s budget of last resort. Eviction rank: contentless, 
 unused, unplanned, later phases furthest first, then this phase's used regions most recent first
 (those this pass filled before those that stayed through it, so a loop streams the same regions
 each pass), then its next use. A planned loop keeps a prefix of its plan: a region it refilled
-inside the prefix counts as kept, and the kept go from the prefix's end. A fill ahead takes only
-the streamed regions. A plan phase that
+inside the prefix counts as kept, and the kept go from the prefix's end. A fill ahead takes what
+its demand would, but no other guess and nothing this pass has yet to use. A plan phase that
 ran through last time with no region coming back is a single pass: its used regions rank with the
 unplanned, and other phases' loops go after every single pass's.
 
@@ -50,9 +50,9 @@ unplanned, and other phases' loops go after every single pass's.
 
 A Region has a `Source`, and only the core calls it. `use` on an absent Region runs it on the caller's
 thread, with no lock held and never during capture. One worker per GPU runs it ahead of demand, one
-Region at a time: what comes next in the observed order, else the Plan's. Past the one Region a use asked
-for, it fills only room already free. Demand stops it, and so does a shortfall, before anything real gives
-way. A Source that needs its caller, for the GIL or a GPU kernel, says so in `ahead()` and never runs there.
+Region at a time: what comes next in the observed order, else the Plan's, and then what follows that. A
+use of the Region it is filling waits for it; any other demand stops it, and so does a shortfall, before
+anything real gives way. A Source that needs its caller, for the GIL or a GPU kernel, says so in `ahead()` and never runs there.
 
 TensorFS implements `Source`: a Region's page in host RAM, else the store, then its derive. It owns reads
 and the page tier. Its decode scratch still comes from here.
@@ -100,9 +100,16 @@ at the next trim once its blocks are free, even after a capture whose end failed
 ## Prefetch
 
 A phase with a measure admits a prefetch when `free >= bytes + (last peak - what it already holds)`,
-mapped reusable pages covering the gap first. It takes only idle completed memory, and what it
-filled and nobody used is evicted first. A phase with no measure yet prefetches only into room
-already free beside the `C/4` floor, and evicts nothing.
+mapped reusable pages covering the gap first. Short of that it makes the room, as the Region's
+demand would: working pages beyond the phase's need, then idle regions in eviction rank, but no
+other fill ahead and nothing this pass has yet to use. In a loop that does not fit, the first is
+the region just used, the one needed furthest ahead (Belady), so the next block's copy runs
+beside this one's compute. The worker waits for the GPU to finish with it; a stop ends the wait.
+It makes room for one Region ahead, and the small ones beside it, never two; none in a pass where
+one it made room for was evicted unused. A fill that took room ranks as its demand fill would;
+any other fill ahead that nobody used is evicted first. A
+phase with no measure yet prefetches only into room already free beside the `C/4` floor, and
+evicts nothing.
 
 ## Sharing a GPU
 

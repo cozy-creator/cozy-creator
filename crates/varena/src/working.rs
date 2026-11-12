@@ -318,6 +318,10 @@ pub(crate) struct State {
     pub(crate) evictions: u64,
     pub(crate) reclaimed_bytes: u64,
     pub(crate) prefetch_unused_bytes: u64,
+    // Regions filled ahead by taking room, not used yet.
+    pub(crate) took: BTreeSet<u64>,
+    // The clock when one of those was evicted unused: no fill ahead takes room again this pass.
+    pub(crate) wasted: u64,
     pub(crate) reclaimed_by_reason: crate::ReclaimedBytes,
     segments: BTreeMap<u64, Segment>,
     blocks: BTreeMap<u64, Block>,
