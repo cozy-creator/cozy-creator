@@ -23,31 +23,27 @@ function ToolName({ name }: { name: string }) {
   )
 }
 
-/** Models & LoRAs, the same for every tool with model slots: it opens the one picker. */
-function ModelsButton({ name }: { name: string }) {
+/** Models & LoRAs, the same for every tool with model slots: it opens the one picker, in place under the tool, and closes it. */
+function ModelsButton({ name, open, onToggle }: { name: string; open: boolean; onToggle(): void }) {
   const store = useCanvasStore()
   const view = useElement(name)
   const tools = useSignal(store.tools)
-  const [open, setOpen] = useState(false)
   if (!slotsOf(tools.get(view?.asset?.tool ?? "")).length) return null
-  return (
-    <>
-      <button type="button" className="image-models" aria-label="Models and LoRAs" onClick={() => setOpen(true)}>Models &amp; LoRAs</button>
-      {open && <ModelPicker name={name} onClose={() => setOpen(false)} />}
-    </>
-  )
+  return <button type="button" className="image-models" aria-label="Models and LoRAs" aria-expanded={open} onClick={onToggle}>Models &amp; LoRAs</button>
 }
 
 /** Beneath every node with a tool, the same for every tool and kind (Paul, 11-12: "We should make this a standard type of interface"): its
  *  tool, Models & LoRAs beside it, and the models and LoRAs set listed under them. Nothing of models or LoRAs is inside the card. */
 export function ToolLine({ name, view, width }: { name: string; view: ElementView; width: number }) {
+  const [picking, setPicking] = useState(false)
   if (!view.asset?.tool) return null
   return (
     <div className="image-controls tool-line nodrag nopan nowheel" style={{ "--image-control-width": `${width}px` } as CSSProperties}>
       <div className="image-version-row">
         <ToolName name={name} />
-        <ModelsButton name={name} />
+        <ModelsButton name={name} open={picking} onToggle={() => setPicking((now) => !now)} />
       </div>
+      {picking && <ModelPicker name={name} onClose={() => setPicking(false)} />}
       <ModelConfig name={name} />
     </div>
   )

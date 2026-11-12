@@ -198,6 +198,16 @@
   padding: 6px 12px;
   font-size: 18px;
 }
+/* Models & LoRAs open: the tool line widens to hold the picker, which takes the fields' room; the frame gives way to it (cl-958). */
+.focus-card > .image-controls:has(> .model-picker) {
+  width: min(780px, 100%);
+}
+.card.focus-card:has(> .image-controls > .model-picker) {
+  grid-template-rows: minmax(160px, 1fr) auto 0px;
+}
+.card.focus-card:has(> .image-controls > .model-picker) > .here-under {
+  display: none;
+}
 /* What makes it reads as its name, not a field being typed in: a plain edge, as tall as Models & LoRAs beside it. */
 .focus-card .image-tool {
   min-height: 40px;
