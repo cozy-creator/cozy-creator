@@ -48,7 +48,8 @@ ERROR_KINDS = frozenset({"usage", "validation", "not_found", "credential", "forb
 CONTEXT: dict = {}
 ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_failed",
     "settled_http_status", "journal_run_present", "output_http_status", "output_digest_present",
-    "output_digest_matches", "old_subject_output_marker", "old_subject_log_marker", "old_subject_numbers"})
+    "output_digest_matches", "old_subject_output_marker", "old_subject_log_marker", "old_subject_numbers",
+    "worker_owner_pem", "worker_owner_pkcs8", "worker_owner_algorithm", "worker_owner_public_key"})
 
 
 def check(ok: object, case: str, **counts: int | bool) -> None:
@@ -310,6 +311,30 @@ def worker_journal(root: Path, identifiers: list[str]) -> tuple[Path, dict]:
     return matches[0]
 
 
+def owner_signer(raw: bytes):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    CONTEXT["worker_stage"] = "owner_key_decode"
+    try:
+        private = serialization.load_pem_private_key(raw, password=None)
+    except ValueError:
+        # Dalek's native write_key emits RFC5958 PKCS#8 v2 with the public key.
+        # Some OpenSSL loaders accept only v1. Recognize ONLY this exact Ed25519
+        # encoding and let the existing crypto library derive/validate the key.
+        lines = raw.strip().splitlines()
+        check(len(raw) <= 4096 and len(lines) >= 3 and lines[0] == b"-----BEGIN PRIVATE KEY-----"
+              and lines[-1] == b"-----END PRIVATE KEY-----", "worker_owner_pem")
+        der = base64.b64decode(b"".join(lines[1:-1]), validate=True)
+        check(len(der) == 83 and der[:16] == bytes.fromhex("3051020101300506032b657004220420")
+              and der[48:51] == bytes.fromhex("812100"), "worker_owner_pkcs8")
+        private = Ed25519PrivateKey.from_private_bytes(der[16:48])
+        public = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        check(public == der[51:], "worker_owner_public_key")
+    check(isinstance(private, Ed25519PrivateKey), "worker_owner_algorithm")
+    return private
+
+
 def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple[int, bytes]:
     """Existing TLS-pinned native API, real owner key, no qualification server seam."""
     from cryptography.hazmat.primitives import serialization
@@ -318,6 +343,7 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
     import h2.events
     from urllib.parse import urlsplit
 
+    CONTEXT["worker_stage"] = "registered_endpoint"
     with read_db(CALCIFER / "state.db") as connection:
         endpoint = connection.execute("SELECT kind,worker_id,address,pin,key FROM machines WHERE name='local'").fetchone()
     require(endpoint and endpoint[0] == "local", "fixture_failure")
@@ -325,7 +351,8 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
     parsed = urlsplit("https://" + address)
     require(parsed.hostname in {"127.0.0.1", "::1", "localhost"} and len(pin) == 32, "fixture_failure")
     marker = json.loads((project / ".vault-local-execution.json").read_bytes())
-    private = serialization.load_pem_private_key(Path(key_path).read_bytes(), password=None)
+    private = owner_signer(Path(key_path).read_bytes())
+    CONTEXT["worker_stage"] = "capability_sign"
     public = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     b64 = lambda value: base64.urlsafe_b64encode(value).rstrip(b"=").decode()
     payload = json.dumps({"m": worker_id, "a": "machine", "e": int(time.time()) + 300,
@@ -337,12 +364,15 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
     context.set_alpn_protocols(["h2"])
     encoded = json.dumps(body, separators=(",", ":")).encode()
     path = "/v1/project-execution/" + quote(marker["storage"]["project_id"], safe="") + "/" + suffix
+    CONTEXT["worker_stage"] = "worker_connect"
     with socket.create_connection((parsed.hostname, parsed.port), timeout=60) as tcp:
+        CONTEXT["worker_stage"] = "worker_tls"
         with context.wrap_socket(tcp, server_hostname=parsed.hostname) as tls:
             # Authentication/private proof is transmitted only after the actual
             # registered native leaf pin is verified on this connection.
             require(hashlib.sha256(tls.getpeercert(binary_form=True)).digest() == pin
                     and tls.selected_alpn_protocol() == "h2", "fixture_failure")
+            CONTEXT["worker_stage"] = "worker_h2_request"
             protocol = h2.connection.H2Connection(config=h2.config.H2Configuration(client_side=True, header_encoding="utf-8"))
             protocol.initiate_connection()
             protocol.send_headers(1, [(":method", method), (":scheme", "https"), (":authority", address), (":path", path),
@@ -351,6 +381,7 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
                 ("cozy-local-private-token", marker["token"])])
             protocol.send_data(1, encoded, end_stream=True)
             tls.sendall(protocol.data_to_send())
+            CONTEXT["worker_stage"] = "worker_h2_response"
             status, answer = 0, bytearray()
             while True:
                 incoming = tls.recv(65536)
@@ -374,9 +405,11 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
 def wrong_binding_stays_pending(native: Native, reference: str, project: Path, original_worker: Path, identifiers: list[str], receipt: Receipt) -> list[dict]:
     # Real source contention prevents the automatic bridge from retiring legacy
     # rows on this first read. No fabricated row or test-only barrier is used.
+    CONTEXT["worker_stage"] = "source_contention"
     blocker = sqlite3.connect(original_worker, timeout=0)
     try:
         blocker.execute("BEGIN IMMEDIATE")
+        CONTEXT["worker_stage"] = "controller_history_read"
         native.call("GET", project_route(reference, "/runs?limit=0"))
     finally:
         blocker.rollback()
