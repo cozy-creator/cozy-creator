@@ -15,6 +15,7 @@
 parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
+. "$(dirname "$0")/lines.sh"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
@@ -27,7 +28,6 @@ parse "$@"
 . "$(dirname "$0")/previews.sh"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
-. "$(dirname "$0")/lines.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
@@ -281,6 +281,8 @@ case $SHARD in
   runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   local-wake) parts="local_wake_update logs" ;;
+  # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
+  lines) parts="machine_lines logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
@@ -370,8 +372,6 @@ case $SHARD in
   local-code) parts="unseen local_edits hub_dependency hub_published child_latents path_manifest rental_end logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
-  # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
-  lines) parts="machine_lines logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
