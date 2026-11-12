@@ -223,10 +223,14 @@ async function died(why) {
   ];
   for (const [name, fields, x, y] of mine) await post(`${at}/assets`, { tool: `${tool}/draw`, kind: 'image', name, exact: true, fields, at: { x, y } });
   boxes.push(...mine.map(([name]) => name), ...imports.map(([name]) => name));
+  // Off the view a box isn't drawn (culled): fitted, every one is.
+  await until('every box in the project', async () => (await api(at)).body.assets.map((one) => one.name), (names) => boxes.every((name) => names.includes(name)));
   await both(async (page) => {
     if (new URL(page.url()).pathname !== projectPath) await goto(page, projectPath);
-    for (const name of boxes) await boxOf(page, name).waitFor();
-    await fitCanvas(page);
+    await until(`every box drawn (${page === paper ? 'paper' : 'dark'})`, async () => {
+      await fitCanvas(page);
+      return page.evaluate((names) => names.filter((name) => !document.querySelector(`.react-flow__node .card[data-asset="${name}"]`)), boxes);
+    }, (missing) => missing.length === 0, 30_000);
   });
 
   // Renders on this computer: fresh's take approved, then another (not looked at); broken failing; slow rendering and waits after it.
