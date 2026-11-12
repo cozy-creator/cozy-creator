@@ -393,6 +393,12 @@ async function died(error) {
   await until('zoom cannot go below the fitted full image', imageCamera, (position) => Math.abs(position.zoom - 1) < 0.0001 && Math.abs(position.x) < 0.5 && Math.abs(position.y) < 0.5);
   await expectFit(0.25);
   check('fitted_minimum_keeps_focus_open_and_its_canvas_camera_unchanged', await focus.isVisible() && sameCamera(gestureCanvas, await camera()));
+  for (let step = 0; step < 12 && (await imageCamera()).zoom < 7; step++) {
+    const before = (await imageCamera()).zoom;
+    await focus.getByRole('button', { name: 'Zoom in image', exact: true }).click();
+    await until('the local image camera reaches 700 percent', imageCamera, (position) => position.zoom > before);
+  }
+  check('high_image_zoom_keeps_the_focused_canvas_camera_unchanged', (await imageCamera()).zoom >= 7 && sameCamera(gestureCanvas, await camera()));
   await page.keyboard.press('Escape');
   await focus.waitFor({ state: 'detached' });
   await until('Escape animates to the original Wander camera', camera, (position) => sameCamera(beforeGestures, position));
@@ -414,6 +420,92 @@ async function died(error) {
   await until('background exit animates to the original Wander camera', camera, (position) => sameCamera(beforeGestures, position));
   await settled(page);
   check('clicking_the_empty_focus_background_exits_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
+
+  // Drag a real four-node selection, so one gesture can exercise both React Flow stop callbacks.
+  const referenceTools = (await api(`/v1/tools?project=${id}&palette=true`)).tools;
+  const reference = referenceTools.map((tool) => ({ tool, prompt: tool.fields.find((field) => field.type === 'prompt' || field.type === 'words') }))
+    .find(({ tool, prompt }) => tool.makes === 'image' && prompt?.type === 'prompt' && (!prompt.takes || prompt.takes.includes('image')));
+  if (!reference) throw new Error('an image tool whose first prompt accepts image references is unavailable');
+  const bulkWords = '<self.2> Keep these words and add the four reference images.';
+  await api(`${at}/assets/${NAME}`, 'PATCH', { tool: reference.tool.id, fields: { [reference.prompt.field]: bulkWords } });
+  await until('the image reference tool and seed words are saved', asset, (item) => item.tool === reference.tool.id && item.fields?.[reference.prompt.field] === bulkWords);
+  await api(`${at}/canvas`, 'PATCH', { cards: { [NAME]: { x: 1000, y: 280, w: 640 } } });
+  const bulkNames = [];
+  for (let number = 0; number < 4; number++) {
+    const name = `bulk_reference_${number + 1}`;
+    bulkNames.push(name);
+    await api(`${at}/imports`, 'POST', { source: await picture(11 + number, 480, 320), name, exact: true, at: { x: 160 + (number % 2) * 260, y: 180 + Math.floor(number / 2) * 220, w: 160 } });
+  }
+  await fitCanvas(page);
+  const sourceNodes = bulkNames.map((name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`));
+  for (const node of sourceNodes) await node.waitFor();
+  const bounds = await Promise.all(sourceNodes.map((node) => node.boundingBox()));
+  const enclosing = { left: Math.min(...bounds.map((box) => box.x)) - 12, top: Math.min(...bounds.map((box) => box.y)) - 12,
+    right: Math.max(...bounds.map((box) => box.x + box.width)) + 12, bottom: Math.max(...bounds.map((box) => box.y + box.height)) + 12 };
+  const pane = await page.locator('.react-flow').boundingBox();
+  const navigation = await page.locator('.top').boundingBox();
+  const paletteBounds = await tools.boundingBox();
+  enclosing.left = Math.max(enclosing.left, pane.x + 8, paletteBounds.x + paletteBounds.width + 8);
+  enclosing.top = Math.max(enclosing.top, pane.y + 8, navigation.y + navigation.height + 8);
+  enclosing.right = Math.min(enclosing.right, pane.x + pane.width - 8);
+  enclosing.bottom = Math.min(enclosing.bottom, pane.y + pane.height - 8);
+  await page.mouse.click(enclosing.left, enclosing.top);
+  await page.keyboard.down('Shift');
+  await page.mouse.move(enclosing.left, enclosing.top);
+  await page.mouse.down();
+  await page.mouse.move(enclosing.right, enclosing.bottom, { steps: 16 });
+  await page.mouse.up();
+  await page.keyboard.up('Shift');
+  const selected = await until('four image nodes are selected by the pointer rectangle', () => page.locator('.react-flow__node.selected .card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset).sort()),
+    (names) => JSON.stringify(names) === JSON.stringify([...bulkNames].sort()));
+  check('bulk_reference_drop_uses_four_actually_selected_nodes', selected.length === 4);
+  const selection = page.locator('.react-flow__nodesselection-rect');
+  await selection.waitFor();
+  const group = await selection.boundingBox();
+  const destination = await boxOf(page, NAME).locator('.media').boundingBox();
+  const stamp = (item) => item ? { name: item.name, tool: item.tool, version: item.version, approved: item.approved, pinned: item.pinned, sha: item.sha256, versions: item.versions,
+    sources: (item.prefixes ?? []).map((version) => [version.number, version.main?.sha256]) } : null;
+  const projectBeforeBulk = await state();
+  const targetBeforeBulk = stamp(projectBeforeBulk.assets.find((item) => item.name === NAME));
+  const sourcesBeforeBulk = bulkNames.map((name) => stamp(projectBeforeBulk.assets.find((item) => item.name === name)));
+  const pendingBulkWrites = new Set();
+  let bulkWriteCount = 0;
+  let bulkWriteActivity = Date.now();
+  const bulkRequest = (request) => {
+    if (request.method() !== 'PATCH' || new URL(request.url()).pathname !== `${at}/assets/${NAME}`) return;
+    pendingBulkWrites.add(request);
+    bulkWriteCount++;
+    bulkWriteActivity = Date.now();
+  };
+  const bulkFinished = (request) => { if (pendingBulkWrites.delete(request)) bulkWriteActivity = Date.now(); };
+  page.on('request', bulkRequest);
+  page.on('requestfinished', bulkFinished);
+  page.on('requestfailed', bulkFinished);
+  await page.mouse.move(group.x + group.width / 2, group.y + group.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(group.x + group.width / 2 + 12, group.y + group.height / 2, { steps: 3 });
+  await page.mouse.move(destination.x + destination.width / 2, destination.y + destination.height / 2, { steps: 20 });
+  await page.mouse.up();
+  await until('the group drop saves all four external image references', asset, (item) => bulkNames.every((name) => item.fields?.[reference.prompt.field]?.includes(`<${name}>`)));
+  await until('all group-drop asset writes have finished', () => ({ count: bulkWriteCount, pending: pendingBulkWrites.size, quiet: Date.now() - bulkWriteActivity }),
+    (writes) => writes.count > 0 && writes.pending === 0 && writes.quiet >= 500);
+  page.off('request', bulkRequest);
+  page.off('requestfinished', bulkFinished);
+  page.off('requestfailed', bulkFinished);
+  const projectAfterBulk = await state();
+  const targetAfterBulk = projectAfterBulk.assets.find((item) => item.name === NAME);
+  const tags = [...targetAfterBulk.fields[reference.prompt.field].matchAll(/<([^>]+)>/g)].map((match) => match[1]);
+  const external = tags.filter((tag) => bulkNames.includes(tag));
+  check('one_group_drag_appends_exactly_four_external_references', external.length === 4 && bulkNames.every((name) => external.filter((tag) => tag === name).length === 1) && tags.filter((tag) => tag === 'self.2').length === 1 && tags.length === 5, { tags, bulkWriteCount });
+  check('bulk_reference_drop_preserves_the_target_source_and_approval', JSON.stringify(stamp(targetAfterBulk)) === JSON.stringify(targetBeforeBulk));
+  check('bulk_reference_drop_keeps_all_source_assets_and_creates_no_nodes', JSON.stringify(bulkNames.map((name) => stamp(projectAfterBulk.assets.find((item) => item.name === name)))) === JSON.stringify(sourcesBeforeBulk)
+    && JSON.stringify(projectAfterBulk.assets.map((item) => item.name).sort()) === JSON.stringify(projectBeforeBulk.assets.map((item) => item.name).sort()));
+  await shot('bulk-reference-drop');
+  if (await page.locator('[data-focused-asset]').count()) {
+    await page.getByRole('button', { name: 'Back to canvas', exact: true }).click();
+    await page.locator('[data-focused-asset]').waitFor({ state: 'detached' });
+    await settled(page);
+  }
 
   // H3 edits Summary before Beats; a real tiny imported clip exercises the separate completed-view face without a GPU.
   const videoTool = metadata.tools.find((item) => item.makes === 'video' && item.id === 'minimax-h3/generate'
