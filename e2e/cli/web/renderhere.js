@@ -131,7 +131,7 @@ const AUTOMATIC = /No machine is green, so this project's renders are placed aut
     return {
       first: first?.textContent, pressed: first?.getAttribute('aria-pressed'), green: first?.classList.contains('on'),
       doing: drawer.querySelector('.doing-now')?.textContent ?? null, details: Boolean(details), folded: details ? !details.open : null,
-      kv_shown: [...drawer.querySelectorAll('.kv')].some((kv) => kv.offsetParent !== null),
+      kv_shown: [...drawer.querySelectorAll('.kv')].some((kv) => !kv.closest('details:not([open])')),
     };
   });
   check('drawer_from_the_canvas_leads_with_render_here', face.first === 'Render here' && face.pressed === 'true' && face.green === true, face);
