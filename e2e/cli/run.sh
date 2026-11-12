@@ -493,15 +493,12 @@ case $SHARD in
   web-beats) export DB_WEB=beats; parts="tools_read db_existing_web logs" ;;
   # Pasted mentions (cl-902).
   web-paste) export DB_WEB=paste; parts="tools_read db_existing_web logs" ;;
-  # A toast when a render finishes, with View (cl-937).
-  web-donetoast) export DB_WEB=donetoast; parts="tools_read db_existing_web logs" ;;
   # A run says one thing at most: no note of a completed run's warnings, one note of a failure that stays (cl-921).
   web-toasts) export DB_WEB=toasts; parts="tools_read db_existing_web logs" ;;
   # A rendering box at rest, and new takes not looked at (cl-928).
   web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
-  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it; an
-  # edit's backdrop with every picture it uses (cl-949).
-  web-tiles) export DB_WEB="tiles newtakes backdrop"; parts="tools_read db_existing_web logs" ;;
+  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it.
+  web-tiles) export DB_WEB="tiles newtakes"; parts="tools_read db_existing_web logs" ;;
   # The take looked at in Focus is the one drawn when it finishes (cl-942).
   web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
   # A take is one id from Render to its version, listed at once and never off, through a slow Calcifer and a reload (cl-945), with cl-942's.
@@ -551,6 +548,7 @@ case $SHARD in
     takeids
     failedtakes
     purged
+    toasts
     old_takes
     prepares
     db_migrate

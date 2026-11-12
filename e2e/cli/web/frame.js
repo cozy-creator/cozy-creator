@@ -3,7 +3,7 @@
 // one box ... those should fit inside of the video-panel as sections, and we'll still display the reference images in the background"), in a
 // real browser on a real Calcifer. H3's Shot in Focus: Summary and its Beats are sections inside the frame, each opened by its head (Summary
 // too, which can't be removed), + Beat adds one; behind them, faded and full height, the pictures the section being written mentions, all of
-// them with none written in; its corner pulled toward 9:16 lands on a ratio H3 makes; under the frame its tool with Models & LoRAs, then
+// them with none written in (its corner's shapes are aspect.js's); under the frame its tool with Models & LoRAs, then
 // Render and the fields. Writing its next take (New, beside Render on the title row) is the same, its take faded behind, "New take" said;
 // Render renders and the title row says so; New is a draft again. Qwen's Image writes in the same frame, its Render in the same spot,
 // and Cmd/Ctrl+Enter renders. Screenshots of each.
@@ -115,9 +115,10 @@ async function died(why) {
       inside: node.querySelectorAll('.here-under .active-models, .here-under button[aria-label="Models and LoRAs"]').length,
     };
   });
-  const write = async (name, place) => {
+  /** Written in `place`: what's behind the frame follows it, to `behind`, the pictures that section mentions (judged by each check after). */
+  const write = async (name, place, behind) => {
     await card(name).locator(`.in-frame .mention-text[data-field="${place}"]`).click();
-    await page.waitForTimeout(400);
+    await until(`${name}'s backdrop follows ${place}`, async () => (await looked(name)).behind, (now) => JSON.stringify(now) === JSON.stringify(behind), 10_000).catch(() => {});
   };
 
   // An empty Shot in Focus: Summary and its Beats in the frame, the tool, Render, the fields and Models & LoRAs under it.
@@ -134,13 +135,13 @@ async function died(why) {
   await shot('empty-16-9');
 
   // Written in: what that section mentions, full height.
-  await write('scene', 'summary');
+  await write('scene', 'summary', ['amy']);
   const inSummary = await looked('scene');
   seen.in_summary = inSummary.behind;
   check('in_summary_its_picture_is_behind', JSON.stringify(inSummary.behind) === JSON.stringify(['amy']) && inSummary.full_height, inSummary);
   await shot('writing-summary');
   await card('scene').locator('.beat-toggle', { hasText: 'Beat 2' }).click();
-  await write('scene', 'beats.1.description');
+  await write('scene', 'beats.1.description', ['boat']);
   const inBeat = await looked('scene');
   seen.in_beat = inBeat.behind;
   check('in_beat_2_its_picture_is_behind', JSON.stringify(inBeat.behind) === JSON.stringify(['boat']) && inBeat.full_height, inBeat);
@@ -154,23 +155,6 @@ async function died(why) {
   check('plus_beat_adds_a_beat', added.beats?.length === 3 && three.sections.filter((one) => one.head === 'Summary').length === 1 && three.sections.filter((one) => /^Beat \d/.test(one.head ?? '')).length === 3, { beats: added.beats?.length, sections: three.sections });
   await shot('a-beat-added');
 
-  // Its corner pulled toward 9:16 lands on a ratio H3 makes.
-  const shape = shotTool.fields.find((field) => field.type === 'shape');
-  seen.h3_ratios = shape?.ratios ?? null;
-  const media = await card('scene').locator('.media').first().boundingBox();
-  const grip = await card('scene').locator('.media .corner').first().boundingBox();
-  if (grip) {
-    await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(grip.x + grip.width / 2 - media.width * 0.7, grip.y + grip.height / 2 + media.height * 0.4, { steps: 20 });
-    await page.mouse.up();
-    await page.waitForTimeout(600);
-  }
-  const pulled = await fieldsOf('scene');
-  const ratios = (shape?.ratios ?? []).map(String);
-  seen.pulled = { corner: Boolean(grip), saved: pulled[shape?.field ?? 'aspect_ratio'] ?? null };
-  check('a_pulled_corner_lands_on_a_ratio_h3_makes', Boolean(grip) && (seen.pulled.saved === null || !ratios.length || ratios.includes(seen.pulled.saved)), seen.pulled);
-  await shot('pulled-toward-9-16');
   await closeBox(page);
 
   const allRuns = async () => ((await api('/v1/runs?limit=100')).body?.runs ?? []).filter((run) => run.project_id === id && run.kind === 'call').length;
@@ -184,7 +168,7 @@ async function died(why) {
   const viewing = { sections: await card('again').locator('.in-frame .frame-sections').count(), label: await header() };
   await next.click();
   await card('again').locator('.in-frame .frame-sections').waitFor();
-  await write('again', 'summary');
+  await write('again', 'summary', ['amy']);
   const again = await looked('again');
   seen.again = { viewing, again };
   const take = await card('again').evaluate((node) => {

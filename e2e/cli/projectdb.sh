@@ -83,6 +83,10 @@ failedtakes() { DB_WEB=failedtakes db_existing_web; }
 # Undo of a delete past the real 3-hour window, the clock moved on: each box back without its files, saying so (cl-919): web/purged.js.
 purged() { DB_WEB=purged db_existing_web; }
 
+# A run says one thing at most: none of a completed run's warnings, that it finished with its picture and View, nothing of a take landing
+# while looked at, and one note of a failure that stays (cl-921, cl-937): web/toasts.js.
+toasts() { DB_WEB=toasts db_existing_web; }
+
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return
 [ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }
