@@ -258,11 +258,12 @@ def qualify(native: Native, project: dict, receipt: Receipt, ready: dict) -> Non
         worker.stage("source")
         folder = project["view"] / "public-remote-cpu"
         folder.mkdir(mode=0o700)
-        script, source = folder / "echo.py", folder / "source.txt"
-        script.write_text(PROGRAM); source.write_bytes(SOURCE)
+        script, source, request = folder / "echo.py", folder / "source.txt", folder / "input.json"
+        script.write_text(PROGRAM); source.write_bytes(SOURCE); request.write_text(json.dumps({"text": TEXT}))
         worker.stage("run")
-        body = native.command("run", str(script) + "/echo", "--input", "-", "--file", "source=" + str(source),
-                              "--on", worker.name, cwd=project["folder"], stdin=json.dumps({"text": TEXT}).encode())
+        # `--input` takes a FILE (cli run/mod.rs `read_input`); `-` is not stdin.
+        body = native.command("run", str(script) + "/echo", "--input", str(request), "--file", "source=" + str(source),
+                              "--on", worker.name, cwd=project["folder"])
         runs = [document.get("run", document) for document in _documents(body)]
         terminal = [run for run in runs if isinstance(run, dict) and run.get("status") == "completed" and run.get("result", {}).get("text") == TEXT]
         require(terminal, "fixture_failure")
