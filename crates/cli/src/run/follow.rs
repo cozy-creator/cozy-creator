@@ -835,14 +835,14 @@ pub(crate) fn said(progress: &Progress) -> String {
 }
 
 /// How long the run has left, as Calcifer estimates it: `41s left`, `about 3m10s left` while that is
-/// little trusted, or that nothing like it ran here to tell.
+/// little trusted, or that nothing like it has run to tell yet.
 pub(crate) fn left(progress: &Progress) -> Option<String> {
     match (progress.eta_s, progress.eta_basis) {
         (Some(left), _) => {
             let about = if progress.eta_confidence.is_some_and(|c| c < 0.5) { "about " } else { "" };
             Some(format!("{about}{} left", output::span(left)))
         }
-        (None, Some(EtaBasis::FirstRun)) => Some("first run on this machine".into()),
+        (None, Some(EtaBasis::FirstRun)) => Some("time left not known yet: nothing like it has run".into()),
         (None, _) => None,
     }
 }

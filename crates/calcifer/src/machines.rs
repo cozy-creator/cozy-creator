@@ -86,6 +86,11 @@ pub(crate) struct Machines {
     /// This computer's machine, started when something uses it.
     pub(crate) local: crate::local::Local,
     tasks: Mutex<JoinSet<()>>,
+    /// The config's `dev = true`: its rentals follow the open RC (`rc`, cl-922).
+    pub(crate) dev: bool,
+    pub(crate) rc: crate::rc::Rc,
+    /// Told when a rental becomes ready: a dev home's moves to the RC before its first run.
+    pub(crate) rc_ready: Notify,
 }
 
 /// What Calcifer last heard of a machine, never stored.
@@ -139,6 +144,9 @@ impl Machines {
             end_waits: Notify::new(),
             local,
             tasks: Mutex::default(),
+            dev: config.dev,
+            rc: crate::rc::Rc::default(),
+            rc_ready: Notify::new(),
             calcifer,
         });
         me.calcifer.serve_with(&me);
@@ -161,6 +169,9 @@ impl Machines {
         me.spawn(me.clone().local_tasks());
         me.spawn(me.clone().place_runs());
         me.spawn(me.clone().notice_stalled());
+        if me.dev {
+            me.spawn(me.clone().follow_rcs());
+        }
         let lister = me.clone();
         me.spawn(async move { lister.list_hubs().await });
         me
@@ -194,6 +205,11 @@ impl Machines {
         lock(&self.seen)
             .get(name)
             .and_then(|seen| seen.frame.clone())
+    }
+
+    /// Its first GPU's name, as it last said: a run's record reads it, without its whole frame.
+    pub(crate) fn gpu(&self, name: &str) -> Option<String> {
+        lock(&self.seen).get(name).and_then(|seen| seen.frame.as_ref()?.gpus.first().map(|gpu| gpu.name.clone()))
     }
 
     /// Stops every task where it stands, as if the process ended.
@@ -687,6 +703,7 @@ impl Machines {
             status.runs = held.into_iter().map(|run| self.held(run)).collect();
             status.activity = activity.iter().map(|operation| self.operation(operation)).collect();
         }
+        machine.rc = self.rc_follow(&row.name, self.frame(&row.name).as_ref());
         let asked = match row.kind {
             MachineKind::Rental => store.rent_ask(&row.name).map_err(internal)?,
             _ => None,
@@ -889,6 +906,7 @@ impl Machines {
             let seen = seen.entry(name.to_owned()).or_default();
             if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready") {
                 self.placing.notify_one();
+                self.rc_ready.notify_one();
             }
             seen.stopped &= frame.phase == "releasing";
             seen.frame = Some(frame);
@@ -1160,6 +1178,44 @@ impl Machines {
                 (row.endpoint.is_none(), running + queued, row.name.clone())
             })
             .map(|row| row.name))
+    }
+
+    /// Why `name` takes no work now (cl-920): it ended or is no machine here, its end is asked, or its Hub says it's offline. None: it may.
+    pub(crate) fn gone(&self, name: &str) -> Option<String> {
+        if name == "local" {
+            return None;
+        }
+        let row = match self.store().machine(name) {
+            Ok(Some(row)) => row,
+            Ok(None) => return Some(format!("{name} is no machine here")),
+            Err(_) => return None,
+        };
+        if row.state == MachineState::Ended {
+            return Some(format!("{name} ended"));
+        }
+        if self.pending_end(name).ok().flatten().is_some() {
+            return Some(format!("{name} is ending"));
+        }
+        self.offline(name).map(|why| format!("{name} is offline: {why}"))
+    }
+
+    /// Whether `name` ended or is no machine here: it leaves every project's chosen machines (cl-920).
+    pub(crate) fn ended_here(&self, name: &str) -> bool {
+        match self.store().machine(name) {
+            _ if name == "local" => false,
+            Ok(Some(row)) => row.state == MachineState::Ended,
+            Ok(None) => true,
+            Err(_) => false,
+        }
+    }
+
+    /// Where a render's job goes with no machine chosen (`api::calcifer::render_set`), by what's held here this moment.
+    pub(crate) fn automatic(&self) -> Vec<On> {
+        let here = platform::Os::CURRENT.local_inference();
+        let rows = self.store().machines().unwrap_or_default();
+        let listed = |row: &&MachineRow| row.state != MachineState::Ended && (here || row.kind != MachineKind::Local);
+        let machines: Vec<Machine> = rows.iter().filter(listed).filter_map(|row| self.picture(row).ok()).collect();
+        wire::render_set(&machines)
     }
 
     /// Whether this controller placed `row` (no rental) or ordered it: a rental another client of

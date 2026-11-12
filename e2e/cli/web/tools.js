@@ -260,7 +260,8 @@ function linesOf(text, name) {
   await shotBox.locator('.mention-text[data-field="beats.1.description"]').click();
   await page.keyboard.type('The second.');
   await until('both beats in the file', () => fieldsOf('shot'), (fields) => fields.beats?.length === 2 && fields.beats[1].description?.includes('The second.'));
-  check('total_is_their_sum', (await shotBox.locator('.beats-edit[data-field=beats] > .beats-last .total').textContent()).trim() === '10 s', await shotBox.locator('.beats-last .total').textContent());
+  // No running total under the beats (cl-903).
+  check('no_running_total', (await shotBox.locator('.beats-edit[data-field=beats] .total').count()) === 0 && !/\b10 s\b/.test(await shotBox.locator('.beats-last').innerText()), await shotBox.locator('.beats-last').innerText());
   const grip = await shotBox.locator('[aria-label="Move beat 2"]').boundingBox();
   const first = await beatRows().first().boundingBox();
   await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);

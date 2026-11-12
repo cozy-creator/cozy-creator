@@ -1389,12 +1389,13 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![], machines: project.folder.machines() }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder) }));
         }
     };
     // What a reader now holds is what any change from here is told against.
     project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
     let mut state = model.state(&project, asked.assets);
+    state.machines = chosen(&api, &project.folder);
     state.covered = covered;
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_file));
@@ -2872,6 +2873,10 @@ struct Walk {
     faults: Mutex<HashMap<(String, String, String), u32>>,
     /// The machines it stopped sending to (`fault`), with the renders that stops: one asked later tries again.
     stopped: Mutex<BTreeMap<String, BTreeSet<String>>>,
+    /// The renders whose machines were all gone, which it said go where they finish soonest (cl-920).
+    fell_back: Mutex<HashSet<String>>,
+    /// How many times each job was placed again after its machine went as it was sent (cl-920).
+    replaced: Mutex<HashMap<String, u32>>,
     /// That this computer's first need of ffprobe was met: it measures what a function reads of a file.
     measuring: AtomicBool,
     /// The ranges of videos cut on this computer, by hash, where each is: sent from there, never kept in the project.
@@ -2886,6 +2891,9 @@ const WINDOW: usize = 32;
 const HELD_UP: std::time::Duration = std::time::Duration::from_secs(1);
 /// With several machines, a job a machine would start after this long waits here, so it commits to no queue early (cl-816).
 const HOLD_MS: i64 = 1000;
+/// What a send refused for a machine that went meanwhile says (`Machines::reach`): the job is placed again (cl-920), this many times.
+pub(crate) const GONE: [&str; 3] = ["machine_ended", "machine_offline", "machine_ending"];
+const PLACED_AGAIN: u32 = 3;
 /// How often jobs held for a busy machine are quoted again.
 const HELD_LOOK: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long a job's package may take to say what it calls, and its models' cards what they weigh, before its machines are asked without.
@@ -2976,6 +2984,8 @@ impl Walk {
             missed: Mutex::default(),
             faults: Mutex::default(),
             stopped: Mutex::default(),
+            fell_back: Mutex::default(),
+            replaced: Mutex::default(),
             measuring: AtomicBool::new(false),
             clips: Mutex::new(HashMap::new()),
             ended: Mutex::default(),
@@ -3059,6 +3069,8 @@ impl Walk {
 
     /// Which of `on` render `ask` may still send to.
     fn sending(&self, ask: &str, on: &[On]) -> Vec<On> {
+        let on = self.live(ask, on);
+        let on = on.as_slice();
         let stopped = self.stopped.lock().expect("stopped lock");
         if stopped.is_empty() {
             return on.to_vec();
@@ -3072,6 +3084,27 @@ impl Walk {
             })
             .cloned()
             .collect()
+    }
+
+    /// Of `on`, the machines that take work now (cl-920, Paul 11-12: "if those machines are ended then either try a different machine or
+    /// tell me to rent a new one"): with every one gone (ended, ending, offline), where a render naming none goes, said once a render.
+    fn live(&self, ask: &str, on: &[On]) -> Vec<On> {
+        let api = self.host.api();
+        let gone: Vec<String> = (on.iter())
+            .filter_map(|on| match on {
+                On::Machine(name) => api.machines.gone(name),
+                _ => None,
+            })
+            .collect();
+        if gone.is_empty() || gone.len() < on.len() {
+            return on.iter().filter(|on| !matches!(on, On::Machine(name) if api.machines.gone(name).is_some())).cloned().collect();
+        }
+        let automatic = api.machines.automatic();
+        if self.fell_back.lock().expect("fell back lock").insert(ask.to_owned()) {
+            let set = automatic.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+            self.say(Told::Warning { message: format!("{}: it goes where it finishes soonest of {set}", gone.join("; ")), name: None });
+        }
+        automatic
     }
 
     /// Sizes a function reads are ffprobe's: with files to measure and none here, this computer's first need fetches it behind the walk, which
@@ -3793,6 +3826,11 @@ impl Walk {
                         }
                     }
                 }
+                // Its machine went as it was sent (a pod releasing itself that second, cl-920): placed again, never failed.
+                Err(error) if GONE.contains(&error.code.as_str()) && self.place_again(&key) => {
+                    self.say(Told::Said { message: format!("{name}: {}; placing it again", error.message), name: Some(name.clone()) });
+                    self.project.walker.lock().expect("walker lock").graph.put_back(id);
+                }
                 Err(error) => {
                     self.send_failed(&ask, &name, &error)?;
                     self.failed_of(&name, &kind, inputs, None, error, first);
@@ -3864,6 +3902,14 @@ impl Walk {
                 Ok(None)
             }
         }
+    }
+
+    /// Whether job `key`, whose machine went as it was sent, is placed again: a few times, then it fails as sent.
+    fn place_again(&self, key: &str) -> bool {
+        let mut replaced = self.replaced.lock().expect("replaced lock");
+        let times = replaced.entry(key.to_owned()).or_default();
+        *times += 1;
+        *times <= PLACED_AGAIN
     }
 
     /// `name` could not be sent: when that is its machines' doing, not its own, it counts as what they failed.
@@ -5163,10 +5209,28 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
     (chosen.map(|(chosen, _)| chosen), offers, said)
 }
 
-/// The machines the project `named` pins its runs to (cl-873); none: wherever they finish soonest.
+/// The machines the project `named` pins its runs to (cl-873), those that ended left out (cl-920); none: wherever they finish soonest.
+/// With every one of them gone now (ending, or offline by its Hub's word), wherever they finish soonest too.
 pub(crate) fn machines_of(api: &Arc<Api>, named: &str) -> Result<Vec<On>, Error> {
     let project = api.projects.get(api, named).map_err(|Refusal(e)| e)?;
-    Ok(project.folder.machines().into_iter().map(On::Machine).collect())
+    let pinned = chosen(api, &project.folder);
+    match pinned.iter().all(|name| api.machines.gone(name).is_some()) {
+        true => Ok(vec![]),
+        false => Ok(pinned.into_iter().map(On::Machine).collect()),
+    }
+}
+
+/// A project's machines (cl-873) without those that ended or are no machines here (cl-920): a machine that ends leaves every project's
+/// list, kept so at its next read.
+pub(crate) fn chosen(api: &Api, folder: &Folder) -> Vec<String> {
+    let kept = folder.machines();
+    let live: Vec<String> = kept.iter().filter(|name| !api.machines.ended_here(name)).cloned().collect();
+    if live.len() != kept.len()
+        && let Err(e) = folder.set_machines(&live)
+    {
+        warn!("{}: leaving its ended machines out: {}", folder.dir.display(), e.message);
+    }
+    live
 }
 
 /// Where a file stands in its list: its place in the innermost list holding it, as Runtime orders it (`references.1.file` is 1).

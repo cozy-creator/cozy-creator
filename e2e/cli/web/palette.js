@@ -1,14 +1,15 @@
 // The palette offers every tool the Hub lists (cl-896, Paul 11-12: "Where did all of the other image models go?"), in a real browser on a
 // real Calcifer: each package `cozy package ls` names with a release has its tools under what they make, the image models under Image and
-// the video upscalers under Upscale Video; one dragged out is a box of it, and one dropped on a video box goes on it; a tool taken off is
-// off, and back when its package is added; with no Hub the palette says it holds only what's installed.
+// the video upscalers under Upscale Video, and nothing of a release locked to an older Runtime; one dragged out is a box of it, and one
+// dropped on a video box goes on it; a tool taken off is off, and back when its package is added; with no Hub the palette says it holds
+// only what's installed.
 //   node palette.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER. $PLAYWRIGHT: playwright-core's directory;
 // $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $RESTART, $NO_HUB: shell commands that bring this Calcifer
 // back, the second on no Hub (web.sh's web_restart); $CATALOG: the Hub holds every first-party package. Prints what it saw as JSON and exits
 // 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
-const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, carry, closeBox, fitCanvas, implementationRow, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
+const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -29,7 +30,7 @@ const shell = (command) => new Promise((done, fail) => exec(command, { shell: 'b
 
 // What each first-party package offers, by the operation the palette puts it under: the packages repo's `@app.tool`s.
 const OFFERS = {
-  image: [...['anima', 'fibo-2', 'flux-2', 'flux.3', 'hidream-o1', 'hunyuan-image-3', 'ideogram-4', 'krea-2', 'moss-image', 'qwen-image', 'qwen-image-2', 'sdxl'].map((p) => `${p}/image`), 'p-h3-image/generate'],
+  image: [...['anima', 'fibo-2', 'flux-2', 'flux.3-klein', 'hidream-o1', 'hunyuan-image-3', 'ideogram-4', 'krea-2', 'moss-image', 'qwen-image', 'qwen-image-2', 'sdxl'].map((p) => `${p}/image`), 'p-h3-image/generate'],
   edit_image: ['birefnet/remove_background'],
   upscale_image: ['seedvr2/upscale_image'],
   video: ['minimax-h3/generate', 'orbit/orbit'],
@@ -69,6 +70,12 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   const asset = async (name) => (await state())?.assets?.find((row) => row.name === name);
   seen.project = { id, folder: (await state()).path };
   const box = (name) => boxOf(page, name);
+  // Nothing open: a box opened in Focus is there twice, on the canvas and in Focus.
+  const leave = async () => {
+    if (!(await page.locator('.card.here').count())) return;
+    await page.keyboard.press('Escape');
+    await until('nothing open', () => page.locator('.card.here').count(), (n) => n === 0);
+  };
 
   // The Hub's own word on what it holds, read by the CLI: each package with a release.
   const ls = JSON.parse(execFileSync(process.env.COZY, ['--json', 'package', 'ls', '--limit', '200'], { encoding: 'utf8' }));
@@ -105,6 +112,12 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
     const missing = tools.filter((tool) => !under(operation).includes(tool));
     check(`palette_${operation}_lists_every_hub_tool`, missing.length === 0, { missing, shown: palette[operation] });
   }
+  // A release locked to the Runtime before this one is on the Hub, and offered nowhere (run 46790: flux-3-klein@0.7.0, Runtime 0.44).
+  if (process.env.CATALOG) {
+    const OLD = 'e2e-runtime-044';
+    check('an_older_runtime_release_is_on_the_hub', released.includes(OLD), released);
+    check('an_older_runtime_release_is_not_offered', !ids.tools.some((tool) => tool.package === OLD) && !Object.values(palette).flat().some((tool) => tool.startsWith(`${OLD}/`)), ids.tools.filter((tool) => tool.package === OLD).map((tool) => tool.id));
+  }
   const media = ids.tools.filter((tool) => ['image', 'video'].includes(tool.makes) && tool.id !== 'cozy/edit');
   const unshown = media.filter((tool) => !Object.values(palette).flat().includes(tool.id)).map((tool) => tool.id);
   check('every_listed_media_tool_in_the_palette', unshown.length === 0, unshown);
@@ -120,12 +133,12 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   const made = await until('a box of it', async () => (await state()).assets.find((row) => !before.includes(row.name)), Boolean).catch(() => null);
   seen.image_box = made && { name: made.name, tool: made.tool, kind: made.kind };
   check('a_hub_image_tool_makes_its_box', made?.tool === image && made.kind === 'image', seen.image_box);
-  await closeBox(page);
+  await leave();
 
   // A video upscaler dropped on a video box goes on it.
   await carry(page, page.locator('.tools [data-palette="nodes"] li.tool[data-node="video"]'), await openCanvas(page));
   const video = await until('a video box', async () => (await state()).assets.find((row) => !before.includes(row.name) && row.kind === 'video'), Boolean);
-  await closeBox(page);
+  await leave();
   const upscaler = wanted.upscale_video.find((tool) => !tool.startsWith('minimax-h3/')) ?? wanted.upscale_video[0];
   await fitCanvas(page);
   await box(video.name).waitFor();
@@ -136,7 +149,7 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   const upscaled = await until('the upscaler on it', () => asset(video.name), (now) => now?.tool === upscaler).catch(() => null);
   seen.video_box = upscaled && { name: upscaled.name, tool: upscaled.tool, kind: upscaled.kind };
   check('a_hub_video_upscaler_goes_on_a_video_box', upscaled?.tool === upscaler && upscaled.kind === 'video', { upscaler, asset: await asset(video.name) });
-  await closeBox(page);
+  await leave();
   await shot('boxes');
 
   // Taken off, it's off the list at rest and the palette; its package added, it's back.

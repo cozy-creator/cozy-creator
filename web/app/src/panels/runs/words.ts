@@ -27,13 +27,13 @@ export function stalledWords(stalled: Stalled, now: number): string {
 /** The seconds the run has left, as Calcifer estimates them for every client. */
 export const secondsLeft = (run: Run): number | undefined => run.progress?.eta_s ?? undefined
 
-/** That nothing like it ran on its machine to tell how long it takes. */
+/** That nothing like it has run anywhere this computer knows, and it has no step of its own yet, to tell how long it takes. */
 const firstRun = (run: Run) => run.progress?.eta_s === undefined && run.progress?.eta_basis === "first_run"
 
-/** How long is left: `41s left`, `about 3m10s left` while that's little trusted; or that this is its first run here. */
+/** How long is left: `41s left`, `about 3m10s left` while that's little trusted; or that it isn't known yet. */
 export function eta(run: Run): string | null {
   const progress = run.progress
-  if (firstRun(run)) return "first run on this machine"
+  if (firstRun(run)) return "time left not known yet: nothing like it has run"
   if (progress?.eta_s == null) return null
   return `${(progress.eta_confidence ?? 1) < 0.5 ? "about " : ""}${span(progress.eta_s)} left`
 }
@@ -99,15 +99,38 @@ export function countsOf(progress: Progress): Counts | undefined {
   return stageOf(progress.stage.split(/\s+\/\s+/).at(-1) ?? "")?.counts
 }
 
-/** How far a stage is, by what it counts: `step 6 of 8`, `frame 173 of 350`, `65 tokens` (a cap is no total), bytes, `173 of 350` for a
- *  count of what isn't named, a share. */
+/** Bytes as Paul writes them: `2.1GB`, `340MB`. */
+export function size(n: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  let value = n
+  let unit = 0
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000
+    unit += 1
+  }
+  return `${unit === 0 ? value : value < 10 ? value.toFixed(1) : value.toFixed(0)}${units[unit]}`
+}
+
+/** How far a stage is, by what it counts (Paul, 11-12): `Step 7 / 8`, `Frame 173 / 350`, a decode's `65 tokens` (a cap is no total),
+ *  `2.1GB / 7GB`, `173 / 350` for a count of anything else (`stages.json`'s items), a share. */
 export function countWords(progress: Progress): string {
   const counts = countsOf(progress)
   if (counts === "token") return `${progress.completed} token${progress.completed === 1 ? "" : "s"}`
-  if (progress.bytes_total) return `${bytes(progress.bytes_done)} of ${bytes(progress.bytes_total)}`
-  if (progress.total) return `${counts === "step" || counts === "frame" ? `${counts} ` : ""}${progress.completed} of ${progress.total}`
+  if (progress.bytes_total) return `${size(progress.bytes_done)} / ${size(progress.bytes_total)}`
+  if (progress.total) return `${counts === "step" ? "Step " : counts === "frame" ? "Frame " : ""}${progress.completed} / ${progress.total}`
   if (progress.stage_fraction != null) return `${Math.round(progress.stage_fraction * 100)}%`
   return ""
+}
+
+/** A stage with its count, as Paul wrote them: `Denoising image - Step 7 / 8`, `Rewriting prompt: 65 tokens`, `Segment 2 of 3: Decoding
+ *  video - Frame 173 / 350`. */
+export function stageLine(progress: Progress): string {
+  const parts = progress.stage.trim().split(/\s+\/\s+/).filter(Boolean)
+  const own = parts.length ? stageName(parts.at(-1)!) : "Working"
+  const scope = parts.slice(0, -1).map((part) => stageName(part)).join(", ")
+  const count = countWords(progress)
+  const said = !count ? own : countsOf(progress) === "token" ? `${own}: ${count}` : `${own} - ${count}`
+  return scope ? `${scope}: ${said}` : said
 }
 
 /** Its own work, as a person reads it: its stage and what it counts, `Generating the image · step 6 of 8, 3s left`,
@@ -116,9 +139,8 @@ export function workWords(run: Run): string {
   const progress = run.progress
   if (!progress?.stage && !progress?.total) return ""
   const left = secondsLeft(run)
-  const after = left !== undefined ? `, ${span(left)} left` : firstRun(run) ? ", first run on this machine" : ""
-  const count = countWords(progress)
-  return `${stageName(progress.stage)}${count ? ` · ${count}` : ""}${after}`
+  const after = left !== undefined ? `, ${span(left)} left` : firstRun(run) ? ", time left not known yet" : ""
+  return `${stageLine(progress)}${after}`
 }
 
 /** Worth saying more than a bar: it has run over 10 s, or has over 10 s to go. */

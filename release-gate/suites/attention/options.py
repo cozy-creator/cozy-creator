@@ -22,7 +22,7 @@ import tempfile
 from pathlib import Path
 from typing import cast
 
-MODEL_OF = {'minimax-h3': 'H3 15 s', 'qwen-image-2': 'Qwen-Image 2.1 4 MP', 'moss-image': 'MOSS 4 MP', 'flux-3-klein': 'Klein'}
+MODEL_OF = {'minimax-h3': 'H3 15 s', 'qwen-image-2': 'Qwen-Image 2.1 4 MP', 'moss-image': 'MOSS 4 MP', 'flux.3-klein': 'Klein'}
 
 
 def captured(measurements: dict[str, object]) -> dict[str, dict[str, list[dict[str, object]]]]:

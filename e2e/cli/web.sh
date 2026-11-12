@@ -1,9 +1,9 @@
 # e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. `cozy open
 #`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
-# call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
+# call with no holder or session. Then the page as a person uses it: Place (web/place.js), twenty pictures dropped at once (web/dropped.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), undo and redo of the project's history from the page and the CLI (web/undo.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), the background and dots at every zoom (web/canvas.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), right click Download (web/download.js), a starred asset first in Files (web/star.js), a box from its tool's fields (web/tools.js), a tool on a box of the kind it makes (web/kinds.js), typed words that read over a picture (web/legible.js), every tool the Hub lists in the palette (web/palette.js), an orbit video turned (web/orbit.js), an Edit rendered (web/timeline.js),
+# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), the background and dots at every zoom (web/canvas.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), right click Download (web/download.js), a starred asset first in Files (web/star.js), a click selects and a double click opens, Delete deletes (web/select.js), a box from its tool's fields (web/tools.js), a tool on a box of the kind it makes (web/kinds.js), the right-side panel closed by a click off it (web/drawer.js), the tool beside a box's name (web/toolword.js), typed words that read over a picture (web/legible.js), a Shot's beats laid out (web/beats.js), pasted mentions marked as typed and loaded (web/paste.js), a press from inside never dismissing (web/dismiss.js), every tool the Hub lists in the palette (web/palette.js), an orbit video turned (web/orbit.js), an Edit rendered (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), projects closed once nothing reads them (web/closes.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and a save past project.db held by another program (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, and leaves
@@ -82,6 +82,8 @@ if [ "$scope" = native ]; then
   NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
   return
 fi
+step "web-dropped: twenty pictures dropped at once, each first drawn where and as it stays, with its picture; nothing moves, resizes or swaps through its import, measurement and 10 s after, nor after a reload"
+web_proof dropped "$chrome" "$pw" ''
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
 step "web-activity: each machine top right, an install and a download listed once under it with their waiters; a cold render's face, each phase in order with its numbers and time left; Cancel waiting and rendering"
@@ -124,12 +126,24 @@ step "web-menu: a box with a tool, right clicked: no Change the tool; its tool c
 web_proof menu "$chrome" "$pw" ''
 step "web-star: Star from a box's menu: in project.db, nothing out of date, first in Files with a ★, kept by a reload, Undo and Redo, Unstar"
 web_proof star "$chrome" "$pw" ''
+step "web-select: a click selects a box and opens nothing, a double click opens it; Backspace or Delete deletes it, open or not, and Undo brings it back; Backspace in words edits only them"
+web_proof select "$chrome" "$pw" ''
 step "web-tools: a box drawn from its tool's fields by type, groups two deep, slots refusing what doesn't fit, a video's range, previews, Pick up from here"
 web_proof tools "$chrome" "$pw" ''
 step "web-kinds: a tool goes on a box of the kind it makes: a video tool refused on a picture; a video tool on a picture and an image tool on a video change nothing and say why at the bottom left; BiRefNet on it starts from <self.1>"
 web_proof kinds "$chrome" "$pw" ''
+step "web-toolword: a box with a tool says it beside its name, readable and shrinking with the box; one with none says nothing"
+web_proof toolword "$chrome" "$pw" ''
+step "web-drawer: the right-side panel closes on a click off it or Esc; a selection from inside let go outside keeps it"
+web_proof drawer "$chrome" "$pw" ''
+step "web-dismiss: a selection or a press from inside a surface let go outside keeps it open; pressed and let go outside, it closes"
+web_proof dismiss "$chrome" "$pw" ''
 step "web-legible: typed words over a busy picture are bold with a halo, on paper and on dark; every prompt is bold"
 web_proof legible "$chrome" "$pw" ''
+step "web-beats: H3's Shot with three beats: six lines of words each, growing with them; a short length slider; no running total"
+web_proof beats "$chrome" "$pw" ''
+step "web-paste: lines pasted into a beat, plain and rich, mark each mention at once (_ and digits, .N, a range, an angle); typed and loaded, marked the same"
+web_proof paste "$chrome" "$pw" ''
 step "web-palette: every tool the Hub lists under what it makes, one dragged out and one onto a video box, one taken off and back, and with no Hub said so"
 NO_HUB=$no_hub web_proof palette "$chrome" "$pw" "$restart"
 step "web-orbit: a function's file declared an orbit, by cozy run and a box's take, into project.db and the page: no play button, a drag turns it and wraps, off and back by Undo, on for a dropped video"

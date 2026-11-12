@@ -81,14 +81,15 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
   const callbacks = useRef({ onSize, onShown })
   callbacks.current = { onSize, onShown }
   const [failed, setFailed] = useState(false)
-  const [resolution, setResolution] = useState(256)
-  const sources = [...new Set([sha256, ...neighbors])].slice(0, HELD).map((sha): Source => {
+  // Unknown until it's measured, before it's first drawn: only the size it's drawn at is asked for, not a smaller one first.
+  const [resolution, setResolution] = useState<number | null>(null)
+  const sources = resolution === null ? [] : [...new Set([sha256, ...neighbors])].slice(0, HELD).map((sha): Source => {
     const path = sha === sha256 ? originalPath ?? neighborPaths?.[sha] : neighborPaths?.[sha]
     const width = resolution === 0 && path ? 0 : resolution || WIDTH
     const original = width === 0 ? path : undefined
     return { key: JSON.stringify([sha, width, original]), sha, width, path: original }
   })
-  const selected = sources[0].key
+  const selected = sources[0]?.key ?? ""
   const wanted = sources.map((source) => source.key)
   const windowKey = JSON.stringify(wanted)
 
@@ -247,7 +248,7 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
 
   useLayoutEffect(() => {
     const buffer = held.current
-    if (!buffer || buffer.stopped) return
+    if (!buffer || buffer.stopped || !selected) return
     buffer.selected = selected
     buffer.wanted = wanted
     buffer.sources = new Map(sources.map((source) => [source.key, source]))

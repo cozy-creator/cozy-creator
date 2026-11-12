@@ -73,15 +73,19 @@ struct Drawing {
     width: u32,
     frames: u32,
     preview: bool,
+    /// A picture's EXIF orientation, 1 to 8, in its name: one drawn before it was turned isn't taken for it. A private one's can't be read before
+    /// its turn, and is 1 here.
+    turn: u8,
 }
 
 impl Drawing {
-    /// A poster by its rule's name, so one cached by an earlier rule is made again.
+    /// A poster by its rule's name, so one cached by an earlier rule is made again; a turned picture's too, as one was drawn as stored.
     fn name(&self, hex: &str) -> String {
-        match (self.preview, self.field, self.frames) {
+        match (self.preview, self.field, self.frames, self.turn) {
             (true, ..) => format!("{hex}-preview"),
-            (false, "video", 0) => format!("{hex}-{}-poster", self.width),
-            _ => format!("{hex}-{}-{}", self.width, self.frames),
+            (false, "video", 0, _) => format!("{hex}-{}-poster", self.width),
+            (_, _, _, 1) => format!("{hex}-{}-{}", self.width, self.frames),
+            _ => format!("{hex}-{}-{}-turned{}", self.width, self.frames, self.turn),
         }
     }
 }
@@ -105,15 +109,9 @@ pub(super) async fn thumb(
     let frames = asked.strip.filter(|_| field == "video" && !preview).map_or(0, |n| n.clamp(1, MOST_FRAMES));
     let source = folder.path(&file.path);
     let private = private_project(&source);
-    let drawing = Drawing {
-        source: if private.is_some() { super::vault::logical(&source) } else { source },
-        project: private,
-        field,
-        seconds: file.lasts_ms() as f64 / 1000.0,
-        width: asked.w.unwrap_or(WIDTH).clamp(16, WIDEST),
-        frames,
-        preview,
-    };
+    let turn = if field == "image" && private.is_none() { tools::orientation(&source) } else { 1 };
+    let source = if private.is_some() { super::vault::logical(&source) } else { source };
+    let drawing = Drawing { source, project: private, field, seconds: file.lasts_ms() as f64 / 1000.0, width: asked.w.unwrap_or(WIDTH).clamp(16, WIDEST), frames, preview, turn };
     let name = drawing.name(&hex);
     let private = drawing.project.is_some();
     let dir = directory(&drawing, api.machines.hubs.home().thumbs()).map_err(Refusal)?;
@@ -135,7 +133,7 @@ pub(super) async fn thumb(
 pub(super) fn landed(source: PathBuf, sha256: &str, seconds: f64) {
     let project = private_project(&source);
     let source = if project.is_some() { super::vault::logical(&source) } else { source };
-    let drawing = Drawing { source, project, field: "video", seconds, width: 0, frames: 0, preview: true };
+    let drawing = Drawing { source, project, field: "video", seconds, width: 0, frames: 0, preview: true, turn: 1 };
     LANDED.0.lock().expect("landed lock").push_back((drawing.name(&folder::hex_of(sha256).to_ascii_lowercase()), drawing));
     LANDED.1.notify_one();
 }
@@ -281,7 +279,18 @@ fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name
         _ => {
             let ext = if tools::has_alpha(ffprobe, &drawing.source) { "png" } else { "jpg" };
             let out = part(ext)?;
-            run(ffmpeg, &input(&source), &strs(&["-vf", &scale, "-q:v", "3"]), out.path())?;
+            // Turned by its EXIF as a browser draws it, here, and by nothing of FFmpeg's own, whichever version it is.
+            let upright = match tools::orientation(&drawing.source) {
+                2 => "hflip,",
+                3 => "hflip,vflip,",
+                4 => "vflip,",
+                5 => "transpose=cclock_flip,",
+                6 => "transpose=clock,",
+                7 => "transpose=clock_flip,",
+                8 => "transpose=cclock,",
+                _ => "",
+            };
+            run(ffmpeg, &[strs(&["-noautorotate"]), input(&source)].concat(), &strs(&["-vf", &format!("{upright}{scale}"), "-q:v", "3"]), out.path())?;
             (out, ext)
         }
     };

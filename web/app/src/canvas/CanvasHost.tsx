@@ -40,6 +40,7 @@ import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
 import { aspectOf, bodyBox, HEAD, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
+import { pressBeganOutside } from "../ui/press"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
 import { keys, stepZoom, ZOOMS, ZoomControl, type ZoomItem } from "./ZoomControl"
@@ -146,12 +147,17 @@ function ProjectSync({ id }: { id: string }) {
 function useMachines(store: CanvasStore, pinned: string[]) {
   const { client, status } = useConnection()
   const { data, isPending } = useQuery(machinesQuery(client))
-  const held = (data?.machines ?? []).filter((machine) => machine.ordered !== false && !machine.offline)
+  const listed = data?.machines ?? []
+  // A chosen machine that ended leaves the project's machines at once; one that's offline or ending takes nothing now (cl-920).
+  const alive = pinned.filter((name) => name === "local" || listed.some((machine) => machine.name === name && (machine.state === "ready" || machine.state === "booting") && !machine.offline))
+  // A test pod, a rental whose GPU memory is capped, runs only what names it.
+  const capped = (machine: (typeof listed)[number]) => (machine.status?.gpus ?? []).some((gpu) => (gpu.memory_limit_bytes ?? 0) > 0)
+  const held = listed.filter((machine) => machine.ordered !== false && !machine.offline)
   // One still booting takes what's sent to it, which waits for it there.
-  const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting"))
+  const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting") && !capped(machine))
   const up = held.filter((machine) => machine.kind !== "rental" && machine.kind !== "local" && machine.state === "ready" && !machine.unreachable)
   const automatic = [...rented, ...up].map((machine) => machine.name).concat(status.local_usable ? ["local"] : [])
-  const names = pinned.length ? pinned : automatic
+  const names = alive.length ? alive : automatic
   const key = names.join()
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
   useEffect(() => {
@@ -297,7 +303,8 @@ function Canvas({
   shutNow.current = shut
   const focusTravel = useRef<{ owner: NonNullable<CanvasStore["inPlace"]>; body: Box; started?: boolean } | null>(null)
   const transition = useRef(0)
-  const returning = useRef<{ view: Viewport; until: number } | null>(null)
+  const returning = useRef<Viewport | null>(null)
+  const closingAddress = useRef<string | null>(null)
   // Once arrived, Focus fits and moves its own image camera.
   store.fitHere = () => {}
   store.enterFocus = (room) => {
@@ -323,12 +330,13 @@ function Canvas({
   const writeHere = useCallback(
     (name: string) => {
       name = store.resolveName(name)
+      closingAddress.current = null
       if (store.inPlace?.name === name) return
       const view = store.get(name)
       if (!view) return
       const pose = store.poseOf(name)
       const frame = pose && bodyBox(view, pose)
-      const back = store.inPlace?.back ?? (returning.current && performance.now() < returning.current.until ? returning.current.view : flow.getViewport())
+      const back = store.inPlace?.back ?? returning.current ?? flow.getViewport()
       transition.current += 1
       returning.current = null
       if (store.inPlace) {
@@ -359,8 +367,12 @@ function Canvas({
   const stopWriting = useCallback(() => {
     const held = store.inPlace
     const back = held?.back ?? focusTravel.current?.owner.back
-    if (!held && !back && toolsBeforeFocus.current === null) return
+    const palette = toolsBeforeFocus.current
+    if (!held && !back && palette === null) return
     const token = ++transition.current
+    // Store the return anchor before any subscribed state can render the old route.
+    if (back) returning.current = back
+    toolsBeforeFocus.current = null
     focusTravel.current = null
     store.inPlace = null
     store.closeSurface()
@@ -371,12 +383,8 @@ function Canvas({
     }
     store.focusEntering.set(false)
     store.focusedName.set(null)
-    if (toolsBeforeFocus.current !== null) {
-      setShut(toolsBeforeFocus.current)
-      toolsBeforeFocus.current = null
-    }
+    if (palette !== null) setShut(palette)
     if (back) {
-      returning.current = { view: back, until: performance.now() + HERE_MS }
       if (store.projectId) saveViewport(store.projectId, back)
       const returned = () => {
         if (transition.current !== token || store.inPlace) return
@@ -388,6 +396,7 @@ function Canvas({
   }, [store, flow])
   const leaveHere = useCallback(() => {
     if (!store.inPlace) return
+    closingAddress.current = store.inPlace.name
     stopWriting()
     navigate(to())
   }, [store, navigate, stopWriting, to])
@@ -396,10 +405,18 @@ function Canvas({
     if (store.focusedName.get() === null && toolsBeforeFocus.current !== null) stopWriting()
   }, [store, focusedName, stopWriting])
   store.hereRenamed = (name) => navigate(to(`assets/${encodeURIComponent(name)}`), { replace: true })
+  const enterAddressed = useCallback((name: string) => {
+    const current = openedNow.current
+    const resolved = store.resolveName(name)
+    if (!current || store.resolveName(current) !== resolved || closingAddress.current === resolved) return
+    writeHere(resolved)
+  }, [store, writeHere])
   // The address says which box is being worked on, so a reload or Back finds it, and anything else leaves it.
   useEffect(() => {
-    if (!opened) stopWriting()
-  }, [opened, stopWriting])
+    const current = openedNow.current
+    if (!current || store.resolveName(current) !== closingAddress.current) closingAddress.current = null
+    if (!current) stopWriting()
+  }, [opened, store, stopWriting])
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
   const pointer = useRef<{ x: number; y: number } | null>(null)
@@ -583,7 +600,7 @@ function Canvas({
 
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (store.focusedName.get() || (returning.current && performance.now() < returning.current.until)) return
+      if (store.focusedName.get() || returning.current) return
       if (store.projectId) saveViewport(store.projectId, viewport)
     },
     [store],
@@ -623,6 +640,8 @@ function Canvas({
   )
   const dragStop = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
+      // React Flow can deliver both node and selection stop for one group drag.
+      if (!nodes.some((node) => store.isDragging(node.data.name))) return
       carrying(false)
       stage.current?.removeAttribute("data-offering")
       const { clientX, clientY } = pointOf(event)
@@ -691,16 +710,12 @@ function Canvas({
         }
         flow.setNodes((nodes) => nodes.map((node) => (node.selected ? { ...node, selected: false } : node)))
       } else if (event.key === "Delete" || (event.key === "Backspace" && !command)) {
-        const take = here ? store.lookingAt(here) : undefined
-        if (here && take !== undefined) {
-          event.preventDefault()
-          return store.discardTake(here, take)
-        }
-        const names = flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
-        if (names.length) {
-          event.preventDefault()
-          store.remove(names)
-        }
+        // What's selected goes, with Undo; open, the box itself. A take goes by its own ✕ or menu.
+        const names = here ? [here] : flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
+        if (!names.length) return
+        event.preventDefault()
+        if (here) leaveHere()
+        store.remove(names)
       } else if (command && event.key.toLowerCase() === "a") {
         event.preventDefault()
         flow.setNodes((nodes) => nodes.map((node) => ({ ...node, selected: true })))
@@ -758,20 +773,35 @@ function Canvas({
   }, [active, store, client, flow, placer, visibleCentre])
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
+  // A click selects a box, and only it (Shift, Ctrl or Cmd add to what's selected); a double click or tap opens it (Paul, 11-12).
   const nodeClicked = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
-      if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
-      const { name } = node.data
+      if (event.shiftKey || event.metaKey || event.ctrlKey) return
+      flow.setNodes((nodes) => nodes.map((held) => (Boolean(held.selected) === (held.id === node.id) ? held : { ...held, selected: held.id === node.id })))
+    },
+    [flow],
+  )
+  const focusNode = useCallback(
+    (name: string) => {
+      const view = store.get(name)
+      if (!store.projectId || !view?.asset || view.placing) return
       if (store.focusedName.get() === name) return
-      // A click opens at once: only Shift selects.
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
       writeHere(name)
       navigate(to(`assets/${encodeURIComponent(name)}`))
     },
     [store, flow, writeHere, navigate, to],
   )
+  const nodeDoubleClicked = useCallback((event: ReactMouseEvent, node: ElementNode) => {
+    if (node.type !== "element" || event.shiftKey || event.metaKey || event.ctrlKey || (event.target as Element).closest("button, input, select, textarea, [contenteditable]")) return
+    focusNode(node.data.name)
+  }, [focusNode])
+  const touchPress = useRef<{ id: number; name: string; x: number; y: number } | null>(null)
+  const lastTap = useRef<{ name: string; at: number; x: number; y: number } | null>(null)
+  // A click on open canvas leaves the box worked on, unless its press began on a box: a selection or a drag let go out here.
+
   const paneClicked = useCallback(() => {
-    if (!store.focusedName.get()) leaveHere()
+    if (!store.focusedName.get() && pressBeganOutside((element) => Boolean(element.closest(".react-flow__node, .react-flow__nodesselection")))) leaveHere()
   }, [store, leaveHere])
   const nodeMenu = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
@@ -836,6 +866,24 @@ function Canvas({
         data-layered={LAYERED ? "" : undefined}
         data-tools={shut ? "shut" : "open"}
         data-lod={band}
+        onPointerDownCapture={(event) => {
+          if (event.pointerType === "mouse" || store.focusedName.get() || (event.target as Element).closest("button, input, select, textarea, [contenteditable]")) return
+          const name = (event.target as Element).closest<HTMLElement>(".card[data-asset]")?.dataset.asset
+          touchPress.current = name ? { id: event.pointerId, name, x: event.clientX, y: event.clientY } : null
+        }}
+        onPointerUpCapture={(event) => {
+          const press = touchPress.current
+          if (!press || press.id !== event.pointerId) return
+          touchPress.current = null
+          if (Math.hypot(event.clientX - press.x, event.clientY - press.y) > 6) { lastTap.current = null; return }
+          const previous = lastTap.current
+          const at = performance.now()
+          if (previous?.name === press.name && at - previous.at <= 500 && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) < 24) {
+            lastTap.current = null
+            focusNode(press.name)
+          } else lastTap.current = { name: press.name, at, x: event.clientX, y: event.clientY }
+        }}
+        onPointerCancelCapture={() => { touchPress.current = null; lastTap.current = null }}
         onPointerMove={(event) => {
           pointer.current = { x: event.clientX, y: event.clientY }
         }}
@@ -880,6 +928,7 @@ function Canvas({
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
           onNodeClick={nodeClicked}
+          onNodeDoubleClick={nodeDoubleClicked}
           onPaneClick={paneClicked}
           onNodeContextMenu={nodeMenu}
           onNodeDragStart={nodeDragStart}
@@ -899,7 +948,7 @@ function Canvas({
         leaveHere()
         requestAnimationFrame(() => placer.addFile({ ...file, copy: true }, flow.screenToFlowPosition({ x, y })))
       }} />}
-      {opened && <Addressed name={opened} enter={writeHere} leave={leaveHere} />}
+      {opened && <Addressed name={opened} enter={enterAddressed} leave={leaveHere} />}
       {active && <AssetMenu />}
       {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />

@@ -34,6 +34,11 @@ impl Card {
         &self.document["package_interface"]
     }
 
+    /// What the release's wheel requires (`Requires-Dist`). None: a card kept before Calcifer kept them.
+    pub fn requirements(&self) -> Option<Vec<&str>> {
+        Some(self.document.get("requirements")?.as_array()?.iter().filter_map(Value::as_str).collect())
+    }
+
 }
 
 /// Where `(hub, package)`'s cards live under `root`, the cozy home.
@@ -66,6 +71,25 @@ pub async fn card(
     if let Some(card) = kept(root, hub, package, release) {
         return Ok(card);
     }
+    from_hub(client, root, hub, package, release).await
+}
+
+/// The card of `release` with its requirements: one kept without them is read again and kept, or, with no Hub, stands as it is.
+pub async fn card_requiring(
+    client: impl FnOnce() -> Result<Client, Error>,
+    root: &Path,
+    hub: &str,
+    package: &str,
+    release: &str,
+) -> Result<Card, Error> {
+    match kept(root, hub, package, release) {
+        Some(card) if card.requirements().is_some() => Ok(card),
+        Some(card) => Ok(from_hub(client, root, hub, package, release).await.unwrap_or(card)),
+        None => from_hub(client, root, hub, package, release).await,
+    }
+}
+
+async fn from_hub(client: impl FnOnce() -> Result<Client, Error>, root: &Path, hub: &str, package: &str, release: &str) -> Result<Card, Error> {
     let (org, name) = package.split_once('/').expect("a package is org/name");
     let answer = client()?.get_package_release(org, name, release).await;
     let document = answer.map_err(|e| absent(refusal(e), &format!("{package}@{release}")))?;

@@ -655,7 +655,7 @@ export type ErrorKind = "usage" | "validation" | "not_found" | "credential" | "f
 /**
  * What a time left stands on.
  */
-export type EtaBasis = "machine" | "gpu" | "steps" | "first_run";
+export type EtaBasis = "machine" | "gpu" | "card" | "steps" | "first_run";
 
 /**
  * A key for another computer: its file, which the client writes owner-only.
@@ -1162,7 +1162,11 @@ ending?: string | null,
  * Why its last end failed (this computer's sign-in, or the Hub's refusal): nothing was ended,
  * and a rental may still bill. Ending it again asks again.
  */
-end_failed?: string | null, };
+end_failed?: string | null,
+/**
+ * In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
+ */
+rc?: RcFollow | null, };
 
 /**
  * What a machine is to Calcifer: this computer's, a rental, or another computer's added by address.
@@ -2009,7 +2013,7 @@ eta_s?: number | null,
  */
 eta_confidence?: number | null,
 /**
- * What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
+ * What `eta_s` stands on; `first_run` with none: nothing like it ran on any card this computer knows.
  */
 eta_basis?: EtaBasis | null,
 /**
@@ -2191,6 +2195,24 @@ warnings?: Array<string>,
  * Where the quoted offer is, for an ask that named its provider or a Hub admin's.
  */
 provider?: string | null, datacenter?: string | null, };
+
+/**
+ * A dev home's rental and the open RC's newest builds (cl-922).
+ */
+export type RcFollow = {
+/**
+ * The open RC: `0.25.0`.
+ */
+rc: string,
+/**
+ * `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand gave it
+ * other software, which it keeps; `none`: the RC has no build for it, or can't be read now.
+ */
+state: string,
+/**
+ * What it runs or moves to, what holds it, or why there is none, in words.
+ */
+detail: string, };
 
 /**
  * A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.

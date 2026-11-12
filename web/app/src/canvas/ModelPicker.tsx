@@ -227,8 +227,7 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
       {restricted && <p className="muted">Only the default Turbo LoRA is verified.</p>}
       {restricted && adapters.length > 0 && <button type="button" className="tb model-picker-reset" onClick={clearBase}>Reset Turbo LoRA</button>}
     </> : <>
-      <h4>Added LoRAs</h4>
-      <AdapterList name={name} slot={slot.slot} families={slot.family ? [slot.family] : []} adapters={adapters} />
+      {adapters.length > 0 && <><h4>Added LoRAs</h4><AdapterList name={name} slot={slot.slot} families={slot.family ? [slot.family] : []} adapters={adapters} /></>}
       {legacy.length > 0 && <div className="model-picker-legacy"><h4>Existing LoRAs</h4><AdapterList name={name} slot={null} families={slot.family ? [slot.family] : []} adapters={legacy} /></div>}
       <h4>Available LoRAs</h4>
       <ul className="model-picker-choices" aria-label={`Add LoRA for ${slot.slot}`}>

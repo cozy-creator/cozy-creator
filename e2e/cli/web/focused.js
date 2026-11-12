@@ -98,7 +98,7 @@ async function died(error) {
   const palette = () => page.evaluate(() => ({ shut: document.querySelector('aside.tools')?.classList.contains('shut'), saved: localStorage.getItem('cozy.tools-shut') }));
   const sameCamera = (before, after) => Math.abs(before.x - after.x) < 0.5 && Math.abs(before.y - after.y) < 0.5 && Math.abs(before.zoom - after.zoom) < 0.0001;
   const sameRect = (before, after) => ['x', 'y', 'width', 'height'].every((key) => Math.abs(before[key] - after[key]) < 2);
-  const focusByClick = async () => {
+  const focusByDoubleClick = async () => {
     const media = boxOf(page, NAME).locator('.media');
     await media.waitFor();
     const point = await media.evaluate((element) => {
@@ -110,7 +110,7 @@ async function died(error) {
       if (right <= left || bottom <= top) throw new Error('the Wander image has no visible click target');
       return { x: (left + right) / 2, y: (top + bottom) / 2 };
     });
-    await page.mouse.click(point.x, point.y);
+    await page.mouse.dblclick(point.x, point.y);
     await focus.waitFor();
     await page.locator(`[data-focused-asset="${NAME}"]:not([data-entering])`).waitFor();
     await card.waitFor();
@@ -197,10 +197,10 @@ async function died(error) {
 
   const wander = await camera();
   const expanded = await palette();
-  await focusByClick();
+  await focusByDoubleClick();
   const focusedCanvas = await camera();
   const wide = await expectFit(4);
-  check('node_click_opens_one_focus_workspace', await page.locator('[data-focused-asset]').count() === 1 && await card.count() === 1);
+  check('node_double_click_opens_one_focus_workspace', await page.locator('[data-focused-asset]').count() === 1 && await card.count() === 1);
   check('entry_animates_the_canvas_into_the_selected_asset', !sameCamera(wander, focusedCanvas), { before: wander, after: focusedCanvas });
   check('focus_keeps_temporary_palette_collapse_out_of_saved_settings', (await palette()).saved === expanded.saved);
   const background = await focus.evaluate((element) => ({ color: getComputedStyle(element).backgroundColor, image: getComputedStyle(element).backgroundImage }));
@@ -358,7 +358,7 @@ async function died(error) {
   if (!(await palette()).shut) await tools.getByLabel('Hide the tools', { exact: true }).click();
   const collapsed = await palette();
   const beforeGestures = await camera();
-  await focusByClick();
+  await focusByDoubleClick();
   await expectFit(0.25);
   const gestureCanvas = await camera();
   await focus.getByRole('button', { name: 'Zoom in image', exact: true }).click();
@@ -389,7 +389,7 @@ async function died(error) {
   await until('Escape animates to the original Wander camera', camera, (position) => sameCamera(beforeGestures, position));
   await settled(page);
   check('Escape_explicitly_exits_focus_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
-  await focusByClick();
+  await focusByDoubleClick();
   await expectFit(0.25);
   const mainImage = (await measure()).media;
   await page.mouse.click(mainImage.x + mainImage.width / 2, mainImage.y + mainImage.height / 2);
@@ -417,7 +417,7 @@ async function died(error) {
   await fitCanvas(page);
   const videoWander = await camera();
   const videoTile = await boxOf(page, VIDEO).locator('.media').boundingBox();
-  await page.mouse.click(videoTile.x + videoTile.width / 2, videoTile.y + videoTile.height / 2);
+  await page.mouse.dblclick(videoTile.x + videoTile.width / 2, videoTile.y + videoTile.height / 2);
   const videoFocus = page.locator(`[data-focused-asset="${VIDEO}"]`);
   await videoFocus.waitFor();
   await page.locator(`[data-focused-asset="${VIDEO}"]:not([data-entering])`).waitFor();

@@ -14,18 +14,18 @@ import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
-import { fieldsOf, shapesOf, snapped } from "./controls"
+import { fieldsOf, snapped } from "./controls"
 import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched, widthFor } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
 import { ImageVersions } from "./ImageVersions"
-import { FocusFrame } from "./FocusFrame"
+import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
 import { readableSurface } from "./readableSurface"
 import type { Box } from "./graph"
@@ -56,7 +56,8 @@ function TakeProgress({ view, run }: { view: ElementView; run: number }) {
 
 /** An approved box shows nothing wrong unless what it reads changed: a failure of something tried since is on its other face. */
 function dotOf(view: ElementView): string {
-  if (view.placing || view.queued || view.asked !== undefined) return "s-making"
+  // A file on its way to Calcifer says nothing: it's there already, as far as anyone looking can tell (cl-918).
+  if (view.queued || view.asked !== undefined) return "s-making"
   const asset = view.asset
   if (asset?.standing === "making") return "s-making"
   if (asset?.failure && !(asset.pinned && faceOf(view) === "media")) return "s-failed"
@@ -441,15 +442,35 @@ function Status({ view, name }: { view: ElementView; name: string }) {
   return null
 }
 
-/** The corner, pulled to size a box. Showing no picture, or its words, a box takes its tool's shape from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. Showing a picture, it only scales. */
+/** The corner changes output shape freely within its tool's bounds, or to its declared ratios. Focus fits the result only once the pull ends. */
 function Corner({ name, view, width, focused = false }: { name: string; view: ElementView; width: number; focused?: boolean }) {
   const store = useCanvasStore()
+  const focusResize = useFocusResize()
   const flow = useReactFlow()
   const tools = useSignal(store.tools)
   const control = view.asset && reshapes(view) ? fieldsOf(view.asset, tools).find((held) => held.type === "shape") : undefined
-  const from = useRef<{ x: number; y: number; w: number; h: number; inverse: number; owner: CanvasStore["inPlace"] } | null>(null)
-  const pulled = useRef<{ w: number; h: number } | null>(null)
+  const validRatio = (ratio: unknown): ratio is string => typeof ratio === "string" && ratio.split(":").length === 2 && ratio.split(":").map(Number).every((value) => value > 0 && Number.isFinite(value))
+  const ratios = (control?.ratios ?? []).filter(validRatio)
+  const dynamic = Boolean(control?.auto) && ratios.length !== 1
+  const fallback = control?.default
+  const defaultShape = ratios.length === 1 ? ratios[0] : validRatio(fallback) ? fallback : ratios[0] ?? "1:1"
+  const held = control ? store.valueOf(name, control.field) : undefined
+  const override = validRatio(held) ? held : null
+  const hasOverride = held !== undefined && held !== null && held !== ""
+  const badge = Boolean(control && view.hereWords && (view.asset?.kind === "image" || view.asset?.kind === "video"))
+  const from = useRef<{ x: number; y: number; w: number; h: number; pixels?: { w: number; h: number }; inverse: number; owner: CanvasStore["inPlace"] } | null>(null)
+  const pulled = useRef<{ w: number; h: number; shape?: string } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
+  const label = nearest ?? override ?? (dynamic ? "Auto" : defaultShape)
+  const shapeFor = (width: number, height: number) => {
+    if (ratios.length) return snapped(width / height, ratios)
+    let w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height))
+    const ratio = Math.min(control?.max ?? Infinity, Math.max(control?.min ?? 0, w / h))
+    if (ratio !== w / h) { w = Math.round(ratio * 1_000_000); h = 1_000_000 }
+    let a = w, b = h
+    while (b) [a, b] = [b, a % b]
+    return `${w / a}:${h / a}`
+  }
   const moved = (event: PointerEvent) => {
     const start = from.current
     if (!start) return
@@ -461,10 +482,14 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
         return store.setWidth(name, w, false)
       }
       const w = Math.min(WIDEST, Math.max(NARROWEST, start.w + dx))
-      const h = Math.min(WIDEST, Math.max(LOWEST, start.h + dy))
-      pulled.current = { w, h }
+      const requestedHeight = Math.min(WIDEST, Math.max(LOWEST, start.h + dy))
+      const shape = shapeFor(w, requestedHeight)
+      const [rw, rh] = shape.split(":").map(Number)
+      const h = w * rh / rw
+      pulled.current = { w, h, shape }
       store.drawShape(name, w, h)
-      setNearest(snapped(w / h, shapesOf(control)))
+      if (focused && start.pixels) focusResize?.move(start.pixels.w * w / start.w, start.pixels.h * h / start.h)
+      setNearest(shape)
     })
   }
   const done = () => {
@@ -476,18 +501,35 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
       const size = pulled.current
       pulled.current = null
       setNearest(null)
-      if (size && control) store.setShape(name, control, size.w, snapped(size.w / size.h, shapesOf(control)))
+      if (size && control) store.setShape(name, control, focused ? start.w : size.w, size.shape ?? shapeFor(size.w, size.h))
       else if (size) store.setWidth(name, size.w)
+      if (owner && store.inPlace === owner) owner.pulled = false
+      if (focused) { focusResize?.end(); return }
       if (!owner || store.inPlace !== owner) return
-      owner.pulled = false
       requestAnimationFrame(() => {
         if (store.inPlace === owner) store.fitHere(true)
       })
     })
   }
+  const resetShape = () => {
+    if (!control) return
+    flushSync(() => {
+      from.current = null
+      pulled.current = null
+      setNearest(null)
+      store.patch(name, { shape: undefined })
+      if (dynamic) store.unshape(name, control.field)
+      else void store.setField(name, control.field, defaultShape)
+      focusResize?.end()
+    })
+  }
   return (
     <>
-      {nearest && (
+      {badge && <span className="ratio-rest" data-output-aspect={label} title="Output aspect ratio">
+        {label}
+        {hasOverride && <button type="button" className="ratio-clear nodrag nopan" aria-label={dynamic ? "Auto aspect ratio" : `Reset aspect ratio to ${defaultShape}`} title={dynamic ? "Use the reference image's aspect ratio" : `Reset to ${defaultShape}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); resetShape() }}><Icon name="close" /></button>}
+      </span>}
+      {nearest && !badge && (
         <div className="ratio-live">
           <span>{nearest}</span>
         </div>
@@ -500,13 +542,16 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => {
+          if (event.button !== 0) return
+          event.stopPropagation()
           const pose = store.poseOf(name)
           if (!pose) return
           event.currentTarget.setPointerCapture(event.pointerId)
           // Canvas pixels per screen pixel: the zoom's, or focused, the frame's against its box.
           const frame = event.currentTarget.closest(".media")?.getBoundingClientRect()
           const inverse = focused && frame?.width ? pose.w / frame.width : 1 / flow.getZoom()
-          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), inverse, owner: store.inPlace }
+          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), inverse, pixels: focused && frame ? { w: frame.width, h: frame.height } : undefined, owner: store.inPlace }
+          if (focused && control) focusResize?.start()
           if (store.inPlace) store.inPlace.pulled = true
         }}
         onPointerMove={moved}
@@ -525,12 +570,14 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const field = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "shape")
   if (!field || view.shape) return null
   const held = store.valueOf(name, field.field)
-  if (typeof held !== "string" || !held) return <span className="ratio-rest">Auto</span>
+  const preset = typeof field.default === "string" && ratioOf(field.default) ? field.default : undefined
+  const fallback = String(preset ?? field.ratios?.[0] ?? "1:1")
+  if (typeof held !== "string" || !ratioOf(held)) return <span className="ratio-rest">{field.auto ? "Auto" : fallback}</span>
   return (
     <span className="ratio-rest">
       {held}
       {view.here && (
-        <button type="button" className="ratio-clear nodrag" aria-label="Auto shape" title="Back to its auto shape" onClick={() => store.unshape(name, field.field)}>
+        <button type="button" className="ratio-clear nodrag" aria-label={field.auto ? "Auto shape" : `Reset aspect ratio to ${fallback}`} title={field.auto ? "Use automatic aspect ratio" : `Reset to ${fallback}`} onClick={() => field.auto ? store.unshape(name, field.field) : void store.setField(name, field.field, fallback)}>
           <Icon name="close" />
         </button>
       )}
@@ -548,8 +595,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
   const tools = useSignal(store.tools)
-  const naming = useCallback(() => store.openName(name), [store, name])
-  const pressedAt = useRef<{ x: number; y: number } | null>(null)
   const self = useRef<HTMLDivElement>(null)
   const cancel = useCallback(() => {
     if (store.get(name)?.placing) store.cancel(store.resolveName(name))
@@ -677,6 +722,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const asset = view.asset
   const versions = asset?.prefixes ?? []
   const shown = shownOf(view)
+  const tool = asset?.tool ? tools.get(asset.tool) : undefined
   const at = versions.findIndex((version) => version.number === shown?.number)
   const shownVersion = versions.find((version) => version.number === shown?.number)
   const face = faceOf(view)
@@ -694,7 +740,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const imageHeight = width / originalAspect
   const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
   const style: CSSProperties & Record<`--${string}`, string | number> = focused
-    ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 240 : 64 : asset?.kind === "video" && !editing ? 64 : asset?.tool ? 220 : 0}px` }
+    ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 320 : 64 : asset?.kind === "video" && !editing ? 64 : asset?.tool ? 220 : 0}px` }
     : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
   return (
     <div
@@ -716,21 +762,13 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           <span
             className="nm"
             title={view.name}
-            onPointerDown={(event) => {
-              pressedAt.current = { x: event.clientX, y: event.clientY }
-            }}
-            onClick={(event) => {
-              // A tap renames. A drag by its name only moved it, and with Shift, Ctrl or Cmd it selects, as anywhere on the box.
-              if (event.shiftKey || event.metaKey || event.ctrlKey) return
-              event.stopPropagation()
-              const from = pressedAt.current
-              if (from && Math.hypot(event.clientX - from.x, event.clientY - from.y) < 5) naming()
-            }}
           >
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
         )}
-        {view.draft === undefined && asset?.kind === "image" && shown?.number !== undefined && <span className="node-version-label">v{shown.number}</span>}
+        {view.draft === undefined && (asset ? asset.kind === "image" && shown?.number !== undefined : isPicture(view)) && <span className="node-version-label">v{asset ? shown?.number : 1}</span>}
+        {/* What makes it, beside its name (Paul, 11-12: "I want to see what tools are attached"). */}
+        {view.draft === undefined && !lite && asset?.tool && <span className="node-tool" title={asset.tool}>{tool ? toolName(tool) : asset.tool}</span>}
         {view.draft === undefined && !lite && <span className="sp" />}
         {view.draft === undefined && here && asset?.kind !== "image" && versions.length > 1 && at >= 0 && (
           <span className="count">
@@ -756,13 +794,14 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           >
             <Icon name="close" />
           </button>
-        ) : view.placing && view.placing.stage !== "adding" ? (
-          <button type="button" className="iconb nodrag" aria-label="Cancel" onClick={cancel}>
+        ) : view.placing ? (
+          // Its × stays as it was dropped: past the point of no return, the moment Calcifer is being asked, it does nothing.
+          <button type="button" className="iconb nodrag" aria-label="Cancel" onClick={() => view.placing?.stage !== "adding" && cancel()}>
             <Icon name="close" />
           </button>
         ) : (
           view.draft === undefined &&
-          asset &&
+          (asset || view.landed) &&
           !lite && (
             <button type="button" className="iconb nodrag" aria-label="Delete" title="Delete" onClick={() => store.remove([name])}>
               <Icon name="close" />
@@ -790,7 +829,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         </Media>
       )}</FocusFrame>
       {here && !lite && asset && (asset.kind === "image" || (asset.kind === "video" && !asset.timeline && !editing)) && !view.placing && <ImageVersions name={name} view={view} width={width} />}
-      {!lite && asset && asset.kind !== "image" && !view.placing && !looking && <ShapeLine name={name} view={view} />}
+      {!lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
         <div className="rest-asking nodrag nopan nowheel">
@@ -800,6 +839,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {here && asset && asset.kind !== "text" && !asset.timeline && <Takes view={view} name={name} width={width} side />}
       {here && asset && (asset.kind !== "image" || editing) && !(asset.kind === "video" && !asset.timeline && !editing) && (
         <div className="here-under nodrag nopan nowheel">
+          {parameterTool && <div className="authoring-ratio"><ShapeLine name={name} view={view} /></div>}
           <div className="here-all">
             {(asset.kind !== "text" || asset.tool) && <>
               {asset.timeline && <Takes view={view} name={name} width={width} />}

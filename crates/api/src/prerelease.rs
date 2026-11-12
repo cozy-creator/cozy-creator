@@ -1,11 +1,11 @@
 //! Where a Runtime or TensorFS version PyPI lacks lives: a GitHub prerelease (cozy-runtime
-//! `v<version>`, cozy-creator `tensorfs-v<version>`), whose `SHA256SUMS` names its wheels.
+//! `v<version>`, cozy-creator `tensorfs-v<version>`), whose `SHA256SUMS` names its wheels. The open
+//! RC's newest builds (`<version>+dev.g<sha8>`, cl-922) are on its rolling prerelease `rc-<x.y.z>` in
+//! each repository, with the `cozy` a machine runs (`cozy-<version>-linux-<arch>`).
 
 fn repo_and_prefix(distribution: &str) -> (&'static str, &'static str) {
-    match distribution.replace('-', "_").as_str() {
-        "cozy_runtime" => ("cozy-runtime", "v"),
-        _ => ("cozy-creator", "tensorfs-v"),
-    }
+    let repo = repo(distribution);
+    (repo, if repo == "cozy-runtime" { "v" } else { "tensorfs-v" })
 }
 
 /// The release `version` of `distribution`: its files are under this.
@@ -30,23 +30,73 @@ pub fn version_of<'a>(distribution: &str, tag: &'a str) -> Option<&'a str> {
 /// (file, sha256): the platform's own first, else the pure one.
 pub fn wheel<'a>(sums: &'a str, distribution: &str, version: &str, platform: &str) -> Option<(&'a str, &'a str)> {
     let prefix = format!("{}-{version}-", distribution.replace('-', "_"));
-    let wheels: Vec<(&str, &str)> = sums
-        .lines()
-        .filter_map(|line| line.split_once(char::is_whitespace))
-        .map(|(sha256, file)| (file.trim().trim_start_matches('*'), sha256.trim()))
-        .filter(|(file, sha256)| sha256.len() == 64 && file.starts_with(&prefix) && file.ends_with(".whl"))
-        .collect();
+    let wheels: Vec<(&str, &str)> = listed(sums).filter(|(file, _)| file.starts_with(&prefix) && file.ends_with(".whl")).collect();
+    (wheels.iter().find(|(file, _)| native(file, platform)))
+        .or_else(|| wheels.iter().find(|(file, _)| file.ends_with("-none-any.whl")))
+        .copied()
+}
+
+/// Whether wheel `file` is the stable-ABI one built for `platform`: a version-specific
+/// (`cp310-cp310`) wheel fits one Python only.
+fn native(file: &str, platform: &str) -> bool {
     let (os, arch) = platform.split_once('/').unwrap_or((platform, ""));
-    // A version-specific (`cp310-cp310`) wheel fits one Python only; the stable-ABI one fits all.
-    let native = |file: &str| file.contains("-abi3-") && match (os, arch) {
+    file.contains("-abi3-") && match (os, arch) {
         ("linux", arch) => file.contains("manylinux") && file.contains(arch),
         ("macos", "aarch64") => file.contains("macosx") && file.contains("arm64"),
         ("macos", arch) => file.contains("macosx") && file.contains(arch),
         ("windows", "x86_64") => file.contains("win_amd64"),
         ("windows", _) => file.contains("win_arm64"),
         _ => false,
-    };
-    (wheels.iter().find(|(file, _)| native(file)))
-        .or_else(|| wheels.iter().find(|(file, _)| file.ends_with("-none-any.whl")))
-        .copied()
+    }
 }
+
+/// Each `(file, sha256)` a `SHA256SUMS` names.
+fn listed(sums: &str) -> impl Iterator<Item = (&str, &str)> {
+    (sums.lines())
+        .filter_map(|line| line.split_once(char::is_whitespace))
+        .map(|(sha256, file)| (file.trim().trim_start_matches('*'), sha256.trim()))
+        .filter(|(_, sha256)| sha256.len() == 64)
+}
+
+/// The repository whose releases hold `distribution` (`cozy` for the machine's binary).
+pub fn repo(distribution: &str) -> &'static str {
+    match distribution.replace('-', "_").as_str() {
+        "cozy_runtime" => "cozy-runtime",
+        _ => "cozy-creator",
+    }
+}
+
+/// `repo`'s rolling prerelease of the open RC `rc` (`0.25.0`): its newest builds are under this.
+pub fn rc(repo: &str, rc: &str) -> String {
+    format!("https://github.com/cozy-creator/{repo}/releases/download/rc-{rc}")
+}
+
+/// One build a `SHA256SUMS` names: its file, sha256 and version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Build {
+    pub file: String,
+    pub sha256: String,
+    pub version: String,
+}
+
+/// The build of `distribution` for `platform` (`linux/x86_64`) on an RC's prerelease: a native
+/// wheel, never the pure one (it carries no kernels), or for `cozy` the machine's binary
+/// (`cozy-<version>-<os>-<arch>`).
+pub fn rc_build(sums: &str, distribution: &str, platform: &str) -> Option<Build> {
+    let (os, arch) = platform.split_once('/').unwrap_or((platform, ""));
+    let (file, sha256) = match distribution {
+        "cozy" => listed(sums).find(|(file, _)| file.starts_with("cozy-") && file.ends_with(&format!("-{os}-{arch}")))?,
+        _ => {
+            let prefix = format!("{}-", distribution.replace('-', "_"));
+            listed(sums).find(|(file, _)| file.starts_with(&prefix) && file.ends_with(".whl") && native(file, platform))?
+        }
+    };
+    let version = file.split('-').nth(1).filter(|version| !version.is_empty())?;
+    Some(Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
+}
+
+/// Whether `version` is a dev build (`0.45.0+dev.gb976b092`): an RC's, or one built by hand.
+pub fn dev(version: &str) -> bool {
+    version.contains("+dev.g")
+}
+

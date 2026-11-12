@@ -248,7 +248,8 @@ async function openBox(page, name) {
   }
   const { x, y } = await middle();
   const before = await page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform);
-  await page.mouse.click(x, y);
+  // A click only selects it: a double click opens it (Paul, 11-12).
+  await page.mouse.dblclick(x, y);
   await card.waitFor();
   // The canvas draws in on it: a person reaches for it once it's there. Its move starts a frame after the click, which a slow runner draws late.
   await until(`the canvas drawing in on ${name}`, () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform), (now) => now !== before, 2000).catch(() => {});
