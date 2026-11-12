@@ -669,7 +669,7 @@ impl Doc {
         let sent = |read: &Reading| {
             let held = now.iter().find(|held| held.asset == read.asset && held.number == read.number)?;
             let files: Vec<_> = held.files.values().collect();
-            let sends = if tool || read.asset == i { json!({"files": files}) } else { json!({"description": self.assets[read.asset].description, "files": files}) };
+            let sends = if tool || read.asset == i { json!({"files": files}) } else { json!({"description": super::binder::OFF, "files": files}) };
             Some(digest(&sends)[..READ_PART].to_owned())
         };
         let read = |read: &Reading| {
@@ -984,7 +984,7 @@ impl Doc {
         each_text(value, &mut walk);
     }
 
-    /// What each box asset `i` mentions sends, in `order`, by name: a text box its words, numbered on, and a box its files and description,
+    /// What each box asset `i` mentions sends, in `order`, by name: a text box its words, numbered on, and a box its files and (empty) description,
     /// of each version read. Calcifer's own tools read files alone.
     fn parts(&self, i: usize, reads: &[ReadNow], order: &mut Vec<Result<usize, String>>) -> Vec<(String, String)> {
         let tool = self.tool(i).is_some();
@@ -1009,7 +1009,7 @@ impl Doc {
                 None => {
                     let mut read: Vec<(Option<u32>, Value)> = reads.iter().filter(|read| read.asset == j).map(|read| {
                         let files: Vec<_> = read.files.values().collect();
-                        (read.number, if tool || j == i { json!({"files": files}) } else { json!({"description": of.description, "files": files}) })
+                        (read.number, if tool || j == i { json!({"files": files}) } else { json!({"description": super::binder::OFF, "files": files}) })
                     }).collect();
                     read.sort_by_key(|(number, _)| *number);
                     json!(read)

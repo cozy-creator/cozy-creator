@@ -810,7 +810,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
               {!looking && (asset.kind !== "image" || editing) && <AssetEdit name={name} view={view} editing={editing} prominent={parameterTool} head={asset.kind !== "image" ? <Stack name={name} /> : undefined} actions={editing && <RenderButton name={name} view={view} />} />}
               {asset.kind !== "image" && !view.hereWords && <TakeName view={view} />}
-              {/* Writing an image tool's next take, its description isn't asked: it's for what's looked at. */}
               {view.warned && warned ? (
                 <div className="warned-lines">
                   {view.warnings!.map((warning) => (

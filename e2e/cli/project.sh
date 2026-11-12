@@ -1431,7 +1431,7 @@ render "$E" hero_old || check "entities: render hero_old: $(tail -c 400 "$OUT/re
 J '.assets[] | select(.name == "hero") | .kind == "image"' <<< "$(status "$E")" || check "entities: a made picture's kind comes from its version: $(row "$E" hero .)"
 [ "$(read_of "$E" hero_old)" = '["hero"]' ] || check "entities: hero_old reads $(read_of "$E" hero_old)"
 local drew; drew=$(asked "$E" hero_old)
-J '.input.instructions.references | length == 1 and (.[0] | .key == "hero" and .type == "image" and (.file | startswith("sha256:")) and .description == "A brave hero, unlike <hero_old>.")' <<< "$drew" || check "entities: a read is its picture and its words: $drew"
+J '.input.instructions.references | length == 1 and (.[0] | .key == "hero" and .type == "image" and (.file | startswith("sha256:")) and .description == "")' <<< "$drew" || check "entities: a read is its picture, and no description (cl-900): $drew"
 
 step "a project: a name that can't be one is refused, with the fix; a dot is read as \`_\`, with a warning (tools.md, Names)"
 local N=$OUT/names
@@ -2314,7 +2314,7 @@ YAML
 render "$T" direct || check "tools: direct: $(tail -c 500 "$OUT/render.txt")"
 input=$(asked "$T" direct)
 J '(.target | endswith("/still")) and (.input | .aspect_ratio == "16:9" and .count == 4 and (has("style") | not) and .instructions.text == "Look at <red_art> and <blue_art>.")' <<< "$input" || check "tools: the call: $input"
-J '.input.instructions.references | map(.key) == ["red_art", "blue_art"] and (.[0] | .type == "image" and .description == "PUBLIC-RED-WORDS" and (.file | length == 71))' <<< "$input" || check "tools: <red_art> is not the picture it names: $input"
+J '.input.instructions.references | map(.key) == ["red_art", "blue_art"] and (.[0] | .type == "image" and .description == "" and (.file | length == 71))' <<< "$input" || check "tools: <red_art> is not the picture it names: $input"
 says tools "count: 99 is past what it takes, so it's 4"; says tools "isn't one of flat, noise"
 
 step "a tool is a function: its bounds clamp, and only what's meant for a reader crosses a mention"
@@ -2452,7 +2452,7 @@ input=$(asked "$T" shot | jq -c .input)
 printf '%s\n' "$input" > "$OUT/types-input.json"
 J '.summary.text == "<amy> walks on <coast> in Soft light., as in <walk:24-72>, and <amy> again; <hum> plays."' <<< "$input" || check "types: the summary's text, each mention as its box spells it and the text box its words: $(jq -c .summary.text <<< "$input")"
 [ "$(keys "$(jq -c .summary <<< "$input")")" = '[["amy","image"],["coast","image"],["walk:24-72","video"],["hum","audio"]]' ] || check "types: the summary's references, once each, in first-mention order: $(keys "$(jq -c .summary <<< "$input")")"
-J --arg amy "sha256:$(sha "$T/amy.png")" --arg walk "sha256:$(sha "$T/walk.mp4")" '.summary.references | (.[0] | .description == "Amy, tall." and .file == $amy) and (.[1].description == "A volcanic coast.") and all(.file | startswith("sha256:")) and (.[2].file != $walk)' <<< "$input" || check "types: what a reference holds, a range cut: $(jq -c .summary.references <<< "$input")"
+J --arg amy "sha256:$(sha "$T/amy.png")" --arg walk "sha256:$(sha "$T/walk.mp4")" '.summary.references | (.[0] | .description == "" and .file == $amy) and (.[1].description == "") and all(.file | startswith("sha256:")) and (.[2].file != $walk)' <<< "$input" || check "types: what a reference holds, a range cut: $(jq -c .summary.references <<< "$input")"
 J '.pictures.text == "<coast.1> and walk." and (.pictures.references | map(.key) == ["coast.1"])' <<< "$input" || check "types: a prompt of pictures, a version by its number, a video as its name: $(jq -c .pictures <<< "$input")"
 J '.negative == "no amy here"' <<< "$input" || check "types: words take a box as its name: $(jq -c .negative <<< "$input")"
 J '.beats | length == 2 and (.[0] | .duration == 4 and (.description.references | map(.key) == ["amy"]) and .look == {"lens": "close", "note": "tight"} and (.angles[0] | .hold == 2 and (.framing.references | map(.key) == ["coast"])) and (.still | startswith("sha256:"))) and (.[1].description == {"text": "Nothing named.", "references": []})' <<< "$input" \
@@ -2460,8 +2460,8 @@ J '.beats | length == 2 and (.[0] | .duration == 4 and (.description.references 
 J '.aspect_ratio == "16:9" and .megapixels == 4 and .turbo == false and .bright == true and .segments == 2 and .quality == "draft" and .resolution == "1080p" and .edit == "head" and .steps == 12 and .seed == 5' <<< "$input" \
   || check "types: toggles, numbers, choices, the shape and the seed: $(jq -c 'del(.summary, .pictures, .beats, .references, .clip)' <<< "$input")"
 J --arg amy "sha256:$(sha "$T/amy.png")" --arg walk "sha256:$(sha "$T/walk.mp4")" --arg hum "sha256:$(sha "$T/hum.wav")" '.first_frame == $amy and .plate == $walk and .sound == $hum' <<< "$input" || check "types: a slot holds what's written in it: $(jq -c '{first_frame, plate, sound}' <<< "$input")"
-J '.clip | .type == "video" and .description == "A walk." and (.file | startswith("sha256:"))' <<< "$input" || check "types: a described video slot: $(jq -c .clip <<< "$input")"
-J '.references | length == 2 and all(.type == "image") and (map(.description) == ["Amy, tall.", "A volcanic coast."])' <<< "$input" || check "types: a list slot of pictures: $(jq -c .references <<< "$input")"
+J '.clip | .type == "video" and .description == "" and (.file | startswith("sha256:"))' <<< "$input" || check "types: a described video slot: $(jq -c .clip <<< "$input")"
+J '.references | length == 2 and all(.type == "image") and (map(.description) == ["", ""])' <<< "$input" || check "types: a list slot of pictures: $(jq -c .references <<< "$input")"
 J 'has("pickup") | not' <<< "$input" || check "types: a pickup no gesture made: $(jq -c .pickup <<< "$input")"
 says types "megapixels: 9 is past what it takes, so it's 4"
 says types "isn't a shape it takes, so it's 16:9"
