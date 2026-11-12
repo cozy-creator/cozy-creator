@@ -215,12 +215,14 @@ web_deleted() {
 }
 
 # Calcifer started again with config.toml's calcifer.undo_seconds at $2, else none: the old one gone first, so the new one reads it.
+# $3, a command, runs while it's stopped.
 web_undo_window() {
   local config=$HOME/.cozy/config.toml pid
   awk -v n="$2" '/^undo_seconds *=/ { next } { print } /^\[calcifer\]/ && n != "" { print "undo_seconds = " n; put = 1 } END { if (n != "" && !put) printf "\n[calcifer]\nundo_seconds = %s\n", n }' "$config" > "$config.next" && mv "$config.next" "$config"
   pid=$(jq -r .pid < "$1")
   kill -TERM "$pid" 2> /dev/null || true
   while kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
+  [ -z "${3:-}" ] || "$3"
   bash -c "$(web_start)" || true
 }
 
