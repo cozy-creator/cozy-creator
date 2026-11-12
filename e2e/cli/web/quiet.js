@@ -39,6 +39,8 @@ const LOOK = (name) => {
     take: Boolean(node?.querySelector('.media-pixels img')),
     making: Boolean(node?.querySelector('.media-making')),
     notes: [...document.querySelectorAll('.note .line')].map((line) => line.textContent),
+    asking: node?.querySelector('.status.asking')?.textContent ?? null,
+    status: node?.querySelector('.status')?.textContent ?? null,
   };
 };
 
@@ -118,7 +120,14 @@ const LOOK = (name) => {
   let last = '';
   let kept = 0;
   const said = { warnings: new Set(), notes: new Set(), faces: new Set(), warned: false, failed: false };
+  let answered = asked ? 1 : 0;
   const landed = await until('its new take, quietly', async () => {
+    // Asked again once its package is installed, it's answered again, as a person would.
+    const again = box.locator('button:has-text("Run here anyway")').first();
+    if (await again.isVisible().catch(() => false)) {
+      answered += 1;
+      await again.click().catch(() => {});
+    }
     const now = await look();
     const state = `${now.face}|${now.says}`;
     if (now.face && state !== last && phases) {
@@ -136,7 +145,7 @@ const LOOK = (name) => {
   await page.waitForTimeout(1500);
   const after = await look();
   await shot('landed');
-  seen.render = { landed, after, faces: [...said.faces], warnings: [...said.warnings], notes: [...said.notes], screenshots: kept };
+  seen.render = { landed, after, faces: [...said.faces], warnings: [...said.warnings], notes: [...said.notes], screenshots: kept, answered };
   check('its_take_lands', landed.versions > had && landed.take, landed);
   check('its_box_said_how_it_went', said.faces.size > 0, [...said.faces]);
   check('no_warning_line_while_it_renders', said.warnings.size === 0, [...said.warnings]);
