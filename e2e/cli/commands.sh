@@ -651,8 +651,8 @@ runtime_floor() {
 step "a package release runs on a Runtime that meets its floor: publishing refuses a dishonest one; a held machine refuses, another upgrades (cl-952)"
 [ -n "$LOCAL" ] || return 0
 [ -n "${E2E_FLOOR:-}" ] || { check "runtime floor: isolated.sh published no e2e-floor: ${E2E_HELD_REFUSED:-not seeded}"; return; }
-grep -q '"runtime_floor_lacks"' "$E2E_LIES" && grep -q 'call from cozy_runtime.author' "$E2E_LIES" && grep -q 'cozy-runtime>=0\.45' "$E2E_LIES" \
-  || check "runtime floor: publishing e2e-lies (cozy-runtime>=0.44, imports call) wasn't refused naming call and cozy-runtime>=0.45: $(tail -c 400 "$E2E_LIES")"
+grep -q '"runtime_floor_lacks"' "$E2E_LIES" && grep -q 'call from cozy_runtime.author' "$E2E_LIES" && grep -q 'raise its floor: cozy-runtime>=0\.' "$E2E_LIES" \
+  || check "runtime floor: publishing e2e-lies (cozy-runtime>=0.44, imports call) wasn't refused naming call and the floor its lock has: $(tail -c 400 "$E2E_LIES")"
 local code=0
 cozy --json machine update local --runtime 0.45.0 -y > "$OUT/floor-hold.json" 2>&1 \
   || { check "runtime floor: local refused Runtime 0.45.0: $(tail -c 300 "$OUT/floor-hold.json")"; return; }
