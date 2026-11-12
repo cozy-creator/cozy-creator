@@ -593,6 +593,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
   const tools = useSignal(store.tools)
+  const namePress = useRef<{ x: number; y: number } | null>(null)
   const self = useRef<HTMLDivElement>(null)
   const cancel = useCallback(() => {
     if (store.get(name)?.placing) store.cancel(store.resolveName(name))
@@ -759,6 +760,13 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           <span
             className="nm"
             title={view.name}
+            onPointerDown={(event) => { namePress.current = { x: event.clientX, y: event.clientY } }}
+            onClick={(event) => {
+              if (event.shiftKey || event.metaKey || event.ctrlKey) return
+              event.stopPropagation()
+              const from = namePress.current
+              if (from && Math.hypot(event.clientX - from.x, event.clientY - from.y) < 5) store.openName(name)
+            }}
           >
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
