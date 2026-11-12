@@ -866,7 +866,10 @@ function Canvas({
         <Zoom zoomBy={zoomBy} items={zoomItems} />
         {veil && <div className="dropveil" />}
       </div>
-      {active && focusedName && <FocusedViewport name={focusedName} onClose={leaveHere} />}
+      {active && focusedName && <FocusedViewport name={focusedName} onClose={leaveHere} onCopyVersion={(file, x, y) => {
+        leaveHere()
+        requestAnimationFrame(() => placer.addFile({ ...file, copy: true }, flow.screenToFlowPosition({ x, y })))
+      }} />}
       {opened && <Addressed name={opened} enter={writeHere} leave={leaveHere} />}
       {active && <AssetMenu />}
       {active && <Viewer />}

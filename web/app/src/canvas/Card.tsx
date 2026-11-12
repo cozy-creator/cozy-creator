@@ -808,7 +808,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
       ) : (
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width} restWidth={width}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
-          {here && !view.hereWords && asset && shownVersion?.main && (
+          {here && !focused && !view.hereWords && asset && shownVersion?.main && (
             <div
               className="take-out nodrag nopan"
               onPointerDown={(event) => {
