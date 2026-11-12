@@ -422,8 +422,8 @@ async function died(error) {
   await videoFocus.waitFor();
   await page.locator(`[data-focused-asset="${VIDEO}"]:not([data-entering])`).waitFor();
   const videoFocusedCanvas = await camera();
-  const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
-  await newVideo.click();
+  // Empty, it has no New: its form is what's open (cl-925).
+  check('empty_video_has_no_new', await videoFocus.getByRole('button', { name: 'New video', exact: true }).count() === 0);
   const videoForm = videoFocus.locator('.focus-parameter-tool > .here-under');
   await videoForm.waitFor();
   const beatPrompt = videoForm.locator('[data-field="beats"] .beat .mention-text').first();

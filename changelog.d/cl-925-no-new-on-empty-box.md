@@ -1,0 +1,1 @@
+An empty box in Focus offers no New, beside its name or among its takes: its words are already what's asked. Once it has a take, New is there. A box's face no longer falls back to a stored description.

@@ -20,13 +20,14 @@ export function piecesOf(text?: Record<string, unknown>): string[] {
   })
 }
 
-/** The words a card shows when it has nothing else to show: its first prompt's, at the top or in its rows, else its description. */
+/** The words a card shows when it has nothing else to show: its first prompt's, at the top or in its rows. Never its description, which is off
+ *  for now (cl-900). */
 export function lineOf(text: Record<string, unknown> | undefined, fields: ToolField[]): string | null {
   const isText = (field: ToolField) => field.type === "prompt" || field.type === "words"
   const said = fields.flatMap((field) =>
     field.type === "group" ? rowsIn(text?.[field.field]).flatMap((row) => (field.members ?? []).filter(isText).map((member) => row[member.field])) : isText(field) ? [text?.[field.field]] : [],
   )
-  return said.map(string).find((words) => words !== null) ?? string(text?.description)
+  return said.map(string).find((words) => words !== null) ?? null
 }
 
 /** Text with its mentions told apart, for showing, never as HTML. */
