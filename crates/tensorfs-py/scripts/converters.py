@@ -894,7 +894,7 @@ def qwen3vl_comfy() -> Table[TableRow]:
     """A Qwen3-VL text encoder in ComfyUI's one file (`text_encoders/`): Transformers' `Qwen3VLModel` names under
     `model.`, its language model's without `language_model.`, so every tensor is renamed and none moves. The component is
     BF16: a float8 weight with no scale beside it (a published abliterated encoder's, `vectors/`) is the value ComfyUI
-    upcasts, `fp8.tensorwise` at scale 1, its bytes kept. No reference: the file takes its config and tokenizer from the
+    upcasts, `fp8.rowwise` with a scale of 1 per row, its bytes kept. No reference: the file takes its config and tokenizer from the
     Hub base it is uploaded on (`--base`)."""
     family: FamilyDoc = json.loads((FAMILIES / "krea-2.json").read_text())
     keys = {k: tuple(shape) for k, shape in family["components"]["text_encoder"]["keys"]}

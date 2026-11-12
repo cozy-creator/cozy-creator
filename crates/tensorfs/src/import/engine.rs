@@ -1086,8 +1086,10 @@ fn planned(
 }
 
 /// A float8 tensor with no scale beside it, in a component whose `cast` is a wider float: ComfyUI
-/// upcasts such a weight (its plain `fp8_e4m3fn` files), so it is `fp8.tensorwise` at scale 1. Its
-/// bytes are kept, cut as a plain tensor's would be, and decode to `logical` exactly.
+/// upcasts such a weight (its plain `fp8_e4m3fn` files), so its scale is 1. A matrix is
+/// `fp8.rowwise` with a scale of 1 per row, the form a quantize reads exactly; anything else
+/// `fp8.tensorwise` at 1. Its bytes are kept, cut as a plain tensor's would be, and decode to
+/// `logical` exactly.
 fn unit_scaled(what: &str, component: &str, key: &str, t: &Tensor, ops: &Ops, logical: &Dtype) -> Result<Planned> {
     let (shape, runs) = layout(what, &t.shape, ops)?;
     let moves = ops.view.is_some() || ops.take.is_some() || ops.permute.is_some();
@@ -1098,16 +1100,20 @@ fn unit_scaled(what: &str, component: &str, key: &str, t: &Tensor, ops: &Ops, lo
             return refuse(Code::SEAM_UNBANKED, format!("{what}: a computed tensor; a table row may rename it, never cut it"))
         }
     };
-    let scale = Reading::inline(1f32.to_le_bytes().to_vec(), Dtype::F32);
+    let (scheme, rows) = match shape.len() {
+        2.. => ("fp8.rowwise", shape[..shape.len() - 1].to_vec()),
+        _ => ("fp8.tensorwise", vec![]),
+    };
+    let ones = 1f32.to_le_bytes().repeat(rows.iter().product::<u64>() as usize);
     Ok(Planned {
         component: component.into(),
         key: key.into(),
         dtype: logical.clone(),
         shape: shape.clone(),
-        encoding: Some(Encoding { scheme: "fp8.tensorwise".into(), params: Default::default() }),
+        encoding: Some(Encoding { scheme: scheme.into(), params: Default::default() }),
         parts: vec![
             PlannedPart { role: "weight".into(), dtype: t.dtype.clone(), shape, read: weight },
-            PlannedPart { role: "scale".into(), dtype: Dtype::F32, shape: vec![], read: scale },
+            PlannedPart { role: "scale".into(), dtype: Dtype::F32, shape: rows, read: Reading::inline(ones, Dtype::F32) },
         ],
     })
 }
