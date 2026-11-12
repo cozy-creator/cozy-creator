@@ -303,7 +303,8 @@ web_proof() {
   # What died on another Hub doesn't leave the next proof on it.
   [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
   folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null)
-  case $folder in */web-*) rm -rf "$folder" ;; esac
+  # A project's machine storage (`.vault-machine`) may still be settling a canceled run: its leftovers never end the suite.
+  case $folder in */web-*) rm -rf "$folder" 2> /dev/null || { sleep 5; rm -rf "$folder"; } || true ;; esac
 }
 
 # web_serves's own, on its project.

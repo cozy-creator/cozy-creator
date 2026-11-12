@@ -137,11 +137,10 @@ async function runs(page, base, id, folder) {
   seen.ran = runsHere;
   if (runsHere) await runs(page, base, id, folder);
 
-  // The filters: every project goes in the route.
+  // A project's runs are its own (project data containment): its Runs drawer offers no view of every project's.
   await page.goto(await projectUrl(id, `/runs`));
-  await page.click('.filters input[type=checkbox]');
-  await until('every project in the route', () => Promise.resolve(page.url()), (url) => url.includes('all'));
-  check('filter_every_project', true);
+  await page.locator('.filters').waitFor();
+  check('runs_stay_in_their_project', (await page.locator('.filters input[type=checkbox]').count()) === 0);
 
   // Local code is the CLI's: it says so, and offers no button to run it.
   await page.goto(await projectUrl(id, `/new?target=${encodeURIComponent('./weightless/wait')}`));
