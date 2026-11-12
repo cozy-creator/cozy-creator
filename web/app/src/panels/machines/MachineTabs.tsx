@@ -152,7 +152,8 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
       <nav className="mtabs" aria-label="Machines">
         {machines.map((machine) => {
           const doing = doingOf(machine, runs)
-          const total = doing.filter((one) => one.kind !== "boot").length
+          // Its jobs are function runs, its GPUs' work: an install or a download is listed, not counted (cl-889).
+          const total = doing.filter((one) => one.kind === "run" && one.run.kind === "call").length
           return (
             <button
               key={machine.name}

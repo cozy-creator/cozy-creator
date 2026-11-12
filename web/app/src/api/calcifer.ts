@@ -1110,7 +1110,7 @@ boot?: string | null,
  */
 attempt?: Attempt | null,
 /**
- * Calcifer's runs on it.
+ * Calcifer's function runs on it, its GPUs' work: installs, downloads, updates and removals aren't counted (cl-889).
  */
 running: number, queued: number,
 /**

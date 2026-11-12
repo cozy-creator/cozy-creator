@@ -1088,7 +1088,7 @@ pub struct Machine {
     /// A booting rental's acquisition attempt, as its Hub says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt: Option<Attempt>,
-    /// Calcifer's runs on it.
+    /// Calcifer's function runs on it, its GPUs' work: installs, downloads, updates and removals aren't counted (cl-889).
     #[serde(default)]
     pub running: u32,
     #[serde(default)]
