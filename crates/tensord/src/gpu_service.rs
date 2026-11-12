@@ -859,8 +859,8 @@ pub(crate) struct Pool {
     host: Option<Arc<memory::Host>>,
     /// Held while the pool lives: the thread blocked on measurement events ends with it.
     _events: Option<memory::Reacting>,
-    /// Idle executors watched for their exit (none where it cannot watch).
-    exits: Option<Exits>,
+    /// Idle executors watched for their exit, once the pool is built (none where it cannot watch).
+    exits: std::sync::OnceLock<Exits>,
     /// Memoized Model methods' results, shared by every run on this machine.
     memo: Arc<crate::memo::Memo>,
     private_memos: Mutex<BTreeMap<(String, u64), Arc<crate::memo::Memo>>>,
@@ -1066,7 +1066,7 @@ impl Pool {
         let host = memory::Host::watch(config.host.mode, gpus, running.clone(), &notes);
         let launcher = crate::child_launcher::ChildLauncher::new()?;
         let memo = Arc::new(crate::memo::Memo::open(root.join("stage-memo"))?);
-        Ok(Arc::new_cyclic(|pool: &Weak<Self>| {
+        let pool = Arc::new_cyclic(|pool: &Weak<Self>| {
             let gpus = devices.iter().filter_map(|d| d.memory.clone()).map(memory::Source::Gpu);
             let sources: Vec<memory::Source> = gpus.chain(host.clone().map(memory::Source::Host)).collect();
             let pool = pool.clone();
@@ -1103,11 +1103,8 @@ impl Pool {
                 }
                 Err(error) => tracing::warn!("no host ledger: idle executors end for host memory only by the host rule: {error}"),
             }
-            let exits = Exits::watch(pool.clone())
-                .map_err(|error| tracing::warn!("executor exits are not watched: {error}"))
-                .ok();
             Self {
-                exits,
+                exits: std::sync::OnceLock::new(),
                 launcher,
                 root: root.to_path_buf(),
                 serving: Arc::default(),
@@ -1140,7 +1137,14 @@ impl Pool {
                 lost: Mutex::default(),
                 foreign: Mutex::default(),
             }
-        }))
+        });
+        // Started once the pool is built: inside `new_cyclic` its first upgrade found no pool and it
+        // ended, so an idle executor that exited stayed a zombie until the next call (cl-885).
+        match Exits::watch(Arc::downgrade(&pool)) {
+            Ok(exits) => drop(pool.exits.set(exits)),
+            Err(error) => tracing::warn!("executor exits are not watched: {error}"),
+        }
+        Ok(pool)
     }
     /// Current driver-attributed process usage. TensorD owns no GPU allocations.
     pub(crate) fn memory(&self) -> BTreeMap<String, api::machine::GpuMemory> {
@@ -2052,7 +2056,7 @@ impl Pool {
             if !killed && !self.stopped.load(Ordering::Acquire) {
                 idle.push(session);
                 drop(idle);
-                self.exits.iter().for_each(Exits::changed);
+                self.exits.get().into_iter().for_each(Exits::changed);
                 return Ok(Disposition::Cached);
             }
             drop(idle);
@@ -2093,7 +2097,7 @@ impl Pool {
             drop(levels);
             sessions.insert(key, session);
             drop(sessions);
-            self.exits.iter().for_each(Exits::changed);
+            self.exits.get().into_iter().for_each(Exits::changed);
             return Ok(Disposition::Cached);
         }
     }
