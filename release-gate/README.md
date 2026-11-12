@@ -151,7 +151,9 @@ It rents and runs there, and writes no repository: every synthetic write still r
 `pod-session.yaml` runs one rental from a runner, signed in as above, so no laptop has to stay up for it (the pod
 renews its own run capability while its runs live, cl-675). `sessions/<script>.sh` sources `sessions/lib.sh` (`quote`, `rent`,
 `step`, the guard at `cap` USD and the trap that ends the rental by its own id); its header lists its `params`.
-Without `rent=true` it stops after the $0 pre-flight. Dispatched from `rc/<x>`, or with `runtime_ref`, it has that Runtime's wheel in `RUNTIME_WHEEL`. `model-ingest` puts a first-party model on the root (xs-104);
+Without `rent=true` it stops after the $0 pre-flight. Dispatched from `rc/<x>`, or with `runtime_ref`, it has that Runtime's wheel in `RUNTIME_WHEEL`. `model-ingest` puts a first-party model on the root (xs-104), or with `mirrors` authors' models and LoRAs under their own orgs as
+mirrors (xs-185: converted on the pod, composed on a base, run, tagged, published or held). The `CIVITAI_TOKEN` secret, when set, signs
+the session's Calcifer in to Civitai;
 `ab` runs cells from `packages_refs` checkouts on one pod and compares their outputs (a refactor's same-bytes proof).
 `tool-functions` (cl-774) takes `qwen-image-2/image`, `birefnet/remove_background`, `minimax-h3/generate`, `upscale` and `edit` from dropping the tool to accepting its output on one 4090, as the page does (`e2e/page.py`), a shape like `lab`'s beside them, from a `packages_refs` checkout `pk`, keeping frames to judge.
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
