@@ -26,7 +26,7 @@ done
 expect slow-refuses-pure "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${bad[*]:-a source checkout and its pure wheel refused runtime_without_kernels, naming the dev-build}"
 
 # Kernel-less: every native kernel module of the machine's Runtimes moved aside, executors started again.
-"$CLI" machine ssh "$M" -- "find / -xdev -path '*cozy_runtime/_kernels/_*.so' -not -path '*/proc/*' 2>/dev/null | while read -r f; do mv \"\$f\" \"\$f.cl913\"; echo \"\$f\"; done" \
+"$CLI" machine ssh "$M" -- "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -path '*cozy_runtime/_kernels/_*.so' -print 2>/dev/null | while read -r f; do mv \"\$f\" \"\$f.cl913\"; echo \"\$f\"; done" \
   < /dev/null > "$S/moved.txt" 2>&1
 restart off
 bad=() said=()
@@ -48,7 +48,7 @@ expect slow-kernel-less "$([ ${#bad[@]} -eq 0 ] && echo PASS || echo FAIL)" "${b
 bad=()
 for i in 1 2 3; do run_cell "$OUT" "slow-bar-$i" "$TOOL/slow" --on "$M" 'seconds:=1' "instructions=bar $i" > /dev/null 2>&1 || bad+=("bar $i"); done
 "$CLI" machine ssh "$M" -- 'cat > /tmp/hot-host.jsonl' < "$HERE/../e2e/cli/slow/hot-host.jsonl" > /dev/null 2>&1
-"$CLI" machine ssh "$M" -- "mkdir -p ~/.cozy && printf '\n[machine]\ngpu_samples = \"/tmp/hot-host.jsonl\"\n' >> ~/.cozy/config.toml" < /dev/null > /dev/null 2>&1
+"$CLI" machine ssh "$M" -- "mkdir -p ~/.cozy && touch ~/.cozy/config.toml && if grep -q '^\[machine\]' ~/.cozy/config.toml; then sed -i '/^\[machine\]/a gpu_samples = \"/tmp/hot-host.jsonl\"' ~/.cozy/config.toml; else printf '\n[machine]\ngpu_samples = \"/tmp/hot-host.jsonl\"\n' >> ~/.cozy/config.toml; fi" < /dev/null > "$S/hot-config.log" 2>&1
 restart hot
 run_cell "$OUT" slow-hot "$TOOL/slow" --on "$M" 'seconds:=45' 'instructions=hot' > /dev/null 2>&1 || bad+=("the hot run did not complete")
 c=$(codes slow-hot) said=$(jq -r '.warnings[]? | select(.code == "slow_run") | .message' "$OUT/slow-hot.json" 2>/dev/null)
