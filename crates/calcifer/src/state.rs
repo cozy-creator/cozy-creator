@@ -335,24 +335,7 @@ impl Store {
         })
     }
 
-    /// Keeps `step` (JSON) for the ask under `key`, before its run is submitted.
-    pub(crate) fn plan_after(&self, key: &str, step: &str) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("INSERT OR REPLACE INTO after_steps (key_sha256, step) VALUES (?1, ?2)", params![digest(key), step])?;
-            Ok(())
-        })
-    }
 
-    pub(crate) fn after_step(&self, key: &str) -> Result<Option<String>> {
-        self.read(|conn| Ok(conn.query_row("SELECT step FROM after_steps WHERE key_sha256 = ?1", [digest(key)], |r| r.get(0)).optional()?))
-    }
-
-    pub(crate) fn forget_after(&self, key: &str) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM after_steps WHERE key_sha256 = ?1", [digest(key)])?;
-            Ok(())
-        })
-    }
 }
 
 #[derive(Deserialize)]

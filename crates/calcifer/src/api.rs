@@ -58,6 +58,7 @@ pub(crate) struct Api {
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
     pub(crate) sessions: crate::sessions::Sessions,
+    pub(crate) browser: crate::browser::OwnedBrowser,
     /// The components packages ship, as read for the page.
     pub(crate) tool_uis: crate::tool_ui::Held,
     bearer: [u8; 32],
@@ -67,6 +68,17 @@ pub(crate) struct Api {
     stop: watch::Sender<bool>,
 }
 
+async fn legacy_session() -> Refusal {
+    refuse(Kind::Usage, "owned_browser_required", "open the project in its owned browser session")
+}
+
+async fn no_store(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
 impl Api {
     pub(crate) fn new(
         calcifer: Arc<Calcifer>,
@@ -74,7 +86,8 @@ impl Api {
         token: &str,
     ) -> Arc<Self> {
         let api = Arc::new(Self {
-            sessions: crate::sessions::Sessions::open(calcifer.store()),
+            sessions: crate::sessions::Sessions::open(calcifer.maintenance_store()),
+            browser: crate::browser::OwnedBrowser::new(),
             calcifer,
             machines,
             projects: Default::default(),
@@ -148,6 +161,9 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
     Router::new()
         .route("/v1/events", get(crate::events::stream))
         .route("/v1/events/{stream}", put(crate::events::show))
+        .route("/v1/project-storage", get(crate::browser::project_storage))
+        .route("/v1/browser/open", post(crate::browser::open))
+        .route("/v1/maintenance/source", post(crate::maintenance_source::capture))
         .route("/v1/runs", post(crate::runs::submit).get(list))
         .route("/v1/runs/{id}", get(show))
         .route("/v1/runs/{id}/cancel", post(cancel))
@@ -200,8 +216,9 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
-        .route("/v1/session", post(crate::sessions::start))
+        .route("/v1/session", post(legacy_session))
         .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
+        .layer(middleware::from_fn(no_store))
         .merge(crate::page::routes())
         .fallback(unknown_route)
         .method_not_allowed_fallback(unknown_route)
@@ -378,7 +395,7 @@ fn media_secret(request: &Request) -> Option<&str> {
     let path: Vec<&str> = request.uri().path().split('/').collect();
     let file = matches!(
         path[..],
-        ["", "v1", "runs", _, "outputs", _] | ["", "v1", "projects", _, "files" | "cuts" | "thumbs", _]
+        ["", "v1", "runs", _, "outputs", _] | ["", "v1", "projects", _, "runs", _, "outputs", _] | ["", "v1", "projects", _, "files" | "cuts" | "thumbs", _]
     );
     if !reads || !file {
         return None;
@@ -392,8 +409,8 @@ pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
 
 async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
     let admitted = match bearer(request.headers()) {
-        Some(token) => api.admits(token) || api.sessions.admits_token(api.calcifer.store(), token),
-        None => media_secret(&request).is_some_and(|media| api.sessions.admits_media(api.calcifer.store(), media)),
+        Some(token) => api.admits(token) || api.sessions.admits_owned_token(token),
+        None => media_secret(&request).is_some_and(|media| api.sessions.admits_owned_media(media)),
     };
     if !admitted {
         let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
@@ -461,27 +478,40 @@ pub(crate) fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
 }
 
 /// A run by its id or its number.
-pub(crate) fn find(api: &Api, key: &str) -> Result<RunRow, Refusal> {
-    let store = api.calcifer.store();
-    let row = match store.run(key)? {
-        Some(row) => Some(row),
-        None => match key.parse() {
-            Ok(number) => store.run_by_number(number)?,
-            Err(_) => None,
-        },
+#[derive(Deserialize)]
+pub(crate) struct RunPath {
+    id: String,
+    #[serde(default)]
+    run: Option<String>,
+}
+impl RunPath {
+    pub(crate) fn project(&self) -> Option<&str> { self.run.as_ref().map(|_| self.id.as_str()) }
+    pub(crate) fn key(&self) -> &str { self.run.as_deref().unwrap_or(&self.id) }
+}
+
+pub(crate) fn find_maintenance(api: &Api, key: &str) -> Result<RunRow, Refusal> {
+    let store=api.calcifer.maintenance_store();
+    let row=store.run(key)?.or(match key.parse() { Ok(number)=>store.run_by_number(number)?,Err(_)=>None });
+    let row=row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","maintenance knows no such run"))?;
+    api.calcifer.remember_maintenance_run(row.id.as_str());
+    Ok(row)
+}
+
+pub(crate) async fn find_scoped(api: &Arc<Api>, project: Option<&str>, key: &str) -> Result<RunRow, Refusal> {
+    let journal = match project {
+        Some(project) => crate::store::RunStore::Project(api.projects.store(api, project).await.map_err(Refusal)?),
+        None => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
     };
-    let row = row.ok_or_else(|| {
-        Refusal(
-            Error::new(Kind::NotFound, "run_not_found", format!("no run {key}"))
-                .next("cozy run ls"),
-        )
-    })?;
-    crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
+    let row = match journal.run(key)? {
+        Some(row) => Some(row),
+        None => match key.parse() { Ok(number) => journal.run_by_number(number)?, Err(_) => None },
+    }.ok_or_else(|| refuse(Kind::NotFound, "run_not_found", "this scope knows no such run"))?;
+    if project.is_none() { api.calcifer.remember_maintenance_run(row.id.as_str()); }
     Ok(row)
 }
 
 #[derive(Deserialize)]
-struct Listing {
+pub(crate) struct Listing {
     status: Option<Status>,
     /// A prefix of the runs' target (`org/pkg`).
     package: Option<String>,
@@ -494,12 +524,21 @@ struct Listing {
 }
 
 /// Runs newest first, and how many older ones match.
-async fn list(
-    State(api): State<Arc<Api>>,
-    query: Result<Query<Listing>, QueryRejection>,
-) -> Result<Json<RunList>, Refusal> {
+async fn list(State(api): State<Arc<Api>>, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
     let Query(listing) = query?;
-    let store = api.calcifer.store();
+    if listing.project.is_some() { return Err(refuse(Kind::Usage, "project_context_required", "use the project run-history route")); }
+    list_scoped(&api, None, listing).await
+}
+
+pub(crate) async fn project_list(State(api): State<Arc<Api>>, Path(project): Path<String>, query: Result<Query<Listing>, QueryRejection>) -> Result<Json<RunList>, Refusal> {
+    list_scoped(&api, Some(&project), query?.0).await
+}
+
+async fn list_scoped(api: &Arc<Api>, project: Option<&str>, listing: Listing) -> Result<Json<RunList>, Refusal> {
+    let journal = match project {
+        Some(project) => crate::store::RunStore::Project(api.projects.store(api, project).await.map_err(Refusal)?),
+        None => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
+    };
     let named = match &listing.machine {
         Some(text) => match api.machines.named(text).map_err(Refusal)? {
             Some(row) => Some(row),
@@ -510,66 +549,39 @@ async fn list(
         None => None,
     };
     let machine = (named.as_ref().map(|row| row.name.clone())).or_else(|| listing.machine.as_ref().map(|_| "local".to_owned()));
-    let (rows, older, mut unreadable) = store.runs(&RunFilter {
+    let (rows, older, mut unreadable) = journal.runs(&RunFilter {
         status: listing.status,
         target: listing.package.clone(),
         machine: machine.clone(),
-        out_dir: match listing.project.as_deref() {
-            Some(named) => Some(crate::project::landed_in(&crate::project::named(&api, named).map_err(Refusal)?)),
-            None => None,
-        },
+        out_dir: None,
         before: listing.before,
         limit: listing.limit.unwrap_or(50).clamp(1, 1000),
     })?;
     let mut runs = Vec::with_capacity(rows.len());
     for row in &rows {
-        if crate::project::vault::require_path(&row.out_dir).is_err() { continue; }
-        match api.calcifer.record(row) {
-            Ok(run) => runs.push(run),
-            Err(e) => unreadable.push(format!("run {}: {e}", row.number)),
-        }
+        if project.is_none() { api.calcifer.remember_maintenance_run(row.id.as_str()); }
+        match api.calcifer.record(row) { Ok(run) => runs.push(run), Err(_) => unreadable.push("run_unavailable".into()) }
     }
-    if let Some(first) = unreadable.first() {
-        warn!("{} runs left out of a list, the first {first}", unreadable.len());
-    }
-    // A rental's runs other clients of this account sent, on its first page.
-    let mut others = vec![];
-    if let Some(row) = named.filter(|row| row.kind == MachineKind::Rental && row.state == MachineState::Ready && listing.before.is_none()) {
-        match crate::others::listed(&api, &row).await {
-            Ok(listed) => others = listed,
-            Err(e) => unreadable.push(format!("{}'s runs other clients sent: {}", row.name, e.message)),
-        }
-        let package = listing.package.as_deref().unwrap_or_default();
-        others.retain(|run| listing.status.is_none_or(|status| run.status == status) && run.target.starts_with(package));
-    }
-    Ok(Json(RunList {
-        runs,
-        older,
-        machine,
-        unreadable,
-        others,
-    }))
+    Ok(Json(RunList { runs, older, machine, unreadable, others: vec![] }))
 }
 
 #[derive(Deserialize)]
-struct Detail {
+pub(crate) struct Detail {
     detail: Option<String>,
 }
 
 /// The run; `?detail=full` adds its measurements and settled calls.
-async fn show(
+pub(crate) async fn show(
     State(api): State<Arc<Api>>,
-    Path(key): Path<String>,
+    Path(path): Path<RunPath>,
     query: Result<Query<Detail>, QueryRejection>,
 ) -> Result<Json<Run>, Refusal> {
-    if let Some((machine, number)) = crate::others::named(&key) {
-        return Ok(Json(crate::others::show(&api, machine, number).await.map_err(Refusal)?));
-    }
-    let row = find(&api, &key)?;
+    let key = path.key();
+    let row = find_scoped(&api, path.project(), key).await?;
     if query?.0.detail.as_deref() != Some("full") {
         return Ok(Json(api.calcifer.record(&row)?));
     }
-    let mut run = api.calcifer.store().detail(&row)?;
+    let mut run = api.calcifer.run_store(row.id.as_str())?.detail(&row)?;
     let record = api.calcifer.record(&row)?;
     (run.waiting, run.progress, run.queue_position) = (record.waiting, record.progress, record.queue_position);
     (run.project, run.project_id, run.stalled) = (record.project, record.project_id, record.stalled);
@@ -579,14 +591,12 @@ async fn show(
 }
 
 /// 202 with the run asked to stop; 200 when it had already ended.
-async fn cancel(
+pub(crate) async fn cancel(
     State(api): State<Arc<Api>>,
-    Path(key): Path<String>,
+    Path(path): Path<RunPath>,
 ) -> Result<(StatusCode, Json<Run>), Refusal> {
-    if crate::others::named(&key).is_some() {
-        return Err(refuse(Kind::Conflict, "run_sent_elsewhere", format!("run {key} was sent by another client of this account: it is canceled from there")));
-    }
-    let row = find(&api, &key)?;
+    let key = path.key();
+    let row = find_scoped(&api, path.project(), key).await?;
     if row.state == RunState::Settled {
         return Ok((StatusCode::OK, Json(api.calcifer.record(&row)?)));
     }
@@ -627,7 +637,7 @@ async fn unknown_route(method: Method, uri: Uri) -> Refusal {
 }
 
 #[derive(Deserialize)]
-struct Resume {
+pub(crate) struct Resume {
     #[serde(default)]
     starting_after: u64,
 }
@@ -636,26 +646,21 @@ struct Resume {
 /// events, then the broadcast as it happens. The stream ends after the run's terminal event once
 /// each of its outputs has landed or carries an `export_error`; Calcifer stopping ends it without
 /// one (reconnect from the last `id:`, as `Last-Event-ID` or `?starting_after=`).
-async fn events(
+pub(crate) async fn events(
     State(api): State<Arc<Api>>,
-    Path(key): Path<String>,
+    Path(path): Path<RunPath>,
     headers: axum::http::HeaderMap,
     query: Result<Query<Resume>, QueryRejection>,
 ) -> Result<Sse<KeepAliveStream<BoxStream<'static, Result<sse::Event, Infallible>>>>, Refusal> {
     let Query(Resume { starting_after }) = query?;
     let last = headers.get("last-event-id").and_then(|v| v.to_str().ok()?.trim().parse::<u64>().ok());
     let starting_after = starting_after.max(last.unwrap_or(0));
-    if let Some((machine, number)) = crate::others::named(&key) {
-        let events = crate::others::events(&api, machine, number, starting_after).await.map_err(Refusal)?;
-        return Ok(Sse::new(events.take_until(api.stopped()).boxed()).keep_alive(KeepAlive::default()));
-    }
+    let key = path.key();
     // Subscribed first: whatever happens after the store is read is in the tail.
     let tail = api.calcifer.subscribe();
-    let row = find(&api, &key)?;
+    let row = find_scoped(&api, path.project(), key).await?;
     let mut pending = VecDeque::from(
-        api.calcifer
-            .store()
-            .events_after(row.id.as_str(), starting_after)?,
+        api.calcifer.run_store(row.id.as_str())?.events_after(row.id.as_str(), starting_after)?,
     );
     pending.extend(api.calcifer.live(&row.id));
     let follow = Follow {
@@ -704,7 +709,7 @@ impl Follow {
                 return Some((Ok(sent.data(data)), self));
             }
             // An ended run's stream waits only for its outputs to land (or a store it cannot read).
-            let owed = self.calcifer.store().outputs_to_export(self.id.as_str());
+            let owed = self.calcifer.run_store(self.id.as_str()).and_then(|store| store.outputs_to_export(self.id.as_str()));
             if self.ended && !owed.is_ok_and(|outputs| !outputs.is_empty()) {
                 return None;
             }
@@ -713,7 +718,7 @@ impl Follow {
                     Ok((id, event)) if id == self.id => self.pending.push_back(event),
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        match self.calcifer.store().events_after(self.id.as_str(), self.last) {
+                        match self.calcifer.run_store(self.id.as_str()).and_then(|store| store.events_after(self.id.as_str(), self.last)) {
                             Ok(events) => self.pending.extend(events),
                             Err(e) => {
                                 warn!(run = %self.id, "the event stream cannot catch up: {e}");

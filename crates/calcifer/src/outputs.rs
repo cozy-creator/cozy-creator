@@ -130,7 +130,7 @@ impl Calcifer {
     /// Starts an exporter for each run that owes one, then for each run whose outputs change.
     pub(crate) fn export_outputs(self: &Arc<Self>) -> Result<(), Error> {
         let mut events = self.subscribe();
-        for (id, _) in self.store.exports_owed()? {
+        for (id, _) in self.each_store(|store| store.exports_owed())?.into_iter().flatten().collect::<Vec<_>>() {
             self.export(&id);
         }
         let me = Arc::downgrade(self);
@@ -163,7 +163,7 @@ impl Calcifer {
                         me.export(&id);
                     }
                     Ok(_) => {}
-                    Err(RecvError::Lagged(_)) => match me.store.exports_owed() {
+                    Err(RecvError::Lagged(_)) => match me.each_store(|store| store.exports_owed()).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()) {
                         Ok(owed) => owed.iter().for_each(|(id, _)| me.export(id)),
                         Err(e) => warn!("{e}"),
                     },
@@ -198,9 +198,9 @@ impl Calcifer {
 
     /// A project's run that ended: what stays on its machine, in project.lock with who holds it.
     fn note_stays(&self, id: &RunId) {
-        let Ok(Some(row)) = self.store.run(id.as_str()) else { return };
+        let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return };
         let (Some(project), Some(machine)) = (crate::project::of_landing(&row.out_dir), &row.machine) else { return };
-        let Ok(run) = self.store.record(&row) else { return };
+        let Ok(run) = self.record(&row) else { return };
         for item in run.output.iter().filter(|item| item.stays && item.path.is_none()) {
             let Some(sha256) = &item.sha256 else { continue };
             if let Err(why) = crate::project::stays(project, &sha256.to_string(), machine, item.length) {
@@ -209,12 +209,19 @@ impl Calcifer {
         }
     }
 
+    fn making_scoped(&self, digest: &str, machine: &str) -> crate::store::Result<Option<(RunRow, OutputRow)>> {
+        match crate::private_io::current() {
+            Some(scope) => self.project_store(&scope.storage.project_id)?.making(digest, machine),
+            None => self.maintenance_store().making(digest, machine),
+        }
+    }
+
     /// Whether `machine` still has what stays on it, a byte of it read as `bring` reads it, or it's on its way here. Only its saying
     /// it holds that no more is a no: one out of reach may have it yet.
     pub(crate) async fn still_holds(&self, digest: &str, machine: &str) -> bool {
-        let Ok(Some((run, item))) = self.store.making(digest, machine) else { return false };
+        let Ok(Some((run, item))) = self.making_scoped(digest, machine) else { return false };
         // Its export going: `bring` waits for it, so a reader bound now has it (cl-815).
-        let owed = self.store.outputs_to_export(run.id.as_str()).unwrap_or_default();
+        let owed = self.with_run_store(run.id.as_str(), |store| store.outputs_to_export(run.id.as_str())).unwrap_or_default();
         if owed.iter().any(|owed| owed.name == item.name && owed.index == item.index) {
             return true;
         }
@@ -237,14 +244,14 @@ impl Calcifer {
     /// What stays on `machine` brought here now, because something needs it, as an export brings an output: its project's `files/`
     /// holds it after. A machine out of reach is tried again; Err says why it can't be had.
     pub(crate) async fn bring(&self, digest: &str, machine: &str) -> Result<(), String> {
-        let made = self.store.making(digest, machine).map_err(|e| e.to_string())?;
+        let made = self.making_scoped(digest, machine).map_err(|e| e.to_string())?;
         let Some((run, item)) = made else {
             return Err(format!("Calcifer knows of no run on {machine} that made it"));
         };
         // On its way here already: that export's landing, and no second read of it.
         let mut events = self.subscribe();
         let mut exporting = false;
-        while (self.store.outputs_to_export(run.id.as_str()).map_err(|e| e.to_string())?.iter()).any(|owed| owed.name == item.name && owed.index == item.index) {
+        while (self.with_run_store(run.id.as_str(), |store| store.outputs_to_export(run.id.as_str())).map_err(|e| e.to_string())?.iter()).any(|owed| owed.name == item.name && owed.index == item.index) {
             exporting = true;
             tokio::select! {
                 _ = events.recv() => {}
@@ -252,7 +259,7 @@ impl Calcifer {
             }
         }
         if exporting {
-            let now = self.store.output(run.id.as_str(), &item.name, item.index).map_err(|e| e.to_string())?;
+            let now = self.with_run_store(run.id.as_str(), |store| store.output(run.id.as_str(), &item.name, item.index)).map_err(|e| e.to_string())?;
             return match now.and_then(|now| now.export_error) {
                 Some(why) => Err(why),
                 None => Ok(()),
@@ -374,9 +381,9 @@ impl Calcifer {
     /// `export` takes, so an event after this starts another.
     fn next_exports(&self, id: &RunId) -> Result<Option<(RunRow, Vec<OutputRow>)>, StoreError> {
         let mut runs = lock(&self.exports.runs);
-        let next = match self.store.run(id.as_str())? {
+        let next = match self.with_run_store(id.as_str(), |store| store.run(id.as_str()))? {
             Some(run) => {
-                let mut items = self.store.outputs_to_export(id.as_str())?;
+                let mut items = self.with_run_store(id.as_str(), |store| store.outputs_to_export(id.as_str()))?;
                 items.truncate(LANES);
                 Some((run, items)).filter(|(_, items)| !items.is_empty())
             }
@@ -425,7 +432,7 @@ impl Calcifer {
     ) -> Result<(), Failure> {
         let mut events = self.subscribe();
         let superseded = || -> Result<bool, Failure> {
-            let now = self.store.output(run.id.as_str(), &item.name, item.index)?;
+            let now = self.with_run_store(run.id.as_str(), |store| store.output(run.id.as_str(), &item.name, item.index))?;
             Ok(now.is_none_or(|now| now.rev != item.rev))
         };
         if superseded()? {
@@ -508,7 +515,7 @@ impl Calcifer {
     /// The outputs of runs on `machine` that have not landed and are not given up, each with the
     /// bytes its export has in place.
     pub(crate) fn owed_on(&self, machine: &str) -> Result<Vec<Owed>, StoreError> {
-        let owed = self.store.exports_owed_on(machine)?;
+        let owed = self.each_store(|store| store.exports_owed_on(machine))?.into_iter().flatten().collect::<Vec<_>>();
         let moving = lock(&self.exports.moving);
         let owed = owed.into_iter().map(|owed| {
             let key = (owed.run, owed.name, owed.index);
@@ -595,10 +602,10 @@ impl Calcifer {
                 height: facts.height as u32,
                 duration_ms: facts.lasts_ms(),
             });
-            let mut events = self.store.exported(id, name, index, rev, &kept, measured)?;
+            let mut events = self.with_run_store(id, |store| store.exported(id, name, index, rev, &kept, measured))?;
             if let Some(said) = unlisted {
                 export_warning(run, &said);
-                events.extend(self.store.warned(id, &::api::calcifer::Warning { code: "output_unlisted".to_owned(), message: said })?);
+                events.extend(self.with_run_store(id, |store| store.warned(id, &::api::calcifer::Warning { code: "output_unlisted".to_owned(), message: said }))?);
             }
             let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
             let publish_began = Instant::now();
@@ -629,23 +636,34 @@ pub(crate) struct Item {
     member: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+pub(crate) struct OutputPath {
+    id: String,
+    #[serde(default)]
+    run: Option<String>,
+    name: String,
+}
+
 /// `GET /v1/runs/{id|number}/outputs/{name}[?index=i]`: the output's exported file, whole or one
 /// `Range` of it, with `ETag: "r<rev>"` naming the revision it holds; otherwise why not. A folder's is its tree document
 /// (`api::tree`), and `?member=` one of its files: a client fetches what it asks for, by content.
 pub(crate) async fn serve(
     State(api): State<Arc<Api>>,
-    Route((run, name)): Route<(String, String)>,
+    Route(path): Route<OutputPath>,
     query: Result<Query<Item>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
     let Item { index, member } = query?.0;
-    let row = api::find(&api, &run)?;
+    let run = path.run.as_deref().unwrap_or(&path.id);
+    let project = path.run.as_ref().map(|_| path.id.as_str());
+    let name = &path.name;
+    let row = api::find_scoped(&api, project, run).await?;
     crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
     let readable = crate::project::vault::readable_token(&row.out_dir);
     let number = row.number;
     let (item, file, landed_folder) = {
         let _placing = lock(&api.calcifer.exports.placing);
-        let item = api.calcifer.store().output(row.id.as_str(), &name, index)?;
+        let item = api.calcifer.run_store(row.id.as_str())?.output(row.id.as_str(), name, index)?;
         let item = item.ok_or_else(|| {
             let message = format!("run {number} has no output {name} at index {index}");
             Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run watch {number}")))
@@ -676,7 +694,7 @@ pub(crate) async fn serve(
     }
     let (Some(file), Some(rev)) = (file, item.exported_rev) else {
         let record = api.calcifer.record(&row)?;
-        if record.output.iter().any(|kept| kept.stays && kept.name == name && kept.index == index) {
+        if record.output.iter().any(|kept| kept.stays && kept.name == *name && kept.index == index) {
             let on = row.machine.as_deref().unwrap_or("its machine");
             let message = format!("output {name} of run {number} stays on {on}: it isn't brought to this computer");
             return Err(Refusal(api::refuse(Kind::Conflict, "output_on_its_machine", message).0.next(format!("cozy run watch {number}"))));

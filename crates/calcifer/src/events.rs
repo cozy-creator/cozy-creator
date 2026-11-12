@@ -417,7 +417,7 @@ impl Watch {
             StreamEvent::ProjectChanged { id, .. } | StreamEvent::Canvas { id, .. } | StreamEvent::History { id, .. } => Some(id),
             StreamEvent::BoardUpdated { project, .. } | StreamEvent::JobUpdated { project, .. } | StreamEvent::AheadUpdated { project, .. } => Some(project),
             StreamEvent::RunUpdated { run } => {
-                return self.api.calcifer.store().run(run.id.as_str()).ok().flatten().is_some_and(|row| project::vault::require_path(&row.out_dir).is_ok());
+                return self.api.calcifer.run_store(run.id.as_str()).and_then(|store| store.run(run.id.as_str())).ok().flatten().is_some_and(|row| project::vault::require_path(&row.out_dir).is_ok());
             }
             _ => None,
         };
@@ -483,7 +483,7 @@ impl Watch {
     /// `id` as it is now; none when it is gone, or can't be read, which says `resync`.
     fn run(&mut self, id: &RunId) -> Option<StreamEvent> {
         let calcifer = &self.api.calcifer;
-        let run = match calcifer.store().run(id.as_str()) {
+        let run = match calcifer.run_store(id.as_str()).and_then(|store| store.run(id.as_str())) {
             Ok(Some(row)) if project::vault::require_path(&row.out_dir).is_ok() => calcifer.record(&row),
             Ok(Some(_)) => return None,
             Ok(None) => return None,

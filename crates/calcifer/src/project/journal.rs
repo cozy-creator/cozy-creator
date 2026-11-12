@@ -1,5 +1,5 @@
 //! Project-owned controller records, on the admitted project's existing SQLite connection.
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::{Arc, Weak}};
 use api::error::Error;
 use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
 use tokio::sync::OwnedRwLockReadGuard;
@@ -17,15 +17,92 @@ pub(crate) struct ProjectRef {
 /// A bounded operation on one verified mounted owner. Never retain across a worker wait.
 pub(crate) struct ProjectStore {
     project: Arc<Project>,
+    controller: Weak<crate::Calcifer>,
     _view: OwnedRwLockReadGuard<()>,
 }
 
+#[derive(Clone)]
+pub(crate) struct RunOwner {
+    project: Arc<Project>,
+    controller: Weak<crate::Calcifer>,
+}
+impl RunOwner {
+    pub(crate) fn project_id(&self) -> &str { &self.project.id }
+    pub(crate) fn root(&self) -> &std::path::Path { &self.project.root }
+    pub(crate) fn store(&self) -> store::Result<ProjectStore> {
+        let view = vault::try_admit_work(&self.project).map_err(project_error)?;
+        Ok(ProjectStore { project: self.project.clone(), controller: self.controller.clone(), _view: view })
+    }
+}
+
+pub(crate) struct SealingStore<'a> {
+    project: Arc<Project>,
+    controller: Weak<crate::Calcifer>,
+    transition: &'a vault::ProjectTransition,
+}
+impl SealingStore<'_> {
+    pub(crate) fn read<T>(&self, read: impl FnOnce(&Connection) -> store::Result<T>) -> store::Result<T> {
+        self.transition.validate(&self.project).map_err(project_error)?;
+        self.project.folder.journal_read(read)
+    }
+    pub(crate) fn write<T>(&self, write: impl FnOnce(&Transaction<'_>) -> store::Result<T>) -> store::Result<T> {
+        self.transition.validate(&self.project).map_err(project_error)?;
+        self.project.folder.journal_write(write)
+    }
+    pub(crate) fn admit_submission(&self, _new: &store::NewRun) -> store::Result<()> {
+        Err(StoreError::Locked("project_transition".into()))
+    }
+    pub(crate) fn require_machine(&self, name: &str) -> store::Result<()> {
+        let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
+        controller.maintenance_store().machine(name)?.ok_or_else(|| StoreError::UnknownMachine(name.into())).map(drop)
+    }
+    pub(crate) fn keep_machine(&self, machine: &store::MachineRow) -> store::Result<()> {
+        let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
+        controller.maintenance_store().put_machine(machine)
+    }
+    pub(crate) fn append_diagnostic(&self, code: &'static str, detail: &str) -> store::Result<()> {
+        self.write(|tx| { tx.execute("INSERT INTO project_diagnostics(at_ms,code,detail) VALUES(?1,?2,?3)", params![store::now_ms(),code,detail])?; Ok(()) })
+    }
+}
+
 impl Projects {
+    pub(crate) fn reference(&self, api: &Arc<Api>, named: &str) -> Result<ProjectRef, Error> {
+        let refs = api.calcifer.maintenance_store().known_projects().map_err(|_| Error::new(api::error::Kind::Unavailable, "project_index", "the project reference index is unavailable"))?;
+        if api::target::written_as_path(named.trim()) {
+            let root = vault::logical(&super::holding(std::path::Path::new(named.trim()))?);
+            if let Some(known) = refs.iter().find(|entry| vault::logical(&entry.path) == root) {
+                return Ok(ProjectRef { id: known.id.clone(), path: root, code: known.code.clone() });
+            }
+            let keybag = project_vault::Keybag::load(&root.join(project_vault::KEYBAG_FILE))
+                .map_err(|_| Error::new(api::error::Kind::NotFound, "project_reference_unavailable", "this project has no registered or public encrypted reference"))?;
+            let reference = ProjectRef { id: keybag.info().project_id, path: root, code: String::new() };
+            // Register only the public reference, never open a mounted view for bootstrap.
+            api.calcifer.maintenance_store().write(|tx| {
+                tx.execute("INSERT INTO projects(id,path,code) VALUES(?1,?2,'') ON CONFLICT(id) DO UPDATE SET path=excluded.path", params![reference.id, reference.path.to_string_lossy()])?;
+                Ok(())
+            }).map_err(|_| Error::new(api::error::Kind::Unavailable, "project_index", "the project reference could not be recorded"))?;
+            return Ok(reference);
+        }
+        let mut matches = refs.into_iter().filter(|entry| entry.id == named || entry.code == named || entry.path.file_name().is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case(named)));
+        let entry = matches.next().ok_or_else(|| Error::new(api::error::Kind::NotFound, "project_unknown", "this computer knows no such project reference"))?;
+        if matches.next().is_some() { return Err(Error::new(api::error::Kind::Conflict, "project_ambiguous", "use the project's opaque id, code or absolute path")); }
+        Ok(ProjectRef { id: entry.id, path: entry.path, code: entry.code })
+    }
+
+    pub(super) fn transition_store<'a>(&self, api: &Arc<Api>, named: &str, transition: &'a vault::ProjectTransition) -> Result<SealingStore<'a>, Error> {
+        let project = self.open_now(named).map(Ok).unwrap_or_else(|| self.get(api, named).map_err(|error| error.0))?;
+        transition.validate(&project)?;
+        Ok(SealingStore { project, controller: Arc::downgrade(&api.calcifer), transition })
+    }
+
     pub(crate) async fn store(&self, api: &Arc<Api>, named: &str) -> Result<ProjectStore, Error> {
         let view = vault::admit_project(api, named).await?;
         let project = self.get(api, named).map_err(|error| error.0)?;
         project.require_view()?;
-        Ok(ProjectStore { project, _view: view })
+        let store = ProjectStore { project, controller: Arc::downgrade(&api.calcifer), _view: view };
+        api.calcifer.maintenance_store().migrate_project(&store, &api.calcifer.inputs).map_err(|_| Error::new(api::error::Kind::Conflict,"project_migration_pending","legacy project history could not be verified; its source is preserved"))?;
+        api.calcifer.attach_project(&store).map_err(|_| Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"))?;
+        Ok(store)
     }
 
     /// Currently accessible owners only; no locked project is opened for this snapshot.
@@ -42,6 +119,32 @@ impl Projects {
 
 impl ProjectStore {
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
+    pub(crate) fn owner(&self) -> RunOwner { RunOwner { project: self.project.clone(), controller: self.controller.clone() } }
+    pub(crate) fn input_root(&self) -> store::Result<PathBuf> {
+        self.project.require_view().map_err(project_error)?;
+        let path=self.project.folder.dir.join(".vault-inputs");
+        std::fs::create_dir_all(&path).map_err(|_| StoreError::Protected("project_input_storage".into()))?;
+        platform::durable::set_mode(&path,0o700).map_err(|_| StoreError::Protected("project_input_storage".into()))?;
+        Ok(path)
+    }
+    pub(crate) fn execution_scope(&self) -> (&str, &std::path::Path) { (&self.project.id, &self.project.root) }
+
+
+    pub(crate) fn admit_submission(&self, new: &store::NewRun) -> store::Result<()> {
+        if new.project.as_deref() != Some(self.project.id.as_str()) || new.out_dir != super::landing(&self.project.root) {
+            return Err(StoreError::Protected("project_submission_scope".into()));
+        }
+        Ok(())
+    }
+    pub(crate) fn require_machine(&self, name: &str) -> store::Result<()> {
+        let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
+        controller.maintenance_store().machine(name)?.ok_or_else(|| StoreError::UnknownMachine(name.into())).map(drop)
+    }
+    pub(crate) fn keep_machine(&self, machine: &store::MachineRow) -> store::Result<()> {
+        let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
+        controller.maintenance_store().put_machine(machine)
+    }
+
 
     pub(crate) fn read<T>(&self, read: impl FnOnce(&Connection) -> store::Result<T>) -> store::Result<T> {
         self.project.require_view().map_err(project_error)?;
@@ -66,6 +169,13 @@ impl ProjectStore {
         self.project.folder.keep_answer(key, &answer.digest, answer.status, &answer.content_type, &answer.body).map_err(project_error)
     }
 
+    pub(crate) fn rendered_here(&self, machine: &str) -> store::Result<std::collections::HashMap<String,u64>> {
+        self.read(|conn| { let mut stmt=conn.prepare("SELECT tool,bytes FROM project_rendered_here WHERE machine=?1")?; Ok(stmt.query_map([machine], |row| Ok((row.get(0)?,row.get::<_,i64>(1)? as u64)))?.collect::<rusqlite::Result<_>>()?) })
+    }
+    pub(crate) fn keep_rendered_here(&self, machine: &str, tools: &[(String,u64)]) -> store::Result<()> {
+        self.write(|tx| { for (tool,bytes) in tools { tx.execute("INSERT OR REPLACE INTO project_rendered_here(tool,machine,bytes) VALUES(?1,?2,?3)",params![tool,machine,*bytes as i64])?; } Ok(()) })
+    }
+
     pub(crate) fn append_diagnostic(&self, code: &'static str, detail: &str) -> store::Result<()> {
         self.write(|tx| {
             tx.execute("INSERT INTO project_diagnostics (at_ms, code, detail) VALUES (?1, ?2, ?3)", params![store::now_ms(), code, detail])?;
@@ -75,7 +185,10 @@ impl ProjectStore {
 }
 
 fn project_error(error: Error) -> StoreError {
-    StoreError::Protected(error.code.to_string())
+    match error.code.as_str() {
+        "project_locked" | "project_view_changed" | "project_busy" => StoreError::Locked(error.code.to_owned()),
+        _ => StoreError::Protected(error.code.to_owned()),
+    }
 }
 
 pub(super) const SCHEMA: &str = "    CREATE TABLE runs (
@@ -161,7 +274,7 @@ pub(super) const SCHEMA: &str = "    CREATE TABLE runs (
     CREATE TABLE project_view (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), document TEXT NOT NULL) STRICT;
     CREATE TABLE project_diagnostics (id INTEGER PRIMARY KEY, at_ms INTEGER NOT NULL, code TEXT NOT NULL, detail TEXT NOT NULL) STRICT;
     CREATE TABLE journal_migrations (source TEXT PRIMARY KEY, digest TEXT NOT NULL, record TEXT NOT NULL) STRICT;
-    CREATE TABLE project_after_steps (key_sha256 TEXT PRIMARY KEY, step TEXT NOT NULL) STRICT;
+    CREATE TABLE after_steps (key_sha256 TEXT PRIMARY KEY, step TEXT NOT NULL) STRICT;
     CREATE TABLE project_headers (hub TEXT NOT NULL, sha256 TEXT NOT NULL, families TEXT NOT NULL, lora INTEGER NOT NULL, family TEXT, PRIMARY KEY (hub, sha256)) STRICT, WITHOUT ROWID;
     CREATE TABLE project_rendered_here (tool TEXT NOT NULL, machine TEXT NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY (tool, machine)) STRICT, WITHOUT ROWID;
     CREATE TABLE project_vault_operations (id TEXT PRIMARY KEY, binding TEXT NOT NULL, state TEXT NOT NULL) STRICT;

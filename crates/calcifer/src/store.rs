@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::project::vault;
+mod migration;
 use api::{
     calcifer::{Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem, Reason, Run, Status, Warning},
     config::Origin,
@@ -142,6 +143,11 @@ fn fence_legacy_projects(writer: &mut Connection) -> Result<()> {
         };
         for index in indexes { tx.execute_batch(&format!("DROP INDEX \"{}\"", index.replace('"', "\"\"")))?; }
         tx.execute_batch(&format!("ALTER TABLE {table} RENAME TO legacy_project_{table}"))?;
+    }
+    // Protocol-3 rejects old mutation/operation IDs. These are recomputable
+    // caches or obsolete replay barriers, never authoritative run history.
+    for table in ["legacy_project_headers", "legacy_project_rendered_here", "legacy_project_vault_operations"] {
+        tx.execute_batch(&format!("DROP TABLE IF EXISTS {table}"))?;
     }
     // Machine/account state is unrelated to project admission and remains available.
     let (_, rest) = SCHEMA.split_once("    CREATE TABLE runs (").expect("run schema");
@@ -416,6 +422,7 @@ pub(crate) struct RunFilter {
 
 /// A new run, recorded under its idempotency key.
 pub(crate) struct NewRun {
+    pub project: Option<String>,
     pub id: RunId,
     pub kind: Kind,
     pub target: String,
@@ -568,500 +575,22 @@ impl Durable {
     }
 }
 
-impl Store {
-    pub(crate) fn open(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| StoreError::Corrupt(e.to_string()))?;
-        }
-        let mut writer = Connection::open(path)?;
-        let mode: String = writer.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
-        let wal = mode.eq_ignore_ascii_case("wal");
-        // In WAL mode a commit doesn't sync: `write` flushes for it (`Durable`).
-        writer.pragma_update(None, "synchronous", if wal { "NORMAL" } else { "FULL" })?;
-        writer.pragma_update(None, "secure_delete", "ON")?;
-        writer.pragma_update(None, "foreign_keys", "ON")?;
-        match writer.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? {
-            0 => {
-                let tx = writer.transaction()?;
-                tx.execute_batch(SCHEMA)?;
-                tx.pragma_update(None, "user_version", VERSION)?;
-                tx.commit()?;
-            }
-            7 => {
-                measured_columns(&mut writer)?;
-                stays_column(&mut writer)?;
-                batch_column(&mut writer)?;
-                job_column(&mut writer)?;
-                fence_legacy_projects(&mut writer)?;
-            }
-            VERSION => {
-                measured_columns(&mut writer)?;
-                stays_column(&mut writer)?;
-                batch_column(&mut writer)?;
-                job_column(&mut writer)?;
-            }
-            other => return Err(StoreError::Version(other)),
-        }
-        run_list_indexes(&writer)?;
-        writer.execute_batch(ANSWERS)?;
-        writer.execute_batch(crate::project::vault_operation::TABLES)?;
-        writer.execute_batch(crate::state::TABLES)?;
-        crate::state::project_names(&writer)?;
-        crate::state::project_codes(&writer)?;
-        private(path);
-        let reader = Connection::open(path)?;
-        reader.pragma_update(None, "query_only", "ON")?;
-        let mut journal = path.as_os_str().to_owned();
-        journal.push("-wal");
-        Ok(Self {
-            writer: Mutex::new(writer),
-            reader: Mutex::new(reader),
-            durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
-        })
+fn key_digest(key: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    hex::encode(Sha256::digest(key.as_bytes()))
+}
+
+macro_rules! journal_methods {
+    () => {
+    pub(crate) fn plan_after(&self, key: &str, step: &str) -> Result<()> {
+        self.write(|tx| { tx.execute("INSERT OR REPLACE INTO after_steps(key_sha256,step) VALUES(?1,?2)", params![key_digest(key),step])?; Ok(()) })
     }
-
-    pub(crate) fn migration_required(&self) -> Result<bool> {
-        self.read(|conn| {
-            let tables: Vec<String> = {
-                let mut stmt = conn.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'legacy_project_%'")?;
-                stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
-            };
-            for table in tables {
-                let exists: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM \"{}\")", table.replace('"', "\"\"")), [], |row| row.get(0))?;
-                if exists { return Ok(true); }
-            }
-            Ok(false)
-        })
+    pub(crate) fn after_step(&self, key: &str) -> Result<Option<String>> {
+        self.read(|conn| Ok(conn.query_row("SELECT step FROM after_steps WHERE key_sha256=?1", [key_digest(key)], |row| row.get(0)).optional()?))
     }
-
-    /// Waiting for another reader, loading rows and opening private records may block on I/O.
-    /// Hand the async worker back before taking the lock, as writes do before their commit.
-    pub(crate) fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let read = || f(&self.reader.lock().unwrap_or_else(|e| e.into_inner()));
-        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
-            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(read),
-            _ => read(),
-        }
+    pub(crate) fn forget_after(&self, key: &str) -> Result<()> {
+        self.write(|tx| { tx.execute("DELETE FROM after_steps WHERE key_sha256=?1", [key_digest(key)])?; Ok(()) })
     }
-
-    /// One transaction, durable when it returns. Its flush can wait seconds on a busy disk's
-    /// write-back: on a multi-thread runtime the worker says so first, so its other tasks (the
-    /// API's among them) move on. The flush runs outside the writer lock: others commit meanwhile.
-    pub(crate) fn write<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
-        let commit = || {
-            let (value, commit) = {
-                let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let value = f(&tx)?;
-                tx.commit()?;
-                (value, self.durable.committed())
-            };
-            self.durable.wait(commit)?;
-            Ok(value)
-        };
-        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
-            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(commit),
-            _ => commit(),
-        }
-    }
-
-    /// Protect already-recorded private content when an ordinary project opts into a vault.
-    /// The caller installs the keybag/public recipient before this atomic journal transaction.
-    pub(crate) fn protect_project_journal(&self, root: &Path) -> Result<()> {
-        self.rewrite_project_journal(root, |context, value, protected| {
-            if protected {
-                // Validate the existing slot; a prefix alone is not proof that it is valid ciphertext.
-                open_bytes(context, value)?;
-                return Ok(value.to_vec());
-            }
-            // A frame may have been sealed after the physical cutover but before this transaction.
-            // Only a verified same-root/context envelope is already protected. A legacy plaintext
-            // log that merely begins with our prefix is still data and must be encrypted.
-            if vault::is_payload(value)
-                && vault::payload_root(value).ok().flatten().as_deref() == Some(root)
-                && matches!(vault::open_payload(context, value), Ok(Some(_)))
-            {
-                return Ok(value.to_vec());
-            }
-            let sealed = seal_at(root, context, value)?;
-            if !vault::is_payload(&sealed) {
-                return Err(StoreError::Protected(
-                    "project encryption is not ready for journal conversion".into(),
-                ));
-            }
-            Ok(sealed)
-        })
-        .map(drop)
-    }
-
-    /// Rewrite every retained protected payload using the owner's verified replacement generation.
-    pub(crate) fn rekey_project_journal(&self, root: &Path, old: &project_vault::ProjectSecret, new: &project_vault::Keybag) -> Result<()> {
-        self.rewrite_project_journal(root, |context, value, protected| {
-            if protected {
-                return vault::rekey_payload(context, value, old, new).map_err(private_error);
-            }
-            // A newly protected slot (target on an older sealed-spec row) can still be
-            // plaintext. Put it in the current protected view rather than carrying it on.
-            let sealed = seal_at(root, context, value)?;
-            if !vault::is_payload(&sealed) {
-                return Err(StoreError::Protected("project encryption is not ready for journal rekey".into()));
-            }
-            Ok(sealed)
-        })
-        .map(drop)
-    }
-
-    fn rewrite_project_journal(&self, root: &Path, mut transform: impl FnMut(&str, &[u8], bool) -> Result<Vec<u8>>) -> Result<bool> {
-        self.write(|tx| {
-            let all: Vec<(String, String, Vec<u8>)> = {
-                // Keep only the prefix in Rust until the path or an envelope may belong to
-                // this project. Other projects' plaintext specs can be large.
-                // SQLite returns NULL for substr of an empty BLOB, although spec is NOT NULL.
-                let mut rows = tx.prepare("SELECT id, out_dir, coalesce(substr(spec, 1, ?1), x'') AS spec FROM runs NOT INDEXED")?;
-                rows.query_map([vault::PAYLOAD_PREFIX.len() as i64], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                    .collect::<rusqlite::Result<_>>()?
-            };
-            let mut changed = false;
-            for (id, directory, probe) in all {
-                let path = vault::logical(Path::new(&directory));
-                if !path.starts_with(root) && !vault::is_payload(&probe) {
-                    continue;
-                }
-                // Every protected prefix is still fully parsed, including malformed or
-                // relocated envelopes whose out_dir no longer identifies their owner.
-                let spec: Vec<u8> = tx.query_row("SELECT spec FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
-                let protected = vault::is_payload(&spec);
-                let scope = vault::payload_root(&spec).map_err(private_error)?;
-                if !path.starts_with(root) && scope.as_deref() != Some(root) {
-                    continue;
-                }
-                if protected { tx.execute("UPDATE runs SET out_dir = ?2 WHERE id = ?1", params![&id, crate::project::landing(root).to_string_lossy()])?; }
-
-                for column in ["spec", "outcome"] {
-                    let value: Option<Vec<u8>> =
-                        tx.query_row(&format!("SELECT {column} FROM runs WHERE id = ?1"), [&id], |row| row.get(0))?;
-                    if let Some(value) = value {
-                        let sealed = transform(&run_context(&id, column), &value, protected)?;
-                        if sealed != value {
-                            tx.execute(&format!("UPDATE runs SET {column} = ?2 WHERE id = ?1"), params![id, sealed])?;
-                            changed = true;
-                        }
-                    }
-                }
-                for column in ["target", "warnings", "inputs", "reason_code", "reason"] {
-                    let value: Option<String> =
-                        tx.query_row(&format!("SELECT {column} FROM runs WHERE id = ?1"), [&id], |row| row.get(0))?;
-                    if let Some(value) = value {
-                        // Earlier private records already sealed their spec, before target
-                        // became a private slot. Its own envelope decides whether to retain
-                        // or seal it; the spec's marker alone is not sufficient.
-                        let protected = protected && (column != "target" || vault::is_payload(value.as_bytes()));
-                        let sealed = as_text(transform(&run_context(&id, column), value.as_bytes(), protected)?)?;
-                        if sealed != value {
-                            tx.execute(&format!("UPDATE runs SET {column} = ?2 WHERE id = ?1"), params![id, sealed])?;
-                            changed = true;
-                        }
-                    }
-                }
-                let outputs: Vec<(String, u32, u64, Option<u64>, Option<u64>)> = {
-                    let mut rows = tx.prepare("SELECT name, idx, rev, exported_rev, failed_rev FROM outputs WHERE run = ?1")?;
-                    rows.query_map([&id], |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get::<_, i64>(1)? as u32,
-                            row.get::<_, i64>(2)? as u64,
-                            row.get::<_, Option<i64>>(3)?.map(|n| n as u64),
-                            row.get::<_, Option<i64>>(4)?.map(|n| n as u64),
-                        ))
-                    })?
-                    .collect::<rusqlite::Result<_>>()?
-                };
-                for (name, index, rev, exported, failed) in outputs {
-                    for (column, revision) in [
-                        ("label", rev),
-                        ("checkpoint", rev),
-                        ("path", exported.unwrap_or(rev)),
-                        ("export_error", failed.unwrap_or(rev)),
-                    ] {
-                        let value: Option<String> = tx.query_row(
-                            &format!("SELECT {column} FROM outputs WHERE run = ?1 AND name = ?2 AND idx = ?3"),
-                            params![id, name, index],
-                            |row| row.get(0),
-                        )?;
-                        if let Some(value) = value {
-                            let sealed = as_text(transform(
-                                &output_context(&id, &name, index, revision, column),
-                                value.as_bytes(),
-                                protected,
-                            )?)?;
-                            if sealed != value {
-                                tx.execute(
-                                    &format!("UPDATE outputs SET {column} = ?4 WHERE run = ?1 AND name = ?2 AND idx = ?3"),
-                                    params![id, name, index, sealed],
-                                )?;
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-                let logs: Vec<(i64, String)> = {
-                    let mut rows = tx.prepare("SELECT seq, text FROM run_logs WHERE run = ?1")?;
-                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?)))?
-                        .collect::<rusqlite::Result<_>>()?
-                };
-                for (seq, text) in logs {
-                    let sealed = as_text(transform(&log_context(&id, seq as u64), text.as_bytes(), protected)?)?;
-                    if sealed != text {
-                        tx.execute(
-                            "UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2",
-                            params![id, seq, sealed],
-                        )?;
-                        changed = true;
-                    }
-                }
-                let asks: Vec<(String, Vec<u8>, Option<String>)> = {
-                    let mut rows = tx.prepare("SELECT key, body, reason FROM asks WHERE run = ?1")?;
-                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                        .collect::<rusqlite::Result<_>>()?
-                };
-                for (key, body, reason) in asks {
-                    let sealed = transform(&format!("ask:{key}:body"), &body, protected)?;
-                    let sealed_reason = reason
-                        .as_ref()
-                        .map(|reason| transform(&format!("ask:{key}:reason"), reason.as_bytes(), protected).and_then(as_text))
-                        .transpose()?;
-                    if sealed != body || sealed_reason != reason {
-                        tx.execute(
-                            "UPDATE asks SET body = ?2, reason = ?3 WHERE key = ?1",
-                            params![key, sealed, sealed_reason],
-                        )?;
-                        changed = true;
-                    }
-                }
-            }
-            let answers: Vec<String> = {
-                // Preserve the old table-scan order rather than using the key index.
-                let mut rows = tx.prepare("SELECT key FROM answers NOT INDEXED")?;
-                rows.query_map([], |row| row.get(0))?
-                    .collect::<rusqlite::Result<_>>()?
-            };
-            for key in answers {
-                let body: Vec<u8> = tx.query_row("SELECT body FROM answers WHERE key = ?1", [&key], |row| row.get(0))?;
-                let scope = vault::payload_root(&body).map_err(private_error)?.or_else(|| answer_path(&body));
-                if scope.as_deref().is_none_or(|path| !vault::logical(path).starts_with(root)) {
-                    continue;
-                }
-                let sealed = transform(&format!("answer:{key}:body"), &body, vault::is_payload(&body))?;
-                if sealed != body {
-                    tx.execute("UPDATE answers SET body = ?2 WHERE key = ?1", params![key, sealed])?;
-                    changed = true;
-                }
-            }
-            if changed { vault::mark_journal_cleanup(root).map_err(private_error)?; }
-            Ok(changed)
-        })
-    }
-
-    /// Old plaintext must not remain in our live SQLite freelist or WAL after conversion.
-    /// This cannot erase historical external copies or SSD remnants.
-    pub(crate) fn cleanup_private_journal(&self) -> Result<()> {
-        let writer = self.writer.lock().expect("store writer");
-        let _reader = self.reader.lock().expect("store reader");
-        writer.pragma_update(None, "secure_delete", "ON")?;
-        let checkpoint = |conn: &Connection| -> Result<()> {
-            let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
-            if busy != 0 {
-                return Err(StoreError::Protected("journal cleanup is waiting for SQLite readers".into()));
-            }
-            Ok(())
-        };
-        checkpoint(&writer)?;
-        writer.execute_batch("VACUUM;")?;
-        checkpoint(&writer)
-    }
-
-    /// What the write under `key` answered, if it was kept.
-    pub(crate) fn answer(&self, key: &str) -> Result<Option<Answer>> {
-        self.read(|conn| {
-            let row = conn
-                .query_row(
-                    "SELECT digest, status, content_type, body FROM answers WHERE key = ?1",
-                    [key],
-                    |r| {
-                        Ok(Answer {
-                            digest: r.get(0)?,
-                            status: r.get(1)?,
-                            content_type: r.get(2)?,
-                            body: r.get(3)?,
-                        })
-                    },
-                )
-                .optional()?;
-            row.map(|mut answer| {
-                answer.body = open_bytes(&format!("answer:{key}:body"), &answer.body)?;
-                Ok(answer)
-            })
-            .transpose()
-        })
-    }
-
-    /// Keeps what the write under `key` answered; answers older than a day go.
-    pub(crate) fn keep_answer(&self, key: &str, answer: &Answer) -> Result<()> {
-        let now = now_ms();
-        let body = match answer_path(&answer.body) {
-            Some(path) => seal_at(&path, &format!("answer:{key}:body"), &answer.body)?,
-            None => answer.body.clone(),
-        };
-        self.write(|tx| {
-            tx.execute("DELETE FROM answers WHERE at_ms < ?1", [now - ANSWER_KEPT_MS])?;
-            tx.execute(
-                "INSERT OR REPLACE INTO answers (key, digest, status, content_type, body, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![key, answer.digest, answer.status, answer.content_type, body, now],
-            )?;
-            Ok(())
-        })
-    }
-
-    pub(crate) fn put_machine(&self, machine: &MachineRow) -> Result<()> {
-        self.write(|tx| put_machine_in(tx, machine))
-    }
-
-    pub(crate) fn machine(&self, name: &str) -> Result<Option<MachineRow>> {
-        self.read(|conn| {
-            conn.query_row(
-                &format!("SELECT {MACHINE_COLUMNS} FROM machines WHERE name = ?1"),
-                [name],
-                machine_row,
-            )
-            .optional()?
-            .transpose()
-        })
-    }
-
-    pub(crate) fn machines(&self) -> Result<Vec<MachineRow>> {
-        self.read(|conn| {
-            let mut statement = conn.prepare(&format!("SELECT {MACHINE_COLUMNS} FROM machines ORDER BY name"))?;
-            let rows = statement.query_map([], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-            rows.into_iter().collect()
-        })
-    }
-
-    /// The machines a name, a former name (alias) or a rental id names, in any state; one with
-    /// that very name first.
-    pub(crate) fn machines_named(&self, text: &str) -> Result<Vec<MachineRow>> {
-        self.read(|conn| {
-            let mut statement = conn.prepare(&format!(
-                "SELECT {MACHINE_COLUMNS} FROM machines
-                 WHERE name = ?1 COLLATE NOCASE OR alias = ?1 COLLATE NOCASE OR rental_id = ?1 COLLATE NOCASE
-                 ORDER BY name = ?1 COLLATE NOCASE DESC, rowid DESC"
-            ))?;
-            let rows = statement.query_map([text], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-            rows.into_iter().collect()
-        })
-    }
-
-    /// The name a renamed machine had before.
-    pub(crate) fn alias(&self, name: &str) -> Result<Option<String>> {
-        self.read(|conn| {
-            Ok(conn
-                .query_row("SELECT alias FROM machines WHERE name = ?1", [name], |r| r.get(0))
-                .optional()?
-                .flatten())
-        })
-    }
-
-    /// Renames a machine that has not served (its Hub named it): its runs move with it, and the
-    /// old name stays its alias. An ended machine that held the name gives it up: its history
-    /// keeps it as `<name>@<when it was recorded>`.
-    pub(crate) fn rename_machine(&self, old: &str, new: &str) -> Result<bool> {
-        self.write(|tx| {
-            let renamable: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM machines WHERE name = ?1 AND served = 0 AND state <> 'ended')
-                     AND NOT EXISTS (SELECT 1 FROM machines WHERE alias = ?2 AND name <> ?1)",
-                params![old, new],
-                |r| r.get(0),
-            )?;
-            let holder: Option<(String, i64)> = tx
-                .query_row("SELECT state, created_at FROM machines WHERE name = ?1", [new], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
-                .optional()?;
-            match holder {
-                _ if !renamable => return Ok(false),
-                Some((state, _)) if state != "ended" => return Ok(false),
-                Some((_, at)) => move_machine(tx, new, &format!("{new}@{at}"), None)?,
-                None => {}
-            }
-            move_machine(tx, old, new, Some(old))?;
-            Ok(true)
-        })
-    }
-
-    /// Records a rental another client of the account ordered, under its name; an ended machine that
-    /// held the name gives it up (as in `rename_machine`), and a live one keeps it, so this one is
-    /// named by its rental id. The row as recorded; none when its rental is recorded already.
-    pub(crate) fn adopt(&self, machine: &MachineRow) -> Result<Option<MachineRow>> {
-        self.write(|tx| {
-            let known: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM machines WHERE rental_id = ?1)",
-                [&machine.rental_id],
-                |r| r.get(0),
-            )?;
-            if known {
-                return Ok(None);
-            }
-            let mut row = machine.clone();
-            let holder: Option<(String, i64)> = tx
-                .query_row("SELECT state, created_at FROM machines WHERE name = ?1", [&row.name], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
-                .optional()?;
-            match holder {
-                Some((state, at)) if state == "ended" => move_machine(tx, &row.name, &format!("{}@{at}", row.name), None)?,
-                Some(_) => row.name = row.rental_id.clone().unwrap_or_default().to_ascii_lowercase(),
-                None => {}
-            }
-            put_machine_in(tx, &row)?;
-            Ok(Some(row))
-        })
-    }
-
-    /// Unsettled runs by machine: how many it accepted, and how many wait to be sent or accepted.
-    pub(crate) fn machine_load(&self) -> Result<std::collections::HashMap<String, (u32, u32)>> {
-        self.read(|conn| {
-            let mut statement = conn.prepare(
-                "SELECT machine, SUM(state = 'accepted'), SUM(state <> 'accepted') FROM runs
-                 WHERE state <> 'settled' AND machine IS NOT NULL GROUP BY machine",
-            )?;
-            let rows = statement.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
-    /// How many runs `machine` has been sent and hasn't settled, an update's aside: its work going.
-    pub(crate) fn working(&self, machine: &str) -> Result<u32> {
-        self.read(|conn| {
-            let going = conn.query_row(
-                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND kind <> 'update' AND state IN ('sent', 'accepted')",
-                [machine],
-                |r| r.get(0),
-            )?;
-            Ok(going)
-        })
-    }
-
-    /// Whether an update of `machine` is yet to end: what's sent to it waits for that.
-    pub(crate) fn updating(&self, machine: &str) -> Result<bool> {
-        self.read(|conn| {
-            let held = conn.query_row(
-                "SELECT EXISTS (SELECT 1 FROM runs WHERE machine = ?1 AND kind = 'update' AND state <> 'settled')",
-                [machine],
-                |r| r.get(0),
-            )?;
-            Ok(held)
-        })
-    }
-
     /// Unsettled runs no machine was chosen for, oldest first, with where each may go.
     pub(crate) fn unplaced(&self) -> Result<Vec<RunRow>> {
         self.read(|conn| {
@@ -1173,12 +702,10 @@ impl Store {
     /// Ends an ask: `done` with the machine it made, or `failed` with why. A rent ask that is
     /// done records its machine in the same transaction.
     pub(crate) fn settle_ask(&self, key: &str, outcome: std::result::Result<Option<&MachineRow>, &str>) -> Result<()> {
+        if let Ok(Some(machine)) = outcome { self.keep_machine(machine)?; }
         self.write(|tx| {
             match outcome {
                 Ok(machine) => {
-                    if let Some(machine) = machine {
-                        put_machine_in(tx, machine)?;
-                    }
                     tx.execute(
                         "UPDATE asks SET state = 'done', machine = COALESCE(?2, machine) WHERE key = ?1",
                         params![key, machine.map(|m| &m.name)],
@@ -1250,6 +777,8 @@ impl Store {
     }
 
     pub(crate) fn submit(&self, key: &str, digest: &str, new: NewRun) -> Result<(RunRow, bool)> {
+        self.admit_submission(&new)?;
+        if let Some(machine) = &new.machine { self.require_machine(machine)?; }
         let (id, fresh) = self.write(|tx| {
             let recorded: Option<(String, String)> = tx
                 .query_row("SELECT id, digest FROM runs WHERE idempotency_key = ?1", [key], |r| {
@@ -1263,15 +792,7 @@ impl Store {
                     Err(StoreError::Conflict(key.into()))
                 };
             }
-            // The machine's name, as `Machines::named` resolved what the run named.
-            let machine = match &new.machine {
-                None => None,
-                Some(name) => Some(
-                    tx.query_row("SELECT name FROM machines WHERE name = ?1", [name], |r| r.get::<_, String>(0))
-                        .optional()?
-                        .ok_or_else(|| StoreError::UnknownMachine(name.clone()))?,
-                ),
-            };
+            let machine = new.machine.clone();
             // Calcifer's own run is no machine's to accept: it is going from the row that records it.
             let (state, began) = match new.kind {
                 Kind::Here => ("accepted", Some(now_ms())),
@@ -1793,13 +1314,8 @@ impl Store {
     /// ends canceled when that was asked) and is never run again; one it never confirmed goes back
     /// to the outbox under the same id when Calcifer placed it and the machine had served, and
     /// otherwise fails. Answers the events, by run.
-    pub(crate) fn machine_ended(&self, machine: &str, reason: &str) -> Result<Vec<(RunId, Event)>> {
+    pub(crate) fn runs_on_ended_machine(&self, machine: &str, served: bool, reason: &str) -> Result<Vec<(RunId, Event)>> {
         self.write(|tx| {
-            let served: Option<bool> = tx
-                .query_row("SELECT served FROM machines WHERE name = ?1", [machine], |r| r.get(0))
-                .optional()?;
-            let Some(served) = served else { return Err(StoreError::UnknownMachine(machine.into())) };
-            tx.execute("UPDATE machines SET state = 'ended', reason = ?2 WHERE name = ?1", params![machine, reason])?;
             let mut statement = tx.prepare(&format!(
                 "SELECT {RUN_COLUMNS} FROM runs WHERE machine = ?1 AND state <> 'settled' ORDER BY number"
             ))?;
@@ -2024,6 +1540,617 @@ impl Store {
             export_settled(tx, run, name, index, rev, false)
         })
     }
+    };
+}
+
+impl Store {
+    journal_methods!();
+
+    fn admit_submission(&self, new: &NewRun) -> Result<()> {
+        if new.project.is_some() { return Err(StoreError::Protected("project_store_required".into())); }
+        Ok(())
+    }
+    fn require_machine(&self, name: &str) -> Result<()> {
+        self.machine(name)?.ok_or_else(|| StoreError::UnknownMachine(name.into())).map(drop)
+    }
+    fn keep_machine(&self, machine: &MachineRow) -> Result<()> { self.put_machine(machine) }
+
+    pub(crate) fn machine_ended(&self, machine: &str, reason: &str) -> Result<Vec<(RunId, Event)>> {
+        let row = self.machine(machine)?.ok_or_else(|| StoreError::UnknownMachine(machine.into()))?;
+        self.write(|tx| { tx.execute("UPDATE machines SET state = 'ended', reason = ?2 WHERE name = ?1", params![machine, reason])?; Ok(()) })?;
+        self.runs_on_ended_machine(machine, row.served, reason)
+    }
+
+    pub(crate) fn open(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| StoreError::Corrupt(e.to_string()))?;
+        }
+        let mut writer = Connection::open(path)?;
+        let mode: String = writer.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
+        let wal = mode.eq_ignore_ascii_case("wal");
+        // In WAL mode a commit doesn't sync: `write` flushes for it (`Durable`).
+        writer.pragma_update(None, "synchronous", if wal { "NORMAL" } else { "FULL" })?;
+        writer.pragma_update(None, "secure_delete", "ON")?;
+        writer.pragma_update(None, "foreign_keys", "ON")?;
+        writer.pragma_update(None, "temp_store", "MEMORY")?;
+        match writer.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? {
+            0 => {
+                let tx = writer.transaction()?;
+                tx.execute_batch(SCHEMA)?;
+                tx.pragma_update(None, "user_version", VERSION)?;
+                tx.commit()?;
+            }
+            7 => {
+                measured_columns(&mut writer)?;
+                stays_column(&mut writer)?;
+                batch_column(&mut writer)?;
+                job_column(&mut writer)?;
+                fence_legacy_projects(&mut writer)?;
+            }
+            VERSION => {
+                measured_columns(&mut writer)?;
+                stays_column(&mut writer)?;
+                batch_column(&mut writer)?;
+                job_column(&mut writer)?;
+            }
+            other => return Err(StoreError::Version(other)),
+        }
+        run_list_indexes(&writer)?;
+        writer.execute_batch(ANSWERS)?;
+        writer.execute_batch(crate::project::vault_operation::TABLES)?;
+        writer.execute_batch(crate::state::TABLES)?;
+        crate::state::project_names(&writer)?;
+        crate::state::project_codes(&writer)?;
+        private(path);
+        let reader = Connection::open(path)?;
+        reader.pragma_update(None, "query_only", "ON")?;
+        reader.pragma_update(None, "temp_store", "MEMORY")?;
+        let mut journal = path.as_os_str().to_owned();
+        journal.push("-wal");
+        Ok(Self {
+            writer: Mutex::new(writer),
+            reader: Mutex::new(reader),
+            durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
+        })
+    }
+
+    pub(crate) fn migration_required(&self) -> Result<bool> {
+        self.read(|conn| {
+            let tables: Vec<String> = {
+                let mut stmt = conn.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'legacy_project_%'")?;
+                stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
+            };
+            for table in tables {
+                let exists: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM \"{}\")", table.replace('"', "\"\"")), [], |row| row.get(0))?;
+                if exists { return Ok(true); }
+            }
+            Ok(false)
+        })
+    }
+
+    /// Waiting for another reader, loading rows and opening private records may block on I/O.
+    /// Hand the async worker back before taking the lock, as writes do before their commit.
+    pub(crate) fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let read = || f(&self.reader.lock().unwrap_or_else(|e| e.into_inner()));
+        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(read),
+            _ => read(),
+        }
+    }
+
+    /// One transaction, durable when it returns. Its flush can wait seconds on a busy disk's
+    /// write-back: on a multi-thread runtime the worker says so first, so its other tasks (the
+    /// API's among them) move on. The flush runs outside the writer lock: others commit meanwhile.
+    pub(crate) fn write<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
+        let commit = || {
+            let (value, commit) = {
+                let mut conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+                let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let value = f(&tx)?;
+                tx.commit()?;
+                (value, self.durable.committed())
+            };
+            self.durable.wait(commit)?;
+            Ok(value)
+        };
+        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(commit),
+            _ => commit(),
+        }
+    }
+
+    /// Protect already-recorded private content when an ordinary project opts into a vault.
+    /// The caller installs the keybag/public recipient before this atomic journal transaction.
+    pub(crate) fn protect_project_journal(&self, root: &Path) -> Result<()> {
+        self.rewrite_project_journal(root, |context, value, protected| {
+            if protected {
+                // Validate the existing slot; a prefix alone is not proof that it is valid ciphertext.
+                open_bytes(context, value)?;
+                return Ok(value.to_vec());
+            }
+            // A frame may have been sealed after the physical cutover but before this transaction.
+            // Only a verified same-root/context envelope is already protected. A legacy plaintext
+            // log that merely begins with our prefix is still data and must be encrypted.
+            if vault::is_payload(value)
+                && vault::payload_root(value).ok().flatten().as_deref() == Some(root)
+                && matches!(vault::open_payload(context, value), Ok(Some(_)))
+            {
+                return Ok(value.to_vec());
+            }
+            let sealed = seal_at(root, context, value)?;
+            if !vault::is_payload(&sealed) {
+                return Err(StoreError::Protected(
+                    "project encryption is not ready for journal conversion".into(),
+                ));
+            }
+            Ok(sealed)
+        })
+        .map(drop)
+    }
+
+    /// Rewrite every retained protected payload using the owner's verified replacement generation.
+    pub(crate) fn rekey_project_journal(&self, root: &Path, old: &project_vault::ProjectSecret, new: &project_vault::Keybag) -> Result<()> {
+        self.rewrite_project_journal(root, |context, value, protected| {
+            if protected {
+                return vault::rekey_payload(context, value, old, new).map_err(private_error);
+            }
+            // A newly protected slot (target on an older sealed-spec row) can still be
+            // plaintext. Put it in the current protected view rather than carrying it on.
+            let sealed = seal_at(root, context, value)?;
+            if !vault::is_payload(&sealed) {
+                return Err(StoreError::Protected("project encryption is not ready for journal rekey".into()));
+            }
+            Ok(sealed)
+        })
+        .map(drop)
+    }
+
+    fn rewrite_project_journal(&self, root: &Path, mut transform: impl FnMut(&str, &[u8], bool) -> Result<Vec<u8>>) -> Result<bool> {
+        self.write(|tx| {
+            let all: Vec<(String, String, Vec<u8>)> = {
+                // Keep only the prefix in Rust until the path or an envelope may belong to
+                // this project. Other projects' plaintext specs can be large.
+                // SQLite returns NULL for substr of an empty BLOB, although spec is NOT NULL.
+                let mut rows = tx.prepare("SELECT id, out_dir, coalesce(substr(spec, 1, ?1), x'') AS spec FROM runs NOT INDEXED")?;
+                rows.query_map([vault::PAYLOAD_PREFIX.len() as i64], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            let mut changed = false;
+            for (id, directory, probe) in all {
+                let path = vault::logical(Path::new(&directory));
+                if !path.starts_with(root) && !vault::is_payload(&probe) {
+                    continue;
+                }
+                // Every protected prefix is still fully parsed, including malformed or
+                // relocated envelopes whose out_dir no longer identifies their owner.
+                let spec: Vec<u8> = tx.query_row("SELECT spec FROM runs WHERE id = ?1", [&id], |row| row.get(0))?;
+                let protected = vault::is_payload(&spec);
+                let scope = vault::payload_root(&spec).map_err(private_error)?;
+                if !path.starts_with(root) && scope.as_deref() != Some(root) {
+                    continue;
+                }
+                if protected { tx.execute("UPDATE runs SET out_dir = ?2 WHERE id = ?1", params![&id, crate::project::landing(root).to_string_lossy()])?; }
+
+                for column in ["spec", "outcome"] {
+                    let value: Option<Vec<u8>> =
+                        tx.query_row(&format!("SELECT {column} FROM runs WHERE id = ?1"), [&id], |row| row.get(0))?;
+                    if let Some(value) = value {
+                        let sealed = transform(&run_context(&id, column), &value, protected)?;
+                        if sealed != value {
+                            tx.execute(&format!("UPDATE runs SET {column} = ?2 WHERE id = ?1"), params![id, sealed])?;
+                            changed = true;
+                        }
+                    }
+                }
+                for column in ["target", "warnings", "inputs", "reason_code", "reason"] {
+                    let value: Option<String> =
+                        tx.query_row(&format!("SELECT {column} FROM runs WHERE id = ?1"), [&id], |row| row.get(0))?;
+                    if let Some(value) = value {
+                        // Earlier private records already sealed their spec, before target
+                        // became a private slot. Its own envelope decides whether to retain
+                        // or seal it; the spec's marker alone is not sufficient.
+                        let protected = protected && (column != "target" || vault::is_payload(value.as_bytes()));
+                        let sealed = as_text(transform(&run_context(&id, column), value.as_bytes(), protected)?)?;
+                        if sealed != value {
+                            tx.execute(&format!("UPDATE runs SET {column} = ?2 WHERE id = ?1"), params![id, sealed])?;
+                            changed = true;
+                        }
+                    }
+                }
+                let outputs: Vec<(String, u32, u64, Option<u64>, Option<u64>)> = {
+                    let mut rows = tx.prepare("SELECT name, idx, rev, exported_rev, failed_rev FROM outputs WHERE run = ?1")?;
+                    rows.query_map([&id], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get::<_, i64>(1)? as u32,
+                            row.get::<_, i64>(2)? as u64,
+                            row.get::<_, Option<i64>>(3)?.map(|n| n as u64),
+                            row.get::<_, Option<i64>>(4)?.map(|n| n as u64),
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<_>>()?
+                };
+                for (name, index, rev, exported, failed) in outputs {
+                    for (column, revision) in [
+                        ("label", rev),
+                        ("checkpoint", rev),
+                        ("path", exported.unwrap_or(rev)),
+                        ("export_error", failed.unwrap_or(rev)),
+                    ] {
+                        let value: Option<String> = tx.query_row(
+                            &format!("SELECT {column} FROM outputs WHERE run = ?1 AND name = ?2 AND idx = ?3"),
+                            params![id, name, index],
+                            |row| row.get(0),
+                        )?;
+                        if let Some(value) = value {
+                            let sealed = as_text(transform(
+                                &output_context(&id, &name, index, revision, column),
+                                value.as_bytes(),
+                                protected,
+                            )?)?;
+                            if sealed != value {
+                                tx.execute(
+                                    &format!("UPDATE outputs SET {column} = ?4 WHERE run = ?1 AND name = ?2 AND idx = ?3"),
+                                    params![id, name, index, sealed],
+                                )?;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                let logs: Vec<(i64, String)> = {
+                    let mut rows = tx.prepare("SELECT seq, text FROM run_logs WHERE run = ?1")?;
+                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                for (seq, text) in logs {
+                    let sealed = as_text(transform(&log_context(&id, seq as u64), text.as_bytes(), protected)?)?;
+                    if sealed != text {
+                        tx.execute(
+                            "UPDATE run_logs SET text = ?3 WHERE run = ?1 AND seq = ?2",
+                            params![id, seq, sealed],
+                        )?;
+                        changed = true;
+                    }
+                }
+                let asks: Vec<(String, Vec<u8>, Option<String>)> = {
+                    let mut rows = tx.prepare("SELECT key, body, reason FROM asks WHERE run = ?1")?;
+                    rows.query_map([&id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                for (key, body, reason) in asks {
+                    let sealed = transform(&format!("ask:{key}:body"), &body, protected)?;
+                    let sealed_reason = reason
+                        .as_ref()
+                        .map(|reason| transform(&format!("ask:{key}:reason"), reason.as_bytes(), protected).and_then(as_text))
+                        .transpose()?;
+                    if sealed != body || sealed_reason != reason {
+                        tx.execute(
+                            "UPDATE asks SET body = ?2, reason = ?3 WHERE key = ?1",
+                            params![key, sealed, sealed_reason],
+                        )?;
+                        changed = true;
+                    }
+                }
+            }
+            let answers: Vec<String> = {
+                // Preserve the old table-scan order rather than using the key index.
+                let mut rows = tx.prepare("SELECT key FROM answers NOT INDEXED")?;
+                rows.query_map([], |row| row.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for key in answers {
+                let body: Vec<u8> = tx.query_row("SELECT body FROM answers WHERE key = ?1", [&key], |row| row.get(0))?;
+                let scope = vault::payload_root(&body).map_err(private_error)?.or_else(|| answer_path(&body));
+                if scope.as_deref().is_none_or(|path| !vault::logical(path).starts_with(root)) {
+                    continue;
+                }
+                let sealed = transform(&format!("answer:{key}:body"), &body, vault::is_payload(&body))?;
+                if sealed != body {
+                    tx.execute("UPDATE answers SET body = ?2 WHERE key = ?1", params![key, sealed])?;
+                    changed = true;
+                }
+            }
+            if changed { vault::mark_journal_cleanup(root).map_err(private_error)?; }
+            Ok(changed)
+        })
+    }
+
+    /// Old plaintext must not remain in our live SQLite freelist or WAL after conversion.
+    /// This cannot erase historical external copies or SSD remnants.
+    pub(crate) fn cleanup_private_journal(&self) -> Result<()> {
+        let writer = self.writer.lock().expect("store writer");
+        let _reader = self.reader.lock().expect("store reader");
+        writer.pragma_update(None, "secure_delete", "ON")?;
+        let checkpoint = |conn: &Connection| -> Result<()> {
+            let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+            if busy != 0 {
+                return Err(StoreError::Protected("journal cleanup is waiting for SQLite readers".into()));
+            }
+            Ok(())
+        };
+        checkpoint(&writer)?;
+        writer.execute_batch("VACUUM;")?;
+        checkpoint(&writer)
+    }
+
+    /// What the write under `key` answered, if it was kept.
+    pub(crate) fn answer(&self, key: &str) -> Result<Option<Answer>> {
+        self.read(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT digest, status, content_type, body FROM answers WHERE key = ?1",
+                    [key],
+                    |r| {
+                        Ok(Answer {
+                            digest: r.get(0)?,
+                            status: r.get(1)?,
+                            content_type: r.get(2)?,
+                            body: r.get(3)?,
+                        })
+                    },
+                )
+                .optional()?;
+            row.map(|mut answer| {
+                answer.body = open_bytes(&format!("answer:{key}:body"), &answer.body)?;
+                Ok(answer)
+            })
+            .transpose()
+        })
+    }
+
+    /// Keeps what the write under `key` answered; answers older than a day go.
+    pub(crate) fn keep_answer(&self, key: &str, answer: &Answer) -> Result<()> {
+        let now = now_ms();
+        let body = match answer_path(&answer.body) {
+            Some(path) => seal_at(&path, &format!("answer:{key}:body"), &answer.body)?,
+            None => answer.body.clone(),
+        };
+        self.write(|tx| {
+            tx.execute("DELETE FROM answers WHERE at_ms < ?1", [now - ANSWER_KEPT_MS])?;
+            tx.execute(
+                "INSERT OR REPLACE INTO answers (key, digest, status, content_type, body, at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![key, answer.digest, answer.status, answer.content_type, body, now],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn put_machine(&self, machine: &MachineRow) -> Result<()> {
+        self.write(|tx| put_machine_in(tx, machine))
+    }
+
+    pub(crate) fn machine(&self, name: &str) -> Result<Option<MachineRow>> {
+        self.read(|conn| {
+            conn.query_row(
+                &format!("SELECT {MACHINE_COLUMNS} FROM machines WHERE name = ?1"),
+                [name],
+                machine_row,
+            )
+            .optional()?
+            .transpose()
+        })
+    }
+
+    pub(crate) fn machines(&self) -> Result<Vec<MachineRow>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(&format!("SELECT {MACHINE_COLUMNS} FROM machines ORDER BY name"))?;
+            let rows = statement.query_map([], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.into_iter().collect()
+        })
+    }
+
+    /// The machines a name, a former name (alias) or a rental id names, in any state; one with
+    /// that very name first.
+    pub(crate) fn machines_named(&self, text: &str) -> Result<Vec<MachineRow>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(&format!(
+                "SELECT {MACHINE_COLUMNS} FROM machines
+                 WHERE name = ?1 COLLATE NOCASE OR alias = ?1 COLLATE NOCASE OR rental_id = ?1 COLLATE NOCASE
+                 ORDER BY name = ?1 COLLATE NOCASE DESC, rowid DESC"
+            ))?;
+            let rows = statement.query_map([text], machine_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            rows.into_iter().collect()
+        })
+    }
+
+    /// The name a renamed machine had before.
+    pub(crate) fn alias(&self, name: &str) -> Result<Option<String>> {
+        self.read(|conn| {
+            Ok(conn
+                .query_row("SELECT alias FROM machines WHERE name = ?1", [name], |r| r.get(0))
+                .optional()?
+                .flatten())
+        })
+    }
+
+    /// Renames a machine that has not served (its Hub named it): its runs move with it, and the
+    /// old name stays its alias. An ended machine that held the name gives it up: its history
+    /// keeps it as `<name>@<when it was recorded>`.
+    pub(crate) fn rename_machine(&self, old: &str, new: &str) -> Result<bool> {
+        self.write(|tx| {
+            let renamable: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM machines WHERE name = ?1 AND served = 0 AND state <> 'ended')
+                     AND NOT EXISTS (SELECT 1 FROM machines WHERE alias = ?2 AND name <> ?1)",
+                params![old, new],
+                |r| r.get(0),
+            )?;
+            let holder: Option<(String, i64)> = tx
+                .query_row("SELECT state, created_at FROM machines WHERE name = ?1", [new], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()?;
+            match holder {
+                _ if !renamable => return Ok(false),
+                Some((state, _)) if state != "ended" => return Ok(false),
+                Some((_, at)) => move_machine(tx, new, &format!("{new}@{at}"), None)?,
+                None => {}
+            }
+            move_machine(tx, old, new, Some(old))?;
+            Ok(true)
+        })
+    }
+
+    /// Records a rental another client of the account ordered, under its name; an ended machine that
+    /// held the name gives it up (as in `rename_machine`), and a live one keeps it, so this one is
+    /// named by its rental id. The row as recorded; none when its rental is recorded already.
+    pub(crate) fn adopt(&self, machine: &MachineRow) -> Result<Option<MachineRow>> {
+        self.write(|tx| {
+            let known: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM machines WHERE rental_id = ?1)",
+                [&machine.rental_id],
+                |r| r.get(0),
+            )?;
+            if known {
+                return Ok(None);
+            }
+            let mut row = machine.clone();
+            let holder: Option<(String, i64)> = tx
+                .query_row("SELECT state, created_at FROM machines WHERE name = ?1", [&row.name], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()?;
+            match holder {
+                Some((state, at)) if state == "ended" => move_machine(tx, &row.name, &format!("{}@{at}", row.name), None)?,
+                Some(_) => row.name = row.rental_id.clone().unwrap_or_default().to_ascii_lowercase(),
+                None => {}
+            }
+            put_machine_in(tx, &row)?;
+            Ok(Some(row))
+        })
+    }
+
+    /// Unsettled runs by machine: how many it accepted, and how many wait to be sent or accepted.
+    pub(crate) fn machine_load(&self) -> Result<std::collections::HashMap<String, (u32, u32)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT machine, SUM(state = 'accepted'), SUM(state <> 'accepted') FROM runs
+                 WHERE state <> 'settled' AND machine IS NOT NULL GROUP BY machine",
+            )?;
+            let rows = statement.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// How many runs `machine` has been sent and hasn't settled, an update's aside: its work going.
+    pub(crate) fn working(&self, machine: &str) -> Result<u32> {
+        self.read(|conn| {
+            let going = conn.query_row(
+                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND kind <> 'update' AND state IN ('sent', 'accepted')",
+                [machine],
+                |r| r.get(0),
+            )?;
+            Ok(going)
+        })
+    }
+
+    /// Whether an update of `machine` is yet to end: what's sent to it waits for that.
+    pub(crate) fn updating(&self, machine: &str) -> Result<bool> {
+        self.read(|conn| {
+            let held = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM runs WHERE machine = ?1 AND kind = 'update' AND state <> 'settled')",
+                [machine],
+                |r| r.get(0),
+            )?;
+            Ok(held)
+        })
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
 
 /// The event of an output's export at `rev` settling, if that is its current revision.
@@ -2830,3 +2957,34 @@ pub(crate) fn now_ms() -> i64 {
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;
+
+impl crate::project::ProjectStore {
+    journal_methods!();
+}
+
+pub(crate) enum RunStore<'a> {
+    Maintenance(&'a Store),
+    Project(crate::project::ProjectStore),
+}
+impl RunStore<'_> {
+    journal_methods!();
+    fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        match self { Self::Maintenance(store) => store.read(f), Self::Project(store) => store.read(f) }
+    }
+    fn write<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        match self { Self::Maintenance(store) => store.write(f), Self::Project(store) => store.write(f) }
+    }
+    fn admit_submission(&self, new: &NewRun) -> Result<()> {
+        match self { Self::Maintenance(store) => store.admit_submission(new), Self::Project(store) => store.admit_submission(new) }
+    }
+    fn require_machine(&self, name: &str) -> Result<()> {
+        match self { Self::Maintenance(store) => store.require_machine(name), Self::Project(store) => store.require_machine(name) }
+    }
+    fn keep_machine(&self, machine: &MachineRow) -> Result<()> {
+        match self { Self::Maintenance(store) => store.keep_machine(machine), Self::Project(store) => store.keep_machine(machine) }
+    }
+}
+
+impl crate::project::journal::SealingStore<'_> {
+    journal_methods!();
+}

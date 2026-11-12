@@ -722,7 +722,7 @@ impl Machines {
 
     /// A run the machine holds for this controller, with this controller's record of it.
     fn held(&self, run: v1::RunState) -> wire::LiveRun {
-        let row = self.store().run(&run.id).ok().flatten();
+        let row = self.calcifer.run_store(&run.id).and_then(|store| store.run(&run.id)).ok().flatten();
         wire::LiveRun {
             run: row.and_then(|row| self.calcifer.record(&row).ok()),
             id: run.id,
@@ -733,7 +733,7 @@ impl Machines {
 
     /// What a machine does for runs, its waiters by this controller's run numbers: a run it keeps no record of isn't one.
     fn operation(&self, operation: &v1::Operation) -> wire::Operation {
-        let runs = (operation.runs.iter()).filter_map(|id| Some(self.store().run(id).ok()??.number)).collect();
+        let runs = (operation.runs.iter()).filter_map(|id| Some(self.calcifer.run_store(id).and_then(|store| store.run(id)).ok()??.number)).collect();
         let rate = Some(operation.bytes_per_s).filter(|rate| *rate >= 1.0);
         let left = operation.bytes_total.saturating_sub(operation.bytes_done);
         wire::Operation {
@@ -1069,7 +1069,7 @@ impl Machines {
     }
 
     fn place_unplaced(self: &Arc<Self>) {
-        let unplaced = match self.store().unplaced() {
+        let unplaced = match self.calcifer.each_store(|store| store.unplaced()).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()) {
             Ok(unplaced) => unplaced,
             Err(e) => return warn!("reading unplaced runs: {e}"),
         };
@@ -1475,8 +1475,8 @@ async fn calcifer_log(api: &Arc<Api>, name: &str, query: LogQuery, headers: &Hea
         return Err(Refusal(Error::new(Kind::Usage, "log_not_kept", said).next("cozy machine logs local calcifer")));
     }
     let home = api.machines.hubs.home();
-    let log = Log::rotated(home.calcifer(), "calcifer.log");
-    let unreadable = |e: &dyn std::fmt::Display| Refusal(Error::new(Kind::Internal, "log_unreadable", format!("{}: {e}", home.calcifer_log().display())));
+    let log = Log::rotated(home.calcifer(), "health.log");
+    let unreadable = |e: &dyn std::fmt::Display| Refusal(Error::new(Kind::Internal, "log_unreadable", format!("{}: {e}", home.calcifer_health().display())));
     let mut since = Since(query.since_ms);
     if !follows(headers) {
         let read = tokio::task::spawn_blocking({
