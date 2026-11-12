@@ -73,6 +73,72 @@ def _documents(body: bytes) -> list[dict]:
     return result
 
 
+# Every receipt key is a closed class. Free-form codes/causes leave RAM only as SHA256;
+# messages, tracebacks, source lines, stdout/stderr and request/response bodies never do.
+_KNOWN_CODES = (
+    "project_execution_unavailable", "project_worker_unavailable", "project_migration_pending",
+    "project_storage_migration_pending", "private_storage_unavailable", "project_transport_unsupported",
+    "project_busy", "project_tool_retirement_pending", "run_failed", "usage", "target_relative",
+    "target_not_found", "input_invalid", "input_unreadable", "source_scope_required",
+    "source_admission_unavailable", "source_snapshot_changed", "project_view_changed",
+    "code_unreadable", "code_invalid", "code_unwritable", "script_metadata_invalid",
+    "script_unreadable", "script_unwritable", "local_source_invalid", "local_source_incomplete",
+    "local_install_failed", "uv_unavailable", "lock_failed", "describe_failed",
+    "package_interface_invalid", "runtime_floor_unmet", "runtime_floor_unread", "runtime_requirement_invalid",
+    "package_installation_uv_failed", "package_prepare_description_failed", "package_prepare_interface_invalid",
+    "executor_launch_failed", "executor_lost", "import_failed", "missing_dependency", "call_failed",
+    "invalid_entrypoint", "function_not_found", "invalid_payload", "machine_stopped", "output_owner_lost",
+    "result_custody_failed", "project_storage_busy", "private_warm_unsupported", "machine_disk_full",
+)
+_KINDS = ("usage", "validation", "not_found", "credential", "forbidden", "conflict", "capacity", "unavailable", "internal")
+_PYTHON_ERRORS = {
+    "attribute_error": "AttributeError", "type_error": "TypeError", "value_error": "ValueError",
+    "module_not_found": "ModuleNotFoundError", "import_error": "ImportError", "syntax_error": "SyntaxError",
+    "file_not_found": "FileNotFoundError", "permission_error": "PermissionError", "runtime_error": "RuntimeError",
+}
+
+
+def _errors(documents: list[dict]) -> list[dict]:
+    found = []
+    for document in documents:
+        run = document.get("run", document)
+        containers = [document, run] if isinstance(run, dict) else [document]
+        for container in list(containers):
+            if isinstance(container.get("result"), dict):
+                containers.append(container["result"])
+        for container in containers:
+            for field in ("error", "reason", "failure"):
+                if isinstance(container.get(field), dict):
+                    found.append(container[field])
+    return found
+
+
+def _observation(completed: subprocess.CompletedProcess, documents: list[dict], runs: list[dict], file_created: bool) -> dict:
+    stderr_documents = _documents(completed.stderr)
+    errors = _errors(documents) + _errors(stderr_documents)
+    codes = [error["code"] for error in errors if isinstance(error.get("code"), str)]
+    causes = [error["cause"] for error in errors if isinstance(error.get("cause"), str)]
+    # Diagnostic text is inspected in RAM against fixed strings, never serialized or hashed.
+    details = [error[field] for error in errors for field in ("message", "detail") if isinstance(error.get(field), str)]
+    details.append(completed.stderr.decode("utf-8", errors="replace"))
+    return {
+        "exit_code": completed.returncode, "file_created": file_created,
+        "stdout_json_documents": len(documents), "stderr_json_documents": len(stderr_documents),
+        "typed_errors": len(errors), "typed_code_missing": bool(errors) and not codes,
+        "code_sha256": sorted({sha(code.encode()) for code in codes})[:16],
+        "cause_sha256": sorted({sha(cause.encode()) for cause in causes})[:16],
+        "refusal_codes": {code: code in codes or code in causes for code in _KNOWN_CODES},
+        "error_kinds": {kind: any(error.get("kind") == kind for error in errors) for kind in _KINDS},
+        "python_errors": {kind: any(text in detail for detail in details) for kind, text in _PYTHON_ERRORS.items()},
+        "run_states": {state: any(isinstance(run, dict) and run.get("status") == state for run in runs) for state in ("queued", "preparing", "running", "completed", "failed", "canceled", "needs_access")},
+        "result_shapes": {
+            "run_envelope": any(isinstance(document.get("run"), dict) for document in documents),
+            "direct_result": any(isinstance(run, dict) and isinstance(run.get("result"), dict) for run in runs),
+            "expected_answer": any(isinstance(run, dict) and isinstance(run.get("result"), dict) and "allowed_sha256" in run["result"] for run in runs),
+        },
+    }
+
+
 def qualify(native: Native, scanner: Scanner, project: dict, receipt: Receipt) -> None:
     view = project["view"]
     folder = view / "managed-execution-proof"
@@ -91,11 +157,10 @@ def qualify(native: Native, scanner: Scanner, project: dict, receipt: Receipt) -
     completed = subprocess.run([str(native.cli), "--json", "run", str(script) + "/storage", "--input", str(request), "--on", "local"], cwd=project["folder"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     documents = _documents(completed.stdout)
     runs = [document.get("run", document) for document in documents]
-    errors = [document["error"] for document in documents if isinstance(document.get("error"), dict)]
-    errors += [run["reason"] for run in runs if isinstance(run, dict) and isinstance(run.get("reason"), dict)]
-    errors += [run["result"]["error"] for run in runs if isinstance(run, dict) and isinstance(run.get("result"), dict) and isinstance(run["result"].get("error"), dict)]
-    known_codes = ("project_execution_unavailable", "project_worker_unavailable", "project_migration_pending", "private_storage_unavailable", "project_transport_unsupported", "project_busy", "run_failed", "usage")
-    receipt.add("managed_execution_observation", exit_code=completed.returncode, file_created=allowed.exists(), refusal_codes={code: any(error.get("code") == code for error in errors) for code in known_codes})
+    for run in runs:
+        if isinstance(run, dict) and isinstance(run.get("id"), str):
+            scanner.add(run["id"])
+    receipt.add("managed_execution_observation", **_observation(completed, documents, runs, allowed.exists()))
     require(completed.returncode == 0, "managed_execution_failed")
     records = [run for run in runs if isinstance(run, dict) and isinstance(run.get("result"), dict) and "allowed_sha256" in run["result"]]
     require(records, "native_terminal_result_missing")
