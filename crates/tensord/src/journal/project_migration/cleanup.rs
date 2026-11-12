@@ -672,12 +672,18 @@ pub(super) fn retire_metadata(
         let result = store
             .retire_objects(&receipt.cleanup.objects, &uses, &keep)
             .map_err(crate::storage::io_error)?;
-        let independent = keep
-            .iter()
-            .map(|object| object.sha256.as_str())
-            .collect::<BTreeSet<_>>();
+        let mut independent = BTreeSet::new();
+        for root in &keep {
+            independent.extend(
+                store
+                    .closure(root)
+                    .map_err(crate::storage::io_error)?
+                    .into_iter()
+                    .map(|object| object.sha256),
+            );
+        }
         for object in result.retained {
-            if !independent.contains(object.sha256.as_str()) {
+            if !independent.contains(&object.sha256) {
                 pending.push(format!(
                     "legacy_retention_reader_or_independent_root:{}",
                     object.sha256

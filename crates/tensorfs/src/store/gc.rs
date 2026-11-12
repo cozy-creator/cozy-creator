@@ -218,6 +218,7 @@ impl Store {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _fence = super::retention::exclusive(self)?;
         let _refs = self.lock("refs")?;
+        let _uses = self.lock("uses")?;
         self.restore_trash()?;
         let candidates = objects
             .iter()
