@@ -692,7 +692,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const imageHeight = width / originalAspect
   const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
   const style: CSSProperties & Record<`--${string}`, string | number> = focused
-    ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 240 : 64 : asset?.kind === "video" && !editing ? 64 : asset?.tool ? 220 : 0}px` }
+    ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 320 : 64 : asset?.kind === "video" && !editing ? 64 : asset?.tool ? 220 : 0}px` }
     : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }
   return (
     <div
