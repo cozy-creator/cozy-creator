@@ -191,6 +191,41 @@ pub(crate) fn targets_of<'a>(tensors: impl Iterator<Item = (&'a str, &'a [u64])>
     targets
 }
 
+/// Each LoRA component of `header` with no `adapter` record, and the component of family `family` its factors fit, in any
+/// spelling (kohya's `lora_down`): what an upload on a base of that family records (xs-183). One that fits none, or several, is
+/// left out.
+pub fn unrecorded_adapters(header: &Header, family: &str) -> BTreeMap<String, Adapter> {
+    let recorded = Adapter::read_all(&header.metadata);
+    (header.components().iter())
+        .filter(|c| !recorded.contains_key(&c.name) && paired(c))
+        .filter_map(|c| {
+            let keys: Vec<(String, &[u64])> = (c.tensors.iter())
+                .filter_map(|t| Some((crate::import::lora::peft_key(&t.key)?, t.shape.as_slice())))
+                .collect();
+            let targets = targets_of(keys.iter().map(|(key, shape)| (key.as_str(), *shape)));
+            let fits: Vec<&str> = fitting(&targets).into_iter().filter(|(f, _)| f.name == family).map(|(_, component)| component).collect();
+            match fits.as_slice() {
+                [component] => Some((c.name.clone(), Adapter { family: family.to_owned(), component: (*component).to_owned(), trained_on: None })),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The family `header` verifies as, or records: a base's, for a LoRA uploaded on it.
+pub fn family_of(header: &Header) -> Option<String> {
+    Facts::of(header).and_then(|facts| facts.family)
+}
+
+/// `header` with `adapters` added to its `adapter` record; its chunks, components and other metadata as they are.
+pub fn with_adapters(header: &Header, adapters: &BTreeMap<String, Adapter>) -> crate::format::Result<Header> {
+    let mut all = Adapter::read_all(&header.metadata);
+    all.extend(adapters.iter().map(|(c, a)| (c.clone(), a.clone())));
+    let mut metadata = header.metadata.clone();
+    metadata.insert(ADAPTER.into(), Adapter::value_all(&all));
+    Header::new(header.chunks.clone(), header.pipeline().cloned(), header.components().to_vec(), metadata)
+}
+
 /// Every family component all of `targets` fit: an adapter with no record of its family is one when that's a single one.
 pub(crate) fn fitting(targets: &BTreeMap<&str, Factors>) -> Vec<(&'static Family, &'static str)> {
     (families().iter())
