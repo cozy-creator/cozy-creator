@@ -870,7 +870,8 @@ export class CanvasStore {
     const owner = this.owners.get(run.number) ?? [...this.views].find(([, view]) => watched(view)?.run === run.number)?.[0]
     if (!owner) return
     const viewed = this.get(owner)
-    if (viewed && watched(viewed)?.run === run.number && (run.status === "failed" || run.status === "canceled")) this.patch(owner, { watch: undefined })
+    // A take looked at that's canceled is gone; one that failed stays looked at, its error in its frame (cl-954).
+    if (viewed && watched(viewed)?.run === run.number && run.status === "canceled") this.patch(owner, { watch: undefined })
     // The run its frame is on: the take looked at (cl-945), else the first going. Another's progress is its own tile's.
     const making = this.get(owner)?.asset?.making ?? []
     const view = this.get(owner)
@@ -931,7 +932,7 @@ export class CanvasStore {
         const answered = view.asked !== undefined && view.asked < this.began
         if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }), { stays: true })
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
-        if (view.canceling && !asset.making?.length && !asset.takes?.length && !queued.has(asset.name)) change.canceling = undefined
+        if (view.canceling && !asset.making?.length && !asset.takes?.some((take) => !take.failure) && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (answered) change.asked = undefined
         // Its own takes (cl-945): each listed from the click until Calcifer lists it, as a take or as its version, or a read begun after
@@ -958,7 +959,7 @@ export class CanvasStore {
           // showing what it showed (cl-936), what's approved staying and what lands beside it unseen (cl-928): its watch goes once nothing is on its way.
           const seen = watched({ ...view, asset })
           const still = (id: string) => listed.has(id) || Boolean(taking?.some((take) => take.id === id))
-          if (!view.here && view.watch !== undefined && !asset.takes?.length && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
+          if (!view.here && view.watch !== undefined && !asset.takes?.some((take) => !take.failure) && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
           else if (seen?.number !== undefined) Object.assign(change, { watch: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Ended with no version (failed, canceled): nothing of it to look at.
           else if (view.watch !== undefined && !still(view.watch)) change.watch = undefined
@@ -1924,8 +1925,10 @@ export class CanvasStore {
     if (take.id) this.patch(name, { gone: [...(view.gone ?? []), take.id] })
     // One with an id is off by it (`gone`), and what's listed after stays as read; a run no take names is off its runs until a read.
     const making = take.id ? {} : { making: asset.making?.filter((number) => number !== take.run) }
-    const send = take.run !== undefined ? (_: string, write: Write) => this.client.cancelRun(String(take.run), write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(this.projectId!, [take.id], write.once).then(() => ({}))
-    this.over(name, making, send, take.run !== undefined ? `cancel run ${take.run} of` : "cancel a take of", undefined)
+    // One that failed is deleted by its id (cl-954); one sent, its run is stopped; one queued is dropped by its id.
+    const byRun = take.run !== undefined && !take.failure
+    const send = byRun ? (_: string, write: Write) => this.client.cancelRun(String(take.run), write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(this.projectId!, [take.id], write.once).then(() => ({}))
+    this.over(name, making, send, take.failure ? "delete a failed take of" : byRun ? `cancel run ${take.run} of` : "cancel a take of", undefined)
   }
 
   /** Its render stops, wherever it is: what's queued leaves, its runs are canceled (as `cozy run cancel`), and it says Cancelling… until

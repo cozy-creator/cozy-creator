@@ -1,4 +1,4 @@
-import type { ToolField, MainFile, Tool } from "../api/calcifer"
+import type { ErrorBody, ToolField, MainFile, Tool } from "../api/calcifer"
 import type { Media } from "../types"
 import type { ElementView } from "./CanvasStore"
 import type { Box } from "./graph"
@@ -135,14 +135,22 @@ export interface Taking {
   id: string
   run?: number
   queued?: boolean
+  /** It failed, and why: listed until it's deleted (cl-954). */
+  failure?: ErrorBody
 }
 
 /** Its takes not landed, in the order they were asked: a take is listed from the click to its version, and is never another's. */
 export function takingOf(view: ElementView): Taking[] {
   const landed = new Set([...(view.asset?.prefixes ?? []).map((held) => held.id).filter(Boolean), ...(view.gone ?? [])])
-  const listed = (view.asset?.takes ?? []).filter((take) => !landed.has(take.id)).map((take) => ({ id: take.id, run: take.run ?? undefined, queued: take.queued }))
+  const listed = (view.asset?.takes ?? []).filter((take) => !landed.has(take.id)).map((take) => ({ id: take.id, run: take.run ?? undefined, queued: take.queued, failure: take.failure ?? undefined }))
   const known = new Set(listed.map((take) => take.id))
   return [...listed, ...(view.taking ?? []).filter((take) => !known.has(take.id) && !landed.has(take.id)).map((take) => ({ id: take.id, queued: true }))]
+}
+
+/** Why the take its frame looks at failed, when it did (cl-954): what the frame shows in its place. */
+export function failureOf(view: ElementView): ErrorBody | undefined {
+  const watch = watched(view)
+  return watch ? takingOf(view).find((take) => take.id === watch.id)?.failure : undefined
 }
 
 /** A take's id, made where it's asked for, as Calcifer makes one: `project-` and 32 hex digits. */
