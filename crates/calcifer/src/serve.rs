@@ -271,6 +271,10 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let address = listener
         .local_addr()
         .map_err(|e| failed(Error::new(Kind::Internal, "calcifer_port", e.to_string())))?;
+    if loaded.config.calcifer.development_web.is_some_and(|development| development.port() == address.port()) {
+        calcifer.close();
+        return Err(failed(Error::new(Kind::Usage, "calcifer_development_web", "Vite and Calcifer must use different ports")));
+    }
     steps.done("listen");
     let mut token = [0; 32];
     getrandom::fill(&mut token).expect("the OS provides randomness");
@@ -280,6 +284,9 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     tokio::spawn(drop_old_measurements(calcifer.clone()));
     let api = Api::new(calcifer.clone(), machines.clone(), &token);
     api.browser_address.set(address).expect("listener address set once");
+    if let Some(development) = loaded.config.calcifer.development_web {
+        api.development_web.set(development).expect("development web address set once");
+    }
     // A service manager's stop (SIGTERM) is `down`, as graceful: the machine runs on.
     #[cfg(unix)]
     if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {

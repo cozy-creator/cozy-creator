@@ -58,6 +58,7 @@ pub(crate) struct Api {
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
     pub(crate) sessions: crate::sessions::Sessions,
+    pub(crate) development_web: std::sync::OnceLock<std::net::SocketAddr>,
     /// The components packages ship, as read for the page.
     pub(crate) tool_uis: crate::tool_ui::Held,
     bearer: [u8; 32],
@@ -75,6 +76,7 @@ impl Api {
     ) -> Arc<Self> {
         let api = Arc::new(Self {
             sessions: crate::sessions::Sessions::open(calcifer.store()),
+            development_web: std::sync::OnceLock::new(),
             calcifer,
             machines,
             projects: Default::default(),
@@ -203,7 +205,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/session", post(crate::sessions::start))
         .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
         .merge(crate::page::routes())
-        .fallback(unknown_route)
+        .fallback(crate::page::fallback)
         .method_not_allowed_fallback(unknown_route)
         .layer(middleware::from_fn(guard))
         .layer(DefaultBodyLimit::max(MAX_BODY))
@@ -618,7 +620,7 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
     }))
 }
 
-async fn unknown_route(method: Method, uri: Uri) -> Refusal {
+pub(crate) async fn unknown_route(method: Method, uri: Uri) -> Refusal {
     refuse(
         Kind::NotFound,
         "unknown_route",
