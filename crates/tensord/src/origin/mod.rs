@@ -28,9 +28,6 @@ use crate::stop::Stop;
 /// How long the datacenter volume keeps what nobody reads.
 const VOLUME_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// How often a blocked call looks at its stop.
-const TICK: Duration = Duration::from_millis(100);
-
 /// The machine's one download line, smaller first (cl-905): what a reader is blocked on, then each
 /// run's needs in job order (acceptance, as its GPU work queues), then what jobs waiting on another's
 /// output will read, then guesses, then warm sets. The downloader finishes one before the next.
@@ -152,15 +149,9 @@ impl Machine {
         let (sent, answer) = std::sync::mpsc::channel();
         let stop = stop.clone();
         self.runtime.spawn(async move {
-            let stopped = async {
-                let mut tick = tokio::time::interval(TICK);
-                while !stop.is_cancelled() {
-                    tick.tick().await;
-                }
-            };
             let answered = tokio::select! {
                 answered = work => answered,
-                () = stopped => refuse(Code::TRANSFER_FAILED, "stopped"),
+                () = stop.cancelled() => refuse(Code::TRANSFER_FAILED, "stopped"),
             };
             let _ = sent.send(answered);
         });

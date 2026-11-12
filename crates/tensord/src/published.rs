@@ -256,8 +256,6 @@ fn canceled() -> Failure {
 /// A lookup the network could not answer for now: no name resolution, a link refused, reset or
 /// silent, the Hub's 5xx. A definite answer (absent, private, refused, malformed) is never this.
 pub(crate) const UNREACHABLE: &str = "hub_unreachable";
-/// How often a wait looks at its run's cancel.
-const TICK: Duration = Duration::from_millis(100);
 
 /// `prepare` asked again while the network leaves it unanswered ([`UNREACHABLE`]), by the one retry rule
 /// (`tensorfs::fetch::Backoff`): its cancel ends the wait, and the run watchs each attempt and why. Nothing has executed, so
@@ -277,13 +275,9 @@ pub(crate) fn patiently<T>(job: &Job, mut prepare: impl FnMut() -> Result<T, Fai
         tracing::warn!(run = %job.caller, "{said}");
         job.stage(said.clone());
         job.waiting(Some(said));
-        let until = Instant::now() + wait;
-        while Instant::now() < until {
-            if stop.is_cancelled() {
-                job.waiting(None);
-                return Err(canceled());
-            }
-            std::thread::sleep(TICK);
+        if !stop.sleep(wait) {
+            job.waiting(None);
+            return Err(canceled());
         }
         // Asked again: what it does now is what it shows.
         job.waiting(None);
@@ -1583,9 +1577,12 @@ fn make_source(
     progress: &(dyn Fn(&str, u64, u64) + Sync),
 ) -> Result<Made, Failure> {
     let bearer = |token: &str| if token.is_empty() { String::new() } else { format!("bearer {token}") };
+    let (cancelled, cancel_notify) = cancellation.as_ref().map(Stop::flag).unzip();
     let access = tensorfs::import::Access {
         huggingface_token: bearer(&providers.huggingface),
         civitai_token: bearer(&providers.civitai),
+        cancelled,
+        cancel_notify,
         ..Default::default()
     };
     let [converter] = match profiles {
@@ -1636,7 +1633,8 @@ fn make_source(
         access: &access,
         tmp: &store.root().join("tmp"),
         progress: &counted,
-        stop: Some(&stop),
+        // The stop wakes the import itself (`access`).
+        stop: None,
     };
     let started = Instant::now();
     let (header, files) = tensorfs::import::into_store(store, &request, Some(&name)).map_err(|e| {
