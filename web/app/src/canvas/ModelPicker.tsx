@@ -24,6 +24,7 @@ const compatible = (model: FoundModel | ModelDetail | undefined, family: string 
 
 /** One modal edits every model slot without changing the node's tool or creating work. */
 export function ModelPicker({ name, onClose }: { name: string; onClose(): void }) {
+  const { bridge, privateViewEpoch, signedOut } = useConnection()
   const store = useCanvasStore()
   const view = useElement(name)
   const tools = useSignal(store.tools)
@@ -34,6 +35,16 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   const tool = tools.get(view?.asset?.tool ?? "")
   const slots = slotsOf(tool)
   const legacy = adaptersOf(store.valueOf(name, "lora"))
+  useEffect(() => {
+    const project = store.projectId
+    const epoch = project ? bridge.projectEpoch(project) : 0
+    const unwatch = privateViewEpoch.subscribe(() => {
+      if (project && bridge.projectEpoch(project) !== epoch) close.current()
+    })
+    const unsign = signedOut.subscribe(() => { if (signedOut.get()) close.current() })
+    if (signedOut.get()) close.current()
+    return () => { unwatch(); unsign() }
+  }, [store, bridge, privateViewEpoch, signedOut])
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const key = (event: KeyboardEvent) => {

@@ -27,7 +27,7 @@ export interface AddOn {
 }
 
 /** What a checkpoint can go on in what a tool runs. One for now. */
-export const modelsOf = (tool: Tool | undefined) => (tool?.model ? [tool.model] : [])
+export const modelsOf = (tool: Tool | undefined) => tool?.models?.length ? tool.models : tool?.model ? [tool.model] : []
 
 type Entry = Record<string, unknown>
 type Fields = Record<string, unknown>
