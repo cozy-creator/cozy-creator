@@ -33,7 +33,7 @@ import { carriedFile } from "./carry"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import type { ReadableProjection } from "./readableSurface"
-import { fieldsOf, fullRows, heldTo } from "./controls"
+import { fieldsOf, fullRows, heldTo, mainText } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
 import { bodyBox, bodyWidth, canvasBox, faceOf, farNameOf, HEAD, HEAD_FOOT, heightFor, hexOf, inBoxOf, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, sameStep, selectedOf, sentShape, type Shown, shownOf, stepOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor, type ZoomStep } from "./shown"
@@ -569,9 +569,9 @@ export class CanvasStore {
     return now
   }
 
-  /** The shape a box makes with none set, and what sets it. A picture tool's, as Cozy's image packages take it: the first picture it mentions, held
-   *  to what its tool makes, else its tool's own. A video tool's: the first picture or video in its slots (H3's first or last frame), never a
-   *  mention, as a portrait of who's in it makes no vertical shot; else 16:9 (se-128). */
+  /** The shape a box makes with none set, and what sets it. A picture tool's, as Cozy's image packages take it: the first picture it mentions and can
+   *  use (one crossed out sets nothing), held to what its tool makes, else its tool's own. A video tool's: the first picture or video in its slots
+   *  (H3's first or last frame), never a mention, as a portrait of who's in it makes no vertical shot; else 16:9 (se-128). */
   private autoOf(view: ElementView): { ratio?: number; from?: string } {
     const asset = view.asset
     const tools = this.tools.get()
@@ -595,6 +595,7 @@ export class CanvasStore {
       return { ratio: heldTo(control, ratioOf(control.default) ?? 16 / 9) }
     }
     for (const mention of this.mentionsOf(view)) {
+      if (asset.unused?.some((one) => one.mention === mention)) continue
       const ratio = shapeOf(mention, [kind])
       if (ratio) return { ratio: heldTo(control, ratio), from: `<${mention}>` }
     }
@@ -655,9 +656,9 @@ export class CanvasStore {
     return view.asset?.tool ? fieldsOf(view.asset, this.tools.get()).flatMap((field) => textsIn(valueIn(view, field.field))).flatMap(mentionsIn) : []
   }
 
-  /** The field a tool's next take is written in: its first prompt. */
+  /** The field a tool's next take is written in: its main text. */
   private promptOf(tool: string): string {
-    return this.tools.get().get(tool)?.fields.find((field) => field.type === "prompt")?.field ?? "instructions"
+    return mainText(this.tools.get().get(tool)?.fields ?? [])?.field ?? "instructions"
   }
 
   /** The boxes whose fields mention `key`. */

@@ -2,6 +2,7 @@ import { useQueries } from "@tanstack/react-query"
 import type { Tool } from "../api/calcifer"
 import { useConnection } from "../app/Connection"
 import type { CanvasStore } from "./CanvasStore"
+import { mainText } from "./controls"
 
 // A LoRA's triggers (Paul, 11-12): its Hub card's, appended to a box's prompt when it's added, shown on its row beneath the box, and
 // drawn in a token colour wherever a prompt of that box says them. They stay plain text, sent as written. Each is one entry, as Civitai's
@@ -56,14 +57,8 @@ export function appended(text: string, triggers: string[]): string | null {
   }, text)
 }
 
-// Nothing marks a negative prompt yet (the SDK's `NegativePrompt` is plain text), so its name stands in for the mark.
-const NEGATIVE = /^neg(ative)?(_|$)/i
-
-/** A tool's prompt: its first `prompt` field, else its first words (SDXL's and Ideogram 4's `str`); never a negative prompt. */
-export function promptOf(tool: Tool | undefined): string | undefined {
-  const fields = tool?.fields.filter((field) => !NEGATIVE.test(field.field)) ?? []
-  return (fields.find((field) => field.type === "prompt") ?? fields.find((field) => field.type === "words"))?.field
-}
+/** A tool's prompt: its main text (`mainText`). */
+export const promptOf = (tool: Tool | undefined): string | undefined => mainText(tool?.fields ?? [])?.field
 
 // The highlight: ranges over each prompt's own text nodes (never its chips), one CSS highlight for the page, so nothing a person types moves.
 
