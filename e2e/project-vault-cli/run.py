@@ -400,7 +400,7 @@ class Proof:
     ) -> Payload | str:
         if holder is None:
             holder = self.controller()
-        fields = {'Authorization': 'Bearer ' + holder['token'], **(headers or {})}
+        fields = {'Authorization': 'Bearer ' + holder['token'], 'cozy-project-storage': '3', **(headers or {})}
         if isinstance(body, dict):
             fields['Content-Type'] = 'application/json'
             body = json.dumps(body).encode('utf-8')

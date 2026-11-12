@@ -41,9 +41,9 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
 
@@ -64,7 +64,7 @@ async function died(why) {
   writeFileSync(join(folder, 'walk.mp4'), MP4);
   writeFileSync(join(folder, 'cat.mp4'), MP4);
   for (const [name, file, x] of [['Azul_3', 'azul.png', 80], ['walk', 'walk.mp4', 480], ['cat', 'cat.mp4', 880]]) {
-    await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, file)), name, exact: true, at: { x, y: 80 } }) });
+    await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, file), id), name, exact: true, at: { x, y: 80 } }) });
     await box(name).waitFor();
   }
 

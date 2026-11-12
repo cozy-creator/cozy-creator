@@ -77,15 +77,15 @@ async function loseAnswers(page, method, path, times) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
   const api = (path, init = {}) => page.evaluate(async ([path, init]) => {
-    const token = JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token;
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init.headers } });
+    const token = JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token;
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, [path, init]);
   const folder = (await api(`/v1/projects/${id}`)).body.path;
   seen.project = { id, folder };
   // The project and its canvas as Calcifer answers them (cl-803: both are project.db's), asked from here: what the page reads is counted.
-  const token = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token);
-  const cards = async () => (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}` } })).json()).cards ?? {};
+  const token = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token);
+  const cards = async () => (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).cards ?? {};
   const status = () => projectJson(folder).assets;
   const names = () => status().map((asset) => asset.name);
   const hasAsset = (name) => names().includes(name);
@@ -267,7 +267,7 @@ async function loseAnswers(page, method, path, times) {
   if ((await api('/v1/status')).body.local_usable && !process.env.ALONE) {
     // Named before it's run, it's read by PyPI's Runtime, which knows no tool: the install a run makes on this machine's Runtime takes its place, as
     // tools.js primes its fixture, and the page knows it makes pictures.
-    const stillRuns = async () => (await api(`/v1/runs?project=${id}&limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
+    const stillRuns = async () => (await api(`/v1/projects/${id}/runs?limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
     execFileSync(COZY, ['--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
     const primed = (await stillRuns()).length;
     addBoxes(folder, [{ name: 'fixture', tool: `${TOOL}/still`, kind: 'image', fields: { instructions: 'a whale' } }]);

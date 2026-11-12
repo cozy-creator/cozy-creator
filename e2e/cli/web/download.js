@@ -46,9 +46,9 @@ const hex = (digest) => digest?.replace(/^sha256:/, '');
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, headers: Object.fromEntries(answer.headers), body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
   const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
@@ -71,8 +71,8 @@ const hex = (digest) => digest?.replace(/^sha256:/, '');
     return path;
   };
   const takes = { 1: picture(40), 2: picture(80) };
-  await post(`${at}/imports`, { source: await upload(held?.token, takes[1]), name: 'hei', exact: true, at: { x: 100, y: 100 } });
-  await post(`${at}/assets/hei/versions`, { source: await upload(held?.token, takes[2]) });
+  await post(`${at}/imports`, { source: await upload(held?.token, takes[1], id), name: 'hei', exact: true, at: { x: 100, y: 100 } });
+  await post(`${at}/assets/hei/versions`, { source: await upload(held?.token, takes[2], id) });
   const row = await until('hei with two takes', async () => (await api(at)).body?.assets?.find((asset) => asset.name === 'hei'), (asset) => asset?.prefixes?.length === 2);
   const showing = row.prefixes.find((take) => take.number === row.version) ?? row.prefixes.at(-1);
   seen.showing = showing.number;
@@ -126,7 +126,7 @@ const hex = (digest) => digest?.replace(/^sha256:/, '');
   if (local) {
     const fixture = join(__dirname, '..', 'project', 'tool.py');
     execFileSync(process.env.COZY, ['--json', 'run', `${fixture}/still`, 'prompt=download', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
-    const run = await until('its output landed', async () => (await api('/v1/runs?limit=5')).body?.runs?.find((held) => held.target.includes('still') && held.project_id === id), (held) => held?.output?.some((item) => item.name === 'image' && item.url));
+    const run = await until('its output landed', async () => (await api(`${at}/runs?limit=5`)).body?.runs?.find((held) => held.target.includes('still') && held.project_id === id), (held) => held?.output?.some((item) => item.name === 'image' && item.url));
     const item = run.output.find((held) => held.name === 'image');
     const said = item.label || item.name;
     await page.goto(await projectUrl(id, `/runs/${run.number}`));

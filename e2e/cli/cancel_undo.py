@@ -97,7 +97,7 @@ def main() -> int:
     while time.monotonic() < deadline:
         jobs = status().get("board", {}).get("jobs", [])
         run = next((job["run"] for job in jobs if job["asset"] == "shot" and job.get("run")), None)
-        if run and json.loads(request(f"/v1/runs/{run}"))["status"] == "in_progress":
+        if run and json.loads(request(project_path(project, f"/runs/{run}")))["status"] == "in_progress":
             break
         time.sleep(0.1)
     else:

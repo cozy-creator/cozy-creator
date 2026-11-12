@@ -74,7 +74,7 @@ class Session:
     def call(self, method: str, path: str, body: Json = None, raw: bytes | None = None,
              sent: threading.Event | None = None) -> Reply:
         data = raw if raw is not None else json.dumps(body).encode() if body is not None else None
-        headers = {"Authorization": "Bearer " + self.context.token}
+        headers = {"Authorization": "Bearer " + self.context.token, "cozy-project-storage": "3"}
         if data is not None:
             headers.update({"Content-Type": "application/octet-stream" if raw is not None else "application/json",
                             "Content-Length": str(len(data))})

@@ -43,9 +43,9 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;
@@ -102,7 +102,7 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
     const { x, y, width, height } = el.getBoundingClientRect();
     return document.elementFromPoint(x + width / 2, y + height / 2) === el;
   }), await box.evaluate((el) => [...el.querySelectorAll('.media > *')].map((child) => child.className)));
-  const bytes = async (rev) => Buffer.from(await (await fetch(`${base}/v1/projects/${id}/runs/${making}/outputs/video?rev=${rev}`, { headers: { Authorization: `Bearer ${token}` } })).arrayBuffer());
+  const bytes = async (rev) => Buffer.from(await (await fetch(`${base}/v1/projects/${id}/runs/${making}/outputs/video?rev=${rev}`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).arrayBuffer());
   const file1 = await bytes(first.rev);
   check('segment_1_has_picture_and_sound', file1.includes('avc1') && file1.includes('mp4a'), file1.length);
   await video.evaluate((el) => { el.currentTime = 4; });

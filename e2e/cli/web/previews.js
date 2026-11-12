@@ -51,8 +51,8 @@ const LOOK = (name) => {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
-  const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}` } })).json().catch(() => null);
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json().catch(() => null);
   const local = Boolean((await api('/v1/status'))?.local_usable) && !process.env.ALONE;
   seen.ran = local;
   if (!local) {

@@ -85,8 +85,8 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
-  const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}` } })).json();
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
 
   // `local` is a machine at the top right, whatever it's doing, where this computer runs models: macOS and Windows list none.
   const chip = page.locator('.mtab[data-machine="local"]');
@@ -333,7 +333,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const making = (await held('slow'))?.making ?? [];
   await cancel('slow');
   const stopped = await until('slow stopped', async () => ({ faces: await page.locator('.card[data-asset="slow"] .run-face').count(), asset: await held('slow') }), (now) => now.faces === 0 && !now.asset?.making?.length, 60_000).catch((why) => ({ why: String(why) }));
-  const runs = await Promise.all(making.map((number) => api(`/v1/runs/${number}`)));
+  const runs = await Promise.all(making.map((number) => api(`/v1/projects/${id}/runs/${number}`)));
   const cancelling = (said.faces = (await page.evaluate(() => window.said.faces))).slow ?? [];
   check('cancel_says_cancelling', cancelling.some((face) => face.says === 'Cancelling…'), cancelling.slice(-6));
   check('cancel_while_rendering', stopped.faces === 0 && !stopped.asset?.version && runs.length > 0 && runs.every((run) => run.status === 'canceled'), { stopped, runs: runs.map((run) => [run.number, run.status]) });

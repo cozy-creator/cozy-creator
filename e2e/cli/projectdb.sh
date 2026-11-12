@@ -198,7 +198,7 @@ for ((i = 0; i < takes; i++)); do printf -v c '%06x' $((i * 33331 % 16777215)); 
 local hex=()
 for ((i = 1; i < takes; i++)); do
   hex[i]=$(sha "$L/clips/$i.mp4")
-  api -f -o /dev/null -X PUT --data-binary "@$L/clips/$i.mp4" "http://$ADDR/v1/files/sha256:${hex[i]}" || { check "latency: PUT take $i"; return; }
+  api -f -o /dev/null -X PUT --data-binary "@$L/clips/$i.mp4" "http://$ADDR/v1/project-files/sha256:${hex[i]}?project=$ID" || { check "latency: PUT take $i"; return; }
 done
 began=$SECONDS
 : > "$OUT/db-latency-join.txt"
@@ -252,8 +252,7 @@ JSON
 tiny "$OUT/crdt-a.png"; cp "$OUT/crdt-a.png" "$OUT/crdt-b.png"; printf 'second' >> "$OUT/crdt-b.png"
 project_import "$P" "$OUT/crdt-a.png" art > "$OUT/crdt-import.txt" 2>&1 || check "CRDT: import: $(tail -c 300 "$OUT/crdt-import.txt")"
 db_calcifer
-source="sha256:$(sha "$OUT/crdt-b.png")"
-api --fail-with-body -X PUT --data-binary "@$OUT/crdt-b.png" "http://$ADDR/v1/files/$source" > /dev/null || check "CRDT: upload second version"
+source=$(project_upload "$P" "$OUT/crdt-b.png") || check "CRDT: upload second version"
 project_api "$P" /assets/art/versions -X POST -H 'Content-Type: application/json' -d "$(jq -cn --arg source "$source" '{source:$source}')" > "$OUT/crdt-version.txt" 2>&1 || check "CRDT: version: $(tail -c 300 "$OUT/crdt-version.txt")"
 project_api "$P" /assets/kyogre -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"instructions":"Before the rename."}}' > "$OUT/crdt-set.txt" 2>&1 || check "CRDT: set: $(tail -c 300 "$OUT/crdt-set.txt")"
 python3 - "$P/project.db" "$OUT/crdt-before.am" <<'PY'

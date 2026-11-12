@@ -22,7 +22,7 @@ def request(path: str, method: str = "GET", body: dict[str, object] | None = Non
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     address = urlsplit(f"http://{holder['address']}")
     assert address.hostname in {"127.0.0.1", "::1", "localhost"} and address.port
-    headers = {"Authorization": f"Bearer {holder['token']}", "Cozy-Client": "page e2e-db"}
+    headers = {"Authorization": f"Bearer {holder['token']}", "Cozy-Client": "page e2e-db", "cozy-project-storage": "3"}
     if method != "GET":
         headers["Idempotency-Key"] = uuid4().hex
     if edit:

@@ -42,9 +42,9 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
   const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
@@ -76,9 +76,9 @@ async function died(why) {
     writeFileSync(path, png(shade));
     return path;
   };
-  await post(`${at}/imports`, { source: await upload(held?.token, picture(40)), name: 'hei', exact: true, at: { x: 100, y: 100 } });
-  await post(`${at}/assets/hei/versions`, { source: await upload(held?.token, picture(80)) });
-  await post(`${at}/imports`, { source: await upload(held?.token, picture(120)), name: 'other', exact: true, at: { x: 1400, y: 100 } });
+  await post(`${at}/imports`, { source: await upload(held?.token, picture(40), id), name: 'hei', exact: true, at: { x: 100, y: 100 } });
+  await post(`${at}/assets/hei/versions`, { source: await upload(held?.token, picture(80), id) });
+  await post(`${at}/imports`, { source: await upload(held?.token, picture(120), id), name: 'other', exact: true, at: { x: 1400, y: 100 } });
   const searched = (await api(`/v1/tools?project=${id}&q=birefnet`)).body?.tools ?? [];
   const cutout = searched.find((tool) => tool.package === 'birefnet' && tool.makes === 'image');
   seen.birefnet_tool = cutout?.id ?? searched.map((tool) => tool.id);

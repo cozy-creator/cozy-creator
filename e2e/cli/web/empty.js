@@ -45,9 +45,9 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
 
@@ -98,7 +98,7 @@ async function died(why) {
     await closeBox(page);
 
     // Its first take: New is there.
-    const added = await api(`${at}/assets/${box.name}/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, box.take()) }) });
+    const added = await api(`${at}/assets/${box.name}/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, box.take(), id) }) });
     if (added.status >= 300) throw new Error(`${box.name}'s first take: ${JSON.stringify(added)}`);
     await until(`${box.name}'s first take`, () => asset(box.name), (row) => row?.versions >= 1 || row?.prefixes?.length >= 1);
     await openBox(page, box.name);

@@ -73,7 +73,7 @@ let [mine, asked] = [false, 0];
   mine = true;
   out.stream_status = await bounded('answer on GET /v1/events', page.evaluate(async (token) => {
     window.streamed = [];
-    const r = await fetch('/v1/events', { headers: { Authorization: `Bearer ${token}` } });
+    const r = await fetch('/v1/events', { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } });
     if (!r.ok) return r.status;
     const reader = r.body.getReader(), decode = new TextDecoder();
     window.endStream = () => reader.cancel();
@@ -94,7 +94,7 @@ let [mine, asked] = [false, 0];
   out.stream_interest = await page.evaluate(async ({ token, id }) => {
     const stream = window.streamed.find((event) => event.type === 'hello').stream;
     const response = await fetch(`/v1/events/${encodeURIComponent(stream)}`, {
-      method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ projects: [id] }),
+      method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' }, body: JSON.stringify({ projects: [id] }),
     });
     const reply = await response.json();
     if (!response.ok || !reply.held.includes(id)) throw new Error(`project interest refused: ${response.status}`);

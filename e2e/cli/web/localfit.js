@@ -91,9 +91,9 @@ function provider(upstream) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   // Only where this computer runs models and has no GPU: anywhere else there's nothing it would do poorly to ask about.
@@ -127,7 +127,7 @@ function provider(upstream) {
   seen.project = { id, folder };
   const versions = async (name) => (await state()).assets.find((held) => held.name === name)?.versions ?? 0;
   // A render's runs of `fn`, not its package's install.
-  const runsOf = async (fn) => ((await api(`/v1/runs?project=${id}&limit=100`)).body?.runs ?? []).filter((run) => new RegExp(`^\\S+/${fn}(@\\S+)?$`).test(run.target ?? ''));
+  const runsOf = async (fn) => ((await api(`/v1/projects/${id}/runs?limit=100`)).body?.runs ?? []).filter((run) => new RegExp(`^\\S+/${fn}(@\\S+)?$`).test(run.target ?? ''));
   const fit = async (names) => (await api(`/v1/projects/${id}/fit`, { method: 'POST', body: JSON.stringify({ names }) })).body;
   const box = (name) => boxOf(page, name);
   const asking = (name) => box(name).locator('.status.asking');
