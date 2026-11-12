@@ -18,6 +18,7 @@ mod eta;
 mod events;
 mod files;
 mod hub;
+mod health;
 mod kept;
 mod lanes;
 mod link;

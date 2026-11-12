@@ -106,7 +106,7 @@ fn render(spec: &ServiceSpec) -> String {
         .chain(spec.args.iter().map(|arg| arg.as_os_str()))
         .map(|word| string(&word.to_string_lossy()))
         .collect();
-    let log = spec.log.as_ref().map_or(String::new(), |log| {
+    let log = spec.log.as_ref().map_or_else(|| "<key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string>".into(), |log| {
         let log = string(&log.to_string_lossy());
         format!("<key>StandardOutPath</key>{log}<key>StandardErrorPath</key>{log}")
     });

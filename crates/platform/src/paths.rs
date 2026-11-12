@@ -76,6 +76,11 @@ impl Home {
         self.root.join("calcifer")
     }
 
+    /// The closed service-health record; legacy mixed logs are never served as health.
+    pub fn calcifer_health(&self) -> PathBuf {
+        self.calcifer().join("health.log")
+    }
+
     pub fn calcifer_log(&self) -> PathBuf {
         self.calcifer().join("calcifer.log")
     }

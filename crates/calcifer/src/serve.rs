@@ -25,7 +25,7 @@ use ::api::{
     error::{Envelope, Error, Kind},
 };
 use tokio::net::TcpListener;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     Calcifer,
@@ -93,9 +93,10 @@ pub(crate) enum Stopped {
 }
 
 /// `cozy calcifer`: exits 0 unless Calcifer could not start, which `refused.json` then says.
-/// Its log is its stdout (the service's `calcifer.log`).
+/// Its persistent diagnostics are the closed events in `health.log`.
 pub fn main() -> ExitCode {
-    tracing_subscriber::fmt().init();
+    // The panic payload and location never enter stderr or the health sink.
+    std::panic::set_hook(Box::new(|_| crate::health::service_health(crate::health::HealthEvent::Panicked)));
     // Before the runtime's workers start: Linux names the calling thread.
     if let Err(e) = process::set_name("calcifer")
         && !e.is_unsupported()
@@ -103,7 +104,7 @@ pub fn main() -> ExitCode {
         warn!("{e}");
     }
     let served = match configuration() {
-        Ok(loaded) => match runtime(&loaded) {
+        Ok(loaded) => match crate::health::install(&loaded.home).and_then(|()| runtime(&loaded)) {
             // Stopped, Calcifer exits now: nothing left on the runtime holds the process (or its
             // service) past `down`.
             Ok(runtime) => {
@@ -144,18 +145,16 @@ fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
 
 /// Logs why Calcifer cannot start and leaves it in `<home>/calcifer/refused.json` for the CLI.
 fn refuse(home: &Home, error: Error) -> Error {
-    error!("Calcifer cannot start: {error}");
+    crate::health::service_health(crate::health::HealthEvent::StartRefused);
     let envelope = serde_json::to_vec(&Envelope {
-        error: error.clone(),
+        error: Error::new(Kind::Unavailable, "calcifer_start_failed", "Calcifer could not start").next("cozy doctor"),
     })
     .expect("serializes");
     let written = home
         .open()
         .and_then(|()| durable::private_dir(&home.calcifer()))
         .and_then(|()| durable::replace(&home.calcifer().join(REFUSED), &envelope, 0o600));
-    if let Err(e) = written {
-        error!("{e}");
-    }
+    let _ = written;
     error
 }
 
@@ -311,6 +310,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     let _ = std::fs::remove_file(home.calcifer().join(REFUSED));
     steps.done("record");
+    crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");
     match calcifer.resume() {
         Ok(runs) => steps.done(&format!("resume ({runs} runs)")),
@@ -322,6 +322,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     crate::project::resume(&api);
 
     api.stopped().await;
+    crate::health::service_health(crate::health::HealthEvent::Stopping);
     tokio::task::block_in_place(|| crate::project::vault::close_all(&api)).map_err(failed)?;
     if let Ok(Err(e)) = server.await {
         warn!("the API server ended: {e}");
@@ -329,7 +330,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     machines.close();
     calcifer.close();
     drop(held);
-    info!("Calcifer stopped");
+    crate::health::service_health(crate::health::HealthEvent::Stopped);
     Ok(Stopped::Down)
 }
 

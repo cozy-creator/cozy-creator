@@ -21,7 +21,7 @@ pub struct ServiceSpec {
     pub name: String,
     pub program: PathBuf,
     pub args: Vec<OsString>,
-    /// Where its stdout and stderr append: what it says before its own log is open.
+    /// Where stdout and stderr append. `None` discards both streams, including before startup.
     pub log: Option<PathBuf>,
 }
 
