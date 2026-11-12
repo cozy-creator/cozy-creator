@@ -16,7 +16,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, addBoxes, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
+const { projectFromPage, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, addBoxes, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 // A still made in slow steps, so its tile is seen rendering at both zooms; it's canceled from its tile.
@@ -177,7 +177,12 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
   await post(`${at}/assets`, { tool: video.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 5 }] }, at: { x: 380, y: 0 } });
   await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
   await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png')), name: 'plain', exact: true, at: { x: 820, y: 0 } });
-  for (const name of ['still', 'shot', 'plain', 'slow', 'again', 'reel']) await boxOf(page, name).waitFor();
+  /** Each of these drawn: fitted until they're all in view, as a canvas draws only what's in view, wherever they were placed. */
+  const seeAll = (names) => until(`${names.join(', ')} on the canvas`, async () => {
+    await fitCanvas(page);
+    return Promise.all(names.map((name) => boxOf(page, name).isVisible()));
+  }, (shown) => shown.every(Boolean));
+  await seeAll(['still', 'shot', 'plain', 'slow', 'again', 'reel']);
   // The two this computer renders, in a row under the others.
   projectJson(project, 'PATCH', '/canvas', { cards: { slow: { x: 0, y: 560 }, again: { x: 380, y: 560 }, reel: { x: 760, y: 560 } } });
   await until('the rows placed', () => boxOf(page, 'again').evaluate((node) => node.getBoundingClientRect().top > document.querySelector('.react-flow__node:has(.card[data-asset="still"])').getBoundingClientRect().bottom), Boolean).catch(() => {});
@@ -391,7 +396,8 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
   await post(`${at}/assets`, { tool: image.id, kind: 'image', name: 'upper', exact: true, fields: { instructions: 'a lighthouse at dawn' }, at: { x: 0, y: 2400 } });
   await post(`${at}/assets/upper/versions`, { source: await upload(held?.token, join(folder, 'take.png')) });
   await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png')), name: 'lower', exact: true, at: { x: 520, y: 2400 } });
-  for (const name of ['upper', 'lower']) await boxOf(page, name).waitFor();
+  projectJson(project, 'PATCH', '/canvas', { cards: { upper: { x: 0, y: 2400 }, lower: { x: 520, y: 2400 } } });
+  await seeAll(['upper', 'lower']);
   await boxOf(page, 'upper').locator('.media').first().click();
   if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
   await page.getByRole('menuitem', { name: /^Zoom to selection/ }).click();
