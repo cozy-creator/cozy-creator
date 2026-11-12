@@ -16,6 +16,7 @@
     { "match": "encoding reference images", "says": "Encoding pictures", "phase": "working" },
     { "match": "encoding pictures", "says": "Encoding pictures", "phase": "working" },
     { "match": "decoding image", "says": "Decoding image", "phase": "working" },
+    { "match": "render", "says": "Rendering", "phase": "working" },
     { "match": "conditioning", "says": "Encoding inputs", "phase": "working" },
     { "match": "decoding", "says": "Decoding image", "phase": "working" },
     { "match": "saving image", "says": "Saving image", "phase": "saving" },
