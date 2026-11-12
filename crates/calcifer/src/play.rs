@@ -79,6 +79,7 @@ pub(crate) async fn play(
     }
     let expires_s = lifetime(&ask.expires)?;
     let row = find_scoped(&api, path.project(), path.key()).await?;
+    if row.project_root.is_some() { return Err(Refusal(Error::new(Kind::Conflict,"project_play_unavailable","project playback requires an owned private media transport; read this output through its project route"))); }
     let refuse = |kind, code: &str, message: String| Refusal(Error::new(kind, code, message));
     // A run still going may yet make the output; an ended one never will.
     let (name, index) = match ask.output.rsplit_once('/') {

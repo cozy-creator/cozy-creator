@@ -314,7 +314,7 @@ impl Host {
         let calcifer = &self.api.calcifer;
         let mut tail = calcifer.subscribe();
         loop {
-            let row = calcifer.run_store(id.as_str()).and_then(|store| store.run(id.as_str())).map_err(|e| refused(e.into()))?;
+            let row = self.journal().and_then(|store|store.run(id.as_str())).map_err(|e| refused(e.into()))?;
             let row =
                 row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
             let run = calcifer.record(&row).map_err(refused)?;

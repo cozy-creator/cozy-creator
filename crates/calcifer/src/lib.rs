@@ -400,12 +400,16 @@ impl Calcifer {
 
     pub(crate) fn attach_project(self: &Arc<Self>, store: &project::ProjectStore) -> store::Result<bool> {
         let owner = store.owner();
-        let ids: Vec<String> = store.read(|conn| {
-            let mut rows = conn.prepare("SELECT id FROM runs")?;
-            Ok(rows.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
+        if lock(&self.project_owners).get(owner.project_id()).is_some_and(|prior|prior.same_view(&owner)) { return Ok(false); }
+        let ids:Vec<String>=store.read(|conn| {
+            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE owner=?1 AND (state<>'settled' OR EXISTS(SELECT 1 FROM outputs WHERE run=runs.id AND {}))",store::OWED))?;
+            Ok(stmt.query_map([store.project_id()],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })?;
-        let fresh = lock(&self.project_owners).insert(owner.project_id().into(), owner.clone()).is_none();
-        lock(&self.run_owners).extend(ids.into_iter().map(|id| (id, Some(owner.clone()))));
+        let mut routes=lock(&self.run_owners);
+        if ids.iter().any(|id|routes.get(id).is_some_and(|prior|match prior {Some(prior)=>!prior.same_view(&owner),None=>true})) { return Err(StoreError::Protected("active_run_owner_ambiguous".into())); }
+        let fresh=lock(&self.project_owners).insert(owner.project_id().into(),owner.clone()).is_none();
+        routes.extend(ids.into_iter().map(|id|(id,Some(owner.clone()))));
+        drop(routes);
         if fresh {
             for id in store.unsettled()? { self.drive(id); }
             for (id, _) in store.exports_owed()? { self.export(&id); }
@@ -423,6 +427,14 @@ impl Calcifer {
             Some(None) => Ok(store::RunStore::Maintenance(&self.store)),
             None => Err(StoreError::Locked("run_owner_required".into())),
         }
+    }
+
+    pub(crate) fn row_owner(&self,row:&RunRow)->store::Result<Option<project::RunOwner>> {
+        let Some(root)=&row.project_root else { return Ok(None); };
+        lock(&self.project_owners).values().find(|owner|owner.root()==root).cloned().map(Some).ok_or_else(||StoreError::Locked("project_not_open".into()))
+    }
+    pub(crate) fn row_store(&self,row:&RunRow)->store::Result<store::RunStore<'_>> {
+        match self.row_owner(row)? { Some(owner)=>owner.store().map(store::RunStore::Project),None=>Ok(store::RunStore::Maintenance(self.maintenance_store())) }
     }
 
     fn run_scope(&self,id:&str)->Result<Option<private_io::Scope>,::api::error::Error> {
@@ -660,12 +672,14 @@ impl Calcifer {
 
     /// The run as the API answers it, with what it is doing now.
     pub(crate) fn record(&self, row: &RunRow) -> Result<Run, Error> {
-        let mut run = self.with_run_store(row.id.as_str(), |store| store.record(row))?;
+        let journal=self.row_store(row)?;
+        let mut run=journal.record(row)?;
+        let owned=match &journal {store::RunStore::Project(store)=>row.owner==store.project_id(),store::RunStore::Maintenance(_)=>true};
         if let Some(dir) = project::of_landing(&row.out_dir) {
             let (id, name) = project::identity(dir);
             (run.project_id, run.project) = (Some(id), Some(name));
         }
-        if let Some(live) = lock(&self.live).get(&row.id) {
+        if let Some(live) = lock(&self.live).get(&row.id).filter(|_|owned) {
             run.waiting.clone_from(&live.waiting);
             run.progress.clone_from(&live.progress);
         }
@@ -675,10 +689,11 @@ impl Calcifer {
                 .and_then(|w| w.split("position ").nth(1)?.split(' ').next()?.parse().ok());
             run.queue_position = match told {
                 Some(place) => Some(place),
-                None => Some(self.with_run_store(row.id.as_str(), |store| store.queued_ahead(run.machine.as_deref(), run.number))? + 1),
+                None => Some(journal.queued_ahead(run.machine.as_deref(),run.number)?+1),
             };
         }
-        run.stalled = self.stalled(&run);
+        run.stalled=owned.then(||self.stalled(&run)).flatten();
+        if !owned && row.state!=State::Settled {run.waiting=Some("copied history; this execution is not resumed".into());run.progress=None;run.queue_position=None;}
         Ok(run)
     }
 

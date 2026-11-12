@@ -306,7 +306,7 @@ impl Removal {
             retained: Vec<String>,
         }
         let runs = self.targets.iter().enumerate().map(|(i, (package, from))| {
-            let submit = SubmitRun { project: None,
+            let submit = SubmitRun { project: crate::private_io::current().map(|scope|scope.storage.project_id),
                 agreed: None,
                 stays: vec![],
                 on: On::Machine(self.machine.clone()),
@@ -320,7 +320,7 @@ impl Removal {
                 },
                 inputs: vec![],
                 held: vec![],
-                out: None,
+                out: crate::private_io::current().map(|scope|crate::project::landing(&crate::project::vault::logical(&scope.storage.view_root))),
                 warnings: vec![],
             };
             let key = format!("{key}-{i}");

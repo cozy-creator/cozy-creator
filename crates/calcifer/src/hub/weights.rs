@@ -311,7 +311,7 @@ fn from_run(api: &Api, reference: &str, destination: &str, lane: &str) -> Result
         Some((number, output)) => (number, Some(output)),
         None => (reference, None),
     };
-    let run = api.calcifer.record(&crate::api::find_maintenance(api, number)?)?;
+    let run = api.calcifer.record(&crate::api::find_current(api, number)?)?;
     let item = weights(&run, output)?;
     let machine = run.machine.clone().ok_or_else(|| {
         Refusal(Error::new(Kind::Conflict, "run_unplaced", format!("run {} never reached a machine", run.number)))
