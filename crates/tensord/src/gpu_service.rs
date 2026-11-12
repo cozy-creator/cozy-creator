@@ -1223,8 +1223,9 @@ impl Pool {
         let (plan, start, degree) = (session.env.clone(), session.start, session.degree);
         self.notes.note(serde_json::json!({"event": "end_idle", "plan": plan,
             "constructions": session.loaded.keys().collect::<Vec<_>>(), "gpus": start..start + degree as usize}));
+        let private = session.private_project.is_some();
         if let Err(error) = session.executor.terminate() {
-            tracing::warn!("memory: ending idle executor {key}: {error}");
+            if !private { tracing::warn!("memory: ending idle executor {key}: {error}"); }
         }
         self.ended(&plan, start);
         true
