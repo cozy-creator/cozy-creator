@@ -309,7 +309,15 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
         if (zoom >= 1 && now < 1) await tab.keyboard.press('Shift+Digit0');
         else await tab.click(`.zoom button[aria-label="${zoom < now ? 'Zoom out' : 'Zoom in'}"]`);
         // A slow frame holds the view still part way: it's there once it has left where it was and is on one of the control's steps.
-        await until('the zoom moved', async () => (await tab.evaluate(VIEW)).zoom, (at) => !near(at, now, 0.0005));
+        // Stuck, it says whether the page still draws a frame (a lost transition) and which control the press left focused (a lost click).
+        await until('the zoom moved', async () => (await tab.evaluate(VIEW)).zoom, (at) => !near(at, now, 0.0005)).catch(async (error) => {
+          seen.zoom_stuck = await tab.evaluate(() => new Promise((done) => {
+            const told = (frame) => done({ frame, focus: document.activeElement?.getAttribute('aria-label'), shown: document.querySelector('.zoom-at')?.textContent });
+            setTimeout(() => told(false), 2000);
+            requestAnimationFrame(() => told(true));
+          })).catch((why) => String(why));
+          throw error;
+        });
         await until('the zoom on a step', async () => (await tab.evaluate(VIEW)).zoom, (at) => STEPS.some((step) => near(at, step, 0.0005)));
         await settled(tab);
       }

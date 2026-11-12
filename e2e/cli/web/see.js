@@ -379,7 +379,8 @@ async function rest(page, handle) {
   renameSync(olderAt, olderAway);
   const absent = await until('absent on the wire', () => asset('older_art'), (held) => held.absent === true);
   check('wire_absent_per_file', Object.values(absent.files).every((file) => file.absent === true) && (await state()).absent > 0, absent.files);
-  await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'On another computer');
+  // In cl-898's words (e4d29f0e3): "Kept on another computer".
+  await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'Kept on another computer');
   await open(page, 'older_art');
   check('no_manual_pull', (await element(page, 'older_art').getByRole('button', { name: 'Pull', exact: true }).count()) === 0);
   check('no_hash_when_absent', !(await page.evaluate(() => document.body.innerText)).includes(older.sha256.replace('sha256:', '').slice(0, 12)));
@@ -411,11 +412,14 @@ async function rest(page, handle) {
     await take(1);
     await take(2);
     await open(page, 'card');
-    await until('its count', () => card.locator('.count').textContent(), (text) => text === '2/2');
+    // Which take it shows, of how many: open, its column says, the one shown pressed (a picture has no N/M count since d49ac60ec, and
+    // Focus no head since 0a5a13047).
+    const count = () => card.locator('.take[data-take]').evaluateAll((takes) => `${takes.find((take) => take.getAttribute('aria-pressed') === 'true')?.dataset.take}/${takes.length}`);
+    await until('its count', count, (text) => text === '2/2');
     const made = await asset('card');
     check('wire_execution_ms', made.prefixes.every((version) => version.execution_ms > 0 && version.run > 0), made.prefixes);
     await card.locator('.take[aria-label$=" 1"]').click();
-    await until('looking at the first', () => card.locator('.count').textContent(), (text) => text === '1/2');
+    await until('looking at the first', count, (text) => text === '1/2');
     check('looking_is_only_this_page', (await asset('card')).version === made.version, (await asset('card')).version);
     // A double tap on it approves it, and again unapproves it.
     await card.locator('.take[aria-label$=" 1"]').dblclick();
@@ -438,6 +442,8 @@ async function rest(page, handle) {
   // The Hub unreachable: a read answers at once and writes nothing, and the page shows it. Then Calcifer as it was.
   seen.hub_checked = Boolean(process.env.NO_HUB);
   if (process.env.NO_HUB && process.env.RESTART) {
+    // An open box is Focus, the canvas behind it drawn in on it and drawing only what's near (c9b33c581): the page is looked at on the canvas.
+    await away(page);
     // project.db's revision, one more each commit: a read commits nothing.
     const revision = () => rowsOf(folder, "SELECT value FROM meta WHERE key = 'seq'")[0]?.[0];
     await shell(process.env.NO_HUB).catch(() => {});

@@ -1132,8 +1132,10 @@ export class CanvasStore {
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: open, it's the one looked at. At rest a box goes on
           // showing what it showed (cl-936), what's approved staying and what lands beside it unseen (cl-928): its watch goes once nothing is on its way.
-          const seen = watched({ ...view, asset })
-          const still = (id: string) => listed.has(id) || Boolean(taking?.some((take) => take.id === id))
+          // What Calcifer makes itself (a frame, a cut) has no run to watch: its take landing is the one it was rendered to look at.
+          const watching = watched({ ...view, asset })
+          const seen = watching && madeHere(asset.tool) && (newest ?? 0) > (view.asset?.prefixes?.at(-1)?.number ?? 0) ? { ...watching, number: newest } : watching
+          const still =(id: string) => listed.has(id) || Boolean(taking?.some((take) => take.id === id))
           if (!view.here && view.watch !== undefined && !asset.takes?.some((take) => !take.failure) && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
           else if (seen?.number !== undefined) Object.assign(change, { watch: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Ended with no version (failed, canceled): nothing of it to look at.
@@ -1385,12 +1387,13 @@ export class CanvasStore {
     return field
   }
 
-  /** Its height at a width, stack and all, when what it shows keeps its shape as it narrows: a box that may shrink to fit. */
+  /** Its height at a width as drawn, stack and all, when what it shows keeps its shape as it narrows: a box that may shrink to fit. A picture
+   *  showing another take is drawn at that take's width (`bodyWidth`): its height is its row's at the width that draws it that wide. */
   private tallOf(name: string): ((w: number) => number) | undefined {
     const view = this.views.get(name)
     if (!view) return undefined
-    if (view.asset?.kind === "image" && !view.hereWords && shownOf(view)) return undefined
-    const tall = (w: number) => this.laid(name, { x: 0, y: 0, w, h: heightFor(view, w) }).h
+    const per = bodyWidth(view, 1)
+    const tall = (w: number) => this.laid(name, { x: 0, y: 0, w: w / per, h: heightFor(view, w / per) }).h
     return tall(NARROWEST) < tall(NARROWEST * 2) ? tall : undefined
   }
 

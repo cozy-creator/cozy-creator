@@ -98,12 +98,9 @@ const DESCRIBED_MS = 300_000;
   await box('quick').waitFor();
   await page.keyboard.press('f');
   const turbo = box('quick').locator('input[type=checkbox][aria-label="Turbo"]');
-  // Opened, with More open: a toggle isn't on a box's face.
+  // Opened: in Focus every field of its tool is out, with no More (cl-938, aeddbfe14).
   const openQuick = async (timeout = STEP_MS) => {
     await openBox(page, 'quick');
-    const more = box('quick').locator('.more-toggle');
-    await more.waitFor({ timeout });
-    if ((await more.getAttribute('aria-expanded')) !== 'true') await more.click();
     await turbo.waitFor({ timeout });
   };
   await openQuick(DESCRIBED_MS);
