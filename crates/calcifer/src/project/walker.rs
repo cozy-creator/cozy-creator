@@ -85,7 +85,7 @@ pub(crate) struct Job {
     pub state: State,
     pub shot: bool,
     pub video: bool,
-    /// Pinned when it lands: what reads it waits for that.
+    /// Selected when it lands; existing asks retain their completed input snapshots.
     pub approve: bool,
     /// The order things go: the sooner asked and the earlier in the file, the smaller.
     pub rank: u64,
@@ -300,6 +300,12 @@ impl Graph {
             // Going already, of this render, as what a walker before this one sent.
             let going = self.open.get(&keys[i]).into_iter().flatten().copied().filter(|&id| self.jobs[id].ask == ask && self.jobs[id].state == State::Going);
             own.extend(going);
+            // A completed selected version is this ask's input snapshot. Making
+            // another version must not make its readers wait for that replacement.
+            if node.pinned && holds[i] && !judged[i] {
+                through[i] = vec![];
+                continue;
+            }
             let approving = own.iter().any(|&id| self.jobs[id].approve);
             let holds_up = approving || judged[i] || (!node.pinned && !own.is_empty());
             through[i] = match (holds_up, node.pinned, others.is_empty()) {

@@ -15,15 +15,15 @@ export interface Shown extends MainFile {
  * What a card shows: the version being looked at, else its state, else, out of date or with nothing else, its newest. A constant's
  * state may be no version at all.
  */
-export function shownOf(view: ElementView): Shown | null {
+export function shownOf(view: ElementView, selectedOnly = false): Shown | null {
   const asset = view.asset
   if (!asset) return view.landed ? { output: view.landed.field, path: "", sha256: view.landed.sha256, field: view.landed.field } : null
   // Looking at a take still being made: nothing of it to show yet, and no other take's picture stands in.
-  const watch = watched(view)
+  const watch = selectedOnly ? undefined : watched(view)
   if (watch && watch.number === undefined) return null
   const versions = asset.prefixes ?? []
   const version = (number?: number | null) => versions.find((held) => held.number === number)
-  const held = version(view.viewed) ?? version(asset.version)
+  const held = (selectedOnly ? undefined : version(view.viewed)) ?? version(asset.version)
   if (held?.main) return { ...held.main, number: held.number, run: held.run ?? undefined }
   if (asset.sha256 && asset.path && asset.field) {
     const { path, sha256, field, width, height, duration_ms, alpha, absent, machine } = asset
@@ -32,6 +32,9 @@ export function shownOf(view: ElementView): Shown | null {
   const newest = versions.at(-1)
   return newest?.main ? { ...newest.main, number: newest.number, run: newest.run ?? undefined } : null
 }
+
+/** Inputs use the completed selected state, independently of a displayed pending run. */
+export const selectedOf = (view: ElementView): Shown | null => shownOf(view, true)
 
 /** A card's size, unmeasured, so a card culled away still counts in a fit. */
 export const HEAD = 32

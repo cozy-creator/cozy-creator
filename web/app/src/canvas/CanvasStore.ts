@@ -32,7 +32,7 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { angleOf, baseOf } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -282,12 +282,16 @@ export class CanvasStore {
   readonly tools = signal<Map<string, Tool>>(new Map())
   /** Names came or went: a text shows a name as a chip or as words by it. */
   readonly names = signal(0)
-  /** The menu open, and where. */
-  readonly menu = signal<{ name: string; x: number; y: number } | null>(null)
+  /** The menu open, and where: a box's, or with `number` its take's. */
+  readonly menu = signal<{ name: string; x: number; y: number; number?: number } | null>(null)
   /** The box whose file is being looked at large, over everything. */
   readonly viewing = signal<string | null>(null)
   /** The one asset shown in the viewport-sized Focus surface; the canvas camera stays in Wander. */
   readonly focusedName = signal<string | null>(null)
+  /** The focused viewer owns its image camera separately from the canvas. */
+  focusZoomBy?: (direction: number) => void
+  focusZoomTo?: (scale: number) => void
+  focusFit?: () => void
   /** Zoomed this far out a box is its picture, its name and marks for its stack, which is all that can be seen: thousands are drawn at once. */
   readonly far = signal(false)
   /** The canvas's zoom as pictures are asked for it: a power of two, so a zoom asks for a sharper picture only as it doubles. */
@@ -537,10 +541,10 @@ export class CanvasStore {
       const of = read ? this.views.get(read.name) : undefined
       if (!of?.asset || of.asset.kind !== "image" || this.refusalOf(name, mention) || seen.has(mention)) return []
       seen.add(mention)
-      const file = read?.number !== undefined ? of.asset.prefixes?.find((held) => held.number === read.number)?.main : shownOf(of)
+      const file = read?.number !== undefined ? of.asset.prefixes?.find((held) => held.number === read.number)?.main : selectedOf(of)
       if (file && !file.absent && file.field === "image") return [{ mention, sha256: file.sha256 }]
       // Nothing of it yet: its frame, at the shape it will be, and whether it's being made.
-      return [{ mention, shape: sentShape(of) ?? 1, making: Boolean(of.asset.making?.length || of.queued || of.asked !== undefined) }]
+      return [{ mention, shape: sentShape(of) ?? 1, making: read?.number === undefined && !file && Boolean(of.asset.making?.length || of.queued || of.asked !== undefined) }]
     })
   }
 
@@ -549,6 +553,7 @@ export class CanvasStore {
     const asset = this.get(name)?.asset
     for (const read of asset?.reads ?? []) {
       const of = this.get(this.mentionOf(read.name, name)?.name ?? "")
+      if (of?.asset && (read.version !== undefined && read.version !== null ? versionIn(of.asset, read.version)?.main : selectedOf(of))) continue
       if (of?.asset?.tool && (of.asset.making?.length || of.queued || of.asked !== undefined || (!of.asset.prefixes?.length && !of.asset.sha256))) return read.name
     }
     return null
@@ -879,7 +884,6 @@ export class CanvasStore {
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) Object.assign(change, { slid: newest, glimpse: undefined })
-          if (asset.kind === "image" && newest && newest !== view.asset?.prefixes?.at(-1)?.number) Object.assign(change, { hereWords: undefined, viewed: undefined, watchRun: undefined, watchFrom: undefined })
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at.
@@ -1265,8 +1269,9 @@ export class CanvasStore {
   pickTake(name: string, number: number) {
     const asset = this.get(name)?.asset
     if (!asset) return
-    if (asset.kind === "image") return this.selectVersion(name, number)
+    this.patch(name, { watchRun: undefined, watchFrom: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
     this.view(name, number === asset.version ? undefined : number)
+    if (asset.kind === "image") return
     if (!asset.tool || asset.timeline) return
     const field = this.promptOf(asset.tool)
     const words = this.valueOf(name, field)
@@ -1284,7 +1289,7 @@ export class CanvasStore {
     if (asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     void this.save(key)
     this.patch(key, { viewed: undefined, watchRun: undefined, watchFrom: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
-    if (asset.version === number) return
+    if (asset.pinned && (asset.approved ?? asset.version) === number) return
     const edit = this.step(`Selected version ${number} of ${key}`, [key])
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select version", edit)
     if (view?.hereWords && asset.tool) {
@@ -2018,7 +2023,7 @@ export class CanvasStore {
     const said = this.mentionOf(mention, asset)
     const view = said && this.get(said.name)
     if (!view) return null
-    if (said.number === undefined) return shownOf(view)
+    if (said.number === undefined) return selectedOf(view)
     const main = versionIn(view.asset, said.number)?.main
     return main ? { ...main, number: said.number } : null
   }

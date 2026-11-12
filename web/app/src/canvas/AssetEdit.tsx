@@ -17,6 +17,7 @@ import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } fr
 import { makes } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
 import { ToolBox } from "./ToolBox"
+import "./FocusParameters.css"
 
 /** Where a field's value is, and how it's changed: what's typed waits for a pause, what's set is written at once, and unset takes its key away. */
 export interface Bound {
@@ -703,36 +704,41 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 const small = (field: ToolField) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
 
 /** What a box asks and holds, under it. On its face: prompts, groups, what a render can't go without, a filled slot, and Render. Everything else is under More, expert settings in its Advanced. On a take: what's done with that. */
-export function AssetEdit({ name, view, editing, head, actions, children }: { name: string; view: ElementView; editing: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
+export function AssetEdit({ name, view, editing, prominent = false, head, actions, children }: { name: string; view: ElementView; editing: boolean; prominent?: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const [advanced, setAdvanced] = useState(false)
   if (!view.asset) return null
   const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
-  const fields = makes(view) ? fieldsOf(view.asset, tools) : []
-  const inFrame = framed(view, fields, tool)
+  const declared = makes(view) ? fieldsOf(view.asset, tools) : []
+  const priority = (field: ToolField) => field.type === "group" && (field.field === "beats" || field.members?.some((member) => member.total)) ? 0 : field.field === "summary" ? 1 : 2
+  const fields = prominent ? [...declared].sort((a, b) => priority(a) - priority(b)) : declared
+  const inFrame = prominent ? undefined : framed(view, fields, tool)
   const first = fields.find((field) => field.type === "prompt" || field.type === "words")
   // The box's own shape is its shape: its corner sets it.
   const rest = fields.filter((field) => field !== inFrame && field.type !== "timeline" && field.type !== "shape")
-  const faced = editing ? rest.filter((field) => onFace(field, store.valueOf(name, field.field))) : []
+  const faced = editing ? rest.filter((field) => prominent ? !field.advanced : onFace(field, store.valueOf(name, field.field))) : []
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, fields)
   const folded = rest.filter((field) => !faced.includes(field))
   const plainFolded = folded.filter((field) => !field.advanced)
   const expert = folded.filter((field) => field.advanced)
   const open = store.showsMore(name)
   const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
-  const row = (field: ToolField) => <ControlRow key={field.field} name={name} field={field} view={view} focus={store.focusing === name && field === first} named={folded.includes(field)} />
+  const row = (field: ToolField) => {
+    const control = <ControlRow key={field.field} name={name} field={field} view={view} focus={!prominent && store.focusing === name && field === first} named={folded.includes(field)} />
+    return prominent && field.type === "group" && field.list ? <section key={field.field} className="focus-parameter-group"><h3>{field.label}</h3>{control}</section> : control
+  }
   return (
-    <div className="edit-face">
+    <div className={`edit-face ${prominent ? "prominent" : ""}`}>
       {head && <div className="tool-head">{head}</div>}
-      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} row={row}>
+      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => prominent || !small(field))} folded={plainFolded} row={row}>
         {(lines, more) => {
-          const behind = (more !== null && folded.length > 0) || addOns || beyond.length > 0
+          const behind = (more !== null && plainFolded.length > 0) || addOns || beyond.length > 0
           return (
             <>
               {editing && lines && <div className="edit-shown">{lines}</div>}
+              {more !== null && expert.length > 0 && <div className="advanced">{expert.map(row)}</div>}
               <div className="row actions">
-                {more !== null && faced.filter(small).map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named={false} />)}
+                {!prominent && more !== null && faced.filter(small).map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named={false} />)}
                 {actions}
                 {behind && (
                   <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}>
@@ -744,14 +750,6 @@ export function AssetEdit({ name, view, editing, head, actions, children }: { na
                 open && (
                   <div className="edit-more">
                     {open && more}
-                    {open && more !== null && expert.length > 0 && (
-                      <div className="advanced">
-                        <button type="button" className="advanced-toggle nodrag" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}>
-                          Advanced
-                        </button>
-                        {advanced && expert.map(row)}
-                      </div>
-                    )}
                     {open && <AddOnRows name={name} />}
                     {open && beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
                     {children}

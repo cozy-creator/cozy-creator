@@ -9,7 +9,7 @@ import { useConnection } from "../app/Connection"
 import { leftWords } from "../panels/format"
 import { fractionOf, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
 import { long, workWords } from "../panels/runs/words"
-import type { Run, Tool } from "../api/calcifer"
+import type { MainFile, Run, Tool } from "../api/calcifer"
 import { useCanvasStore, useElement } from "./context"
 import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
@@ -310,6 +310,9 @@ type Source = { path: string } | { run: number; output: string }
 
 // A project's file, by its hash. Anything else from a state isn't followed.
 const FILE = /^files\/[0-9a-f]{64}(\.\w+)?$/
+
+/** Its bytes are in the project's files/, which the file route serves, so a person can download it. */
+export const downloadable = (file: MainFile) => !file.absent && FILE.test(file.path)
 
 export function sourceOf(view: ElementView, shown: Shown | null): Source | null {
   const asset = view.asset
@@ -637,7 +640,7 @@ export function Ghosts({ name, view, mentions, cardWidth = 960 }: { name: string
     if (view.asset?.kind !== "image" || frame || !element.current) return
     const held = element.current
     const measure = () => {
-      if (held.clientWidth > 0 && held.clientHeight > 0) setFrame({ width: held.clientWidth, height: held.clientHeight })
+      if (held.clientWidth > 0 && held.clientHeight > 0) setFrame({ width: held.clientWidth, height: held.clientHeight / 2 })
     }
     measure()
     const observer = new ResizeObserver(measure)
@@ -764,6 +767,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {busy && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {busy && <OnItsWay view={view} name={name} number={run} />}
+      {asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit: open it and drag to turn">

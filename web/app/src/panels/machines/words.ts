@@ -62,7 +62,7 @@ export const kindWords = (machine: Machine) =>
 export function endsWords(machine: Machine, now: number): string {
   const deadline = machine.status?.idle_deadline_ms
   if (deadline != null) return deadline > now ? `ends in ${span((deadline - now) / 1000)} if it stays idle` : "ends now"
-  return machine.status && machine.kind === "rental" ? "ends after its jobs" : ""
+  return machine.status && machine.kind === "rental" ? "ends 15 min after its last job" : ""
 }
 
 export function spentWords(machine: Machine): string {

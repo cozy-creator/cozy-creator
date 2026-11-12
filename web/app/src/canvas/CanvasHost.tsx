@@ -397,6 +397,10 @@ function Canvas({
   /** Zoom to `zoom` about the middle of what's visible, as a fit moves. Worked on where it stands, a box then stays where this puts it. */
   const zoomTo = useCallback(
     (zoom: number) => {
+      if (store.focusedName.get()) {
+        store.focusZoomTo?.(zoom)
+        return
+      }
       const pane = stage.current?.querySelector(".react-flow")?.getBoundingClientRect()
       if (!pane) return
       const from = aimed()
@@ -411,21 +415,33 @@ function Canvas({
     },
     [flow, store, aimed],
   )
-  const zoomBy = useCallback((by: 1 | -1) => zoomTo(stepZoom(aimed().zoom, by)), [aimed, zoomTo])
+  const zoomBy = useCallback((by: 1 | -1) => {
+    if (store.focusedName.get()) {
+      store.focusZoomBy?.(by)
+      return
+    }
+    zoomTo(stepZoom(aimed().zoom, by))
+  }, [store, aimed, zoomTo])
   /** Everything; a box worked on, it and what's under it as they were drawn in. */
   const fit = useCallback(() => {
+    if (store.focusedName.get()) {
+      store.focusFit?.()
+      return
+    }
     aim.current = null
-    if (store.focusedName.get()) leaveHere()
     void flow.fitView({ ...fitOver(), duration: HERE_MS })
-  }, [flow, store, leaveHere])
+  }, [flow, store])
   /** What's selected, else the box worked on. */
   const fitSelected = useCallback(() => {
-    if (store.focusedName.get()) leaveHere()
+    if (store.focusedName.get()) {
+      store.focusFit?.()
+      return
+    }
     const nodes = flow.getNodes().filter((node) => node.selected)
     if (!nodes.length) return fit()
     aim.current = null
     void flow.fitView({ ...fitOver(), maxZoom: MOST_HERE, nodes, duration: HERE_MS })
-  }, [flow, store, fit, leaveHere])
+  }, [flow, store, fit])
   const zoomItems = useCallback(
     (): ZoomItem[] => [
       { label: "Zoom in", keys: keys("Mod", "+"), run: () => zoomBy(1) },
@@ -520,10 +536,10 @@ function Canvas({
 
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (store.focusedName.get()) leaveHere()
+      if (store.focusedName.get()) return
       if (store.projectId) saveViewport(store.projectId, viewport)
     },
-    [store, leaveHere],
+    [store],
   )
 
   const selectionChanged = useCallback(
@@ -695,12 +711,6 @@ function Canvas({
   }, [active, store, client, flow, placer, visibleCentre])
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
-  const moveStarted = useCallback(
-    () => {
-      if (store.focusedName.get()) leaveHere()
-    },
-    [store, leaveHere],
-  )
   const nodeClicked = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
       if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
@@ -713,7 +723,9 @@ function Canvas({
     },
     [store, flow, writeHere, navigate, to],
   )
-  const paneClicked = useCallback(() => leaveHere(), [leaveHere])
+  const paneClicked = useCallback(() => {
+    if (!store.focusedName.get()) leaveHere()
+  }, [store, leaveHere])
   const nodeMenu = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
       if (node.type !== "element") return
@@ -832,7 +844,10 @@ function Canvas({
           defaultNodes={[]}
           nodeTypes={nodeTypes}
           defaultViewport={saved ?? undefined}
-          panOnScroll
+          panOnScroll={!focusedName}
+          panOnDrag={!focusedName}
+          zoomOnScroll={!focusedName}
+          zoomOnPinch={!focusedName}
           panOnScrollSpeed={1}
           selectionMode={SelectionMode.Partial}
           selectNodesOnDrag={false}
@@ -846,8 +861,6 @@ function Canvas({
           onlyRenderVisibleElements
           colorMode="dark"
           attributionPosition="bottom-left"
-          onMoveStart={moveStarted}
-          onMove={moveStarted}
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
           onNodeClick={nodeClicked}

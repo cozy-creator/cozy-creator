@@ -613,6 +613,11 @@ export class Client {
     return `${project(id)}/${file.split("/").map(encodeURIComponent).join("/")}`
   }
 
+  /** A file route's file downloaded as `name`, its extension Calcifer's: `hei.2` saves `hei.2.png`. */
+  download(path: string, name: string): void {
+    this.transport.save(`${path}${path.includes("?") ? "&" : "?"}download=${encodeURIComponent(name)}`)
+  }
+
   // Runs
 
   runs(filter: RunFilter, limit: number, signal?: AbortSignal): Promise<RunList> {

@@ -2149,8 +2149,24 @@ button:disabled {
   color: var(--mute);
   font-size: var(--small);
 }
-.keep-up:empty {
-  display: none;
+/* A machine's drawer: what it's doing and when it ends, then what to do with it, Render here first. */
+.doing-now {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 6px 0;
+}
+.machine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+.machine-actions > p,
+.machine-actions > .failure {
+  flex-basis: 100%;
+  margin: 0;
 }
 .kv {
   margin: 8px 0;
@@ -2351,12 +2367,6 @@ button:disabled {
 }
 .order p {
   margin: 0 0 8px;
-}
-.ending {
-  margin: 8px 0;
-}
-.ending p {
-  margin: 0 0 6px;
 }
 .stack {
   display: grid;
@@ -2786,8 +2796,24 @@ a.tab:hover {
 .fixed-image-references {
   inset: auto;
   left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  bottom: 0;
+  transform: translateX(-50%);
+}
+.in-frame .mention-text {
+  font-weight: 600;
+  text-shadow: 0 1px 2px var(--panel);
+}
+.image-edit-action {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  z-index: 9;
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--round);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 18px;
 }
 .tool:active {
   cursor: grabbing;
@@ -3896,8 +3922,11 @@ input[type="checkbox"] {
 }
 
 /* Each machine, top right: what it's doing, its name, and how many things. */
+/* Every machine shows: past its width the chips wrap to another row. */
 .mtabs {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: stretch;
   gap: calc(2px * var(--ui));
   min-width: 0;
@@ -3993,7 +4022,7 @@ input[type="checkbox"] {
 }
 .activity header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding: 2px 4px 8px;
   border-bottom: 1px solid var(--line);
@@ -4005,7 +4034,8 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.activity .more {
+.activity .more,
+.activity .render-here {
   flex: none;
 }
 .activity ul {
