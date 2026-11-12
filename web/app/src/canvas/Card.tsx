@@ -19,6 +19,7 @@ import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
+import { VideoScrub } from "./VideoScrub"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
 import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
@@ -857,6 +858,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         </Media>
       )}</FocusFrame>
       {rendering && <span className="render-wave" aria-hidden="true" />}
+      {focused && asset?.kind === "video" && !asset.timeline && !editing && <VideoScrub name={name} view={view} />}
       {here && !lite && asset && (asset.kind === "image" || (asset.kind === "video" && !asset.timeline && !editing)) && !view.placing && <ImageVersions name={name} view={view} width={width} />}
       {!lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
@@ -876,7 +878,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
-              {!looking && (asset.kind !== "image" || editing) && <AssetEdit name={name} view={view} editing={editing} prominent={parameterTool} head={asset.kind !== "image" ? <Stack name={name} /> : undefined} actions={editing && <RenderButton name={name} view={view} />} />}
+              {/* With no tool, a picture or a video asks nothing and has nothing to render (Paul, 11-12). */}
+              {!looking && (asset.kind !== "image" || editing) && Boolean(asset.tool) && <AssetEdit name={name} view={view} editing={editing} prominent={parameterTool} head={asset.kind !== "image" ? <Stack name={name} /> : undefined} actions={editing && <RenderButton name={name} view={view} />} />}
               {asset.kind !== "image" && !view.hereWords && <TakeName view={view} />}
               {view.warned && warned ? (
                 <div className="warned-lines">

@@ -81,7 +81,8 @@ export interface ElementView {
   /** What reading the project said of it. */
   warnings?: string[]
   /** A piece of a cut was clicked: where to play from. `at` is seconds, `ask` tells one click from the next. */
-  seek?: { at: number; ask: number }
+  /** Where its player is asked to go; `still`, and stay there, as a scrubber asks. */
+  seek?: { at: number; ask: number; still?: boolean }
   /** Known from the import's answer until the project is read again. */
   landed?: { sha256: string; field: string }
   /** The project doesn't hold it, as far as reads say. Until when: a read begun after that says. Forever until Calcifer answers. */
@@ -1374,9 +1375,9 @@ export class CanvasStore {
     this.patch(name, { hereWords: asset.kind === "video" || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
   }
 
-  seek(name: string, at: number) {
+  seek(name: string, at: number, still = false) {
     const held = this.get(name)
-    if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1 } })
+    if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1, still } })
   }
 
   /**

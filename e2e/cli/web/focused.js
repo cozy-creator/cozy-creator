@@ -619,14 +619,18 @@ async function died(error) {
   }), Boolean);
   const completedGeometry = await videoFocus.locator('.focus-viewer').boundingBox();
   check('completed_video_has_a_prominent_view_only_face', completedGeometry.width > videoRoom.width * 0.5 && completedGeometry.height > 120 && !await summaryPrompt.isVisible() && !await beatPrompt.isVisible() && await videoFocus.locator('.mention-text:visible').count() === 0, { completedGeometry, videoRoom });
-  check('completed_video_has_models_and_an_explicit_pick_up_action', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await videoFocus.locator('.video-pickup-action').isVisible());
-  await videoFocus.locator('.video-pickup-action').click();
+  // Pick up from here is under its scrubber (cl-933).
+  const pickUp = videoFocus.locator('.video-scrub button:text-is("Pick up from here")');
+  check('completed_video_has_models_and_an_explicit_pick_up_action', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await pickUp.isVisible());
+  await pickUp.click();
   await videoFocus.locator('.focus-new-video').waitFor();
   await summaryPrompt.waitFor({ state: 'visible' });
   check('pick_up_opens_the_video_editor_without_starting_a_render', !await videoFocus.locator('.focus-viewer').isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1 && !(await state()).assets.find((item) => item.name === VIDEO).making?.length);
   await completedVideo.click();
   await videoFocus.locator('.focus-viewer').getByRole('button', { name: 'Play', exact: true }).waitFor();
   await shot('completed-video');
+  // With a take it has New (cl-925).
+  const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
   check('video_has_a_new_state_tile', await newVideo.isVisible());
   await newVideo.click();
   check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1);

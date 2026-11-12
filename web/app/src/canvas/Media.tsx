@@ -361,6 +361,8 @@ export function Player({ field, path, machine, seek, auto, onTime }: { field: st
   const stopRef = useRef<() => void>(() => {})
   const wanted = useRef<number | null>(null)
   const asked = useRef(seek?.ask ?? 0)
+  // Scrubbed, it holds the frame it was taken to, playing only when played.
+  const still = useRef(false)
 
   useEffect(() => () => stopRef.current(), [])
   // Asked to play at once: once it's there, so React's second mount in development doesn't stop it.
@@ -387,7 +389,11 @@ export function Player({ field, path, machine, seek, auto, onTime }: { field: st
     if (!seek || seek.ask === asked.current) return
     asked.current = seek.ask
     wanted.current = seek.at
-    if (element.current) element.current.currentTime = seek.at
+    still.current = Boolean(seek.still)
+    if (element.current) {
+      element.current.currentTime = seek.at
+      if (still.current) element.current.pause()
+    }
     setState((now) => (now === "idle" ? "waiting" : now))
   }, [seek])
 
@@ -421,7 +427,7 @@ export function Player({ field, path, machine, seek, auto, onTime }: { field: st
         setState("playing")
         if (wanted.current !== null) el.currentTime = wanted.current
         wanted.current = null
-        el.play().catch(() => {})
+        if (!still.current) el.play().catch(() => {})
       })
       .catch((error: unknown) => {
         if (!waiting.signal.aborted) failed(error instanceof Error ? error.message : String(error))
@@ -723,11 +729,6 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {(onItsWay || arriving !== undefined) && asset?.rendering == null && !view.here && <RunFace view={view} name={name} number={run} full={full} />}
       {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
-      {asset?.kind === "video" && tools.get(asset.tool ?? "")?.pickup && !view.hereWords && shown && <button type="button" className="image-edit-action video-pickup-action nodrag nopan" onClick={(event) => {
-        event.stopPropagation()
-        const playing = event.currentTarget.closest(".media")?.querySelector<HTMLVideoElement>("video.live")
-        void store.beginVideoPickup(name, playing?.currentTime ?? view.scrub ?? 0)
-      }}>Pick up from here</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit: open it and drag to turn">
