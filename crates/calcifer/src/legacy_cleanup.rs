@@ -2,6 +2,38 @@
 //! logs belong to the project journal; these mixed raw copies have no safe project owner.
 use std::{fs, io, path::Path};
 
+const RETIRED_DIGESTS: &[u8] = b"cozy: retired digest cache v3\n";
+
+pub(crate) fn digests_retired(path: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else { return false };
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() != RETIRED_DIGESTS.len() as u64 { return false; }
+    fs::read(path).is_ok_and(|bytes| bytes == RETIRED_DIGESTS)
+}
+
+fn retire_digests(cache: &Path) -> io::Result<()> {
+    let memo = cache.join("digests");
+    if digests_retired(&memo) { return Ok(()); }
+    for entry in entries(&memo)? {
+        let name = entry.file_name();
+        let name = name.to_str().ok_or_else(|| io::Error::other("unknown legacy digest entry"))?;
+        let known = name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let metadata = entry.file_type()?;
+        if !known || !metadata.is_file() || metadata.is_symlink() || entry.metadata()?.len() != 71 {
+            return Err(io::Error::other("a legacy digest entry needs an ownership decision"));
+        }
+        let bytes = fs::read(entry.path())?;
+        if std::str::from_utf8(&bytes).ok().and_then(|text| text.parse::<::api::ids::Digest>().ok()).is_none() {
+            return Err(io::Error::other("a legacy digest entry has an unknown format"));
+        }
+        remove_file(&entry.path())?;
+    }
+    if memo.exists() { fs::remove_dir(&memo)?; }
+    platform::durable::private_dir(cache).map_err(io::Error::other)?;
+    // Old in-flight clients ignore memo failures. A regular file prevents them
+    // from recreating this retired directory after the verified cleanup.
+    platform::durable::replace(&memo, RETIRED_DIGESTS, 0o600).map_err(io::Error::other)
+}
+
 fn absent(error: &io::Error) -> bool { error.kind() == io::ErrorKind::NotFound }
 fn raw_log(name: &str) -> bool {
     name == "calcifer.log" || name.strip_prefix("calcifer.log.")
@@ -56,6 +88,7 @@ pub(crate) fn retire(calcifer: &Path) -> io::Result<()> {
         for entry in entries(&home.join("cache"))? {
             if entry.file_name().to_str().is_some_and(redirect) { remove_file(&entry.path())?; }
         }
+        retire_digests(&home.join("cache"))?;
     }
     Ok(())
 }
@@ -71,6 +104,8 @@ pub(crate) fn pending(calcifer: &Path) -> bool {
         _ => return true,
     }
     let Some(home) = calcifer.parent() else { return true };
+    let digests = home.join("cache/digests");
+    if digests.exists() && !digests_retired(&digests) { return true; }
     match entries(&home.join("cache")) {
         Ok(found) => found.iter().any(|entry| entry.file_name().to_str().is_some_and(redirect)),
         Err(_) => true,

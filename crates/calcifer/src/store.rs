@@ -1705,10 +1705,13 @@ impl Store {
             // Older source caches have no explicit owner. Do not silently call
             // them independent maintenance merely because the SQL rows moved.
             if conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_runs')",[],|row|row.get::<_,bool>(0))? {
-                match std::fs::read_dir(self.legacy_home.parent().unwrap_or(&self.legacy_home).join("cache").join("digests")) {
-                    Ok(mut entries)=>if entries.next().is_some() {return Ok(true);},
-                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
-                    Err(_)=>return Ok(true),
+                let digests=self.legacy_home.parent().unwrap_or(&self.legacy_home).join("cache").join("digests");
+                if !crate::legacy_cleanup::digests_retired(&digests) {
+                    match std::fs::read_dir(&digests) {
+                        Ok(mut entries)=>if entries.next().is_some() {return Ok(true);},
+                        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                        Err(_)=>return Ok(true),
+                    }
                 }
                 match std::fs::read_dir(self.legacy_home.join("local")) {
                     Ok(entries)=>for entry in entries {
