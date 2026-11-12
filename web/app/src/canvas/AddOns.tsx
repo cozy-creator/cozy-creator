@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import "./AddOns.css"
-import { type AddOn, addOnsOf, atStrength, carried, takenOff, wordOf } from "./checkpoints"
+import { type AddOn, addOnsOf, carried, takenOff, wordOf } from "./checkpoints"
 import { useCanvasStore, useElement } from "./context"
 import { madeHere } from "./shown"
 import { modelLabel } from "./palette"
@@ -68,44 +68,4 @@ export function AddOns({ name }: { name: string }) {
       {going && !going.whyNot(name, view, tools) && <span className="box-takes" />}
     </>
   )
-}
-
-/** Behind More: each add-on, and how strong a LoRA is. */
-export function AddOnRow({ name, addOn }: { name: string; addOn: AddOn }) {
-  const { lora, models, store } = useAddOns(name)
-  const [moving, setMoving] = useState<number | null>(null)
-  const shown = moving ?? addOn.strength
-  const off = (
-    <button type="button" className="iconb nodrag" aria-label={`Take ${wordOf(addOn.ref)} off ${name}`} title="Take it off" onClick={() => store.putOn(name, takenOff(addOn, lora, models))}>
-      <Icon name="close" />
-    </button>
-  )
-  if (!addOn.lora) {
-    return (
-      <div className="slide held-line" title={said(addOn)}>
-        <span className="ctl-name">Fine-tune</span>
-        <span className="held-value">{wordOf(addOn.ref)}</span>
-        {off}
-      </div>
-    )
-  }
-  const done = () => {
-    if (moving !== null && moving !== addOn.strength) store.putOn(name, atStrength(addOn, moving, lora, models))
-    setMoving(null)
-  }
-  return (
-    <div className="add-on-row">
-      <label className="slide" title={said(addOn)}>
-        <span className="ctl-name">{wordOf(addOn.ref)}</span>
-        <input className="nodrag nopan" type="range" aria-label={`Strength of ${wordOf(addOn.ref)}`} min={0} max={2} step={0.05} value={shown} onChange={(event) => setMoving(Number(event.target.value))} onPointerUp={done} onKeyUp={done} />
-        <span>{shown}</span>
-      </label>
-      {off}
-    </div>
-  )
-}
-
-export function AddOnRows({ name }: { name: string }) {
-  const { held } = useAddOns(name)
-  return held.map((addOn) => <AddOnRow key={`${addOn.slot}:${addOn.ref}`} name={name} addOn={addOn} />)
 }

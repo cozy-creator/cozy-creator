@@ -101,6 +101,7 @@ case $suite:$shard in
   cli:runs | cli:commands | cli:local-code) needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
+  cli:web-models) needs='packages loras' ;;
   cli:) needs='packages birefnet downloads' ;;
   cli:*) needs='packages' ;;
   imports:*)
@@ -190,7 +191,7 @@ if [ -n "$needs" ]; then
       systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
       relay ;;
   esac
-  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* ]]; then
+  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -205,6 +206,43 @@ if [ -n "$needs" ]; then
     mirror "$seed/qwen3.5-0.8b.safetensors" qwen/qwen3.5-0.8b bf16 0.1.0 https://huggingface.co/Qwen/Qwen3.5-0.8B --source-format as-is
     random_weights "$seed/fontbox.safetensors" 115
     mirror "$seed/fontbox.safetensors" lilylilith/fontbox bf16 0.1.0 https://huggingface.co/lilylilith/fontbox --source-format as-is
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" loras "* ]]; then
+    # What H3's Models & LoRAs lists (web-models, cl-934): its default model, a stand-in its family names, and an edit LoRA of that family.
+    h3=$(sed -n 's/^_MODEL = "\(.*\)"$/\1/p' "$packages/minimax-h3/h3.py")
+    [ -n "$h3" ] || { echo "minimax-h3/h3.py names no _MODEL" >&2; exit 1; }
+    random_weights "$seed/minimax-h3.safetensors" 1
+    mirror "$seed/minimax-h3.safetensors" "${h3%@*}" bf16 "${h3#*@}" https://huggingface.co/MiniMaxAI/MiniMax-H3 --source-format as-is
+    cozy --json model edit "${h3%@*}" --family minimax-h3 > "$seed/edit-minimax-h3.json" 2>&1 \
+      || { echo "naming ${h3%@*}'s family failed: $(tail -c 600 "$seed/edit-minimax-h3.json")" >&2; exit 1; }
+    # An H3 LoRA as musubi-tuner writes it (e2e/release/synthetic.sh's), one rank of one block.
+    python3 -I - "$seed/vfx-edit.safetensors" <<'PYH3'
+import json, struct, sys
+stem, rank = "lora_unet_blocks_0_attn_qkv_proj", 1
+shapes = {f"{stem}.lora_down.weight": [rank, 5376], f"{stem}.lora_up.weight": [3 * 7168, rank]}
+header, data, at = {}, b"", 0
+for key, shape in shapes.items():
+    size = 2 * shape[0] * shape[1]
+    header[key] = {"dtype": "F16", "shape": shape, "data_offsets": [at, at + size]}
+    data, at = data + b"\x00\x3c" * (size // 2), at + size
+header[f"{stem}.alpha"] = {"dtype": "F32", "shape": [], "data_offsets": [at, at + 4]}
+data += struct.pack("<f", 1.0)
+header["__metadata__"] = {"ss_network_module": "networks.lora_minimax_h3", "ss_minimax_h3_task": "ref2va", "ss_minimax_h3_base_family": "ref2va"}
+raw = json.dumps(header).encode()
+raw += b" " * (-len(raw) % 8)
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + data)
+PYH3
+    lora=alissonerdx/minimax-h3-vfx-edit
+    cozy --json lora upload "$seed/vfx-edit.safetensors" "$lora" --lane f16 --mirror https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI --on local -y \
+      > "$seed/upload-vfx-edit.json" 2>&1 || { echo "uploading $lora failed: $(tail -c 600 "$seed/upload-vfx-edit.json")" >&2; exit 1; }
+    commit=$(python3 "$here/model-details.py" "$lora" | jq -r '.checkpoints[0].checkpoint // empty')
+    [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; exit 1; }
+    cozy --json lora publish "$lora" 0.1.0 "$commit" -y > "$seed/publish-vfx-edit.json" 2>&1 \
+      || { echo "publishing $lora failed: $(tail -c 600 "$seed/publish-vfx-edit.json")" >&2; exit 1; }
+    cozy --json lora edit "$lora" --family minimax-h3 > "$seed/edit-vfx-edit.json" 2>&1 \
+      || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-vfx-edit.json")" >&2; exit 1; }
+    log "published ${h3%@*}@${h3#*@} (a stand-in) and $lora@0.1.0, family minimax-h3"
     rm -f "$seed"/*.safetensors
   fi
   cd "$start"

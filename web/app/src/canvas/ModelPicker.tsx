@@ -8,19 +8,20 @@ import { say } from "../ui/notes"
 import { NSFW, isNsfw, useShowNsfw } from "../ui/Tags"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
-import { modelLabel } from "./palette"
 import { loraNote } from "./loraNotes"
 import "./ModelPicker.css"
 
 type Entry = Record<string, unknown>
 type Kind = "weights" | "lora"
-type PickerSlot = ToolModel & { kind?: "base" | "lora" | null; class?: string | null }
+/** One choice the picker offers: `slot` is its first key in a box's `models`, `keys` every key it sets. */
+export type PickerSlot = ToolModel & { param: string; keys: string[] }
 type PickerModel = FoundModel & { strength?: number | null; description?: string | null }
 const entryOf = (value: unknown): Entry => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Entry : {}
 const adaptersOf = (value: unknown): unknown[] => Array.isArray(value) ? value : []
 const identityOf = (ref: string) => ref.split("@")[0]
 const title = (value: string) => value.split(/[-_]+/).filter(Boolean).map((part) => part.toLowerCase() === "lora" ? "LoRA" : !/[aeiou]/i.test(part) ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1)).join(" ")
-const slotName = (slot: PickerSlot, qwen: boolean) => qwen && slot.slot === "rewriter" ? "Prompt-Enhancer I2I" : qwen && slot.slot === "expander" ? "Prompt-Enhancer T2I" : title(slot.slot)
+const slotName = (slot: PickerSlot, qwen: boolean, slots: PickerSlot[]) => qwen && slot.slot === "rewriter" ? "Prompt-Enhancer I2I" : qwen && slot.slot === "expander" ? "Prompt-Enhancer T2I"
+  : slots.filter((held) => held.param === slot.param).length > 1 ? `${title(slot.param)} (${title(slot.slot.split(".models.")[0])})` : title(slot.param)
 const modelName = (ref: string) => title(identityOf(ref).split("/").filter(Boolean).at(-1)?.replace(/\.safetensors$/, "") ?? ref)
 export const modelChoiceLabel = (ref: string) => {
   const parts = identityOf(ref).split("/").filter(Boolean)
@@ -28,10 +29,18 @@ export const modelChoiceLabel = (ref: string) => {
   return owner ? `${owner} / ${modelName(ref)}` : modelName(ref)
 }
 const descriptionOf = (model: PickerModel) => (model.description ?? loraNote(model.model)?.description)?.trim().replace(/\s+/g, " ") || "No description provided."
-const slotsOf = (tool: Tool | undefined): PickerSlot[] => {
-  const slots = (tool as (Tool & { models?: PickerSlot[] }) | undefined)?.models
-  const primary = tool?.model as PickerSlot | undefined
-  return slots?.length ? slots : primary ? [{ ...primary, kind: primary.kind ?? "base" }] : []
+/** What a tool's models and LoRAs are set by, the one list every model control reads: each slot it declares, and its child calls'
+ *  slots of one parameter and one default as one (H3's segments each take `base_model`: one Base Model). */
+export function slotsOf(tool: Tool | undefined): PickerSlot[] {
+  const declared = tool?.models?.length ? tool.models : tool?.model ? [{ ...tool.model, kind: tool.model.kind ?? "base" }] : []
+  const merged = new Map<string, PickerSlot>()
+  for (const slot of declared) {
+    const param = slot.slot.split(".models.").at(-1) ?? slot.slot
+    const one = merged.get(`${param} ${slot.default ?? ""}`)
+    if (one) one.keys.push(slot.slot)
+    else merged.set(`${param} ${slot.default ?? ""}`, { ...slot, param, keys: [slot.slot] })
+  }
+  return [...merged.values()]
 }
 const compatible = (model: FoundModel | ModelDetail | undefined, family: string | null | undefined, kind: Kind | undefined) => Boolean(kind && family && model?.family === family && model?.kind === kind)
 const adapterFits = (model: FoundModel | ModelDetail, slot: PickerSlot) => {
@@ -120,13 +129,13 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
       <div ref={dialog} className="model-picker" role="dialog" aria-modal="true" aria-label="Models and LoRAs" tabIndex={-1} onKeyDown={(event) => event.stopPropagation()}>
         <header className="model-picker-head">
           {page && <button type="button" className="iconb model-picker-back" aria-label="Back to model slots" title="Back" onClick={() => setPage(null)}><Icon name="back" /></button>}
-          <div className="model-picker-title"><h2>{active ? slotName(active, qwen) : page === "__legacy" ? "Existing LoRAs" : tool ? modelLabel(tool) : "Models and LoRAs"}</h2></div>
+          <div className="model-picker-title"><h2>{active ? slotName(active, qwen, slots) : page === "__legacy" ? "Existing LoRAs" : "Models & LoRAs"}</h2></div>
           <button type="button" className="iconb" aria-label="Close model picker" title="Close" onClick={onClose}><Icon name="close" /></button>
         </header>
         <div className="model-picker-body">
           {!page && <>
             {!slots.length && <p className="muted">No model settings for this tool.</p>}
-            <ul className="model-picker-slots">{slots.map((slot) => <li key={slot.slot}><button type="button" data-model-slot={slot.slot} onClick={() => setPage(slot.slot)}><span>{slotName(slot, qwen)}</span><Icon name="forward" /></button></li>)}
+            <ul className="model-picker-slots">{slots.map((slot) => <li key={slot.slot}><button type="button" data-model-slot={slot.slot} onClick={() => setPage(slot.slot)}><span>{slotName(slot, qwen, slots)}</span><Icon name="forward" /></button></li>)}
               {slots.length !== 1 && legacy.length > 0 && <li><button type="button" onClick={() => setPage("__legacy")}><span>Existing LoRAs</span><Icon name="forward" /></button></li>}
             </ul>
           </>}
@@ -141,11 +150,14 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   )
 }
 
-function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot: string, change: (held: Entry) => Entry) {
+/** A choice changed, written to every key it sets. */
+function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot: PickerSlot, change: (held: Entry) => Entry) {
   const models = { ...entryOf(store.valueOf(name, "models")) }
-  const next = Object.fromEntries(Object.entries(change(entryOf(models[slot]))).filter(([, value]) => value !== undefined && value !== null && !(Array.isArray(value) && !value.length)))
-  if (Object.keys(next).length) models[slot] = next
-  else delete models[slot]
+  const next = Object.fromEntries(Object.entries(change(entryOf(models[slot.slot]))).filter(([, value]) => value !== undefined && value !== null && !(Array.isArray(value) && !value.length)))
+  for (const key of slot.keys) {
+    if (Object.keys(next).length) models[key] = next
+    else delete models[key]
+  }
   store.putOn(name, { models: Object.keys(models).length ? models : null })
 }
 
@@ -186,7 +198,7 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
   const selectedMeta = listed ?? detail ?? (identityOf(selected) === identityOf(slot.default ?? "") ? defaultModel : undefined)
   const selectedVisible = showNsfw || Boolean(selectedMeta && !isNsfw(selectedMeta.tags))
   const availableLoras = kind ? found.filter((model) => adapterFits(model, slot) && !adapters.some((adapter) => identityOf(String(entryOf(adapter).ref ?? "")) === model.model)) : []
-  const clearBase = () => changeSlot(store, name, slot.slot, ({ ref: _, ...rest }) => {
+  const clearBase = () => changeSlot(store, name, slot, ({ ref: _, ...rest }) => {
     if (restricted) delete rest.lora
     return rest
   })
@@ -198,7 +210,7 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
     }
     const strength = recommended ?? loraNote(model.model)?.strength
     const adapter = { ref: model.model, ...(typeof strength === "number" && Number.isFinite(strength) ? { strength } : {}) }
-    changeSlot(store, name, slot.slot, (held) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model)) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }))
+    changeSlot(store, name, slot, (held) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model)) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }))
   }
   return <section className="model-picker-slot" data-model-slot={slot.slot}>
     {!restricted && <div className="model-picker-tabs" role="group" aria-label={`Choices for ${slot.slot}`}>
@@ -216,10 +228,10 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
           <span>{defaultVisible ? slot.default ? modelChoiceLabel(slot.default) : "No model selected" : defaultModel ? "Default model hidden" : "Default model"}<small>Default</small></span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>
         {malformed && <li><button type="button" aria-pressed="true" disabled><span>Invalid model selection</span><span className="model-picker-choice-mark" aria-hidden="true" /></button></li>}
-        {selected && <li><button type="button" aria-pressed="true" disabled={!selectedValid || !selectedVisible} onClick={() => changeSlot(store, name, slot.slot, (held) => ({ ...held, ref: selected }))}>
+        {selected && <li><button type="button" aria-pressed="true" disabled={!selectedValid || !selectedVisible} onClick={() => changeSlot(store, name, slot, (held) => ({ ...held, ref: selected }))}>
           <span>{selectedVisible ? modelChoiceLabel(selected) : selectedMeta ? "Selected model hidden" : "Selected model"}<small>{selectedValid ? "Selected" : selectionState.trim().replace(/^\(|\)$/g, "")}</small></span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>}
-        {alternatives.filter((model) => model.model !== identityOf(slot.default ?? "")).map((model) => <li key={model.model}><button type="button" aria-pressed="false" onClick={() => changeSlot(store, name, slot.slot, (held) => ({ ...held, ref: model.model }))}>
+        {alternatives.filter((model) => model.model !== identityOf(slot.default ?? "")).map((model) => <li key={model.model}><button type="button" aria-pressed="false" onClick={() => changeSlot(store, name, slot, (held) => ({ ...held, ref: model.model }))}>
           <span>{modelChoiceLabel(model.model)}</span><span className="model-picker-choice-mark" aria-hidden="true" />
         </button></li>)}
       </ul>
@@ -227,7 +239,7 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
       {restricted && <p className="muted">Only the default Turbo LoRA is verified.</p>}
       {restricted && adapters.length > 0 && <button type="button" className="tb model-picker-reset" onClick={clearBase}>Reset Turbo LoRA</button>}
     </> : <>
-      {adapters.length > 0 && <><h4>Added LoRAs</h4><AdapterList name={name} slot={slot.slot} families={slot.family ? [slot.family] : []} adapters={adapters} /></>}
+      {adapters.length > 0 && <><h4>Added LoRAs</h4><AdapterList name={name} slot={slot} families={slot.family ? [slot.family] : []} adapters={adapters} /></>}
       {legacy.length > 0 && <div className="model-picker-legacy"><h4>Existing LoRAs</h4><AdapterList name={name} slot={null} families={slot.family ? [slot.family] : []} adapters={legacy} /></div>}
       <h4>Available LoRAs</h4>
       <ul className="model-picker-choices" aria-label={`Add LoRA for ${slot.slot}`}>
@@ -239,10 +251,8 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
   </section>
 }
 
-function AdapterList({ name, slot, families, adapters }: { name: string; slot: string | null; families: string[]; adapters: unknown[] }) {
+function AdapterList({ name, slot, families, adapters }: { name: string; slot: PickerSlot | null; families: string[]; adapters: unknown[] }) {
   const store = useCanvasStore()
-  const tool = store.tools.get().get(store.get(name)?.asset?.tool ?? "")
-  const spec = slotsOf(tool).find((held) => held.slot === slot)
   const change = (index: number, strength?: number) => {
     const edit = (items: unknown[]) => strength === undefined ? items.filter((_, at) => at !== index) : items.map((held, at) => at === index ? { ...entryOf(held), strength } : held)
     if (slot === null) {
@@ -251,7 +261,7 @@ function AdapterList({ name, slot, families, adapters }: { name: string; slot: s
     } else changeSlot(store, name, slot, (held) => ({ ...held, lora: edit(adaptersOf(held.lora)) }))
   }
   if (!adapters.length) return <p className="muted model-picker-empty">None added</p>
-  return <ul className="model-picker-adapters">{adapters.map((value, index) => <Adapter key={`${index}:${String(entryOf(value).ref ?? "")}`} value={value} families={families} slot={spec} onRemove={() => change(index)} onStrength={(value) => change(index, value)} />)}</ul>
+  return <ul className="model-picker-adapters">{adapters.map((value, index) => <Adapter key={`${index}:${String(entryOf(value).ref ?? "")}`} value={value} families={families} slot={slot ?? undefined} onRemove={() => change(index)} onStrength={(value) => change(index, value)} />)}</ul>
 }
 
 function Adapter({ value, families, slot, onRemove, onStrength }: { value: unknown; families: string[]; slot?: PickerSlot; onRemove(): void; onStrength(value: number): void }) {

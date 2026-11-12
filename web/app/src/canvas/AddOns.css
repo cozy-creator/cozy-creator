@@ -54,16 +54,6 @@
   height: 13px;
 }
 
-.add-on-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.add-on-row .slide {
-  flex: 1;
-  min-width: 0;
-}
-
 .active-models {
   margin: 8px 0 0;
   padding: 0;
@@ -121,17 +111,6 @@
 }
 .checkpoint.away {
   opacity: 0.5;
-}
-/* In the left bar, what's on the box: its name over its strength and its ×. */
-.picks-on .add-on-row .slide {
-  flex-wrap: wrap;
-  gap: 2px 6px;
-}
-.picks-on .add-on-row .ctl-name {
-  flex: 1 0 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .tools .row.center:has(.browse-toggle) {
   gap: 12px;
