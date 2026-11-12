@@ -337,21 +337,24 @@ async function placedInView(page, expected) {
     const lay = {};
     const left = Math.max(...Object.values(rows(folder)).map((row) => row.x)) + 1500;
     const put = (name, x, y, w) => { lay[name] = { x: left + x, y, w }; };
-    // Rows of the grid touch: a picture 300 wide and the room it keeps under it for the name of a box below (e139a61c6, shown.ts).
-    const ROW = 262;
+    // Rows of the grid touch: a picture 300 wide (its name 32, the picture 169, its row 40) and the room it keeps under it, its tool and
+    // shape line twice and the rise of a box below's name, 92 (cl-932, 4ae6c085a: shown.ts heightFor and underOf).
+    const ROW = 32 + 169 + 40 + 92;
     for (const [i, j] of [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1], [0, 2], [1, 2], [2, 2]]) put(`grid_${i}_${j}`, 320 * i, ROW * j, 300);
-    put('crowded', 290, 800, 360);
-    put('beside', 0, 1200, 240);
-    put('free', 200, 1500, 240);
-    put('left', 0, 1800, 240);
-    put('right', 468, 1800, 240);
-    put('nudging', 234, 2100, 240);
+    // The rest under the grid, each clear of the one above as laid out (a 240 picture keeps 299, the crowded 360 one 367).
+    const BELOW = 3 * ROW + 14;
+    put('crowded', 290, BELOW, 360);
+    put('beside', 0, BELOW + 400, 240);
+    put('free', 200, BELOW + 700, 240);
+    put('left', 0, BELOW + 1000, 240);
+    put('right', 468, BELOW + 1000, 240);
+    put('nudging', 234, BELOW + 1300, 240);
     const CHAIN = ['chain_a', 'chain_b', 'chain_c', 'chain_d', 'chain_e'];
-    CHAIN.forEach((name, i) => put(name, 260 * i, 2500, 240));
+    CHAIN.forEach((name, i) => put(name, 260 * i, BELOW + 1700, 240));
     // Two rows four long, 10 apart, with a gap 4 short of the box between them, and room beyond.
-    for (let i = 0; i < 4; i++) put(`row_l${i}`, 250 * i, 2900, 240);
-    for (let i = 0; i < 4; i++) put(`row_r${i}`, 990 + 236 + 250 * i, 2900, 240);
-    put('squeezed', 990 + 118 - 120, 3300, 240);
+    for (let i = 0; i < 4; i++) put(`row_l${i}`, 250 * i, BELOW + 2100, 240);
+    for (let i = 0; i < 4; i++) put(`row_r${i}`, 990 + 236 + 250 * i, BELOW + 2100, 240);
+    put('squeezed', 990 + 118 - 120, BELOW + 2500, 240);
     Object.keys(lay).forEach((name, i) => {
       const file = join(pictures, `${name}.png`);
       writeFileSync(file, png(40 + i * 9, 320, 180));
@@ -419,7 +422,7 @@ async function placedInView(page, expected) {
     check('small_pushes_absorb_a_drop', nudging.now.w === 240 && seen.nudging.by <= 1 && outward.left.x === nudging.now.x - 16 - 240 && outward.right.x === nudging.now.x + 240 + 16 && Object.keys(nudging.moved).sort().join() === 'left,right', seen.nudging);
     check('a_nudged_drop_lies_on_nothing', nudging.lying.length === 0, nudging.lying);
 
-    const crowded = await letGo('crowded', ROW + 3 - 800);
+    const crowded = await letGo('crowded', ROW + 3 - BELOW);
     seen.crowded = { ...crowded, by: stays(crowded) };
     check('a_crowded_drop_stays_where_it_was_let_go', crowded.now.w >= 360 * 0.8 && seen.crowded.by <= 3 && Object.keys(crowded.moved).length > 0, seen.crowded);
     check('a_crowded_drop_lies_on_nothing', crowded.lying.length === 0, crowded.lying);
