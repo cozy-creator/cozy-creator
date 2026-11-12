@@ -1,13 +1,13 @@
 .focus-viewport {
   position: fixed;
-  inset: 60px 10px 10px 48px;
+  inset: 60px 12px 12px;
   z-index: 15;
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
   min-height: 0;
-  background: var(--bg);
+  background: transparent;
 }
 .focus-heading {
   display: flex;
@@ -16,14 +16,41 @@
   min-height: 34px;
   flex: none;
 }
-.focus-heading h2 {
+.focus-title {
   flex: 1;
   min-width: 0;
-  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.focus-name {
+  min-width: 0;
+  max-width: 85%;
+  padding: 4px 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: var(--heading) var(--mono);
+  font: 28px / 1.3 var(--mono);
+  color: var(--ink);
+  background: none;
+  border: 0;
+  cursor: text;
+  text-align: left;
+}
+.focus-title .nm-field {
+  font: 28px / 1.3 var(--mono);
+  min-height: 44px;
+}
+.focus-version-label,
+.node-version-label {
+  flex: none;
+  font: 16px / 1.3 var(--mono);
+  color: var(--mute);
+}
+.focus-heading > .tb {
+  height: 44px;
+  padding: 8px 14px;
+  font-size: 19px;
 }
 .focus-body {
   flex: 1;
@@ -67,10 +94,15 @@
   min-height: 0;
   overflow: hidden;
 }
-.focus-viewer > .media {
+.focus-image-transform {
+  position: relative;
   flex: none;
-  width: var(--focus-media-w, 100%);
-  height: var(--focus-media-h, 100%);
+  transform-origin: center;
+}
+.focus-image-transform > .media {
+  flex: none;
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   --surface-media-width: 100%;
@@ -78,10 +110,43 @@
   --surface-media-height: 100%;
   --surface-media-overflow: visible;
 }
-.focus-viewer > .tl {
+.focus-image-transform > .tl {
   width: 100%;
   height: 100%;
   overflow: auto;
+}
+.focus-image-zoom {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 8;
+}
+.focus-image-zoom .tb {
+  min-width: 36px;
+  min-height: 36px;
+  font-size: 18px;
+}
+.focus-viewport .card.focus-card {
+  --body: 20px;
+  --small: 17px;
+  --tiny: 15px;
+  --heading: 24px;
+  --title: 28px;
+}
+.focus-card .image-tool-name {
+  font-size: 20px;
+}
+.focus-card .image-models {
+  min-height: 40px;
+  padding: 6px 12px;
+  font-size: 18px;
+}
+body:has(.focus-viewport) .tools,
+body:has(.focus-viewport) .zoom {
+  display: none;
 }
 .focus-viewport .focus-card > .here-side {
   grid-column: 2;
@@ -133,7 +198,7 @@
   white-space: nowrap;
 }
 @media (max-width: 760px) {
-  .focus-viewport { inset: 58px 6px 6px 34px; }
+  .focus-viewport { inset: 58px 6px 6px; }
   .card.focus-card { grid-template-columns: minmax(0, 1fr) min(25vw, 150px); gap: 8px; }
   .focus-heading { gap: 8px; }
 }

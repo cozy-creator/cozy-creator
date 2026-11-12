@@ -707,7 +707,6 @@ const small = (field: ToolField) => field.type === "toggle" || field.type === "n
 export function AssetEdit({ name, view, editing, prominent = false, head, actions, children }: { name: string; view: ElementView; editing: boolean; prominent?: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const [advanced, setAdvanced] = useState(false)
   if (!view.asset) return null
   const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
   const declared = makes(view) ? fieldsOf(view.asset, tools) : []
@@ -733,10 +732,11 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
       {head && <div className="tool-head">{head}</div>}
       <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => prominent || !small(field))} folded={plainFolded} row={row}>
         {(lines, more) => {
-          const behind = (more !== null && folded.length > 0) || addOns || beyond.length > 0
+          const behind = (more !== null && plainFolded.length > 0) || addOns || beyond.length > 0
           return (
             <>
               {editing && lines && <div className="edit-shown">{lines}</div>}
+              {more !== null && expert.length > 0 && <div className="advanced">{expert.map(row)}</div>}
               <div className="row actions">
                 {!prominent && more !== null && faced.filter(small).map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named={false} />)}
                 {actions}
@@ -750,14 +750,6 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
                 open && (
                   <div className="edit-more">
                     {open && more}
-                    {open && more !== null && expert.length > 0 && (
-                      <div className="advanced">
-                        <button type="button" className="advanced-toggle nodrag" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}>
-                          Advanced
-                        </button>
-                        {advanced && expert.map(row)}
-                      </div>
-                    )}
                     {open && <AddOnRows name={name} />}
                     {open && beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
                     {children}

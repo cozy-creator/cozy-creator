@@ -884,7 +884,6 @@ export class CanvasStore {
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) Object.assign(change, { slid: newest, glimpse: undefined })
-          if (asset.kind === "image" && newest && newest !== view.asset?.prefixes?.at(-1)?.number) Object.assign(change, { hereWords: undefined, viewed: undefined, watchRun: undefined, watchFrom: undefined })
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at.
@@ -1270,8 +1269,9 @@ export class CanvasStore {
   pickTake(name: string, number: number) {
     const asset = this.get(name)?.asset
     if (!asset) return
-    if (asset.kind === "image") return this.selectVersion(name, number)
+    this.patch(name, { watchRun: undefined, watchFrom: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
     this.view(name, number === asset.version ? undefined : number)
+    if (asset.kind === "image") return
     if (!asset.tool || asset.timeline) return
     const field = this.promptOf(asset.tool)
     const words = this.valueOf(name, field)
@@ -1289,7 +1289,7 @@ export class CanvasStore {
     if (asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     void this.save(key)
     this.patch(key, { viewed: undefined, watchRun: undefined, watchFrom: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
-    if (asset.version === number) return
+    if (asset.pinned && (asset.approved ?? asset.version) === number) return
     const edit = this.step(`Selected version ${number} of ${key}`, [key])
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select version", edit)
     if (view?.hereWords && asset.tool) {

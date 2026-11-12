@@ -13,10 +13,10 @@
   min-height: 0;
   max-height: none;
   border-radius: var(--round2);
-  --body: 18px;
-  --small: 16px;
-  --tiny: 14px;
-  --heading: 22px;
+  --body: 20px;
+  --small: 18px;
+  --tiny: 16px;
+  --heading: 26px;
 }
 .focus-viewport .focus-card.focus-parameter-tool > .here-under > .here-all {
   flex: 1;
@@ -54,7 +54,7 @@
   min-height: 100px;
   max-height: 360px;
   padding: 14px;
-  font-size: 18px;
+  font-size: 20px;
   line-height: 1.5;
 }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beats-edit {
@@ -85,7 +85,7 @@
 }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .grip {
   padding-top: 10px;
-  font-size: 18px;
+  font-size: 20px;
 }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beat-time {
   flex-wrap: wrap;
@@ -111,7 +111,7 @@
   padding: 14px;
 }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .group-head {
-  font-size: 18px;
+  font-size: 20px;
 }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .add-beat {
   min-height: 44px;
