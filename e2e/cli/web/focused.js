@@ -635,15 +635,8 @@ async function died(error) {
   }), Boolean);
   const completedGeometry = await videoFocus.locator('.focus-viewer').boundingBox();
   check('completed_video_has_a_prominent_view_only_face', completedGeometry.width > videoRoom.width * 0.5 && completedGeometry.height > 120 && !await summaryPrompt.isVisible() && !await beatPrompt.isVisible() && await videoFocus.locator('.mention-text:visible').count() === 0, { completedGeometry, videoRoom });
-  // Pick up from where the player is, right under its bottom right (cl-950).
-  const pickUp = videoFocus.locator('.focus-under button.pick-up');
-  check('completed_video_has_models_and_an_explicit_pick_up_action', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await pickUp.isVisible());
-  await pickUp.click();
-  await videoFocus.locator('.focus-new-video').waitFor();
-  await summaryPrompt.waitFor({ state: 'visible' });
-  check('pick_up_opens_the_video_editor_without_starting_a_render', !await videoFocus.locator('.focus-viewer').isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1 && !(await state()).assets.find((item) => item.name === VIDEO).making?.length);
-  await completedVideo.click();
-  await videoFocus.locator('.focus-viewer').getByRole('button', { name: 'Play', exact: true }).waitFor();
+  // An imported take has no run to say its seams, so no segment is offered to redo (cl-951): web-scrub's rendered take is.
+  check('completed_video_has_models_and_no_redo_without_its_seams', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await videoFocus.locator('.focus-under .redo-segment').count() === 0);
   await shot('completed-video');
   // With a take it has New (cl-925).
   check('video_has_a_new_state_tile', await newVideo.isVisible());

@@ -40,6 +40,8 @@ class Take(msgspec.Struct):
     latents: Latents
     given: File
     warnings: list[str]
+    #: Where its second segment starts (se-130).
+    seams: list[int] = []
 
 
 def _said(prompt: Prompt[Image | Video | Audio]) -> dict[str, object]:
@@ -67,7 +69,7 @@ def shoot(payload: ShotBox, out: Outputs) -> Take:
     with source.stream() as events:
         video = out.save_video_stream(iter(events)).video
     # cast: Runtime takes a saved file of its kind in a Latents field (_invoke._fills)
-    return Take(video, cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(json.dumps(given).encode(), media_type="application/json"), [])
+    return Take(video, cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(json.dumps(given).encode(), media_type="application/json"), [], [6])
 
 
 class Bare(msgspec.Struct, kw_only=True):

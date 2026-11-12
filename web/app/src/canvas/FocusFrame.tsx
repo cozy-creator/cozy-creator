@@ -13,7 +13,7 @@ export const useFocusResize = () => useContext(ResizeContext)
 const UI = "button, input, select, textarea, a, video, audio, [contenteditable], [role=slider], .tl, .orbit"
 
 /** Image-space pan/zoom never changes the Wander camera. */
-/** What sits right under the frame, at its right (a video's Pick up from here): its row's height is kept out of the fit. */
+/** What sits right under the frame (a video's segments and Redo): its row's height is kept out of the fit. */
 const UNDER = 44
 
 /** `zooms`: a picture can be zoomed and panned in it; a player that's its own control (an Edit's cut, cl-957) is only fitted. */

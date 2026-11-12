@@ -1,17 +1,17 @@
-// A video in Focus picks up from where its player is (cl-933, cl-950, Paul 11-12: "when you are viewing a video in focused mode, you
-// can display the pick up from here, probably put that underneath the thumbnail. Also give us a scrubber of some sort. Also if you click on
-// an empty image / empty video node, with nothing in it, there is no point in displaying 'instructions' or anything"), in a real browser on a
-// real Calcifer. H3's Shot with a four-second take: in Focus, scrubbed a frame at a time, the time says where, and Pick up from here then
-// Render asks to keep up to that frame (on the tool's grid). An empty picture and an empty video with no tool, in Focus, ask nothing.
-//   node scrub.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
+// A video in Focus shows its take's segments and redoes from one, and a new box continues another's take (cl-933, cl-950, cl-951; Paul
+// 11-12: "we can just regenerate entire segments, and nothing else … if we like segment 2 and 3, but want to regenerate segment 4, then we
+// can do that"; "it has to be obvious that we're continuing another video"), in a real browser on a real Calcifer. shaped.py's Shot, rendered
+// here with no model, makes 107 frames and says its seams (39, 73: se-130's `seams`). In Focus its segments are blocks right under the
+// player, the one the player is in marked; in segment 2 or 3, Redo, and Render keeps every segment before it: `pickup.out_frame` is that
+// seam. The draft says what's kept and what's redone, and Cancel makes it a plain draft. Another box continues the take from its end, and
+// its take says so. An empty picture and an empty video with no tool, in Focus, ask nothing.
+//   node scrub.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER; $COZY: the cozy under test.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
-const { mkdtempSync } = require('fs');
-const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until, upload } = require('./page');
+const { addBoxes, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -29,13 +29,10 @@ async function died(why) {
   process.exit(1);
 }
 
-/** Where a pickup lands on a tool's frame grid: its last point at or before `frame` (ranges.ts pickupAt, cl-950). */
-const pickupAt = (frame, last, snap) => {
-  const at = Math.min(frame, last);
-  return !snap ? at : at < snap.first ? null : Math.max(snap.first, snap.offset + Math.floor((at - snap.offset) / snap.every) * snap.every);
-};
-/** Seconds as the button says them, "0:12.96". */
+/** Seconds as the page says a cut, "0:04.46". */
 const clock = (seconds) => `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(2).padStart(5, '0')}`;
+const FIRST_RUN_MS = 10 * 60_000;
+const SHAPED = join(__dirname, '..', 'project', 'shaped.py');
 
 (async () => {
   const base = calcifer();
@@ -53,9 +50,10 @@ const clock = (seconds) => `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed
   await page.waitForSelector('.top');
   const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
+  if (!(await api('/v1/status')).body?.local_usable) throw new Error('this computer runs no tools: the cell renders its own take here');
 
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-scrub-${Date.now()}`);
@@ -64,73 +62,166 @@ const clock = (seconds) => `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
   const at = `/v1/projects/${id}`;
-  seen.project = { id, folder: (await api(at)).body.path };
-  const post = async (path, body) => {
-    const answer = await api(path, { method: 'POST', body: JSON.stringify(body) });
+  const folder = (await api(at)).body.path;
+  seen.project = { id, folder };
+  const post = async (path, body, headers) => {
+    const answer = await api(path, { method: 'POST', body: JSON.stringify(body), headers });
     if (answer.status >= 300) throw new Error(`${path}: ${JSON.stringify(answer)}`);
     return answer.body;
   };
+  const row = async (name) => (await api(at)).body?.assets?.find((one) => one.name === name);
+  const versionsOf = async (name) => (await api(`${at}/assets/${name}`)).body?.versions ?? [];
 
-  // H3's Shot with a four-second take of its own.
-  const folder = mkdtempSync(join(tmpdir(), 'web-scrub-'));
-  const clip = join(folder, 'take.mp4');
-  execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24:duration=4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', clip]);
-  const tools = (await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? [];
-  const shotTool = tools.find((tool) => tool.id === 'minimax-h3/generate') ?? tools.find((tool) => tool.package === 'minimax-h3' && tool.pickup);
-  seen.tool = shotTool && { id: shotTool.id, pickup: shotTool.pickup };
-  if (!shotTool?.pickup) throw new Error(`the Hub lists no H3 tool that picks up: ${JSON.stringify(tools.map((tool) => [tool.id, tool.pickup]))}`);
-  await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 4 }] }, at: { x: 100, y: 100 } });
-  await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, clip) });
-  // An empty picture and an empty video with no tool.
+  // An empty picture and an empty video with no tool; shaped.py's Shot, read with this computer's Runtime, and a box to continue it.
   await post(`${at}/assets`, { tool: '', kind: 'image', name: 'blank_pic', exact: true, fields: { node_kind: 'image' }, at: { x: 600, y: 100 } });
   await post(`${at}/assets`, { tool: '', kind: 'video', name: 'blank_clip', exact: true, fields: { node_kind: 'video' }, at: { x: 1000, y: 100 } });
-  for (const name of ['shot', 'blank_pic', 'blank_clip']) await boxOf(page, name).waitFor();
-  await until('the take', async () => (await api(at)).body?.assets?.find((row) => row.name === 'shot')?.versions, (n) => n >= 1);
+  execFileSync(process.env.COZY, ['--json', 'run', `${SHAPED}/picture`, 'prompt=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
+  addBoxes(folder, [
+    { name: 'shot', tool: `${SHAPED}/shot`, kind: 'video', fields: { summary: 'A lighthouse at dusk.', beats: [{ duration: 4 }] }, at: { x: 100, y: 100 } },
+    { name: 'next', tool: `${SHAPED}/shot`, kind: 'video', fields: { summary: 'The beam sweeps on.', beats: [{ duration: 2 }] }, at: { x: 100, y: 600 } },
+  ]);
+  for (const name of ['shot', 'next', 'blank_pic', 'blank_clip']) await boxOf(page, name).waitFor();
   await fitCanvas(page);
-
-  // In Focus, right under the player's bottom right: Pick up from where the player is (cl-950). One scrubber, the player's own.
-  await openBox(page, 'shot');
   const focus = page.locator('.focus-viewport');
-  const pickUp = focus.locator('.focus-under button.pick-up');
-  await pickUp.waitFor();
-  check('one_scrubber_the_players_own', (await focus.locator('.video-scrub, input[type=range]').count()) === 0, await focus.locator('input[type=range]').count());
-  const player = await focus.locator('.focus-image-transform > .media').first().boundingBox();
-  const button = await pickUp.boundingBox();
-  seen.placed = { player, button };
-  check('pick_up_is_right_under_the_players_bottom_right', Math.abs(button.y - (player.y + player.height)) <= 2 && Math.abs(button.x + button.width - (player.x + player.width)) <= 2, seen.placed);
-  check('pick_up_is_a_readable_button', button.height >= 28, button);
+  const resultOf = async (name, number) => {
+    const version = (await versionsOf(name)).find((one) => one.number === number);
+    return { version, result: version?.runs?.length ? (await api(`/v1/runs/${version.runs.at(-1)}`)).body?.result : undefined };
+  };
+  // Render on its title row, here; this computer's tools ask first only when it's weak.
+  const renderHere = async () => {
+    await focus.locator('button[aria-label=Render]').first().click();
+    const anyway = page.getByRole('button', { name: 'Run here anyway' });
+    await anyway.first().waitFor({ timeout: 3000 }).then(() => anyway.first().click()).catch(() => {});
+  };
+  // Looking at a take, not its words: what a render from the words stays on (cl-907).
+  const lookAtTake = async (number) => {
+    const tile = focus.locator(`.take[aria-label="take ${number}"]`).first();
+    if (await tile.count()) await tile.click();
+  };
 
-  // Its label follows the player: played a moment, then put at two seconds by the player's own position.
-  const label = () => pickUp.innerText();
-  seen.label_at_start = await label();
+  // Rendered from the page: its run says where its segments start.
+  await openBox(page, 'shot');
+  await renderHere();
+  await until('its take', async () => (await row('shot'))?.versions, (n) => n >= 1, FIRST_RUN_MS);
+  const made = await resultOf('shot', 1);
+  seen.take = { runs: made.version?.runs, seams: made.result?.seams };
+  check('its_run_says_its_seams', JSON.stringify(made.result?.seams) === '[39,73]', made.result);
+  await closeBox(page);
+
+  // In Focus, right under the player: its take's segments as blocks, sized by their frames. One scrubber, the player's own.
+  await openBox(page, 'shot');
+  const segments = focus.locator('.focus-under .segments');
+  await lookAtTake(1);
+  await segments.waitFor();
+  const blocks = segments.locator('.segment');
+  const widths = await blocks.evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width));
+  seen.blocks = { said: await blocks.allInnerTexts(), widths };
+  check('its_segments_are_blocks', JSON.stringify(seen.blocks.said) === '["1","2","3"]' && widths[0] > widths[1] && Math.abs(widths[1] - widths[2]) <= 2, seen.blocks);
+  check('one_scrubber_the_players_own', (await focus.locator('.video-scrub, input[type=range]').count()) === 0, await focus.locator('input[type=range]').count());
+
+  // The one the player is in is marked; in segment 1 there's no Redo, a new take is.
   const play = focus.locator('button[aria-label="Play"]').first();
   if (await play.count()) await play.click();
   const video = focus.locator('video').first();
   await video.waitFor({ state: 'attached' });
-  await until('it plays', () => video.evaluate((element) => element.currentTime), (time) => time > 0.3).catch(() => null);
-  seen.label_while_playing = await label();
-  await video.evaluate((element) => { element.pause(); element.currentTime = 2; });
-  // Where the cut lands: the tool's grid point at or before the player's 2 s, never after it.
-  const wanted = pickupAt(48, 96, shotTool.pickup);
-  const lands = `Pick up from ${clock(wanted / 24)}`;
-  seen.wanted = { out_frame: wanted, lands };
-  const said = await until('its label at 2 s', label, (text) => text.trim() === lands).catch(() => label());
-  seen.label_at_2s = said;
-  check('its_label_is_where_the_cut_lands_and_follows_the_player', said.trim() === lands && wanted <= 48 && seen.label_while_playing !== seen.label_at_start, { start: seen.label_at_start, playing: seen.label_while_playing, said, lands });
-  await shot('pick-up-under');
+  await until('it plays', () => video.evaluate((element) => element.readyState >= 2), Boolean);
+  const marked = () => segments.locator('.segment.here').innerText().catch(() => '');
+  const redo = segments.locator('button.redo-segment');
+  const put = async (seconds) => video.evaluate((element, seconds) => { element.pause(); element.currentTime = seconds; }, seconds);
+  await put(0.5);
+  seen.at_half = await until('segment 1 marked', marked, (text) => text === '1').catch(marked);
+  check('in_segment_1_no_redo', seen.at_half === '1' && (await redo.count()) === 0, { marked: seen.at_half, redo: await redo.count() });
+  await put(3.5);
+  seen.at_3_5 = await until('Redo segment 3', () => redo.innerText().catch(() => ''), (text) => text === 'Redo segment 3').catch(() => redo.innerText().catch(() => ''));
+  check('in_the_last_redo_it', seen.at_3_5 === 'Redo segment 3' && (await marked()) === '3', { redo: seen.at_3_5, marked: await marked() });
+  // Chosen by its block: the player goes to its start, and Redo says what goes again, each segment going on from the one before.
+  await blocks.nth(1).click();
+  seen.chosen = await until('Redo segments 2–3', () => redo.innerText().catch(() => ''), (text) => text === 'Redo segments 2–3').catch(() => redo.innerText().catch(() => ''));
+  await video.evaluate((element) => element.pause());
+  check('a_block_chooses_its_segment', seen.chosen === 'Redo segments 2–3' && (await marked()) === '2', { redo: seen.chosen, marked: await marked() });
+  const player = await focus.locator('.focus-image-transform > .media').first().boundingBox();
+  const row2 = await segments.boundingBox();
+  const button = await redo.boundingBox();
+  seen.placed = { player, row: row2, button };
+  check('right_under_the_player', Math.abs(row2.y - (player.y + player.height)) <= 2 && Math.abs(button.x + button.width - (player.x + player.width)) <= 2, seen.placed);
+  check('redo_is_a_readable_button', button.height >= 28, button);
+  await shot('segments');
 
-  // Picked up: Render asks to keep up to that frame, the one the label said.
-  const asked = page.waitForRequest((request) => request.method() === 'POST' && /\/v1\/projects\/[^/]+\/runs$/.test(new URL(request.url()).pathname), { timeout: STEP_MS });
+  // Redo: the draft says what's kept and what's made again, and nothing renders until Render, which keeps segment 1: out_frame 39.
+  const asked = () => page.waitForRequest((request) => request.method() === 'POST' && /\/v1\/projects\/[^/]+\/runs$/.test(new URL(request.url()).pathname), { timeout: STEP_MS });
   await page.route('**/runs', (route) => (route.request().method() === 'POST' ? route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { kind: 'conflict', code: 'e2e_held', message: 'held by the cell' } }) }) : route.continue()));
-  await pickUp.click();
-  await focus.locator('button[aria-label=Render]').first().click();
-  const anyway = page.getByRole('button', { name: 'Run here anyway' });
-  await Promise.race([asked, anyway.first().waitFor({ timeout: STEP_MS }).then(() => anyway.first().click())]).catch(() => {});
-  const body = JSON.parse((await asked).postData() ?? '{}');
-  seen.asked = body;
-  check('pick_up_keeps_up_to_where_the_player_was', body.pickup?.out_frame === wanted && body.pickup?.take === '<shot.1>', { out: body.pickup, wanted });
+  await redo.click();
+  const leadIn = focus.locator('.lead-in');
+  await leadIn.waitFor();
+  const words = () => leadIn.locator('.lead-in-words b').innerText().catch(() => '');
+  seen.lead_in = await until('what it keeps', words, (text) => text === 'Keeps segment 1 of <shot.1> · redoes 2–3').catch(words);
+  check('the_draft_says_what_it_keeps_and_redoes', seen.lead_in === 'Keeps segment 1 of <shot.1> · redoes 2–3', seen.lead_in);
+  check('redo_starts_no_render', (await row('shot')).versions === 1 && !(await row('shot')).making?.length, await row('shot'));
+  await shot('redo-draft');
+  const render = async () => {
+    const request = asked();
+    await focus.locator('button[aria-label=Render]').first().click();
+    const anyway = page.getByRole('button', { name: 'Run here anyway' });
+    await Promise.race([request, anyway.first().waitFor({ timeout: STEP_MS }).then(() => anyway.first().click())]).catch(() => {});
+    return JSON.parse((await request).postData() ?? '{}');
+  };
+  const redone = await render();
+  seen.redone = redone;
+  check('redo_keeps_the_segments_before_it', redone.pickup?.take === '<shot.1>' && redone.pickup?.out_frame === 39, redone.pickup);
+  // Cancel: a plain draft, which keeps nothing.
+  await leadIn.locator('button:text-is("Cancel")').click();
+  await leadIn.waitFor({ state: 'detached' });
+  const plain = await render();
+  seen.plain = plain;
+  check('cancel_makes_a_plain_draft', plain.names?.includes('shot') && !plain.pickup, plain);
   await page.unroute('**/runs');
+
+  // Redone for real: segment 1 stays, so the new take's seams start at its seam, and nothing was moved.
+  await lookAtTake(1);
+  await blocks.nth(1).click();
+  await until('Redo segments 2–3', () => redo.innerText().catch(() => ''), (text) => text === 'Redo segments 2–3');
+  await video.evaluate((element) => element.pause()).catch(() => {});
+  await redo.click();
+  await leadIn.waitFor();
+  await renderHere();
+  await until('the redone take', async () => (await row('shot'))?.versions, (n) => n >= 2, FIRST_RUN_MS);
+  const redid = await resultOf('shot', 2);
+  seen.redid = { pickup: redid.version?.pickup, seams: redid.result?.seams, warnings: redid.result?.warnings };
+  check('a_redo_keeps_the_seam_it_starts_at', redid.version?.pickup?.take === '<shot.1>' && redid.version?.pickup?.out_frame === 39 && redid.result?.seams?.[0] === 39 && !redid.result?.warnings?.length, seen.redid);
   await closeBox(page);
+
+  // Asked off a seam (only `cozy run` asks a frame of its own): Calcifer puts 60 on the grid (56), and the tool starts at the seam
+  // before it, says so, and keeps that seam.
+  const off = execFileSync(process.env.COZY, ['--json', 'run', `${SHAPED}/shot`, 'summary=A lighthouse at dusk.', 'beats:=[{"duration": 4}]', 'pickup.take=<shot.1>', 'pickup.out_frame=60', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
+  const offRun = off.trim().split('\n').map((line) => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean).map((event) => event.run?.number).filter(Boolean).at(-1);
+  const offResult = (await api(`/v1/runs/${offRun}`)).body?.result;
+  seen.off_seam = { run: offRun, seams: offResult?.seams, warnings: offResult?.warnings };
+  check('off_a_seam_it_starts_at_the_seam_before', offResult?.seams?.[0] === 39 && (offResult?.warnings ?? []).some((said) => said.includes('keeps up to frame 39, not 56')), seen.off_seam);
+
+  // Another box continues the take from its end, a seam too: chosen in its draft, said in its frame, and sent; its take says where from.
+  await openBox(page, 'next');
+  const from = focus.locator('.continue-from select');
+  await from.waitFor();
+  await from.selectOption({ label: '<shot.1>' });
+  await leadIn.waitFor();
+  seen.continues = await until('what it continues', words, (text) => text.startsWith('Continues')).catch(words);
+  check('it_says_it_continues_that_video', seen.continues === `Continues <shot.1> from its end · ${clock(107 / 24)}`, seen.continues);
+  await shot('continue-draft');
+  const continued = await render();
+  seen.continued = continued;
+  check('it_continues_from_the_end', continued.pickup?.take === '<shot.1>' && continued.pickup?.out_frame === 107 && continued.pickup?.beats_from === 0, continued.pickup);
+  await until('its take', async () => (await row('next'))?.versions, (n) => n >= 1, FIRST_RUN_MS);
+  const recorded = (await versionsOf('next'))[0]?.pickup;
+  check('its_take_records_its_source', recorded?.take === '<shot.1>' && recorded?.out_frame === 107, recorded);
+  await focus.locator('.take[aria-label="take 1"]').click().catch(() => {});
+  const says = focus.locator('.focus-under .continues');
+  seen.source_said = await until('its source said', () => says.innerText().catch(() => ''), (text) => text.startsWith('Continues')).catch(() => says.innerText().catch(() => ''));
+  check('focus_shows_its_source', seen.source_said === `Continues <shot.1> from ${clock(107 / 24)}`, seen.source_said);
+  await closeBox(page);
+  const tile = boxOf(page, 'next').locator('.continues-rest');
+  seen.tile_said = await tile.innerText().catch(() => '');
+  check('its_tile_shows_its_source', seen.tile_said === 'from shot', seen.tile_said);
+  await shot('continued');
 
   // An empty picture and an empty video with no tool ask nothing.
   for (const name of ['blank_pic', 'blank_clip']) {

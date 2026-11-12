@@ -416,7 +416,7 @@ function Canvas({
     store.closeSurface()
     if (held) {
       void store.save(held.name)
-      store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
+      store.patch(held.name, { here: undefined, hereWords: undefined })
       store.view(held.name)
     }
     store.focusEntering.set(false)
