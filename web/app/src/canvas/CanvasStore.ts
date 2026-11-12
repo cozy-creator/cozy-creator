@@ -26,7 +26,6 @@ import type { Entity, Project } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { carriedFile } from "./carry"
-import { addOnsOf } from "./checkpoints"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import type { ReadableProjection } from "./readableSurface"
@@ -229,13 +228,6 @@ type Placed = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued
 
 const viewOf = (element: Placed): ElementView => ({ ...element })
 
-/** Its stack's chips: its tool's, and each add-on on that. */
-const chipsOf = (view: ElementView) => {
-  if (view.asset?.kind === "image") return 0
-  const tool = view.asset?.tool
-  return addOnsOf(valueIn(view, "lora"), valueIn(view, "models")).length + (tool && (!madeHere(tool) || tool === "cozy/edit") ? 1 : 0)
-}
-
 function linksOf(entity: Entity): string[] {
   return [...Object.values(entity.links ?? {}), ...(entity.subs ?? []).flatMap(linksOf)]
 }
@@ -258,7 +250,6 @@ export class CanvasStore {
   private subscribers = new Map<string, Set<() => void>>()
   private shapes = new Map<string, string>()
   /** Each view's stack, by the view: a change is a new view. */
-  private stacks = new WeakMap<ElementView, number>()
   private pauses = new Map<string, ReturnType<typeof setTimeout>>()
   private asked = new Set<number>()
   /** What's been said of a render that never reached a machine. */
@@ -913,10 +904,10 @@ export class CanvasStore {
           if (this.hasRead && made && newest !== view.asset?.prefixes?.at(-1)?.number && made.run != null && view.asset?.making?.includes(made.run)) this.sayLater(asset.name, made.number, made.main?.sha256)
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
-          // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at. At rest, an approved box
-          // goes on showing what's approved, and what lands beside it is unseen (cl-928).
+          // The take it was rendered to look at landed, with nothing newer being made: open, it's the one looked at. At rest a box goes on
+          // showing what it showed (cl-936), what's approved staying and what lands beside it unseen (cl-928): its watch goes once nothing is on its way.
           const seen = watched({ ...view, asset })
-          if (!view.here && asset.pinned && (view.watchFrom !== undefined || view.watchRun !== undefined) && !asset.making?.length) Object.assign(change, { watchFrom: undefined, watchRun: undefined })
+          if (!view.here && (view.watchFrom !== undefined || view.watchRun !== undefined) && !asset.making?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined })
           else if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Bind a queued preview to its run and retain it through the gap between execution and the version landing.
           else if (seen?.run !== undefined) {
@@ -1030,7 +1021,7 @@ export class CanvasStore {
     const sizes = new Map(left.map((element) => {
       const view = views.get(element.name)!
       const w = widthFor(view)
-      return [element.name, { w: bodyWidth(view, w), h: heightFor(view, w) + underOf(view, chipsOf(view)) }]
+      return [element.name, { w: bodyWidth(view, w), h: heightFor(view, w) + underOf(view) }]
     }))
     const names = left.map((element) => element.name)
     const placed = homesFor(names, readsOf(this.state!), boxes, (name) => sizes.get(name)!, boxes.size ? this.onScreen() : undefined)
@@ -1118,19 +1109,7 @@ export class CanvasStore {
   /** What a box takes on the canvas, as one key: the same from its first node on, so only a real change moves anything. */
   private shapeOf(name: string, width: number, height: number) {
     const view = this.get(name)
-    return `${view ? bodyWidth(view, width) : width}:${height}:${this.stacked(name)}`
-  }
-
-  /** How many are in the stack under it: its tool and what's on that. Read once per view, as every box's is read wherever one moves. */
-  stacked(name: string): number {
-    const view = this.get(name)
-    if (!view) return 0
-    let held = this.stacks.get(view)
-    if (held === undefined) {
-      held = chipsOf(view)
-      this.stacks.set(view, held)
-    }
-    return held
+    return `${view ? bodyWidth(view, width) : width}:${height}:${view ? underOf(view) : 0}`
   }
 
   /** A box and the room it keeps under it, which nothing else lies on: what hangs from it, and what the name of a box below rises into. */
@@ -1138,7 +1117,7 @@ export class CanvasStore {
     const view = this.get(name)
     if (!view) return box
     const drawn = bodyBox(view, box)
-    return { ...drawn, h: drawn.h + underOf(view, this.stacked(name)) }
+    return { ...drawn, h: drawn.h + underOf(view) }
   }
 
   /** Where a block of boxes goes to lie on nothing: there, with what it lies on pushed aside under `edit`, unless something that can't be is in the way. */

@@ -6,7 +6,7 @@ import { flushSync } from "react-dom"
 import { machinesQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
-import type { MainFile } from "../api/calcifer"
+import type { MainFile, ToolField } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -14,14 +14,14 @@ import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
-import { fieldsOf, shapesOf, snapped } from "./controls"
+import { fieldsOf, shapesOf, shapeWords, snapped } from "./controls"
 import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { VideoScrub } from "./VideoScrub"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -29,9 +29,10 @@ import { ImageVersions } from "./ImageVersions"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
 import { readableSurface } from "./readableSurface"
+import { RunFace, RunMeter, useArriving } from "./RunFace"
+import { StateDot, viewState } from "./StateDot"
 import type { Box } from "./graph"
 
-const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-current", making: "s-making", missing: "s-current", failed: "s-failed" }
 const WIDEST = 1600
 const LOWEST = 90
 /** How wide a picture is asked for while the canvas is drawn in on it. */
@@ -53,23 +54,6 @@ function TakeProgress({ view, run }: { view: ElementView; run: number }) {
   if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
   const fraction = mine?.progress?.done_fraction
   return <>{fraction == null ? "…" : `${Math.round(fraction * 100)}%`}</>
-}
-
-/** An approved box shows nothing wrong unless what it reads changed: a failure of something tried since is on its other face. */
-function dotOf(view: ElementView): string {
-  // A file on its way to Calcifer says nothing: it's there already, as far as anyone looking can tell (cl-918).
-  if (view.queued || view.asked !== undefined) return "s-making"
-  const asset = view.asset
-  if (asset?.standing === "making") return "s-making"
-  if (asset?.failure && !(asset.pinned && faceOf(view) === "media")) return "s-failed"
-  if (asset && shownOf(view)?.absent) return "s-missing"
-  return DOTS[asset?.standing ?? "current"] ?? "s-missing"
-}
-
-/** Takes that landed beside an approved one and haven't been looked at (cl-928): a green dot left of its name. */
-function UnseenDot({ count, noun }: { count: number; noun: string }) {
-  const said = `${count} new ${noun}${count === 1 ? "" : "s"} you haven't looked at`
-  return <span className="unseen-dot" role="img" aria-label={said} title={said} />
 }
 
 /** A button on a card does its one thing, and a field takes the click: neither selects it. */
@@ -223,7 +207,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             {version.main && !version.main.absent ? (
               <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />
             ) : null}
-            {asset.unseen?.includes(version.number) && <span className="unseen-dot take-unseen" role="img" aria-label="Not looked at yet" />}
+            {asset.unseen?.includes(version.number) && <span className="take-unseen" role="img" aria-label="Not looked at yet" />}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
@@ -577,6 +561,12 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
   )
 }
 
+/** What a shape field makes with none set, past Auto: its default, else its first ratio, else 1:1. */
+function shapeFallback(field: ToolField): string {
+  const fixedRatio = field.ratios?.find((ratio): ratio is string => typeof ratio === "string" && ratioOf(ratio) !== undefined)
+  return typeof field.default === "string" && ratioOf(field.default) ? field.default : fixedRatio ?? "1:1"
+}
+
 /** The shape a box makes, by its corner: the one set, else Auto. Open, the one set has an × that takes it back to Auto. Being pulled, the middle says it. */
 function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
@@ -584,8 +574,7 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const field = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "shape")
   if (!field || view.shape) return null
   const held = store.valueOf(name, field.field)
-  const fixedRatio = field.ratios?.find((ratio): ratio is string => typeof ratio === "string" && ratioOf(ratio) !== undefined)
-  const fallback = typeof field.default === "string" && ratioOf(field.default) ? field.default : fixedRatio ?? "1:1"
+  const fallback = shapeFallback(field)
   if (typeof held !== "string" || !ratioOf(held)) return <span className="ratio-rest">{field.auto ? "Auto" : fallback}</span>
   return (
     <span className="ratio-rest">
@@ -597,6 +586,62 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
       )}
     </span>
   )
+}
+
+/** The shape it makes as set, else its picture's, else what its tool makes unset (Auto): what a tile says under its picture (cl-932). */
+function useShapeSaid(view: ElementView, name: string): string | null {
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  if (!view.asset || view.shape) return null
+  const field = fieldsOf(view.asset, tools).find((held) => held.type === "shape")
+  const held = field ? store.valueOf(name, field.field) : undefined
+  if (typeof held === "string" && ratioOf(held)) return held
+  const shown = shownOf(view)
+  if (shown?.width && shown.height) return shapeWords(shown.width / shown.height)
+  if (!field) return null
+  return field.auto ? "Auto" : shapeFallback(field)
+}
+
+/** Under a box at rest, as Paul drew it (cl-932, 11-12): its tool and its shape; then, while it renders, cl-898's two lines with Cancel and
+ *  the whole job's meter. Nothing else: what it can do is in Focus. It hangs under it, in the room it keeps clear (`underOf`). */
+/** The run a box at rest says how goes, while it's on its way or its result is: `going`, and the run's number once there is one. */
+function useGoing(view: ElementView): { going: boolean; number?: number } {
+  const arriving = useArriving(view)
+  const asset = view.asset
+  const onItsWay = asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
+  return { going: Boolean(asset && !view.placing && (onItsWay || arriving !== undefined) && asset.rendering == null), number: onItsWay ? makingRun(view) : arriving }
+}
+
+function Under({ view, name, lite }: { view: ElementView; name: string; lite: boolean }) {
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  const { going, number } = useGoing(view)
+  const shape = useShapeSaid(view, name)
+  const asset = view.asset
+  if (!asset || view.placing) return null
+  const tool = asset.tool ? tools.get(asset.tool) : undefined
+  // What makes it (Paul, 11-12: "I want to see what tools are attached"): once, here, as "MiniMax H3 · Shot".
+  const named = asset.tool ? (tool ? toolName(tool) : asset.tool) : null
+  const line = !lite && (named || shape)
+  if (!line && !going) return null
+  return (
+    <div className="tile-under">
+      {line && (
+        <div className="tile-line">
+          {named && <span className="node-tool" title={asset.tool!}>{named}</span>}
+          <span className="sp" />
+          {shape && <span className="ratio-rest">{shape}</span>}
+        </div>
+      )}
+      {going && <RunFace view={view} name={name} number={number} />}
+    </div>
+  )
+}
+
+/** Along the top of a box at rest, how far its whole job is (Paul, 11-12). */
+function TileMeter({ view }: { view: ElementView }) {
+  const { going, number } = useGoing(view)
+  return going ? <RunMeter view={view} number={number} /> : null
 }
 
 const CardBody = memo(function CardBody({ name, width, focused = false, snapshot }: { name: string; width: number; focused?: boolean; snapshot?: ElementView }) {
@@ -743,7 +788,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const asset = view.asset
   const versions = asset?.prefixes ?? []
   const shown = shownOf(view)
-  const tool = asset?.tool ? tools.get(asset.tool) : undefined
   const at = versions.findIndex((version) => version.number === shown?.number)
   const shownVersion = versions.find((version) => version.number === shown?.number)
   const face = faceOf(view)
@@ -779,7 +823,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
     >
       {!focused && (
       <div className="head">
-        {view.draft === undefined && unseen?.length ? <UnseenDot count={unseen.length} noun={asset?.noun ?? "take"} /> : null}
+        {/* What it's doing, left of its name (Paul, 11-12): grey queued, blue running, green new and not looked at, red failed. */}
+        {view.draft === undefined && <StateDot state={viewState(view)} unseen={unseen?.length ?? 0} noun={asset?.noun ?? "take"} />}
         {view.draft !== undefined ? (
           <NameField name={name} draft={view.draft} onCancel={cancel} />
         ) : (
@@ -797,9 +842,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
         )}
-        {view.draft === undefined && (asset ? asset.kind === "image" && shown?.number !== undefined : isPicture(view)) && <span className="node-version-label">v{asset ? shown?.number : 1}</span>}
-        {/* What makes it, beside its name (Paul, 11-12: "I want to see what tools are attached"). */}
-        {view.draft === undefined && !lite && asset?.tool && <span className="node-tool" title={asset.tool}>{tool ? toolName(tool) : asset.tool}</span>}
+        {view.draft === undefined && (asset ? (here ? asset.kind === "image" : asset.kind !== "text") && shown?.number !== undefined : isPicture(view)) && <span className="node-version-label">v{asset ? shown?.number : 1}</span>}
         {view.draft === undefined && !lite && <span className="sp" />}
         {view.draft === undefined && here && asset?.kind !== "image" && versions.length > 1 && at >= 0 && (
           <span className="count">
@@ -839,7 +882,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
             </button>
           )
         )}
-        <span className={`dot ${dotOf(view)}`} />
       </div>
       )}
       <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text" && !(asset?.timeline && editing)}>{asset?.timeline && editing ? (
@@ -862,7 +904,9 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {rendering && <span className="render-wave" aria-hidden="true" />}
       {focused && asset?.kind === "video" && !asset.timeline && !editing && <VideoScrub name={name} view={view} />}
       {here && !lite && asset && (asset.kind === "image" || (asset.kind === "video" && !asset.timeline && !editing)) && !view.placing && <ImageVersions name={name} view={view} width={width} />}
-      {!lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
+      {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
+      {!here && !focused && <Under view={view} name={name} lite={lite} />}
+      {!here && !focused && <TileMeter view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
         <div className="rest-asking nodrag nopan nowheel">
