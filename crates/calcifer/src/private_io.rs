@@ -23,7 +23,7 @@ pub(crate) fn current() -> Option<Scope> {
 
 pub(crate) fn of_path(path: &Path) -> Result<Option<Scope>, Error> {
     let logical = crate::project::vault::logical(path);
-    let Some(root) = logical.ancestors().find(|root| crate::project::vault::encrypted(root) || root.join(LOCAL_PRIVATE_MARKER).is_file()) else {
+    let Some(root) = logical.ancestors().find(|root| crate::project::vault::encrypted(root) || root.join(LOCAL_PRIVATE_MARKER).is_file() || root.join("project.db").is_file()) else {
         return Ok(None);
     };
     of_output(&crate::project::landing(root))
@@ -83,21 +83,14 @@ pub(crate) fn check_project_placement(
     Ok(vec![api::calcifer::On::Machine("local".into())])
 }
 
-/// Called with the admitted project's identity/root after its bounded DB operation has ended.
-pub(crate) async fn execution_link(
-    project_id: &str,
-    project_root: &Path,
-    machine: &str,
-    base: &crate::link::Link,
-) -> Result<crate::link::Link, Error> {
-    check_project_placement(project_id, project_root, &[api::calcifer::On::Machine(machine.into())])?;
+/// Native project identity is checked before creating or reusing its owner proof. Preparation,
+/// source planning and uploads use this same scope, before any placement is accepted.
+pub(crate) fn scope_for_project(project_id: &str, project_root: &Path) -> Result<Scope, Error> {
     let logical = crate::project::vault::logical(project_root);
     let scope = if crate::project::vault::encrypted(&logical) {
-        of_output(&crate::project::landing(&logical))?
-            .ok_or_else(|| error("The encrypted project storage is unavailable."))?
+        of_output(&crate::project::landing(&logical))?.ok_or_else(|| error("The encrypted project storage is unavailable."))?
     } else {
-        let view = platform::durable::canonical(project_root)
-            .map_err(|_| error("The project storage is unavailable."))?;
+        let view = platform::durable::canonical(project_root).map_err(|_| error("The project storage is unavailable."))?;
         if crate::project::vault::plain_project_id(&view).as_deref() != Some(project_id) {
             return Err(error("The project storage owner changed before execution."));
         }
@@ -106,9 +99,19 @@ pub(crate) async fn execution_link(
             None => descriptor_for_mounted(&view, project_id, 1)?,
         }
     };
-    if scope.storage.project_id != project_id {
-        return Err(error("The execution storage belongs to another project."));
-    }
+    if scope.storage.project_id != project_id { return Err(error("The execution storage belongs to another project.")); }
+    Ok(scope)
+}
+
+/// Called with the admitted project's identity/root after its bounded DB operation has ended.
+pub(crate) async fn execution_link(
+    project_id: &str,
+    project_root: &Path,
+    machine: &str,
+    base: &crate::link::Link,
+) -> Result<crate::link::Link, Error> {
+    check_project_placement(project_id, project_root, &[api::calcifer::On::Machine(machine.into())])?;
+    let scope = scope_for_project(project_id, project_root)?;
     let selected = base.with_private(scope);
     selected.probe_private().await.map_err(|failure| match failure {
         crate::link::LinkError::Refused { code, message, remedy, next } => Error {
@@ -245,9 +248,8 @@ pub(crate) fn of_output(out_dir: &Path) -> Result<Option<Scope>, Error> {
     };
     let logical = crate::project::vault::logical(project);
     if !crate::project::vault::encrypted(&logical) {
-        if !logical.join(LOCAL_PRIVATE_MARKER).exists() { return Ok(None); }
-        let Some(id) = crate::project::vault::plain_project_id(&logical) else { return Ok(None) };
-        return retained_scope(&logical, &id);
+        let id = crate::project::vault::plain_project_id(&logical).ok_or_else(|| error("The project storage owner is unavailable."))?;
+        return scope_for_project(&id, &logical).map(Some);
     }
     let view = crate::project::vault::resolve_path(&logical)?;
     let info = Keybag::load(&logical.join(KEYBAG_FILE))
