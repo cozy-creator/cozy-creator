@@ -207,10 +207,12 @@ async function closeBox(page) {
   await settled(page);
 }
 // A click works on a box where it stands: the middle of it, where there's nothing else to press.
-/** An open box's Render. An image tool's box looking at a take shows only its description: its + goes to its next take's words, with Render. */
+/** An open box's Render. Image tools enter their explicit Edit mode before rendering. */
 async function renderOf(page, name) {
   const here = page.locator(`.card.here[data-asset="${name}"]`).first();
   await here.waitFor();
+  const edit = here.getByRole('button', { name: 'Edit image', exact: true });
+  if (await edit.count()) await edit.click();
   const next = here.locator('.here-side .take.add[aria-label="Its next take"]');
   // A cold tool list can briefly show fallback fields before an image take gains its +.
   // Wait for an editor (including non-image/custom editors) or that actual next-take control.
@@ -626,6 +628,37 @@ function rowsOf(folder, query) {
   return execFileSync(PYTHON, ['-c', script, `${folder}/project.db`, query], { encoding: 'utf8' }).split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
+/** Expand a tool category without creating anything and return one actual draggable implementation. */
+async function implementationRow(page, operation, id) {
+  const category = page.locator(`.tools [data-operation="${operation}"]`);
+  await category.waitFor();
+  if (await category.getAttribute('aria-expanded') !== 'true') await category.click();
+  const rows = page.locator(`.tools [data-implementation][data-tool-operation="${operation}"]`);
+  const row = id ? page.locator(`.tools [data-implementation][data-tool-operation="${operation}"][data-tool=${JSON.stringify(id)}]`) : rows.first();
+  await row.waitFor();
+  return row;
+}
+
+/** Navigate through stored versions using only the visible back/forward controls. */
+async function selectVersion(page, name, wanted) {
+  await openBox(page, name);
+  const folder = (await projectFromPage(page)).path;
+  const card = boxOf(page, name);
+  const counter = card.getByLabel('Current version', { exact: true });
+  const current = async () => Number((await counter.innerText()).match(/(\d+)\s*\/\s*\d+/)?.[1]);
+  for (let step = 0; step < 100; step++) {
+    const at = await current();
+    if (at === wanted) {
+      await until(`${name} current version is persisted`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.version), (number) => number === wanted);
+      return;
+    }
+    if (!Number.isFinite(at)) throw new Error(`invalid version counter for ${name}: ${await counter.innerText()}`);
+    await card.getByRole('button', { name: at < wanted ? 'Next version' : 'Previous version', exact: true }).click();
+    await until(`${name} version moves from ${at}`, current, (now) => now !== at);
+  }
+  throw new Error(`${name} did not reach version ${wanted}`);
+}
+
 /** Pick a real implementation inside a node's operation configuration. */
 async function chooseModel(page, name, id, operation) {
   await openBox(page, name);
@@ -641,4 +674,4 @@ async function chooseModel(page, name, id, operation) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { implementationRow, selectVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
