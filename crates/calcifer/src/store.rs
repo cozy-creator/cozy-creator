@@ -81,7 +81,8 @@ const SCHEMA: &str = "
         started_at INTEGER,
         stays TEXT NOT NULL DEFAULT '[]',
         batch TEXT NOT NULL DEFAULT '',
-        job BLOB
+        job BLOB,
+        attempt INTEGER NOT NULL DEFAULT 1
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
     CREATE TABLE outputs (
@@ -165,6 +166,19 @@ fn job_column(writer: &mut Connection) -> Result<()> {
     )?;
     if !has {
         writer.execute_batch("ALTER TABLE runs ADD COLUMN job BLOB")?;
+    }
+    Ok(())
+}
+
+/// A store made before a run could be sent again (cl-935) gains that column: each run on its first attempt.
+fn attempt_column(writer: &mut Connection) -> Result<()> {
+    let has: bool = writer.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'attempt')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has {
+        writer.execute_batch("ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1")?;
     }
     Ok(())
 }
@@ -367,6 +381,33 @@ pub(crate) struct RunRow {
     pub wants: String,
     /// The quote a `new` run's renter agreed to.
     pub agreed: Option<Agreed>,
+    /// Which time it is sent: a machine's failure under it sends it again (cl-935).
+    pub attempt: u32,
+}
+
+impl RunRow {
+    /// The id its machine knows it by: its own, then `<id>~<attempt>` for each time it is sent again.
+    pub(crate) fn sent_id(&self) -> String {
+        match self.attempt {
+            0 | 1 => self.id.to_string(),
+            attempt => format!("{}~{attempt}", self.id),
+        }
+    }
+}
+
+/// The run a machine's id names (`RunRow::sent_id`).
+pub(crate) fn calcifer_id(sent: &str) -> &str {
+    sent.rsplit_once('~').filter(|(_, n)| n.parse::<u32>().is_ok()).map_or(sent, |(id, _)| id)
+}
+
+/// How many times a run is sent in all when its machine's GPU fails under it (cl-935).
+const ATTEMPTS: u32 = 3;
+
+/// A failure that is the machine's GPU's, not the run's: a driver fault on its GPU, or its GPU's
+/// memory lost to a killed process stuck in the kernel. It is sent again; a model or package
+/// failure never is.
+fn machine_failure(outcome: &v1::Outcome) -> bool {
+    outcome.status == "failed" && outcome.reason.as_ref().is_some_and(|r| matches!(r.code.as_str(), "gpu_fault" | "gpu_lost"))
 }
 
 /// Which runs a listing answers, newest first.
@@ -564,6 +605,7 @@ impl Store {
                 stays_column(&mut writer)?;
                 batch_column(&mut writer)?;
                 job_column(&mut writer)?;
+                attempt_column(&mut writer)?;
             }
             other => return Err(StoreError::Version(other)),
         }
@@ -1623,12 +1665,16 @@ impl Store {
         })
     }
 
-    /// Ends an accepted run with its machine's outcome.
+    /// Ends an accepted run with its machine's outcome; one its machine's GPU failed under goes
+    /// back to the outbox instead, to be sent again (`machine_failure`).
     pub(crate) fn settle(&self, id: &str, outcome: &v1::Outcome, cursor: u64) -> Result<Vec<Event>> {
         self.write(|tx| {
             let Some(row) = run_in(tx, id)?.filter(|row| row.state == State::Accepted) else {
                 return Ok(vec![]);
             };
+            if machine_failure(outcome) && !row.cancel_requested && row.attempt < ATTEMPTS {
+                return again(tx, &row, outcome);
+            }
             let mut events = vec![];
             for product in &outcome.outputs {
                 events.extend(put_output(tx, &row, product)?);
@@ -2120,7 +2166,7 @@ fn put_machine_in(tx: &Transaction, machine: &MachineRow) -> Result<()> {
 
 const RUN_COLUMNS: &str = "id, number, kind, target, hub, machine, pinned, spec, out_dir, state, cancel_requested,
     cursor, machine_state, status, reason_code, reason, state_seq, created_at, accepted_at, settled_at, warnings,
-    inputs, outcome, wants, agreed, started_at";
+    inputs, outcome, wants, agreed, started_at, attempt";
 
 const RUN_LIST_SCOPE: &str = "FROM runs WHERE number < ?1
     AND (?2 IS NULL OR CASE state WHEN 'accepted' THEN 'in_progress' WHEN 'settled' THEN status ELSE 'queued' END = ?2)
@@ -2289,6 +2335,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
             },
             wants: wants.unwrap_or_else(|| "any".into()),
             agreed: (agreed.as_deref().map(serde_json::from_str).transpose()).map_err(|_| corrupt("a run's agreed price"))?,
+            attempt: r.get::<_, i64>(26)?.max(1) as u32,
         })
     })())
 }
@@ -2517,6 +2564,42 @@ fn next_seq(tx: &Transaction, id: &str) -> Result<u64> {
 }
 
 /// A new lifecycle event for the run as it now stands.
+/// Sends `row` again after its machine's GPU failed under it: its attempt's outputs aren't kept. A
+/// run its machine can't serve (`gpu_lost`: too few GPUs in service there) goes to the least busy
+/// rental that has them (`Machines::place_unplaced`), when it was on a rental; else to its machine,
+/// which places it on GPUs in service.
+fn again(tx: &Transaction, row: &RunRow, outcome: &v1::Outcome) -> Result<Vec<Event>> {
+    let id = row.id.as_str();
+    let reason = outcome.reason.clone().unwrap_or_default();
+    let machine = row.machine.clone().unwrap_or_default();
+    let rental = tx
+        .query_row("SELECT kind FROM machines WHERE name = ?1", [&machine], |r| r.get::<_, String>(0))
+        .optional()?
+        .is_some_and(|kind| kind == "rental");
+    let elsewhere = reason.code == "gpu_lost" && rental;
+    tx.execute(
+        "UPDATE runs SET state = 'queued', attempt = ?2, cursor = 0, machine_state = NULL, accepted_at = NULL, started_at = NULL,
+            machine = CASE WHEN ?3 THEN NULL ELSE machine END, wants = CASE WHEN ?3 THEN 'any' ELSE wants END,
+            pinned = CASE WHEN ?3 THEN 0 ELSE pinned END
+         WHERE id = ?1",
+        params![id, row.attempt + 1, elsewhere],
+    )?;
+    let whither = match elsewhere {
+        true => "to a rental with GPUs in service".to_owned(),
+        false => format!("to {machine}, on GPUs in service"),
+    };
+    let text = format!(
+        "attempt {} failed on {machine}, the machine's fault ({}: {}): sent again {whither}, attempt {} of {ATTEMPTS}",
+        row.attempt, reason.code, reason.message, row.attempt + 1
+    );
+    let (seq, at_ms) = (next_seq(tx, id)?, now_ms());
+    tx.execute(
+        "INSERT INTO run_logs (run, seq, at_ms, level, text) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, seq as i64, at_ms, "warning", seal_run_text(tx, id, &log_context(id, seq), &text)?],
+    )?;
+    Ok(vec![log_event(seq, at_ms, "warning".to_owned(), text), lifecycle(tx, id)?])
+}
+
 fn lifecycle(tx: &Transaction, id: &str) -> Result<Event> {
     let seq = next_seq(tx, id)?;
     tx.execute("UPDATE runs SET state_seq = ?2 WHERE id = ?1", params![id, seq as i64])?;

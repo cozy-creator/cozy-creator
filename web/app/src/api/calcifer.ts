@@ -808,7 +808,11 @@ memory_limit_bytes?: number,
 /**
  * It draws a screen now: a render on it makes the screen lag.
  */
-display?: boolean, };
+display?: boolean,
+/**
+ * Why nothing is placed on it now (cl-935); empty: in service.
+ */
+out_of_service?: string, };
 
 /**
  * A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
@@ -2976,9 +2980,21 @@ export type StuckProcess = { pid: number, command: string,
  */
 wchan: string,
 /**
- * When the machine found it stuck.
+ * When it was killed.
  */
-since_unix_ms: number, };
+since_unix_ms: number,
+/**
+ * Its resident host memory then.
+ */
+resident_bytes: number,
+/**
+ * The GPUs (by index) out of service while it holds their memory, nothing placed on them until it exits (cl-935).
+ */
+gpus: Array<number>,
+/**
+ * What the driver showed it holding on them.
+ */
+gpu_bytes: number, };
 
 /**
  * The answer to a submit: 202 when this call recorded the run, 200 (`replay`) when the key had.

@@ -18,28 +18,31 @@ pub(crate) fn group_outlives(leader: &Birth, before: u64) -> bool {
         .any(|member| member.start_ticks < before && member.state().is_ok_and(|state| state != State::Gone))
 }
 
-/// How often a wait on a killed process looks whether it is stuck in the kernel: never a deadline.
+/// How often a wait on a killed process samples its leaving (`platform::contain::all_stuck`): never a deadline.
 const SAMPLE: Duration = Duration::from_millis(100);
 
-/// A killed process stuck in the kernel (D state): shown in the machine's status
-/// (`platform::contain::stuck`), not waited on. Its own thread reaps it once it exits.
+/// A killed process stuck in the kernel (D state, no killed process moving for
+/// `platform::contain::STALL`): shown in the machine's status (`platform::contain::stuck`), not
+/// waited on. Its own thread reaps it once it exits.
 #[derive(Debug)]
 pub(crate) struct Stuck(pub u32);
 impl std::fmt::Display for Stuck {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "pid {} was killed and is stuck in the kernel (D state): it holds what it held, \
-            GPU memory included, until it exits", self.0)
+        write!(formatter, "pid {} was killed and is stuck in the kernel (D state, nothing moving for {} s): it holds what \
+            it held, GPU memory included, until it exits", self.0, platform::contain::STALL.as_secs())
     }
 }
 impl std::error::Error for Stuck {}
 
 /// Wait for this exact process to exit (its caller closed its channel, or `killed` it), then reap
 /// it. Then its scope: whatever outlived it (a `setsid` daemon) is killed and counted, and the
-/// scope is removed. A killed one stuck in the kernel ends the wait with [`Stuck`].
+/// scope is removed. A killed one stuck in the kernel ends the wait with [`Stuck`]; one leaving
+/// slowly (a CUDA process's driver teardown) is waited on, its time logged.
 pub(crate) fn reap(exact: &Exact, child: Option<Child>, killed: bool) -> io::Result<Reaped> {
     if !killed {
         exact.wait()?;
     }
+    let began = std::time::Instant::now();
     while killed && !exact.wait_for(SAMPLE)? {
         if platform::contain::all_stuck(std::slice::from_ref(exact.birth())) {
             let (exact, pid) = (exact.try_clone()?, exact.birth().pid);
@@ -51,6 +54,9 @@ pub(crate) fn reap(exact: &Exact, child: Option<Child>, killed: bool) -> io::Res
             })?;
             return Err(io::Error::other(Stuck(pid)));
         }
+    }
+    if killed && began.elapsed() >= Duration::from_secs(1) {
+        tracing::info!("pid {} exited {:.1} s after its kill", exact.birth().pid, began.elapsed().as_secs_f64());
     }
     let status = match child {
         Some(mut child) => child.wait()?,

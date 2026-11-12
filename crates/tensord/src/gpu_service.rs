@@ -862,9 +862,55 @@ pub(crate) struct Pool {
     lanes: Mutex<BTreeMap<String, std::ops::Range<usize>>>,
     /// Driver faults that failed no run, by GPU: the next run ending there carries them.
     unreported: Mutex<Vec<(usize, String)>>,
+    /// GPUs out of service, by the killed executor stuck in the kernel that holds their memory (cl-935).
+    lost: Mutex<BTreeMap<u32, Lost>>,
+    /// GPUs out of service, by envelope index: in use at this run's start by processes it doesn't own (cl-935).
+    foreign: Mutex<BTreeMap<usize, Foreign>>,
     // Drop session/resource custody before ending the actual spawning thread.
     launcher: crate::child_launcher::ChildLauncher,
 }
+/// A killed executor process stuck in the kernel and the GPUs whose memory it holds (cl-935): they
+/// are out of service until it exits.
+#[derive(Clone, Debug)]
+pub(crate) struct Lost {
+    pub stuck: platform::contain::Stuck,
+    /// Each GPU by its index (`nvidia-smi`'s), with the bytes the driver showed held there.
+    pub gpus: Vec<(u32, u64)>,
+}
+
+/// A GPU in use at this machine run's start by processes it doesn't own (cl-935).
+#[derive(Clone, Debug)]
+pub(crate) struct Foreign {
+    at: std::time::Instant,
+    /// Its bytes in use then, and the driver's pids for them (a container's are the host's).
+    bytes: u64,
+    pids: Vec<u32>,
+    /// Those of them this machine ended: its own earlier executors.
+    ended: Vec<u32>,
+}
+
+/// What a GPU uses with nothing on it (the driver's own reserve) stays under this.
+const IDLE_USE: u64 = 1 << 30;
+
+/// Whether `pid`, as this machine sees it, is a Cozy executor of an earlier run of it: a Runtime
+/// executor or trampoline that doesn't descend from this run.
+fn earlier_executor(pid: u32) -> bool {
+    let cmdline = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    let executor = cmdline.split(|b| *b == 0).any(|arg| arg == b"cozy_runtime.internal.trampoline" || arg == b"cozy_runtime.internal.executor");
+    let (own, mut at) = (std::process::id(), pid);
+    for _ in 0..64 {
+        if at == own {
+            return false;
+        }
+        let stat = fs::read_to_string(format!("/proc/{at}/stat")).unwrap_or_default();
+        match stat.rsplit_once(") ").and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<u32>().ok()) {
+            Some(parent) if parent > 1 => at = parent,
+            _ => break,
+        }
+    }
+    executor
+}
+
 /// While the pool lives, its idle executors are watched for their exit: one killed or crashed
 /// while idle leaves the pool and is reaped at once, never left a zombie until the next call.
 /// Dropped with the pool, its thread ends.
@@ -1083,6 +1129,8 @@ impl Pool {
                 running,
                 lanes: Mutex::default(),
                 unreported: Mutex::default(),
+                lost: Mutex::default(),
+                foreign: Mutex::default(),
             }
         }))
     }
@@ -1394,6 +1442,224 @@ impl Pool {
                 pool.faulted(&fault);
             }
         }));
+    }
+
+    /// A killed executor found stuck in the kernel takes the GPUs whose memory it holds out of
+    /// service until it exits (cl-935).
+    pub(crate) fn watch_stuck(self: &Arc<Self>) {
+        let pool = Arc::downgrade(self);
+        let lose = move |stuck: &platform::contain::Stuck| {
+            let (pool, stuck, pid) = (pool.clone(), stuck.clone(), stuck.pid);
+            let lose = std::thread::Builder::new().name(format!("lost-{pid}")).spawn(move || {
+                if let Some(pool) = pool.upgrade() {
+                    pool.lose(stuck);
+                }
+            });
+            if let Err(error) = lose {
+                tracing::warn!("pid {pid} is stuck in the kernel; its GPUs stay in service: {error}");
+            }
+        };
+        // Those found before the pool was (this machine's start swept an earlier run's scopes).
+        platform::contain::stuck().iter().for_each(&lose);
+        platform::contain::on_stuck(lose);
+    }
+
+    /// The GPUs `stuck` holds memory on go out of service: those the driver charges it on, else
+    /// (a container, whose pids aren't the driver's) its executor's lane. Back once it exits.
+    fn lose(self: &Arc<Self>, stuck: platform::contain::Stuck) {
+        let pid = stuck.pid;
+        let tenant = self.tenants.lock().unwrap().get(&pid).map(|t| (t.start..t.start + t.width.max(1), t.exact.try_clone()));
+        let readings: Vec<Option<platform::gpu::Reading>> = self.devices.iter()
+            .map(|d| platform::gpu::Device::open(&d.entry).and_then(|gpu| gpu.read()).ok()).collect();
+        let charged: Vec<Option<u64>> = readings.iter()
+            .map(|r| r.as_ref().and_then(|r| r.processes.as_ref()).and_then(|p| p.get(&pid).copied())).collect();
+        let accounted = charged.iter().any(Option::is_some);
+        let held: Vec<(usize, u64)> = (0..self.devices.len()).filter_map(|i| match charged[i] {
+            Some(bytes) => Some((i, bytes)),
+            None if !accounted && tenant.as_ref().is_some_and(|(lane, _)| lane.contains(&i)) =>
+                Some((i, readings[i].as_ref().map_or(0, |r| r.total.saturating_sub(r.free)))),
+            None => None,
+        }).collect();
+        if held.is_empty() {
+            return tracing::warn!("pid {pid} ({}) is stuck in the kernel; no GPU here shows it holding memory", stuck.command);
+        }
+        let index = |i: usize| self.inventory(&self.devices[i].entry).map_or(i as u32, |g| g.device_index);
+        let gpus: Vec<(u32, u64)> = held.iter().map(|(i, bytes)| (index(*i), *bytes)).collect();
+        let shown: Vec<String> = gpus.iter().map(|(gpu, bytes)| format!("GPU {gpu} ({:.1} GiB)", *bytes as f64 / (1u64 << 30) as f64)).collect();
+        tracing::warn!("{} out of service: pid {pid} ({}) holds that memory, killed and stuck in the kernel; \
+            back once it exits", shown.join(", "), stuck.command);
+        self.notes.note(serde_json::json!({"event": "gpu_lost", "pid": pid, "wchan": stuck.wchan, "gpus": gpus}));
+        self.lost.lock().unwrap().insert(pid, Lost { stuck, gpus });
+        self.refresh_out();
+        let exact = match tenant.and_then(|(_, exact)| exact.ok()) {
+            Some(exact) => Some(exact),
+            None => Birth::of(pid).ok().and_then(|birth| Exact::open(&birth).ok().flatten()),
+        };
+        match exact {
+            Some(exact) if exact.wait().is_ok() => (),
+            // Unwatchable: looked for once a second.
+            _ => while platform::contain::stuck().iter().any(|s| s.pid == pid) {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            },
+        }
+        self.found(pid);
+    }
+
+    /// `pid` exited: the GPUs no other stuck process holds are back in service.
+    fn found(&self, pid: u32) {
+        let mut lost = self.lost.lock().unwrap();
+        let Some(gone) = lost.remove(&pid) else { return };
+        drop(lost);
+        let back: Vec<u32> = gone.gpus.iter().map(|(gpu, _)| *gpu).collect();
+        tracing::info!("pid {pid} exited: GPU {back:?} no longer held by it");
+        self.notes.note(serde_json::json!({"event": "gpu_back", "pid": pid, "gpus": back}));
+        self.refresh_out();
+    }
+
+    /// The GPU's index as `nvidia-smi` numbers it.
+    fn index(&self, device: usize) -> u32 {
+        self.inventory(&self.devices[device].entry).map_or(device as u32, |g| g.device_index)
+    }
+
+    /// Why each GPU (by envelope index) is out of service, and whether it has been long enough
+    /// (a stuck process, or [`platform::contain::STALL`] of a foreign one) for runs waiting on it to fail.
+    fn out_of_service(&self) -> BTreeMap<usize, (String, bool)> {
+        let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+        let mut out = BTreeMap::new();
+        for lost in self.lost.lock().unwrap().values() {
+            for (gpu, bytes) in &lost.gpus {
+                if let Some(d) = (0..self.devices.len()).find(|d| self.index(*d) == *gpu) {
+                    out.insert(d, (format!("pid {} ({}) holds {:.1} GiB of it, killed and stuck in the kernel; back once it exits",
+                        lost.stuck.pid, lost.stuck.command, gib(*bytes)), true));
+                }
+            }
+        }
+        for (d, foreign) in self.foreign.lock().unwrap().iter() {
+            let pids: Vec<String> = foreign.pids.iter().map(u32::to_string).collect();
+            let why = match foreign.ended.as_slice() {
+                [] => format!("{:.1} GiB of it was in use when this machine started, by processes it doesn't run (driver pids {}); \
+                    back once that memory is released", gib(foreign.bytes), pids.join(", ")),
+                ended => format!("an earlier run's executor (pid {}) held {:.1} GiB of it when this machine started, and was ended; \
+                    back once that memory is released", ended.iter().map(u32::to_string).collect::<Vec<_>>().join(", "), gib(foreign.bytes)),
+            };
+            out.entry(*d).or_insert((why, foreign.at.elapsed() >= platform::contain::STALL));
+        }
+        out
+    }
+
+    /// The allocation table's GPUs out of service follow `out_of_service`; dispatch wakes.
+    fn refresh_out(&self) {
+        let out = self.out_of_service();
+        let (gone, back): (Vec<usize>, Vec<usize>) = (0..self.devices.len()).partition(|d| out.contains_key(d));
+        self.allocations.set_out(&back, false);
+        self.allocations.set_out(&gone, true);
+        if let Some(engine) = self.engine.get().and_then(Weak::upgrade) {
+            engine.notify_activity();
+        }
+    }
+
+    /// Why each GPU out of service is, by UUID (`machine show`).
+    pub(crate) fn out_reasons(&self) -> BTreeMap<String, String> {
+        self.out_of_service().into_iter()
+            .filter_map(|(d, (why, _))| Some((self.inventory(&self.devices[d].entry)?.device_uuid.clone(), why)))
+            .collect()
+    }
+
+    /// At its start, before any executor of this run: a GPU whose memory is in use is held by
+    /// processes this machine doesn't run (cl-935: across heine's TensorD restart an earlier
+    /// executor kept 20 GB of GPU 0, and the next run there failed out of memory). Each earlier
+    /// executor of its own it can see is ended; the GPU is out of service until its memory is back.
+    /// A dedicated machine counts any such use, seen or not (a container's driver pids aren't its
+    /// own); a shared one only its own executors', as other programs' memory is theirs.
+    pub(crate) fn foreign_at_start(self: &Arc<Self>) {
+        let dedicated = matches!(self.config.host.mode, HostMode::Dedicated);
+        let mut found = BTreeMap::new();
+        for (d, device) in self.devices.iter().enumerate() {
+            let Ok(reading) = platform::gpu::Device::open(&device.entry).and_then(|gpu| gpu.read()) else { continue };
+            let used = reading.total.saturating_sub(reading.free);
+            if used <= IDLE_USE || reading.display {
+                continue;
+            }
+            let pids: Vec<u32> = reading.processes.as_ref().map(|p| p.keys().copied().collect()).unwrap_or_default();
+            let ended: Vec<u32> = pids.iter().copied().filter(|pid| earlier_executor(*pid)).filter(|pid| {
+                Birth::of(*pid).ok().and_then(|birth| Exact::open(&birth).ok().flatten()).is_some_and(|exact| exact.kill().is_ok())
+            }).collect();
+            if ended.is_empty() && !dedicated {
+                continue;
+            }
+            found.insert(d, Foreign { at: std::time::Instant::now(), bytes: used, pids, ended });
+        }
+        if found.is_empty() {
+            return;
+        }
+        *self.foreign.lock().unwrap() = found;
+        for (d, (why, _)) in self.out_of_service() {
+            tracing::warn!("GPU {} out of service: {why}", self.index(d));
+        }
+        self.notes.note(serde_json::json!({"event": "gpu_foreign", "gpus": self.out_reasons()}));
+        self.refresh_out();
+        let pool = Arc::downgrade(self);
+        let mut told = std::collections::BTreeSet::new();
+        let watching = std::thread::Builder::new().name("gpu-foreign".into()).spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let Some(pool) = pool.upgrade() else { return };
+            let held: Vec<usize> = pool.foreign.lock().unwrap().keys().copied().collect();
+            // Read off the lock: a wedged driver blocks a read.
+            let back: Vec<usize> = held.iter().copied().filter(|d| {
+                platform::gpu::Device::open(&pool.devices[*d].entry).and_then(|gpu| gpu.read())
+                    .is_ok_and(|r| r.total.saturating_sub(r.free) <= IDLE_USE)
+            }).collect();
+            let mut foreign = pool.foreign.lock().unwrap();
+            back.iter().for_each(|d| drop(foreign.remove(d)));
+            // From now runs waiting on it fail (`unservable`), for their clients to place them again: dispatch looks once.
+            let settled = foreign.iter().any(|(d, f)| f.at.elapsed() >= platform::contain::STALL && told.insert(*d));
+            let left = foreign.len();
+            drop(foreign);
+            for d in &back {
+                tracing::info!("GPU {}: the memory held at start is back; in service", pool.index(*d));
+            }
+            if !back.is_empty() || settled {
+                pool.refresh_out();
+            }
+            if left == 0 {
+                return;
+            }
+        });
+        if let Err(error) = watching {
+            tracing::warn!("GPUs held at start stay out of service until the machine restarts: {error}");
+        }
+    }
+
+    /// The killed executors stuck in the kernel and the GPUs they hold, by pid (cl-935).
+    pub(crate) fn lost(&self) -> BTreeMap<u32, Lost> {
+        self.lost.lock().unwrap().clone()
+    }
+
+    /// The widest lane of GPUs in service: what a root may be given.
+    pub(crate) fn serving_width(&self) -> usize {
+        self.allocations.serving()
+    }
+
+    /// Why `lane` can't run now: a GPU of it out of service, or, unbound, wider than any lane in
+    /// service. A run waiting for it fails as the machine's (`gpu_lost`), for its client to place it again.
+    pub(crate) fn unservable(&self, lane: Option<std::ops::Range<usize>>, width: usize) -> Option<String> {
+        let out = self.out_of_service();
+        let settled: Vec<usize> = out.iter().filter(|(_, (_, settled))| *settled).map(|(d, _)| *d).collect();
+        if settled.is_empty() {
+            return None;
+        }
+        let blocked = match lane {
+            Some(lane) => lane.clone().any(|d| settled.contains(&d)),
+            None => {
+                let serving = (0..self.devices.len()).collect::<Vec<_>>();
+                let widest = serving.split(|d| settled.contains(d)).map(<[usize]>::len).max().unwrap_or(0);
+                width > widest
+            }
+        };
+        blocked.then(|| {
+            let why: Vec<String> = settled.iter().map(|d| format!("GPU {}: {}", self.index(*d), out[d].0)).collect();
+            format!("its {width} GPU(s) aren't in service on this machine: {}", why.join("; "))
+        })
     }
 
     fn faulted(&self, fault: &platform::gpu::Fault) {
@@ -2393,9 +2659,13 @@ impl Pool {
             let width = match record.invocation.gpus {
                 // Unpacked, it takes its narrowest width: never wider than proven (cr-268).
                 0 => width.or_else(|| record.invocation.widths.first().copied())
-                    .unwrap_or_else(|| held.record.widest_group(self.width()).min(1)) as usize,
+                    .unwrap_or_else(|| held.record.widest_group(self.serving_width()).min(1)) as usize,
                 gpus => gpus as usize,
             };
+            if let Some(why) = (record.invocation.parent.is_empty() && width > 0).then(|| self.unservable(None, width)).flatten() {
+                engine.fail_unstarted(&record.id, "gpu_lost", why)?;
+                return Ok(false);
+            }
             let root = (record.invocation.parent.is_empty() && self.width() > 0)
                 .then(|| self.root(engine, record, width))
                 .flatten();
@@ -2429,6 +2699,10 @@ impl Pool {
             Some(width) => plan.at(width)?,
             None => plan,
         };
+        if let Some(why) = self.unservable(lane.clone(), plan.degree as usize) {
+            engine.fail_unstarted(&record.id, "gpu_lost", why)?;
+            return Ok(false);
+        }
         let Some((start, permit)) = self.place(&plan, (Some(root), record.family()), lane, claims) else {
             return Ok(false);
         };
@@ -3368,7 +3642,7 @@ impl Pool {
         executor.keep_memo(match private { Some(scope) => self.memo_for_private(scope)?, None => self.memo.clone() });
         if plan.degree > 0 {
             let exact = Exact::open(&executor.birth)?.ok_or_else(|| io::Error::other("executor exited before its start"))?;
-            let tenant = Tenant { plan: plan.executor.clone(), start, exact };
+            let tenant = Tenant { plan: plan.executor.clone(), start, width: plan.degree as usize, exact };
             self.tenants.lock().unwrap().insert(executor.birth.pid, tenant);
             self.leaders.lock().unwrap().insert(executor.birth.pid, Leader {
                 private_project: private.map(|scope| scope.project_id.clone()),
@@ -3469,6 +3743,7 @@ impl Pool {
                 leader: session.executor.birth.clone(),
                 plan: session.env.clone(),
                 start,
+                width: session.degree as usize,
             }),
             host: self.host.as_deref(),
         };
@@ -4020,7 +4295,15 @@ fn ending(error: io::Error, executor: DeviceExecutor) -> (io::Error, String) {
     let stderr = executor.stderr_tail();
     let error = match executor.terminate() {
         Ok(ended) => with_end(error, &ended, &stderr),
-        Err(unproven) => io::Error::other(format!("{error}; executor exit unproven: {unproven}")),
+        // The run's own reason keeps its type: a refusal stays the run's refusal (cl-935: 46907's
+        // `model_asset_missing` became `executor_invalidated`).
+        Err(unproven) => match refused(&error) {
+            Some(refusal) => io::Error::other(Refused {
+                code: refusal.code.clone(),
+                detail: format!("{}; executor exit unproven: {unproven}", refusal.detail),
+            }),
+            None => io::Error::other(format!("{error}; executor exit unproven: {unproven}")),
+        },
     };
     (error, stderr)
 }
@@ -4521,6 +4804,7 @@ struct Formation {
     leader: Birth,
     plan: String,
     start: usize,
+    width: usize,
 }
 
 impl Formation {
@@ -4533,7 +4817,7 @@ impl Formation {
             .filter_map(|birth| Exact::open(birth).ok().flatten())
             .collect();
         let tenant = |follower: &Exact| -> io::Result<(u32, Tenant)> {
-            let tenant = Tenant { plan: self.plan.clone(), start: self.start, exact: follower.try_clone()? };
+            let tenant = Tenant { plan: self.plan.clone(), start: self.start, width: self.width, exact: follower.try_clone()? };
             Ok((follower.birth().pid, tenant))
         };
         self.tenants.register(followers.iter().map(tenant).collect::<io::Result<Vec<_>>>()?);

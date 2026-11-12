@@ -589,6 +589,11 @@ components:
             The most of `memory_bytes` this machine uses (`machine.gpu_memory_limit`); 0: all of it.
           minimum: 0
         name: {type: string}
+        out_of_service:
+          type: string
+          description: >-
+            Why nothing is placed on it now (cl-935): its memory held by a process stuck in the kernel, or in use at
+            the machine's start by processes it doesn't run. Absent: in service.
         pci_bus_id: {type: string}
         uuid: {type: string}
     GpuAllocation:
@@ -1258,8 +1263,14 @@ components:
         exits once that wait ends.
       properties:
         command: {type: string}
+        gpu_bytes: {type: integer, format: int64, minimum: 0, description: What the driver showed it holding on them.}
+        gpus:
+          type: array
+          items: {type: integer, format: int32, minimum: 0}
+          description: The GPUs (by index) out of service while it holds their memory (cl-935).
         pid: {type: integer, format: int32, minimum: 0}
-        since_unix_ms: {type: integer, format: int64, description: When the machine found it stuck.}
+        resident_bytes: {type: integer, format: int64, minimum: 0, description: Its resident host memory when killed.}
+        since_unix_ms: {type: integer, format: int64, description: When it was killed.}
         wchan: {type: string, description: The kernel function it sleeps in; empty when the kernel hides it.}
     TensorFSOptions:
       type: object
