@@ -621,6 +621,15 @@ project_api "$M" /assets/notes -X PATCH -H 'Content-Type: application/json' -d '
 [ "$(sql1 "$M" 'PRAGMA user_version')" = 2 ] || check "migrate: 0.24.0 made schema $(sql1 "$M" 'PRAGMA user_version'), not 2"
 # 0.24.0's CLI has no export, history or delete: its Calcifer's routes, as its page asks, read and write alike on both.
 migrate_read "$M" 0240 || check "migrate: what 0.24.0 holds of it"
+# A copy of it whose project.db refuses a take's row, as a migration that fails part-way would meet: below.
+local F=$OUT/migrate-fails was_dump
+mkdir -p "$F" && cp -a "$M/." "$F/" && rm -f "$F"/project.db*
+python3 - "$M/project.db" "$F/project.db" <<'PY' || check "migrate: a copy that fails part-way"
+import sqlite3, sys
+with sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True) as source, sqlite3.connect(sys.argv[2]) as copy:
+    source.backup(copy)
+    copy.execute("CREATE TRIGGER e2e_refused BEFORE INSERT ON versions BEGIN SELECT RAISE(ABORT, 'e2e: a row refused'); END")
+PY
 
 in_cozy "$now" || { check "migrate: this cozy back in its place"; return; }
 in_project "$M" --json status > "$OUT/migrate-open.json" 2> "$OUT/migrate-open.err" || { check "migrate: this cozy opening it: $(tail -c 300 "$OUT/migrate-open.err")"; return; }
@@ -649,6 +658,14 @@ kill9
 J '[.versions[].number] == [1, 2, 4] and .discarded == [3] and .asset.approved == 2' <<< "$(held "$M" take)" \
   || check "migrate: take after a new take and a kill: $(held "$M" take | jq -c '{versions: [.versions[].number], discarded, approved: .asset.approved}')"
 [ "$(sql "$M" "SELECT json_extract(record, '\$.id') FROM versions WHERE key = 'take'" | sort -u | wc -l)" = 4 ] || check "migrate: take's four versions have not four ids"
+# A migration that fails part-way, past its rows' deletes, leaves the project as it was: one transaction. Let be, it migrates.
+was_dump=$(dump_of "$F/project.db")
+if in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1; then check "migrate: a migration refused part-way opened the project"; fi
+[ "$(dump_of "$F/project.db")" = "$was_dump" ] || check "migrate: a migration refused part-way changed project.db ($was_dump, now $(dump_of "$F/project.db")): $(tail -c 300 "$OUT/migrate-fails.json")"
+db_sql "$F" "DROP TRIGGER e2e_refused"
+in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1 || check "migrate: let be, the copy didn't open: $(tail -c 300 "$OUT/migrate-fails.json")"
+[ "$(sql1 "$F" 'PRAGMA user_version')" = 3 ] || check "migrate: let be, the copy is schema $(sql1 "$F" 'PRAGMA user_version')"
+migrate_facts "$F" | cmp -s - "$OUT/migrate-0240-facts" || check "migrate: let be, the copy reads otherwise: $(migrate_facts "$F" | diff "$OUT/migrate-0240-facts" - | head -c 600)"
 echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.name): [.versions[].number]}) | add' "$OUT/migrate-now-facts")"
 }
 # in_cozy <file>: that cozy in this one's place, as an update puts it, and its Calcifer the one serving: the last stopped as a
@@ -671,6 +688,15 @@ migrate_read() {
   migrate_facts "$1" > "$OUT/migrate-$2-facts" && migrate_rows "$1" > "$OUT/migrate-$2-rows" \
     && project_api "$1" /yaml | yaml_body > "$OUT/migrate-$2-yaml" \
     && project_api "$1" /history | jq -c '[.entries[] | {words, undone: (.undone != null)}]' > "$OUT/migrate-$2-history"
+}
+# dump_of <project.db>: its schema version and the hash of all it holds (read; a WAL copy no one has open needs its -shm made).
+dump_of() {
+  python3 - "$1" <<'PY'
+import hashlib, sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+held = hashlib.sha256("\n".join(conn.iterdump()).encode()).hexdigest()
+print(conn.execute("PRAGMA user_version").fetchone()[0], held)
+PY
 }
 # migrate_rows <project>: project.db's rows of takes, boxes' records and files, sorted.
 migrate_rows() {
