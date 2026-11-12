@@ -20,14 +20,15 @@
 #              two failed cells stop the session
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
 #   need_s     seconds the cap must buy (3600)
-#   free_gib   optional: before the first cell another program (fixtures/game.py, raw driver allocations by a root
-#              shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as the
-#              0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
+#   free_gib   optional: before the first cell another program (suites/bench/vram.py, raw driver allocations by a
+#              root shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as
+#              the 0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
 . "$(dirname "$0")/lib.sh"
 CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '')
 [[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
-FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
+VRAM=$(dirname "$0")/../suites/bench/vram.py
 if [ -n "$FREE_GIB" ]; then
+  [ -f "$VRAM" ] || fail "no suites/bench/vram.py"
   [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
   RENT_ARGS=--ssh
 fi
@@ -74,23 +75,19 @@ quote "$(param need_s 3600)"
 rent
 
 if [ -n "$FREE_GIB" ]; then
-  cd "$FIX" || fail "no fixtures"
-  step hold-write run ./game.py --on "$NAME" op=write \
-    cfg="{\"name\": \"hold\", \"mode\": \"free\", \"leave_gb\": $FREE_GIB, \"trigger\": \"now\", \"give_up_s\": 60, \"hold_s\": 7200}" ||
-    fail "the holder's launcher"
-  cozy run watch "$(runno hold-write)" --once --json > "$OUT/hold-write.json" 2>&1
-  value=$(jq -c '.result.value | if type == "string" then fromjson else . end' "$OUT/hold-write.json" 2> /dev/null)
-  launch=$(jq -r '.launch // empty' <<< "$value" 2> /dev/null) HOLD=$(jq -r '.state // empty' <<< "$value" 2> /dev/null)
-  [ -n "$launch" ] && [ -n "$HOLD" ] || fail "no holder launcher: $(head -c 300 "$OUT/hold-write.json")"
-  cozy machine ssh "$NAME" "setsid nohup sh $launch > /dev/null 2>&1 < /dev/null &" || fail "the holder did not start"
-  for _ in $(seq 60); do
-    cozy machine ssh "$NAME" "cat $HOLD 2>/dev/null" > "$OUT/hold.json" 2>/dev/null
-    jq -e '.t_done' "$OUT/hold.json" > /dev/null 2>&1 && break
-    sleep 2
-  done
-  jq -e '.reached == true' "$OUT/hold.json" > /dev/null 2>&1 || fail "the holder did not settle: $(head -c 300 "$OUT/hold.json")"
-  say "holder: $(jq -c '{held_mib, at_done: .nvml_at_done}' "$OUT/hold.json"): $FREE_GIB GiB left free"
-  cd "$OUT" || fail "no $OUT"
+  # A package can't hold it: the Runtime refuses one that starts a process. A root shell starts vram.py, which waits
+  # for its holding to stand and says '<pid> <held> <free> <total> <others>' (bytes).
+  hold=$(cat <<EOS
+echo $(base64 -w0 "$VRAM") | base64 -d > /var/tmp/ab-vram.py && rm -f /var/tmp/ab-vram.ready
+setsid nohup python3 /var/tmp/ab-vram.py $(awk -v g="$FREE_GIB" 'BEGIN { printf "%d", g * 1073741824 }') /var/tmp/ab-vram.ready > /var/tmp/ab-vram.out 2>&1 < /dev/null &
+i=0; while [ ! -s /var/tmp/ab-vram.ready ] && kill -0 \$! 2> /dev/null && [ \$i -lt 240 ]; do sleep 0.5; i=\$((i + 1)); done
+cat /var/tmp/ab-vram.ready 2> /dev/null || tail -c 300 /var/tmp/ab-vram.out
+EOS
+)
+  cozy machine ssh "$NAME" "echo $(base64 -w0 <<< "$hold") | base64 -d | sh" > "$OUT/hold.txt" 2>&1
+  read -r _ held free _ < <(tail -1 "$OUT/hold.txt")
+  [[ ${held:-x} =~ ^[0-9]+$ ]] || fail "no holder: $(head -c 300 "$OUT/hold.txt")"
+  say "holder: $((held >> 20)) MiB held, $((free >> 20)) MiB left free ($(cat "$OUT/hold.txt"))"
 fi
 
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
