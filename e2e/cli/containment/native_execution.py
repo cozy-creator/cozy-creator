@@ -98,6 +98,13 @@ _PYTHON_ERRORS = {
     "module_not_found": "ModuleNotFoundError", "import_error": "ImportError", "syntax_error": "SyntaxError",
     "file_not_found": "FileNotFoundError", "permission_error": "PermissionError", "runtime_error": "RuntimeError",
 }
+# TensorD's fixed transport refusals and its warning that a lock's Runtime replaced the machine's
+# development one: matched in RAM like the Python error names.
+_TRANSPORT = {
+    "probe_refused": "refused the inherited transport probe", "probe_unproven": "cannot prove protected inherited transport",
+    "probe_unreadable": "has no inherited transport capability", "hello_unproven": "does not prove inherited project transport",
+}
+_PASSED_OVER = "is no later patch of its lock"
 
 
 def _errors(documents: list[dict]) -> list[dict]:
@@ -123,7 +130,10 @@ def _observation(completed: subprocess.CompletedProcess, documents: list[dict], 
     # Diagnostic text is inspected in RAM against fixed strings, never serialized or hashed.
     details = [error[field] for error in errors for field in ("message", "detail") if isinstance(error.get(field), str)]
     details.append(completed.stderr.decode("utf-8", errors="replace"))
+    said = completed.stdout.decode("utf-8", errors="replace") + "\n".join(details)
     return {
+        "transport_refusals": {kind: text in said for kind, text in _TRANSPORT.items()},
+        "development_runtime_passed_over": _PASSED_OVER in said,
         "exit_code": completed.returncode, "file_created": file_created,
         "stdout_json_documents": len(documents), "stderr_json_documents": len(stderr_documents),
         "typed_errors": len(errors), "typed_code_missing": bool(errors) and not codes,
