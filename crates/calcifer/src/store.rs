@@ -136,7 +136,7 @@ const SCHEMA: &str = "
 /// history stays in this same file until an admitted project verifies its import.
 fn fence_legacy_projects(writer: &mut Connection) -> Result<()> {
     let tx = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    for table in ["runs", "outputs", "run_logs", "asks", "answers", "projects", "rendered_here", "headers", "after_steps", "vault_operations"] {
+    for table in ["runs", "outputs", "run_logs", "asks", "answers", "projects", "rendered_here", "headers", "after_steps", "vault_operations", "unseen"] {
         let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)", [table], |row| row.get(0))?;
         if !exists { continue; }
         let indexes: Vec<String> = {
@@ -164,6 +164,19 @@ fn fence_legacy_projects(writer: &mut Connection) -> Result<()> {
         tx.execute_batch(&format!("INSERT INTO projects(id, path, code) SELECT id, path, {code} FROM legacy_project_projects"))?;
     }
     tx.pragma_update(None, "user_version", VERSION)?;
+    tx.commit()?;
+    Ok(())
+}
+
+// An earlier V8 draft may already have this RC's old global table. Fence it
+// before any project opens; no current writer creates or writes global unseen rows.
+fn fence_legacy_unseen(writer:&mut Connection)->Result<()> {
+    let exists=writer.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='unseen')",[],|row|row.get::<_,bool>(0))?;
+    if !exists {return Ok(());}
+    let legacy=writer.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='legacy_project_unseen')",[],|row|row.get::<_,bool>(0))?;
+    if legacy {return Err(StoreError::Protected("legacy_unseen_sources_conflict".into()));}
+    let tx=writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute_batch("ALTER TABLE unseen RENAME TO legacy_project_unseen")?;
     tx.commit()?;
     Ok(())
 }
@@ -512,11 +525,14 @@ pub(crate) struct Batch {
     pub machine_state: Option<String>,
     /// When the machine says it began executing the run.
     pub started_at_ms: Option<i64>,
+    /// What the machine says of the run itself, by code (cl-913): kept among its warnings, each code once.
+    pub warnings: Vec<Warning>,
 }
 
 impl Batch {
     pub(crate) fn is_empty(&self) -> bool {
         self.cursor == 0 && self.logs.is_empty() && self.products.is_empty() && self.machine_state.is_none() && self.started_at_ms.is_none()
+            && self.warnings.is_empty()
     }
 }
 
@@ -1195,9 +1211,24 @@ macro_rules! journal_methods {
             if let Some(at) = batch.started_at_ms.filter(|_| row.started_at_ms.is_none()) {
                 tx.execute("UPDATE runs SET started_at = ?2 WHERE id = ?1", params![id, at])?;
             }
-            if let Some(state) = batch.machine_state.filter(|s| row.machine_state.as_ref() != Some(s)) {
-                tx.execute("UPDATE runs SET machine_state = ?2 WHERE id = ?1", params![id, state])?;
-                events.push(lifecycle(tx, id)?);
+            let mut warnings = row.warnings.clone();
+            for warning in batch.warnings {
+                if !warnings.iter().any(|had| had.code == warning.code) {
+                    warnings.push(warning);
+                }
+            }
+            let warned = warnings.len() > row.warnings.len();
+            if warned {
+                let text = serde_json::to_string(&warnings).expect("serializes");
+                tx.execute("UPDATE runs SET warnings = ?2 WHERE id = ?1", params![id, seal_run_text(tx, id, &run_context(id, "warnings"), &text)?])?;
+            }
+            match batch.machine_state.filter(|s| row.machine_state.as_ref() != Some(s)) {
+                Some(state) => {
+                    tx.execute("UPDATE runs SET machine_state = ?2 WHERE id = ?1", params![id, state])?;
+                    events.push(lifecycle(tx, id)?);
+                }
+                None if warned => events.push(lifecycle(tx, id)?),
+                None => {}
             }
             tx.execute(
                 "UPDATE runs SET cursor = MAX(cursor, ?2) WHERE id = ?1",
@@ -1662,6 +1693,7 @@ impl Store {
             }
             other => return Err(StoreError::Version(other)),
         }
+        fence_legacy_unseen(&mut writer)?;
         run_list_indexes(&writer)?;
         writer.execute_batch(ANSWERS)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;

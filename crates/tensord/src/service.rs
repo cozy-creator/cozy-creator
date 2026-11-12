@@ -81,22 +81,22 @@ fn holds_gpus(birth: &Birth, before: u64) -> bool {
     !left.is_empty() && !platform::contain::all_stuck(&left)
 }
 impl Service {
-    pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>) -> io::Result<Arc<Self>> {
-        Self::open_in(root, generations, parallelism, store, None, None, Arc::default())
+    pub(crate) fn open(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>, local_project_custody: bool) -> io::Result<Arc<Self>> {
+        Self::open_in(root, generations, parallelism, store, None, None, Arc::default(), local_project_custody)
     }
     pub(crate) fn open_project(root: &Path, store: Arc<crate::storage::Store>, parent: &Arc<Service>, scope: api::machine::LocalPrivateStorage) -> io::Result<Arc<Self>> {
-        let service = Self::open_in(root, &root.join("generations"), parent.parallelism, store, parent.pool(), Some(scope), parent.held.clone())?;
+        let service = Self::open_in(root, &root.join("generations"), parent.parallelism, store, parent.pool(), Some(scope), parent.held.clone(), false)?;
         service.engine.bind_machine_activity(&parent.engine);
         Ok(service)
     }
-    fn open_in(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>, shared: Option<Arc<Pool>>, project_scope: Option<api::machine::LocalPrivateStorage>, held: Arc<std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>>) -> io::Result<Arc<Self>> {
+    fn open_in(root: &Path, generations: &Path, parallelism: usize, store: Arc<crate::storage::Store>, shared: Option<Arc<Pool>>, project_scope: Option<api::machine::LocalPrivateStorage>, held: Arc<std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>>, local_project_custody: bool) -> io::Result<Arc<Self>> {
         if parallelism == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "CPU parallelism must be positive",
             ));
         }
-        let engine = Engine::open(&root.join("execution"), store)?;
+        let engine = Engine::open(&root.join("execution"), store, local_project_custody)?;
         // A completed request does not prove its retained CUDA context ended. A prior
         // machine's executor cannot be adopted (nothing can reach it), so it is ended now
         // and GPU admission stays fenced until its exit is observed.

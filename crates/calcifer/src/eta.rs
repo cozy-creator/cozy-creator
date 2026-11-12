@@ -1,7 +1,10 @@
-//! A run's time left (CALCIFER-API.md "Time left"). Before it runs, a prior: what the runs like it took, phase by phase, on this
-//! machine, else on others of its GPU. As it runs, that prior blended with its own steps: a stage's first step carries its warm-up and
-//! is never its pace; the median of its latest steps is, weighed more with each one. Phases it hasn't reached come from the prior.
-//! What's shown eases to a new estimate over a second or two: it never jumps. With no prior and under two steps of its own, it says so.
+//! A run's time left (CALCIFER-API.md "Time left"), the whole job's: until its results are here. Before it runs, a prior: what the
+//! runs like it took, phase by phase, on this machine, else on others of its GPU, else on another card scaled by the Hub's per-SKU
+//! speeds (cl-921, as cl-913's bar). As it runs, that prior blended with its own steps: a stage's first step carries its warm-up and
+//! is never its pace once a later one is in; the median of its latest steps is, weighed more with each one. Phases it hasn't reached
+//! come from the prior; what TensorD says before the prior's first stage (its executor starting, its models loading) is that prior's
+//! lead. Its results' bytes, as its runs' were, come here at its machine's measured rate. What's shown eases to a new estimate over a
+//! second or two: it never jumps. With no prior and no step of its own, it says so.
 //! Times are milliseconds on its machine's clock, which this computer's `now` is read on by the least lag seen of its reports. A run
 //! sent on its machine's quote (cl-816) waits at least until that quote's finish, and with no runs like it here, the quote is its prior.
 
@@ -125,7 +128,7 @@ impl Took {
         Some(Took { machine: machine.into(), gpu: gpu.into(), megapixels, width: measured.execution.degree.max(1), lead_ms, stages, tail_ms })
     }
 
-    fn total_ms(&self) -> f64 {
+    pub(crate) fn total_ms(&self) -> f64 {
         self.lead_ms + self.stages.iter().map(|stage| stage.ms).sum::<f64>() + self.tail_ms
     }
 
@@ -245,6 +248,21 @@ impl Prior {
         Prior { basis, runs: 0, lead_ms: ms, stages: vec![], tail_ms: 0.0, confidence, weight: GPU_WEIGHT }
     }
 
+    /// Another card's runs as this card's: each time `factor` times as long (the Hub's speed of that card over this one's), trusted
+    /// less and weighed less against the run's own steps.
+    pub(crate) fn scaled(mut self, factor: f64) -> Self {
+        self.lead_ms *= factor;
+        self.tail_ms *= factor;
+        for stage in &mut self.stages {
+            stage.ms *= factor;
+            if let Some(steps) = &mut stage.steps {
+                (steps.first_ms, steps.steady_ms) = (steps.first_ms * factor, steps.steady_ms * factor);
+            }
+        }
+        (self.basis, self.confidence, self.weight) = (EtaBasis::Card, self.confidence * 0.7, self.weight / 2.0);
+        self
+    }
+
     /// As asked for `steps` steps, where its input says: each stage that steps takes that many.
     pub(crate) fn with_steps(mut self, steps: Option<u64>) -> Self {
         for each in self.stages.iter_mut().filter_map(|stage| stage.steps.as_mut()) {
@@ -282,6 +300,17 @@ pub(crate) fn one_gpu_ms(history: &[Took], machine: &str, gpu: &str, size: &JobS
     Some(Prior::of(&one, machine, gpu, size.megapixels)?.with_steps(size.steps).total_ms(size.steps))
 }
 
+/// Whether a GPU's name as its machine says it (`NVIDIA GeForce RTX 4090`) is the card a Hub sells (`RTX 4090`, `rtx-4090`): their
+/// letters and digits, the vendor's words aside, one beginning the other.
+pub(crate) fn same_card(gpu: &str, card: &str) -> bool {
+    let bare = |name: &str| {
+        let lower = name.to_ascii_lowercase().replace("nvidia", "").replace("geforce", "");
+        lower.chars().filter(char::is_ascii_alphanumeric).collect::<String>()
+    };
+    let (gpu, card) = (bare(gpu), bare(card));
+    !gpu.is_empty() && !card.is_empty() && (gpu.starts_with(&card) || card.starts_with(&gpu))
+}
+
 /// What a run's machine quoted as it was sent (cl-816), on this computer's clock: when it would start and finish, and what that
 /// stands on.
 #[derive(Clone, Copy, Debug)]
@@ -311,6 +340,8 @@ struct Stepping {
     own: Vec<f64>,
     /// Its machine's steady pace, when it says.
     steady_ms: f64,
+    /// Its first step's time: its pace while it has no other, warm-up and all.
+    first_ms: f64,
 }
 
 /// A run in parts its stage's scope counts up front (`Segment 2 of 3 / denoise`): how many, the one it is in and since when, and what
@@ -344,6 +375,11 @@ pub(crate) struct Clock {
     quoted: Option<Quoted>,
     /// Its parts, once a scope counts them.
     parts: Option<Parts>,
+    /// Its results coming here once it ends, at its machine's rate.
+    result_ms: f64,
+    /// Bytes it moves now at a known rate, its own stage's or a segment's in it (`… / loading model`), on its machine's clock: when, and
+    /// what they had left then. Its time left is at least that.
+    moving: Option<(f64, f64)>,
 }
 
 impl Clock {
@@ -362,6 +398,31 @@ impl Clock {
             self.prior = Some(Prior::whole((quoted.finish_at - quoted.start_at).max(0.0), basis));
         }
         self.quoted = Some(quoted);
+    }
+
+    /// It stands on no runs like it, only on its machine's quote of another card's: another card's runs would say more.
+    pub(crate) fn needs_prior(&self) -> bool {
+        self.prior.as_ref().is_none_or(|held| held.stages.is_empty() && held.basis != EtaBasis::Machine)
+    }
+
+    /// With no runs like it on this machine or its card: another card's (`Prior::scaled`).
+    pub(crate) fn prior_if_none(&mut self, prior: Prior) {
+        if self.needs_prior() {
+            self.prior = Some(prior);
+        }
+    }
+
+    /// What `progress`, reported at `at` with its rate worked out here, has left of the bytes it moves; none moving at a known rate,
+    /// nothing.
+    pub(crate) fn moving(&mut self, progress: &Progress, at: f64) {
+        self.moving = (progress.bytes_per_s.filter(|rate| *rate >= 1.0))
+            .filter(|_| progress.bytes_total > progress.bytes_done)
+            .map(|rate| (at, (progress.bytes_total - progress.bytes_done) as f64 / rate * 1000.0));
+    }
+
+    /// Its results take `ms` to come here once it ends.
+    pub(crate) fn result(&mut self, ms: f64) {
+        self.result_ms = ms.max(0.0);
     }
 
     /// Its execution began at `at`.
@@ -412,6 +473,14 @@ impl Clock {
             *steps = Stepping { stage: progress.stage.clone(), last_at: at, ..Stepping::default() };
         }
         if progress.completed != steps.completed {
+            // Its first step's time, as its machine timed it, else from when its stage began (pod run 46947: no number until step 2).
+            if steps.first_ms == 0.0 && progress.completed >= 1 {
+                let entered = self.stage.as_ref().map_or(at, |(_, _, since)| *since);
+                steps.first_ms = match progress.step_ms > 0.0 {
+                    true => progress.step_ms,
+                    false => (at - entered).max(0.0) / progress.completed as f64,
+                };
+            }
             if progress.completed >= 2 && progress.step_ms > 0.0 {
                 steps.own.push(progress.step_ms);
                 if steps.own.len() > RECENT {
@@ -423,8 +492,22 @@ impl Clock {
         (steps.total, steps.steady_ms) = (progress.total, progress.step_steady_ms);
     }
 
-    /// What it has left at `now` (this computer's), as best known; none with no basis.
+    /// What it has left at `now` (this computer's), as best known: never less than the bytes it moves now have left at their rate,
+    /// which alone, with nothing else known, are its time left at least (`bytes`, cl-921); none with no basis.
     pub(crate) fn estimate(&self, here: f64) -> Option<Estimate> {
+        let now = here - self.ahead.unwrap_or(0.0);
+        let floor = (self.moving.map(|(at, ms)| (ms - (now - at)).max(0.0)))
+            .filter(|ms| *ms > 0.0)
+            .map(|ms| ms + self.result_ms);
+        match (self.estimated(here), floor) {
+            (Some(estimate), Some(floor)) if estimate.left_ms < floor => Some(Estimate { left_ms: floor, ..estimate }),
+            (None, Some(floor)) => Some(Estimate { left_ms: floor, confidence: 0.2, basis: EtaBasis::Bytes }),
+            (estimate, _) => estimate,
+        }
+    }
+
+    /// What it has left at `now` (this computer's) by what ran before it and its own steps; none with no basis.
+    fn estimated(&self, here: f64) -> Option<Estimate> {
         let now = here - self.ahead.unwrap_or(0.0);
         let prior = self.prior.as_ref();
         // In parts, once one has ended: those left each as long as those that took, what's left of this one, then its tail. The whole
@@ -433,7 +516,7 @@ impl Clock {
             && let Some(each) = median(&parts.took)
         {
             let current = (each - (now - parts.since)).max(0.0);
-            let left = parts.of.saturating_sub(parts.at) as f64 * each + current + prior.map_or(0.0, |prior| prior.tail_ms);
+            let left = parts.of.saturating_sub(parts.at) as f64 * each + current + prior.map_or(0.0, |prior| prior.tail_ms) + self.result_ms;
             let done = (parts.at - 1) as f64 / parts.of.max(1) as f64;
             let basis = prior.map_or(EtaBasis::Steps, |prior| prior.basis);
             return Some(Estimate { left_ms: left, confidence: (0.5 + 0.5 * done).min(0.95), basis });
@@ -459,6 +542,12 @@ impl Clock {
                 }
             }
             (Some(started), None, None) => (left_of(prior?.lead_ms, now - started), prior?.rest_ms(None)),
+            // What TensorD or the Runtime says before the prior's first stage (its executor starting, its models loading): its lead.
+            (Some(started), Some((name, None, _)), None)
+                if self.passed.is_none() && !self.steps.as_ref().is_some_and(|steps| steps.stage == *name && steps.total > 0) =>
+            {
+                (left_of(prior?.lead_ms, now - started), prior?.rest_ms(None))
+            }
             (Some(_), Some((name, index, at)), None) => {
                 let stepping = self.steps.as_ref().filter(|steps| steps.stage == *name && steps.total > 0);
                 let current = match (stepping, index) {
@@ -477,7 +566,7 @@ impl Clock {
         // in. A prior's stages already hold all of its parts.
         let others = (self.parts.as_ref().filter(|_| prior.is_none()))
             .map_or(0.0, |parts| parts.of.saturating_sub(parts.at) as f64 * ((now - parts.since).max(0.0) + current));
-        let left = current + rest + others;
+        let left = current + rest + others + self.result_ms;
         let basis = prior.map_or(EtaBasis::Steps, |prior| prior.basis);
         // As trusted as what it stands on, less while a phase runs past what was expected, and more with each step of its own.
         let trust = prior.map_or(0.3, |prior| prior.confidence) * fit;
@@ -488,7 +577,7 @@ impl Clock {
     }
 
     /// What its stepping stage has left: its current step and those after it, at a pace that is the prior's at first and its own
-    /// more with each step; never its first step's alone.
+    /// more with each step; its first step's alone only with no prior and no other step.
     fn steps_left(&self, steps: &Stepping, index: Option<usize>, entered: f64, now: f64) -> Option<(f64, f64)> {
         if steps.completed >= steps.total {
             return Some((0.0, 1.0));
@@ -501,6 +590,8 @@ impl Clock {
             (Some(before), Some(own)) if seen >= 1.0 => (weight * before.steady_ms + seen * own) / (weight + seen),
             (Some(before), _) => before.steady_ms,
             (None, Some(own)) if seen >= 1.0 => own,
+            // Nothing like it before and one step of its own: that step's pace, warm-up and all, until another says more.
+            (None, _) if steps.first_ms > 0.0 => steps.first_ms,
             _ => return None,
         };
         let (current, fit) = match steps.completed {

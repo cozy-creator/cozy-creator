@@ -117,6 +117,9 @@ pub(crate) struct GpuConfig {
     /// its kernels with them at start, before any package is installed (`image_kernel_boot`).
     #[serde(default)]
     pub image_kernels: Option<ImageKernels>,
+    /// Tests only: recorded GPU readings every call reads in place of its GPUs' own (`machine.gpu_samples`, cl-913).
+    #[serde(default)]
+    pub gpu_samples: Option<PathBuf>,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ImageKernels {
@@ -520,6 +523,8 @@ struct Session {
     /// Its TensorFS has varena v2, whose cores share each GPU through its ledger. An older one
     /// is asked for nothing and asks for nothing: TensorD makes its room (`room_outside_ledger`).
     ledger: bool,
+    /// Why its Runtime serves its GPUs none of its native kernels, as its Start said (cl-913); empty: it does.
+    kernels_absent: String,
 }
 impl Session {
     fn lane(&self) -> std::ops::Range<usize> {
@@ -703,6 +708,12 @@ impl Zygote {
 
 /// A parent that died (killed, out of memory): the pool starts a new one.
 const ENDED: &str = "import-only executor ended";
+
+/// Run `id`'s stage while TensorD starts its executor and loads its models (cl-921): each phase in words, until the Runtime says its
+/// own (`loading <component>`, its stages).
+fn say(engine: &Engine, id: &str, stage: &str) {
+    let _ = engine.observe_progress(id, 0, serde_json::json!({"stage": stage, "step_ms": 0.0}).to_string());
+}
 
 /// What one more import-only parent may hold of the host: torch, Diffusers and Transformers
 /// imported come to 0.73–0.85 GB resident (SDXL, Qwen-Image, Krea 2, Anima, H3 on CPU).
@@ -3234,6 +3245,19 @@ impl Pool {
                 session
             }
             None => {
+                // What its executor's start does, said while it does (cl-921): its package imported, unless an import-only parent
+                // holds it already and it forks from that.
+                let forks = self.zygotes.lock().unwrap().get(&parent_app(&held)).is_some_and(|zygote| zygote.ready());
+                let package = match held.record.package.is_empty() {
+                    true => "the package",
+                    false => held.record.package.as_str(),
+                };
+                let stage = match (forks, crate::import_pages::recorded(&held)) {
+                    (true, _) => "starting the executor".to_owned(),
+                    (false, 0) => format!("importing {package}"),
+                    (false, pages) => format!("importing {package} ({:.1} GB of its files)", pages as f64 / 1e9),
+                };
+                say(engine, id, &stage);
                 let born = Mutex::new(vec![]);
                 let on_birth = |birth: &Birth, cancel: &Cancellation| {
                     born.lock().unwrap().extend(executor_births(birth, &[]));
@@ -3425,6 +3449,7 @@ impl Pool {
             used: Instant::now(),
             launch,
             serving: id,
+            kernels_absent: String::new(),
         })
     }
 
@@ -3449,7 +3474,17 @@ impl Pool {
         if !session.ledger && degree > 0 {
             self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
         }
-        let driver = platform::gpu::Peak::watch(gpus.iter().map(|d| d.entry.clone()).collect());
+        // Its GPUs' readings (recorded ones, under `machine.gpu_samples`): one held back for heat most of its load warns as it goes.
+        let samples = self.config.gpu_samples.as_deref().and_then(crate::slowed::samples);
+        let replayed = samples.is_some();
+        let hot: platform::gpu::Hot = {
+            let (engine, id) = (engine.clone(), id.to_owned());
+            Box::new(move |used: &platform::gpu::Used| crate::slowed::ran(&engine, &id, std::slice::from_ref(used), replayed, false))
+        };
+        let driver = match samples {
+            Some(samples) => platform::gpu::Peak::replay(samples, Some(hot)),
+            None => platform::gpu::Peak::watch(gpus.iter().map(|d| d.entry.clone()).collect(), Some(hot)),
+        };
         // A call begins: the host is looked at before it grows.
         self.nudge_host();
         let retained = session.started;
@@ -3483,6 +3518,9 @@ impl Pool {
             host: self.host.as_deref(),
         };
         if !session.started {
+            if !load_only {
+                say(engine, id, "starting the executor");
+            }
             // Runtime initializes and validates its allocator. TensorD schedules device work
             // and owns no allocator-specific protocol or backend-name admission gate.
             let interface_path = self.interface_file(&session.executor, held)?;
@@ -3507,6 +3545,10 @@ impl Pool {
                 &mut callbacks,
             )?)?;
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
+            session.kernels_absent.clone_from(&started.kernels_absent);
+            if degree > 0 {
+                crate::slowed::started(&started.kernels_absent);
+            }
             session.launch.start =
                 serde_json::from_value(started.stages.clone()).unwrap_or_default();
             if session.launch.mode == "spawn" {
@@ -3537,6 +3579,9 @@ impl Pool {
                 for selected in plan.selections() {
                     if !manifests.contains(&selected.manifest) { manifests.push(selected.manifest); }
                 }
+            }
+            if !load_only && !plan.slots.is_empty() {
+                say(engine, id, "loading the models");
             }
             // The request's signer, whose capability the Runtime keeps apart.
             let actor = engine.get(id).ok().and_then(|record| record.submission).map(|s| s.actor).unwrap_or_default();
@@ -3679,6 +3724,9 @@ impl Pool {
         let operation = crate::call_memo::operation(&held.record, &record.invocation.module, api::interface::invocable(&entry))
             .map(|(operation, _)| operation)
             .unwrap_or_default();
+        if degree > 0 && !session.kernels_absent.is_empty() {
+            crate::slowed::without_kernels(engine, id, &session.kernels_absent);
+        }
         session.executor.codec().prestart();
         let invoking = session.executor.lookahead().invoking(id);
         engine.watch_previews(id, session.executor.previews(id));
@@ -3726,7 +3774,9 @@ impl Pool {
         dispatched.record(&reply, &self.config.inventory);
         session.loaded.insert(construction.clone(), Level::Gpu);
         self.note_decisions(id, session.executor.birth.pid, &lane, &reply);
-        record_measurements(engine, id, &plan, &reply, &driver.map(platform::gpu::Peak::end).unwrap_or_default());
+        let used = driver.map(platform::gpu::Peak::end).unwrap_or_default();
+        record_measurements(engine, id, &plan, &reply, &used);
+        crate::slowed::ran(engine, id, &used, replayed, true);
         phase(serde_json::json!({"phase": "measurements_recorded"}));
         if reply.attention_applied {
             if let Err(error) = engine.apply_attention(id) {

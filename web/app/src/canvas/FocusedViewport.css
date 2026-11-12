@@ -51,6 +51,10 @@
   font: 16px / 1.3 var(--mono);
   color: var(--mute);
 }
+.focus-warnings {
+  flex: none;
+  padding: 0 0 6px;
+}
 .focus-heading > .tb {
   height: 44px;
   padding: 8px 14px;
@@ -248,7 +252,7 @@ body:has(.focus-viewport) .zoom {
 .authoring-ratio {
   position: absolute;
   right: 16px;
-  bottom: 14px;
+  bottom: 82px;
   z-index: 6;
 }
 .authoring-ratio .ratio-rest {
@@ -256,9 +260,6 @@ body:has(.focus-viewport) .zoom {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-.focus-new-video .row.actions {
-  padding-right: 110px;
 }
 .focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video {
   grid-template-columns: minmax(0, 1fr) min(22vw, 260px);
@@ -283,8 +284,35 @@ body:has(.focus-viewport) .zoom {
   min-height: 0;
   overflow-y: auto;
 }
-.media:has(video.live) .video-pickup-action {
-  bottom: 52px;
+/* A video in Focus: its scrubber and Pick up from here, under it (cl-933). */
+.focus-viewport .video-scrub {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0 0;
+}
+.focus-viewport .video-scrub input[type="range"] {
+  width: 100%;
+  accent-color: var(--ember);
+}
+.focus-viewport .video-scrub .row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Small, a word's size, and under the player, never over it (Paul, 11-12). */
+.focus-viewport .video-scrub .pick-up {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--round);
+  background: var(--card);
+  color: var(--ink);
+  font: 12px / 1.3 var(--sans);
+  cursor: pointer;
+}
+.focus-viewport .video-scrub .pick-up:hover {
+  border-color: var(--line2);
 }
 .image-tool-name {
   flex: 1;

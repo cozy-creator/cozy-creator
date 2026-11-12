@@ -65,7 +65,8 @@ fn error(detail: &'static str) -> Error {
     Error::new(Kind::Conflict, "private_storage_unavailable", detail)
 }
 
-/// Placement policy is resolved before pricing or renting. Automatic project work cannot drift to a remote worker.
+/// Validate the local canonical owner before placement. Choosing a remote machine
+/// keeps the existing remote working-copy flow; its provider storage is external.
 pub(crate) fn check_project_placement(
     project_id: &str,
     project_root: &Path,
@@ -74,13 +75,7 @@ pub(crate) fn check_project_placement(
     if project_id.is_empty() || !project_root.is_absolute() {
         return Err(error("The project storage owner is unavailable."));
     }
-    if on.iter().any(|choice| !matches!(choice, api::calcifer::On::Any)
-        && !matches!(choice, api::calcifer::On::Machine(name) if name == "local")) {
-        return Err(Error::new(Kind::Conflict, "project_remote_execution_unavailable",
-            "Remote workers cannot yet keep project execution in protected storage.")
-            .remedy("Run again with --on local. Renting a machine separately remains available."));
-    }
-    Ok(vec![api::calcifer::On::Machine("local".into())])
+    Ok(on.to_vec())
 }
 
 /// Native project identity is checked before creating or reusing its owner proof. Preparation,
@@ -112,6 +107,9 @@ pub(crate) async fn execution_link(
 ) -> Result<crate::link::Link, Error> {
     check_project_placement(project_id, project_root, &[api::calcifer::On::Machine(machine.into())])?;
     let scope = scope_for_project(project_id, project_root)?;
+    // Never send this computer's mounted path or proof token to a remote worker.
+    // Canonical inputs, history and downloaded results remain in this project.
+    if machine != "local" { return Ok(base.clone()); }
     let selected = base.with_private(scope);
     selected.probe_private().await.map_err(|failure| match failure {
         crate::link::LinkError::Refused { code, message, remedy, next } => Error {

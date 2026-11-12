@@ -123,7 +123,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
       const face = document.querySelector(`.card[data-asset="${name}"] .run-face`);
       if (!face) return;
       const text = (selector) => face.querySelector(selector)?.textContent ?? '';
-      const now = { phase: face.dataset.phase, says: text('.face-state b'), stage: text('.face-state b'), left: text('.face-left'), where: text('.fact-where dd'), facts: [...face.querySelectorAll('.face-fact dt')].map((label) => label.textContent).join(','), time: text('.fact-time dd'), detail: text('.face-detail'), bar: face.querySelector('.face-track i')?.style.transform ?? '' };
+      const now = { phase: face.dataset.phase, says: text('.face-state b'), machine: text('.face-machine') };
       const list = (said.faces[name] ??= []);
       if (JSON.stringify(list.at(-1)) !== JSON.stringify(now)) list.push(now);
     };
@@ -152,28 +152,28 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const faces = said.faces.waits ?? [];
   const firstOf = (test) => faces.findIndex(test);
   const installs = firstOf((face) => /^Installing activity_\d+/.test(face.says));
-  const tokens = firstOf((face) => /^Rewriting the prompt · \d+ tokens$/.test(face.stage));
-  const steps = firstOf((face) => /^Segment 1 of 2 · Denoising · step \d of 4$/.test(face.stage));
-  const frames = firstOf((face) => /^Segment 2 of 2 · Decoding video · frame \d+ of 12$/.test(face.stage));
-  const fraction = (face) => (face.bar ? 1 + Number(face.bar.match(/-?[\d.]+/)?.[0]) / 100 : null);
+  const tokens = firstOf((face) => /^Rewriting prompt: \d+ tokens?$/.test(face.says));
+  const steps = firstOf((face) => /^Segment 1 of 2: Denoising - Step \d \/ 4$/.test(face.says));
+  const frames = firstOf((face) => /^Segment 2 of 2: Decoding video - Frame \d+ \/ 12$/.test(face.says));
   check('face_never_wordless', faces.length > 0 && faces.every((face) => face.says.trim()), faces);
   check('face_phases_in_order', installs >= 0 && tokens > installs && steps > tokens && frames > steps, { installs, tokens, steps, frames, faces });
   // Each stage says what it counts: a decode's tokens, never steps; frames; steps only where it denoises (Paul, 11-12).
-  check('face_counts_tokens_not_steps', faces.filter((face) => /Rewriting the prompt/.test(face.stage)).every((face) => /^Rewriting the prompt · \d+ tokens$/.test(face.stage)), faces);
-  check('face_denoise_only_denoising', faces.every((face) => !/denois/i.test(`${face.says} ${face.stage}`) || /^Segment [12] of 2 · Denoising( · step \d of 4)?$/.test(face.stage)), faces.filter((face) => /denois/i.test(`${face.says} ${face.stage}`)));
-  check('face_decodes_frames', faces.some((face) => /^Segment [12] of 2 · Decoding video · frame \d+ of 12$/.test(face.stage)) && !faces.some((face) => /Decoding video.*step/.test(face.stage)), faces);
+  check('face_counts_tokens_not_steps', faces.filter((face) => /Rewriting prompt/.test(face.says)).every((face) => /^Rewriting prompt: \d+ tokens?$/.test(face.says)), faces);
+  check('face_denoise_only_denoising', faces.every((face) => !/denois/i.test(face.says) || /^Segment [12] of 2: Denoising( - Step \d \/ 4)?$/.test(face.says)), faces.filter((face) => /denois/i.test(face.says)));
+  check('face_decodes_frames', faces.some((face) => /^Segment [12] of 2: Decoding video - Frame \d+ \/ 12$/.test(face.says)) && !faces.some((face) => /Decoding video.*Step/.test(face.says)), faces);
   // The bar and the time left are the whole render's: in its second part the bar is past half of it, never back to a part's start.
-  const second = faces.filter((face) => /^Segment 2 of 2/.test(face.stage));
-  check('face_steps_with_time_left', faces.some((face) => /^Segment [12] of 2 · Denoising · step [2-4] of 4$/.test(face.stage) && /\d+ (s|min) left$/.test(face.left)), faces);
-  check('face_whole_render_bar', second.length > 0 && second.every((face) => (fraction(face) ?? 0) >= 0.4) && second.some((face) => /\d+ (s|min) left$/.test(face.left)), second);
-  check('face_says_where', faces.some((face) => /^local\b/.test(face.where)), faces);
+  const second = faces.filter((face) => /^Segment 2 of 2/.test(face.says));
+  // Paul's first line: its machine, then its time so far over the whole job's once there's an estimate.
+  check('face_steps_with_time_left', faces.some((face) => /^Segment [12] of 2: Denoising - Step [2-4] \/ 4$/.test(face.says) && /^local - \d+[smh]( \d+[sm])? \/ \d+[smh]( \d+[sm])?$/.test(face.machine)), faces);
+  check('face_two_plain_lines', faces.every((face) => face.machine && face.says) && (await page.locator('.run-face .face-track, .run-face .face-facts').count()) === 0, faces.slice(-3));
+  check('face_says_where', faces.some((face) => /^local\b/.test(face.machine)), faces);
   // Its facts (Paul, 11-12): where, what's ahead and how many wait, its weights, its package, its time elapsed and left.
-  check('face_lists_its_facts', faces.some((face) => /Where/.test(face.facts) && /Queue/.test(face.facts) && /Weights/.test(face.facts) && /Package/.test(face.facts) && /\d+:\d\d elapsed/.test(face.time)), faces.map((face) => [face.facts, face.time]).slice(-4));
+  check('face_whole_job_time', second.some((face) => / \/ /.test(face.machine)), second);
   // Made, its file on its way here is a phase of its own with its numbers, never a take that looks done before it's here (Paul, 11-12). On
   // this runner's loopback a still lands in milliseconds, so it may pass too fast to be seen: whenever it is, it says its bytes.
   const result = faces.filter((face) => face.phase === 'result');
   seen.result_phase = result;
-  check('face_result_download_says_its_bytes', result.every((face) => face.says === 'Saving' || /^Downloading the result · \d.* of \d/.test(face.says)), result);
+  check('face_result_download_says_its_bytes', result.every((face) => face.says === 'Saving' || /^Downloading result - \d.*B \/ \d/.test(face.says)), result);
   const gone = await until('its face gone with its take', () => page.locator('.card[data-asset="waits"] .run-face').count(), (n) => n === 0, 15_000).catch(() => 1);
   check('face_gone_with_its_take', gone === 0);
   check('install_listed_with_its_waiter', said.rows.some((row) => /^install: activity_\d+ Install .* for run \d+$/.test(row)), said.rows);
@@ -248,8 +248,12 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const sayOf = (asset) => page.locator(`.card[data-asset="${asset}"] .run-face .face-state b`).first().textContent().catch(() => '');
   await projectAction(folder, 'render', 'slow', 'after', '--on', 'local', '--queue');
   const waited = await until('after waits its turn', () => sayOf('after'), (text) => /^Waits for <slow>/.test(text ?? ''), 60_000).catch((why) => String(why));
-  const rendering = await until('slow renders its steps', () => sayOf('slow'), (text) => /^Segment 1 of 2 · Denoising/.test(text ?? ''), 120_000).catch((why) => String(why));
+  const rendering = await until('slow renders its steps', () => sayOf('slow'), (text) => /^Segment 1 of 2: Denoising/.test(text ?? ''), 120_000).catch((why) => String(why));
   seen.cancel = { waited, rendering };
+  // On the canvas: one box waiting its turn, one denoising, each its two lines (Paul's examples, 11-12).
+  await page.keyboard.press('f');
+  await page.waitForTimeout(400);
+  await shot('face-canvas');
   // Open (focus), its progress is between its name and its picture, at normal size, and covers none of it (Paul, 11-12).
   await openBox(page, 'slow');
   const above = page.locator('.focus-viewport[data-focused-asset="slow"] > .run-face.above');
@@ -260,7 +264,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
     const [head, face, media] = [box(':scope > .focus-heading'), box(':scope > .run-face.above'), box('.focus-body .media')];
     const says = viewport?.querySelector(':scope > .run-face.above .face-state b');
     const stage = viewport?.querySelector(':scope > .run-face.above .face-state b')?.textContent ?? '';
-    const bar = viewport?.querySelector(':scope > .run-face.above .face-bar .face-track')?.getBoundingClientRect().height;
+    const bar = 0;
     return { head: head?.bottom, top: face?.top, bottom: face?.bottom, media: media?.top, width: face && viewport && face.width / viewport.getBoundingClientRect().width, size: says && says.getBoundingClientRect().height, bar, stage, over: viewport?.querySelectorAll('.media .run-face').length };
   });
   seen.focus = focus;
@@ -268,7 +272,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   check('focus_progress_between_name_and_picture', focus.top >= focus.head - 1 && focus.bottom <= focus.media + 1 && focus.width > 0.9 && focus.over === 0, focus);
   check('focus_progress_normal_size', focus.size >= 14 && focus.size <= 32, focus);
   // Its bar is the whole render's; the part it's in and that stage's count are on the line under it.
-  check('focus_part_under_the_bar', /^Segment [12] of 2 · (Denoising|Decoding video)/.test(focus.stage), focus);
+  check('focus_says_its_stage', /^Segment [12] of 2: (Denoising|Decoding video)/.test(focus.stage), focus);
   await page.keyboard.press('Escape');
   await cancel('after');
   const left = await until('after left its line', async () => ({ faces: await page.locator('.card[data-asset="after"] .run-face').count(), asset: await held('after') }), (now) => now.faces === 0 && !now.asset?.making?.length, 30_000).catch((why) => ({ why: String(why) }));

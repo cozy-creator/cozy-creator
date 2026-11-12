@@ -693,8 +693,14 @@ pub(crate) async fn events(
     let mut pending = VecDeque::from(
         api.calcifer.row_store(&row)?.events_after(row.id.as_str(), starting_after)?,
     );
-    let owner=api.calcifer.row_owner(&row)?;
-    let inert=row.custody_pending || owner.as_ref().is_some_and(|owner|owner.project_id()!=row.owner);
+    // Replayed events use the live GPU without giving inert legacy rows a live tail.
+    for event in &mut pending {
+        if let Event::Created { run, .. } | Event::Queued { run, .. } | Event::InProgress { run, .. } = event {
+            api.calcifer.live_gpu(run);
+        }
+    }
+    let owner = api.calcifer.row_owner(&row)?;
+    let inert = row.custody_pending || owner.as_ref().is_some_and(|owner| owner.project_id() != row.owner);
     if !inert { pending.extend(api.calcifer.live(&row.id)); }
     let follow = Follow {
         owner,

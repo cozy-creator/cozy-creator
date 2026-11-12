@@ -92,6 +92,8 @@ pub(crate) struct Exports {
     moving: Mutex<HashMap<(RunId, String, u32), (Arc<AtomicU64>, u64)>>,
     /// Each run's result coming here, as its record says it: the bytes in place of its exports in flight over their last seconds.
     arriving: Mutex<HashMap<RunId, (String, std::collections::VecDeque<(Instant, u64)>)>>,
+    /// Each machine's bytes a second into here, as its last exports of a MiB or more came (cl-921: a run's time left counts its results).
+    rates: Mutex<HashMap<String, f64>>,
 }
 
 /// What a run's results coming here are called, as its progress says them.
@@ -529,6 +531,16 @@ impl Calcifer {
             }
         };
         lock(&self.exports.moving).remove(&key);
+        if done.is_ok()
+            && let Some(machine) = &run.machine
+        {
+            let (bytes, seconds) = (moved.load(Ordering::Relaxed) as f64, began.elapsed().as_secs_f64());
+            if bytes >= (1u64 << 20) as f64 && seconds > 0.0 {
+                let mut rates = lock(&self.exports.rates);
+                let rate = rates.entry(machine.clone()).or_insert(bytes / seconds);
+                *rate = 0.5 * *rate + 0.5 * bytes / seconds;
+            }
+        }
         if !lock(&self.exports.moving).keys().any(|(id, ..)| *id == run.id) {
             lock(&self.exports.arriving).remove(&run.id);
         }
@@ -536,6 +548,11 @@ impl Calcifer {
             bytes = moved.load(Ordering::Relaxed), phase = "output_export", state = "end",
             ok = done.is_ok(), elapsed_ms = began.elapsed().as_secs_f64() * 1000.0); }
         done
+    }
+
+    /// `machine`'s bytes a second into here, as its last exports came; none before one of a MiB or more.
+    pub(crate) fn export_rate(&self, machine: &str) -> Option<f64> {
+        lock(&self.exports.rates).get(machine).copied()
     }
 
     /// Run `id`'s results coming here, as progress: their bytes in place of all of them, at what rate, and the time that leaves. None

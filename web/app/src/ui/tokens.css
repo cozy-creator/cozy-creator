@@ -41,6 +41,10 @@
   --ood: #744f00;
   --mak: #225a79;
   --bad: #9e321b;
+  /* What's selected on the canvas: its own blue, apart from a check's green and hover's line (cl-926). */
+  --select: #1f63e0;
+  --select-gap: #fffaf0;
+  --select-glow: #1f63e059;
   --tint: #4d3b2e12;
   --tint2: #4d3b2e20;
   --mark: #5f4e3fa6;
@@ -101,6 +105,9 @@
   --ood: #e6c14b;
   --mak: #5aa9ff;
   --bad: #f0625d;
+  --select: #3d8bff;
+  --select-gap: #0b0b0c;
+  --select-glow: #3d8bff66;
   --tint: #ffffff0d;
   --tint2: #ffffff14;
   --mark: #ffffff38;

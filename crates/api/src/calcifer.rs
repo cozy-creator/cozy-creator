@@ -729,7 +729,7 @@ pub struct Progress {
     /// How far to trust `eta_s`, 0 to 1: higher with closer history and more of the run done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_confidence: Option<f64>,
-    /// What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
+    /// What `eta_s` stands on; `first_run` with none: nothing like it ran on any card this computer knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_basis: Option<EtaBasis>,
     /// The number of its newest preview of what it's making (`GET /v1/runs/{id}/preview`), from 1;
@@ -774,9 +774,13 @@ pub enum EtaBasis {
     Machine,
     /// Runs like it on other machines of this GPU, and its own steps.
     Gpu,
-    /// Its own steps alone: nothing like it ran here.
+    /// Runs like it on another card, scaled by the Hub's per-SKU speeds, and its own steps.
+    Card,
+    /// Its own steps alone: nothing like it ran anywhere this computer knows.
     Steps,
-    /// Nothing yet: no run like it here or on this GPU, and fewer than two of its own steps.
+    /// The bytes it moves now, left at their rate, alone: its time left is at least this.
+    Bytes,
+    /// Nothing yet: no run like it on any card this computer knows, and no step of its own.
     FirstRun,
 }
 
@@ -819,6 +823,9 @@ pub struct MachineEstimate {
     /// How many runs start there before it.
     pub queue_position: u32,
     pub basis: crate::machine::Basis,
+    /// A machine on its way (a rental booting or ordered): when it should serve, part of `start_ms` (cl-915).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ready_ms: Option<u64>,
 }
 
 /// One event of a run's stream.
@@ -1381,6 +1388,53 @@ pub struct MachineStatus {
     /// What it does for this controller's runs besides their own work, each once however many wait on it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub activity: Vec<Operation>,
+    /// Its GPUs held back for heat most of their last loaded run: the machine is hot, and its runs slow (cl-913).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heat: Vec<crate::machine::GpuHeat>,
+    /// Why its Runtime serves its GPUs none of its native kernels; empty: it does.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub runtime_kernels: String,
+}
+
+impl MachineStatus {
+    /// What makes its runs slow now, one line each: a GPU held back for heat, a Runtime without its kernels.
+    pub fn slowed(&self) -> Vec<String> {
+        let heat = self.heat.iter().map(|hot| {
+            let replayed = if hot.replayed { " (replayed readings)" } else { "" };
+            format!(
+                "GPU {} ran throttled for heat {:.0}% of its last run ({} °C, {} of {} MHz){replayed}",
+                hot.gpu,
+                hot.share * 100.0,
+                hot.temperature_max_c,
+                hot.sm_mhz_mean,
+                hot.sm_mhz_limit
+            )
+        });
+        let kernels = (!self.runtime_kernels.is_empty()).then(|| format!("its Runtime {} serves no native kernels: {}", self.runtime, self.runtime_kernels));
+        heat.chain(kernels).collect()
+    }
+
+    /// Its GPUs run the Runtime's native kernels, which only a native wheel carries (Linux, Windows): the pure wheel, all a
+    /// source checkout builds, leaves them none (cl-913).
+    pub fn takes_runtime_kernels(&self) -> bool {
+        matches!(self.platform.as_str(), "linux/x86_64" | "linux/aarch64" | "windows/x86_64") && !self.gpus.is_empty()
+    }
+}
+
+/// A Runtime without its kernels refused for `machine` (cl-913): `what` it is, and the commit its dev-build builds the wheel with
+/// them from.
+pub fn kernel_less_runtime(machine: &str, what: &str, commit: Option<&str>) -> crate::error::Error {
+    let commit = commit.unwrap_or("<its commit>");
+    crate::error::Error::new(
+        crate::error::Kind::Validation,
+        "runtime_without_kernels",
+        format!(
+            "{what} carries none of the Runtime's kernels: {machine}'s GPUs would run slower GEMMs and no FlashAttention-3. \
+             The dev-build of {commit} makes its wheel with them (artifact cozy-runtime-<sha>, the manylinux wheel)"
+        ),
+    )
+    .next(format!("gh workflow run dev-build.yaml -R cozy-creator/cozy-runtime -f ref={commit}"))
+    .next(format!("cozy machine update {machine} --runtime <its cozy_runtime-*-manylinux_*.whl>"))
 }
 
 /// Weights arriving or a package's environment built on a machine (`machine::Operation`), and the runs waiting on it.

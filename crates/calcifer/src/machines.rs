@@ -207,6 +207,11 @@ impl Machines {
             .and_then(|seen| seen.frame.clone())
     }
 
+    /// Its first GPU's name, as it last said: a run's record reads it, without its whole frame.
+    pub(crate) fn gpu(&self, name: &str) -> Option<String> {
+        lock(&self.seen).get(name).and_then(|seen| seen.frame.as_ref()?.gpus.first().map(|gpu| gpu.name.clone()))
+    }
+
     /// Stops every task where it stands, as if the process ended.
     pub(crate) fn close(&self) {
         lock(&self.tasks).abort_all();
@@ -1100,15 +1105,6 @@ impl Machines {
             Err(e) => return warn!("reading unplaced runs: {e}"),
         };
         for run in unplaced {
-            let owner=lock(&self.calcifer.run_owners).get(run.id.as_str()).cloned().flatten();
-            if let Some(owner)=owner {
-                let requested=On::from(run.wants.clone());
-                match crate::private_io::check_project_placement(owner.project_id(),owner.root(),&[requested]) {
-                    Ok(on)=>if let Some(On::Machine(name))=on.into_iter().next() { let _=self.calcifer.place(&run.id,&name); },
-                    Err(error)=>{ let _=self.calcifer.fail(&run.id,::api::calcifer::Reason {code:error.code,message:error.message,..Default::default()}); },
-                }
-                continue;
-            }
             let gpus = run.spec.gpus;
             let placed = match run.wants.as_str() {
                 // It waits for a rental that fits while none does.
@@ -1787,6 +1783,8 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
         toolchain: Some(frame.toolchain.clone()).filter(|t| !t.state.is_empty()),
         kernels: frame.kernels.clone(),
         stuck: frame.stuck.clone(),
+        heat: frame.heat.clone(),
+        runtime_kernels: frame.runtime_kernels.clone(),
         disk_total_bytes: frame.disk.as_ref().map_or(0, |d| d.total_bytes),
         disk_free_bytes: frame.disk.as_ref().map_or(0, |d| d.free_bytes),
         disk_models_bytes: frame.disk.as_ref().map_or(0, |d| d.models_bytes),

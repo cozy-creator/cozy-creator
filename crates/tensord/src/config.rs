@@ -65,6 +65,8 @@ pub(crate) struct Config {
     pub logs: PathBuf,
     /// What the load ignored, said once the log is up.
     pub warnings: Vec<String>,
+    /// Tests only: recorded GPU readings every call reads (`machine.gpu_samples`).
+    pub gpu_samples: Option<PathBuf>,
 }
 
 /// The one load.
@@ -81,6 +83,7 @@ pub(crate) fn reread(config: &mut Config) -> io::Result<()> {
     config.gpu_memory_limit = loaded.config.machine.gpu_memory_limit;
     config.mode = mode(config.grant.lifetime, &loaded.config.machine);
     config.display_pace = display_pace(config.mode, &loaded.config.machine);
+    config.gpu_samples.clone_from(&loaded.config.machine.gpu_samples);
     Ok(())
 }
 
@@ -125,6 +128,7 @@ fn from_loaded(lifetime: Lifetime, loaded: Loaded, environment: &BTreeMap<String
         provider,
         grant,
         warnings,
+        gpu_samples: machine.gpu_samples.clone(),
     })
 }
 

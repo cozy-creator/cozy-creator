@@ -98,10 +98,10 @@ async function died(error) {
   const palette = () => page.evaluate(() => ({ shut: document.querySelector('aside.tools')?.classList.contains('shut'), saved: localStorage.getItem('cozy.tools-shut') }));
   const sameCamera = (before, after) => Math.abs(before.x - after.x) < 0.5 && Math.abs(before.y - after.y) < 0.5 && Math.abs(before.zoom - after.zoom) < 0.0001;
   const sameRect = (before, after) => ['x', 'y', 'width', 'height'].every((key) => Math.abs(before[key] - after[key]) < 2);
-  const focusByClick = async () => {
+  const wanderPoint = async () => {
     const media = boxOf(page, NAME).locator('.media');
     await media.waitFor();
-    const point = await media.evaluate((element) => {
+    return media.evaluate((element) => {
       const rect = element.getBoundingClientRect();
       const left = Math.max(rect.left, document.querySelector('aside.tools')?.getBoundingClientRect().right ?? 0);
       const right = Math.min(rect.right, innerWidth - 8);
@@ -110,7 +110,10 @@ async function died(error) {
       if (right <= left || bottom <= top) throw new Error('the Wander image has no visible click target');
       return { x: (left + right) / 2, y: (top + bottom) / 2 };
     });
-    await page.mouse.click(point.x, point.y);
+  };
+  const focusByDoubleClick = async () => {
+    const point = await wanderPoint();
+    await page.mouse.dblclick(point.x, point.y);
     await focus.waitFor();
     await page.locator(`[data-focused-asset="${NAME}"]:not([data-entering])`).waitFor();
     await card.waitFor();
@@ -141,11 +144,12 @@ async function died(error) {
     const loaded = [...media.querySelectorAll('.media-pixels img')].some((image) => image.complete && image.naturalWidth > 0);
     return { viewer: rect(viewer), media: rect(media), controls: rect(element.querySelector('.image-controls')), loaded };
   });
-  const fits = (look, ratio) => look.loaded && look.media.width > 20 && look.media.height > 20
+  const frameFits = (look, ratio) => look.media.width > 20 && look.media.height > 20
     && look.media.x >= look.viewer.x - 2 && look.media.y >= look.viewer.y - 2
     && look.media.right <= look.viewer.right + 2 && look.media.bottom <= look.viewer.bottom + 2
     && Math.abs((look.media.width / look.media.height) / ratio - 1) < 0.03
     && Math.min(Math.abs(look.media.width - look.viewer.width), Math.abs(look.media.height - look.viewer.height)) < 3;
+  const fits = (look, ratio) => look.loaded && frameFits(look, ratio);
   const expectFit = (ratio) => until('the full image fits the Focus viewer', measure, (look) => fits(look, ratio));
   const imageCamera = () => card.locator('.focus-image-transform').evaluate((element) => {
     const matrix = new DOMMatrix(getComputedStyle(element).transform);
@@ -197,10 +201,28 @@ async function died(error) {
 
   const wander = await camera();
   const expanded = await palette();
-  await focusByClick();
+  const selectionPoint = await wanderPoint();
+  await page.mouse.click(selectionPoint.x, selectionPoint.y);
+  await page.locator(`.react-flow__node.selected:has(.card[data-asset="${NAME}"])`).waitFor();
+  check('single_click_selects_without_entering_focus_or_moving_the_camera', await page.locator('[data-focused-asset]').count() === 0 && sameCamera(wander, await camera()));
+  await boxOf(page, NAME).locator('.head .nm').click();
+  const inlineName = boxOf(page, NAME).locator('.head input[aria-label="Name"]');
+  await inlineName.waitFor();
+  check('Wander_title_opens_inline_rename_without_focus_or_camera_movement', await page.locator('[data-focused-asset]').count() === 0 && await inlineName.inputValue() === NAME && sameCamera(wander, await camera()));
+  await inlineName.fill(NAME);
+  await inlineName.press('Enter');
+  await inlineName.waitFor({ state: 'detached' });
+  await boxOf(page, NAME).locator('.head .nm').dblclick();
+  await inlineName.waitFor();
+  check('Wander_title_double_click_stays_in_rename', await page.locator('[data-focused-asset]').count() === 0 && sameCamera(wander, await camera()));
+  await inlineName.fill(NAME);
+  await inlineName.press('Enter');
+  await inlineName.waitFor({ state: 'detached' });
+  check('Wander_inline_name_commit_preserves_the_asset_and_camera', (await asset()).name === NAME && await page.locator('[data-focused-asset]').count() === 0 && sameCamera(wander, await camera()));
+  await focusByDoubleClick();
   const focusedCanvas = await camera();
   const wide = await expectFit(4);
-  check('node_click_opens_one_focus_workspace', await page.locator('[data-focused-asset]').count() === 1 && await card.count() === 1);
+  check('node_double_click_opens_one_focus_workspace', await page.locator('[data-focused-asset]').count() === 1 && await card.count() === 1);
   check('entry_animates_the_canvas_into_the_selected_asset', !sameCamera(wander, focusedCanvas), { before: wander, after: focusedCanvas });
   check('focus_keeps_temporary_palette_collapse_out_of_saved_settings', (await palette()).saved === expanded.saved);
   const background = await focus.evaluate((element) => ({ color: getComputedStyle(element).backgroundColor, image: getComputedStyle(element).backgroundImage }));
@@ -346,6 +368,45 @@ async function died(error) {
     await choose(2);
     await expectFit(0.25);
     check('old_tall_state_stays_previewable_after_generation', await history.locator('.take.on[data-take]').getAttribute('data-take') === '2' && (await asset()).versions === 11);
+
+    // The weightless tool declares a continuous AspectRatio, with no discrete ratio list.
+    await newImage.click();
+    const aspectBadge = card.locator('.focus-viewer .media > [data-output-aspect]');
+    await aspectBadge.waitFor();
+    const beforeResize = await until('the square edit frame is fitted before resizing', measure, (look) => frameFits(look, 1));
+    const beforeResizeCamera = await camera();
+    const beforeResizeWidth = (await api(`${at}/canvas`)).cards[NAME].w;
+    const corner = await card.getByRole('slider', { name: 'Its size', exact: true }).boundingBox();
+    const fromCorner = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
+    await page.mouse.move(fromCorner.x, fromCorner.y);
+    await page.mouse.down();
+    await card.locator('.focus-viewer[data-resizing="true"]').waitFor();
+    await page.mouse.move(fromCorner.x - 150, fromCorner.y + 90, { steps: 12 });
+    const heldResize = await measure();
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    const stableResize = await measure();
+    const requestedShape = await aspectBadge.getAttribute('data-output-aspect');
+    const [ratioWidth, ratioHeight] = requestedShape.split(':').map(Number);
+    const requestedRatio = ratioWidth / ratioHeight;
+    check('aspect_drag_holds_free_bounds_until_release', sameRect(beforeResize.viewer, heldResize.viewer) && sameRect(heldResize.media, stableResize.media)
+      && Math.abs(heldResize.media.x - beforeResize.media.x) < 2 && Math.abs(heldResize.media.y - beforeResize.media.y) < 2
+      && Math.abs(heldResize.media.width - (beforeResize.media.width - 150)) < 4 && Math.abs(heldResize.media.height - (beforeResize.media.height + 90)) < 4
+      && !frameFits(heldResize, requestedRatio), { beforeResize, heldResize, stableResize, requestedShape });
+    await shot('aspect-dragging');
+    await page.mouse.up();
+    await until('aspect dragging ends after release', () => card.locator('.focus-viewer').getAttribute('data-resizing'), (value) => value === null);
+    await until('the exact requested ratio is saved', asset, (item) => item.fields?.aspect_ratio === requestedShape);
+    const afterResize = await until('the output refits to the exact released ratio', measure, (look) => frameFits(look, requestedRatio)
+      && Math.abs((look.media.width / look.media.height) / requestedRatio - 1) < 0.001);
+    check('aspect_release_refits_without_changing_the_Wander_width_or_camera', Number.isFinite(beforeResizeWidth) && (await api(`${at}/canvas`)).cards[NAME].w === beforeResizeWidth
+      && sameCamera(beforeResizeCamera, await camera()) && Math.abs((await imageCamera()).zoom - 1) < 0.0001, { beforeResizeWidth, afterResize });
+    const badgeRect = await aspectBadge.boundingBox();
+    check('requested_aspect_badge_stays_inside_the_output_frame', badgeRect.x >= afterResize.media.x - 2 && badgeRect.y >= afterResize.media.y - 2
+      && badgeRect.x + badgeRect.width <= afterResize.media.right + 2 && badgeRect.y + badgeRect.height <= afterResize.media.bottom + 2);
+    const automatic = focus.getByRole('button', { name: 'Auto aspect ratio', exact: true });
+    if (await automatic.count()) await automatic.click();
+    await choose(2);
+    await expectFit(0.25);
   } else seen.skipped_render = 'no free local execution in this cell';
 
   await approve(2);
@@ -358,7 +419,7 @@ async function died(error) {
   if (!(await palette()).shut) await tools.getByLabel('Hide the tools', { exact: true }).click();
   const collapsed = await palette();
   const beforeGestures = await camera();
-  await focusByClick();
+  await focusByDoubleClick();
   await expectFit(0.25);
   const gestureCanvas = await camera();
   await focus.getByRole('button', { name: 'Zoom in image', exact: true }).click();
@@ -384,12 +445,18 @@ async function died(error) {
   await until('zoom cannot go below the fitted full image', imageCamera, (position) => Math.abs(position.zoom - 1) < 0.0001 && Math.abs(position.x) < 0.5 && Math.abs(position.y) < 0.5);
   await expectFit(0.25);
   check('fitted_minimum_keeps_focus_open_and_its_canvas_camera_unchanged', await focus.isVisible() && sameCamera(gestureCanvas, await camera()));
+  for (let step = 0; step < 12 && (await imageCamera()).zoom < 7; step++) {
+    const before = (await imageCamera()).zoom;
+    await focus.getByRole('button', { name: 'Zoom in image', exact: true }).click();
+    await until('the local image camera reaches 700 percent', imageCamera, (position) => position.zoom > before);
+  }
+  check('high_image_zoom_keeps_the_focused_canvas_camera_unchanged', (await imageCamera()).zoom >= 7 && sameCamera(gestureCanvas, await camera()));
   await page.keyboard.press('Escape');
   await focus.waitFor({ state: 'detached' });
   await until('Escape animates to the original Wander camera', camera, (position) => sameCamera(beforeGestures, position));
   await settled(page);
   check('Escape_explicitly_exits_focus_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
-  await focusByClick();
+  await focusByDoubleClick();
   await expectFit(0.25);
   const mainImage = (await measure()).media;
   await page.mouse.click(mainImage.x + mainImage.width / 2, mainImage.y + mainImage.height / 2);
@@ -406,6 +473,92 @@ async function died(error) {
   await settled(page);
   check('clicking_the_empty_focus_background_exits_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
 
+  // Drag a real four-node selection, so one gesture can exercise both React Flow stop callbacks.
+  const referenceTools = (await api(`/v1/tools?project=${id}&palette=true`)).tools;
+  const reference = referenceTools.map((tool) => ({ tool, prompt: tool.fields.find((field) => field.type === 'prompt' || field.type === 'words') }))
+    .find(({ tool, prompt }) => tool.makes === 'image' && prompt?.type === 'prompt' && (!prompt.takes || prompt.takes.includes('image')));
+  if (!reference) throw new Error('an image tool whose first prompt accepts image references is unavailable');
+  const bulkWords = '<self.2> Keep these words and add the four reference images.';
+  await api(`${at}/assets/${NAME}`, 'PATCH', { tool: reference.tool.id, fields: { [reference.prompt.field]: bulkWords } });
+  await until('the image reference tool and seed words are saved', asset, (item) => item.tool === reference.tool.id && item.fields?.[reference.prompt.field] === bulkWords);
+  await api(`${at}/canvas`, 'PATCH', { cards: { [NAME]: { x: 1000, y: 280, w: 640 } } });
+  const bulkNames = [];
+  for (let number = 0; number < 4; number++) {
+    const name = `bulk_reference_${number + 1}`;
+    bulkNames.push(name);
+    await api(`${at}/imports`, 'POST', { source: await picture(11 + number, 480, 320), name, exact: true, at: { x: 160 + (number % 2) * 260, y: 180 + Math.floor(number / 2) * 220, w: 160 } });
+  }
+  await fitCanvas(page);
+  const sourceNodes = bulkNames.map((name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`));
+  for (const node of sourceNodes) await node.waitFor();
+  const bounds = await Promise.all(sourceNodes.map((node) => node.boundingBox()));
+  const enclosing = { left: Math.min(...bounds.map((box) => box.x)) - 12, top: Math.min(...bounds.map((box) => box.y)) - 12,
+    right: Math.max(...bounds.map((box) => box.x + box.width)) + 12, bottom: Math.max(...bounds.map((box) => box.y + box.height)) + 12 };
+  const pane = await page.locator('.react-flow').boundingBox();
+  const navigation = await page.locator('.top').boundingBox();
+  const paletteBounds = await tools.boundingBox();
+  enclosing.left = Math.max(enclosing.left, pane.x + 8, paletteBounds.x + paletteBounds.width + 8);
+  enclosing.top = Math.max(enclosing.top, pane.y + 8, navigation.y + navigation.height + 8);
+  enclosing.right = Math.min(enclosing.right, pane.x + pane.width - 8);
+  enclosing.bottom = Math.min(enclosing.bottom, pane.y + pane.height - 8);
+  await page.mouse.click(enclosing.left, enclosing.top);
+  await page.keyboard.down('Shift');
+  await page.mouse.move(enclosing.left, enclosing.top);
+  await page.mouse.down();
+  await page.mouse.move(enclosing.right, enclosing.bottom, { steps: 16 });
+  await page.mouse.up();
+  await page.keyboard.up('Shift');
+  const selected = await until('four image nodes are selected by the pointer rectangle', () => page.locator('.react-flow__node.selected .card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset).sort()),
+    (names) => JSON.stringify(names) === JSON.stringify([...bulkNames].sort()));
+  check('bulk_reference_drop_uses_four_actually_selected_nodes', selected.length === 4);
+  const selection = page.locator('.react-flow__nodesselection-rect');
+  await selection.waitFor();
+  const group = await selection.boundingBox();
+  const destination = await boxOf(page, NAME).locator('.media').boundingBox();
+  const stamp = (item) => item ? { name: item.name, tool: item.tool, version: item.version, approved: item.approved, pinned: item.pinned, sha: item.sha256, versions: item.versions,
+    sources: (item.prefixes ?? []).map((version) => [version.number, version.main?.sha256]) } : null;
+  const projectBeforeBulk = await state();
+  const targetBeforeBulk = stamp(projectBeforeBulk.assets.find((item) => item.name === NAME));
+  const sourcesBeforeBulk = bulkNames.map((name) => stamp(projectBeforeBulk.assets.find((item) => item.name === name)));
+  const pendingBulkWrites = new Set();
+  let bulkWriteCount = 0;
+  let bulkWriteActivity = Date.now();
+  const bulkRequest = (request) => {
+    if (request.method() !== 'PATCH' || new URL(request.url()).pathname !== `${at}/assets/${NAME}`) return;
+    pendingBulkWrites.add(request);
+    bulkWriteCount++;
+    bulkWriteActivity = Date.now();
+  };
+  const bulkFinished = (request) => { if (pendingBulkWrites.delete(request)) bulkWriteActivity = Date.now(); };
+  page.on('request', bulkRequest);
+  page.on('requestfinished', bulkFinished);
+  page.on('requestfailed', bulkFinished);
+  await page.mouse.move(group.x + group.width / 2, group.y + group.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(group.x + group.width / 2 + 12, group.y + group.height / 2, { steps: 3 });
+  await page.mouse.move(destination.x + destination.width / 2, destination.y + destination.height / 2, { steps: 20 });
+  await page.mouse.up();
+  await until('the group drop saves all four external image references', asset, (item) => bulkNames.every((name) => item.fields?.[reference.prompt.field]?.includes(`<${name}>`)));
+  await until('all group-drop asset writes have finished', () => ({ count: bulkWriteCount, pending: pendingBulkWrites.size, quiet: Date.now() - bulkWriteActivity }),
+    (writes) => writes.count > 0 && writes.pending === 0 && writes.quiet >= 500);
+  page.off('request', bulkRequest);
+  page.off('requestfinished', bulkFinished);
+  page.off('requestfailed', bulkFinished);
+  const projectAfterBulk = await state();
+  const targetAfterBulk = projectAfterBulk.assets.find((item) => item.name === NAME);
+  const tags = [...targetAfterBulk.fields[reference.prompt.field].matchAll(/<([^>]+)>/g)].map((match) => match[1]);
+  const external = tags.filter((tag) => bulkNames.includes(tag));
+  check('one_group_drag_appends_exactly_four_external_references', external.length === 4 && bulkNames.every((name) => external.filter((tag) => tag === name).length === 1) && tags.filter((tag) => tag === 'self.2').length === 1 && tags.length === 5, { tags, bulkWriteCount });
+  check('bulk_reference_drop_preserves_the_target_source_and_approval', JSON.stringify(stamp(targetAfterBulk)) === JSON.stringify(targetBeforeBulk));
+  check('bulk_reference_drop_keeps_all_source_assets_and_creates_no_nodes', JSON.stringify(bulkNames.map((name) => stamp(projectAfterBulk.assets.find((item) => item.name === name)))) === JSON.stringify(sourcesBeforeBulk)
+    && JSON.stringify(projectAfterBulk.assets.map((item) => item.name).sort()) === JSON.stringify(projectBeforeBulk.assets.map((item) => item.name).sort()));
+  await shot('bulk-reference-drop');
+  if (await page.locator('[data-focused-asset]').count()) {
+    await page.getByRole('button', { name: 'Back to canvas', exact: true }).click();
+    await page.locator('[data-focused-asset]').waitFor({ state: 'detached' });
+    await settled(page);
+  }
+
   // H3 edits Summary before Beats; a real tiny imported clip exercises the separate completed-view face without a GPU.
   const videoTool = metadata.tools.find((item) => item.makes === 'video' && item.id === 'minimax-h3/generate'
     && item.fields.some((field) => field.type === 'group' && field.field === 'beats')
@@ -417,13 +570,13 @@ async function died(error) {
   await fitCanvas(page);
   const videoWander = await camera();
   const videoTile = await boxOf(page, VIDEO).locator('.media').boundingBox();
-  await page.mouse.click(videoTile.x + videoTile.width / 2, videoTile.y + videoTile.height / 2);
+  await page.mouse.dblclick(videoTile.x + videoTile.width / 2, videoTile.y + videoTile.height / 2);
   const videoFocus = page.locator(`[data-focused-asset="${VIDEO}"]`);
   await videoFocus.waitFor();
   await page.locator(`[data-focused-asset="${VIDEO}"]:not([data-entering])`).waitFor();
   const videoFocusedCanvas = await camera();
-  const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
-  await newVideo.click();
+  // Empty, it has no New: its form is what's open (cl-925).
+  check('empty_video_has_no_new', await videoFocus.getByRole('button', { name: 'New video', exact: true }).count() === 0);
   const videoForm = videoFocus.locator('.focus-parameter-tool > .here-under');
   await videoForm.waitFor();
   const beatPrompt = videoForm.locator('[data-field="beats"] .beat .mention-text').first();
@@ -454,19 +607,30 @@ async function died(error) {
   const completedVideo = videoFocus.locator('.here-side .take[data-take="1"]');
   await completedVideo.waitFor();
   await completedVideo.click();
+  await videoFocus.locator('.focus-viewer').getByRole('button', { name: 'Play', exact: true }).click();
   const completedPlayer = videoFocus.locator('.focus-viewer video').first();
   await completedPlayer.waitFor({ state: 'visible' });
-  await until('the imported completed video can actually play', () => completedPlayer.evaluate((element) => element.readyState >= 2 && element.videoWidth > 0), Boolean);
+  // Hold the one-second fixture on a decoded frame while its view controls are checked.
+  await completedPlayer.evaluate((element) => { element.loop = true; });
+  await until('the imported completed video can actually play', () => completedPlayer.evaluate((element) => {
+    const loaded = element.readyState >= 2 && element.videoWidth > 0;
+    if (loaded) element.pause();
+    return loaded;
+  }), Boolean);
   const completedGeometry = await videoFocus.locator('.focus-viewer').boundingBox();
   check('completed_video_has_a_prominent_view_only_face', completedGeometry.width > videoRoom.width * 0.5 && completedGeometry.height > 120 && !await summaryPrompt.isVisible() && !await beatPrompt.isVisible() && await videoFocus.locator('.mention-text:visible').count() === 0, { completedGeometry, videoRoom });
-  check('completed_video_has_models_and_an_explicit_pick_up_action', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await videoFocus.locator('.video-pickup-action').isVisible());
-  await videoFocus.locator('.video-pickup-action').click();
+  // Pick up from here is under its scrubber (cl-933).
+  const pickUp = videoFocus.locator('.video-scrub button:text-is("Pick up from here")');
+  check('completed_video_has_models_and_an_explicit_pick_up_action', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await pickUp.isVisible());
+  await pickUp.click();
   await videoFocus.locator('.focus-new-video').waitFor();
   await summaryPrompt.waitFor({ state: 'visible' });
   check('pick_up_opens_the_video_editor_without_starting_a_render', !await videoFocus.locator('.focus-viewer').isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1 && !(await state()).assets.find((item) => item.name === VIDEO).making?.length);
   await completedVideo.click();
-  await completedPlayer.waitFor({ state: 'visible' });
+  await videoFocus.locator('.focus-viewer').getByRole('button', { name: 'Play', exact: true }).waitFor();
   await shot('completed-video');
+  // With a take it has New (cl-925).
+  const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
   check('video_has_a_new_state_tile', await newVideo.isVisible());
   await newVideo.click();
   check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1);

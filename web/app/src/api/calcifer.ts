@@ -74,9 +74,17 @@ function: string, machine: string,
  */
 run: number,
 /**
+ * The boxes it prepares for: each shows it as its own preparation while it waits.
+ */
+names?: Array<string>,
+/**
  * `installing it`, `downloading its weights`, …; none once it ended.
  */
-stage?: string | null, done: number, total: number,
+stage?: string | null,
+/**
+ * What it waits for on its machine, as the machine says: its place in a line there.
+ */
+waiting?: string | null, done: number, total: number,
 /**
  * It's all there.
  */
@@ -268,7 +276,12 @@ timeline?: TimelineNow | null,
 /**
  * An Edit being rendered here: how far, 0 to 1. It runs on no machine, so it has no run to ask.
  */
-rendering?: number | null, };
+rendering?: number | null,
+/**
+ * The versions that landed beside an approved one that this person hasn't looked at (cl-928). Calcifer's own (`state.db`), never the
+ * project's: each person has theirs. `POST …/versions/{number}/seen` clears one.
+ */
+unseen?: Array<number>, };
 
 /**
  * What `DELETE /v1/projects/{id}/assets/{name}` took, and where its box sat: undo puts it back, its versions with it.
@@ -564,6 +577,30 @@ export type CodeRequest = { hub?: string | null, purpose: Purpose, email?: strin
 export type Component = { "version": string } | { "file": DevBuild };
 
 /**
+ * What `POST /v1/projects/{id}/copies` made: each copy, in the order asked.
+ */
+export type Copied = { made: Array<AssetMade>,
+/**
+ * Each of its `moves` another wrote since, left as it is: its row now (null: none).
+ */
+kept?: { [key in string]: Card | null }, };
+
+/**
+ * `POST /v1/projects/{id}/copies`: boxes copied, in one transaction and one entry of the history. Under an `Idempotency-Key`, a retry makes no more.
+ */
+export type Copies = { boxes: Array<CopyOf>,
+/**
+ * What their drop pushed aside, written with them, each only if no other client wrote it after the revision in `placed`.
+ */
+moves?: { [key in string]: Card }, placed?: { [key in string]: number }, };
+
+/**
+ * A copy of box `from`: a new box called its name counted up (`hei_2`), with its tool, fields and words, and its versions and approval, their
+ * files the same files by hash. `<self…>` in its words is the copy, a mention of a box copied with it names that box's copy, and any other is unchanged.
+ */
+export type CopyOf = { from: string, at?: Card | null, };
+
+/**
  * A `cozy/cut` asset's film at the project's root (`GET /v1/projects/{id}/cuts/{cut}`; its timeline
  * beside it, `<name>.otio`): its file, when it was last cut and how many frames long at `fps`
  * (None: not yet), the takes it retimed to that rate (`<asset> (<fps> fps)`), and what it cuts that
@@ -658,7 +695,7 @@ export type ErrorKind = "usage" | "validation" | "not_found" | "credential" | "f
 /**
  * What a time left stands on.
  */
-export type EtaBasis = "machine" | "gpu" | "steps" | "first_run";
+export type EtaBasis = "machine" | "gpu" | "card" | "steps" | "bytes" | "first_run";
 
 /**
  * A key for another computer: its file, which the client writes owner-only.
@@ -775,6 +812,32 @@ memory_limit_bytes?: number,
  * It draws a screen now: a render on it makes the screen lag.
  */
 display?: boolean, };
+
+/**
+ * A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
+ * readings measured, until a later loaded run there runs cool.
+ */
+export type GpuHeat = { gpu: number,
+/**
+ * The share of its busy readings under a heat limit, 0 to 1.
+ */
+share: number,
+/**
+ * Its busy time those readings cover.
+ */
+busy_ms: number, sm_mhz_mean: number, sm_mhz_limit: number, temperature_max_c: number,
+/**
+ * The driver's limits it saw (`hw_thermal`, `sw_thermal`, `hw_slowdown`, `power_cap`, ...).
+ */
+throttles: Array<string>,
+/**
+ * The run it was measured in, by this machine's id.
+ */
+run: string, at_unix_ms: number,
+/**
+ * Its readings were recorded ones a test replays (`machine.gpu_samples`), not this GPU's own.
+ */
+replayed: boolean, };
 
 /**
  * `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.
@@ -1295,7 +1358,15 @@ stuck?: Array<StuckProcess>,
 /**
  * What it does for this controller's runs besides their own work, each once however many wait on it.
  */
-activity?: Array<Operation>, };
+activity?: Array<Operation>,
+/**
+ * Its GPUs held back for heat most of their last loaded run: the machine is hot, and its runs slow (cl-913).
+ */
+heat?: Array<GpuHeat>,
+/**
+ * Why its Runtime serves its GPUs none of its native kernels; empty: it does.
+ */
+runtime_kernels?: string, };
 
 /**
  * `POST /v1/machines/{name}/update` (with an `Idempotency-Key`): the machine's Runtime, TensorFS
@@ -2016,7 +2087,7 @@ eta_s?: number | null,
  */
 eta_confidence?: number | null,
 /**
- * What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
+ * What `eta_s` stands on; `first_run` with none: nothing like it ran on any card this computer knows.
  */
 eta_basis?: EtaBasis | null,
 /**

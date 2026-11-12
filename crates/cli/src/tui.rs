@@ -91,7 +91,14 @@ impl Screen {
                 view.rows(ctx),
                 selected,
             ),
-            Screen::Machine(view) => detail(frame, &view.title(), view.lines(ctx)),
+            Screen::Machine(view) => {
+                let lines = view.lines(ctx).into_iter().map(|(line, alarm)| match alarm {
+                    true => Line::from(line).style(Style::new().fg(ratatui::style::Color::Red).add_modifier(Modifier::BOLD)),
+                    false => Line::from(line),
+                });
+                let block = Block::new().title(format!("{}  (Esc or q back)", view.title()));
+                frame.render_widget(Paragraph::new(lines.collect::<Vec<_>>()).block(block), frame.area());
+            }
             Screen::Models(view) => {
                 if view.model_at(selected.selected().unwrap_or(0)).is_none() { selected.select(Some(view.first_selection())); }
                 table_sections(frame, &view.title(), &["model", "family", "size", "local"], view.rows(), selected, view.hint(), &view.headings());

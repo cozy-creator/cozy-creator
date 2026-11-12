@@ -412,11 +412,15 @@ function linesOf(text, name) {
   check('description_data_is_preserved', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
   check('a_description_makes_it_no_tool', !(await of('source-a')).tool && (await of('source-a')).sha256?.startsWith('sha256:'), await of('source-a'));
 
-  // A click opens a picture's box at once, with no wait for a second (Paul, 11-06, as Figma does).
+  // A single click selects in Wander; a double click enters Focus.
   await away();
   const pressed = await box('source-a').locator('.media').boundingBox();
   await page.mouse.click(pressed.x + pressed.width / 2, pressed.y + pressed.height / 2);
-  check('a_click_opens_at_once', await page.evaluate(() => Boolean(document.querySelector('.card.here[data-asset="source-a"]'))));
+  await page.locator('.react-flow__node.selected:has(.card[data-asset="source-a"])').waitFor();
+  check('single_click_selects_without_focus', await page.locator('[data-focused-asset]').count() === 0);
+  await page.mouse.dblclick(pressed.x + pressed.width / 2, pressed.y + pressed.height / 2);
+  await page.locator('[data-focused-asset="source-a"]').waitFor();
+  check('double_click_enters_focus', await page.locator('.card.focus-card[data-asset="source-a"]').count() === 1);
   await away();
 
   // A box from what it holds, for a tool no list knows: what says the most is its prompt, whatever the alphabet says of `style` and `summary`, its beats shown, and what else it holds behind More, with no line of names beside it. Each writes one field and moves nothing else.
@@ -562,7 +566,7 @@ function linesOf(text, name) {
   await away();
   await box('source-b').locator('.nm').click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
-  check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Download,Star,Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
+  check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Download,Star,Duplicate,Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
   await page.keyboard.press('Escape');
   await open('Sheet');
   await box('Sheet').getByRole('button', { name: 'Rename node', exact: true }).click({ button: 'right' });
@@ -875,7 +879,7 @@ function linesOf(text, name) {
 
     // A deleted asset's versions come back with it.
     const takes = await versions('Other');
-    // Only Shift selects: a click opens.
+    // Shift adds to what's selected.
     await away();
     await box('Other').locator('.nm').click({ modifiers: ['Shift'] });
     await page.keyboard.press('Delete');

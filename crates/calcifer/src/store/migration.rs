@@ -132,11 +132,42 @@ impl Store {
     pub(crate) fn migrate_project_sealing(&self, project: &crate::project::journal::SealingStore<'_>, inputs: &Path) -> Result<()> {
         self.migrate_into(Destination::Sealing(project),inputs)
     }
+    fn migrate_legacy_unseen(&self,project:&Destination<'_,'_>)->Result<bool> {
+        let mut writer=self.writer.lock().unwrap_or_else(|error|error.into_inner());
+        if !table_exists(&writer,"legacy_project_unseen")? {return Ok(false);}
+        let source=writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows=Rows::load(&source,"unseen","project=?1",project.project_id())?;
+        if rows.values.is_empty() {return Ok(false);}
+        let number=rows.column("number")?;
+        for row in &rows.values {
+            let value=integer(&row[number])?;
+            if value<0 || value>i64::from(u32::MAX) {return Err(corrupt("legacy unseen version"));}
+        }
+        let digest=rows.fingerprint();
+        project.write(|tx| {
+            let prior=tx.query_row("SELECT digest FROM journal_migrations WHERE source='controller-v7:unseen'",[],|row|row.get::<_,String>(0)).optional()?;
+            if prior.as_ref().is_some_and(|prior|prior!=&digest) {return Err(StoreError::Protected("project_unseen_source_changed".into()));}
+            rows.insert_verified(tx,"project_unseen")?;
+            tx.execute("INSERT OR IGNORE INTO journal_migrations(source,digest,record) VALUES('controller-v7:unseen',?1,'unseen')",[&digest])?;
+            Ok(())
+        })?;
+        // The project's FULL commit and exact row verification precede retirement.
+        let verified=project.read(|conn|Ok(conn.query_row("SELECT digest FROM journal_migrations WHERE source='controller-v7:unseen'",[],|row|row.get::<_,String>(0))?))?;
+        if verified!=digest {return Err(StoreError::Protected("project_unseen_unverified".into()));}
+        source.execute("DELETE FROM legacy_project_unseen WHERE project=?1",[project.project_id()])?;
+        source.commit()?;
+        Ok(true)
+    }
+
     fn migrate_into(&self, project: Destination<'_,'_>, inputs: &Path) -> Result<()> {
+        let unseen_changed=self.migrate_legacy_unseen(&project)?;
         let mut writer = self.writer.lock().unwrap_or_else(|error| error.into_inner());
-        if !table_exists(&writer,"legacy_project_runs")? { drop(writer); return self.migrate_legacy_files(&project); }
+        if !table_exists(&writer,"legacy_project_runs")? {
+            drop(writer);self.migrate_legacy_files(&project)?;
+            return if unseen_changed {if self.migration_required()? {self.checkpoint_legacy_retirement()} else {self.cleanup_private_journal()}} else {Ok(())};
+        }
         let source = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut changed=false;
+        let mut changed=unseen_changed;
         let root = project.execution_scope().1;
         let plain=plain_owner(&source,&self.legacy_home,project.project_id(),root)?;
         let landing = crate::project::landing(root);

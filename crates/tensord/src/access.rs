@@ -551,6 +551,17 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
         let (mut last, mut said, mut shown) = (None, String::new(), None::<String>);
         // What its run waits on, as this machine lists it (`activity`), by repository.
         let caller = engine.caller_id(&id);
+        // A call's weights show on its root's progress too, the box a person watches (cl-921: H3's segment downloaded 2.5 min
+        // with no bytes on its shot): over its own stage, until they're here.
+        let root = engine.get(&id).ok().map(|record| record.invocation.root).filter(|root| !root.is_empty() && *root != id);
+        let tell = |weights: Option<Weights>| {
+            if let Some(root) = &root {
+                if let Err(error) = engine.observe_weights(root, weights.clone()) {
+                    tracing::warn!("run {root}: its call's weights' progress: {error}");
+                }
+            }
+            engine.observe_weights(&id, weights)
+        };
         let mut waits: std::collections::HashMap<String, crate::activity::Waiting> = Default::default();
         loop {
             let live = fetch.upgrade().filter(|f| !f.ended());
@@ -561,7 +572,7 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
                 wait.here(each.here);
                 wait.moved("", each.done, each.total);
             }
-            if let Err(error) = engine.observe_weights(&id, weights.clone()) {
+            if let Err(error) = tell(weights.clone()) {
                 tracing::warn!("run {id}: its weights' progress: {error}");
                 return;
             }
@@ -593,6 +604,7 @@ pub(crate) fn meter(engine: Arc<Engine>, id: String, fetch: &Arc<Fetch>) {
                 return;
             }
             if engine.get(&id).is_ok_and(|record| record.state.terminal()) {
+                let _ = tell(None);
                 return;
             }
             drop(live);

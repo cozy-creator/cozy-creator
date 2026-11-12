@@ -119,6 +119,7 @@ impl Projects {
         project.require_view()?;
         let mut store = ProjectStore { project, controller: Arc::downgrade(&api.calcifer), _view: view, access:Access::Viewing };
         api.calcifer.maintenance_store().migrate_project(&store, &api.calcifer.inputs).map_err(|_| Error::new(api::error::Kind::Conflict,"project_migration_pending","legacy project history could not be verified; its source is preserved"))?;
+        super::unseen::refresh(&store.project)?;
         // A history read never starts a worker. If the registered local worker is
         // already available, resolve actual bindings without retaining this view lease.
         if store.legacy_worker_pending().map_err(|_|Error::new(api::error::Kind::Conflict,"project_migration_pending","legacy custody remains unresolved"))? && api.machines.local.running() {
@@ -271,6 +272,11 @@ fn keep_worker_receipt(tx:&Transaction<'_>,project:&str,machine:&str,receipt:&ap
     }
     Ok(covered)
 }
+
+pub(super) const UNSEEN_SCHEMA:&str="CREATE TABLE IF NOT EXISTS project_unseen (
+    project TEXT NOT NULL, box TEXT NOT NULL, number INTEGER NOT NULL,
+    PRIMARY KEY(project,box,number)
+) STRICT, WITHOUT ROWID;";
 
 pub(super) const SCHEMA: &str = "    CREATE TABLE runs (
         id TEXT PRIMARY KEY,

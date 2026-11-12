@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-palette|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -25,6 +25,8 @@ parse "$@"
 . "$(dirname "$0")/rental.sh"
 . "$(dirname "$0")/fallback.sh"
 . "$(dirname "$0")/previews.sh"
+. "$(dirname "$0")/coming.sh"
+. "$(dirname "$0")/slow.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -166,6 +168,17 @@ if [ "$first" != none ]; then
   cozy --json run ls > "$OUT/runs.json" || check "cozy run ls failed"
   grep -Eq "\"number\": *$first([^0-9]|\$)" "$OUT/runs.json" || check "cozy run ls does not list run $first"
 fi
+phases first
+}
+
+# phases <cell>: every stage the cell's run went through is in the page's words (web/app/src/panels/runs/stages.json, which the
+# release gate reads too), its executor's start or load is said before its work, an install says its steps in words, and a download
+# counts its bytes (cl-921). Its phases, in the page's words, land in $OUT/<cell>.phases.
+phases() {
+[ -s "$OUT/$1.ndjson" ] || return 0
+python3 "$E2E/cli/stages.py" "$OUT/$1.ndjson" "$E2E/../web/app/src/panels/runs/stages.json" > "$OUT/$1.phases" 2>&1 \
+  || check "phases of $1: $(grep PROBLEM "$OUT/$1.phases" | head -5 | paste -sd';' -)$(tail -n 2 "$OUT/$1.phases" | grep -v PROBLEM)"
+cat "$OUT/$1.phases"
 }
 
 # The restarted machine runs a request with a file input in a new executor (weightless: the first run loads weights).
@@ -281,7 +294,7 @@ cozy --json package uninstall local/one_script --on local > /dev/null || check "
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine slow_runs prepares completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   local-wake) parts="local_wake_update logs" ;;
@@ -290,11 +303,25 @@ case $SHARD in
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves page_resend logs" ;;
   project-stream) parts="project_stream logs" ;;
+  # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path, the page too.
+  slow) parts="slow_runs logs" ;;
   project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
   web-core) parts="tools_read web_core page_resend logs" ;;
   web-firefox) parts="tools_read web_firefox logs" ;;
   # The palette against a Hub holding every first-party package (e2e/isolated.sh), and with none (cl-896).
   web-palette) export DB_WEB=palette; parts="tools_read db_existing_web logs" ;;
+  # The canvas where it was after Focus (cl-931).
+  web-refocus) export DB_WEB=refocus; parts="tools_read db_existing_web logs" ;;
+  # A pulled shape snapping to a ratio its tool makes (cl-936).
+  web-aspect) export DB_WEB=aspect; parts="tools_read db_existing_web logs" ;;
+  # A video scrubbed in Focus (cl-933).
+  web-scrub) export DB_WEB=scrub; parts="tools_read db_existing_web logs" ;;
+  # The tool beside a box's name (cl-927).
+  web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
+  # The right-side panel closed by a click off it (cl-929).
+  web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;
+  # No New on an empty box (cl-925).
+  web-empty) export DB_WEB=empty; parts="tools_read db_existing_web logs" ;;
   # A press from inside never dismisses (cl-923).
   web-dismiss) export DB_WEB=dismiss; parts="tools_read db_existing_web logs" ;;
   # Typed words over a picture (cl-901).
@@ -303,26 +330,37 @@ case $SHARD in
   web-beats) export DB_WEB=beats; parts="tools_read db_existing_web logs" ;;
   # Pasted mentions (cl-902).
   web-paste) export DB_WEB=paste; parts="tools_read db_existing_web logs" ;;
+  # A toast when a render finishes, with View (cl-937).
+  web-donetoast) export DB_WEB=donetoast; parts="tools_read db_existing_web logs" ;;
+  # A rendering box at rest, and new takes not looked at (cl-928).
+  web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
   web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
+  # Files dropped: twenty pictures at once, each drawn once where and as it stays (cl-918), and Place's drop, chooser, rename and moves.
+  web-dropped) export DB_WEB="dropped place"; parts="tools_read db_existing_web logs" ;;
   web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
   web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
   web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
-  # computer placed on (cl-894), and a new take never changing what's approved (cl-908).
-  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals logs" ;;
+  # computer placed on (cl-894), a new take never changing what's approved (cl-908), and one not looked at (cl-928).
+  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes prepares logs" ;;
+  # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
+  projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;
   projectdb-palette) parts="tools_read db_existing_web logs"; DB_WEB="nodes tools" ;;
   projectdb-focus) parts="tools_read db_existing_web logs"; DB_WEB=focused ;;
+  projectdb-select) parts="tools_read db_existing_web logs"; DB_WEB=select ;;
   projectdb-cancel) parts="db_cancel_undo logs" ;;
   projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
   projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
   projectdb-versions) parts="tools_read db_existing_web logs"; DB_WEB=versions ;;
   projectdb-menu) parts="tools_read db_existing_web logs"; DB_WEB=menu ;;
+  projectdb-selected) parts="tools_read db_existing_web logs"; DB_WEB=selected ;;
+  projectdb-copy) parts="tools_read db_existing_web logs"; DB_WEB=copy ;;
   projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
   projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
@@ -330,6 +368,8 @@ case $SHARD in
   # result's Latents in another package's caller (cr-276), a host path refused; then a docker rental's end, signed out,
   # with a revoked key and signed in (cl-875).
   local-code) parts="unseen local_edits hub_dependency hub_published child_latents path_manifest rental_end logs" ;;
+  # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
+  coming) parts="coming_machine logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;

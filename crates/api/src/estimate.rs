@@ -1,13 +1,42 @@
-//! How this machine lays out its GPU work (cl-816, Paul 11-07): the one model its scheduler gives
-//! each root its width by and its estimate quotes from. Roots start in the order they are ready,
+//! How a machine lays out its GPU work (cl-816, Paul 11-07): the one model its scheduler gives
+//! each root its width by and its estimate quotes from, and its caller quotes a machine still coming
+//! up by (cl-915). Roots start in the order they are ready,
 //! acceptance breaking ties, on the GPUs free soonest; an older root waiting for GPUs keeps them
 //! from younger ones. As each starts it takes its width in the plan that ends all that waits
 //! soonest, of those capping every job at one width; within 2% the wider plan wins, its first
 //! results coming sooner. So a lone job runs wide and several queued jobs one GPU each.
 
+/// A function's time when none of it ran on the machine and the caller knows none.
+pub const UNKNOWN_MS: f64 = 60_000.0;
+/// An install the machine has not timed.
+pub const INSTALL_MS: f64 = 120_000.0;
+/// Weights' arrival, bytes a millisecond, until the machine has fetched enough to know its link.
+pub const LINK: f64 = 100_000.0;
+
+/// A job's preparation before it can start: its code's install unless it is held, and its absent weights' download at `link` (bytes
+/// a millisecond) and their load onto the GPUs.
+pub fn prepare_ms(installed: bool, fetch: u64, link: f64, load_ms: f64) -> f64 {
+    let install = if installed { 0.0 } else { INSTALL_MS };
+    let load = match fetch {
+        0 => 0.0,
+        fetch => fetch as f64 / link + load_ms,
+    };
+    install + load
+}
+
+/// The widths a function runs at on `gpus` GPUs when its interface isn't held there: the count asked, else one GPU; none on a machine
+/// without GPUs.
+pub fn unheld_widths(gpus: usize, asked: u32) -> Vec<u32> {
+    match (gpus, asked) {
+        (0, _) => vec![],
+        (_, 0) => vec![1],
+        (held, asked) => vec![asked.min(held as u32)],
+    }
+}
+
 /// One root's work.
 #[derive(Clone, Debug)]
-pub(crate) struct Job {
+pub struct Job {
     /// The widths it runs at, smallest first; none: it holds no GPU.
     pub widths: Vec<u32>,
     /// Its time on one GPU, ms.
@@ -20,23 +49,23 @@ pub(crate) struct Job {
 }
 
 impl Job {
-    pub(crate) fn ms(&self, width: u32) -> f64 {
+    pub fn ms(&self, width: u32) -> f64 {
         self.one_ms * self.scaling.at(width)
     }
 }
 
 /// How a job goes faster with GPUs: the share of it that doesn't.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Scaling {
+pub struct Scaling {
     pub serial: f64,
 }
 
 impl Scaling {
     /// Until two widths have run: 2 GPUs near 1.8x, 4 near 3x, about what fast-linked cards do.
-    pub(crate) const PRIOR: Scaling = Scaling { serial: 0.1 };
+    pub const PRIOR: Scaling = Scaling { serial: 0.1 };
 
     /// From its times at two widths.
-    pub(crate) fn of((a, at_a): (u32, f64), (b, at_b): (u32, f64)) -> Self {
+    pub fn of((a, at_a): (u32, f64), (b, at_b): (u32, f64)) -> Self {
         let (a, b, r) = (f64::from(a), f64::from(b), at_a / at_b);
         let under = (1.0 - 1.0 / a) - r * (1.0 - 1.0 / b);
         match under.abs() > f64::EPSILON && a != b {
@@ -45,14 +74,14 @@ impl Scaling {
         }
     }
 
-    pub(crate) fn at(self, width: u32) -> f64 {
+    pub fn at(self, width: u32) -> f64 {
         self.serial + (1.0 - self.serial) / f64::from(width.max(1))
     }
 }
 
 /// Where a job goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct Placed {
+pub struct Placed {
     pub width: u32,
     pub start_ms: f64,
     pub finish_ms: f64,
@@ -64,7 +93,7 @@ pub(crate) struct Placed {
 const TIE: f64 = 0.02;
 
 /// `jobs` on `gpus` GPUs, in their order (running ones first, then by acceptance).
-pub(crate) fn pack(gpus: usize, jobs: &[Job]) -> Vec<Placed> {
+pub fn pack(gpus: usize, jobs: &[Job]) -> Vec<Placed> {
     let mut free = vec![0.0; gpus];
     let mut placed = vec![Placed::default(); jobs.len()];
     for (at, job) in jobs.iter().enumerate() {

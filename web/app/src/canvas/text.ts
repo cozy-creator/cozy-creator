@@ -2,6 +2,7 @@
 // nothing here is more than text.
 
 import type { ToolField } from "../api/calcifer"
+import { nameKey } from "./names"
 
 export type Row = Record<string, unknown>
 
@@ -20,13 +21,14 @@ export function piecesOf(text?: Record<string, unknown>): string[] {
   })
 }
 
-/** The words a card shows when it has nothing else to show: its first prompt's, at the top or in its rows, else its description. */
+/** The words a card shows when it has nothing else to show: its first prompt's, at the top or in its rows. Never its description, which is off
+ *  for now (cl-900). */
 export function lineOf(text: Record<string, unknown> | undefined, fields: ToolField[]): string | null {
   const isText = (field: ToolField) => field.type === "prompt" || field.type === "words"
   const said = fields.flatMap((field) =>
     field.type === "group" ? rowsIn(text?.[field.field]).flatMap((row) => (field.members ?? []).filter(isText).map((member) => row[member.field])) : isText(field) ? [text?.[field.field]] : [],
   )
-  return said.map(string).find((words) => words !== null) ?? string(text?.description)
+  return said.map(string).find((words) => words !== null) ?? null
 }
 
 /** Text with its mentions told apart, for showing, never as HTML. */
@@ -64,4 +66,12 @@ export function took(ms: number): string {
   if (seconds < 90) return `${seconds} s`
   const minutes = Math.round(seconds / 60)
   return minutes < 90 ? `${minutes} min` : `${(minutes / 60).toFixed(1)} h`
+}
+
+/** `value` with each mention in it of a name `to` holds, by its key, naming what it holds instead: `<hei.2>` is `<hei_2.2>`, as Calcifer writes a copy. */
+export function mentionsMoved(value: unknown, to: Map<string, string>): unknown {
+  if (typeof value === "string") return value.replace(/<([\p{L}\p{N}_-]+)((?:[.:][^<>\s]*)?)>/gu, (said, name: string, rest: string) => (to.has(nameKey(name)) ? `<${to.get(nameKey(name))}${rest}>` : said))
+  if (Array.isArray(value)) return value.map((item) => mentionsMoved(item, to))
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([field, item]) => [field, mentionsMoved(item, to)]))
+  return value
 }

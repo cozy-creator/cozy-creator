@@ -224,7 +224,7 @@ type Settled = Box<dyn Fn(&Execution) + Send + Sync>;
 
 impl Engine {
 
-    pub(crate) fn open(root: &Path, store: Arc<crate::storage::Store>) -> io::Result<Arc<Self>> {
+    pub(crate) fn open(root: &Path, store: Arc<crate::storage::Store>, local_project_custody: bool) -> io::Result<Arc<Self>> {
         fs::create_dir_all(root)?;
         platform::durable::set_mode(root, 0o700)?;
         for name in ["staging", "results"] {
@@ -232,7 +232,7 @@ impl Engine {
         }
         platform::durable::sync_dir(root)?;
         let mut journal = Journal::open(root)?;
-        let startup_inert=if crate::private_io::current().is_none() {journal.nonterminal_ids()?} else {HashSet::new()};
+        let startup_inert=if local_project_custody && crate::private_io::current().is_none() {journal.nonterminal_ids()?} else {HashSet::new()};
         journal.interrupt_preparations()?;
         Ok(Arc::new(Self {
             root: root.to_path_buf(),
@@ -488,6 +488,16 @@ impl Engine {
             .lock()
             .unwrap()
             .append_log(id, progress.get(id), &line)?;
+        drop(progress);
+        self.notify_activity();
+        Ok(sequence)
+    }
+    /// A warning the machine says of run `id` itself, by its stable `code` (`slowed`): its controller keeps it among the
+    /// run's warnings.
+    pub(crate) fn append_coded_warning(&self, id: &str, code: &str, text: &str) -> io::Result<u64> {
+        let line = serde_json::to_vec(&serde_json::json!({"level": "warning", "text": text, "code": code}))?;
+        let progress = self.progress.lock().unwrap();
+        let sequence = self.journal.lock().unwrap().append_log(id, progress.get(id), &line)?;
         drop(progress);
         self.notify_activity();
         Ok(sequence)

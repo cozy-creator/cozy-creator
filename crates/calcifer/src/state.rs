@@ -1,6 +1,6 @@
 //! Calcifer's own state beside its runs, as tables of `state.db` (cl-818): the project folders it opened, browser sessions, your tool
-//! list, Render here, what each model header said, and an ask's step after its run. Each change is one transaction; nothing is
-//! rewritten whole. The JSON files an earlier Calcifer kept these in are imported once, at open, and deleted ([`import`]).
+//! list, Render here, model header caches and independent asks. Project activity belongs to project.db. Each change is one
+//! transaction; nothing is rewritten whole. The JSON files an earlier Calcifer kept these in are imported once, at open, and deleted ([`import`]).
 use std::{
     collections::{BTreeMap, HashMap},
     io::ErrorKind,

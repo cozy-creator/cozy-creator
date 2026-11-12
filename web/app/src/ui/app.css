@@ -344,8 +344,9 @@ code {
 }
 .react-flow {
   --xy-background-color: transparent;
-  --xy-selection-background-color: color-mix(in srgb, var(--ember) 8%, transparent);
-  --xy-selection-border: 1px solid var(--ember);
+  --xy-selection-background-color: color-mix(in srgb, var(--select) 12%, transparent);
+  /* Whole pixels: Chrome draws a 1.5px border as 1. */
+  --xy-selection-border: 2px solid var(--select);
   --xy-attribution-background-color: transparent;
 }
 .react-flow__attribution {
@@ -357,7 +358,7 @@ code {
 }
 .react-flow__nodesselection-rect {
   background: none;
-  border: 1px dashed color-mix(in srgb, var(--ember) 40%, transparent);
+  border: calc(1.5px * var(--unzoom, 1)) dashed color-mix(in srgb, var(--select) 70%, transparent);
 }
 .dropveil {
   position: absolute;
@@ -495,6 +496,16 @@ code {
 .card .nm {
   font: var(--w-title) calc(var(--t-title) * var(--ui)) / 1.25 var(--mono);
 }
+/* The tool on a box, beside its name (cl-927): quieter than it, and the first to give way. */
+.card .node-tool {
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--mute);
+  font: calc(var(--t-body) * var(--ui)) / 1.25 var(--sans);
+}
 .card.here .nm,
 .react-flow__node.selected .nm {
   color: var(--ink);
@@ -528,6 +539,10 @@ code {
   transform: scale(0.7);
   opacity: 0.55;
   transition: transform 90ms ease-out, opacity 90ms ease-out;
+}
+/* Carried with Alt or Option held: a copy of it lands where it's let go. */
+.stage[data-copying] .react-flow__node.dragging {
+  cursor: copy;
 }
 /* Let go, it slides: back from a box that took its name, or off one it can't lie on. */
 .react-flow__node.glide {
@@ -626,15 +641,19 @@ code {
   outline: 2px solid var(--ember);
   outline-offset: 2px;
 }
-.card:hover > .media,
-.react-flow__node.selected .media {
+.card:hover > .media {
   outline: 1px solid var(--line2);
   outline-offset: 2px;
 }
+/* Selected: a thick ring outside the box, a light or dark gap between it and the picture, and a glow. --unzoom keeps it 3 to 6px on
+   screen at any zoom (cl-926). */
 .react-flow__node.selected .media,
 .react-flow__node.selected .tl {
-  outline: 2px solid var(--ember);
-  outline-offset: 2px;
+  outline: calc(6px * var(--unzoom, 1)) solid var(--select);
+  outline-offset: calc(3px * var(--unzoom, 1));
+  box-shadow:
+    0 0 0 calc(3px * var(--unzoom, 1)) var(--select-gap),
+    0 0 calc(24px * var(--unzoom, 1)) calc(10px * var(--unzoom, 1)) var(--select-glow);
 }
 .media.alpha {
   background-color: var(--check);
@@ -658,10 +677,12 @@ code {
     linear-gradient(var(--box-mark), var(--box-mark)) bottom right / var(--thin) var(--long);
   background-repeat: no-repeat;
 }
-.card:hover > .media.blank,
-.react-flow__node.selected .media.blank {
+.card:hover > .media.blank {
   --box-mark: var(--mark2);
   outline: none;
+}
+.react-flow__node.selected .media.blank {
+  --box-mark: var(--mark2);
 }
 .stage[data-carrying] .media.blank {
   --mark: var(--ember);
@@ -903,63 +924,56 @@ code {
   color: #cfe6ff;
   font: var(--small) var(--sans);
 }
-/* A render on its way, on its box's face (RunFace.tsx): its state and Cancel, one bar for the whole of it and its time left, then where it
-   runs, what it's doing with its numbers, and what it warned of. Over a take looked at, or a glimpse, only the first two, along the bottom.
-   At rest at the box's small step; open (Focus), between its name and its picture, large. */
+/* A render on its way (RunFace.tsx), as Paul wrote it (11-12): two plain lines, its machine and time, then what it's doing with how far
+   and how fast, and a small Cancel. No box, panel or bar. On the canvas, along its box's bottom at the box's text size, legible over a
+   picture; in Focus, between its name and its picture. */
 .run-face {
   position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  overflow: hidden;
-  pointer-events: none;
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 3;
-  --face-font: calc(var(--t-small) * var(--ui));
-}
-.card.here .run-face {
-  --face-font: var(--small);
-}
-.run-face.strip {
-  justify-content: flex-end;
-}
-.run-face .face {
-  display: flex;
-  flex-direction: column;
-  gap: calc(0.35 * var(--face-font));
-  max-height: 100%;
-  overflow: hidden;
-  padding: calc(0.8 * var(--face-font));
+  padding: var(--s3) var(--s4);
+  pointer-events: none;
   color: var(--ink);
-  font: var(--face-font) / 1.35 var(--sans);
+  font: calc(var(--t-small) * var(--ui)) / 1.35 var(--sans);
+  text-shadow: 0 0 3px var(--card), 0 0 6px var(--card);
 }
-.run-face.strip .face,
-.run-face.full .face {
-  background: color-mix(in srgb, var(--card) 86%, transparent);
-}
-.run-face .face-state {
+.run-face p {
   display: flex;
   align-items: baseline;
   gap: var(--s4);
   min-width: 0;
+  margin: 0;
+}
+.run-face .face-machine {
+  overflow: hidden;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .run-face .face-state b {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   font-weight: var(--w-heading);
+  font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.run-face.failed .face-state b {
+  color: var(--bad);
+}
 .run-face .face-cancel {
   flex: none;
-  padding: 0 calc(0.6 * var(--face-font));
+  padding: 0 var(--s3);
   border: 1px solid var(--line2);
   border-radius: var(--round);
   background: var(--field);
   color: var(--ink);
   font: inherit;
-  line-height: 1.6;
+  text-shadow: none;
   pointer-events: auto;
   cursor: pointer;
 }
@@ -967,102 +981,90 @@ code {
   border-color: var(--bad);
   color: var(--bad);
 }
-.run-face .face-bar {
-  display: flex;
-  align-items: center;
-  gap: var(--s4);
-}
-.run-face .face-track {
+.focus-viewport > .run-face.above {
   position: relative;
-  flex: 1;
-  height: calc(0.5 * var(--face-font));
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--tint2);
+  flex: none;
+  padding: 0 4px;
+  font-size: 17px;
+  text-shadow: none;
 }
-.run-face .face-track i {
+/* At rest, how far the whole job is (cl-928): a thin meter along its box's bottom edge, line 1's numbers, drawn only once there's an
+   estimate. Nothing pulses in it. */
+.run-face .face-meter {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(3px * var(--ui));
+  background: color-mix(in srgb, var(--mak) 22%, transparent);
+}
+.run-face .face-meter i {
+  position: absolute;
+  inset: 0;
+  background: var(--mak);
+  transform-origin: left;
+  transition: transform 400ms linear;
+}
+/* At rest, a render breathes around its box, outside its edge (cl-928, Paul 11-12): ambient, no progress. How far it is, is on its face. */
+.render-wave {
+  position: absolute;
+  inset: var(--head) 0 0;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.render-wave::before,
+.render-wave::after {
+  content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: var(--mak);
-  transition: transform 300ms linear;
+  animation: render-wave 2.4s cubic-bezier(0.25, 0.6, 0.3, 1) infinite;
 }
-.run-face.download .face-track i {
-  background: #2f8fe0;
+.render-wave::after {
+  animation-delay: 1.2s;
 }
-.run-face.install .face-track i,
-.run-face.renting .face-track i {
-  background: #b5762a;
+@keyframes render-wave {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--mak) 75%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 calc(24px * var(--unzoom, 1)) color-mix(in srgb, var(--mak) 0%, transparent);
+  }
 }
-.run-face.canceling .face-track i {
-  background: var(--mute);
+@media (prefers-reduced-motion: reduce) {
+  .render-wave::before {
+    animation: none;
+    box-shadow: 0 0 0 calc(4px * var(--unzoom, 1)) color-mix(in srgb, var(--mak) 60%, transparent);
+  }
+  .render-wave::after {
+    display: none;
+  }
 }
-.run-face .face-left {
+/* Made and not looked at yet (cl-928): green, left of its box's name, and on each such take in its list. */
+.unseen-dot {
+  --unseen: #22c55e;
   flex: none;
-  color: var(--mute);
-  white-space: nowrap;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--unseen);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--unseen) 25%, transparent);
 }
-/* Its facts, a line each, labelled: where, what's ahead, its weights, its package, its time. */
-.run-face .face-facts {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: calc(0.15 * var(--face-font)) calc(0.6 * var(--face-font));
-  margin: 0;
+.card .head .unseen-dot {
+  font-size: calc(var(--t-title) * var(--ui));
+  width: 0.6em;
+  height: 0.6em;
+  margin: 0 0.1em 0.33em 0;
 }
-.run-face .face-fact {
-  display: contents;
-}
-.run-face .face-fact dt {
-  color: var(--mute);
-}
-.run-face .face-fact dd {
-  margin: 0;
-  overflow: hidden;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.run-face p {
-  margin: 0;
-  overflow: hidden;
-  color: var(--mute);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.run-face .face-warning {
-  color: var(--ood);
-}
-.run-face.failed .face-state b {
-  color: var(--bad);
-  font-size: var(--face-font);
-  font-weight: normal;
-}
-/* Open (focus), between its name and its picture, across its width and large: its state and time left read as a heading over a thick
-   bar, the numbers first. Its picture stays below, uncovered. */
-.focus-viewport > .run-face.above {
-  position: relative;
-  inset: auto;
-  z-index: auto;
-  flex: none;
-  pointer-events: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--round2);
-  background: var(--card);
-  /* The Focus card's small step (FocusedViewport.css): normal text, the numbers first. */
-  --face-font: 17px;
-}
-.focus-viewport > .run-face.above .face {
-  gap: calc(0.4 * var(--face-font));
-  padding: calc(0.7 * var(--face-font)) var(--face-font);
-}
-.focus-viewport > .run-face.above .face-left {
-  color: var(--ink);
-  font-weight: var(--w-heading);
-  font-variant-numeric: tabular-nums;
-}
-.focus-viewport > .run-face.above .face-cancel {
-  line-height: 1.8;
+.take .take-unseen {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 2;
+  width: 12px;
+  height: 12px;
+  box-shadow: 0 0 0 2px var(--card), 0 1px 3px #0006;
+  pointer-events: none;
 }
 /* At rest, one line, so nothing hangs under it but what its box keeps room for. */
 .card:not(.here) .prog > b {
@@ -1714,6 +1716,26 @@ video.preview.on {
 .actions:empty {
   display: none;
 }
+.edit-parameters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  padding-block: 10px;
+}
+.edit-parameters > .slide {
+  width: auto;
+}
+.edit-face .actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.edit-face .actions .more-toggle {
+  margin-right: auto;
+}
+.edit-face .actions .run {
+  margin-left: auto;
+}
 .run {
   display: inline-flex;
   align-items: center;
@@ -2105,6 +2127,15 @@ video.preview.on {
 .note .line {
   flex: 1;
   min-width: 0;
+}
+/* What a finished render made (cl-937): its take, small, before its words. */
+.note-picture {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--round);
+  background: var(--well);
+  object-fit: cover;
 }
 .note .remedy {
   flex-basis: 100%;
@@ -4167,6 +4198,13 @@ input[type="checkbox"] {
 }
 .dot.idle {
   background: #9a9a9a;
+}
+/* Something makes its runs slow (cl-913): steady red. */
+.dot.slow {
+  background: #d93025;
+}
+p.warn.slow {
+  color: #d93025;
 }
 /* Weights arriving: an arrow that glows. A package installing: a box. */
 .mark {

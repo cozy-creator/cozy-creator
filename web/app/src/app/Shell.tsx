@@ -15,6 +15,7 @@ import { RunsLink } from "../panels/runs/RunsLink"
 import type { KnownProject } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { Notes } from "../ui/NoteList"
+import { pressBeganOutside } from "../ui/press"
 import { useSignal } from "../ui/signal"
 import { landscape, setLandscape, setTheme, theme } from "../ui/theme"
 import { useConnection } from "./Connection"
@@ -394,6 +395,30 @@ export function Shell() {
   const drawerEpoch = mixedDrawer ? privateEpoch : 0
   const handle = matches[matches.length - 1]?.handle as { drawer?: "normal" | "wide" } | undefined
   const drawerReadable = readable || (location.pathname.endsWith("/vault") && checked && !checking && !uncertain)
+  // A click off the open drawer closes it, as Esc does (Paul, 11-12), but only a press and a release both off it: never a selection or a drag
+  // from inside it (cl-923). What's clicked in the top bar, a menu or a dialog is that control's own.
+  const drawer = useRef<HTMLElement>(null)
+  const open = Boolean(handle?.drawer)
+  useEffect(() => {
+    if (!open) return
+    const inside = (element: Element) => Boolean(drawer.current?.contains(element))
+    const own = (element: Element) => inside(element) || Boolean(element.closest("header.top, [role=menu], [role=dialog], dialog, .notes"))
+    const click = (event: MouseEvent) => {
+      if (event.button === 0 && event.target instanceof Element && !own(event.target) && pressBeganOutside(own)) navigate(to())
+    }
+    const key = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return
+      // Esc is first for what's over the canvas: a box in Focus, a menu.
+      if (!(event.target instanceof Node && drawer.current?.contains(event.target)) && document.querySelector(".focus-viewport, [role=menu], .activity")) return
+      navigate(to())
+    }
+    window.addEventListener("click", click)
+    window.addEventListener("keydown", key)
+    return () => {
+      window.removeEventListener("click", click)
+      window.removeEventListener("keydown", key)
+    }
+  }, [open, navigate, to])
   return (
     <div className="shell" data-drawer={handle?.drawer ?? "none"}>
       <header className="top">
@@ -408,7 +433,7 @@ export function Shell() {
       {heldCanvas && <div hidden={!readable} inert={!readable} style={{ display: readable ? "contents" : "none" }}><CanvasHost key={hostKey} projectId={id} active={readable} slot={readable ? slot : null} history={readable ? history : null} onAdopt={adopt} /></div>}
       {!readable && id && (checking || !checked || uncertain ? <main className="gate"><p>{vault.isError ? "Project protection could not be checked." : "Checking project protection…"}</p>{vault.isError && <button className="tb" type="button" onClick={() => void vault.refetch()}>Try again</button>}</main> : location.pathname.endsWith("/vault") ? <main className="gate"><p>Project protection</p></main> : <ProjectLocked id={id} />)}
       {handle?.drawer && (heldCanvas || drawerReadable) && (
-        <aside className="drawer" hidden={!drawerReadable} inert={!drawerReadable} style={drawerReadable ? undefined : { display: "none" }}>
+        <aside ref={drawer} className="drawer" hidden={!drawerReadable} inert={!drawerReadable} style={drawerReadable ? undefined : { display: "none" }}>
           <Outlet key={drawerEpoch} />
         </aside>
       )}

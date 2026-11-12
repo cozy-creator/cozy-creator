@@ -210,7 +210,7 @@ fn said(need: &Need, largest: Option<u64>, display: bool) -> Option<String> {
 }
 
 /// A card as a person names it, from its driver's name: `RTX 4090`.
-fn card(model: &str) -> String {
+pub(crate) fn card(model: &str) -> String {
     model.trim_start_matches("NVIDIA ").trim_start_matches("GeForce ").to_owned()
 }
 
@@ -392,14 +392,24 @@ fn sized_now(hub: &str, written: &str, lane: Option<&str>) -> Option<u64> {
     SIZED.lock().expect("sized lock").get(&format!("{hub}\n{written}\n{}", lane.unwrap_or_default())).and_then(|(_, held)| held.as_ref().map(|(_, bytes)| *bytes))
 }
 
+/// The Hub's per-SKU speed of each card that holds a run of `package@release`'s `function` on one GPU, by its card's name as `card`
+/// says it: another card's time scaled by them is this one's (cl-897, cl-913). Empty: the Hub didn't say.
+pub(crate) async fn speeds(hubs: &crate::rentals::Hubs, hub: &str, package: &str, release: &str, function: &str) -> BTreeMap<String, f64> {
+    placed_by(hubs, hub, package, release, function).await.map(|placed| placed.speeds).unwrap_or_default()
+}
+
 /// What the Hub places a run of `package@release`'s `function` on, kept a while. None: it didn't say.
 async fn placed(api: &Api, hub: &str, package: &str, release: &str, function: &str) -> Option<Placed> {
+    placed_by(&api.machines.hubs, hub, package, release, function).await
+}
+
+async fn placed_by(hubs: &crate::rentals::Hubs, hub: &str, package: &str, release: &str, function: &str) -> Option<Placed> {
     let key = format!("{hub}\n{package}@{release}/{function}");
     if let Some((_, held)) = PLACED.lock().expect("placed lock").get(&key).filter(|(at, _)| at.elapsed() < KEPT) {
         return held.clone();
     }
     let request = RentalPlacementRequest { package: package.into(), release: Some(release.into()), function: function.into(), lane: None, gpus: None, sku: None };
-    let reader = api.machines.hubs.reader(hub).ok()?;
+    let reader = hubs.reader(hub).ok()?;
     let answer = tokio::time::timeout(HUB_LATE, reader.place_rental(&request)).await.ok()?;
     let placed = answer.ok().map(|placement| Placed {
         speeds: (placement.machines.iter())

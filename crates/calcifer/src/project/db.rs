@@ -226,6 +226,7 @@ fn configure(conn: &Connection, path: &Path) -> Result<(), Error> {
     let e = |error| sql(path, error);
     conn.pragma_update(None, "journal_mode", "WAL").map_err(e)?;
     conn.pragma_update(None, "synchronous", "FULL").map_err(e)?;
+    conn.execute_batch(super::journal::UNSEEN_SCHEMA).map_err(e)?;
     conn.pragma_update(None, "foreign_keys", "ON").map_err(e)?;
     conn.pragma_update(None, "temp_store", "MEMORY").map_err(e)?;
     crate::store::register_owner(conn,path.parent().map(Path::to_owned)).map_err(e)?;

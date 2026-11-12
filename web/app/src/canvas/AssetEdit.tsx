@@ -731,7 +731,8 @@ function framed(view: ElementView, fields: ToolField[], tool: Tool | undefined):
 export function InFrame({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const field = view.asset && framed(view, fieldsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined)
+  // A picture or a video with no tool asks nothing: its words are a tool's to ask for (Paul, 11-12).
+  const field = view.asset && (view.asset.tool || view.asset.kind === "text") && framed(view, fieldsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined)
   if (!field) return null
   return (
     <div className="in-frame">
@@ -776,6 +777,7 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
   const folded = rest.filter((field) => !faced.includes(field))
   const plainFolded = folded.filter((field) => !field.advanced)
   const expert = folded.filter((field) => field.advanced)
+  const parameters = [...faced.filter(small), ...(!videoForm ? expert.filter(small) : [])]
   const open = store.showsMore(name)
   const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
   const row = (field: ToolField) => {
@@ -785,22 +787,14 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
   return (
     <div className={`edit-face ${prominent ? "prominent" : ""}`}>
       {head && <div className="tool-head">{head}</div>}
-      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => prominent || !small(field))} folded={plainFolded} row={row}>
+      <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} row={row}>
         {(lines, more) => {
           const behind = (more !== null && plainFolded.length > 0) || (videoForm && expert.length > 0) || addOns || beyond.length > 0
           return (
             <>
               {editing && lines && <div className="edit-shown">{lines}</div>}
-              {!videoForm && more !== null && expert.length > 0 && <div className="advanced">{expert.map(row)}</div>}
-              <div className="row actions">
-                {!prominent && more !== null && faced.filter(small).map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named={false} />)}
-                {actions}
-                {behind && (
-                  <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}>
-                    <span className="more-word">{open ? "Less" : "More"}</span>
-                  </button>
-                )}
-              </div>
+              {!videoForm && more !== null && expert.some((field) => !small(field)) && <div className="advanced">{expert.filter((field) => !small(field)).map(row)}</div>}
+              {more !== null && parameters.length > 0 && <div className="edit-parameters">{parameters.map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named />)}</div>}
               {behind ? (
                 open && (
                   <div className="edit-more">
@@ -814,6 +808,10 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
               ) : (
                 children
               )}
+              <div className="row actions">
+                {behind && <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
+                {actions}
+              </div>
             </>
           )
         }}

@@ -283,7 +283,8 @@ impl Device {
 /// at its fullest. With its clocks while busy (readings NVML calls idle left out), so a slowed
 /// host shows in every call: the SM clock's mean and lowest against the card's maximum, the
 /// limits the driver applied (power cap, thermal, hardware slowdown) and the share of busy
-/// readings under one, the hottest temperature and the highest power draw.
+/// readings under one, the share under a heat limit (cl-913), the busy time they cover, the
+/// hottest temperature and the highest power draw.
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct Used {
     pub gpu: u32,
@@ -294,8 +295,27 @@ pub struct Used {
     pub sm_mhz_low: u32,
     pub throttles: Vec<&'static str>,
     pub throttled_share: f32,
+    pub heat_share: f32,
+    pub busy_ms: u64,
     pub temperature_max_c: u32,
     pub power_max_w: u32,
+}
+
+/// A GPU busy this long in a call was under load: its readings judge its heat.
+pub const LOADED_MS: u64 = 20_000;
+/// Held back for heat for more than this share of its busy readings: hot.
+pub const HOT_SHARE: f32 = 0.5;
+
+impl Used {
+    /// It was under load in the call.
+    pub fn loaded(&self) -> bool {
+        self.busy_ms >= LOADED_MS
+    }
+
+    /// Under load, the driver held it back for heat most of the time.
+    pub fn hot(&self) -> bool {
+        self.loaded() && self.heat_share > HOT_SHARE
+    }
 }
 
 /// The driver's clock limits a busy reading can carry, by name.
@@ -308,12 +328,22 @@ const THROTTLES: [(ThrottleReasons, &str); 6] = [
     (ThrottleReasons::APPLICATIONS_CLOCKS_SETTING, "app_clocks"),
 ];
 
-/// A call's clock readings of one GPU, summed into [`Used`] at the end.
+/// The limits that are heat's: the driver slowing the card to cool it, and the hardware slowdown that heat raises. A power cap
+/// is the card's own rating, not heat.
+fn heat() -> ThrottleReasons {
+    ThrottleReasons::SW_THERMAL_SLOWDOWN | ThrottleReasons::HW_THERMAL_SLOWDOWN | ThrottleReasons::HW_SLOWDOWN
+}
+
+/// How often a call's GPUs are read.
+const EVERY_MS: u64 = 100;
+
+/// A call's clock readings of one GPU, summed into [`Used`].
 struct Clocks {
     busy: u32,
     mhz_sum: u64,
     low: u32,
     throttled: u32,
+    hot: u32,
     seen: ThrottleReasons,
     temperature: u32,
     power_mw: u32,
@@ -321,15 +351,23 @@ struct Clocks {
 
 impl Clocks {
     fn new() -> Self {
-        Self { busy: 0, mhz_sum: 0, low: 0, throttled: 0, seen: ThrottleReasons::empty(), temperature: 0, power_mw: 0 }
+        Self { busy: 0, mhz_sum: 0, low: 0, throttled: 0, hot: 0, seen: ThrottleReasons::empty(), temperature: 0, power_mw: 0 }
     }
 
     fn read(&mut self, device: &Device) {
         let Ok(gpu) = device.nvml.device_by_index(device.index) else { return };
-        self.temperature = self.temperature.max(gpu.temperature(TemperatureSensor::Gpu).unwrap_or(0));
-        self.power_mw = self.power_mw.max(gpu.power_usage().unwrap_or(0));
+        let temperature = gpu.temperature(TemperatureSensor::Gpu).unwrap_or(0);
+        let power_mw = gpu.power_usage().unwrap_or(0);
         let reasons = gpu.current_throttle_reasons().unwrap_or(ThrottleReasons::empty());
-        let Ok(mhz) = gpu.clock_info(Clock::SM) else { return };
+        match gpu.clock_info(Clock::SM) {
+            Ok(mhz) => self.add(mhz, reasons, temperature, power_mw),
+            Err(_) => self.add(0, ThrottleReasons::GPU_IDLE, temperature, power_mw),
+        }
+    }
+
+    fn add(&mut self, mhz: u32, reasons: ThrottleReasons, temperature: u32, power_mw: u32) {
+        self.temperature = self.temperature.max(temperature);
+        self.power_mw = self.power_mw.max(power_mw);
         if reasons.contains(ThrottleReasons::GPU_IDLE) {
             return;
         }
@@ -338,20 +376,57 @@ impl Clocks {
         self.low = if self.busy == 1 { mhz } else { self.low.min(mhz) };
         let limited = THROTTLES.iter().fold(ThrottleReasons::empty(), |all, (r, _)| all | (reasons & *r));
         self.throttled += u32::from(!limited.is_empty());
+        self.hot += u32::from(reasons.intersects(heat()));
         self.seen |= limited;
     }
 
-    fn into(self, used: &mut Used, limit: u32) {
+    fn fill(&self, used: &mut Used, limit: u32) {
         used.sm_mhz_limit = limit;
         if self.busy > 0 {
             used.sm_mhz_mean = (self.mhz_sum / u64::from(self.busy)) as u32;
             used.sm_mhz_low = self.low;
             used.throttled_share = self.throttled as f32 / self.busy as f32;
+            used.heat_share = self.hot as f32 / self.busy as f32;
         }
+        used.busy_ms = u64::from(self.busy) * EVERY_MS;
         used.throttles = THROTTLES.iter().filter(|(r, _)| self.seen.contains(*r)).map(|(_, n)| *n).collect();
         used.temperature_max_c = self.temperature;
         used.power_max_w = self.power_mw / 1000;
     }
+}
+
+/// One recorded reading of a GPU, as a call's thread takes one every 100 ms: what a replay feeds in place of NVML's
+/// (`machine.gpu_samples`, cl-913), so a throttling host's readings go through the real path. `reasons` are the driver's limits
+/// in force by [`THROTTLES`]' names, and `idle`.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct Sample {
+    pub gpu: u32,
+    pub used_bytes: u64,
+    pub sm_mhz: u32,
+    pub sm_mhz_limit: u32,
+    pub reasons: Vec<String>,
+    pub temperature_c: u32,
+    pub power_w: u32,
+}
+
+impl Sample {
+    fn reasons(&self) -> ThrottleReasons {
+        self.reasons.iter().fold(ThrottleReasons::empty(), |all, name| match name.as_str() {
+            "idle" => all | ThrottleReasons::GPU_IDLE,
+            name => all | THROTTLES.iter().find(|(_, n)| *n == name).map_or(ThrottleReasons::empty(), |(r, _)| *r),
+        })
+    }
+}
+
+/// Told, once per GPU, that the call has held it back for heat most of its load so far ([`Used::hot`]): what it read until then.
+pub type Hot = Box<dyn FnMut(&Used) + Send>;
+
+/// Where a call's readings come from: its GPUs through NVML, or recorded ones, each GPU's in turn, from the first again
+/// once they run out.
+enum Source {
+    Live(Vec<Device>),
+    Recorded(Vec<Vec<Sample>>),
 }
 
 /// A call's GPUs, read every 100 ms on a thread of its own from [`Peak::watch`] until
@@ -363,26 +438,73 @@ pub struct Peak {
 
 impl Peak {
     /// `entries` as `CUDA_VISIBLE_DEVICES` spells them; None for none.
-    pub fn watch(entries: Vec<String>) -> Option<Peak> {
+    pub fn watch(entries: Vec<String>, hot: Option<Hot>) -> Option<Peak> {
         if entries.is_empty() {
             return None;
         }
+        Self::spawn(move || Source::Live(entries.iter().filter_map(|entry| Device::open(entry).ok()).collect()), hot)
+    }
+
+    /// Recorded readings in place of the GPUs' own, by GPU; None for none.
+    pub fn replay(samples: Vec<Sample>, hot: Option<Hot>) -> Option<Peak> {
+        let mut gpus: BTreeMap<u32, Vec<Sample>> = BTreeMap::new();
+        for sample in samples {
+            gpus.entry(sample.gpu).or_default().push(sample);
+        }
+        if gpus.is_empty() {
+            return None;
+        }
+        Self::spawn(move || Source::Recorded(gpus.into_values().collect()), hot)
+    }
+
+    fn spawn(source: impl FnOnce() -> Source + Send + 'static, mut hot: Option<Hot>) -> Option<Peak> {
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
         let thread = std::thread::Builder::new().name("gpu-peak".into()).spawn(move || {
-            let devices: Vec<Device> = entries.iter().filter_map(|entry| Device::open(entry).ok()).collect();
-            let mut rows: Vec<(Used, &Device, Clocks)> = devices.iter()
-                .filter_map(|d| d.used().ok().map(|bytes| (Used { gpu: d.index, before_bytes: bytes, peak_bytes: bytes, ..Used::default() }, d, Clocks::new())))
-                .collect();
-            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(std::time::Duration::from_millis(100)) {
-                for (row, device, clocks) in &mut rows {
-                    row.peak_bytes = row.peak_bytes.max(device.used().unwrap_or(0));
-                    clocks.read(device);
+            let source = source();
+            // Each GPU's row, readings, card maximum, place in its recording, and whether it was said hot.
+            let mut rows: Vec<(Used, Clocks, u32, usize, bool)> = match &source {
+                Source::Live(devices) => devices.iter()
+                    .filter_map(|d| {
+                        let bytes = d.used().ok()?;
+                        let limit = d.nvml.device_by_index(d.index).and_then(|gpu| gpu.max_clock_info(Clock::SM)).unwrap_or(0);
+                        Some((Used { gpu: d.index, before_bytes: bytes, peak_bytes: bytes, ..Used::default() }, Clocks::new(), limit, 0, false))
+                    })
+                    .collect(),
+                Source::Recorded(gpus) => gpus.iter()
+                    .map(|samples| {
+                        let first = &samples[0];
+                        (Used { gpu: first.gpu, before_bytes: first.used_bytes, peak_bytes: first.used_bytes, ..Used::default() }, Clocks::new(), first.sm_mhz_limit, 0, false)
+                    })
+                    .collect(),
+            };
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(std::time::Duration::from_millis(EVERY_MS)) {
+                for (at, (row, clocks, limit, next, said)) in rows.iter_mut().enumerate() {
+                    match &source {
+                        Source::Live(devices) => {
+                            row.peak_bytes = row.peak_bytes.max(devices[at].used().unwrap_or(0));
+                            clocks.read(&devices[at]);
+                        }
+                        Source::Recorded(gpus) => {
+                            let sample = &gpus[at][*next % gpus[at].len()];
+                            *next += 1;
+                            row.peak_bytes = row.peak_bytes.max(sample.used_bytes);
+                            *limit = (*limit).max(sample.sm_mhz_limit);
+                            clocks.add(sample.sm_mhz, sample.reasons(), sample.temperature_c, sample.power_w * 1000);
+                        }
+                    }
+                    if let Some(hot) = hot.as_mut().filter(|_| !*said) {
+                        let mut now = row.clone();
+                        clocks.fill(&mut now, *limit);
+                        if now.hot() {
+                            *said = true;
+                            hot(&now);
+                        }
+                    }
                 }
             }
             rows.into_iter()
-                .map(|(mut row, device, clocks)| {
-                    let limit = device.nvml.device_by_index(device.index).and_then(|gpu| gpu.max_clock_info(Clock::SM)).unwrap_or(0);
-                    clocks.into(&mut row, limit);
+                .map(|(mut row, clocks, limit, ..)| {
+                    clocks.fill(&mut row, limit);
                     row
                 })
                 .collect()

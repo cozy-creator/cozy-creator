@@ -12,7 +12,7 @@ import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { aspectOf, faceOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
+import { aspectOf, faceOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
 import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
@@ -20,7 +20,6 @@ import { BufferedImage } from "./BufferedImage"
 import { RunFace, useArriving } from "./RunFace"
 import { bodyText, CopyError } from "../ui/CopyError"
 
-const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
 const STRIP_FRAMES = 8
 /** How long the pointer rests on a video before its preview plays: one passing over on its way somewhere starts nothing. */
 const PREVIEW_AFTER_MS = 250
@@ -377,6 +376,8 @@ export function Player({ field, path, machine, seek, auto, onTime }: { field: st
   const stopRef = useRef<() => void>(() => {})
   const wanted = useRef<number | null>(null)
   const asked = useRef(seek?.ask ?? 0)
+  // Scrubbed, it holds the frame it was taken to, playing only when played.
+  const still = useRef(false)
 
   useEffect(() => () => stopRef.current(), [])
   // Asked to play at once: once it's there, so React's second mount in development doesn't stop it.
@@ -403,7 +404,11 @@ export function Player({ field, path, machine, seek, auto, onTime }: { field: st
     if (!seek || seek.ask === asked.current) return
     asked.current = seek.ask
     wanted.current = seek.at
-    if (element.current) element.current.currentTime = seek.at
+    still.current = Boolean(seek.still)
+    if (element.current) {
+      element.current.currentTime = seek.at
+      if (still.current) element.current.pause()
+    }
     setState((now) => (now === "idle" ? "waiting" : now))
   }, [seek])
 
@@ -437,7 +442,7 @@ export function Player({ field, path, machine, seek, auto, onTime }: { field: st
         setState("playing")
         if (wanted.current !== null) el.currentTime = wanted.current
         wanted.current = null
-        el.play().catch(() => {})
+        if (!still.current) el.play().catch(() => {})
       })
       .catch((error: unknown) => {
         if (!waiting.signal.aborted) failed(error instanceof Error ? error.message : String(error))
@@ -669,6 +674,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const watch = watched(view)
   const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined)
   const bufferedImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watchRun: undefined, watchFrom: undefined }) : null
+  // A dropped picture shows its own bytes for as long as it shows that file: no copy of it is asked for, so nothing takes its place.
+  const own = Boolean(preview && (!preview.sha256 || !bufferedImage || hexOf(bufferedImage.sha256) === preview.sha256))
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
@@ -712,7 +719,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       <div className="media-pixels" data-image-reference={asset?.kind === "image" && shown && !view.hereWords ? "" : undefined}>
         {preview && (
           <img
-            src={preview}
+            src={preview.url}
             alt=""
             draggable={false}
             onLoad={(event) => {
@@ -722,7 +729,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           />
         )}
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-        {bufferedImage && field === "image" && <BufferedImage sha256={bufferedImage.sha256} originalPath={bufferedImage.path} neighborPaths={neighborPaths} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {bufferedImage && field === "image" && !own && <BufferedImage sha256={bufferedImage.sha256} originalPath={bufferedImage.path} neighborPaths={neighborPaths} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
@@ -739,16 +746,10 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {full && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {busy && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
-      {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
       {(onItsWay || arriving !== undefined) && asset?.rendering == null && !view.here && <RunFace view={view} name={name} number={run} full={full} />}
       {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
-      {asset?.kind === "video" && tools.get(asset.tool ?? "")?.pickup && !view.hereWords && shown && <button type="button" className="image-edit-action video-pickup-action nodrag nopan" onClick={(event) => {
-        event.stopPropagation()
-        const playing = event.currentTarget.closest(".media")?.querySelector<HTMLVideoElement>("video.live")
-        void store.beginVideoPickup(name, playing?.currentTime ?? view.scrub ?? 0)
-      }}>Pick up from here</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit: open it and drag to turn">
@@ -773,13 +774,11 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 /** Why its last render failed, along its bottom, until it's tried again. */
 function FailedHere({ message, copy }: { message: string; copy: string }) {
   return (
-    <div className="run-face strip failed" data-phase="failed">
-      <div className="face">
-        <div className="face-state error-text nodrag nopan">
-          <b title={message}>Didn't render: {message}</b>
-          <CopyError text={copy} />
-        </div>
-      </div>
+    <div className="run-face lines failed" data-phase="failed">
+      <p className="face-state error-text nodrag nopan">
+        <b title={message}>Didn't render: {message}</b>
+        <CopyError text={copy} />
+      </p>
     </div>
   )
 }
@@ -805,11 +804,4 @@ function Glimpse({ glimpse, failed }: { glimpse: NonNullable<ElementView["glimps
       {glimpse.label && <span className="glimpse-label">{glimpse.label}</span>}
     </div>
   )
-}
-
-export const stageLine = (view: ElementView): string | null => {
-  const placing = view.placing
-  if (!placing) return null
-  const percent = placing.stage === "reading" || placing.stage === "sending" ? ` ${Math.round(placing.done * 100)}%` : ""
-  return `${STAGE[placing.stage]}${percent}${placing.attempt ? ` · attempt ${placing.attempt}/5` : ""}`
 }
