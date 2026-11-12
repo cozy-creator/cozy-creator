@@ -1,7 +1,7 @@
-// A project's preferred machines (cl-873, cl-887), a checkbox beside each machine (Paul 11-12: "Just make it a checkbox. When you checkbox a
-// machine, it's highlighted in green, and you can highlight several"): at the start of each row of the machines panel, first in a chip's
+// A project's preferred machines (cl-873, cl-887), a check under each machine's spec (Paul 11-12: "it should just be a check mark. Probably
+// that checkmark and 'details' get their own row so that we can still see the full spec"): in each row of the machines panel, in a chip's
 // flyout top right, and in a machine's drawer. Checked, it's one of the open project's machines and green on its chip, its row and its
-// drawer; nothing checked says once that renders are placed automatically. Every machine has a chip. Render all sends its boxes only to the green ones: each run on one of the two,
+// drawer; nothing checked says once that renders are placed automatically. Every machine has a chip, and its spec shows whole. Render all sends its boxes only to the green ones: each run on one of the two,
 // none on the third machine automatic placement would also take. `cozy machine use` turns the green on the open page within seconds, a
 // reload keeps it, and taking the last one off is automatic again, no machine at all.
 //   node renderhere.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER; $STANDS: two stand-in machines added
@@ -83,7 +83,7 @@ const AUTOMATIC = /Nothing checked: this project's renders are placed automatica
   // A row's checkbox in the machines panel, at its start: nothing opens.
   const tick = async (name) => {
     await list();
-    return turn(page.locator(`.drawer .runrow[data-machine="${name}"] > input.render-check`), `${name}'s row ticked`);
+    return turn(page.locator(`.drawer .runrow[data-machine="${name}"] .checks input.render-check`), `${name}'s row ticked`);
   };
   // A chip's flyout top right, its checkbox its first control.
   const tickChip = async (name) => {
@@ -120,18 +120,20 @@ const AUTOMATIC = /Nothing checked: this project's renders are placed automatica
   await page.goto(at);
   await page.locator(`.mtab[data-machine="${IN}"]`).click();
   await page.locator('.activity a', { hasText: 'Details' }).click();
-  await page.locator('.drawer .run-head').waitFor();
+  await page.locator('.drawer .machine-head').waitFor();
   const face = await page.evaluate(() => {
     const drawer = document.querySelector('.drawer-body') ?? document.querySelector('.drawer');
+    const head = drawer.querySelector('.machine-head');
     const first = drawer.querySelector('input, button');
-    const details = [...drawer.querySelectorAll('details.sect')].find((held) => held.querySelector(':scope > summary')?.textContent === 'Details');
+    const details = [...drawer.querySelectorAll('.checks button')].find((one) => one.textContent === 'Details');
     return {
-      first: first?.className, checked: first?.checked, green: Boolean(drawer.querySelector('.run-head.render-here')),
-      doing: drawer.querySelector('.doing-now')?.textContent ?? null, details: Boolean(details), folded: details ? !details.open : null,
-      kv_shown: [...drawer.querySelectorAll('.kv')].some((kv) => !kv.closest('details:not([open])')),
+      spec: head?.querySelector('.spec')?.textContent ?? null, spec_controls: head?.querySelectorAll('.spec input, .spec button, .spec a').length,
+      first: first?.className, beside: first?.parentElement?.className, checked: first?.checked, green: Boolean(drawer.querySelector('.machine-head.render-here')),
+      doing: drawer.querySelector('.doing-now')?.textContent ?? null, details: Boolean(details), folded: details?.getAttribute('aria-expanded') === 'false',
+      kv_shown: drawer.querySelectorAll('.kv').length > 0,
     };
   });
-  check('drawer_from_the_canvas_leads_with_its_checkbox', face.first === 'render-check' && face.checked === true && face.green, face);
+  check('drawer_from_the_canvas_leads_with_its_checkbox', face.first === 'render-check' && face.beside === 'checks' && face.spec_controls === 0 && face.checked === true && face.green, face);
   check('drawer_face_is_slim', face.doing !== null && face.details && face.folded === true && !face.kv_shown, face);
   await shot('drawer');
 
@@ -158,7 +160,7 @@ const AUTOMATIC = /Nothing checked: this project's renders are placed automatica
   await list();
   cozyIn(folder, ['machine', 'use', OUT]);
   const live = await until('the CLI\'s choice green', green, greenAre([OUT]), 15_000).catch(() => null);
-  const box = page.locator(`.drawer .runrow[data-machine="${OUT}"] > input.render-check`);
+  const box = page.locator(`.drawer .runrow[data-machine="${OUT}"] .checks input.render-check`);
   check('cli_choice_live', live !== null && (await box.isChecked()), await green());
   await page.reload();
   await list();
@@ -173,6 +175,42 @@ const AUTOMATIC = /Nothing checked: this project's renders are placed automatica
   const offs = [await tickChip(OUT), await tickChip(IN)];
   const any = await until('automatic again', state, (now) => same(now.machines, [])).catch(() => null);
   check('chips_untick_to_automatic', offs.every((one) => one === false) && any !== null && AUTOMATIC.test(await said()), { offs, machines: (await state()).machines });
+
+  // Every machine's full spec, a row of its own that wraps rather than cuts, its check and Details under it (Paul 11-12): a 2× H100 PCIe
+  // rental's in the panel and in its chip's flyout. No such pod runs here: the list's answer carries one more, stand-a's record as a pod
+  // reports its GPUs and the Hub its price.
+  await page.route(/\/v1\/machines(\?[^/]*)?$/, async (route) => {
+    const answer = await route.fetch();
+    const body = await answer.json();
+    const real = body.machines?.find((one) => one.name === IN);
+    if (real) {
+      const gpu = (index) => ({ index, name: 'NVIDIA H100 PCIe', memory_bytes: 80 * 2 ** 30 });
+      body.machines.push({ ...real, name: 'spec-h100', kind: 'rental', rental_id: 'pr-spec-h100', status: { ...real.status, gpus: [gpu(0), gpu(1)] },
+        rental: { sku: 'h100-pcie', accelerator: 'NVIDIA H100 PCIe', gpus: 2, usd_micros_per_hour: 4_380_000, spend_usd_micros: 0, spend_basis: 'estimated', rented_at_ms: Date.now(), disk_gb: 200 } });
+    }
+    await route.fulfill({ response: answer, json: body });
+  });
+  await page.goto(`${at}/machines`);
+  const wide = page.locator('.drawer .runrow[data-machine="spec-h100"]');
+  await wide.waitFor();
+  const whole = (where) => where.evaluate((root) => {
+    const box = root.getBoundingClientRect();
+    const parts = [...root.querySelectorAll('.spec > *')].map((one) => {
+      const at = one.getBoundingClientRect();
+      return { text: one.textContent, cut: one.scrollWidth > one.clientWidth + 1 || at.right > box.right + 1 || at.left < box.left - 1 || getComputedStyle(one).textOverflow === 'ellipsis' };
+    });
+    return { said: root.querySelector('.spec')?.innerText.replace(/\s+/g, ' '), parts, check_under: Boolean(root.querySelector('.checks input.render-check')), controls_in_spec: root.querySelectorAll('.spec input, .spec button, .spec a').length };
+  });
+  const spec = /2× NVIDIA H100 PCIe · 80 GiB/;
+  const inPanel = await whole(wide);
+  check('full_spec_in_the_panel', spec.test(inPanel.said) && /\$4\.38\/h/.test(inPanel.said) && /ready/.test(inPanel.said) && inPanel.parts.every((one) => !one.cut) && inPanel.check_under && inPanel.controls_in_spec === 0, inPanel);
+  await page.locator('.mtab[data-machine="spec-h100"]').click();
+  await page.locator('.activity header .spec').waitFor();
+  const inFlyout = await whole(page.locator('.activity header'));
+  check('full_spec_in_the_flyout', spec.test(inFlyout.said) && /\$4\.38\/h/.test(inFlyout.said) && inFlyout.parts.every((one) => !one.cut) && inFlyout.check_under && inFlyout.controls_in_spec === 0, inFlyout);
+  await shot('spec');
+  await page.keyboard.press('Escape');
+  await page.unroute(/\/v1\/machines(\?[^/]*)?$/);
 
   check('no_page_errors', errors.length === 0, errors);
   check('ran', true);

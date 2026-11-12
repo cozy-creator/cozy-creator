@@ -1,9 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
+import type { ReactNode } from "react"
+import type { Machine } from "../../api/calcifer"
 import { projectQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useProjectId } from "../../app/project"
 import type { Project } from "../../types"
 import { say } from "../../ui/notes"
+import { usd } from "../format"
+import { called, gpusWords, stateWords } from "./words"
 
 /** Only the latest ask's answer is kept: an earlier one landing after it would undo it. */
 let asked = 0
@@ -50,5 +54,29 @@ export function RenderCheck({ name, called = name }: { name: string; called?: st
       checked={chosen.includes(name)}
       onChange={() => toggle(name)}
     />
+  )
+}
+
+/** A machine's full spec, a row of its own that wraps rather than cuts (Paul 11-12): its name, its GPUs and their memory, what it costs an
+ *  hour, its state. */
+export function Spec({ machine, now, name = true }: { machine: Machine; now: number; name?: boolean }) {
+  const gpus = gpusWords(machine)
+  return (
+    <div className="spec">
+      {name && <b>{called(machine)}</b>}
+      {gpus && <span>{gpus}</span>}
+      {machine.rental && <span>{usd(machine.rental.usd_micros_per_hour)}/h</span>}
+      <span>{stateWords(machine, now)}</span>
+    </div>
+  )
+}
+
+/** The row under a machine's spec: its check, and its Details. */
+export function Checks({ machine, children }: { machine: Machine; children: ReactNode }) {
+  return (
+    <div className="checks">
+      <RenderCheck name={machine.name} called={called(machine)} />
+      {children}
+    </div>
   )
 }
