@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use crate::err::{refuse, Code, Result};
 use crate::family::{self, Record, Stored};
 use super::compose::{compose, Supply};
-pub use super::compose::{inherit, Inherited, INHERITED};
+pub use super::compose::{inherit, with_assets, Inherited, ADDED, INHERITED};
 use crate::format::{Header, ObjectRef, Provenance, Value};
 use crate::store::Store;
 

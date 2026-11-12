@@ -233,6 +233,9 @@ pub(crate) struct Upload {
     /// Base model or checkpoint. A Hub checkpoint takes only what it lacks from it; a converted source's parts replace the base's. Add :component,… to place them.
     #[arg(long, value_name = "MODEL[:COMPONENT,…]")]
     base: Option<String>,
+    /// Add a file as a component's asset, COMPONENT/PATH=FILE. Repeat for several.
+    #[arg(long = "add", value_name = "COMPONENT/PATH=FILE")]
+    add: Vec<String>,
     #[command(flatten)]
     placement: crate::run::Placement,
 }
