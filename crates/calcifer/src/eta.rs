@@ -498,9 +498,8 @@ impl Clock {
     /// which alone, with nothing else known, are its time left at least (`bytes`, cl-921); none with no basis.
     pub(crate) fn estimate(&self, here: f64) -> Option<Estimate> {
         let now = here - self.ahead.unwrap_or(0.0);
-        let floor = (self.moving.map(|(at, ms)| (ms - (now - at)).max(0.0)))
-            .filter(|ms| *ms > 0.0)
-            .map(|ms| ms + self.result_ms);
+        // Bytes still moving have a time left, even one they've all but used up (e2e 43175004564: the last 0.1 s of a download said none).
+        let floor = self.moving.map(|(at, ms)| (ms - (now - at)).max(0.0) + self.result_ms);
         match (self.estimated(here), floor) {
             (Some(estimate), Some(floor)) if estimate.left_ms < floor => Some(Estimate { left_ms: floor, ..estimate }),
             (None, Some(floor)) => Some(Estimate { left_ms: floor, confidence: 0.2, basis: EtaBasis::Bytes }),
