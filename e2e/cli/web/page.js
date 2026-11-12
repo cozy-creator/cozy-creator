@@ -195,8 +195,8 @@ function observeResizes() {
   });
 }
 
-// A box as a person reaches it, worked on or at rest: it's always on the canvas.
-const boxOf = (page, name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`).first();
+// The asset's current surface: Focus while open, otherwise its Wander node.
+const boxOf = (page, name) => page.locator(`[data-focused-asset="${name}"], .react-flow__node:has(.card[data-asset="${name}"])`).first();
 async function closeBox(page) {
   // By the address, as the page has it: after a reload the box is on its way, and not there to count yet, and `page.url()` hears of a move a moment late.
   // Left already, by a click off it say, the canvas may still be on its way back.
@@ -630,6 +630,13 @@ function rowsOf(folder, query) {
 
 /** Expand a tool category without creating anything and return one actual draggable implementation. */
 async function implementationRow(page, operation, id) {
+  const focused = page.locator('[data-focused-asset]');
+  if (await focused.count()) {
+    await focused.getByRole('button', { name: 'Back to canvas', exact: true }).click();
+    await focused.waitFor({ state: 'detached' });
+  }
+  const show = page.locator('aside.tools [aria-label="Show the tools"]');
+  if (await show.count()) await show.click();
   const category = page.locator(`.tools [data-operation="${operation}"]`);
   await category.waitFor();
   if (await category.getAttribute('aria-expanded') !== 'true') await category.click();
@@ -639,39 +646,38 @@ async function implementationRow(page, operation, id) {
   return row;
 }
 
-/** Navigate through stored versions using only the visible back/forward controls. */
-async function selectVersion(page, name, wanted) {
+/** A thumbnail click previews a retained state without approving it. */
+async function previewVersion(page, name, wanted) {
+  await openBox(page, name);
+  const card = boxOf(page, name);
+  const take = card.locator(`.image-history.here-side .take[data-take="${wanted}"]`);
+  await take.waitFor();
+  await take.scrollIntoViewIfNeeded();
+  await take.click();
+  await until(`${name} thumbnail is previewed`, () => card.locator('.image-history.here-side .take.on[data-take]').getAttribute('data-take'), (number) => number === String(wanted));
+}
+
+/** Approval is explicit and separate from thumbnail preview. */
+async function approveVersion(page, name, wanted) {
+  await previewVersion(page, name, wanted);
+  const folder = (await projectFromPage(page)).path;
+  const item = projectJson(folder).assets.find((asset) => asset.name === name);
+  if (!item.pinned || item.approved !== wanted) await boxOf(page, name).locator(`.image-history.here-side .take[data-take="${wanted}"]`).dblclick();
+  await until(`${name} version is approved`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)), (asset) => asset?.version === wanted && asset?.approved === wanted && asset?.pinned);
+}
+
+/** Replace the tool with a real compatible implementation dragged from its category. */
+async function chooseModel(page, name, id, operation) {
   await openBox(page, name);
   const folder = (await projectFromPage(page)).path;
   const card = boxOf(page, name);
-  const counter = card.getByLabel('Current version', { exact: true });
-  const current = async () => Number((await counter.innerText()).match(/(\d+)\s*\/\s*\d+/)?.[1]);
-  for (let step = 0; step < 100; step++) {
-    const at = await current();
-    if (at === wanted) {
-      await until(`${name} current version is persisted`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.version), (number) => number === wanted);
-      return;
-    }
-    if (!Number.isFinite(at)) throw new Error(`invalid version counter for ${name}: ${await counter.innerText()}`);
-    await card.getByRole('button', { name: at < wanted ? 'Next version' : 'Previous version', exact: true }).click();
-    await until(`${name} version moves from ${at}`, current, (now) => now !== at);
-  }
-  throw new Error(`${name} did not reach version ${wanted}`);
-}
-
-/** Pick a real implementation inside a node's operation configuration. */
-async function chooseModel(page, name, id, operation) {
-  await openBox(page, name);
-  const card = boxOf(page, name);
-  const tool = card.locator('select[aria-label="Tool"]');
-  if (operation && await tool.inputValue() !== operation) await tool.selectOption(operation);
-  const model = card.locator('select[aria-label="Model"]');
-  await model.locator('option').filter({ hasText: /./ }).first().waitFor({ state: 'attached' });
-  await until(`model ${id} is available`, () => model.locator('option').evaluateAll((options) => options.map((option) => option.value)), (ids) => ids.includes(id));
-  await model.selectOption(id);
+  const tool = await implementationRow(page, operation, id);
+  const target = await card.locator('.media').boundingBox();
+  await carry(page, tool, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
+  await until(`tool ${id} attached`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.tool), (held) => held === id);
 }
 
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { implementationRow, selectVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
