@@ -1232,6 +1232,11 @@ export class CanvasStore {
     for (const name of [...this.ids.keys()].sort()) {
       const box = this.boxOf(name, true)
       if (!box) continue
+      const view = this.get(name)
+      if (view?.asset?.kind === "image" && !view.hereWords && shownOf(view)) {
+        field.add(name, box)
+        continue
+      }
       field.remove(name)
       if ([...field.under(box).keys()].some((other) => other < name)) field.add(name, this.giveWay(name, field, box, {}))
       else field.add(name, box)
