@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { chooseModel, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
+const { chooseModel, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, drop, lastLook, launch, lookAt, noStall, openCanvas, photo, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -92,6 +92,17 @@ async function died(why) {
   };
   const imported = async (name, shade) => post(`${at}/imports`, { source: await upload(held?.token, picture(shade)), name, exact: true, at: { x: 100 + shade * 4, y: 100 } });
   const joined = async (name, shade, width, height) => post(`${at}/assets/${name}/versions`, { source: await upload(held?.token, picture(shade, width, height)) });
+  // A camera's JPEG (cl-888).
+  const importedPhoto = async (name) => {
+    const path = join(pictures, `${name}.jpg`);
+    writeFileSync(path, photo());
+    return post(`${at}/imports`, { source: await upload(held?.token, path), name, exact: true, at: { x: 260, y: 100 } });
+  };
+  /** A box's pictures as drawn: how many loaded, and what it says instead of one. */
+  const drawn = (where) => where.evaluate((card) => ({
+    up: [...card.querySelectorAll('.media img')].filter((img) => img.complete && img.naturalWidth > 0).length,
+    notes: [...card.querySelectorAll('.media-note')].map((note) => note.textContent),
+  }));
 
   // Mentions, in an export a hand edited and imported: its words kept whatever comes. Its comments go: the project holds values (cl-803).
   const comments = ['      Two lines,', '      kept as they are.'];
@@ -99,7 +110,7 @@ async function died(why) {
   // Its second square, so a slide along its row crosses a take of another shape.
   await joined('Abr', 20, 200, 200);
   await joined('Abr', 30);
-  await imported('other', 40);
+  await importedPhoto('other');
   const head = yaml();
   importYaml(folder, `# Mine, and kept.\n${head.trimEnd()}
   # A note on words.
@@ -157,8 +168,12 @@ async function died(why) {
   check('a_new_name_ending_so_is_changed', made.body.name === 'b_7', made);
   check('a_typed_name_ending_so_is_refused', (await post(`${at}/assets`, { tool: '', name: 'b.8', fields: { text: 'x' }, exact: true })).status === 400);
 
-  // A rename rewrites what says it, and only that.
+  // A camera's JPEG has its thumbnail, not "No preview" (cl-888: FFmpeg took it for an image2 sequence, which Calcifer refuses).
   await box('other').waitFor();
+  const photoAtRest = await until('the photo drawn', () => drawn(box('other').locator('.card')), (now) => now.up > 0 || now.notes.length > 0, 5 * STEP_MS).catch((why) => String(why));
+  check('a_photo_has_its_thumbnail', photoAtRest.up > 0 && !photoAtRest.notes?.length, photoAtRest);
+
+  // A rename rewrites what says it, and only that.
   await post(`${at}/rename`, { from: 'Abr', to: 'Ada' });
   await until('the mentions', () => Promise.resolve(yaml()), (text) => text.includes('<Ada.2> beside <Ada.1>, and <Ada>'));
   check('rename_keeps_words', comments.every((line) => yaml().includes(line)), yaml());
@@ -466,6 +481,10 @@ async function died(why) {
     const firstChip = await onIt.locator('.in-frame .chip').first().innerText().catch(() => null);
     const behind = await until('its picture behind', () => onIt.locator('.in-frame .ghosts img').count(), (n) => n === 1).catch(() => 0);
     check('a_tool_on_a_picture_writes_its_next_take', caret === true && firstChip === `<Self.${other.approved}>` && behind === 1, { caret, firstChip, behind });
+    // Its next take starts from the photo, which shows faded behind its words (cl-888: "No Preview").
+    const faded = await until('the photo faded behind', () => drawn(onIt), (now) => now.up > 0 || now.notes.length > 0).catch((why) => String(why));
+    const opacity = await onIt.locator('.in-frame .ghosts').evaluate((ghosts) => Number(getComputedStyle(ghosts).opacity)).catch(() => null);
+    check('its_next_take_shows_the_photo_faded', faded.up > 0 && !faded.notes?.length && opacity > 0 && opacity < 1, { faded, opacity });
     await onIt.locator('.in-frame .mention-text').evaluate((el) => el.blur()).catch(() => {});
     await shot('tool-on-picture');
     // Drawn out till words are larger than at 1:1, its tool chip stops short of its ratio.
