@@ -3431,20 +3431,28 @@ impl Walk {
     }
 
     /// Where job `wanted`, not ready yet, will most likely go of its several machines, kept for what it fetches ahead: the soonest finish
-    /// its machines quote, none beginning before what it waits for ends. None when none quoted it.
+    /// its machines quote, none beginning before what it waits for ends; quoted by none, where an unquoted job goes (`takes`). Its own
+    /// task, so its package takes as long as it takes to say what it calls.
     async fn foresee(&self, wanted: Wanted) {
         let Wanted { job, on, hub, with, made, after, .. } = wanted;
         let api = self.host.api();
-        let offers = match self.quotable(job.clone(), on, &hub, &with, made).await {
+        let offers = match self.quotable(job.clone(), on.clone(), &hub, &with, made, None).await {
             Some(quotable) => placement::offers(&api, &[quotable], false).await.0.into_iter().next().unwrap_or_default(),
             None => vec![],
         };
-        let mut walker = self.project.walker.lock().expect("walker lock");
-        let ends = |key: &String| walker.sent.get(key).map(|offer| offer.finish_at_ms).or_else(|| walker.placed.get(key).map(|placed| placed.soonest.finish_at_ms));
-        let begins = after.iter().filter_map(ends).max();
-        let offers: Vec<Offer> = offers.into_iter().map(|offer| begins.map_or_else(|| offer.clone(), |at| offer.from(at))).collect();
-        let machine = placement::soonest(&offers, now_ms()).map(|offer| offer.machine.clone());
-        walker.foreseen.insert(job, machine);
+        let soonest = {
+            let walker = self.project.walker.lock().expect("walker lock");
+            let ends = |key: &String| walker.sent.get(key).map(|offer| offer.finish_at_ms).or_else(|| walker.placed.get(key).map(|placed| placed.soonest.finish_at_ms));
+            let begins = after.iter().filter_map(ends).max();
+            let offers: Vec<Offer> = offers.iter().map(|offer| begins.map_or_else(|| offer.clone(), |at| offer.from(at))).collect();
+            placement::soonest(&offers, now_ms()).map(|offer| offer.machine.clone())
+        };
+        let machine = match soonest {
+            Some(machine) => Some(machine),
+            None => placement::takes(&api, &on, &offers).await.ok(),
+        };
+        info!("{}: {job} will most likely go to {}: its look-ahead goes there", self.folder().dir.display(), machine.as_ref().map_or("none".into(), ToString::to_string));
+        self.project.walker.lock().expect("walker lock").foreseen.insert(job, machine);
     }
 
     /// Asks a machine for a function's code and weights, in the background: a warm run, which holds no GPU and starts no executor. The
@@ -3481,18 +3489,20 @@ impl Walk {
         let shown = package.name.clone() + "/" + &renderer.function;
         let submit = SubmitRun { on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None, stays: vec![] };
         let run = self.send_run(&format!("project-ahead-{}", new_key()), submit).await?;
+        info!("{}: fetching {shown} ahead on {placed}: run {}", self.folder().dir.display(), run.number);
         self.project.jobs.ahead(run.id.clone(), key, with, shown, placed.to_string(), run.number);
         Ok(())
     }
 
     /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices. None when its package doesn't say in
     /// time what it calls.
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>) -> Option<placement::Job> {
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Option<placement::Job> {
         let api = self.host.api();
-        let found = tokio::time::timeout(QUOTE_LATE, self.host.package(hub, with, &self.folder().dir, &on)).await;
+        let late = late.unwrap_or(std::time::Duration::MAX);
+        let found = tokio::time::timeout(late, self.host.package(hub, with, &self.folder().dir, &on)).await;
         let package = found.ok()?.ok()?;
         let renderer = package.maker().ok()??;
-        let models = tokio::time::timeout(QUOTE_LATE, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
+        let models = tokio::time::timeout(late, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
         let size = v1::JobSize::of(&Value::Object(made));
         let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
             interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
@@ -3526,7 +3536,7 @@ impl Walk {
         }
         let api = self.host.api();
         let called = ready.into_iter().map(|(key, ask, target, with, made)| async move {
-            self.quotable(key, self.sending(&ask, &target.on), &target.hub, &with, made).await
+            self.quotable(key, self.sending(&ask, &target.on), &target.hub, &with, made, Some(QUOTE_LATE)).await
         });
         let jobs: Vec<placement::Job> = futures_util::future::join_all(called).await.into_iter().flatten().collect();
         let (offers, said) = placement::offers(&api, &jobs, true).await;

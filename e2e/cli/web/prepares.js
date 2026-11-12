@@ -23,7 +23,7 @@ const finish = (code) => {
 const TOOL = join(__dirname, '..', 'project', 'tool.py');
 const CLIP = join(__dirname, '..', 'project', 'clip.py');
 const [STAND] = (process.env.STANDS ?? '').split(' ');
-const PIC_S = 45;
+const PIC_S = 60;
 const RENDER_MS = 420_000;
 // What pic's run says of its work: its stage and its count.
 const PICS_WORK = /drawing|\d+ \/ \d+|step/i;
@@ -109,7 +109,10 @@ const PICS_WORK = /drawing|\d+ \/ \d+|step/i;
   const ready = samples.find((sample) => sample.ahead?.ready);
   const picDone = samples.find((sample) => !sample.pic_making.length && sample.s > 1);
   seen.timeline = { ahead_asked_s: asked?.s ?? null, ahead_ready_s: ready?.s ?? null, pic_done_s: picDone?.s ?? null, clip_run_s: samples.at(-1).clip_making.length ? samples.at(-1).s : null, on: asked?.ahead.machine ?? null };
-  check('prepares_at_once', asked !== undefined && asked.s <= 20 && asked.pic_making.length > 0, seen.timeline);
+  // At once: while pic is made, not after; its first quote waits for nothing but its own package's description.
+  const drawing = samples.find((sample) => PICS_WORK.test(sample.pic?.says ?? ''));
+  seen.timeline.pic_drawing_s = drawing?.s ?? null;
+  check('prepares_at_once', asked !== undefined && asked.pic_making.length > 0 && (drawing === undefined || asked.s <= drawing.s + 10), seen.timeline);
   check('prepares_in_its_set', ['local', STAND].includes(asked?.ahead.machine), asked?.ahead);
   check('shows_its_preparation', whilePic.some((sample) => /^(Preparing|Ready) on (local|\S+)/.test(sample.clip?.detail ?? '')), whilePic.map((sample) => sample.clip?.detail));
   check('ready_before_its_turn', ready !== undefined && (picDone === undefined || ready.s <= picDone.s + 1), seen.timeline);
