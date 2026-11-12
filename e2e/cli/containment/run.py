@@ -163,7 +163,7 @@ def main() -> int:
             native.document("open", cwd=project["folder"])
             until(lambda: proof.exercise(project["id"], "ready"), lambda value: value.get("page_ready") and value.get("cards", 0) >= 2, "owned_page_ready")
         snapshot = proof.ask("snapshot")
-        require(snapshot["present"] and snapshot["pages"] == 2, "shared_owned_browser")
+        require(snapshot["present"] and snapshot["pages"] == 2 and len(snapshot.get("processes", [])) >= 2 and snapshot["birth"] in snapshot["processes"], "shared_owned_browser")
         browser_birth, profile = snapshot["birth"], Path(snapshot["profile"])
         require(profile.name.startswith("cozy-private-") and tmpfs(profile) and profile.stat().st_mode & 0o777 == 0o700 and profile.stat().st_uid == os.geteuid(), "owned_profile_volatile")
         argv = Path(f"/proc/{browser_birth['pid']}/cmdline").read_bytes().split(b"\0")

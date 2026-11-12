@@ -417,7 +417,7 @@ pub(super) fn private_browser_pipe(command: &mut Command) -> io::Result<(File, F
         command.pre_exec(move || {
             // A controller crash cannot leave its Chrome leader running with live authority.
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 || libc::getppid() as u32 != parent {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "private browser parent ended"));
+                return Err(io::Error::from_raw_os_error(libc::EINTR));
             }
             if libc::dup2(child_read.as_raw_fd(), 3) == -1 || libc::dup2(child_write.as_raw_fd(), 4) == -1 {
                 return Err(io::Error::last_os_error());
