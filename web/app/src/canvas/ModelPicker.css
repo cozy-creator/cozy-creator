@@ -1,0 +1,83 @@
+.model-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+}
+.model-picker {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  max-height: calc(100vh - 32px);
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--round2);
+  background: var(--panel);
+  box-shadow: 0 14px 40px var(--shadow);
+  color: var(--ink);
+  font: var(--body) / 1.4 var(--sans);
+}
+.model-picker-head {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px 8px;
+}
+.model-picker h2,
+.model-picker h3,
+.model-picker h4,
+.model-picker p {
+  margin: 0;
+}
+.model-picker h2 { font-size: var(--title); }
+.model-picker h3 { font-size: var(--heading); }
+.model-picker h4 { font-size: var(--body); }
+.model-picker-head p { color: var(--mute); margin-top: 2px; }
+.model-picker-preferences { flex: none; padding: 0 18px 12px; }
+.model-picker-body {
+  display: grid;
+  flex: 1;
+  gap: 16px;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 18px 18px;
+  overscroll-behavior: contain;
+}
+.model-picker-slot {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--round2);
+  background: var(--card);
+}
+.model-picker-field { display: grid; gap: 4px; min-width: 0; }
+.model-picker .field { min-width: 0; max-width: 100%; }
+.model-picker-slot > select,
+.model-picker-field > .field { width: 100%; }
+.model-picker-reset { justify-self: start; }
+.model-picker-adapters { display: grid; gap: 8px; list-style: none; padding: 0; margin: 0; }
+.model-picker-adapter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.model-picker-adapter-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.model-picker-adapter-name small { display: block; color: var(--mute); }
+.model-picker-adapter.invalid .model-picker-adapter-name small { color: var(--bad); }
+.model-picker-strength { display: grid; gap: 2px; flex: none; font-size: var(--small); }
+.model-picker-strength input { width: 7em; font-size: var(--body); }
+.model-picker-legacy { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+@media (max-width: 520px) {
+  .model-picker-overlay { padding: 8px; }
+  .model-picker { max-height: calc(100vh - 16px); }
+  .model-picker-adapter { flex-wrap: wrap; }
+  .model-picker-adapter-name { flex-basis: 100%; }
+}
