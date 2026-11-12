@@ -22,16 +22,17 @@ import uuid
 from private_execution import command, observed_run, scan, target_history
 
 
-def installations(home: Path, project_id: str) -> set[tuple[str, str, str, str]]:
+def installations(root: Path, project_id: str) -> set[tuple[str, str, str, str]]:
+    """This project's local-code installation bindings in the machine journals under `root`, by path within it."""
     prefix = f"local-private:{len(project_id.encode())}:{project_id}:"
     rows: set[tuple[str, str, str, str]] = set()
-    for path in home.rglob("executions.sqlite3"):
+    for path in root.rglob("executions.sqlite3"):
         if not path.is_file() or path.is_symlink():
             continue
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
             for actor, alias, record in db.execute("SELECT actor,alias,record FROM installations"):
                 if actor.startswith(prefix):
-                    rows.add((str(path), actor, alias, record))
+                    rows.add((str(path.relative_to(root)), actor, alias, record))
     return rows
 
 
@@ -88,7 +89,8 @@ def main() -> None:
         # The new keybag predates its verified copy and global journal rewrap.
         stamp = max(0, (args.project / "project.vault.keys.json").stat().st_mtime_ns - 2_000_000_000)
         store = Path(os.environ.get("TENSORFS_HOME", str(Path.home() / ".cache/tensorfs")))
-        leaked, checked = scan([home, store, args.project], [home / "calcifer/vaults", args.out.resolve()], stamp, [proof["function"].encode()])
+        assert os.path.ismount(view), "the rotated vault view is not a mount"
+        leaked, checked = scan([home, store, args.project], [home / "calcifer/vaults", args.out.resolve(), view], stamp, [proof["function"].encode()])
         (args.out / "scan.json").write_text(json.dumps({"checked_new_or_modified_files": checked, "leaked_paths": leaked}, indent=2))
         assert not leaked, "rekey exposed private target metadata in global storage"
         (args.out / "receipt.json").write_text(json.dumps({"new_generation": True, "target_history_retained": True, "target_filter_pagination": True, "no_reexecution": True, "global_target_scan": True, "synthetic_only": True}, indent=2))
@@ -99,7 +101,9 @@ def main() -> None:
     input_bytes = (folder / "input.txt").read_bytes()
     source_canary = re.search(rb"XS160_SOURCE_[0-9a-f]{32}", source_bytes)
     assert source_canary, "first run the owned synthetic private_execution.py fixture"
-    before = installations(home, project_id)
+    # The project's machine journal is in its own view, which a remount moves; the global journals hold none of it.
+    assert not installations(home, project_id), "private local-code installations reached the global machine journal"
+    before = installations(view / ".vault-machine", project_id)
     assert before, "private local-code installation was not retained before remount"
     def snapshot(rows: set[tuple[str, str, str, str]]) -> list[dict[str, object]]:
         return [{"journal": path, "actor": actor, "alias": alias, "record": json.loads(record)}
@@ -142,7 +146,8 @@ def main() -> None:
     proof["ids"].append(remounted["id"])
     proof["ids"] = target_history(args.cli, args.out, "remount-target-history", proof)
     (folder / "target-proof.json").write_text(json.dumps(proof))
-    after = installations(home, project_id)
+    assert not installations(home, project_id), "remount put private local-code installations in the global machine journal"
+    after = installations(after_view / ".vault-machine", project_id)
     (args.out / "bindings-after.json").write_text(json.dumps(snapshot(after), indent=2))
     assert before.issubset(after), "remount rewrote/deleted historical installation bindings"
     assert len(after) > len(before), "the new physical mount did not receive its own installation binding"

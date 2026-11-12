@@ -271,7 +271,9 @@ def ''' + target_canary + '''(payload: Request, out: Outputs) -> Answer:
     assert any(contains(path, markers) for path in files if ".vault-machine" in path.parts), "no protected machine journal/source/result was retained"
     store = Path(os.environ.get("TENSORFS_HOME", str(Path.home() / ".cache/tensorfs")))
     roots = [home, store, project]
-    exclusions = [home / "calcifer/vaults", args.out.resolve()]
+    # The view is mounted inside the project: its decrypted window, not storage. Its backing is scanned.
+    assert os.path.ismount(view), "the live vault view is not a mount"
+    exclusions = [home / "calcifer/vaults", args.out.resolve(), view]
     leaked, checked = scan(roots, exclusions, stamp, markers)
     (args.out / "scan.json").write_text(json.dumps({"checked_new_or_modified_files": checked, "leaked_paths": leaked}, indent=2))
     assert not leaked, "private test markers reached global plaintext storage; see scan.json"
