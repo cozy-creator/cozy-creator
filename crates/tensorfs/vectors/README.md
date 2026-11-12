@@ -23,6 +23,7 @@ inference quality. Conversion checks must use an independent source-to-output or
 | [moss-lora-headers](moss-lora-headers/) | Five published MOSS-Image LoRAs: ComfyUI's and AI-Toolkit's upstream names under `diffusion_model.` (ComfyUI's fused `proj.qkv` among them), kohya's `lora_unet_`; `moss.lora` maps them, a fused Q/K/V's B in thirds. |
 | [anima-lora-headers](anima-lora-headers/) | Four published Anima LoRAs: sd-scripts' kohya `lora_unet_` native names, ComfyUI's and AI-Toolkit's under `diffusion_model.`, the LLM adapter's too; `anima.lora` renames them onto the family's Diffusers DiT and its `text_conditioner`. |
 | [qwen-image-lora-headers](qwen-image-lora-headers/) | A published Qwen-Image-Edit-2511 LoRA in Diffusers' names under `diffusion_model.`; `qwenimage.lora`. |
+| [krea2-comfy-headers](krea2-comfy-headers/) | Krea 2 fine-tunes in the reference checkpoint's names, bare or under ComfyUI's `model.diffusion_model.`: RedCraft 3.0 in bf16, fp8, int8_convrot and nvfp4, Real Dream V3 in fp8, int8_convrot and nvfp4 (Civitai); `krea2.native` and `krea2.comfy` read them onto the family's keys. Headers only. |
 | [qwen-image-2.1-comfy-headers](qwen-image-2.1-comfy-headers/) | Qwen-Image 2.1 transformers in ComfyUI's single-file layout (fused `img_mlp.gate_up`): Comfy-Org's bf16 repack and Noct-Q V4 in `int8_convrot`; `qwenimage21.comfy` splits them into the family's keys. Headers only. |
 
 H3 normalization has two distinct source contracts: native base QKV rows are interleaved per

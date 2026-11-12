@@ -113,7 +113,6 @@ class Bridge {
     held.names.clear()
     held.gone.clear()
     Object.assign(held, { head: false, whole: false, wholeCursor: null })
-    void this.queries.invalidateQueries({ queryKey: ["yaml", id] })
     const query = this.queries.getQueryCache().find({ queryKey: key })
     // No one's looking: what's held is read when someone is.
     if (!query?.getObserversCount()) return void query?.invalidate()
@@ -301,7 +300,7 @@ export async function connect(): Promise<Boot> {
       forgetProjectView(id)
     }
     const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-      (Boolean(id) && ["project", "canvas", "yaml", "history"].includes(String(queryKey[0])) && queryKey[1] === id)
+      (Boolean(id) && ["project", "canvas", "history"].includes(String(queryKey[0])) && queryKey[1] === id)
       || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
     void queries.cancelQueries({ predicate: privateData })
     // Reset active observers too: merely removing the cache can leave a mounted drawer's old data.

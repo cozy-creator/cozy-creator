@@ -1,0 +1,1 @@
+A model slot takes one model: picking another in Models & LoRAs replaces it (a radio group, the picked row outlined), a dropped checkpoint does too, and a box or run that names one slot twice with two models is refused `model_slot_twice` in one line. Each LoRA beneath a box has a strength slider (0 to 2), its exact number and a reset to its recommended strength.

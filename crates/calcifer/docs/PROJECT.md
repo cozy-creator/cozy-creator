@@ -1,6 +1,6 @@
-# A project as YAML (format 4)
+# A project: boxes, mentions and renders
 
-A project's state is its `project.db` (`PROJECT-DB.md`); the page and the CLI change it through Calcifer. YAML is its view: `GET /v1/projects/{id}/yaml` exports it for reading, a diff or git, and `PUT /v1/projects/{id}/yaml` reads one back, each box and field that differs written as one edit. It is never the source of truth, and a comment in it isn't kept. Physical YAML/lock-only folders are unsupported and are never implicitly imported; create native storage first and use the explicit current-format HTTP authoring view. The HTTP API is in `CALCIFER-API.md`, and the reasons in `tracker/design/project-format-ui.md` and `tracker/design/tools.md`.
+A project is its `project.db` (`PROJECT-DB.md`); the page and the CLI change it through Calcifer's HTTP API (`CALCIFER-API.md`). There is no project file to edit and no YAML export or import (cl-930). The reasons are in `tracker/design/project-format-ui.md` and `tracker/design/tools.md`.
 
 ## The idea
 
@@ -22,74 +22,37 @@ Calcifer owns all of this. It knows no inputs and no packages by name.
 | `<edit_name>.mp4`, `.otio` | Each edit |
 | `.runs/` | Where a run's outputs land on their way into `files/` |
 
-An export holds what the project says. Its media remains in `files/`. An unknown key warns when it's imported.
+## Boxes
 
-## The file
+A box is a name and its fields, as `POST /v1/projects/{id}/assets` writes them and `GET /v1/projects/{id}` reads them:
 
-```yaml
-version: 4
-
-assets:
-  style:                     # a text asset: its words go wherever it's mentioned
-    text: |
-      High-quality Unreal Engine graphics, realistic and detailed.
-
-  kyogre_art:                # a dropped file: a name, a hidden hash, and words for what mentions it
-    approved: 65b436d4f9a3
-    description: The original art of Kyogre, with its background already removed.
-
-  kyogre:                    # made, and approved: it holds this file, and can still show out of date
-    tool: qwen-image-2/image  # Turbo unless `turbo: false`
-    instructions: <style> <kyogre_art> as a realistic creature, front and back on one sheet, with no text, on a transparent background.
-    aspect_ratio: "3:2"
-    approved: 2aee8c40753d
-    description: Kyogre, the colossal blue whale-like legendary Pokémon with huge fins and glowing red lines.
-
-  coast: {tool: qwen-image-2/image, instructions: "A volcanic coast, no people.", turbo: false}
-
-  clash:                     # a shot, on Turbo unless `turbo: false`
-    tool: minimax-h3/generate
-    lora: [{ref: hf://someone/wushu, strength: 0.8}]
-    summary: <style> <kyogre> and <groudon> fight on <coast> in one continuous shot with no cuts.
-    soundscape: Crashing surf, roaring fire, bursts of steam, and deep impacts.
-    beats:
-      - duration: 14
-        description: A wide shot of <coast> shows <kyogre> in the surf and <groudon> on the rocks.
-      - duration: 14
-        description: <groudon> slams the ground as in <stomp:48-120>.
-    first_frame: <coast.2>     # a slot takes only what's written in it
-
-  clash_2k: {tool: minimax-h3/upscale, video: <clash>, to: 1440p}
-
-  edit:
-    tool: cozy/edit          # free, no machine
-    fps: 24
-    tracks:
-      - clips:
-          - <awaken>                             # all of it
-          - {video: <erupt>, in: 12, out: 132}   # frames 12 to 132 of erupt
-          - {image: <title_card>, frames: 48}    # a picture held for 2 s
-```
+| Box | Fields |
+|---|---|
+| `style`, a text asset: its words go wherever it's mentioned | `{"text": "High-quality Unreal Engine graphics, realistic and detailed."}` |
+| `kyogre_art`, a dropped file: a hidden hash, and words for what mentions it | `{"approved": "65b436d4f9a3", "description": "The original art of Kyogre."}` |
+| `kyogre`, made and approved: it holds that file, and can still show out of date | `{"tool": "qwen-image-2/image", "instructions": "<style> <kyogre_art> as a realistic creature, front and back on one sheet.", "aspect_ratio": "3:2", "approved": "2aee8c40753d"}` |
+| `clash`, a shot | `{"tool": "minimax-h3/generate", "lora": [{"ref": "hf://someone/wushu", "strength": 0.8}], "summary": "<style> <kyogre> and <groudon> fight on <coast>.", "beats": [{"duration": 14, "description": "<groudon> slams the ground as in <stomp:48-120>."}], "first_frame": "<coast.2>"}` |
+| `edit`, free, with no machine | `{"tool": "cozy/edit", "fps": 24, "tracks": [{"clips": ["<awaken>", {"video": "<erupt>", "in": 12, "out": 132}, {"image": "<title_card>", "frames": 48}]}]}` |
 
 ## What the platform reads
 
 | Key | Is |
 |---|---|
 | `tool` | A function, in full, in `cozy run`'s grammar: `org/package/function[@release]`, `package/function`, or local code by its path, `./dir/function`, keyed by its directory's name, so moving to the published package re-renders nothing. No `@release` uses what its machine has installed. With none, it's a dropped file, and what it is comes from the file |
-| `approved` | The file it holds, by a prefix of its hash. A choice, not a claim: out of date comes from the lock, so an upstream change never edits the file. A number-shaped hash is its text |
+| `approved` | The file it holds, by a prefix of its hash. A choice, not a claim: out of date comes from the lock, so an upstream change never edits the box. A number-shaped hash is its text |
 | `description` | What it is. It reaches whatever mentions it, and never its own tool. A `<name>` in it stays text, with a warning |
 | `starred` | `true`: a person starred it, and the page's Files lists it first. No input: it puts nothing out of date, and it's no approval |
 | `models`, `lora` | Go on its function's first call |
 
-Every other key is a **field** of its tool: the binder gives it to the function by its type, and it counts in the key. A tool's struct is its box. An unknown key warns at render, and an unknown section warns at reading. A pickup is never written: Pick up from here fills it for one render.
+Every other key is a **field** of its tool: the binder gives it to the function by its type, and it counts in the key. A tool's struct is its box. An unknown key warns at render. A pickup is never written: Pick up from here fills it for one render.
 
 **Text assets.** `text:` with no `tool` is an asset of words alone. `<name>` of one, in any input, is replaced by its words where it stands, before a package sees it, so a function has no `style` input and nothing is prepended: a style goes only where it's mentioned. Its text may mention others, and what it mentions is read by whatever mentions it. A cycle stays plain text, with a warning. Editing it puts what reaches it out of date, and what's approved stays approved. One deleted is no change to what was made with it. It can't go by a tag of a package the project uses.
 
-**Names** hold letters, digits, `_` and `-`, never `.`, which selects inside a box, and match in any case, with `_` and `-` alike: `<Style>` and `<sTYLE>` are one asset, and it keeps the spelling it was written with. Two names in the file that are one are refused, with both lines. A `.` is a character like any other: `<Amy.original>` is one name, with nothing above it, and a model reads it as `<Amy original>`. Anything else is refused when the file is read, in one line with the fix. `all` is what `render all` means, and warns as a name.
+**Names** hold letters, digits, `_` and `-`, never `.`, which selects inside a box, and match in any case, with `_` and `-` alike: `<Style>` and `<sTYLE>` are one asset, and it keeps the spelling it was written with. Two names in a project that are one are refused. A `.` is a character like any other: `<Amy.original>` is one name, with nothing above it, and a model reads it as `<Amy original>`. Anything else is refused when the project is read, in one line with the fix. `all` is what `render all` means, and warns as a name.
 
 ## Defaults
 
-`defaults` is read by the current authoring view. It holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool's interface says it makes, never by what a version is: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
+A project's `defaults` section (nothing writes it now; a project that had one keeps it) holds `image`, `video` and `audio`, and fills what an asset with a tool doesn't say, by what its tool's interface says it makes, never by what a version is: inputs, `models` and `lora`, and `null` in the asset takes one back. Not its tool, and not what Calcifer makes itself, an edit or a frame. A style edit puts every asset it reaches out of date, a background removal too.
 
 ## First-party inputs
 
@@ -106,7 +69,7 @@ Every other key is a **field** of its tool: the binder gives it to the function 
 
 `<name>` in any input makes that asset an input.
 
-**By version.** `<name>` is what it stands on, approved else newest, and moves: what reads it can go out of date. `<name.2>` is version 2, whatever else happens to it, and is never out of date. `<self.2>` is a version of the asset whose text it is, which is how a box edits its own picture. A version number is never reused, so one stays what it says when others go. Neither is a dependency: nothing waits for it and it closes no cycle. `<self>` alone is refused: it would change its own input with every render. A version deleted or never made fails a render with `input_missing`, naming it, and nothing is charged; `reclaim` keeps every file a `<name.N>` names. Names match in any case, and a name can't end in `.` and digits or be `self`: one already in a file goes on working, and `<foo.2>` reads the asset called that.
+**By version.** `<name>` is what it stands on, approved else newest, and moves: what reads it can go out of date. `<name.2>` is version 2, whatever else happens to it, and is never out of date. `<self.2>` is a version of the asset whose text it is, which is how a box edits its own picture. A version number is never reused, so one stays what it says when others go. Neither is a dependency: nothing waits for it and it closes no cycle. `<self>` alone is refused: it would change its own input with every render. A version deleted or never made fails a render with `input_missing`, naming it, and nothing is charged; `reclaim` keeps every file a `<name.N>` names. Names match in any case, and a name can't end in `.` and digits or be `self`: one already in a project goes on working, and `<foo.2>` reads the asset called that.
 
 - **In a shot's `summary`:** reaches every segment. **In a beat:** only the segment holding it. H3 gets confused by extra references, so mention things only where they're needed.
 - **A package's own tags:** its tool declares them, `@app.tool(reserved=["d", "scenetrans", "cutoff"])`. In the text of an asset that function makes, each stays text in any case, and reaches it unchanged. A project naming something the same is warned at the name, and `<d>` is the tag.
@@ -130,7 +93,7 @@ An asset that is only a `description`, with no tool and no file, stands as words
 
 Putting a tool on a text asset moves its `text` to `instructions`. On a picture, the tool starts from the version shown, approved else newest: `<self.N>` in its first required picture slot, else at the start of its first prompt. A tool approves nothing.
 
-**The key** is blind to names: eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its fields after defaults, each box they mention replaced by its number in order of first mention (`<Amy.2>` is `<#0.2>`), then twelve for each of those boxes: its `description` and the files of each version read, or a text box's words. So a rename, on the page or in an imported YAML, puts nothing out of date, and a box renamed in an import keeps its versions and approval when exactly one vanished row matches it. Editing a box's description puts its readers out of date, `<Abr.2>`'s too. Inputs plus the seed never run twice: a seed in its fields, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
+**The key** is blind to names: eight hex digits of its tool (no release, no root namespace), `models`, `lora` and its fields after defaults, each box they mention replaced by its number in order of first mention (`<Amy.2>` is `<#0.2>`), then twelve for each of those boxes: its `description` and the files of each version read, or a text box's words. So a rename puts nothing out of date. Editing a box's description puts its readers out of date, `<Abr.2>`'s too. Inputs plus the seed never run twice: a seed in its fields, or a function with no seed, has one result per key. Putting old text back returns the old take as its state, with no run.
 
 **Not in the key:** its own `description`; a pickup; package and cozy updates; the machine or card. An update never re-renders anything. A hit reuses the stored file, whatever another card would make.
 
@@ -147,13 +110,13 @@ cozy status
 
 `cozy new [directory]` creates a project explicitly. `cozy open`, `cozy run` and `cozy status` use an existing project for the current directory.
 
-Use the browser for asset import, creation, field edits, rendering, approval, history, undo and export. The browser and other API clients use the project endpoints described in `CALCIFER-API.md`, and edits appear in connected views.
+Use the browser for asset import, creation, field edits, rendering, approval, history and undo. The browser and other API clients use the project endpoints described in `CALCIFER-API.md`, and edits appear in connected views.
 
 ## Queueing
 
 A project has one walker, and each render adds to it. The browser follows the work while it runs.
 
-- **A render uses the project as it was when you asked, so keep editing.** Each ask keeps its export in `project.db` until it is done, so a restart resumes it, and an edit, `approve` or `unpin` touches nothing of it. Each plans on its own text, and independent work goes at once across all of them. What you edit shows out of date in `status` until a render makes it, and when you delete an asset, what a render still owes of it stops: queued, it isn't made and its row says so; running, it's canceled so billing stops, and lands nothing. Putting it back brings back the asset, not a canceled render.
+- **A render uses the project as it was when you asked, so keep editing.** Each ask keeps a snapshot of the project's boxes in `project.db` until it is done, so a restart resumes it, and an edit, `approve` or `unpin` touches nothing of it. Each plans on its own snapshot, and independent work goes at once across all of them. What you edit shows out of date in `status` until a render makes it, and when you delete an asset, what a render still owes of it stops: queued, it isn't made and its row says so; running, it's canceled so billing stops, and lands nothing. Putting it back brings back the asset, not a canceled render.
 - **Placement:** each render's work goes to its selected machines. With several machines, a job goes to the one where the plan has it ending soonest, once that has its GPUs free.
 - **Everything at once, up to 32 jobs per render going:** what doesn't read each other goes side by side, each sent, installed and made on its own. What fails stops what reads it, there and then, and nothing else. How wide a job goes, how many GPUs of its machine, comes from how long things took there: it never changes once a job has started.
 - **Ahead of its turn,** a machine fetches the code and weights of what's queued for it, behind whatever a run is waiting on: its `tool`'s function, and for one that loads nothing itself, only what all its package's internal functions load. It's a guess, so a wrong one costs bytes, and it stops when its last job's run begins. It holds no GPU, doesn't show in `cozy run ls`, and a machine with no room for it stays as it is, saying so in one line. `status` and the render's view show it; Cancel All stops it.
@@ -173,7 +136,7 @@ Dropping a picture, video or sound onto the browser canvas is one act: the file 
 
 ## Orphans
 
-An asset no longer named in the project keeps its versions and files until `reclaim`. Deleted from the page or through the API, or gone from an imported YAML once a render has seen that, its name is free: a later asset of that name starts with no versions, and the browser's Rename or Undo still finds the old ones. What it made stands.
+An asset no longer named in the project keeps its versions and files until `reclaim`. Deleted from the page or through the API, its name is free: a later asset of that name starts with no versions, and the browser's Rename or Undo still finds the old ones. What it made stands.
 
 ## Discarded takes
 
@@ -221,12 +184,8 @@ The package `cozy` is reserved: Calcifer runs it itself, free, with no machine, 
 - **Use one:** `--file image=65b436d4f9a3` names a file by its hash, and approving that file for `kyogre` in the browser makes it what `kyogre` holds.
 - **`reclaim`** lists a run's files once nothing names them.
 
-## Canonical storage and interchange
+## Storage
 
-A project is stored in its current native CRDT `project.db`. Folders stored only as `project.yaml`,
-`project.lock` or migration stages are unsupported and are not upgraded, imported or archived on open.
-Calcifer refuses them without changing their project data.
-
-Current-format YAML remains an explicit authoring interchange: export a native project's graph or
-import format 4 text into an already native project. That does not replace its retained versions,
-media or undo history with a file-based project store. Older format 2/3 documents are not converted.
+A project is its native CRDT `project.db`. A folder without one is not a project, whatever else it holds (an old
+`project.yaml` or `project.lock` too): `cozy new --unencrypted` makes one there and leaves the other files as they are; an
+encrypted project starts in an empty folder.

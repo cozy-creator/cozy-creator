@@ -45,7 +45,7 @@ fn seed_current_web_project() {
     }
     let written = Written {
         boxes: seed.boxes,
-        ..Written::blank()
+        ..Written::default()
     };
     assert_eq!(written.boxes.len(), seed.expected_assets);
     assert_eq!(seed.cards.len(), seed.expected_assets);

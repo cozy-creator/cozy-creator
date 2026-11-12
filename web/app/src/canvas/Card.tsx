@@ -3,7 +3,7 @@ import type { NodeProps, Viewport } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import { machinesQuery } from "../api/queries"
+import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
 import type { MainFile, Tool, ToolField } from "../api/calcifer"
@@ -21,7 +21,7 @@ import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { PickUpHere } from "./PickUpHere"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, takingOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns } from "./AddOns"
@@ -49,7 +49,11 @@ function kindOf(view: ElementView): string {
 
 /** How far a take being made is: its package installing or its weights arriving show as such, never as its own percentage. */
 function TakeProgress({ view, run }: { view: ElementView; run: number }) {
-  const mine = view.run?.number === run ? view.run : undefined
+  // Its own run, each tile (cl-945): the box follows only the one its frame is on.
+  const { client } = useConnection()
+  const framed = view.run?.number === run
+  const { data } = useQuery({ ...runQuery(client, run), enabled: !framed })
+  const mine = framed ? view.run : data
   const on = useWaitsOn(mine)
   if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
   const fraction = mine?.progress?.done_fraction
@@ -129,7 +133,7 @@ function nextTake(store: CanvasStore, view: ElementView, name: string, tools: Ma
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
   const writes = paints(view, tools)
-  const any = Boolean(asset.prefixes?.length) || Boolean(asset.sha256) || Boolean(asset.timeline) || making.length > 0 || Boolean(waiting) || Boolean(asset.failure)
+  const any = Boolean(asset.prefixes?.length) || Boolean(asset.sha256) || Boolean(asset.timeline) || takingOf(view).length > 0 || making.length > 0 || Boolean(waiting) || Boolean(asset.failure)
   const adds = (writes || (asset.kind === "video" && Boolean(asset.tool))) && any
   const write = () => {
     // Already on them, the caret goes back in.
@@ -143,7 +147,7 @@ function nextTake(store: CanvasStore, view: ElementView, name: string, tools: Ma
     if (writes) return store.writeNext(name)
     store.focusFit?.()
     store.focusing = name
-    store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watchRun: undefined, watchFrom: undefined })
+    store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watch: undefined })
   }
   const label = writes ? "Its next take" : asset.timeline ? "Its words" : "New video"
   return { adds, write, label, title: writes ? "New image" : "New video", tool: tools.get(asset.tool ?? "")?.label, on: Boolean(view.hereWords), word: writes || asset.kind === "video" }
@@ -198,16 +202,19 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
   // Rendered from its words, what's being made is what's looked at.
   const shown = onWords || watch ? null : shownOf(view)
   const versions = [...(asset.prefixes ?? [])].reverse()
-  const making = asset.making ?? []
-  const waiting = !making.length && (view.queued || view.asked !== undefined)
+  // Each take on its way by its id, from the click to its version (cl-945); a run no take names, and what's asked with no take named
+  // (Render all, before Calcifer lists it), as they come.
+  const pending = takingOf(view)
+  const making = (asset.making ?? []).filter((run) => !pending.some((take) => take.run === run))
+  const waiting = !pending.length && !making.length && (view.queued || view.asked !== undefined)
   // The newest take, once its tile's up, is made ready at the size it's looked at, before it's clicked.
   const { client } = useConnection()
   const newest = asset.prefixes?.at(-1)
   const next = nextTake(store, view, name, tools)
-  if (!next.adds && !versions.length && !view.joining && !making.length && !waiting) return null
+  if (!next.adds && !versions.length && !view.joining && !pending.length && !making.length && !waiting) return null
   const pick = (number: number) => {
     store.pickTake(name, number)
-    if (onWords || watch) store.patch(name, { hereWords: undefined, watchFrom: undefined, watchRun: undefined })
+    if (onWords || watch) store.patch(name, { hereWords: undefined, watch: undefined })
   }
   const row = (
     <div
@@ -220,7 +227,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       {next.adds && !focused && <NewTake next={next} />}
       {waiting && (
         <span className="take-at">
-          <button type="button" className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued" onClick={() => store.watchTake(name)}>
+          <button type="button" className="take making" title="Queued">
             …
           </button>
           <button type="button" className="take-off" aria-label="Cancel what's queued" title="Cancel what's queued" onClick={() => store.cancelRender(name)}>
@@ -228,12 +235,23 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
           </button>
         </span>
       )}
+      {pending.map((take) => (
+        <span key={take.id} className="take-at">
+          <button type="button" className={`take making ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} title={take.run !== undefined ? `Run ${take.run}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
+            <span className={`state-dot ${take.run !== undefined ? "running" : "queued"}`} role="img" aria-label={take.run !== undefined ? "Rendering" : "Queued"} />
+            {take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
+          </button>
+          <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
+            <Icon name="close" />
+          </button>
+        </span>
+      ))}
       {making.map((run) => (
         <span key={run} className="take-at">
-          <button type="button" className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`} onClick={() => store.watchTake(name, run)}>
+          <button type="button" className="take making" title={`Run ${run}`}>
             <TakeProgress view={view} run={run} />
           </button>
-          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelRun(name, run)}>
+          <button type="button" className="take-off" aria-label={`Cancel run ${run}`} title={`Cancel run ${run}`} onClick={() => store.cancelTake(name, { id: "", run })}>
             <Icon name="close" />
           </button>
         </span>
@@ -248,6 +266,7 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
             aria-pressed={shown?.number === version.number}
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : "", asset.unseen?.includes(version.number) ? "not looked at yet" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
+            data-take-id={version.id || undefined}
             style={asset.kind === "image" ? { height: 100, width: Math.min(220, 100 * (version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5)), aspectRatio: "auto" } : undefined}
             onClick={() => pick(version.number)}
             onDoubleClick={() => store.toggleApproved(name, version.number)}

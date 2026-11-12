@@ -471,10 +471,6 @@ export class Client {
     return this.json(`${project(id)}?assets=false`)
   }
 
-  async yaml(id: string, signal?: AbortSignal): Promise<string> {
-    return (await this.send(`${project(id)}/yaml`, { signal })).text()
-  }
-
   import(id: string, key: string, body: Import, write: Write = {}): Promise<Imported> {
     return this.write("POST", `${project(id)}/imports`, body, key, write)
   }
@@ -490,7 +486,7 @@ export class Client {
   }
 
   /** A new version of each of `names`, on these machines; none: Calcifer's to say (cl-894). A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
-  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated"> = {}, once?: AbortSignal): Promise<Asked> {
+  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated" | "takes"> = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
   }
 
@@ -595,6 +591,11 @@ export class Client {
   /** These assets' queued work dropped and their runs canceled. */
   cancelRender(id: string, names: string[], once?: AbortSignal): Promise<unknown> {
     return this.write("POST", `${project(id)}/cancel`, { names }, undefined, { once })
+  }
+
+  /** These takes, by id, dropped from the queue or their runs canceled (cl-945). */
+  cancelTakes(id: string, takes: string[], once?: AbortSignal): Promise<unknown> {
+    return this.write("POST", `${project(id)}/cancel`, { names: [], takes }, undefined, { once })
   }
 
   rename(id: string, from: string, to: string, write: Write = {}): Promise<Renamed> {
@@ -763,14 +764,12 @@ export class Client {
 
   // Models
 
-  /** The Hub's models: of `family` only when it's said, only those a tool's slot loads when `fits` (`<tool>:<slot>`, judged by their
-   *  headers; `project` finds local code) is, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
-  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; fits?: string; project?: string; noTag?: string } = {}): Promise<ModelSearch> {
+  /** The Hub's models: of `family` and `role` only when said, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
+  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; role?: "model" | "lora"; noTag?: string } = {}): Promise<ModelSearch> {
     const asked = new URLSearchParams({ limit: String(limit) })
     if (q) asked.set("q", q)
     if (only.family) asked.set("family", only.family)
-    if (only.fits) asked.set("fits", only.fits)
-    if (only.fits && only.project) asked.set("project", only.project)
+    if (only.role) asked.set("role", only.role)
     if (only.noTag) asked.set("no_tag", only.noTag)
     return this.json(`/v1/models?${asked}`, { signal })
   }

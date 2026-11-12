@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-trash|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|released|commands|follow|slow|web|web-core|web-toasts|web-palette|web-trash|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -26,8 +26,10 @@ parse "$@"
 . "$(dirname "$0")/rental.sh"
 . "$(dirname "$0")/fallback.sh"
 . "$(dirname "$0")/previews.sh"
+. "$(dirname "$0")/released.sh"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
+. "$(dirname "$0")/oldtakes.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
@@ -290,14 +292,16 @@ cozy --json package uninstall local/one_script --on local > /dev/null || check "
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="uv_at_once entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles slot_choices old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine slow_runs prepares completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="uv_at_once entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine slow_runs prepares completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
-  executors) parts="second_executor lifetime kept_preparing update remove" ;;
+  executors) parts="second_executor lifetime kept_preparing update released_project remove" ;;
+  # A project the newest release made, read by the candidate (cl-930).
+  released) parts="update released_project logs" ;;
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;
   entrypoints) parts="entrypoints" ;;
-  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references no_descriptions orbit_angles slot_choices old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
+  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves page_resend logs" ;;
   project-stream) parts="project_stream logs" ;;
@@ -349,6 +353,10 @@ case $SHARD in
   web-tiles) export DB_WEB="tiles newtakes backdrop"; parts="tools_read db_existing_web logs" ;;
   # The take looked at in Focus is the one drawn when it finishes (cl-942).
   web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
+  # A take is one id from Render to its version, listed at once and never off, through a slow Calcifer and a reload (cl-945), with cl-942's.
+  web-takeids) export DB_WEB="takeids focusfinish"; parts="tools_read db_existing_web logs" ;;
+  # A project cozy 0.24.0 made keeps every take under this cozy, and a take asked by id lands as that version (cl-945).
+  old-takes) parts="old_takes logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
   web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
   # Files dropped: twenty pictures at once, each drawn once where and as it stays (cl-918), and Place's drop, chooser, rename and moves.
@@ -360,9 +368,9 @@ case $SHARD in
   web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
-  # computer placed on (cl-894), a new take never changing what's approved (cl-908), one not looked at (cl-928), and the take looked at in
-  # Focus drawn when it finishes (cl-942).
-  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes focusfinish prepares logs" ;;
+  # computer placed on (cl-894), a new take never changing what's approved (cl-908), one not looked at (cl-928), the take looked at in
+  # Focus drawn when it finishes (cl-942), and a take one id from Render to its version, a 0.24.0 project's takes kept (cl-945).
+  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes focusfinish takeids old_takes prepares logs" ;;
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;

@@ -727,12 +727,10 @@ async fn call(
                 &target, code.release, code.interface, callable, &terms, level == WarmLevel::Gpu, &mut notes,
             )
             .await?;
-            crate::hub::checkpoints::check_choices(api, hub, &target, &crate::hub::checkpoints::slots_of(code.interface, callable), &models).await?;
             (call.warm(level, &models, payload)?, None, None)
         }
         None => {
             let mut bound = bind::bind(&target, code.release, code.interface, callable, &terms).await?;
-            crate::hub::checkpoints::check_choices(api, hub, &target, &crate::hub::checkpoints::slots_of(code.interface, callable), &bound.models).await?;
             notes.append(&mut bound.notes);
             notes.extend(bound.cut.iter().map(|cut| Note { level: NoteLevel::Warning, message: cut.clone() }));
             if let Some(warning) = bound.warning(&target) {

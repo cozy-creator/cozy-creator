@@ -302,6 +302,17 @@ class Route:
 
     clone = detach = contiguous
 
+    def reshape(self, *shape: int | tuple[int, ...]) -> Route:
+        """A contiguous route under another shape, one `-1` resolved."""
+        dims = list(shape[0] if len(shape) == 1 and isinstance(shape[0], tuple) else cast(tuple[int, ...], shape))
+        assert self.strides == contiguous(self.shape), (self.key, "reshaped while not contiguous")
+        if -1 in dims:
+            dims[dims.index(-1)] = self.numel() // -math.prod(dims)
+        assert math.prod(dims) == self.numel(), (self.key, dims)
+        return replace(self, shape=tuple(dims), strides=contiguous(tuple(dims)))
+
+    view = reshape
+
     def __getitem__(self, key: Index | tuple[Index, ...]) -> Route:
         index = key if isinstance(key, tuple) else (key,)
         index = (*index, *([slice(None)] * (self.ndim - len(index))))
@@ -815,6 +826,55 @@ def krea2_lora() -> Table[LoraRow]:
     lora: Lora = {"a": [".lora_A.weight", ".lora_down.weight", ".A"], "b": [".lora_B.weight", ".lora_up.weight", ".B"],
                   "alpha": [".alpha"], "magnitude": MAGNITUDE}
     return {"name": "krea2.lora", "lora": lora, "components": components}
+
+
+# ------------------------------------------------------------------ Krea 2 single files
+
+KREA2_FILES = VECTORS / "krea2-comfy-headers"
+#: The reference checkpoint's names bare (Krea's `raw.safetensors`, Comfy-Org's `diffusion_models/krea2_*`), or under
+#: the prefix ComfyUI's model save writes.
+KREA2_SINGLE_FILE = {"krea2.native": "", "krea2.comfy": "model.diffusion_model."}
+#: A quantized carrier's parts beside its `weight`: ComfyUI's marker and scales (fp8, int8_convrot, nvfp4).
+QUANTIZED_PARTS = (".comfy_quant", ".weight_scale", ".weight_scale_2", ".input_scale")
+
+
+def krea2_single_file(name: str) -> Table[TableRow]:
+    """Krea 2's DiT from one file in the reference checkpoint's names, onto Diffusers' (the family's): Diffusers'
+    `convert_krea2_transformer_checkpoint_to_diffusers` renames every tensor and reshapes each block's flat modulation
+    table to `[6, dim]`. A quantized weight (ComfyUI's fp8, int8_convrot and nvfp4: published fine-tunes, `vectors/`)
+    is folded into one tensor before a row reads it and is only renamed. No reference: Krea's repository is gated, so
+    a DiT-only file takes its configs and other components from the Hub base it is uploaded on (`--base`)."""
+    prefix = KREA2_SINGLE_FILE[name]
+    family: FamilyDoc = json.loads((FAMILIES / "krea-2.json").read_text())
+    keys = {k: tuple(shape) for k, shape in family["components"]["transformer"]["keys"]}
+    from diffusers import Krea2Transformer2DModel
+
+    with torch.device("meta"):
+        # the class defaults are Krea 2's config (the reference repository is gated); the family's keys check it
+        model = cast(torch.nn.Module, Krea2Transformer2DModel())  # type: ignore[no-untyped-call]  # type checkers see diffusers' dummy class
+    source = header(KREA2 / "krea2_raw_bf16.safetensors.header")
+    checkpoint: dict[str, Route] = {k: Route(k, shape, 0, contiguous(shape)) for k, (_, shape) in source.items()}
+    converted: dict[str, Route | Materialized] = single_file_utils.convert_krea2_transformer_checkpoint_to_diffusers(  # type: ignore[no-untyped-call]  # untyped
+        checkpoint)
+    rows: list[TableRow] = []
+    for target, value in model.state_dict().items():
+        route = converted.pop(target)
+        assert isinstance(route, Route) and route.shape == tuple(value.shape) == keys[target], (name, target)
+        stored = source[route.key][1]
+        whole = route.shape == stored and route.offset == 0 and route.strides == contiguous(stored)
+        rows.append(row(target, route.key, None if whole else route_ops(route, stored)))
+    assert not converted and len(rows) == len(keys) == len(source), (name, sorted(converted)[:4])
+    held = 0
+    for vector in sorted(KREA2_FILES.glob("*.header")):
+        published = header(vector)
+        if not all(k.startswith(prefix) for k in published) or (not prefix and any(k.startswith("model.") for k in published)):
+            continue
+        weights = {k.removeprefix(prefix) for k in published if not k.endswith(QUANTIZED_PARTS)}
+        assert weights == set(source), (name, vector.name, sorted(weights ^ set(source))[:4])
+        held += 1
+    assert held, (name, "no published file in this layout")
+    component: Component[TableRow] = {"name": "transformer", "prefix": prefix, "rows": rows}
+    return {"name": name, "components": [component]}
 
 
 # ------------------------------------------------------------------ Qwen-Image 2.1 LoRA
@@ -1466,6 +1526,7 @@ def generate() -> dict[str, Generated]:
         "h3.lora": h3_lora(h3, source),
         "sdxl.lora": sdxl_lora(sdxl, layers, unet),
         "krea2.lora": krea2_lora(),
+        **{name: krea2_single_file(name) for name in KREA2_SINGLE_FILE},
         "qwenimage21.lora": qwenimage21_lora(),
         **{name: comfy_single_file(name) for name in COMFY},
         "flux2.lora": flux2_lora(),

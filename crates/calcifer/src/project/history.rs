@@ -481,7 +481,7 @@ fn kept(method: &Method, path: &str) -> bool {
         ("POST", ["assets", _, "versions"]) => true,
         ("PATCH" | "DELETE", ["assets", _]) => true,
         ("PATCH" | "DELETE", ["assets", _, "versions", _]) => true,
-        ("PATCH", ["canvas"]) | ("PUT", ["yaml"]) => true,
+        ("PATCH", ["canvas"]) => true,
         _ => false,
     }
 }
@@ -727,7 +727,6 @@ fn said_by(by: &By) -> String {
     match (by.via.as_str(), &by.client) {
         ("page", _) => "the page".to_owned(),
         ("cli", _) => "the CLI".to_owned(),
-        ("file", _) => "an import".to_owned(),
         (_, Some(client)) => client.clone(),
         _ => "the API".to_owned(),
     }

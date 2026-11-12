@@ -360,7 +360,7 @@ mod tests {
     use api::calcifer::hub::{FoundModel, ModelAuthor, ModelContentKind};
 
     fn catalog() -> Catalog {
-        Catalog::new(Searching { hub: "https://example.test".into(), q: String::new(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), role: "model".into(), limit: 2, offset: 2, fits: None },
+        Catalog::new(Searching { hub: "https://example.test".into(), q: String::new(), family: Some("sdxl".into()), tag: "art".into(), no_tag: "nsfw".into(), role: "model".into(), limit: 2, offset: 2 },
             ModelSearch { models: vec![FoundModel { model: "author/one".into(), ..Default::default() }, FoundModel { model: "author/two".into(), ..Default::default() }], total: 5, older: 1 },
             Some(vec![HeldModel { model: "author/two".into(), role: "model".into(), complete: Some(true), bytes: 1024, ..Default::default() }] ))
     }

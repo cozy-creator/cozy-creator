@@ -480,7 +480,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
         let at = canvas::row(folder, &name)?;
         folder.edit(|written| written.removed(&name).map(drop))?;
         // Gone from the project, what lands of it lands nothing.
-        cancelled(api, project, std::slice::from_ref(&name), &deleted_why).map_err(|Refusal(why)| why)?;
+        cancelled(api, project, std::slice::from_ref(&name), &[], &deleted_why).map_err(|Refusal(why)| why)?;
         // What it holds, set aside for Undo: a box that never made anything holds nothing.
         if pin.is_some() || folder.reading_lock(|lock| lock.asset(&name).is_some())? {
             folder.update_lock(|lock| lock.set_aside(&name, &box_id, pin.clone()))?;

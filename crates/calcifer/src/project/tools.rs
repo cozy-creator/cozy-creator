@@ -35,7 +35,7 @@ pub(crate) struct Shape {
 const STILL_S: f64 = 3.0;
 
 /// A piece of a cut: the asset it reads, its file (here, its digest, its path in the project,
-/// `files/<sha256>.<ext>`, and its shape as project.lock records it), and its frames from `start`
+/// `files/<sha256>.<ext>`, and its shape as the lock records it), and its frames from `start`
 /// to `end` (exclusive) at the cut's rate. A still is one picture, held from 0 to `end`.
 pub(crate) struct Piece {
     pub asset: String,
@@ -227,7 +227,7 @@ fn sound_filter((start, end): (u64, u64), fps: f64) -> String {
     format!("atrim=start={}:end={},asetpts=PTS-STARTPTS", start as f64 / fps, end as f64 / fps)
 }
 
-/// The cut `pieces` make at `fps`, as project.lock records their takes; None before each is probed.
+/// The cut `pieces` make at `fps`, as the lock records their takes; None before each is probed.
 pub(crate) fn measure(pieces: &[Piece], fps: f64) -> Option<Cutted> {
     let frames = pieces.iter().map(|piece| piece.frames(fps).map(|(start, end)| end - start)).sum::<Option<u64>>()?;
     let mut takes: Vec<String> = vec![];
@@ -448,7 +448,7 @@ fn cut(
     let probes = pieces.iter().map(|piece| probe(ffprobe, &piece.path, true)).collect::<Result<Vec<_>, _>>()?;
     let (fps, rate) = (canvas.fps, canvas.fps.to_string());
     let (width, height) = canvas.edit_size(probes[0].size);
-    // Each piece's frames at the project's rate, within its take, as project.lock records it.
+    // Each piece's frames at the project's rate, within its take, as the lock records it.
     let Some(made) = measure(pieces, fps) else {
         let unprobed: Vec<&str> = pieces.iter().filter(|piece| piece.shape.is_none()).map(|piece| piece.asset.as_str()).collect();
         return Err(failed(format!("no frame rate is recorded for {}'s file", unprobed.join(", "))));

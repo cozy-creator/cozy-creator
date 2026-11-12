@@ -12,7 +12,6 @@ import { Projects } from "../panels/Projects"
 import { ProjectVault } from "../panels/ProjectVault"
 import { RunDrawer } from "../panels/runs/RunDrawer"
 import { Runs } from "../panels/runs/Runs"
-import { Yaml } from "../panels/Yaml"
 import { useConnection } from "./Connection"
 import { Shell } from "./Shell"
 import { ProjectRoute, projectPath } from "./project"
@@ -77,7 +76,6 @@ export const theRouter = () =>
             ...drawers,
             drawer("new", <NewRun />),
             drawer("files", <Files />),
-            drawer("yaml", <Yaml />),
             drawer("vault", <ProjectVault />),
           ],
         })),
