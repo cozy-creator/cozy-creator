@@ -87,7 +87,22 @@ pub(crate) fn migrate_execution_bindings(scope: &LocalPrivateStorage, ordinary: 
     if !bindings.is_empty() || runs.service.engine.needs_project_migration_from(&ordinary.service.engine, &scope.project_id)? {
         runs.service.pause_project();
         runs.service.engine.assert_private_idle(&scope.project_id)?;
-        runs.service.engine.migrate_project_from(&ordinary.service.engine, scope, logs, &verified.actor, bindings)?;
+        let first = runs.service.engine.migrate_project_from(&ordinary.service.engine, scope, logs, &verified.actor, bindings);
+        if first.as_ref().is_err_and(|error| matches!(error.kind(),io::ErrorKind::WouldBlock|io::ErrorKind::ResourceBusy)) {
+            // Canonical rows have already moved only when the protected receipt says so.
+            // Release stale in-memory roots/idle cache holders outside both journal locks,
+            // then retry once. Actual independent readers remain an explicit pending result.
+            let generations=runs.service.engine.retired_migration_generations(&ordinary.service.engine)?;
+            within(None,|| -> io::Result<()> {
+                ordinary.objects.sweep()?;
+                if let Some(pool)=ordinary.service.gpu() {
+                    pool.drop_members(&verified.actor,&generations);
+                    for generation in &generations {pool.end_generation(generation);}
+                }
+                Ok(())
+            })?;
+            runs.service.engine.migrate_project_from(&ordinary.service.engine,scope,logs,&verified.actor,bindings)?;
+        } else { first?; }
     }
     Ok(runs)
 }

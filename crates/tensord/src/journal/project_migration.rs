@@ -946,6 +946,38 @@ impl Journal {
         Ok(found)
     }
 
+    pub(crate) fn retired_migration_generations(&self) -> io::Result<BTreeSet<String>> {
+        let present:bool=self.connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_custody_migrations')",[],|row|row.get(0)).map_err(db_error)?;
+        if !present {
+            return Ok(BTreeSet::new());
+        }
+        let mut query = self
+            .connection
+            .prepare("SELECT receipt FROM project_custody_migrations")
+            .map_err(db_error)?;
+        let rows = query
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .map_err(db_error)?;
+        let mut generations = BTreeSet::new();
+        for bytes in rows {
+            let receipt: Receipt =
+                serde_json::from_slice(&bytes.map_err(db_error)?).map_err(db_error)?;
+            if matches!(
+                receipt.phase.as_str(),
+                "journal_retired" | "inventory_pending" | "complete"
+            ) {
+                if digest(&receipt.original)? != receipt.digest {
+                    return Err(db_error("migration cleanup receipt is inconsistent"));
+                }
+                generations.extend(receipt.cleanup.generations);
+            }
+        }
+        Ok(generations)
+    }
+    pub(crate) fn legacy_generation_has_owner(&self, generation: &str) -> io::Result<bool> {
+        self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE json_extract(invocation,'$.generation')=?1 UNION SELECT 1 FROM installations WHERE json_extract(record,'$.generation')=?1)",[generation],|row|row.get(0)).map_err(db_error)
+    }
+
     pub(crate) fn needs_project_migration(
         &self,
         target: &Journal,
