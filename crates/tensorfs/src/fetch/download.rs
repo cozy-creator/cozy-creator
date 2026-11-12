@@ -266,6 +266,8 @@ pub(crate) struct Shared {
     /// Tasks and write-backs not yet ended.
     busy: AtomicUsize,
     settle: Notify,
+    /// `busy` left 0: the ramp wakes.
+    started: Notify,
     volume_reads: Semaphore,
     write_backs: Semaphore,
     pub stats: Counters,
@@ -629,6 +631,7 @@ impl Shared {
             pace: Mutex::new(Pace { level: START.min(requests.max(1)), max: crate::descriptors::requests(requests.max(1)), ..Pace::default() }),
             busy: AtomicUsize::new(0),
             settle: Notify::new(),
+            started: Notify::new(),
             volume_reads: Semaphore::new(VOLUME_READS),
             write_backs: Semaphore::new(WRITE_BACKS),
             stats: Counters::default(),
@@ -667,6 +670,28 @@ impl Shared {
         }
     }
 
+    fn busy_one(&self) {
+        if self.busy.fetch_add(1, Ordering::AcqRel) == 0 {
+            self.started.notify_waiters();
+        }
+    }
+
+    /// Resolves once a task or write-back is under way, or the fetcher closed.
+    async fn active(&self) {
+        loop {
+            let notified = self.started.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.busy.load(Ordering::Acquire) > 0 {
+                return;
+            }
+            tokio::select! {
+                () = notified => {}
+                () = self.closed() => return,
+            }
+        }
+    }
+
     fn unbusy(&self) {
         if self.busy.fetch_sub(1, Ordering::AcqRel) == 1 {
             let statuses = lock(&self.stats.statuses).clone();
@@ -677,54 +702,63 @@ impl Shared {
         }
     }
 
-    /// The ramp, once a window: more requests while the bytes received grow, back to `START` when idle.
+    /// The ramp, once a window while anything downloads: more requests while the bytes received grow, back to `START`
+    /// when idle. Idle, it waits for the next download.
     pub(crate) async fn pace(self: Arc<Self>) {
         loop {
             tokio::select! {
                 () = tokio::time::sleep(WINDOW) => {}
                 () = self.closed() => return,
             }
-            self.steal();
-            self.hedge();
-            let received = self.stats.received.load(Ordering::Relaxed);
-            let mut pace = lock(&self.pace);
-            let rate = (received - pace.seen) as f64 / WINDOW.as_secs_f64();
-            if received > pace.seen {
-                self.stats.receiving_ms.fetch_add(WINDOW.as_millis() as u64, Ordering::Relaxed);
+            if self.window() {
+                self.active().await;
             }
-            pace.seen = received;
-            if self.busy.load(Ordering::Acquire) == 0 {
-                let gone = pace.level.saturating_sub(START.min(pace.max));
-                self.shrink(&mut pace, gone);
-                (pace.last, pace.settled, pace.flat) = (None, false, 0);
-                continue;
-            }
-            // Demand is requests waiting, or ranges in flight with halves left to take; the tail is a new
-            // phase, probed afresh from its own rate.
-            let (waiting, stealable) = (self.slots.full(), self.stealable());
-            let tail = !waiting && stealable && self.slots.busy();
-            if tail && !pace.tail {
-                (pace.last, pace.settled, pace.flat) = (None, false, 0);
-            }
-            pace.tail = tail;
-            if !(waiting || tail) || pace.settled || pace.level >= pace.max {
-                continue;
-            }
-            // A doubling's new requests take more than a window to deliver: two flat windows settle it.
-            if pace.last.is_some_and(|last| rate < last * GAIN) {
-                pace.flat += 1;
-                if pace.flat >= 2 {
-                    pace.settled = true;
-                    tracing::info!(streams = pace.level, mb_s = rate / 1e6, "streams settled");
-                }
-                continue;
-            }
-            pace.flat = 0;
-            let grow = (pace.level * 2).min(pace.max) - pace.level;
-            (pace.level, pace.last) = (pace.level + grow, Some(rate));
-            self.slots.add(grow);
-            tracing::info!(streams = pace.level, mb_s = rate / 1e6, "more streams");
         }
+    }
+
+    /// One window of the ramp: true when nothing downloads.
+    fn window(&self) -> bool {
+        self.steal();
+        self.hedge();
+        let received = self.stats.received.load(Ordering::Relaxed);
+        let mut pace = lock(&self.pace);
+        let rate = (received - pace.seen) as f64 / WINDOW.as_secs_f64();
+        if received > pace.seen {
+            self.stats.receiving_ms.fetch_add(WINDOW.as_millis() as u64, Ordering::Relaxed);
+        }
+        pace.seen = received;
+        if self.busy.load(Ordering::Acquire) == 0 {
+            let gone = pace.level.saturating_sub(START.min(pace.max));
+            self.shrink(&mut pace, gone);
+            (pace.last, pace.settled, pace.flat) = (None, false, 0);
+            return true;
+        }
+        // Demand is requests waiting, or ranges in flight with halves left to take; the tail is a new
+        // phase, probed afresh from its own rate.
+        let (waiting, stealable) = (self.slots.full(), self.stealable());
+        let tail = !waiting && stealable && self.slots.busy();
+        if tail && !pace.tail {
+            (pace.last, pace.settled, pace.flat) = (None, false, 0);
+        }
+        pace.tail = tail;
+        if !(waiting || tail) || pace.settled || pace.level >= pace.max {
+            return false;
+        }
+        // A doubling's new requests take more than a window to deliver: two flat windows settle it.
+        if pace.last.is_some_and(|last| rate < last * GAIN) {
+            pace.flat += 1;
+            if pace.flat >= 2 {
+                pace.settled = true;
+                tracing::info!(streams = pace.level, mb_s = rate / 1e6, "streams settled");
+            }
+            return false;
+        }
+        pace.flat = 0;
+        let grow = (pace.level * 2).min(pace.max) - pace.level;
+        (pace.level, pace.last) = (pace.level + grow, Some(rate));
+        self.slots.add(grow);
+        tracing::info!(streams = pace.level, mb_s = rate / 1e6, "more streams");
+        false
     }
 
     /// Each free place with nothing waiting takes the back half of the in-flight range with the most
@@ -874,7 +908,7 @@ impl Shared {
                 let seq = queue.seq;
                 queue.heap.push(Reverse((priority, seq, object.sha256.clone())));
                 queue.tasks.insert(object.sha256.clone(), Arc::clone(&task));
-                self.busy.fetch_add(1, Ordering::AcqRel);
+                self.busy_one();
                 self.queued.notify_one();
                 task
             }
@@ -1378,7 +1412,7 @@ impl Shared {
         let Some(volume) = self.volume.clone() else {
             return;
         };
-        self.busy.fetch_add(1, Ordering::AcqRel);
+        self.busy_one();
         let shared = Arc::clone(self);
         tokio::spawn(async move {
             if let Ok(_writing) = shared.write_backs.acquire().await {
