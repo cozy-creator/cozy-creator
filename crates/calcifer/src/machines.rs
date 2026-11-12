@@ -91,6 +91,8 @@ pub(crate) struct Machines {
     pub(crate) rc: crate::rc::Rc,
     /// Told when a rental becomes ready: a dev home's moves to the RC before its first run.
     pub(crate) rc_ready: Notify,
+    /// What each machine is told to have ready (cl-967).
+    pub(crate) lists: crate::ahead::Lists,
 }
 
 /// What Calcifer last heard of a machine, never stored.
@@ -147,6 +149,7 @@ impl Machines {
             dev: config.dev,
             rc: crate::rc::Rc::default(),
             rc_ready: Notify::new(),
+            lists: crate::ahead::Lists::default(),
             calcifer,
         });
         me.calcifer.serve_with(&me);
@@ -919,6 +922,8 @@ impl Machines {
     fn observe(&self, name: &str, mut frame: v1::StatusFrame) {
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
+        self.lists.observe(name, &frame);
+        let rebooted = lock(&self.seen).get(name).and_then(|seen| seen.frame.as_ref()).is_some_and(|last| last.boot_id != frame.boot_id);
         let back = {
             let mut seen = lock(&self.seen);
             let seen = seen.entry(name.to_owned()).or_default();
@@ -943,6 +948,10 @@ impl Machines {
         // Its runs and exports that wait on it try again now.
         if back {
             self.calcifer.touch(name);
+        }
+        // Started again, it holds no list: each goes again.
+        if let Some(machines) = rebooted.then(|| self.calcifer.machines()).flatten() {
+            self.lists.restarted(&machines, name);
         }
         self.calcifer.machine_changed();
     }

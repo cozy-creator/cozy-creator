@@ -338,6 +338,29 @@ impl Jobs {
         self.publish(&mut held);
     }
 
+    /// Upcoming job `key`'s row on its machine (cl-967), as `id` its machine names it: shown, and said when it moved.
+    pub(crate) fn upcoming(&self, id: &str, key: &str, row: Ahead) {
+        let Ok(id) = RunId::try_from(id.to_owned()) else { return };
+        let mut held = self.held.lock().expect("jobs lock");
+        match held.ahead.iter_mut().find(|(run, ..)| *run == id) {
+            Some((.., was)) if *was == row => return,
+            Some((.., was)) => *was = row.clone(),
+            None => held.ahead.push((id, String::new(), key.to_owned(), row.clone())),
+        }
+        crate::events::ahead_updated(&self.project, &row);
+        self.publish(&mut held);
+    }
+
+    /// The upcoming jobs' rows, but those of `keys`, leave the board: their jobs went or ended.
+    pub(crate) fn upcoming_kept(&self, keys: &HashSet<String>) {
+        let mut held = self.held.lock().expect("jobs lock");
+        let before = held.ahead.len();
+        held.ahead.retain(|(id, _, key, _)| !id.as_str().starts_with(crate::ahead::UPCOMING) || keys.contains(key));
+        if held.ahead.len() != before {
+            self.publish(&mut held);
+        }
+    }
+
     /// Box `name` waits for what `key` prepares: its rows say so.
     pub(crate) fn wants_ahead(&self, key: &str, name: &str) {
         let mut held = self.held.lock().expect("jobs lock");
