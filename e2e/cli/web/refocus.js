@@ -1,7 +1,9 @@
 // Leaving Focus returns the canvas to where it was (cl-931, Paul 11-12: "far too often, when I exit out of focus mode, I am still like zoomed
 // way too far in"), in a real browser on a real Calcifer. The canvas panned and zoomed somewhere of its own; a box opened in Focus by a
 // double click and left by Esc, its close, Back to canvas and a click off it, its picture zoomed in Focus first, and by way of a second box
-// opened from the first: each time the canvas is exactly where it was.
+// opened from the first: each time the canvas is exactly where it was. And (cl-955, Paul 11-12: "I exit out, but rather than snapping back
+// to the further away view I had going on, I just sit there at like 400% zoom-in"): left while a trackpad's scroll or pinch still glides,
+// the next visit after that, reloaded in Focus and in again by Forward: exactly where it was too.
 //   node refocus.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -176,6 +178,65 @@ async function died(why) {
   seen.by_a_second_box = await viewport();
   check('by_a_second_box_the_canvas_is_where_it_was', same(before, seen.by_a_second_box), { before, after: seen.by_a_second_box });
   await shot('back');
+
+  // Left while the wheel still glides, as a trackpad's does after the hand has gone: a scroll, then a pinch. Each first wheel on the canvas
+  // used to stop its way back at the box's zoom.
+  const glide = (ms, ctrlKey) => page.evaluate(({ ms, ctrlKey }) => new Promise((done) => {
+    const [x, y] = [innerWidth / 2, innerHeight / 2];
+    const end = performance.now() + ms;
+    const tick = () => {
+      (document.elementFromPoint(x, y) ?? document.body).dispatchEvent(new WheelEvent('wheel', { deltaY: ctrlKey ? -3 : 9, ctrlKey, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+      if (performance.now() < end) setTimeout(tick, 16);
+      else done();
+    };
+    tick();
+  }), { ms, ctrlKey });
+  /** Where the canvas comes to rest. */
+  const rested = async () => {
+    await left();
+    return viewport();
+  };
+  for (const [way, ctrl] of [['scroll', false], ['pinch', true]]) {
+    await enter('one');
+    const gliding = glide(1200, ctrl);
+    await page.waitForTimeout(250);
+    await page.keyboard.press('Escape');
+    await gliding;
+    seen[`${way}_gliding`] = await rested();
+    check(`left_while_a_${way}_glides_the_canvas_is_where_it_was`, same(before, seen[`${way}_gliding`]), { before, after: seen[`${way}_gliding`] });
+  }
+
+  // Moved somewhere else since: the next visit goes back there, never to where an earlier one began.
+  const there = await openCanvas(page);
+  await page.mouse.move(there.x, there.y);
+  await page.mouse.down();
+  await page.mouse.move(there.x + 90, there.y + 40, { steps: 8 });
+  await page.mouse.up();
+  const elsewhere = await rested();
+  await enter('one');
+  await page.keyboard.press('Escape');
+  seen.next_visit = await rested();
+  check('the_next_visit_goes_back_where_it_began', same(elsewhere, seen.next_visit) && !same(before, elsewhere), { elsewhere, after: seen.next_visit });
+
+  // Reloaded in Focus, then left.
+  await enter('one');
+  await page.reload();
+  await focused('one').waitFor();
+  await page.waitForTimeout(400);
+  await page.keyboard.press('Escape');
+  seen.reloaded = await rested();
+  check('reloaded_in_focus_the_canvas_is_where_it_was', same(elsewhere, seen.reloaded), { elsewhere, after: seen.reloaded });
+
+  // Out by Back, in again by Forward, then out.
+  await enter('one');
+  await page.goBack();
+  await rested();
+  await page.goForward();
+  await focused('one').waitFor();
+  await page.waitForTimeout(400);
+  await page.keyboard.press('Escape');
+  seen.forward = await rested();
+  check('in_again_by_forward_the_canvas_is_where_it_was', same(elsewhere, seen.forward), { elsewhere, after: seen.forward });
 
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();

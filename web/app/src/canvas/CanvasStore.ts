@@ -309,8 +309,8 @@ export class CanvasStore {
   rent: (pick?: RentFor | null) => void = () => {}
   /** What Render all asks first, on its own control, once for every tool this computer would do poorly. */
   readonly allAsking = signal<{ fit: Fit } | null>(null)
-  /** The box being worked on where it stands: the view to go back to, the one fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
-  inPlace: { name: string; back: Viewport; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
+  /** The box being worked on where it stands: the view fitted to it, and whether a hand has since moved the canvas or is pulling its corner. */
+  inPlace: { name: string; fitted?: Viewport; moved?: boolean; pulled?: boolean } | null = null
   /** Only the opened card has a viewport-dependent presentation. The cached value owns no DOM. */
   private surface: { id: string; current?: ReadableProjection; pose?: Box; update?: (room?: Box, at?: Viewport) => ReadableProjection | null } | null = null
   private surfaceFrame = 0
