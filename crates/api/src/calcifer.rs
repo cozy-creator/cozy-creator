@@ -1669,19 +1669,27 @@ pub struct MachineList {
 }
 
 impl MachineList {
-    /// Where a render goes with no machine named, the plan placing each job on whichever ends it first (Paul, 11-05): every rental of this
-    /// controller up or on its way, any other computer's that's up, then this one, the last choice, which starts when used. With none of them,
-    /// `local`, which says why it can't where it can't.
+    /// Where a render goes with no machine named (`render_set`).
     pub fn render_set(&self) -> Vec<On> {
-        let held = |machine: &&Machine| machine.ordered && machine.offline.is_none();
-        let rented = self.machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting));
-        let added = self.machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
-        let mut set: Vec<On> = rented.chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
-        if set.is_empty() || platform::Os::CURRENT.local_inference() {
-            set.push(On::Machine("local".into()));
-        }
-        set
+        render_set(&self.machines)
     }
+}
+
+/// Where a render goes with no machine named, the plan placing each job on whichever ends it first (Paul, 11-05): every rental of this
+/// controller up or on its way, any other computer's that's up, then this one, the last choice, which starts when used. With none of them,
+/// `local`, which says why it can't where it can't. Never a test pod, a rental whose GPU memory is capped (a VRAM-capped matrix pod): it
+/// runs only what names it (cl-920).
+pub fn render_set(machines: &[Machine]) -> Vec<On> {
+    let held = |machine: &&Machine| machine.ordered && machine.offline.is_none();
+    let capped = |machine: &Machine| machine.status.as_ref().is_some_and(|status| status.gpus.iter().any(|gpu| gpu.memory_limit_bytes > 0));
+    let rented = (machines.iter().filter(held))
+        .filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting) && !capped(machine));
+    let added = machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
+    let mut set: Vec<On> = rented.chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
+    if set.is_empty() || platform::Os::CURRENT.local_inference() {
+        set.push(On::Machine("local".into()));
+    }
+    set
 }
 
 /// Live rentals summed: how many, what they cost an hour now, and what they accrued so far.

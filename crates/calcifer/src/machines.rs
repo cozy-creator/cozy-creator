@@ -1162,6 +1162,44 @@ impl Machines {
             .map(|row| row.name))
     }
 
+    /// Why `name` takes no work now (cl-920): it ended or is no machine here, its end is asked, or its Hub says it's offline. None: it may.
+    pub(crate) fn gone(&self, name: &str) -> Option<String> {
+        if name == "local" {
+            return None;
+        }
+        let row = match self.store().machine(name) {
+            Ok(Some(row)) => row,
+            Ok(None) => return Some(format!("{name} is no machine here")),
+            Err(_) => return None,
+        };
+        if row.state == MachineState::Ended {
+            return Some(format!("{name} ended"));
+        }
+        if self.pending_end(name).ok().flatten().is_some() {
+            return Some(format!("{name} is ending"));
+        }
+        self.offline(name).map(|why| format!("{name} is offline: {why}"))
+    }
+
+    /// Whether `name` ended or is no machine here: it leaves every project's chosen machines (cl-920).
+    pub(crate) fn ended_here(&self, name: &str) -> bool {
+        match self.store().machine(name) {
+            _ if name == "local" => false,
+            Ok(Some(row)) => row.state == MachineState::Ended,
+            Ok(None) => true,
+            Err(_) => false,
+        }
+    }
+
+    /// Where a render's job goes with no machine chosen (`api::calcifer::render_set`), by what's held here this moment.
+    pub(crate) fn automatic(&self) -> Vec<On> {
+        let here = platform::Os::CURRENT.local_inference();
+        let rows = self.store().machines().unwrap_or_default();
+        let listed = |row: &&MachineRow| row.state != MachineState::Ended && (here || row.kind != MachineKind::Local);
+        let machines: Vec<Machine> = rows.iter().filter(listed).filter_map(|row| self.picture(row).ok()).collect();
+        wire::render_set(&machines)
+    }
+
     /// Whether this controller placed `row` (no rental) or ordered it: a rental another client of
     /// the account ordered speaks with this computer's device key at its Hub, and takes no run
     /// unless one names it.
