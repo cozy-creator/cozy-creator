@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -25,6 +25,7 @@ parse "$@"
 . "$(dirname "$0")/rental.sh"
 . "$(dirname "$0")/fallback.sh"
 . "$(dirname "$0")/previews.sh"
+. "$(dirname "$0")/coming.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
@@ -274,7 +275,7 @@ cozy --json package uninstall local/one_script --on local > /dev/null || check "
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   local-wake) parts="local_wake_update logs" ;;
@@ -333,6 +334,8 @@ case $SHARD in
   # result's Latents in another package's caller (cr-276), a host path refused; then a docker rental's end, signed out,
   # with a revoked key and signed in (cl-875).
   local-code) parts="unseen local_edits hub_dependency hub_published child_latents path_manifest rental_end logs" ;;
+  # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
+  coming) parts="coming_machine logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;

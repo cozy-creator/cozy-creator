@@ -300,6 +300,17 @@ pub(crate) fn one_gpu_ms(history: &[Took], machine: &str, gpu: &str, size: &JobS
     Some(Prior::of(&one, machine, gpu, size.megapixels)?.with_steps(size.steps).total_ms(size.steps))
 }
 
+/// Whether a GPU's name as its machine says it (`NVIDIA GeForce RTX 4090`) is the card a Hub sells (`RTX 4090`, `rtx-4090`): their
+/// letters and digits, the vendor's words aside, one beginning the other.
+pub(crate) fn same_card(gpu: &str, card: &str) -> bool {
+    let bare = |name: &str| {
+        let lower = name.to_ascii_lowercase().replace("nvidia", "").replace("geforce", "");
+        lower.chars().filter(char::is_ascii_alphanumeric).collect::<String>()
+    };
+    let (gpu, card) = (bare(gpu), bare(card));
+    !gpu.is_empty() && !card.is_empty() && (gpu.starts_with(&card) || card.starts_with(&gpu))
+}
+
 /// What a run's machine quoted as it was sent (cl-816), on this computer's clock: when it would start and finish, and what that
 /// stands on.
 #[derive(Clone, Copy, Debug)]

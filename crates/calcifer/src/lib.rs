@@ -12,6 +12,7 @@
 mod access;
 mod api;
 mod authorized;
+mod coming;
 mod eta;
 mod events;
 mod files;
@@ -1048,6 +1049,14 @@ impl Calcifer {
             .collect()
     }
 
+    /// What a run of `target` of `size` takes on one GPU of `card` (a rental's, as its Hub sells it: `RTX 4090`), by this computer's
+    /// runs on that card: for a machine on its way, which has run nothing yet (cl-915).
+    pub(crate) fn card_ms(&self, target: &str, card: &str, size: &v1::JobSize) -> Option<f64> {
+        let history = self.history(target);
+        let gpu = history.iter().map(|took| took.gpu.as_str()).find(|gpu| eta::same_card(gpu, card))?.to_owned();
+        eta::one_gpu_ms(&history, "", &gpu, size)
+    }
+
     /// The GPU `machine` has, by name, as it last said; empty: unknown.
     fn gpu_of(&self, machine: &str) -> String {
         self.machines().and_then(|machines| machines.gpu(machine)).unwrap_or_default()
@@ -1731,6 +1740,10 @@ impl Calcifer {
                     let events = self.store.settle(id.as_str(), &outcome, durable)?;
                     let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
                     self.publish(id, events);
+                    // What it took on a rented card, for its Hub's placement of runs on that card (cl-915).
+                    if let (Some(machines), Ok(Some(row))) = (self.machines(), self.store.run(id.as_str())) {
+                        machines.report_run(&row, &outcome);
+                    }
                     tracing::info!(run = %id, phase = "outcome_recorded", prior_batch_ms, store_ms,
                         elapsed_ms = received.elapsed().as_secs_f64() * 1000.0);
                     return Ok(());

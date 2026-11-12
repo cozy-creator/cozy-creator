@@ -709,7 +709,7 @@ jobs:
           runtime: ${{ inputs.runtime }}
           release: ${{ inputs.publish_run }}
       # The project part's fixtures and probes (e2e/cli/project.sh); Calcifer, a service, fetches its own.
-      - if: matrix.shard == 'commands' || matrix.shard == 'web' || startsWith(matrix.shard, 'web-') || matrix.shard == 'local-code' || matrix.shard == 'control' || matrix.shard == 'projectvault' || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
+      - if: matrix.shard == 'commands' || matrix.shard == 'web' || startsWith(matrix.shard, 'web-') || matrix.shard == 'local-code' || matrix.shard == 'coming' || matrix.shard == 'control' || matrix.shard == 'projectvault' || startsWith(matrix.shard, 'projectdb') || startsWith(matrix.shard, 'project-stream')
         uses: AnimMouse/setup-ffmpeg@v1
       - name: Install the optional project-encryption filesystem driver
         if: matrix.shard == 'projectvault'

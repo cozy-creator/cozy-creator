@@ -12,6 +12,7 @@ pub mod config;
 pub mod contract;
 pub mod digests;
 pub mod error;
+pub mod estimate;
 #[cfg(feature = "hub")]
 pub mod hub;
 pub mod interface;

@@ -2,9 +2,10 @@
 //! machine a batch of jobs may go to is asked once for all of them (`POST /v1/estimate`), packed with its queue as if all were sent
 //! there now; each job goes to the soonest finish of those that can run it at all, on a tie one measured before one not and a rental
 //! before this computer (Paul, 11-05). Only a machine on this cozy's
-//! minor quotes (`Machines::current`). A quote reserves nothing: two clients that pick one machine are settled by its queue. Offers not
-//! yet rented (`any`, `new`) are never asked: the Hub keeps no times per SKU. This computer's `local`, which stops after 15 idle minutes,
-//! is asked as any: it starts to answer, and its times count from its answer, so its finish counts its start (cl-894).
+//! minor quotes (`Machines::current`). A quote reserves nothing: two clients that pick one machine are settled by its queue. This
+//! computer's `local`, which stops after 15 idle minutes, is asked as any: it starts to answer, and its times count from its answer, so its
+//! finish counts its start (cl-894). A rental on its way is quoted here as it will quote once it serves (`coming`, cl-915): a job may wait
+//! for one that finishes it sooner than any machine up now. A `new` run weighs a rental against them (`runs::instead_of_renting`).
 use std::sync::Arc;
 
 use api::{
@@ -52,9 +53,17 @@ pub(crate) struct Offer {
     pub prepare_ms: u64,
     pub queue_position: u32,
     pub basis: Basis,
+    /// When its machine should serve, for one on its way (cl-915); none for one that serves.
+    pub ready_at_ms: Option<i64>,
 }
 
 impl Offer {
+    /// What a job held for a machine on its way says (cl-915): `waits for pluto, ready in about 2 min`. None for one that serves.
+    pub(crate) fn waits_for(&self, now: i64) -> Option<String> {
+        let at = self.ready_at_ms?;
+        Some(format!("waits for {}, ready {}", self.machine, within(at - now)))
+    }
+
     /// How long past its preparation it waits for GPUs, from `now`.
     pub(crate) fn waits_ms(&self, now: i64) -> i64 {
         (self.start_at_ms - now - self.prepare_ms as i64).max(0)
@@ -74,6 +83,7 @@ impl Offer {
             prepare_ms: self.prepare_ms,
             queue_position: self.queue_position,
             basis: self.basis,
+            ready_ms: self.ready_at_ms.map(|at| (at - now).max(0) as u64),
         }
     }
 
@@ -93,10 +103,20 @@ pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<V
             machines.push(on);
         }
     }
+    let now = now_ms();
     let asked = machines.into_iter().map(|on| async move {
         let mine: Vec<usize> = (0..jobs.len()).filter(|&at| jobs[at].on.contains(on)).collect();
         let batch: Vec<&Job> = mine.iter().map(|&at| &jobs[at]).collect();
-        (on, mine, quotes(api, on, &batch, update).await)
+        // One on its way is quoted as it will quote once it serves.
+        let coming = match on {
+            On::Machine(name) => api.machines.coming(name, now),
+            _ => None,
+        };
+        let answer = match coming {
+            Some(coming) => Ok(crate::coming::quotes(api, &coming, &batch, now).await),
+            None => quotes(api, on, &batch, update).await,
+        };
+        (on, mine, answer)
     });
     let mut offers = vec![vec![]; jobs.len()];
     let mut said = vec![];
@@ -113,13 +133,14 @@ pub(crate) async fn offers(api: &Arc<Api>, jobs: &[Job], update: bool) -> (Vec<V
 }
 
 /// The soonest finish of `offers` that can run there at all (release owner, 11-09: one that can't has no finish); of those within a tie
-/// of it, one on its own measured runs before one that isn't, and a rental before this computer.
+/// of it, a machine that serves before one on its way, one on its own measured runs before one that isn't, and a rental before this
+/// computer.
 pub(crate) fn soonest(offers: &[Offer], now: i64) -> Option<&Offer> {
     let fits = || offers.iter().filter(|offer| offer.fits);
     let first = fits().map(|offer| offer.finish_at_ms).min()?;
     let tie = (((first - now).max(0) as f64 * TIE) as i64).max(1000);
     let tied = || fits().filter(|offer| offer.finish_at_ms <= first + tie);
-    let rank = |offer: &&Offer| (offer.basis != Basis::Measured, offer.machine.is_local());
+    let rank = |offer: &&Offer| (offer.ready_at_ms.is_some(), offer.basis != Basis::Measured, offer.machine.is_local());
     tied().min_by_key(rank)
 }
 
@@ -202,8 +223,29 @@ async fn quotes(api: &Arc<Api>, on: &On, jobs: &[&Job], update: bool) -> Result<
                 prepare_ms: quote.prepare_ms,
                 queue_position: quote.queue_position,
                 basis: quote.basis,
+                ready_at_ms: None,
             })
         })
         .collect::<Result<_, &str>>()
         .map_err(str::to_owned)
+}
+
+/// An offer in a line of the log: `stand-c finishes in 480 s (measured)`, `pluto finishes in 390 s (none), ready in 210 s`,
+/// `local can't: no_gpu`.
+pub(crate) fn said(offer: &Offer, now: i64) -> String {
+    if !offer.fits {
+        return format!("{} can't: {}", offer.machine, offer.refusal.as_ref().map_or("no reason given", |reason| reason.code.as_str()));
+    }
+    let ready = offer.ready_at_ms.map(|at| format!(", ready in {} s", (at - now).max(0) / 1000)).unwrap_or_default();
+    format!("{} finishes in {} s ({:?}){ready}", offer.machine, (offer.finish_at_ms - now).max(0) / 1000, offer.basis)
+}
+
+/// How soon, for people: `in under a minute`, `in about 2 min`, `in about 1.5 h`.
+pub(crate) fn within(ms: i64) -> String {
+    let seconds = ms.max(0) as f64 / 1e3;
+    match seconds {
+        s if s < 45.0 => "in under a minute".into(),
+        s if s < 90.0 * 60.0 => format!("in about {} min", (s / 60.0).round().max(1.0)),
+        s => format!("in about {:.1} h", s / 3600.0),
+    }
 }

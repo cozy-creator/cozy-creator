@@ -5,23 +5,18 @@
 use crate::{
     execution::Engine,
     journal::{function_key, Execution, Installation, RunTime, State, PREPARING},
-    pack::{self, Job, Scaling},
     runs::Runs,
     service::Service,
 };
 use api::{
     error::Error,
+    estimate::{self as pack, Job, Scaling, LINK, UNKNOWN_MS},
     machine::{self as v1, Basis, JobSize},
 };
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 
-/// A function's time when none of it ran here and the caller knows none.
-const UNKNOWN_MS: f64 = 60_000.0;
-/// An install this machine has not timed.
-const INSTALL_MS: f64 = 120_000.0;
-/// Weights' arrival, bytes a millisecond, until this machine has fetched enough to know its link.
-const LINK: f64 = 100_000.0;
+/// The bytes fetched before this machine's own link stands for the default's.
 const MEASURED_LINK: u64 = 1 << 30;
 /// The runs a time stands on, newest first, and of them those at one width.
 const HISTORY: usize = 40;
@@ -213,11 +208,7 @@ impl<'a> Here<'a> {
 
     /// Widths when the function's interface is not held: the count asked, else one GPU.
     fn unknown_widths(&self, gpus: u32) -> Vec<u32> {
-        match (self.gpus, gpus) {
-            (0, _) => vec![],
-            (_, 0) => vec![1],
-            (held, asked) => vec![asked.min(held as u32)],
-        }
+        pack::unheld_widths(self.gpus, gpus)
     }
 
     /// The machine's roots as `pack` sees them, by acceptance: their ids, jobs and whether the
@@ -334,11 +325,7 @@ pub(crate) fn quote(runs: &Runs, actor: &str, request: v1::EstimateRequest) -> R
         let fetch: u64 = job.models.iter().map(|model| absent(store, model)).sum();
         let (time, widths) = here.timed(&package, entrypoint, &job.size, job.prior_ms as f64, widths).map_err(internal)?;
         // Weights not here: their download at this machine's link, and the load its runs measured putting them on its GPUs.
-        let load_ms = match fetch {
-            0 => 0.0,
-            fetch => fetch as f64 / here.link + time.load_ms,
-        };
-        let prepare_ms = if installation.is_some() { 0.0 } else { INSTALL_MS } + load_ms;
+        let prepare_ms = pack::prepare_ms(installation.is_some(), fetch, here.link, time.load_ms);
         let mut quote = v1::Quote { key: job.key, basis: time.basis, prepare_ms: prepare_ms as u64, ..Default::default() };
         if job.gpu && here.gpus == 0 {
             quote.refusal = Some(v1::Reason {
