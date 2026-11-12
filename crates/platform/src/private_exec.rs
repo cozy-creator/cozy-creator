@@ -62,6 +62,12 @@ pub fn validate_project_descriptor(project_root: &File, descriptor: &File) -> Re
     imp::validate_descriptor(project_root, descriptor)
 }
 
+/// Suppress dumps in a trusted parent before handling secrets. This parent must never restore
+/// the settings or exec untrusted code. It does not constrain an external host administrator.
+pub fn disable_project_parent_dumps() -> Result<()> {
+    imp::parent_cores()
+}
+
 /// Trusted parents call this before reading their first private record, and never restore it.
 pub fn disable_private_core_dumps() -> Result<()> {
     imp::disable_cores()
@@ -93,6 +99,9 @@ mod imp {
         Err(unsupported())
     }
     pub(super) fn validate_descriptor(_: &File, _: &File) -> Result<()> {
+        Err(unsupported())
+    }
+    pub(super) fn parent_cores() -> Result<()> {
         Err(unsupported())
     }
     pub(super) fn disable_cores() -> Result<()> {
@@ -163,7 +172,7 @@ mod imp {
         }
         Ok(())
     }
-    pub(super) fn disable_cores() -> Result<()> {
+    pub(super) fn parent_cores() -> Result<()> {
         // SAFETY: prctl/setrlimit receive valid scalar arguments and a live native structure.
         unsafe {
             syscall_result(libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) as _)?;
@@ -175,6 +184,10 @@ mod imp {
                 },
             ) as _)?;
         }
+        Ok(())
+    }
+    pub(super) fn disable_cores() -> Result<()> {
+        parent_cores()?;
         core_pattern()
     }
     fn mode(file: &File) -> Result<i32> {
