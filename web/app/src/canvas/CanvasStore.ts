@@ -32,7 +32,7 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { angleOf, baseOf } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -73,6 +73,8 @@ export interface ElementView {
   name: string
   /** The operation chosen on this page; a model can support both image creation and editing. */
   operation?: Operation
+  /** The optional versions strip beside an image; closed until its counter is clicked. */
+  imageHistory?: boolean
   asset?: Asset
   entity?: Entity
   /** An entity's: how the assets it links stand, the worst of them. */
@@ -166,6 +168,8 @@ export interface CarriedFile {
   /** The box it's from, and its number there. */
   from?: string
   number?: number
+  /** A retained alternative dragged out makes an independent copy. */
+  copy?: boolean
 }
 
 /** Rows an edit pushed aside, sent with the box it makes: by name, the rows by node id, and by name the revision each was worked out from. */
@@ -619,7 +623,8 @@ export class CanvasStore {
     return { x: at?.x ?? row.x, y: at?.y ?? row.y, w, h: heightFor(view, w) }
   }
 
-  /** Only a person's drag reads the node's anchor; its width remains the canonical row's. */
+  /** Node.position is the canonical anchor: its origin already accounts for the
+   * displayed body's offset. A drag never writes the selected version's width. */
   private draggedRow(node: ElementNode): Card {
     const row = this.position(node.data.name)
     return { x: Math.round(node.position.x), y: Math.round(node.position.y), w: row?.w ?? this.poseOf(node.data.name)?.w ?? CARD_WIDTH }
@@ -680,12 +685,12 @@ export class CanvasStore {
     this.surface.current = current
     this.surface.pose = pose
     this.surface.zoom = this.flow?.getZoom()
-    const { x, y, w: bodyWidth } = pose
+    const { x, y, w: canonicalWidth } = pose
     const { x: left, y: top, w: width, h: height } = current.bounds
     const origin: [number, number] = [(x - left) / width, (y - top) / height]
-    if (node.data.width === bodyWidth && node.width === width && node.height === height && node.position.x === x && node.position.y === y && node.origin?.[0] === origin[0] && node.origin?.[1] === origin[1]) return
+    if (node.data.width === canonicalWidth && node.width === width && node.height === height && node.position.x === x && node.position.y === y && node.origin?.[0] === origin[0] && node.origin?.[1] === origin[1]) return
     // The card's frame and its React Flow envelope are one layout change, before size observers run.
-    flushSync(() => this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: bodyWidth }, position: { x, y }, width, height, origin, measured: { width, height } })))
+    flushSync(() => this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: canonicalWidth }, position: { x, y }, width, height, origin, measured: { width, height } })))
   }
 
   closeSurface() {
@@ -702,7 +707,8 @@ export class CanvasStore {
   private paintPose(name: string) {
     const id = this.ids.get(name)
     const pose = this.poseOf(name)
-    if (!id || !pose) return
+    const view = this.get(name)
+    if (!id || !pose || !view) return
     if (this.surface?.id === id) {
       if (this.surface.update) {
         if (!this.surfaceFrame) this.surfaceFrame = requestAnimationFrame(() => {
@@ -716,8 +722,9 @@ export class CanvasStore {
       this.flow?.updateNode(id, { position: { x: pose.x, y: pose.y } })
       return
     }
-    const { x, y, w: width, h: height } = pose
-    this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width }, position: { x, y }, width, height: undefined, origin: [0, 0], measured: { width, height } }))
+    const drawn = bodyBox(view, pose)
+    const origin: [number, number] = [(pose.x - drawn.x) / drawn.w, (pose.y - drawn.y) / drawn.h]
+    this.flow?.updateNode(id, (queued) => ({ data: { ...queued.data, width: pose.w }, position: { x: pose.x, y: pose.y }, width: drawn.w, height: undefined, origin, measured: { width: drawn.w, height: drawn.h } }))
   }
 
   // From Calcifer
@@ -987,13 +994,19 @@ export class CanvasStore {
       const pose = this.poseOf(name)
       if (pose) boxes.set(name, this.laid(name, pose))
     }
+    const views = new Map(left.map((element) => [element.name, viewOf(element)]))
     const sizes = new Map(left.map((element) => {
-      const view = viewOf(element)
+      const view = views.get(element.name)!
       const w = widthFor(view)
-      return [element.name, { w, h: heightFor(view, w) + underOf(view, chipsOf(view)) }]
+      return [element.name, { w: bodyWidth(view, w), h: heightFor(view, w) + underOf(view, chipsOf(view)) }]
     }))
     const names = left.map((element) => element.name)
-    return homesFor(names, readsOf(this.state!), boxes, (name) => sizes.get(name)!, boxes.size ? this.onScreen() : undefined)
+    const placed = homesFor(names, readsOf(this.state!), boxes, (name) => sizes.get(name)!, boxes.size ? this.onScreen() : undefined)
+    return new Map([...placed].map(([name, row]) => {
+      const view = views.get(name)!
+      const box = canvasBox(view, { x: row.x, y: row.y, w: row.w ?? sizes.get(name)!.w, h: sizes.get(name)!.h })
+      return [name, { x: box.x, y: box.y, w: box.w }]
+    }))
   }
 
   /** The canvas as far as it shows, clear of the top bar and the tools. */
@@ -1029,15 +1042,17 @@ export class CanvasStore {
     const width = row.w ?? widthFor(view)
     this.rememberPose(name, { ...row, w: width })
     const height = heightFor(view, width)
+    const drawn = bodyBox(view, { x: row.x, y: row.y, w: width, h: height })
     this.shapes.set(name, this.shapeOf(name, width, height))
     return {
       id,
       type: view.entity ? "entity" : "element",
       position: { x: row.x, y: row.y },
       data: { name, width },
-      width,
+      width: drawn.w,
+      origin: [(row.x - drawn.x) / drawn.w, (row.y - drawn.y) / drawn.h],
       // Its size from the row and the lock: a culled node never gets measured, and React Flow's fit leaves out what isn't.
-      measured: { width, height },
+      measured: { width: drawn.w, height: drawn.h },
       selected,
     }
   }
@@ -1061,14 +1076,17 @@ export class CanvasStore {
     if (this.shapes.get(key) === shape) return
     this.shapes.set(key, shape)
     this.paintPose(key)
-    this.unsettle(key, true)
+    // Merely selecting another aspect must never rewrite the canvas row or move
+    // nearby nodes. Explicit moves and corner resizes still settle their geometry.
+    if (!(view.asset?.kind === "image" && !view.hereWords && shownOf(view))) this.unsettle(key, true)
   }
 
   // Keeping clear: no box lies on another
 
   /** What a box takes on the canvas, as one key: the same from its first node on, so only a real change moves anything. */
   private shapeOf(name: string, width: number, height: number) {
-    return `${width}:${height}:${this.stacked(name)}`
+    const view = this.get(name)
+    return `${view ? bodyWidth(view, width) : width}:${height}:${this.stacked(name)}`
   }
 
   /** How many are in the stack under it: its tool and what's on that. Read once per view, as every box's is read wherever one moves. */
@@ -1086,7 +1104,9 @@ export class CanvasStore {
   /** A box and the room it keeps under it, which nothing else lies on: what hangs from it, and what the name of a box below rises into. */
   private laid(name: string, box: Box): Box {
     const view = this.get(name)
-    return view ? { ...box, h: box.h + underOf(view, this.stacked(name)) } : box
+    if (!view) return box
+    const drawn = bodyBox(view, box)
+    return { ...drawn, h: drawn.h + underOf(view, this.stacked(name)) }
   }
 
   /** Where a block of boxes goes to lie on nothing: there, with what it lies on pushed aside under `edit`, unless something that can't be is in the way. */
@@ -1109,7 +1129,7 @@ export class CanvasStore {
     // A row is what the page last said of it, and a node may not have heard yet.
     const box = this.poseOf(name)
     if (!box) return null
-    return bare ? box : this.laid(name, box)
+    return bare ? bodyBox(view, box) : this.laid(name, box)
   }
 
   private field(besides?: Set<string>, bare = false): Field {
@@ -1125,6 +1145,7 @@ export class CanvasStore {
   private tallOf(name: string): ((w: number) => number) | undefined {
     const view = this.views.get(name)
     if (!view) return undefined
+    if (view.asset?.kind === "image" && !view.hereWords && shownOf(view)) return undefined
     const tall = (w: number) => this.laid(name, { x: 0, y: 0, w, h: heightFor(view, w) }).h
     return tall(NARROWEST) < tall(NARROWEST * 2) ? tall : undefined
   }
@@ -1153,7 +1174,9 @@ export class CanvasStore {
   private slide(name: string, to: Box) {
     const id = this.ids.get(name)
     if (!id) return
-    const row = { x: Math.round(to.x), y: Math.round(to.y), w: Math.round(to.w) }
+    const view = this.get(name)
+    const canonical = view ? canvasBox(view, to) : to
+    const row = { x: Math.round(canonical.x), y: Math.round(canonical.y), w: Math.round(canonical.w) }
     const resized = this.poseOf(name)?.w !== row.w
     this.glide(name, resized ? row : { x: row.x, y: row.y })
     if (resized) this.reshape(name)
@@ -1209,6 +1232,11 @@ export class CanvasStore {
     for (const name of [...this.ids.keys()].sort()) {
       const box = this.boxOf(name, true)
       if (!box) continue
+      const view = this.get(name)
+      if (view?.asset?.kind === "image" && !view.hereWords && shownOf(view)) {
+        field.add(name, box)
+        continue
+      }
       field.remove(name)
       if ([...field.under(box).keys()].some((other) => other < name)) field.add(name, this.giveWay(name, field, box, {}))
       else field.add(name, box)
@@ -1245,16 +1273,29 @@ export class CanvasStore {
   /** Selects the node's persistent current image; ordinary references follow this version. */
   selectVersion(name: string, number: number) {
     const key = this.resolveName(name)
-    const asset = this.views.get(key)?.asset
+    const view = this.views.get(key)
+    const asset = view?.asset
     if (!asset || !numbersOf(asset).includes(number)) return
+    if (asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     void this.save(key)
-    this.pin(key, number, this.step(`Selected version ${number} of ${key}`, [key]))
+    const edit = this.step(`Selected version ${number} of ${key}`, [key])
+    this.patch(key, { viewed: undefined, watchRun: undefined, watchFrom: undefined })
+    this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select version", edit)
+    if (view?.hereWords && asset.tool) {
+      const field = this.promptOf(asset.tool)
+      const words = this.valueOf(key, field)
+      if (typeof words === "string") {
+        const next = words.replace(/<(self)\.\d+>/i, (_, self) => `<${self}.${number}>`)
+        if (next !== words) this.setDraft(key, field, next)
+      }
+    }
   }
 
   beginImageEdit(name: string) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset?.tool) return
+    if (view.asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     if (view.here) this.writeNext(key, true)
     else {
       this.writeOnOpen = key
@@ -1575,15 +1616,12 @@ export class CanvasStore {
     const number = Math.max(0, ...first.map((held) => held.number)) + 1
     const main = file.path === undefined ? undefined : { output: file.field, path: file.path, ...file }
     const prefixes = [...first, { number, prefix: file.sha256.slice(0, 12), main }]
-    const was = asset.pinned ? (asset.approved ?? 1) : undefined
-    const approves = merged !== undefined && was !== undefined
-    const stands = was !== undefined && !approves ? was : number
     const edit = merged ?? this.step(`Added ${what} to ${key}`, [key])
     let note = 0
-    this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: stands, ...(was !== undefined ? { approved: stands } : {}) }, (served, write) => this.client.addVersion(this.projectId!, served, source, write), "add to", edit, {
+    this.over<VersionMoved>(key, { prefixes, versions: prefixes.length, version: number, pinned: true, approved: number }, (served, write) => this.client.addVersion(this.projectId!, served, source, write), "add to", edit, {
       done: (answer) => {
         if (answer.already) dismiss(note)
-        if (approves) this.pin(key, answer.number, edit)
+        this.patch(key, { asset: { ...this.get(key)!.asset!, version: answer.stands ?? answer.number, approved: answer.stands ?? answer.number, pinned: true } })
       },
       refused: () => dismiss(note),
     })
@@ -2385,11 +2423,12 @@ export class CanvasStore {
     if (!view) return at
     const w = at.w ?? widthFor(view)
     const field = this.field()
-    const { pushed, x, y, w: fitted } = fit(this.laid(key, { x: at.x, y: at.y, w, h: heightFor(view, w) }), field, { tall: this.tallOf(key), pushes: this.pushable(new Set([key])) })
+    const { pushed, ...fitted } = fit(this.laid(key, { x: at.x, y: at.y, w, h: heightFor(view, w) }), field, { tall: this.tallOf(key), pushes: this.pushable(new Set([key])) })
     this.gesture = edit
     this.push(field, pushed)
     this.gesture = null
-    return { x, y, w: fitted }
+    const canonical = canvasBox(view, fitted)
+    return { x: canonical.x, y: canonical.y, w: canonical.w }
   }
 
   /** The name it will get, as far as this page can tell: placing elements take theirs in the order they were dropped. */

@@ -238,8 +238,8 @@ pub fn edit() -> Tool {
         package: "cozy".to_owned(),
         function: "edit".to_owned(),
         release: String::new(),
-        name: "Timeline".to_owned(),
-        label: "Timeline".to_owned(),
+        name: "Video Timeline".to_owned(),
+        label: "Video Timeline".to_owned(),
         package_title: "Cozy".to_owned(),
         makes: "video".to_owned(),
         description: "Put videos and stills together into one video, free, with no machine".to_owned(),
@@ -248,7 +248,7 @@ pub fn edit() -> Tool {
         ui: None,
         pickup: None,
         model: None,
-        fields: vec![ToolField { field: "timeline".to_owned(), ty: FieldType::Timeline, label: "Timeline".to_owned(), ..ToolField::default() }],
+        fields: vec![ToolField { field: "timeline".to_owned(), ty: FieldType::Timeline, label: "Video Timeline".to_owned(), ..ToolField::default() }],
     }
 }
 

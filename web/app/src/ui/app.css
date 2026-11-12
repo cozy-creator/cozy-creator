@@ -1013,7 +1013,7 @@ video.preview.on {
   width: 100%;
   height: 100%;
   min-height: 0;
-  object-fit: cover;
+  object-fit: contain;
 }
 .in-frame .mention-text {
   position: relative;
@@ -2658,6 +2658,11 @@ a.tab:hover {
   flex: 1;
 }
 .image-controls {
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--image-control-width, 100%);
+  box-sizing: border-box;
   padding: 4px;
   background: var(--panel);
   border-top: 1px solid var(--line2);
@@ -2665,8 +2670,7 @@ a.tab:hover {
 }
 .image-version-row,
 .image-navigation,
-.image-tool,
-.image-output-ratio {
+.image-tool {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -2707,7 +2711,8 @@ a.tab:hover {
   flex: none;
 }
 .image-navigation output {
-  min-width: 3ch;
+  display: inline-block;
+  width: 7ch;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -2719,18 +2724,35 @@ a.tab:hover {
   border: 1px solid var(--line);
   border-radius: var(--round);
 }
-.image-output-ratio {
-  justify-content: space-between;
-  padding-top: 6px;
-}
-.image-output-ratio select {
-  width: auto;
-}
-.media.image-asset .media-pixels > img {
+.media.image-asset .media-pixels img {
   object-fit: contain;
 }
 .media.image-editing .media-pixels {
   opacity: 0.22;
+}
+.media.image-editing:has(.ghosts img) .media-pixels {
+  opacity: 0;
+}
+.image-history-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.image-history .take img {
+  object-fit: contain;
+}
+.here-side.image-history {
+  left: calc(50% + var(--image-history-offset, 0px) + var(--here-gap) * var(--text, 1) * var(--here));
+  height: calc(var(--image-history-height, 200px) / (var(--text, 1) * var(--here)));
+}
+.media.image-editing {
+  overflow: visible;
+}
+.fixed-image-references {
+  inset: auto;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 .tool:active {
   cursor: grabbing;

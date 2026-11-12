@@ -21,11 +21,10 @@ import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { FPS, framesIn, timecode } from "./ranges"
-import { aspectOf, faceOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
-import { ToolSettings } from "./ToolSettings"
 import { ImageVersions } from "./ImageVersions"
 import { Asking } from "./Asking"
 import { readableSurface } from "./readableSurface"
@@ -118,18 +117,19 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   const asset = view.asset!
+  const image = asset.kind === "image"
   const list = useDragScroll({
     axis: side ? "y" : "x",
     lift(pressed) {
       const from = pressed.closest<HTMLElement>(".take[data-take]")
       const version = from && asset.prefixes?.find((held) => held.number === Number(from.dataset.take))
-      return from && version?.main ? { load: { take: taken(store, name, asset, { ...version, main: version.main }) }, from } : null
+      return from && version?.main ? { load: { take: { ...taken(store, name, asset, { ...version, main: version.main }), ...(image ? { copy: true } : {}) } }, from } : null
     },
   })
   const onWords = view.hereWords && !(asset.timeline && !asset.pinned)
   const watch = watched(view)
   // Rendered from its words, what's being made is what's looked at.
-  const shown = onWords || watch ? null : shownOf(view)
+  const shown = image ? shownOf(view) : onWords || watch ? null : shownOf(view)
   const versions = [...(asset.prefixes ?? [])].reverse()
   const making = asset.making ?? []
   const waiting = !making.length && (view.queued || view.asked !== undefined)
@@ -137,7 +137,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
   // The newest take, once its tile's up, is made ready at the size it's looked at, before it's clicked.
   const { client } = useConnection()
   const newest = asset.prefixes?.at(-1)
-  const adds = writes || (asset.timeline && asset.tool && shownOf(view) && faceOf(view) !== "edit")
+  const adds = !image && (writes || (asset.timeline && asset.tool && shownOf(view) && faceOf(view) !== "edit"))
   if (!adds && !versions.length && !view.joining && !making.length && !waiting) return null
   const words = () => {
     // Already on them, the caret goes back in.
@@ -169,7 +169,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
           +{writes && <small className="take-new">New · {tools.get(asset.tool ?? "")?.label}</small>}
         </button>
       )}
-      {waiting && (
+      {!image && waiting && (
         <span className="take-at">
           <button type="button" className={`take making ${watch && !watch.run ? "on" : ""}`} title="Queued" onClick={() => store.watchTake(name)}>
             …
@@ -179,7 +179,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
           </button>
         </span>
       )}
-      {making.map((run) => (
+      {!image && making.map((run) => (
         <span key={run} className="take-at">
           <button type="button" className={`take making ${watch?.run === run ? "on" : ""}`} title={`Run ${run}`} onClick={() => store.watchTake(name, run)}>
             <TakeProgress view={view} run={run} />
@@ -194,19 +194,19 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
           <button
             type="button"
             className={`take ${shown?.number === version.number ? "on" : ""} ${asset.pinned && version.number === (asset.approved ?? asset.version) ? "approved" : ""} ${view.slid === version.number ? "fresh" : ""}`}
-            aria-label={`${asset.noun} ${version.number}`}
+            aria-label={image ? `Version ${version.number}` : `${asset.noun} ${version.number}`}
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
             onClick={() => pick(version.number)}
-            onDoubleClick={() => store.toggleApproved(name, version.number)}
+            onDoubleClick={() => image ? store.selectVersion(name, version.number) : store.toggleApproved(name, version.number)}
           >
             {version.main && !version.main.absent ? (
               <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />
             ) : null}
           </button>
-          <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
+          {!image && <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
-          </button>
+          </button>}
         </span>
       ))}
       {Array.from({ length: view.joining ?? 0 }, (_, i) => (
@@ -217,7 +217,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
     </div>
   )
   return side ? (
-    <div ref={list} className="here-side nodrag nopan nowheel">
+    <div ref={list} className={`here-side ${image ? "image-history" : ""} nodrag nopan nowheel`} aria-label={image ? "Image history" : undefined}>
       {row}
     </div>
   ) : (
@@ -478,7 +478,7 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
     flushSync(() => {
       const { x: dx, y: dy } = start.delta(start, { x: event.clientX, y: event.clientY })
       if (!control) {
-        const w = Math.min(WIDEST, Math.max(NARROWEST, start.w * Math.max(1 + dx / start.w, 1 + dy / start.h)))
+        const w = Math.min(WIDEST, Math.max(NARROWEST, start.w * Math.max(1 + dx / bodyWidth(view, start.w), 1 + dy / start.h)))
         pulled.current = { w, h: w / aspectOf(view) }
         return store.setWidth(name, w, false)
       }
@@ -527,7 +527,7 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
           event.currentTarget.setPointerCapture(event.pointerId)
           const zoom = flow.getZoom()
           const delta = store.surfaceOf(name)?.resizeDelta ?? ((a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (b.x - a.x) / zoom, y: (b.y - a.y) / zoom }))
-          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: pose.w / aspectOf(view), delta, owner: store.inPlace }
+          from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), delta, owner: store.inPlace }
           if (store.inPlace) store.inPlace.pulled = true
         }}
         onPointerMove={moved}
@@ -707,13 +707,17 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   // Looking at a take, nothing of its tool: its warnings and state are the next take's too.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media") && !looking
+  const firstImage = versions.find((version) => version.number === 1)?.main ?? versions[0]?.main
+  const originalAspect = firstImage?.width && firstImage.height ? firstImage.width / firstImage.height : aspectOf(view)
+  const imageHeight = width / originalAspect
+  const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
   return (
     <div
       ref={self}
       className={`card ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === (view.asset.approved ?? view.asset.version) ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
-      style={{ width: here ? (store.surfaceOf(name)?.style.width ?? width) : width }}
+      style={{ width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` } as CSSProperties}
       onClick={buttonsOnly}
       onAnimationEnd={(event) => {
         if (event.target === event.currentTarget && view.landing) store.patch(name, { landing: undefined })
@@ -797,7 +801,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
           {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
         </Media>
       )}
-      {!lite && asset?.kind === "image" && !view.placing && <ImageVersions name={name} view={view} />}
+      {!lite && asset?.kind === "image" && !view.placing && <ImageVersions name={name} view={view} width={width} />}
       {!lite && asset && asset.kind !== "image" && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
@@ -806,10 +810,10 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
         </div>
       )}
       {here && asset && asset.kind !== "text" && asset.kind !== "image" && !asset.timeline && <Takes view={view} name={name} width={width} side />}
-      {here && asset && (
+      {here && asset?.kind === "image" && view.imageHistory && <Takes view={view} name={name} width={width} side />}
+      {here && asset && (asset.kind !== "image" || editing) && (
         <div className="here-under nodrag nopan nowheel">
           <div className="here-all">
-            {!looking && <ToolSettings name={name} asset={asset} selected={view.operation} />}
             {(asset.kind !== "text" || asset.tool) && <>
               {asset.timeline && <Takes view={view} name={name} width={width} />}
               {asset.kind !== "image" && !asset.timeline && (!view.hereWords || view.pickingUp) && <PickUp view={view} name={name} />}

@@ -2191,8 +2191,8 @@ async fn runs(
     }
     let mut named = vec![];
     let mut first = None;
-    // An image's selected version is its current media, not a request to exclude it
-    // from Render all. Timeline is likewise a video tool that can make its next version.
+    // Selected media is its current state, not a request to exclude its generator
+    // from Render all. Timeline can likewise make the video's next version.
     let mut skipped = vec![];
     let mut covering = |i: usize, named: &mut Vec<usize>| {
         if doc.tool(i) == Some(Tool::Cut) {
@@ -2202,7 +2202,7 @@ async fn runs(
         match doc.assets[i].pin.is_some() {
             // What this asks of it is judged at its turn.
             true if outdated && matches!(stand[i].state, Stand::Pinned { version: Some(_), .. }) => {}
-            true if doc.assets[i].kind == "image" => named.push(i),
+            true if format::KINDS.contains(&doc.assets[i].kind.as_str()) => named.push(i),
             true if !doc.assets[i].hollow && !missing => skipped.push(doc.assets[i].name.clone()),
             true => {}
             false => named.push(i),
@@ -2210,7 +2210,7 @@ async fn runs(
     };
     if all {
         if !missing {
-            for &i in doc.order.iter().filter(|&&i| doc.makes(i) && (doc.tool(i).is_none() || doc.assets[i].kind == "image" || doc.tool(i) == Some(Tool::Cut))) {
+            for &i in doc.order.iter().filter(|&&i| doc.makes(i) && (doc.tool(i).is_none() || format::KINDS.contains(&doc.assets[i].kind.as_str()))) {
                 covering(i, &mut named);
             }
         }
@@ -2239,7 +2239,7 @@ async fn runs(
             said(&name, format!("{name} is made here, free, when what it reads settles"));
             // Named, it is made again, as anything named is.
             if !missing {
-                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: asset.kind == "image" || doc.tool(i) == Some(Tool::Cut), new: true, pickup: None });
+                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: format::KINDS.contains(&asset.kind.as_str()), new: true, pickup: None });
             }
             if approve {
                 say(format!("approve {name} in the browser once it is made; open it with `cozy open`"));
@@ -2269,7 +2269,7 @@ async fn runs(
             continue;
         }
         let makes_new = !missing || pickup.is_some();
-        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: approve || asset.kind == "image", new: makes_new, pickup: pickup.clone() };
+        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: approve || format::KINDS.contains(&asset.kind.as_str()), new: makes_new, pickup: pickup.clone() };
         takes.extend((0..if makes_new { n } else { 1 }).map(take));
     }
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
@@ -4614,7 +4614,7 @@ impl Walk {
         let noun = if version.files.contains_key("video") { "take" } else { "version" };
         let key = key.to_owned();
         let number = version.number;
-        let selected = (kind == "image").then(|| version.main().cloned()).flatten();
+        let selected = format::KINDS.contains(&kind.as_str()).then(|| version.main().cloned()).flatten();
         self.record(Some(&key), &name, &kind, version, noun, pending.approve, list_away)?;
         if coming {
             self.project.jobs.why(&name, number, "its file is on its way here".into());
@@ -4655,7 +4655,7 @@ impl Walk {
         })
     }
 
-    /// Readers in this render follow the image version it just made, while explicit
+    /// Readers in this render follow the media version it just made, while explicit
     /// numbered references in the frozen text keep their original meaning.
     fn select_asked(&self, ask: &str, name: &str, number: u32, sha256: &str) -> Result<(), Error> {
         let walk = self.folder().walk_now()?;
@@ -4990,7 +4990,7 @@ impl Walk {
                 held.tried = None;
                 held.failed = None;
             })?;
-            if (approve || kind == "image") && let Some(sha256) = version.main() {
+            if (approve || format::KINDS.contains(&kind)) && let Some(sha256) = version.main() {
                 self.folder().edit(|written| written.selected(name, number.get(), sha256))?;
             }
             Ok(())

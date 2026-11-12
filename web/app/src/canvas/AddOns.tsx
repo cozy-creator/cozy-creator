@@ -39,7 +39,7 @@ export function Stack({ name }: { name: string }) {
   const mark = useSignal(store.far) && !view?.here
   const tool = view?.asset?.tool
   const known = tool ? tools.get(tool) : undefined
-  const made = tool === "cozy/edit" ? "Timeline" : tool && !madeHere(tool) ? (known ? toolName(known) : (tool.split("/").at(-2) ?? tool)) : null
+  const made = tool === "cozy/edit" ? "Video Timeline" : tool && !madeHere(tool) ? (known ? toolName(known) : (tool.split("/").at(-2) ?? tool)) : null
   if (!made && !held.length) return null
   return (
     <ul className="add-ons nodrag nopan" aria-label={`What's on ${name}`}>
