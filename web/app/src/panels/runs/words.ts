@@ -1,5 +1,6 @@
 import type { Progress, Run, Stalled } from "../../api/calcifer"
 import { bytes, shown, span, usd } from "../format"
+import stages from "./stages.json"
 
 export const settled = (run: Run) => run.status === "completed" || run.status === "failed" || run.status === "canceled"
 
@@ -39,71 +40,72 @@ export function eta(run: Run): string | null {
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
-/**
- * The stages the Runtime and the packages name (packages and cozy-runtime rc/0.25.0, cl-898's audit), as the page says them, and what a
- * count under each counts: the one place a stage's words are made readable. A stage not here reads as named, and a count under it is only
- * a count: nothing is called a step that isn't one. A count of tokens is a decode's: its total is only its cap.
- */
-const STAGES: Record<string, { says: string; counts?: "step" | "frame" | "token" }> = {
-  // The Runtime's: `ctx.progress` with no stage, a decode's answer (`vlm.ask`).
-  denoise: { says: "Denoising", counts: "step" },
-  answering: { says: "Answering", counts: "token" },
-  // A picture made: its prompt rewritten or thought through, encoded, its denoising steps, decoded, saved.
-  "upsampling prompt": { says: "Rewriting the prompt", counts: "token" },
-  thinking: { says: "Thinking", counts: "token" },
-  "encoding prompt": { says: "Encoding the prompt" },
-  tokenize: { says: "Reading the prompt" },
-  "encoding reference images": { says: "Encoding the pictures" },
-  "encoding pictures": { says: "Encoding the pictures" },
-  "generating image": { says: "Generating the image", counts: "step" },
-  generate: { says: "Generating the image", counts: "step" },
-  "decoding image": { says: "Decoding the image" },
-  // Anima's.
-  conditioning: { says: "Encoding the inputs" },
-  decoding: { says: "Decoding the image" },
-  "saving image": { says: "Saving the image" },
-  encode_webp: { says: "Saving the image" },
-  // A video made (MiniMax H3): conditioned, denoised and refined by steps, decoded and encoded by frames.
-  prepare: { says: "Preparing" },
-  condition: { says: "Encoding the inputs" },
-  condition_text: { says: "Encoding the prompt" },
-  condition_media: { says: "Encoding the pictures" },
-  read_video: { says: "Reading the video" },
-  upscale_latent: { says: "Upscaling the latents" },
-  refine: { says: "Refining", counts: "step" },
-  decode_video: { says: "Decoding video", counts: "frame" },
-  encode_video: { says: "Encoding video", counts: "frame" },
-  decode_audio: { says: "Decoding audio" },
-  // A video upscaled (RelayVSR) by its frames; restored (SeedVR2).
-  "upscaling frames": { says: "Upscaling frames", counts: "frame" },
-  "seedvr2 vae encode": { says: "Encoding the video" },
-  "seedvr2 denoise": { says: "Denoising" },
-  "seedvr2 vae decode": { says: "Decoding the video" },
+/** What a count counts, as `stages.json` names it: steps only where a stage denoises. */
+export type Counts = "step" | "frame" | "token" | "bytes" | "item"
+
+/** One entry of `stages.json`: a stage (or a scope of one) as the Runtime, a package, TensorD or Calcifer names it, how the page says it,
+ *  the phase of the job it is, and what a count under it counts. */
+interface Entry {
+  match: string
+  says: string
+  phase?: string
+  counts?: Counts
+  scope?: boolean
 }
 
-const stageOf = (part: string) => STAGES[part.trim().toLowerCase()]
+/** A `match` as a pattern: literal text, `{name}` any text, `{#name}` digits; the whole part, any case. */
+const compiled = (stages.stages as unknown as Entry[]).map((entry) => {
+  const names: string[] = []
+  const source = entry.match.replace(/\{(#?)(\w+)\}|[.*+?^$()|[\]\\]/g, (piece, digits: string | undefined, name: string | undefined) => {
+    if (name === undefined) return `\\${piece}`
+    names.push(name)
+    return digits ? "(\\d+)" : "(.+?)"
+  })
+  return { entry, names, pattern: new RegExp(`^${source}$`, "i") }
+})
 
-/** A stage's path as people read it: each part (a `tel.scope`) after a dot, each named as above: `Turn / Segment 1 of 1 / decode_video` is
- *  `Turn · Segment 1 of 1 · Decoding video`. A count under no stage is `Working`. */
+/** A part of a stage's path, as the map says it: its words with what it named filled in, its phase and what it counts; none: the map
+ *  doesn't know it. The release gate reads the same file (`release-gate/suites/progress`). */
+export function stageOf(part: string): { says: string; phase?: string; counts?: Counts; scope?: boolean } | undefined {
+  const text = part.trim()
+  for (const { entry, names, pattern } of compiled) {
+    const found = pattern.exec(text)
+    if (!found) continue
+    const filled = entry.says.replace(/\{(\w+)\}/g, (said, name: string) => {
+      const at = names.indexOf(name)
+      return at < 0 ? said : found[at + 1]
+    })
+    return { says: filled, phase: entry.phase, counts: entry.counts, scope: entry.scope }
+  }
+  return undefined
+}
+
+/** A stage's path as people read it: each part (a `tel.scope`) after a dot, each named as `stages.json` says: `Turn / Segment 1 of 1 /
+ *  decode_video` is `Turn · Segment 1 of 1 · Decoding video`. A part the map doesn't know reads as named. A count under no stage is
+ *  `Working`. */
 export function stageName(stage: string): string {
   const parts = stage.trim().split(/\s+\/\s+/).filter(Boolean)
   if (!parts.length) return "Working"
-  return parts.map((part) => stageOf(part)?.says ?? sentence(part)).join(" · ")
+  return parts.map((part) => stageOf(part)?.says ?? sentence(part.trim())).join(" · ")
 }
 
-/** What a stage's count counts: a decode's tokens as its progress says, else as its stage is known to count; none: just a count. */
-export function countsOf(progress: Progress): "step" | "frame" | "token" | undefined {
+/** The phase of the job a stage is (`installing`, `downloading`, `loading`, `working`, …), by its path's last part; none: unknown. */
+export const phaseOf = (stage: string): string | undefined => stageOf(stage.split(/\s+\/\s+/).at(-1) ?? "")?.phase
+
+/** What a stage's count counts: a decode's tokens or bytes as its progress says, else as its stage is known to count; none: just a count. */
+export function countsOf(progress: Progress): Counts | undefined {
   if (progress.unit === "tokens") return "token"
+  if (progress.unit === "bytes") return "bytes"
   return stageOf(progress.stage.split(/\s+\/\s+/).at(-1) ?? "")?.counts
 }
 
 /** How far a stage is, by what it counts: `step 6 of 8`, `frame 173 of 350`, `65 tokens` (a cap is no total), bytes, `173 of 350` for a
- *  count of what isn't known, a share. */
+ *  count of what isn't named, a share. */
 export function countWords(progress: Progress): string {
   const counts = countsOf(progress)
   if (counts === "token") return `${progress.completed} token${progress.completed === 1 ? "" : "s"}`
   if (progress.bytes_total) return `${bytes(progress.bytes_done)} of ${bytes(progress.bytes_total)}`
-  if (progress.total) return `${counts ? `${counts} ` : ""}${progress.completed} of ${progress.total}`
+  if (progress.total) return `${counts === "step" || counts === "frame" ? `${counts} ` : ""}${progress.completed} of ${progress.total}`
   if (progress.stage_fraction != null) return `${Math.round(progress.stage_fraction * 100)}%`
   return ""
 }

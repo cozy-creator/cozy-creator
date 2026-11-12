@@ -50,7 +50,9 @@ fn state_name(record: &Execution) -> &'static str {
         State::Canceled => "canceled",
         State::Queued if record.waiting_reason.as_deref() == Some(crate::journal::PREPARING) => "preparing",
         State::Queued if record.waiting_reason.as_deref() == Some(crate::journal::NEEDS_ACCESS) => "needs_access",
-        State::Queued | State::Starting => "queued",
+        State::Queued => "queued",
+        // Out of its queue, its executor starting: not yet running.
+        State::Starting => "starting",
         State::Running => "running",
         State::Unknown => "unknown",
     }
@@ -752,6 +754,10 @@ impl Runs {
                     .unwrap_or_else(|| json!({"stage":progress,"step_ms":0.0}))
             });
             let arriving = payload.as_ref().is_some_and(|p| p["bytes_done"].as_u64() < p["bytes_total"].as_u64());
+            // Its executor starting, what it does there (`importing <package>`, `starting the executor`) is its state's reason.
+            let starting = (payload.as_ref())
+                .and_then(|p| p["stage"].as_str().map(str::to_owned))
+                .filter(|_| record.state == State::Starting);
             if let Some(payload) = payload.filter(|_| (running || preparing) && waiting.is_none() || arriving) {
                 // When it last moved, never when it is read: a silent run watchs how long it is.
                 let mut moved = event(record.revision, "progress", &json!({"type":"progress","payload":payload}))?;
@@ -762,7 +768,7 @@ impl Runs {
                 events.push(moved);
             } else {
                 // Every cursor up to the head is answered, or a waiting client would spin.
-                let waiting = waiting.or_else(|| record.waiting_reason.clone());
+                let waiting = waiting.or_else(|| record.waiting_reason.clone()).or(starting);
                 events.push(event(record.revision, "state", &json!({"state":state_name(&record),"completed_units":record.completed_units,"waiting_reason":waiting}))?);
             }
         }
@@ -1061,7 +1067,7 @@ impl Log {
             serde_json::from_slice(&event.body_canonical_bytes).unwrap_or(Value::Null);
         let kind = match event.kind.as_str() {
             "state" | "running" => {
-                let state = body["state"].as_str().unwrap_or("running").replace("starting", "queued");
+                let state = body["state"].as_str().unwrap_or("running").to_owned();
                 v1::Event::State(v1::RunState {
                     // Running from this event: its time counts from here.
                     started_at_ms: if state == "running" { event.at_ms } else { 0 },

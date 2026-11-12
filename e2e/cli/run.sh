@@ -147,6 +147,17 @@ if [ "$first" != none ]; then
   cozy --json run ls > "$OUT/runs.json" || check "cozy run ls failed"
   grep -Eq "\"number\": *$first([^0-9]|\$)" "$OUT/runs.json" || check "cozy run ls does not list run $first"
 fi
+phases first
+}
+
+# phases <cell>: every stage the cell's run went through is in the page's words (web/app/src/panels/runs/stages.json, which the
+# release gate reads too), its executor's start or load is said before its work, an install says its steps in words, and a download
+# counts its bytes (cl-921). Its phases, in the page's words, land in $OUT/<cell>.phases.
+phases() {
+[ -s "$OUT/$1.ndjson" ] || return 0
+python3 "$E2E/cli/stages.py" "$OUT/$1.ndjson" "$E2E/../web/app/src/panels/runs/stages.json" > "$OUT/$1.phases" 2>&1 \
+  || check "phases of $1: $(grep PROBLEM "$OUT/$1.phases" | head -5 | paste -sd';' -)$(tail -n 2 "$OUT/$1.phases" | grep -v PROBLEM)"
+cat "$OUT/$1.phases"
 }
 
 # The restarted machine runs a request with a file input in a new executor (weightless: the first run loads weights).

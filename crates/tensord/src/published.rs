@@ -1454,7 +1454,7 @@ impl Publisher {
                 warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, grant, &runs, &request.providers, job)?);
             }
         }
-        job.stage(format!("preparing {}", request.package));
+        job.stage(format!("preparing the plan for {}", request.package));
         let plan = gpu
             .prepare_root(
                 installation,

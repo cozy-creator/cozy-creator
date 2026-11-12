@@ -605,6 +605,9 @@ impl Seen {
     }
 }
 
+/// The unit of a count of bytes (`Frame::unit`).
+const BYTES: &str = "bytes";
+
 /// How many of a stage's latest steps its steady pace is the median of.
 const STEADY_OF: usize = 5;
 
@@ -637,10 +640,12 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
     // `Telemetry`); a zero one is telemetry, not work.
     seen.completed = seen.completed.max(frame.advance);
     let mut payload = json!({"stage": frame.stage.chars().take(STAGE_CHARS).collect::<String>(), "step_ms": frame.step_ms.unwrap_or(0.0)});
+    // A count of bytes (the Runtime's `loading <component>`) is bytes: a rate and a time left, never steps (cl-921).
+    let bytes = frame.unit == BYTES;
     for (name, value) in [
         ("stage_fraction", frame.stage_fraction.map(Value::from)),
-        ("position", frame.position.map(Value::from)),
-        ("total", frame.total.map(Value::from)),
+        (if bytes { "bytes_done" } else { "position" }, frame.position.map(Value::from)),
+        (if bytes { "bytes_total" } else { "total" }, frame.total.map(Value::from)),
     ] {
         if let Some(value) = value {
             payload[name] = value;

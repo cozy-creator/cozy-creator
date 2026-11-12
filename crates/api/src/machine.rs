@@ -606,7 +606,8 @@ pub struct RunState {
     /// This machine's run number.
     pub number: u64,
     /// queued, preparing, needs_access (a restart interrupted its preparation: the same id and spec
-    /// sent again bring its access), running, succeeded, failed, canceled
+    /// sent again bring its access), starting (out of its queue, its executor starting: `waiting` says
+    /// what it does, `importing <package>`, `starting the executor`), running, succeeded, failed, canceled
     pub state: String,
     /// The log's head.
     pub sequence: u64,

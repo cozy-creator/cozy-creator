@@ -693,6 +693,12 @@ impl Zygote {
 /// A parent that died (killed, out of memory): the pool starts a new one.
 const ENDED: &str = "import-only executor ended";
 
+/// Run `id`'s stage while TensorD starts its executor and loads its models (cl-921): each phase in words, until the Runtime says its
+/// own (`loading <component>`, its stages).
+fn say(engine: &Engine, id: &str, stage: &str) {
+    let _ = engine.observe_progress(id, 0, serde_json::json!({"stage": stage, "step_ms": 0.0}).to_string());
+}
+
 /// What one more import-only parent may hold of the host: torch, Diffusers and Transformers
 /// imported come to 0.73–0.85 GB resident (SDXL, Qwen-Image, Krea 2, Anima, H3 on CPU).
 const PARENT_BYTES: i64 = 1 << 30;
@@ -3184,6 +3190,16 @@ impl Pool {
                 session
             }
             None => {
+                // What its executor's start does, said while it does (cl-921): its package imported, unless an import-only parent
+                // holds it already and it forks from that.
+                let forks = self.zygotes.lock().unwrap().get(&parent_app(&held)).is_some_and(|zygote| zygote.ready());
+                let package = &held.record.package;
+                let stage = match (forks, crate::import_pages::recorded(&held)) {
+                    (true, _) => "starting the executor".to_owned(),
+                    (false, 0) => format!("importing {package}"),
+                    (false, pages) => format!("importing {package} ({:.1} GB of its files)", pages as f64 / 1e9),
+                };
+                say(engine, id, &stage);
                 let born = Mutex::new(vec![]);
                 let on_birth = |birth: &Birth, cancel: &Cancellation| {
                     born.lock().unwrap().extend(executor_births(birth, &[]));
@@ -3433,6 +3449,9 @@ impl Pool {
             host: self.host.as_deref(),
         };
         if !session.started {
+            if !load_only {
+                say(engine, id, "starting the executor");
+            }
             // Runtime initializes and validates its allocator. TensorD schedules device work
             // and owns no allocator-specific protocol or backend-name admission gate.
             let interface_path = self.interface_file(&session.executor, held)?;
@@ -3487,6 +3506,9 @@ impl Pool {
                 for selected in plan.selections() {
                     if !manifests.contains(&selected.manifest) { manifests.push(selected.manifest); }
                 }
+            }
+            if !load_only && !plan.slots.is_empty() {
+                say(engine, id, "loading the models");
             }
             // The request's signer, whose capability the Runtime keeps apart.
             let actor = engine.get(id).ok().and_then(|record| record.submission).map(|s| s.actor).unwrap_or_default();
