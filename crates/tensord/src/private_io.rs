@@ -199,13 +199,15 @@ fn verify_project_identity(descriptor: &LocalPrivateStorage) -> io::Result<()> {
     if !metadata.is_file() || metadata.file_type().is_symlink() { return Err(denied()); }
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let connection = rusqlite::Connection::open_with_flags(db, flags).map_err(|_| denied())?;
-    let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|_| denied())?;
-    if version != 2 { return Err(denied()); }
-    let (bytes, heads): (Vec<u8>, String) = connection.query_row("SELECT snapshot, heads FROM crdt_document WHERE id=1", [], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|_| denied())?;
+    // The SQL schema version also covers unrelated project journal tables (currently v3).
+    // Execution authority is the native document contract, not that storage layout number.
+    // Read its format, full stream and committed heads together from one SQLite snapshot.
+    let (format, bytes, heads): (i64, Vec<u8>, String) = connection.query_row("SELECT format, snapshot, heads FROM crdt_document WHERE id=1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(|_| denied())?;
+    if format != 1 { return Err(denied()); }
     let mut doc = automerge::AutoCommit::load(&bytes).map_err(|_| denied())?;
     let expected: Vec<String> = serde_json::from_str(&heads).map_err(|_| denied())?;
-    let expected: std::collections::BTreeSet<_> = expected.into_iter().collect();
-    let actual: std::collections::BTreeSet<_> = doc.get_heads().into_iter().map(|head| head.to_string()).collect();
+    let expected: std::collections::BTreeSet<automerge::ChangeHash> = expected.into_iter().map(|head|head.parse().map_err(|_|denied())).collect::<io::Result<_>>()?;
+    let actual: std::collections::BTreeSet<_> = doc.get_heads().into_iter().collect();
     if actual != expected { return Err(denied()); }
     let (_, identity) = doc.get(automerge::ROOT, "identity").map_err(|_| denied())?.ok_or_else(denied)?;
     let (id, _) = doc.get(&identity, "id").map_err(|_| denied())?.ok_or_else(denied)?;
