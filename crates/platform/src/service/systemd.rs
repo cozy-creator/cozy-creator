@@ -88,7 +88,7 @@ fn render(spec: &ServiceSpec) -> String {
         .map(|word| quote(&word.to_string_lossy()))
         .collect::<Vec<_>>()
         .join(" ");
-    let log = spec.log.as_ref().map_or(String::new(), |log| {
+    let log = spec.log.as_ref().map_or_else(|| "StandardOutput=null\nStandardError=null\n".into(), |log| {
         let log = log.to_string_lossy().replace('%', "%%");
         format!("StandardOutput=append:{log}\nStandardError=append:{log}\n")
     });

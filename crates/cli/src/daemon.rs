@@ -179,7 +179,7 @@ fn print_log_line(ctx: &Context, machine: &str, log: LogName, line: &str) {
 /// the last `since`. Followed, each line as it is written, woken by a watch on its directory
 /// (`tail -F`, across a rotation to `calcifer.log.1`).
 async fn calcifer_log(ctx: &Context, q: &LogQuery) -> Result<ExitCode, Error> {
-    let path = ctx.home.calcifer_log();
+    let path = ctx.home.calcifer_health();
     if !path.exists() {
         return Err(Error::new(
             Kind::NotFound,
