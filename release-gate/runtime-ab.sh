@@ -50,7 +50,7 @@ ab_model() {
         cell "$n-$i$sfx" "$(pkg ideogram-4 generate)" prompt="A bakery storefront $v with a painted sign that reads FRESH BREAD, photograph" \
           megapixels:=1 aspect_ratio=1:1 prompt_upsampling:=true seed:=$s ;;
       ph3) s=$((R + 750 + i))
-        cell "$n-$i$sfx" "$(pkg minimax-h3 image)" references:="[{\"name\":\"photo\",\"image\":\"$REF\"}]" \
+        cell "$n-$i$sfx" "$(pkg p-h3-image generate)" references:="[{\"name\":\"photo\",\"image\":\"$REF\"}]" \
           instructions="<photo> $v, the sky turned deep orange, everything else kept" seed:=$s ;;
     esac
   done
