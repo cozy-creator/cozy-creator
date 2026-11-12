@@ -261,12 +261,14 @@ async function died(why) {
   check('decoded_state_switching_has_no_empty_flash', flips.every((look) => look.first !== null && look.first < 400 && look.emptyFrames === 0), flips);
   check('warm_thumbnail_clicks_do_not_change_approval', await current('Ada') === 1);
 
-  // A longer state history keeps the original scrollable previews, with both mouse and touch scrolling.
+  // A longer state history keeps the original scrollable previews, with both mouse and touch scrolling. In Focus they're a column the whole height
+  // at the right (33dff78ff), each 100 px tall (c3b5c2cd3), so nine fit a 1100 px window with nothing to scroll: eighteen are twice what fits.
+  const MANY = 18;
   await imported('many', 50);
-  for (const shade of [51, 52, 53, 54, 55, 56, 57, 58]) await joined('many', shade);
+  for (let shade = 51; shade < 50 + MANY; shade++) await joined('many', shade);
   await open('many');
-  await approveVersion(page, 'many', 9);
-  check('all_alternative_states_keep_previews', await previews('many').count() === 9 && await selected('many') === '9');
+  await approveVersion(page, 'many', MANY);
+  check('all_alternative_states_keep_previews', await previews('many').count() === MANY && await selected('many') === String(MANY));
   const side = history('many');
   await settled(page);
   const sideBox = await side.boundingBox();
@@ -294,8 +296,13 @@ async function died(why) {
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await cdp.detach();
   check('right_previews_scroll_with_a_finger', byFinger > beforeFinger + 40, { beforeFinger, byFinger });
+  // And with the wheel, as ever (Paul): back up the column.
+  await page.mouse.move(across, sideBox.y + sideBox.height / 2);
+  await page.mouse.wheel(0, -240);
+  const byWheel = await until('the wheel scrolled it', scrolled, (top) => top < byFinger - 100, 5000).catch(() => scrolled());
+  check('right_previews_scroll_with_the_wheel', byWheel < byFinger - 100, { byFinger, byWheel });
   const unmarked = await until('scroll marker gone', () => page.locator('.scroll-marker.on').count(), (count) => count === 0, 4000).then(() => true, (why) => String(why));
-  check('scroll_marker_does_not_carry_or_remove_a_state', scrolling.marked === 1 && scrolling.ghosts === 0 && unmarked === true && (await asset('many')).versions === 9, { scrolling, unmarked });
+  check('scroll_marker_does_not_carry_or_remove_a_state', scrolling.marked === 1 && scrolling.ghosts === 0 && unmarked === true && (await asset('many')).versions === MANY, { scrolling, unmarked });
   await approveVersion(page, 'many', 5);
   await until('fifth version selected', () => current('many'), (number) => number === 5);
   check('preview_selects_fifth_retained_state', await selected('many') === '5');
@@ -336,18 +343,24 @@ async function died(why) {
   await prompt.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' beside <Ada.2> ');
-  const reference = box('other').locator('.ghosts[data-image-reference]');
-  await until('all referenced image previews load behind editor', () => reference.locator('img').evaluateAll((images) => images.length === 2 && images.every((image) => image.complete && image.naturalWidth > 0)), Boolean);
+  // Behind what's written, faded, every picture it uses as large as it can be, the frame full: its backdrop (cl-949 7f2181749, Paul 11-12: "as
+  // large as possible in the background, full-bleed where possible"), where it once kept each whole and fixed.
+  const reference = box('other').locator('.in-frame .backdrop');
+  await until('all referenced image previews load behind editor', () => reference.locator('.spread-picture img').evaluateAll((images) => images.length === 2 && images.every((image) => image.complete && image.naturalWidth > 0)), Boolean);
   const referenceGeometry = () => reference.evaluate((element) => {
-    return [...element.querySelectorAll('img')].map((image) => {
+    const frame = element.getBoundingClientRect();
+    return [...element.querySelectorAll('.spread-picture img')].map((image) => {
       const rect = image.getBoundingClientRect();
       let opacity = 1;
       for (let node = image; node && !node.classList.contains('card'); node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
-      return { width: rect.width, height: rect.height, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity };
+      return { width: rect.width, height: rect.height, share: (rect.width * rect.height) / (frame.width * frame.height), naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity };
     });
   });
-  const beforeShape = await referenceGeometry();
-  check('edit_mode_shows_all_faded_references_without_cropping', beforeShape.length === 2 && beforeShape.every((image) => image.opacity > 0 && image.opacity < 1 && image.fit === 'contain'), beforeShape);
+  const full = (shape) => shape.reduce((sum, image) => sum + image.share, 0) >= 0.93;
+  const behind = (shape) => shape.length === 2 && shape.every((image) => image.opacity > 0 && image.opacity < 1 && image.fit === 'cover') && full(shape);
+  // It fades in.
+  const beforeShape = await until('the references faded in', referenceGeometry, behind, 5000).catch(referenceGeometry);
+  check('edit_mode_shows_all_faded_references_filling_the_frame', behind(beforeShape), beforeShape);
   const ratioBefore = (await asset('other')).fields?.aspect_ratio;
   check('output_ratio_uses_the_corner_not_a_new_dropdown', await box('other').getByRole('combobox', { name: 'Output aspect ratio', exact: true }).count() === 0);
   const corner = await box('other').getByRole('slider', { name: 'Its size', exact: true }).boundingBox();
@@ -356,8 +369,9 @@ async function died(why) {
   await page.mouse.move(corner.x + corner.width / 2 + 110, corner.y + corner.height / 2 - 50, { steps: 8 });
   await page.mouse.up();
   await until('output aspect ratio changed in edit mode', () => asset('other'), (row) => Boolean(row.fields?.aspect_ratio) && row.fields.aspect_ratio !== ratioBefore);
-  const afterShape = await referenceGeometry();
-  check('output_ratio_keeps_all_reference_previews_fixed_and_uncropped', afterShape.length === beforeShape.length && afterShape.every((image, index) => image.fit === 'contain' && Math.abs(image.width - beforeShape[index].width) < 2 && Math.abs(image.height - beforeShape[index].height) < 2), { beforeShape, afterShape });
+  // The frame takes the new shape, and every reference still fills it.
+  const afterShape = await until('the references in the new frame', referenceGeometry, (shape) => behind(shape) && shape.some((image, index) => Math.abs(image.width - beforeShape[index]?.width) >= 2 || Math.abs(image.height - beforeShape[index]?.height) >= 2), 5000).catch(referenceGeometry);
+  check('output_ratio_keeps_all_references_filling_its_new_frame', behind(afterShape), { beforeShape, afterShape });
   await previewVersion(page, 'other', 1);
   check('view_mode_leaves_editor_and_keeps_selection', await box('other').locator('.in-frame .mention-text').count() === 0 && await current('other') === 1);
   await box('other').getByRole('button', { name: 'Remove image tool', exact: true }).click();

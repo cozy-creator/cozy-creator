@@ -1,8 +1,8 @@
 // Assets as a person works them (web-ui.md, Tools and nodes), in a real browser on a real Calcifer. The shell: a name, Render all, a menu; tools
 // on the left, each dragged out to make a box. A box is its picture or its text at rest. Text with chips, the file still plain; a name dragged in; a fresh box as its prompt, or its prompt
-// and one beat, with all else behind More; controls from what it holds; reshaping; beats; another's edits merged; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
+// and one beat, with all else shown at once in Focus (cl-934); controls from what it holds; reshaping; beats; another's edits merged; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
 // picture in, type, render, approve, delete the picture: what's approved stands, rendering it again fails naming what's gone, the rest goes on,
-// Undo brings it back. Takes side by side, one dragged out, Pick up from here, Render all.
+// Undo brings it back. Takes side by side, one dragged out, Pick up from where the player is, Render all.
 //   node nodes.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
@@ -108,12 +108,6 @@ function replaceFile(at, text) {
     await away();
     await box(name).locator('.nm').hover();
     await box(name).locator('.head [aria-label=Delete]').click();
-  };
-  // Behind its More, opened if it isn't.
-  const more = async (name) => {
-    await open(name);
-    if (!(await box(name).locator('.edit-more').count())) await box(name).locator('.more-toggle').click();
-    await box(name).locator('.edit-more').waitFor();
   };
   await page.evaluate(() => { window.notReloaded = true; });
 
@@ -239,7 +233,8 @@ function replaceFile(at, text) {
   check('video_accepts_operation_without_exposing_type_hint', (await of(blanks.video.name)).fields?.node_kind === 'video' && await page.locator('[data-field="node_kind"]').count() === 0);
   check('opening_model_keeps_the_two_sidebar_lists', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .box-shelf-head, .tools input, .tools .picks').count() === 0);
   await openBox(page, blanks.video.name);
-  await box(blanks.video.name).getByRole('button', { name: new RegExp(`^Take .* off ${blanks.video.name}$`) }).first().click();
+  // Its tool's trash can, on the line beneath it that names the tool (cl-934 3856107a2: the tool chip over its fields is gone).
+  await box(blanks.video.name).getByRole('button', { name: 'Remove video tool', exact: true }).click();
   await until('video model removed', () => of(blanks.video.name), (held) => !held.tool);
   check('removing_model_keeps_blank_video_type', (await of(blanks.video.name)).kind === 'video' && (await of(blanks.video.name)).fields?.node_kind === 'video');
   const timelineTool = await implementationRow(page, 'timeline', 'cozy/edit');
@@ -247,7 +242,7 @@ function replaceFile(at, text) {
   await until('Timeline attached to Video', () => of(blanks.video.name), (held) => held.tool === 'cozy/edit');
   check('timeline_is_a_tool_on_video', (await of(blanks.video.name)).kind === 'video' && Boolean((await of(blanks.video.name)).timeline));
   await openBox(page, blanks.video.name);
-  await box(blanks.video.name).getByRole('button', { name: new RegExp(`^Take .* off ${blanks.video.name}$`) }).click();
+  await box(blanks.video.name).getByRole('button', { name: 'Remove video tool', exact: true }).click();
   await until('Timeline removed', () => of(blanks.video.name), (held) => !held.tool);
   check('removing_timeline_keeps_video_holder', (await of(blanks.video.name)).kind === 'video');
 
@@ -352,8 +347,8 @@ function replaceFile(at, text) {
   // A mention reads as it's written, in its brackets, its first letter up; the file keeps it as typed.
   const chipWords = await sheetText.locator('.chip').allInnerTexts();
   check('chips_read_as_written', chipWords.join() === '<Source-a>,<Source-b>', chipWords);
-  // Behind its words, faded, the pictures they mention, side by side in a 2×2.
-  const ghosts = await until('the pictures it mentions, behind', () => box('Sheet').locator('.in-frame .ghosts img').evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width)), (widths) => widths.length === 2 && widths.every((width) => width > 8), 5000).catch((why) => String(why));
+  // Behind its words, faded, the pictures they mention: the frame's backdrop, every one as large as it can be (cl-938 aeddbfe14, cl-949 7f2181749).
+  const ghosts = await until('the pictures it mentions, behind', () => box('Sheet').locator('.in-frame .backdrop .spread-picture img').evaluateAll((all) => all.map((one) => one.getBoundingClientRect().width)), (widths) => widths.length === 2 && widths.every((width) => width > 8), 5000).catch((why) => String(why));
   check('mentions_ghosted_behind_its_words', Array.isArray(ghosts) && (await box('Sheet').locator('.mention-thumb').count()) === 0, ghosts);
   check('wire_reads_what_it_mentions', (await of('Sheet')).reads?.map((read) => read.name).sort().join() === 'source-a,source-b' && (await of('Sheet')).reads[0].at.includes('instructions'), (await of('Sheet')).reads);
   check('wire_fields_flat', (await of('Sheet')).fields?.instructions?.includes('<source-a>') && !('tool' in (await of('Sheet')).fields), (await of('Sheet')).fields);
@@ -427,7 +422,7 @@ function replaceFile(at, text) {
   check('double_click_enters_focus', await page.locator('.card.focus-card[data-asset="source-a"]').count() === 1);
   await away();
 
-  // A box from what it holds, for a tool no list knows: what says the most is its prompt, whatever the alphabet says of `style` and `summary`, its beats shown, and what else it holds behind More, with no line of names beside it. Each writes one field and moves nothing else.
+  // A box from what it holds, for a tool no list knows: what says the most is its prompt, whatever the alphabet says of `style` and `summary`, in its frame with its beats (cl-938 aeddbfe14), and in Focus all else it holds at once, nothing under More (cl-934 3856107a2). Each writes one field and moves nothing else.
   addBoxes(folder, [{ name: 'knobs', tool: 'no-such-package-here/shoot', kind: 'image', fields: { summary: '<source-b> walks.', aspect_ratio: '3:2', megapixels: 1, style: 'wash', turbo: true, beats: [{ duration: 4, description: 'First.', camera: 'low' }] } }]);
   // It reads source-b, so it's placed beside it, which may be out of view of source-a open: placed, the canvas at rest and fitted has it in view (as versions.js's moving_words).
   await until('knobs placed', rows, (now) => now.knobs);
@@ -438,22 +433,20 @@ function replaceFile(at, text) {
   const knobs = box('knobs');
   // One of its fields as project.db stores it, as text.
   const field = async (name) => (storedBox('knobs')?.[name] === undefined ? undefined : String(storedBox('knobs')[name]));
-  check('summary_is_its_prompt', (await knobs.locator('.in-frame .mention-text').getAttribute('data-field')) === 'summary');
-  // Its description has a field of its own, always open.
-  check('words_and_beats_shown_without_an_asset_description', (await knobs.locator('.mention-text:not([data-field=description])').count()) === 2 && (await knobs.locator('.desc-field').count()) === 0 && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=Megapixels]').count()) === 0, await knobs.innerText());
-  check('no_line_beside_more', (await knobs.locator('.more-marks').count()) === 0 && (await knobs.locator('.more-toggle').innerText()).trim() === 'More', await knobs.locator('.more-toggle').innerText());
-  await more('knobs');
-  check('what_it_holds_behind_more', (await knobs.locator('input[aria-label=Megapixels]').inputValue()) === '1' && (await knobs.locator('label:has-text("turbo") input').isChecked()), await knobs.locator('.edit-more').innerText());
-  check('its_style_behind_more', (await knobs.locator('.mention-text[data-field=style]').textContent()).includes('wash'));
+  check('summary_is_its_prompt', (await knobs.locator('.in-frame .frame-first .mention-text').getAttribute('data-field')) === 'summary');
+  // No description field: its words, its one beat and its style each a text of their own.
+  check('words_and_beats_shown_without_an_asset_description', (await knobs.locator('.mention-text:not([data-field=description])').count()) === 3 && (await knobs.locator('.desc-field').count()) === 0 && (await knobs.locator('.in-frame .beats-edit .beat').count()) === 1, await knobs.innerText());
+  check('nothing_under_more', (await knobs.locator('.more-toggle, .more-marks, .edit-more').count()) === 0, await knobs.innerText());
+  check('what_it_holds_shown_at_once', (await knobs.locator('input[aria-label=Megapixels]').inputValue()) === '1' && (await knobs.locator('label:has-text("turbo") input').isChecked()), await knobs.innerText());
+  check('its_style_shown_at_once', (await knobs.locator('.mention-text[data-field=style]').textContent()).includes('wash'));
   check('no_shape_field', (await knobs.locator('select[aria-label="Shape"], [data-field=aspect_ratio], [aria-label="Aspect ratio"]').count()) === 0, await knobs.innerText());
   await knobs.locator('input[aria-label=Megapixels]').focus();
   await page.keyboard.press('ArrowRight');
   await until('the slider written', () => field('megapixels'), (value) => value === '2');
-  // Nothing has moved the pointer since it opened More. On Windows (41917007085) the box closed here by itself: this says when, and what moved.
+  // Nothing has moved the pointer since it opened. On Windows (41917007085) the box closed here by itself: this says when, and what moved.
   await page.waitForTimeout(300);
-  check('a_box_in_use_stays_open', (await knobs.locator('.edit-more').count()) === 1, await boxLog(page));
+  check('a_box_in_use_stays_open', (await page.locator('.card.here[data-asset="knobs"]').count()) === 1, await boxLog(page));
   check('the_canvas_cannot_scroll', (await page.locator('.react-flow').evaluate((el) => getComputedStyle(el).overflow)) === 'clip');
-  await more('knobs');
   await knobs.locator('label:has-text("turbo") input').click();
   await until('the toggle written', () => field('turbo'), (value) => value === 'false');
 
@@ -494,22 +487,25 @@ function replaceFile(at, text) {
   await until('back to Auto', () => Promise.resolve(storedBox('knobs') ?? {}), (fields) => !('aspect_ratio' in fields));
   check('its_x_is_auto', true);
 
-  // Beats: one text and a duration slider each; add, remove, down to the one that always stays; what else a beat holds stays.
+  // Beats: one text and a duration slider each, in the frame under its prompt's section, one open at a time (cl-938); add, remove, down to the
+  // one that always stays; what else a beat holds stays.
   await open('knobs');
-  check('beat_one', (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.beat input[type=range]').inputValue()) === '4');
+  const knobBeats = knobs.locator('.in-frame .beats-edit .beat');
+  check('beat_one', (await knobBeats.count()) === 1 && (await knobBeats.locator('input[type=range]').inputValue()) === '4');
   check('one_beat_stays', (await knobs.locator('[aria-label^="Remove beat"]').count()) === 0);
   await knobs.locator('.add-beat').click();
-  await until('two beats', () => knobs.locator('.beat').count(), (n) => n === 2);
-  await knobs.locator('.beat .mention-text').nth(1).click();
+  await until('two beats', () => knobBeats.count(), (n) => n === 2);
+  // Added, it's the beat open.
+  await knobBeats.nth(1).locator('.mention-text').click();
   await page.keyboard.type('Second.');
-  await knobs.locator('.beat input[type=range]').nth(1).focus();
+  await knobBeats.nth(1).locator('input[type=range]').focus();
   await page.keyboard.press('ArrowRight');
   const beats = await until('both beats stored', () => Promise.resolve(storedBox('knobs')?.beats ?? []), (held) => held.some((beat) => beat.description?.includes('Second.')) && held.some((beat) => beat.duration === 5));
   check('a_beat_keeps_what_it_holds', beats.some((beat) => beat.camera === 'low'), beats);
   await open('knobs');
   await knobs.locator('[aria-label="Remove beat 2"]').click();
   await until('one beat again', () => Promise.resolve(storedBox('knobs')?.beats ?? []), (held) => held.length === 1);
-  check('down_to_the_one_that_stays', (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('[aria-label^="Remove beat"]').count()) === 0);
+  check('down_to_the_one_that_stays', (await knobBeats.count()) === 1 && (await knobs.locator('[aria-label^="Remove beat"]').count()) === 0);
   await api(`/v1/projects/${id}/assets/knobs`, { method: 'DELETE' });
   await until('knobs gone', () => box('knobs').count(), (n) => n === 0);
 
@@ -579,7 +575,7 @@ function replaceFile(at, text) {
   check('box_menu', ['Rename', 'Delete'].every((item) => items.includes(item)) && !items.includes('Change the tool'), items);
   await page.keyboard.press('Escape');
 
-  // A fresh box, from the list: one prompt, or a prompt and one beat that's in the file from the start. All else is behind More, which stays as it's left, says what's set there, and saves what `cozy status` reads.
+  // A fresh box, from the list: one prompt, or a prompt and one beat that's in the file from the start, in its frame (cl-938 aeddbfe14). In Focus all else is shown at once, nothing under More (cl-934 3856107a2), and what's set there is what `cozy status` reads.
   const statusOf = (name) => projectJson(folder).assets.find((held) => held.name === name);
   if (local) {
     const fixture = join(__dirname, '..', 'project', 'tool.py');
@@ -615,52 +611,44 @@ function replaceFile(at, text) {
     await place('still');
     const still = box('still_1');
     await until('one prompt', () => still.locator('.mention-text:not([data-field=description])').count(), (n) => n === 1);
-    check('fresh_box_is_its_prompt', (await still.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await still.locator('.here-all input, .here-all select, .beat, .edit-more').evaluateAll((elements) => elements.filter((element) => !element.closest('[data-tool-settings]')).length)) === 0, await still.innerText());
-    check('fresh_box_marks_nothing', (await still.locator('.more-marks').count()) === 0 && (await still.locator('.more-toggle').innerText()).trim() === 'More', await still.innerText());
+    check('fresh_box_is_its_prompt', (await still.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await still.locator('.beat').count()) === 0, await still.innerText());
+    check('fresh_box_shows_all_else_at_once', (await still.locator('.here-all input[aria-label=Count]').count()) === 1 && (await still.locator('.here-all [role=radiogroup][aria-label=Style]').count()) === 1 && (await still.locator('.more-toggle, .more-marks, .edit-more').count()) === 0, await still.innerText());
     await shot('fresh-prompt');
-    await more('still_1');
-    await still.locator('input[aria-label=Count]').waitFor();
     await still.locator('[role=radiogroup][aria-label=Style] [role=radio]:text-is("noise")').click();
     await until('the choice in the status', async () => statusOf('still_1').fields?.style, (style) => style === 'noise');
-    await still.locator('.more-toggle').click();
-    await still.locator('.edit-more').waitFor({ state: 'detached' });
-    // Set, it's behind More with no word of it beside: opened, it's there.
-    check('a_set_value_has_no_line', (await still.locator('.more-marks').count()) === 0 && (await still.locator('.more-toggle').innerText()).trim() === 'More', await still.locator('.more-toggle').innerText());
     await shot('fresh-marked');
+    // Left and opened again, then after a reload, it shows what's set.
+    await away();
     await open('still_1');
-    check('shut_stays_shut', (await still.locator('.edit-more').count()) === 0);
-    await more('still_1');
-    check('a_set_value_behind_more', (await still.locator('[role=radiogroup][aria-label=Style] [role=radio][aria-checked=true]').innerText()) === 'noise', await still.locator('.edit-more').innerText());
-    await open('still_1');
-    check('open_stays_open', (await still.locator('.edit-more').count()) === 1);
+    check('a_set_value_shows', (await still.locator('[role=radiogroup][aria-label=Style] [role=radio][aria-checked=true]').innerText()) === 'noise', await still.innerText());
     await reload();
     await open('still_1');
-    check('open_outlasts_a_reload', (await still.locator('.edit-more').count()) === 1);
+    check('a_set_value_outlasts_a_reload', (await still.locator('[role=radiogroup][aria-label=Style] [role=radio][aria-checked=true]').innerText()) === 'noise', await still.innerText());
     await still.locator('[role=radiogroup][aria-label=Style] [role=radio]:text-is("flat")').click();
     await until('its default in the status', async () => statusOf('still_1').fields?.style, (style) => style === 'flat');
-    await still.locator('.more-toggle').click();
-    await still.locator('.edit-more').waitFor({ state: 'detached' });
-    check('its_default_marks_nothing', (await still.locator('.more-marks').count()) === 0, await still.innerText());
 
     await place('told');
     const told = box('told_1');
-    await until('a prompt and a beat', () => told.locator('.beat').count(), (n) => n === 1);
-    check('fresh_shot_is_its_prompt_and_a_beat', (await told.locator('.in-frame .mention-text[data-field=instructions]').count()) === 1 && (await told.locator('.mention-text:not([data-field=description])').count()) === 2 && (await told.locator('input[type=range]').count()) === 1 && (await told.locator('.edit-more').count()) === 0, await told.innerText());
+    // Its beats in the frame, under its prompt's section, one open at a time (cl-938).
+    const toldBeats = told.locator('.in-frame .beats-edit .beat');
+    await until('a prompt and a beat', () => toldBeats.count(), (n) => n === 1);
+    check('fresh_shot_is_its_prompt_and_a_beat', (await told.locator('.in-frame .frame-first .mention-text[data-field=instructions]').count()) === 1 && (await told.locator('.mention-text:not([data-field=description])').count()) === 2 && (await toldBeats.locator('input[type=range]').count()) === 1 && (await told.locator('.more-toggle, .edit-more').count()) === 0, await told.innerText());
     check('fresh_beat_cannot_go', (await told.locator('[aria-label^="Remove beat"]').count()) === 0);
     await until('its beat in the status', async () => statusOf('told_1').fields?.beats?.length, (n) => n === 1);
-    check('its_beat_has_a_length', statusOf('told_1').fields.beats[0].duration === Number(await told.locator('.beat input[type=range]').inputValue()), statusOf('told_1').fields);
+    check('its_beat_has_a_length', statusOf('told_1').fields.beats[0].duration === Number(await toldBeats.locator('input[type=range]').inputValue()), statusOf('told_1').fields);
     await shot('fresh-beat');
     await told.locator('.add-beat').click();
-    await until('two beats', () => told.locator('.beat').count(), (n) => n === 2);
+    await until('two beats', () => toldBeats.count(), (n) => n === 2);
     check('either_can_go_now', (await told.locator('[aria-label^="Remove beat"]').count()) === 2);
-    await told.locator('.beat .mention-text').nth(1).click();
+    // Added, it's the beat open.
+    await toldBeats.nth(1).locator('.mention-text').click();
     await page.keyboard.type('The second.');
-    await told.locator('.beat input[type=range]').nth(1).focus();
+    await toldBeats.nth(1).locator('input[type=range]').focus();
     await page.keyboard.press('ArrowRight');
     await until('both in the status', async () => statusOf('told_1').fields?.beats, (beats) => beats?.length === 2 && beats[1].description?.includes('The second.') && beats[1].duration === Number(beats[0].duration) + 1);
     await told.locator('[aria-label="Remove beat 2"]').click();
     await until('one in the status', async () => statusOf('told_1').fields?.beats?.length, (n) => n === 1);
-    check('the_last_beat_stays', (await told.locator('.beat').count()) === 1 && (await told.locator('[aria-label^="Remove beat"]').count()) === 0, await told.innerText());
+    check('the_last_beat_stays', (await toldBeats.count()) === 1 && (await told.locator('[aria-label^="Remove beat"]').count()) === 0, await told.innerText());
     for (const name of ['still_1', 'told_1', 'fixture']) {
       await api(`/v1/projects/${id}/assets/${name}`, { method: 'DELETE' });
       await until(`${name} gone`, () => box(name).count(), (n) => n === 0);
@@ -749,7 +737,8 @@ function replaceFile(at, text) {
     await scape.waitFor();
     check('shown_by_its_node', (await sounded.locator('.mention-text[data-field=music]').count()) === 1 && (await sounded.locator('.edit-more').count()) === 0, await sounded.innerText());
     check('empty_reads_na', (await scape.getAttribute('data-placeholder')) === 'N/A (silent)', await scape.getAttribute('data-placeholder'));
-    check('a_hidden_input_isnt_drawn', (await sounded.locator('[data-field=steps], [data-field=plate], [data-field=references]').count()) === 0, await sounded.innerText());
+    // In Focus every field it asks for is drawn at once, an empty slot and an advanced one too, nothing under More (cl-934 3856107a2).
+    check('every_field_drawn_at_once', (await sounded.locator('.slot-control[data-field=plate]').count()) === 1 && (await sounded.locator('input[aria-label=Steps]').count()) === 1 && (await sounded.locator('.more-toggle').count()) === 0, await sounded.innerText());
     await scape.click();
     await page.keyboard.type('Rain on steel.');
     await sounded.locator('.mention-text[data-field=music]').click();
@@ -802,8 +791,8 @@ function replaceFile(at, text) {
     await page.keyboard.press('f');
     await page.waitForTimeout(400);
     await box('asker').waitFor();
-    // A toggle shows its function's own default, on, with nothing stored, and off is what's written.
-    await more('asker');
+    // A toggle shows its function's own default, on, with nothing stored, and off is what's written. Open, it's there with the rest (cl-934).
+    await open('asker');
     const bright = box('asker').locator('label:has-text("Bright") input');
     await bright.waitFor();
     check('a_toggle_shows_its_default', await bright.isChecked(), storedBox('asker'));
@@ -906,8 +895,8 @@ function replaceFile(at, text) {
     const appended = await of('Other');
     check('render_appends_and_selects_new_state', appended.version === appended.prefixes.at(-1).number && appended.prefixes.length === beforeAppend + 1, appended);
 
-    // Pick up from here: scrubbed to a frame, its words as they were, and the function told to keep up to there, for that render alone.
-    // The dropped clip is 11 frames: frame 6 is one it has.
+    // Pick up from where the player is, right under it (cl-950 c02923199): its words as they were, and the function told to keep up to there,
+    // for that render alone. The dropped clip has a frame 6.
     // One file dropped asks its name first: Enter takes the one offered.
     await away();
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
@@ -922,12 +911,17 @@ function replaceFile(at, text) {
     await render('Clip', 1);
     await until('its length measured', () => of('Clip'), (held) => held.prefixes?.[0]?.main?.duration_ms > 0);
     await open('Clip');
-    // Rendered from its words, it's still on them: its take, pressed, is what's kept from.
+    // Rendered from its words, it's still on them: its take, pressed, is what plays and is kept from.
     await box('Clip').locator('.take[aria-label="take 1"]').click();
     const clipFile = JSON.stringify(storedBox('Clip'));
-    await more('Clip');
-    await box('Clip').locator('.from-here .keeps').fill('6');
-    await box('Clip').locator('button:text-is("Pick up from here")').click();
+    const fps = (await of('Clip')).prefixes[0].main.fps ?? 24;
+    const player = box('Clip').locator('.focus-viewer video').first();
+    await until('its take loaded', () => player.evaluate((element) => element.readyState), (ready) => ready >= 1);
+    await player.evaluate((element, at) => { element.pause(); element.currentTime = at; }, 6 / fps);
+    const pickUp = box('Clip').locator('.focus-under button.pick-up');
+    await until('Pick up from frame 6', () => pickUp.innerText(), (said) => said.trim() === `Pick up from 0:${(6 / fps).toFixed(2).padStart(5, '0')}`);
+    await pickUp.click();
+    await box('Clip').locator('button[aria-label=Render]').first().click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
     const given = (await api(`/v1/projects/${id}/assets/Clip`)).body.versions.at(-1).files.given.path;
     // Listed as its run ends, it lands in files/ a moment later (Firefox, 42110239536).

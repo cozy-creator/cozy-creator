@@ -4,7 +4,7 @@
 // order, their sum, a block that may be absent, and rows two deep. Slots: what doesn't fit is refused as it's carried and at the drop, with why;
 // a filled one is on the face, and × unsets it. A video's range: in and out dragged on its frames, written `<walk:in-out>` and shown as
 // timecode, in a prompt and on a plate, whose length is set against the beats. Where this computer runs models: previews land as it renders;
-// Pick up from here on its own take and from another box's take let go on it, landing on the tool's frames, with nothing written.
+// Pick up from where the player is on its own take, and from another box's take let go on it, landing on the tool's frames, with nothing written.
 //   node tools.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT, $CHROME, $COZY, $SHOT, $ALONE as nodes.js. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -160,6 +160,8 @@ function replaceFile(at, text) {
   check('edit_image_available_for_reference_capable_models', availability.some((row) => row.operation === 'edit_image' && !row.disabled), availability);
   const qwen = metadata.find((tool) => defaults(tool).some((model) => model?.startsWith('qwen/qwen-image-2.1@')));
   const editQwen = await implementationRow(page, 'edit_image', qwen.id);
+  // Back from Focus, the canvas moves back to where it was (c9b33c581): a person reaches for the box once it's still.
+  await require('./page').settled(page);
   const target = await box(choosing.name).locator('.media').boundingBox();
   await require('./page').carry(page, editQwen, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   await until('dragged tool attaches to image holder', () => of(choosing.name), (asset) => asset.tool === qwen.id);
@@ -203,8 +205,9 @@ function replaceFile(at, text) {
   // Focused video tools expose a large parameter form, without an Advanced fold.
   await open('shot');
   const shotBox = box('shot');
-  check('face_holds_prompts_groups_and_filled_slots', (await shotBox.locator('.mention-text[data-field=summary]').count()) === 1 && (await shotBox.locator('.mention-text[data-field=pictures]').count()) === 1 && (await shotBox.locator('.edit-shown .beats-edit[data-field=beats]').count()) === 1 && (await shotBox.locator('.edit-shown .slot-control[data-field=plate]').count()) === 1, await shotBox.innerText());
-  check('video_parameters_are_prominent_without_a_more_fold', await shotBox.locator('.prominent').count() === 1 && await shotBox.locator('[data-field=first_frame]').count() === 1 && await shotBox.locator('[data-field=negative]').count() === 1);
+  // Its first prompt and its beats are in the frame (cl-938 aeddbfe14), the rest under it in Focus's form (`.edit-face.focused`, was `.prominent`).
+  check('face_holds_prompts_groups_and_filled_slots', (await shotBox.locator('.mention-text[data-field=summary]').count()) === 1 && (await shotBox.locator('.mention-text[data-field=pictures]').count()) === 1 && (await shotBox.locator('.in-frame .beats-edit[data-field=beats]').count()) === 1 && (await shotBox.locator('.edit-shown .slot-control[data-field=plate]').count()) === 1, await shotBox.innerText());
+  check('video_parameters_are_prominent_without_a_more_fold', await shotBox.locator('.edit-face.focused').count() === 1 && await shotBox.locator('[data-field=first_frame]').count() === 1 && await shotBox.locator('[data-field=negative]').count() === 1);
   await more('shot');
   check('advanced_fold_is_removed', await shotBox.locator('.advanced-toggle').count() === 0 && await shotBox.locator('input[aria-label=Steps]').count() === 1);
   await shot('more');
@@ -331,7 +334,8 @@ function replaceFile(at, text) {
   check('a_filled_slot_is_on_the_face', (await shotBox.locator('.edit-shown .slot-control[data-field=first_frame]').count()) === 1);
   await shotBox.locator('[aria-label="Take coast out of First frame"]').click();
   await until('first frame unset', () => fieldsOf('shot'), (fields) => !('first_frame' in fields));
-  check('unset_goes_back_under_more', (await shotBox.locator('.edit-shown [data-field=first_frame]').count()) === 0);
+  // Unset, it's still there to fill: in Focus every field shows, nothing under More (cl-934 3856107a2).
+  check('unset_stays_to_fill', (await shotBox.locator('.edit-shown .slot-control[data-field=first_frame]:not(.filled)').count()) === 1);
   // Typed in: the same rule.
   await more('shot');
   await field('shot', 'sound').locator('input.slot-type').fill('walk');
@@ -412,12 +416,20 @@ function replaceFile(at, text) {
     check('each_type_reaches_the_function', asTyped.summary?.text === 'Along the coast.' && Array.isArray(asTyped.beats) && asTyped.beats[0].angles?.[0]?.framing?.text?.includes('<amy>') && asTyped.plate?.file === 'VideoFile', asTyped);
     check('a_mention_two_deep_is_its_prompts_reference', Object.keys(asTyped.beats[0].angles[0].framing.references ?? {}).join() === 'amy', asTyped.beats[0].angles[0].framing);
 
-    // On its own take: scrubbed to a frame, it lands on the tool's grid, and picks up there.
+    // On its own take, pressed: the player put at frame 4, Pick up right under it says where on the tool's grid that lands (frame 2), and picks
+    // up there (cl-950 c02923199).
     await open('shot');
-    await box('shot').locator('.from-here').waitFor();
-    await box('shot').locator('.from-here .keeps').fill('4');
-    check('it_says_where_it_lands', (await box('shot').locator('.from-here .cut-says').textContent()).startsWith('Lands on 0:00.02'), await box('shot').locator('.from-here').innerText());
-    await box('shot').locator('button:text-is("Pick up from here")').click();
+    await box('shot').locator('.take[aria-label="take 1"]').click();
+    const fps = (await of('shot')).prefixes[0].main.fps ?? 24;
+    const player = box('shot').locator('.focus-viewer video').first();
+    await until('its take loaded', () => player.evaluate((element) => element.readyState), (ready) => ready >= 1);
+    await player.evaluate((element, at) => { element.pause(); element.currentTime = at; }, 4 / fps);
+    const pickUp = box('shot').locator('.focus-under button.pick-up');
+    const lands = `Pick up from 0:${(2 / fps).toFixed(2).padStart(5, '0')}`;
+    const said = await until('where it lands', () => pickUp.innerText(), (text) => text.trim() === lands).catch(() => pickUp.innerText());
+    check('it_says_where_it_lands', said.trim() === lands, { said, lands });
+    await pickUp.click();
+    await box('shot').locator('button[aria-label=Render]').first().click();
     await until('a picked-up take', () => versions('shot'), (n) => n === 2, FIRST_RUN_MS);
     const picked = await given('shot');
     check('pickup_reaches_the_function', picked.pickup?.out_frame === 2 && picked.pickup.take?.file?.file === 'VideoFile', picked.pickup);
@@ -425,22 +437,27 @@ function replaceFile(at, text) {
     const pickedLines = JSON.stringify(stored('shot'));
     check('pickup_writes_nothing', pickedLines === typed && !afterPickup.includes('pickup'), { before: typed, after: pickedLines, hasPickup: afterPickup.includes('pickup') });
 
-    // Another box's take let go on it: from that take, at a frame chosen on it.
-    addBoxes(folder, [{ name: 'other', tool: `${fixture}/shot`, kind: 'video', fields: { plate: '<walk>' } }]);
-    await until('other in the project', () => of('other'), Boolean);
-    await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { other: { x: at.x - 420, y: at.y } } }) });
-    await render('other', 1);
-    await open('other');
-    await box('other').locator('.take[aria-label="take 1"]').click();
-    const onto = await reach('shot');
-    await box('other').locator('.take-out').dragTo(page.locator('body'), { targetPosition: onto });
-    await box('shot').locator('.from-here .pickup-of:has-text("other\'s take 1")').waitFor();
-    check('another_take_offers_pick_up', (await box('shot').locator('.card.here').count()) === 1);
-    await box('shot').locator('.from-here .keeps').fill('7');
-    await box('shot').locator('button:text-is("Pick up from here")').click();
-    await until('picked up from other', () => versions('shot'), (n) => n === 3, FIRST_RUN_MS);
-    const fromOther = await given('shot');
-    check('pickup_of_another_take', fromOther.pickup?.out_frame === 7 && fromOther.pickup.take?.file?.file === 'VideoFile', fromOther.pickup);
+    // Another box's take let go on it: from that take, at a frame chosen on it. A step that never comes is a failed check with why, so the
+    // cell goes on (on 0.25.0 nothing carries a take out of an open box onto another: see the cl-885 notes).
+    try {
+      addBoxes(folder, [{ name: 'other', tool: `${fixture}/shot`, kind: 'video', fields: { plate: '<walk>' } }]);
+      await until('other in the project', () => of('other'), Boolean);
+      await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { other: { x: at.x - 420, y: at.y } } }) });
+      await render('other', 1);
+      await open('other');
+      await box('other').locator('.take[aria-label="take 1"]').click();
+      const onto = await reach('shot');
+      await box('other').locator('.take-out').dragTo(page.locator('body'), { targetPosition: onto });
+      await box('shot').locator('.from-here .pickup-of:has-text("other\'s take 1")').waitFor();
+      check('another_take_offers_pick_up', (await box('shot').locator('.card.here').count()) === 1);
+      await box('shot').locator('.from-here .keeps').fill('7');
+      await box('shot').locator('button:text-is("Pick up from here")').click();
+      await until('picked up from other', () => versions('shot'), (n) => n === 3, FIRST_RUN_MS);
+      const fromOther = await given('shot');
+      check('pickup_of_another_take', fromOther.pickup?.out_frame === 7 && fromOther.pickup.take?.file?.file === 'VideoFile', fromOther.pickup);
+    } catch (error) {
+      check('pickup_of_another_take', false, String(error.message ?? error).slice(0, 400));
+    }
     await shot('picked-up');
   }
 
