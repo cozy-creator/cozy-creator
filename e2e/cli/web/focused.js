@@ -74,7 +74,8 @@ async function died(error) {
   const tool = metadata.tools.find((item) => item.makes === 'image' && item.model && item.fields.some((field) => field.type === 'prompt'));
   if (!tool) throw new Error('the image tool metadata needed by the Focus fixture is unavailable');
   const promptField = tool.fields.find((field) => field.type === 'prompt').field;
-  await api(`${at}/assets/${NAME}`, 'PATCH', { tool: tool.id, fields: { [promptField]: '<self.1> stale edit text to replace' } });
+  // The words last run (cl-909): New begins from them.
+  await api(`${at}/assets/${NAME}`, 'PATCH', { tool: tool.id, fields: { [promptField]: '<self.1> make her smile' } });
   await until('ten image states are retained', asset, (item) => item?.versions === 10 && item.version === 1);
   await boxOf(page, NAME).waitFor();
   await fitCanvas(page);
@@ -108,10 +109,11 @@ async function died(error) {
     await focus.waitFor();
     await card.waitFor();
   };
+  // A tap looks at a state; a double tap makes it current (630309269, explicit variant approval).
   const choose = async (number) => {
     const take = history.locator(`.take[data-take="${number}"]`);
     await take.scrollIntoViewIfNeeded();
-    await take.click();
+    await take.dblclick();
     await until(`state ${number} is current`, asset, (item) => item.version === number);
     await until(`state ${number} is selected in the previews`, () => history.locator('.take.on[data-take]').getAttribute('data-take'), (current) => current === String(number));
   };
@@ -167,13 +169,16 @@ async function died(error) {
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   check('model_dialog_preserves_focus_tool_and_states', await focus.isVisible() && (await asset()).tool === toolBeforePicker && (await asset()).versions === 10);
 
+  // New keeps the words last run, word for word, from the state shown: state 2 picked, `<self.1>` becomes `<self.2>` (cl-909, Paul 11-06).
+  await choose(2);
   const newImage = history.locator('.take.add[aria-label="Its next take"]');
   await newImage.scrollIntoViewIfNeeded();
   await newImage.click();
   const prompt = focus.locator('.in-frame .mention-text').first();
   await prompt.waitFor();
-  await until('New image begins from the currently displayed state', () => prompt.innerText(), (text) => /<self\.1>/i.test(text) && !text.includes('stale edit text'));
-  await until('the fresh source prompt is saved', asset, (item) => /<self\.1>/i.test(item.fields?.[promptField] ?? '') && !item.fields[promptField].includes('stale edit text'));
+  await until('New image keeps the words, from the state shown', () => prompt.innerText(), (text) => /<self\.2>/i.test(text) && text.includes('make her smile')).catch(() => {});
+  const kept = await until('the words from the state shown are saved', asset, (item) => item.fields?.[promptField] === '<self.2> make her smile').catch(asset);
+  check('new_keeps_the_words_last_run_from_the_state_shown', kept.fields?.[promptField] === '<self.2> make her smile', { saved: kept.fields?.[promptField], shown: await prompt.innerText() });
   check('new_image_is_explicit_and_does_not_discard_variants', (await asset()).versions === 10 && await history.locator('.take[data-take]').count() === 10);
 
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
