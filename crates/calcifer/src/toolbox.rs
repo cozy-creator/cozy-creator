@@ -424,7 +424,11 @@ pub(crate) async fn tool_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<To
         return Ok(tool::edit());
     }
     let hub = api.machines.hubs.default_origin();
-    let found = target::describe(api, &hub, tool, None, Some(dir), &runs::default_on(api)).await?;
+    let found = match target::describe(api, &hub, tool, None, Some(dir), &runs::default_on(api)).await {
+        Ok(found) => found,
+        // This computer's machine can't run it (one held on an older Runtime): the Hub's card says what it asks for all the same.
+        Err(why) => return listed_tool(api, &hub, tool).await.ok_or(why),
+    };
     let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;
     let Some(function) = found.function.as_deref().or(target::only_function(&interface)).map(str::to_owned) else {
         let functions = interface.public().iter().map(|name| format!("{}/{name}", shown(&found.package))).collect::<Vec<_>>().join(", ");
@@ -432,6 +436,17 @@ pub(crate) async fn tool_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<To
     };
     tool::tools_of(&found.package, &found.release, &interface).into_iter().find(|held| held.function == function)
         .ok_or_else(|| Error::new(Kind::Usage, "tool_not_a_tool", format!("{tool} is no tool: its function declares no @app.tool, or makes no media")))
+}
+
+/// `tool` as `GET /v1/tools` lists it from the Hub: its package's newest release, by its card. None for local code, or what the Hub hasn't.
+async fn listed_tool(api: &Arc<Api>, hub: &str, tool: &str) -> Option<Tool> {
+    let id = shown(api::calcifer::node::plain(tool.trim()));
+    let (listed, _) = api.listing.tools(api, hub).await;
+    if let Some(offered) = listed.iter().find(|offered| offered.tool.id == id) {
+        return Some(offered.tool.clone());
+    }
+    let (package, _) = id.rsplit_once('/')?;
+    on_the_hub(api, hub, package).await.ok()?.into_iter().find(|found| found.id == id)
 }
 
 /// A box's model choices, bound as a run binds them, refused where their slot can't take them (`checkpoints::check_choices`).
