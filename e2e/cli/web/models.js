@@ -1,9 +1,9 @@
 // One Models & LoRAs picker for every tool, and H3's fields unfolded (cl-934, Paul 11-12: "for minimax h3, we should display the 'more' by
 // default ... We also don't need to display the fine-tune as its own section ... for images ... 'models and loras' at the bottom, next to the
 // tool ... I want this type of UX to be uniform"), in a real browser on a real Calcifer. H3's Shot in Focus: every field shown, no More, Less
-// or Advanced; no fine-tune or LoRA rows of its own; Models & LoRAs at the bottom of its fields, its picker listing H3's Base Model once
+// or Advanced; no fine-tune or LoRA rows of its own; beneath it its tool with Models & LoRAs beside it, the picker listing H3's Base Model once
 // (its segments' slots as one, written `base_model`), a LoRA picked there set on the box; its tool named once, "<Package> · <Tool>", under its media, nothing of it
-// beside the title. Qwen's Image's Models & LoRAs opens the same picker. Screenshots of each.
+// beside the title. Qwen's Image has the same component beneath it, and its Models & LoRAs opens the same picker. Screenshots of each.
 // The isolated Hub holds H3's default model (a stand-in) and an H3 LoRA of its family (e2e/isolated.sh, `loras`).
 //   node models.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
@@ -108,23 +108,29 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   seen.tool_said = { word, ...said };
   check('the_tool_named_once', said.times === 1, seen.tool_said);
   check('nothing_of_the_tool_beside_the_title', !said.heading.includes(shotTool.package_title) && !said.heading.includes(shotTool.label), said.heading);
-  const models = scene.locator('.here-under .models-loras');
+  // Beneath the node, one component for every tool and kind (Paul, 11-12: "just like for the image editing models it is"): its tool,
+  // Models & LoRAs beside it, what's set listed under them; nothing of models or LoRAs inside the card.
+  const models = scene.locator(':scope > .tool-line');
   const button = models.locator('button[aria-label="Models and LoRAs"]');
   await button.waitFor();
-  await button.scrollIntoViewIfNeeded();
-  const placed = await scene.evaluate((card) => {
-    const pick = card.querySelector('.here-under .models-loras button[aria-label="Models and LoRAs"]');
-    const controls = [...card.querySelectorAll('.edit-shown [data-field], .edit-shown [aria-label], .edit-parameters [aria-label], .run')];
-    const box = pick.getBoundingClientRect();
+  /** What sits beneath a node, as classes in order, and whether anything of models is inside its card. */
+  const beneath = (card) => card.evaluate((node) => {
+    const line = node.querySelector(':scope > .tool-line');
+    const row = line?.querySelector('.image-version-row');
+    const pick = row?.querySelector('button[aria-label="Models and LoRAs"]');
+    const tool = row?.querySelector('.image-tool-name');
     return {
-      buttons: card.querySelectorAll('button[aria-label="Models and LoRAs"]').length,
-      words: pick.textContent.trim(),
-      after_every_field: controls.every((el) => Boolean(el.compareDocumentPosition(pick) & Node.DOCUMENT_POSITION_FOLLOWING)),
-      in_sight: box.bottom <= innerHeight && box.top >= 0,
+      row: [...(row?.children ?? [])].map((el) => el.className),
+      tool: tool?.textContent ?? null,
+      words: pick?.textContent.trim() ?? null,
+      beside: Boolean(pick && tool) && Math.abs(pick.getBoundingClientRect().top + pick.getBoundingClientRect().height / 2 - (tool.getBoundingClientRect().top + tool.getBoundingClientRect().height / 2)) < pick.getBoundingClientRect().height,
+      buttons: node.querySelectorAll('button[aria-label="Models and LoRAs"]').length,
+      inside: node.querySelectorAll('.here-under .active-models, .here-under button[aria-label="Models and LoRAs"], .media .active-models').length,
     };
   });
+  const placed = await beneath(scene);
   seen.placed = placed;
-  check('models_and_loras_once_at_the_bottom_of_the_fields', placed.buttons === 1 && placed.words === 'Models & LoRAs' && placed.after_every_field && placed.in_sight, placed);
+  check('models_and_loras_beside_the_tool_beneath_the_node', placed.buttons === 1 && placed.words === 'Models & LoRAs' && placed.beside && placed.inside === 0 && placed.tool === word, placed);
   const listed = () => models.locator('.active-models .active-model-name').evaluateAll((els) => els.map((el) => el.title));
   check('the_fine_tune_listed_under_it_once', JSON.stringify(await listed()) === JSON.stringify([tune]), await listed());
   await shot('h3-unfolded');
@@ -194,10 +200,10 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   // A picture's Models & LoRAs opens the same picker.
   await openBox(page, 'still');
   const picture = page.locator('.card.here[data-asset="still"]').first();
-  const pictureSaid = await picture.locator('.image-controls .image-tool-name').innerText();
-  check('a_picture_names_its_tool_the_same_way', pictureSaid === named(imageTool), { pictureSaid, wanted: named(imageTool) });
-  check('a_picture_has_one_models_and_loras', (await picture.locator('button[aria-label="Models and LoRAs"]').count()) === 1);
-  await picture.locator('button[aria-label="Models and LoRAs"]').click();
+  const under = await beneath(picture);
+  seen.picture_beneath = under;
+  check('a_picture_has_the_same_component_beneath_it', JSON.stringify(under.row) === JSON.stringify(placed.row) && under.tool === named(imageTool) && under.buttons === 1 && under.beside && under.inside === 0, { picture: under, shot: placed });
+  await picture.locator(':scope > .tool-line button[aria-label="Models and LoRAs"]').click();
   await picker.waitFor();
   const imageShape = await shape();
   const imageSlots = new Set((imageTool.models?.length ? imageTool.models : [imageTool.model]).map((slot) => slot.slot.split('.models.').at(-1))).size;

@@ -3,8 +3,8 @@
 // one box ... those should fit inside of the video-panel as sections, and we'll still display the reference images in the background"), in a
 // real browser on a real Calcifer. H3's Shot in Focus: Summary and its Beats are sections inside the frame, each opened by its head (Summary
 // too, which can't be removed), + Beat adds one; behind them, faded and full height, the pictures the section being written mentions, all of
-// them with none written in; its corner pulled toward 9:16 lands on a ratio H3 makes; under the frame its tool, then Render, the fields and
-// Models & LoRAs. Writing its next take (New) is the same, its take faded behind. Qwen's Image writes in the same frame. Screenshots of each.
+// them with none written in; its corner pulled toward 9:16 lands on a ratio H3 makes; under the frame its tool with Models & LoRAs, then
+// Render and the fields. Writing its next take (New) is the same, its take faded behind. Qwen's Image writes in the same frame. Screenshots of each.
 //   node frame.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -90,7 +90,7 @@ async function died(why) {
     const media = node.querySelector('.media');
     const frame = media?.getBoundingClientRect();
     const run = node.querySelector('.here-under .run')?.getBoundingClientRect();
-    const models = node.querySelector('.here-under button[aria-label="Models and LoRAs"]')?.getBoundingClientRect();
+    const models = node.querySelector(':scope > .tool-line button[aria-label="Models and LoRAs"]')?.getBoundingClientRect();
     const tool = node.querySelector(':scope > .image-controls .image-tool-name')?.getBoundingClientRect();
     const fields = [...node.querySelectorAll('.here-under .edit-shown [data-field], .here-under .edit-shown [aria-label]')].map((el) => el.getBoundingClientRect());
     return {
@@ -100,7 +100,8 @@ async function died(why) {
       behind: [...(media?.querySelectorAll('.backdrop .backdrop-picture') ?? [])].map((el) => el.dataset.mention),
       full_height: [...(media?.querySelectorAll('.backdrop .backdrop-picture') ?? [])].every((el) => Math.abs(el.getBoundingClientRect().height - frame.height) < 2),
       ratio: frame ? frame.width / frame.height : null,
-      order: Boolean(frame && tool && run && models) && tool.top >= frame.bottom - 1 && run.top >= tool.bottom - 1 && fields.every((rect) => rect.top >= run.top - 1) && models.top >= Math.max(run.bottom, ...fields.map((rect) => rect.bottom)) - 1,
+      order: Boolean(frame && tool && run && models) && tool.top >= frame.bottom - 1 && Math.abs(models.top + models.height / 2 - (tool.top + tool.height / 2)) < models.height && run.top >= Math.max(tool.bottom, models.bottom) - 1 && fields.every((rect) => rect.top >= run.top - 1),
+      inside: node.querySelectorAll('.here-under .active-models, .here-under button[aria-label="Models and LoRAs"]').length,
     };
   });
   const write = async (name, place) => {
@@ -117,7 +118,7 @@ async function died(why) {
   check('summary_is_a_section_that_cannot_go', !empty.summary_removable, empty);
   check('one_section_open_at_a_time', empty.sections.filter((one) => one.open).length === 1, empty.sections);
   check('the_frame_is_16_9', Math.abs(empty.ratio - 16 / 9) < 0.03, empty.ratio);
-  check('tool_then_render_then_fields_then_models', empty.order, empty);
+  check('tool_and_models_then_render_then_fields', empty.order && empty.inside === 0, empty);
   check('with_none_written_in_all_it_mentions_is_behind', JSON.stringify([...empty.behind].sort()) === JSON.stringify(['amy', 'boat']) && empty.full_height, empty.behind);
   await shot('empty-16-9');
 

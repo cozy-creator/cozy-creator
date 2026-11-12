@@ -14,7 +14,6 @@ import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
 import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
 import { Ghosts, Thumb } from "./Media"
-import { ModelsAndLoras } from "./ImageVersions"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { makes, watched } from "./shown"
@@ -833,8 +832,8 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 /** What beside Render is only a thing to set: the rest of the face wants a line. */
 const small = (field: ToolField) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
 
-/** What a box asks and holds, under its frame (what it's written in is in the frame, InFrame), with Models & LoRAs at the bottom; its tool is
- *  named under its media. In Focus (`focused`), the same for a picture and a video (cl-938): Render, then every field at once, nothing under
+/** What a box asks and holds, under its frame (what it's written in is in the frame, InFrame); its tool and Models & LoRAs are beneath the
+ *  node (ToolLine). In Focus (`focused`), the same for a picture and a video (cl-938): Render, then every field at once, nothing under
  *  More or Advanced (cl-934). Elsewhere what isn't on the face is under More. What's only a thing to set is grouped, named. */
 export function AssetEdit({ name, view, editing, focused = false, actions, children }: { name: string; view: ElementView; editing: boolean; focused?: boolean; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
@@ -878,7 +877,6 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
                 {grouped}
                 {held}
                 {children}
-                <ModelsAndLoras name={name} />
               </>
             )
           }
@@ -899,7 +897,6 @@ export function AssetEdit({ name, view, editing, focused = false, actions, child
                 children
               )}
               {render}
-              <ModelsAndLoras name={name} />
             </>
           )
         }}

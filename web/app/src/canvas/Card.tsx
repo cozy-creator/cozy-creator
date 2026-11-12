@@ -25,7 +25,7 @@ import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, m
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns } from "./AddOns"
-import { ImageVersions } from "./ImageVersions"
+import { ToolLine } from "./ToolLine"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
 import { readableSurface } from "./readableSurface"
@@ -816,7 +816,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   // On the canvas a box is its name, its picture or its text, its state and an X. All else comes with a click, so 300 boxes cost little.
   const editing = here && (asset?.kind === "image" || (asset?.kind === "video" && !asset.timeline) ? Boolean(view.hereWords) : asset?.timeline ? face === "edit" : Boolean(asset?.tool) || Boolean(view.hereWords))
   const looking = here && asset?.kind !== "image" && !view.hereWords && paints(view, tools)
-  // Its fields show under it, Models & LoRAs at their bottom; with none, Models & LoRAs is beside its tool (cl-934).
+  // Its fields show under it, Render first (cl-938).
   const fielded = here && Boolean(asset?.tool) && (asset?.kind !== "image" || editing) && !(asset?.kind === "video" && !asset.timeline && !editing) && !looking
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   // Looking at a take, nothing of its tool: its warnings and state are the next take's too.
@@ -924,7 +924,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       )}</FocusFrame>
       {rendering && <span className="render-wave" aria-hidden="true" />}
       {focused && asset?.kind === "video" && !asset.timeline && !editing && <VideoScrub name={name} view={view} />}
-      {here && !lite && asset?.tool && !view.placing && <ImageVersions name={name} view={view} width={width} models={!fielded} />}
+      {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {!here && !focused && <Under view={view} name={name} lite={lite} />}
       {!here && !focused && <TileMeter view={view} />}
