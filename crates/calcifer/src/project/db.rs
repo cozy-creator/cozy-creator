@@ -211,6 +211,7 @@ fn migrate(path: &Path) -> Result<(), Error> {
         let part = path.with_file_name(format!("{BEFORE_SCHEMA_3}.part"));
         checked.backup(rusqlite::MAIN_DB, &part, rusqlite::backup::NO_PROGRESS).map_err(e)?;
         std::fs::rename(&part, &kept).map_err(|error| err(path, error))?;
+        tracing::info!("project.db before schema 3 kept at {}", kept.display());
     }
     drop(checked);
     let mut conn = Connection::open_with_flags(path, rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE).map_err(e)?;

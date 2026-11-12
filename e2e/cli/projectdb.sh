@@ -639,6 +639,8 @@ in_project "$M" --json status > "$OUT/migrate-open.json" 2> "$OUT/migrate-open.e
 local kept=$M/project.db.pre-schema3 kept_at
 [ -f "$kept" ] && [ "$(dump_of "$kept")" = "$was_0240" ] || check "migrate: no copy of it as 0.24.0 left it: $([ -f "$kept" ] && dump_of "$kept") (was $was_0240)"
 kept_at=$(stat -c %Y.%s "$kept" 2> /dev/null)
+cozy machine logs local calcifer --lines 5000 2> /dev/null | grep -q "project.db before schema 3 kept at .*/migrate/project.db.pre-schema3" \
+  || check "migrate: Calcifer's log doesn't say where the copy is"
 migrate_read "$M" now || check "migrate: what this cozy holds of it"
 local part
 for part in facts rows yaml history; do
