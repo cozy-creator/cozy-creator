@@ -171,9 +171,9 @@ async fn named(api: &Api, client: &Client, endpoint: &Endpoint, hub: &Origin, de
     read(api, endpoint, hub, header?).await?.family
 }
 
-/// Each tool says the family of the model it runs.
+/// Each declared slot says the family of its default model.
 pub(crate) async fn families(api: &Api, hub: &str, tools: &mut [Tool]) {
-    let defaults: BTreeSet<String> = tools.iter().filter_map(|tool| tool.model.as_ref()?.default.clone()).collect();
+    let defaults: BTreeSet<String> = tools.iter().flat_map(|tool| tool.models.iter().chain(tool.model.iter())).filter_map(|model| model.default.clone()).collect();
     let Ok(origin) = Origin::parse(hub) else { return };
     let fresh = |default: &String| {
         let held = named_so_far().lock().expect("named lock");
@@ -198,7 +198,7 @@ pub(crate) async fn families(api: &Api, hub: &str, tools: &mut [Tool]) {
         }
     }
     for tool in tools {
-        if let Some(model) = &mut tool.model {
+        for model in tool.models.iter_mut().chain(tool.model.iter_mut()) {
             model.family = model.default.as_ref().and_then(|default| found.get(default)?.clone());
         }
     }
