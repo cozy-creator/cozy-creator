@@ -1,0 +1,1 @@
+A started call's read of a model that isn't on disk yet (an on-demand model it builds) comes before every other download: the executor asks TensorD for it (`model_need`), TensorD fetches it at order 0 with its whole downloader and answers once it has, and the executor reads it from disk instead of over its own slow connection (about 40 MB/s on a pod).
