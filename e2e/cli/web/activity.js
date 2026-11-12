@@ -24,9 +24,9 @@ const COZY = process.env.COZY;
 const VAE = 'hf://stabilityai/sdxl-vae/diffusion_pytorch_model.safetensors';
 const VAE_SAID = 'Sdxl Vae';
 // A picture tool of its own, new to the machine, so its environment is installed while the box waits. It takes no GPU. It goes as the
-// models do, by their names: its prompt rewritten a token at a time, its cap far over what it writes (Qwen Image 2's rewriter:
-// `lm.generate` tells its tokens, the package's own `ctx.progress` under it); then in two parts as MiniMax H3's segments, each denoised by
-// steps of `pace` s and decoded by frames (`decode_video`); then saved.
+// models do, by their names: its prompt rewritten a token at a time against a cap far over what it writes, as Qwen Image 2's rewriter
+// tells it (`ctx.progress(token, 2176)` under `upsampling prompt`; a package can't reach the Runtime's own token unit, which `lm.generate`
+// sets); then in two parts as MiniMax H3's segments, each denoised by steps of `pace` s and decoded by frames (`decode_video`); then saved.
 const TOOL = `# /// script
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
@@ -38,7 +38,6 @@ import time
 
 import msgspec
 from cozy_runtime.author import Adjustments, App, Context, ImageFrame, Outputs, Seed, Telemetry
-from cozy_runtime.author._services import counting
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.image import ImageRequest, ImageResult, Sizes
 
@@ -56,14 +55,9 @@ class Drawing(msgspec.Struct, kw_only=True):
 def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Telemetry) -> ImageResult:
     width, height = ImageRequest(payload.instructions.text, None, None, payload.seed).size(adj, None, SIZES, megapixels=0.25)
     with tel.stage("upsampling prompt"):
-        # As lm.generate tells a decode: what it tells counts tokens.
-        unit = counting.set("tokens")
-        try:
-            for token in range(64):
-                time.sleep(0.05)
-                ctx.progress(token, 2176)
-        finally:
-            counting.reset(unit)
+        for token in range(64):
+            time.sleep(0.05)
+            ctx.progress(token, 2176)
     for part in range(2):
         with tel.scope(f"Segment {part + 1} of 2"):
             with tel.stage("denoise"):
