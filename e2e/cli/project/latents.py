@@ -10,7 +10,8 @@ from typing import Annotated
 
 import msgspec
 import torch
-from cozy_runtime.author import App, Context, ImageFrame, Outputs, Telemetry, preview
+# The pinned typecheck Runtime (0.45.0) predates `preview`: drop the ignore when the pin moves past it.
+from cozy_runtime.author import App, Context, ImageFrame, Outputs, Telemetry, preview  # type: ignore[attr-defined]
 from cozy_runtime.fields import Image, Prompt, Range
 from cozy_runtime.media import ImageFile
 
