@@ -5,7 +5,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, settled, signIn, STEP_MS, until, upload } = require('./page');
+const { boxOf, calcifer, carry, fitCanvas, lastLook, launch, lookAt, MP4, noStall, png, projectFromPage, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const NAME = 'focus_image';
 const failures = [];
@@ -40,6 +40,7 @@ async function died(error) {
   await signIn(page);
   // Signed in once the page is up: going on before then drops its session.
   await page.waitForSelector('.top');
+
 
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-focused-${Date.now()}`);
@@ -215,6 +216,7 @@ async function died(error) {
   await title.waitFor();
   check('title_is_editable_without_leaving_focus', await focus.isVisible() && (await asset()).name === NAME);
   check('seed_and_advanced_fold_controls_are_absent', await focus.locator('[data-field="seed"], .seed, .advanced-toggle').count() === 0);
+  check('image_workspace_has_no_asset_description_box', await page.locator('.desc-field:visible').count() === 0);
   await shot('wide');
 
   const fittedPicture = await until('the fitted large image displays a decoded thumbnail at the requested density', decodedImage,
@@ -301,6 +303,17 @@ async function died(error) {
   await until('the source prompt keeps the words and updates its reference', asset, (item) => /<self\.1>/i.test(item.fields?.[promptField] ?? '') && item.fields[promptField].includes('make her smile'));
 
   check('new_image_is_explicit_and_does_not_discard_variants', (await asset()).versions === 10 && await history.locator('.take[data-take]').count() === 10);
+
+  const beforeReferenceDrop = await asset();
+  const namesBeforeReferenceDrop = (await state()).assets.map((item) => item.name).sort();
+  const referencedImage = history.locator('.take[data-take="2"]');
+  await referencedImage.scrollIntoViewIfNeeded();
+  const imageDropTarget = await card.locator('.focus-viewer .media').boundingBox();
+  await carry(page, referencedImage, { x: imageDropTarget.x + imageDropTarget.width / 2, y: imageDropTarget.y + imageDropTarget.height - 12 });
+  const afterReferenceDrop = await until('dropping an image onto an image tool appends an explicit reference', asset,
+    (item) => /<self\.1>/i.test(item.fields?.[promptField] ?? '') && /<(?:self|focus_image)\.2>/i.test(item.fields[promptField]) && item.fields[promptField].includes('make her smile'));
+  check('dropping_an_image_into_the_editor_keeps_its_source_and_approval', afterReferenceDrop.version === beforeReferenceDrop.version && afterReferenceDrop.approved === beforeReferenceDrop.approved && afterReferenceDrop.sha256 === beforeReferenceDrop.sha256 && JSON.stringify(afterReferenceDrop.prefixes.map((version) => [version.number, version.main.sha256])) === JSON.stringify(beforeReferenceDrop.prefixes.map((version) => [version.number, version.main.sha256])) && await history.locator('.take.on[data-take]').getAttribute('data-take') === '1');
+  check('dropping_an_image_into_the_editor_does_not_create_a_node', JSON.stringify((await state()).assets.map((item) => item.name).sort()) === JSON.stringify(namesBeforeReferenceDrop));
 
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   if (local) {
@@ -392,13 +405,13 @@ async function died(error) {
   await settled(page);
   check('clicking_the_empty_focus_background_exits_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
 
-  // An unrendered video tool gets a large editable Beats-first workspace and a New tile.
-  const videoTool = metadata.tools.find((item) => item.makes === 'video' && item.id !== 'cozy/edit'
+  // H3 edits Summary before Beats; a real tiny imported clip exercises the separate completed-view face without a GPU.
+  const videoTool = metadata.tools.find((item) => item.makes === 'video' && item.id === 'minimax-h3/generate'
     && item.fields.some((field) => field.type === 'group' && field.field === 'beats')
     && !item.fields.some((field) => field.required && field.type === 'slot' && field.accept === 'video'));
-  if (!videoTool) throw new Error('the video tool metadata needed by the Beats fixture is unavailable');
+  if (!videoTool) throw new Error('the H3 video tool metadata needed by the Summary/Beats fixture is unavailable');
   const VIDEO = 'focus_video';
-  await api(`${at}/assets`, 'POST', { name: VIDEO, exact: true, kind: 'video', tool: videoTool.id, fields: { summary: 'A focused video scene.', beats: [{ duration: 5, description: 'A large focused video beat.' }] }, at: { x: 1100, y: 600, w: 360 } });
+  await api(`${at}/assets`, 'POST', { name: VIDEO, exact: true, kind: 'video', tool: videoTool.id, fields: { description: 'Stored asset description stays out of the UI.', summary: '<focus_image.1> A focused video scene.', beats: [{ duration: 5, description: '<focus_image.2> A large focused video beat.' }, { duration: 5, description: '<focus_image.1> The second focused video beat.' }] }, at: { x: 1100, y: 600, w: 360 } });
   await boxOf(page, VIDEO).waitFor();
   await fitCanvas(page);
   const videoWander = await camera();
@@ -408,21 +421,71 @@ async function died(error) {
   await videoFocus.waitFor();
   await page.locator(`[data-focused-asset="${VIDEO}"]:not([data-entering])`).waitFor();
   const videoFocusedCanvas = await camera();
+  const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
+  await newVideo.click();
   const videoForm = videoFocus.locator('.focus-parameter-tool > .here-under');
   await videoForm.waitFor();
   const beatPrompt = videoForm.locator('[data-field="beats"] .beat .mention-text').first();
   await beatPrompt.waitFor();
+  const summaryPrompt = videoForm.locator('.mention-text[data-field="summary"]');
+  await summaryPrompt.waitFor();
   const formGeometry = await videoForm.boundingBox();
   const videoRoom = await videoFocus.locator('.focus-body').boundingBox();
-  check('video_Beats_get_a_prominent_editable_workspace', await videoForm.locator('.focus-parameter-group h3').first().innerText() === 'Beats' && formGeometry.width > videoRoom.width * 0.5 && formGeometry.height > videoRoom.height * 0.6 && await beatPrompt.evaluate((element) => parseFloat(getComputedStyle(element).fontSize) >= 18) && (await beatPrompt.boundingBox()).height >= 100, { formGeometry, videoRoom });
-  await beatPrompt.fill('Edited in the large video Beats form.');
+  const summaryGeometry = await summaryPrompt.boundingBox();
+  const beatGeometry = await beatPrompt.boundingBox();
+  check('video_summary_precedes_the_prominent_editable_Beats', summaryGeometry.y + summaryGeometry.height <= beatGeometry.y && await videoForm.locator('.focus-parameter-group h3').first().innerText() === 'Beats' && formGeometry.width > videoRoom.width * 0.5 && formGeometry.height > videoRoom.height * 0.6 && await beatPrompt.evaluate((element) => parseFloat(getComputedStyle(element).fontSize) >= 18) && beatGeometry.height >= 100, { formGeometry, videoRoom, summaryGeometry, beatGeometry });
+  await beatPrompt.fill('<focus_image.2> Edited in the large video Beats form.');
   await videoFocus.getByRole('button', { name: 'Rename node', exact: true }).focus();
-  await until('video Beats edits are saved', () => state(), (value) => value.assets.find((item) => item.name === VIDEO)?.fields?.beats?.[0]?.description === 'Edited in the large video Beats form.');
+  await until('video Beats edits are saved', () => state(), (value) => value.assets.find((item) => item.name === VIDEO)?.fields?.beats?.[0]?.description === '<focus_image.2> Edited in the large video Beats form.');
   check('video_seed_and_advanced_fold_controls_are_absent', await videoForm.locator('[data-field="seed"], .seed, .advanced-toggle').count() === 0 && await videoForm.getByRole('button', { name: 'Advanced', exact: true }).count() === 0);
-  const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
+  const videoMore = videoForm.locator('.more-toggle');
+  if (await videoMore.count()) {
+    await videoMore.click();
+    await videoForm.locator('.edit-more').waitFor();
+  }
+  check('H3_quality_steps_and_turbo_controls_are_hidden', await videoForm.locator('[aria-label="Quality"], [aria-label="Steps"], [aria-label="Turbo"]').count() === 0);
+  if (await videoMore.count()) await videoMore.click();
+  check('video_workspace_hides_the_stored_asset_description', await page.locator('.desc-field:visible').count() === 0 && (await state()).assets.find((item) => item.name === VIDEO).fields.description === 'Stored asset description stays out of the UI.');
+
+  const clip = join(images, 'completed.mp4');
+  writeFileSync(clip, MP4);
+  await api(`${at}/assets/${VIDEO}/versions`, 'POST', { source: await upload(session.token, clip) });
+  const completedVideo = videoFocus.locator('.here-side .take[data-take="1"]');
+  await completedVideo.waitFor();
+  await completedVideo.click();
+  const completedPlayer = videoFocus.locator('.focus-viewer video').first();
+  await completedPlayer.waitFor({ state: 'visible' });
+  await until('the imported completed video can actually play', () => completedPlayer.evaluate((element) => element.readyState >= 2 && element.videoWidth > 0), Boolean);
+  const completedGeometry = await videoFocus.locator('.focus-viewer').boundingBox();
+  check('completed_video_has_a_prominent_view_only_face', completedGeometry.width > videoRoom.width * 0.5 && completedGeometry.height > 120 && !await summaryPrompt.isVisible() && !await beatPrompt.isVisible() && await videoFocus.locator('.mention-text:visible').count() === 0, { completedGeometry, videoRoom });
+  check('completed_video_has_models_and_an_explicit_pick_up_action', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await videoFocus.locator('.video-pickup-action').isVisible());
+  await videoFocus.locator('.video-pickup-action').click();
+  await videoFocus.locator('.focus-new-video').waitFor();
+  await summaryPrompt.waitFor({ state: 'visible' });
+  check('pick_up_opens_the_video_editor_without_starting_a_render', !await videoFocus.locator('.focus-viewer').isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1 && !(await state()).assets.find((item) => item.name === VIDEO).making?.length);
+  await completedVideo.click();
+  await completedPlayer.waitFor({ state: 'visible' });
+  await shot('completed-video');
   check('video_has_a_new_state_tile', await newVideo.isVisible());
   await newVideo.click();
-  check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 0);
+  check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1);
+  check('new_video_hides_the_main_player_and_keeps_the_prompt_workspace', !await videoFocus.locator('.focus-viewer').isVisible() && await summaryPrompt.isVisible() && await beatPrompt.isVisible());
+  const beatRows = videoForm.locator('.beats-edit[data-field="beats"] > .beat');
+  check('video_editor_expands_the_first_beat_and_collapses_the_rest', await beatRows.count() === 2 && await beatRows.first().locator('.mention-text').first().isVisible() && !await beatRows.nth(1).locator('.mention-text').first().isVisible());
+  const firstBeatToggle = beatRows.first().getByRole('button', { name: 'Beat 1', exact: true });
+  const secondBeatToggle = beatRows.nth(1).getByRole('button', { name: 'Beat 2', exact: true });
+  await secondBeatToggle.click();
+  check('expanding_another_beat_closes_the_previous_one', await firstBeatToggle.getAttribute('aria-expanded') === 'false' && await secondBeatToggle.getAttribute('aria-expanded') === 'true' && !await beatRows.first().locator('.mention-text').first().isVisible() && await beatRows.nth(1).locator('.mention-text').first().isVisible());
+  await firstBeatToggle.click();
+  for (const [place, ratio] of [['summary', 4], ['beats.0.description', 0.25]]) {
+    const backdrop = videoForm.locator(`[data-video-reference="${place}"] .ghosts img`);
+    const painted = await until(`the ${place} field displays its own referenced image`, () => backdrop.evaluate((image) => {
+      const bounds = image.getBoundingClientRect();
+      return { loaded: image.complete && image.naturalWidth > 0, aspect: image.naturalWidth / image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity: Number(getComputedStyle(image.closest('.ghosts')).opacity), width: bounds.width, height: bounds.height };
+    }), (image) => image.loaded && Math.abs(image.aspect / ratio - 1) < 0.03 && image.width > 20 && image.height > 20);
+    check(`${place}_references_are_faded_and_fit_without_cropping`, painted.fit === 'contain' && painted.opacity > 0 && painted.opacity < 0.6, painted);
+  }
+  await shot('new-video');
   check('video_parameters_do_not_move_the_focused_canvas_camera', sameCamera(videoFocusedCanvas, await camera()));
   await videoFocus.getByRole('button', { name: 'Back to canvas', exact: true }).click();
   await videoFocus.waitFor({ state: 'detached' });
