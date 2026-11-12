@@ -222,7 +222,7 @@ function audit({ floor, fitted = true }) {
   // 3. Each box: its name and × clear of its picture, its takes level with it, and what hangs under it on nothing else's.
   const boxes = [...document.querySelectorAll('.react-flow__node')].filter((node) => visible(node) && onScreen(R(node)));
   // A box and all that hangs off it: its name rises above it as it's drawn larger, and what's under it hangs below.
-  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .tile-under, .refused-line')].filter(visible).map(R);
+  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .tile-under, .refused-line')].filter(visible);
   for (const node of boxes) {
     const card = node.querySelector('.card');
     const media = node.querySelector(':scope .card > .media, :scope .card > .tl');
@@ -273,7 +273,8 @@ function audit({ floor, fitted = true }) {
   for (let i = 0; i < resting.length; i++) {
     for (let j = i + 1; j < resting.length; j++) {
       const [a, b] = [hung(resting[i]), hung(resting[j])];
-      if (a.some((ra) => b.some((rb) => meet(ra, rb)))) say('boxes-overlap', resting[i], `with <${name(resting[j])}>`);
+      const on = a.flatMap((ea) => b.filter((eb) => meet(R(ea), R(eb))).map((eb) => [ea, eb]))[0];
+      if (on) say('boxes-overlap', resting[i], `with <${name(resting[j])}>: ${where(on[0])} ${round(R(on[0]))} on ${where(on[1])} ${round(R(on[1]))}`);
     }
   }
   // What floats over the canvas, on nothing else that floats.
@@ -697,7 +698,11 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     await render('card', false);
     const waiting = await until('the picture tool waits', () => box('card').locator('.prog b, .take.making').count(), (n) => n > 0, RUN_MS).catch(() => 0);
     seen.waits = waiting > 0;
-    if (waiting) for (const finding of await page.evaluate(audit, { floor: FLOOR })) findings.push({ size: '1600x1000', state: 'waiting-on-install', ...finding });
+    if (waiting) {
+      const said = await page.evaluate(audit, { floor: FLOOR });
+      for (const finding of said) findings.push({ size: '1600x1000', state: 'waiting-on-install', ...finding });
+      if (process.env.SHOT && said.length) await page.screenshot({ path: `${process.env.SHOT}-1600x1000-waiting-on-install.png`, scale: 'css' });
+    }
     await until('the first take', () => api(`/v1/projects/${id}`), (state) => state.assets.find((held) => held.name === 'card')?.prefixes?.length >= 1, RUN_MS);
     for (let i = 0; i < 8; i++) await render('card');
     await render('shot');
