@@ -900,7 +900,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         </Media>
       </FocusFrame>}
       {plays && <Segments name={name} view={view} />}
-      {rendering && <span className="render-wave" aria-hidden="true" />}
+      {rendering && <span className="render-wave" data-state={viewState(view) ?? undefined} aria-hidden="true" />}
       {/* Watched, not written: orbit viewing turns on and off here too (xs-180), as in a take being written. */}
       {focused && asset?.kind === "video" && !asset.timeline && !editing && <OrbitToggle view={view} name={name} />}
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}

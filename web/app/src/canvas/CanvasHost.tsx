@@ -910,6 +910,9 @@ function Canvas({
   // A selected box's ring keeps its width on screen: the zoom in steps of two, so a zoom sets it only as it crosses one.
   const unzoom = useStore((state) => 2 ** -Math.ceil(Math.log2(state.transform[2] || 1)))
   useLayoutEffect(() => stage.current?.style.setProperty("--unzoom", String(unzoom)), [unzoom])
+  // Far out a box's name keeps its size on screen (cl-958): the zoom's inverse in quarter steps, so it's set only as a zoom crosses one.
+  const nameZoom = useStore((state) => 2 ** Math.max(0, Math.ceil(-Math.log2(state.transform[2] || 1) * 4) / 4))
+  useLayoutEffect(() => stage.current?.style.setProperty("--name-zoom", String(nameZoom)), [nameZoom])
   const flowStore = useStoreApi<ElementNode, Edge>()
   // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
   useLayoutEffect(() => {

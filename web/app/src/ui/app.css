@@ -1209,6 +1209,11 @@ code {
   inset: var(--head) 0 0;
   border-radius: 2px;
   pointer-events: none;
+  /* Its state dot's colour: blue running, grey queued (cl-958). */
+  --wave: var(--state-running);
+}
+.render-wave[data-state="queued"] {
+  --wave: var(--state-queued);
 }
 .render-wave::before,
 .render-wave::after {
@@ -1223,16 +1228,16 @@ code {
 }
 @keyframes render-wave {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--mak) 75%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--wave, var(--mak)) 75%, transparent);
   }
   100% {
-    box-shadow: 0 0 0 calc(24px * var(--unzoom, 1)) color-mix(in srgb, var(--mak) 0%, transparent);
+    box-shadow: 0 0 0 calc(24px * var(--unzoom, 1)) color-mix(in srgb, var(--wave, var(--mak)) 0%, transparent);
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .render-wave::before {
     animation: none;
-    box-shadow: 0 0 0 calc(4px * var(--unzoom, 1)) color-mix(in srgb, var(--mak) 60%, transparent);
+    box-shadow: 0 0 0 calc(4px * var(--unzoom, 1)) color-mix(in srgb, var(--wave, var(--mak)) 60%, transparent);
   }
   .render-wave::after {
     display: none;
@@ -2285,6 +2290,14 @@ video.preview.on {
 .stage[data-lod="2"] .dot {
   width: 18px;
   height: 18px;
+}
+/* Far out a box is its picture and its name (web-ui.md §2), the name and its dot at the body step on screen, held there by --name-zoom
+   (CanvasHost.tsx); its version and trash can, too small to read or hit, go (cl-958). */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.nm, .state-dot) {
+  font-size: calc(var(--t-body) * var(--ui) * var(--name-zoom, 1));
+}
+.stage[data-lod="2"] .react-flow__node .card > .head :is(.node-version-label, .iconb) {
+  display: none;
 }
 
 /* Drawers, and what floats over the canvas keeps clear of the rest by: the tools' width, the zoom's height, an open drawer's width as drawn,
