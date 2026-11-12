@@ -832,7 +832,7 @@ pub struct Version {
     /// The words it was made from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// Its saved generation request, including structured prompts and model choices; absent when unknown.
+    /// Its saved editable inputs, before prompt binding, including model choices; absent when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fields: Option<Map<String, Value>>,
 }

@@ -239,6 +239,25 @@ async fn typed_nodes_fixture() {
     let conn = db::open(&directory.join(db::DB)).unwrap();
     let stored = db::load(&conn, &directory.join(db::DB)).unwrap();
     assert_eq!(stored.lock.asset(&original.name).unwrap().version(2).unwrap().fields.as_ref(), Some(original_request));
+    assert!(history.versions.iter().find(|version| version.number == 1).unwrap().fields.is_none(), "an import has no historical authoring request");
+    let source_prompt = format!("Keep <{}.1> exactly", original.name);
+    edit(&api, &series.id, &original.name, json!({"fields":{"summary":source_prompt}})).await;
+    let doc = Doc::load(&series.folder).unwrap();
+    let lock = series.folder.lock().unwrap();
+    let source_at = doc.find(&original.name).unwrap();
+    let authored = doc.authoring_fields(source_at);
+    let callable: api::interface::Callable = serde_json::from_value(json!({
+        "name":"image", "request":{"fields":[{"name":"summary","type":{"prompt":["image"]}}]}
+    })).unwrap();
+    let bound = super::super::binder::bind(&super::super::binder::Call {
+        name: &original.name, tool: "fixture/image", package: "fixture", callable: &callable,
+        fields: &authored, reserved: &[], doc: &doc, own: Some(source_at), lock: &lock,
+        stand: &doc.stand(&lock), gone: &BTreeSet::new(), pickup: None, inline: &[],
+    }).unwrap();
+    assert_eq!(authored.get("summary"), Some(&json!(source_prompt)));
+    assert_eq!(bound.payload["summary"]["text"], json!(source_prompt));
+    assert!(bound.payload["summary"]["references"].is_array(), "binding genuinely produces a structured Prompt");
+    drop(lock);
     let reader = make(&api, &series.id, json!({"name":"reader","tool":"fixture/video","kind":"video","fields":{"summary":format!("<{}>", original.name)}})).await;
     {
         use super::super::{AskedText, Graph, Named, Now, Turn, walker};
