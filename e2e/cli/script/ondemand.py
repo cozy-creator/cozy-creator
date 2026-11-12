@@ -9,7 +9,7 @@ import time
 
 import msgspec
 
-from cozy_runtime.author import App, Loader, Model, Telemetry, uses_components
+from cozy_runtime.author import App, Loader, Model, Telemetry
 
 app = App()
 
@@ -19,10 +19,6 @@ class Extra(Model[object]):
 
     def load(self, loader: Loader) -> None:
         self.graph = loader.construct(lambda config: object())
-
-    @uses_components("model")
-    def forward(self) -> None:
-        return None
 
 
 class Hold(msgspec.Struct, kw_only=True):
