@@ -1,13 +1,14 @@
 # model-ingest: a first-party model onto tensorhub.com's root (xs-104). One rental:
-#   1. uploads each source as its bf16 commit;
-#   2. pulls each bf16 commit onto the pod, then writes each lane from it by the recipe the package declares;
+#   1. uploads each source as its `from` commit (bf16);
+#   2. pulls each `from` commit onto the pod, then writes each lane from it by the recipe the package declares;
 #   3. calls the package's function once per model on its first lane's commit (the gate);
-#   4. publishes the release (bf16 + every lane), then calls each model once more through it.
+#   4. publishes the release (`from` + every lane), then calls each model once more through it.
 # A failed first lane stops it; any other failure stops before publishing, and the commits stay private.
 # packages_refs: one checkout (any name). params:
 #   package    the packages directory whose recipes write the lanes and whose function the calls run
-#   sources    space-separated name=source pairs; each source becomes the root model name's bf16 commit
-#   have       space-separated name/lane=commit pairs already on the Hub (bf16 too): not uploaded or written again
+#   sources    space-separated name=source pairs; each source becomes the root model name's `from` commit
+#   from       the lane the others are written from (bf16; fp8 for a model published only in fp8, as Ideogram 4)
+#   have       space-separated name/lane=commit pairs already on the Hub (`from` too): not uploaded or written again
 #   lanes      comma-separated lanes the package's recipes write; the first one gates the release
 #   version    the release: higher than every earlier one
 #   function (ask), slot (model): the call and its model slot
@@ -16,6 +17,7 @@
 #   asset      the field that takes release-gate/ref/seed.jpg (images; empty: none)
 #   gate       false: stop once the commits are written, with no call and no release, on a CPU rental whose
 #              model needs a GPU to answer; a GPU session gates them and the release follows (true)
+#   seconds    what the cap must buy (7200)
 # Mirrors (xs-185): `mirrors`, a JSON array, puts authors' models and LoRAs on the Hub under their own orgs, as
 # `cozy model upload --mirror` records them (admins), instead of the steps above. Each item:
 #   model      org/name, under its author's org (required)   kind   model (default) or lora
@@ -39,7 +41,7 @@
 PACKAGE=$(param package) SOURCES=$(param sources) LANES=$(param lanes) VERSION=$(param version) GIVEN=$(param have)
 FUNCTION=$(param function ask) SLOT=$(param slot model)
 REQUEST=$(param request '{"prompt": "First, what is 17 + 25? Give just the number. Then describe this picture in two sentences.", "max_tokens": 160, "temperature": 0.7, "top_p": 0.8, "presence_penalty": 1.5, "seed": 0}')
-EXPECT=$(param expect 42) ASSET=$(param asset images) IMG=$REF/seed.jpg GATE=$(param gate true)
+EXPECT=$(param expect 42) ASSET=$(param asset images) IMG=$REF/seed.jpg GATE=$(param gate true) FROM=$(param from bf16)
 MIRRORS=$(param mirrors '')
 printf 'checkpoint  sha256:%064d\ncheckpoint  _/x@sha256:%064d\nrun 5 · x\nrun      17999\n' 1 7 > "$OUT/probe.txt"
 [ "$(made probe)" = "sha256:$(printf '%064d' 7)" ] && [ "$(runno probe)" = 17999 ] || fail "parsers"
@@ -181,34 +183,34 @@ call() {
 read -ra pairs <<<"$SOURCES"; IFS=, read -ra lanes <<<"$LANES"
 [ "${#pairs[@]}" -gt 0 ] && [ "${#lanes[@]}" -gt 0 ] && [ -n "$VERSION" ] || fail "no sources, lanes or version"
 for p in "${pairs[@]}"; do
-  model_details "${p%%=*}" > "$OUT/before-${p%%=*}.txt" 2>&1
-  grep -q model.not_found "$OUT/before-${p%%=*}.txt" || say "${p%%=*} exists on prod: $(head -2 "$OUT/before-${p%%=*}.txt" | paste -sd' ')"
+  m=${p%%=*}; model_details "$m" > "$OUT/before-${m//\//-}.txt" 2>&1
+  grep -q model.not_found "$OUT/before-${m//\//-}.txt" || say "$m exists on prod: $(head -2 "$OUT/before-${m//\//-}.txt" | paste -sd' ')"
 done
-declare -A BF16 LANE
+declare -A SOURCE LANE
 for p in $GIVEN; do
   k=${p%%=*} c=${p#*=}; m=${k%/*} l=${k##*/}
   [ "$(lane_of "$m" "$c")" = "$l" ] || fail "have: $m has no $l commit $c"
-  if [ "$l" = bf16 ]; then BF16[$m]=$c; else LANE[$m/$l]=$c; fi
+  if [ "$l" = "$FROM" ]; then SOURCE[$m]=$c; else LANE[$m/$l]=$c; fi
   say "$m $l $c (have)"
 done
-quote 7200
+quote "$(param seconds 7200)"
 rent
 
-# 1. Each source as its bf16 commit, unless given.
+# 1. Each source as its $FROM commit, unless given.
 for p in "${pairs[@]}"; do
   m=${p%%=*}
-  [ -z "${BF16[$m]:-}" ] || continue
-  step "upload-$m" model upload "${p#*=}" "$m" --lane bf16 --on "$NAME" || fail "upload $m"
-  c=$(made "upload-$m"); [ "$(lane_of "$m" "$c")" = bf16 ] || fail "upload $m: no bf16 commit ($c)"
-  BF16[$m]=$c; say "$m bf16 $c"
+  [ -z "${SOURCE[$m]:-}" ] || continue
+  step "upload-${m//\//-}" model upload "${p#*=}" "$m" --lane "$FROM" --on "$NAME" || fail "upload $m"
+  c=$(made "upload-${m//\//-}"); [ "$(lane_of "$m" "$c")" = "$FROM" ] || fail "upload $m: no $FROM commit ($c)"
+  SOURCE[$m]=$c; say "$m $FROM $c"
 done
-# 2. The lanes, by the package's recipes, from the bf16 commits, each pulled whole first: a quantize then reads its
+# 2. The lanes, by the package's recipes, from the $FROM commits, each pulled whole first: a quantize then reads its
 # source from the pod's store, not tensor by tensor from the Hub.
 for p in "${pairs[@]}"; do
   m=${p%%=*}
   for lane in "${lanes[@]}"; do
     [ -n "${LANE[$m/$lane]:-}" ] && continue
-    step "pull-$m" model install "$m@${BF16[$m]}" --on "$NAME" || fail "pull $m's bf16 commit"
+    step "pull-${m//\//-}" model install "$m@${SOURCE[$m]}" --on "$NAME" || fail "pull $m's $FROM commit"
     break
   done
 done
@@ -217,8 +219,8 @@ for lane in "${lanes[@]}"; do
   for p in "${pairs[@]}"; do
     m=${p%%=*}
     [ -z "${LANE[$m/$lane]:-}" ] || continue
-    if step "$lane-$m" model quantize "$m@${BF16[$m]}" --lane "$lane" --package "./$PACKAGE" --on "$NAME" &&
-       c=$(made "$lane-$m") && [ "$(lane_of "$m" "$c")" = "$lane" ]; then
+    if step "$lane-${m//\//-}" model quantize "$m@${SOURCE[$m]}" --lane "$lane" --package "./$PACKAGE" --on "$NAME" &&
+       c=$(made "$lane-${m//\//-}") && [ "$(lane_of "$m" "$c")" = "$lane" ]; then
       LANE[$m/$lane]=$c; say "$m $lane $c"
     else
       failed+=("$m/$lane"); say "LANE FAILED: $m $lane"
@@ -228,23 +230,23 @@ for lane in "${lanes[@]}"; do
 done
 if [ "$GATE" != true ]; then
   [ "${#failed[@]}" = 0 ] || fail "not written: ${failed[*]}; every other commit is private on prod"
-  for p in "${pairs[@]}"; do m=${p%%=*}; for lane in bf16 "${lanes[@]}"; do
-    c=${BF16[$m]}; [ "$lane" = bf16 ] || c=${LANE[$m/$lane]}; say "COMMIT $m $lane $c"
+  for p in "${pairs[@]}"; do m=${p%%=*}; for lane in "$FROM" "${lanes[@]}"; do
+    c=${SOURCE[$m]}; [ "$lane" = "$FROM" ] || c=${LANE[$m/$lane]}; say "COMMIT $m $lane $c"
   done; done
-  say "PASS: ${pairs[*]%%=*} written (bf16 ${lanes[*]}); not gated, not released"
+  say "PASS: ${pairs[*]%%=*} written ($FROM ${lanes[*]}); not gated, not released"
   exit 0
 fi
 # 3. The gate: each model answers on its first lane's commit.
-for p in "${pairs[@]}"; do m=${p%%=*}; call "gate-$m" "$m@${LANE[$m/${lanes[0]}]}" || fail "$m did not pass on ${lanes[0]}"; done
+for p in "${pairs[@]}"; do m=${p%%=*}; call "gate-${m//\//-}" "$m@${LANE[$m/${lanes[0]}]}" || fail "$m did not pass on ${lanes[0]}"; done
 [ "${#failed[@]}" = 0 ] || fail "not published: ${failed[*]} failed; every other commit is private on prod"
 # 4. The release, then each model through it as this card resolves it.
 for p in "${pairs[@]}"; do
-  m=${p%%=*}; commits=("${BF16[$m]}")
+  m=${p%%=*}; commits=("${SOURCE[$m]}")
   for lane in "${lanes[@]}"; do commits+=("${LANE[$m/$lane]}"); done
-  cozy model publish "$m" "$VERSION" "${commits[@]}" > "$OUT/publish-$m.txt" 2>&1 || fail "publish $m: $(tail -3 "$OUT/publish-$m.txt")"
-  sed 's/^/    /' "$OUT/publish-$m.txt" >> "$R"
-  model_details "$m" > "$OUT/info-$m.txt" 2>&1
+  cozy model publish "$m" "$VERSION" "${commits[@]}" > "$OUT/publish-${m//\//-}.txt" 2>&1 || fail "publish $m: $(tail -3 "$OUT/publish-${m//\//-}.txt")"
+  sed 's/^/    /' "$OUT/publish-${m//\//-}.txt" >> "$R"
+  model_details "$m" > "$OUT/info-${m//\//-}.txt" 2>&1
   say "PUBLISHED $m $VERSION"
 done
-for p in "${pairs[@]}"; do m=${p%%=*}; call "release-$m" "$m@$VERSION" || fail "$m@$VERSION did not pass through its release"; done
-say "PASS: ${pairs[*]%%=*} released $VERSION (bf16 ${lanes[*]})"
+for p in "${pairs[@]}"; do m=${p%%=*}; call "release-${m//\//-}" "$m@$VERSION" || fail "$m@$VERSION did not pass through its release"; done
+say "PASS: ${pairs[*]%%=*} released $VERSION ($FROM ${lanes[*]})"
