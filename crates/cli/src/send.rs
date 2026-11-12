@@ -99,9 +99,8 @@ impl<'a> Sender<'a> {
     pub(crate) async fn independent_code(ctx: &'a Context, path: &Path) -> Result<LocalCode, Error> {
         let plan = source_plan(path).await?;
         source_scope(ctx, &plan, CodeScope::Independent).await?;
-        let staged = tokio::task::spawn_blocking(move || plan.stage(None))
-            .await.map_err(|error| Error::internal("stage", error.to_string()))??;
-        Self::new(ctx).await?.prepared_code(staged).await
+        let path = std::fs::canonicalize(path).map_err(|error| unreadable(path, error))?;
+        ctx.calcifer().await?.post("/v1/maintenance/source", &serde_json::json!({ "path": path }), None).await
     }
 
     fn memo(&self) -> PathBuf {
