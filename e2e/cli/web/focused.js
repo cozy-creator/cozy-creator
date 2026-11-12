@@ -225,13 +225,29 @@ async function died(error) {
   if (local) {
     const before = (await asset()).prefixes.map((version) => [version.number, version.main.sha256]);
     const waiting = `${join(__dirname, '..', 'project', 'waits.py')}/wait`;
-    await api(`${at}/assets/${NAME}`, 'PATCH', { tool: waiting, fields: { instructions: '<self.1> ', seconds: 0, aspect_ratio: '1:1' } });
+    await api(`${at}/assets/${NAME}`, 'PATCH', { tool: waiting, fields: { instructions: '<self.1> ', seconds: 3, aspect_ratio: '1:1' } });
     await until('weightless image tool attached', asset, (item) => item.tool === waiting);
+    const approvalBefore = await asset();
     await newImage.click();
     await focus.getByRole('button', { name: 'Render', exact: true }).click();
+    const running = await until('the image render has a pending state tile', asset, (item) => item.versions === 10 && item.making?.length === 1, 300_000);
+    const run = running.making[0];
+    const pending = history.locator(`.take.making[title="Run ${run}"]`);
+    await pending.scrollIntoViewIfNeeded();
+    await pending.click();
+    check('pending_tile_preview_does_not_approve_the_render', (await asset()).version === approvalBefore.version && (await asset()).approved === approvalBefore.approved);
     const edited = await until('editing an older state appends another alternative', asset, (item) => item.versions === 11 && !item.making?.length, 300_000);
     check('generation_from_old_state_retains_every_alternative', JSON.stringify(edited.prefixes.slice(0, 10).map((version) => [version.number, version.main.sha256])) === JSON.stringify(before), edited.prefixes);
+    const completed = edited.prefixes.find((version) => version.run === run);
+    check('completed_pending_run_is_a_retained_numbered_state', Boolean(completed?.main?.sha256), edited.prefixes);
+    if (!completed?.main?.sha256) throw new Error(`completed run ${run} has no retained image state`);
     await until('new alternative has a preview', () => history.locator('.take[data-take]').count(), (count) => count === 11);
+    await until('clicked pending tile stays previewed after completion', () => history.locator('.take.on[data-take]').getAttribute('data-take'), (number) => number === String(completed.number));
+    await until('the completed pending image is actually decoded and displayed', () => card.locator('.focus-viewer .buffered-image[data-displayed-sha]').evaluate((element) => {
+      const image = element.querySelector('img');
+      return { sha: element.dataset.displayedSha?.replace(/^sha256:/, ''), loaded: Boolean(image?.complete && image.naturalWidth > 0) };
+    }), (picture) => picture.loaded && picture.sha === completed.main.sha256.replace(/^sha256:/, ''));
+    check('pending_preview_survives_completion_without_changing_approval', (await asset()).version === approvalBefore.version && (await asset()).approved === approvalBefore.approved && await history.locator('.take.on[data-take]').getAttribute('data-take') === String(completed.number));
     await choose(2);
     await expectFit(0.25);
     check('old_tall_state_stays_previewable_after_generation', await history.locator('.take.on[data-take]').getAttribute('data-take') === '2' && (await asset()).versions === 11);
