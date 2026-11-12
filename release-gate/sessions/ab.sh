@@ -11,8 +11,10 @@
 #              ("<package>/<function>"), "args" ([inputs and flags]),
 #              "update" (optional: {"runtime", "tensorfs"}, each a wheel URL, `artifact:<run id>/<name>` of a
 #              cozy-creator run (a dev-build's tensorfs-wheel-<sha>) or, for runtime, a cozy-runtime dev-build
-#              run id, and "gpu_memory_limit" (`10GiB`, `off`: the development VRAM cap); the pod's `machine update`
-#              before this cell, so cells before and after compare two pairs)}];
+#              run id, "tensord": true (this session's cozy as the pod's TensorD: a dev build's, `cozy` a run id,
+#              which the open RC's Runtime needs, `rc_runtime_needs_rc_cozy`), and "gpu_memory_limit" (`10GiB`,
+#              `off`: the development VRAM cap); the pod's `machine update` before this cell, so cells before and
+#              after compare two pairs)}];
 #              "expect" (optional: the status the cell must end in, `completed` by default; `failed` for a refusal it proves);
 #              "download" (optional: [[model ref, `cozy model install` flags…], …] made present on the pod first, so
 #              the cell's run starts with its weights on disk, as a machine whose package was installed earlier does);
@@ -63,6 +65,9 @@ for k in "${names[@]}"; do
     f=$(wheel "$k" "$kind" "$src") && [ -n "$f" ] || fail "cell $k: no $kind wheel from $src"
     say "cell $k: updates $kind to ${f##*/}"; w+=("--$kind" "$f")
   done
+  if [ "$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update.tensord // false' <<<"$CELLS")" = true ]; then
+    say "cell $k: updates TensorD to this session's $(cozy --version)"; w+=(--tensord "$(command -v cozy)")
+  fi
   cap=$(jq -r --arg k "$k" 'map(select(.name==$k)) | first | .update.gpu_memory_limit // empty' <<<"$CELLS")
   [[ -z $cap || $cap =~ ^([0-9]+[MG]iB|off)$ ]] || fail "cell $k: gpu_memory_limit $cap"
   [ -z "$cap" ] || { say "cell $k: caps VRAM at $cap"; w+=(--gpu-memory-limit "$cap"); }
