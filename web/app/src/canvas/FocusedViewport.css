@@ -9,6 +9,10 @@
   min-height: 0;
   background: transparent;
 }
+.focus-viewport[data-entering] {
+  visibility: hidden;
+  pointer-events: none;
+}
 .focus-heading {
   display: flex;
   align-items: center;
