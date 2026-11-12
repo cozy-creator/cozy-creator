@@ -109,6 +109,8 @@ A SKU and suites with no baseline need `--establish` once.
   count on every selected rental; empty keeps the existing suite selection. Optional `disk` sets every rental's
   container disk in GB (empty: each suite's `skus` disk, else 400); size it to the cells' real need, since disk
   is billed by the hour.
+  `cells=release-gate/loras.sh` runs community LoRAs (xs-184): each uploaded from its provider as a throwaway, then
+  its function at one seed without and with it; `only` picks rows (`moss-axiom,anima-sagging,…`).
 
 ## Promotion
 
