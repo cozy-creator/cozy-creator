@@ -66,7 +66,7 @@ use api::{
     calcifer::project::{
         Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, File as Listing, Import, Imported, Job, JobState, Known, Machines as ProjectMachines, MainFile, Open, Opened,
         Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
-        VersionPrefix, Warning as ProjectWarning,
+        TakeNow, VersionPrefix, Warning as ProjectWarning,
     },
 };
 use serde::Deserialize;
@@ -1703,6 +1703,28 @@ fn making_now(walk: &folder::WalkFile) -> HashMap<String, Vec<u64>> {
     making
 }
 
+/// Each asset's takes asked and not landed, by name key, in the order they go (cl-945), by id: each open job of the walk, what an ask holds
+/// that the walk hasn't taken in yet, and what was sent. Sent, with its run once that has a number.
+fn takes_now(project: &Project, walk: &folder::WalkFile) -> HashMap<String, Vec<TakeNow>> {
+    let runs: HashMap<&str, u64> = walk.pending.iter().map(|(key, pending)| (pending.job_of(key), pending.run)).collect();
+    let mut takes: HashMap<String, Vec<TakeNow>> = HashMap::new();
+    let mut listed = HashSet::new();
+    let mut list = |asset: &str, id: &str| {
+        if listed.insert(id.to_owned()) {
+            let run = runs.get(id).copied();
+            takes.entry(name_key(asset)).or_default().push(TakeNow { id: id.to_owned(), queued: run.is_none(), run: run.filter(|run| *run > 0) });
+        }
+    };
+    {
+        let walker = project.walker.lock().expect("walker lock");
+        let graph = &walker.graph;
+        graph.open_jobs().into_iter().for_each(|id| list(&graph.jobs[id].asset, &graph.jobs[id].key));
+    }
+    walk.walk.asks.iter().flat_map(|ask| &ask.takes).for_each(|take| list(&take.asset, &take.key));
+    walk.pending.iter().for_each(|(key, pending)| list(&pending.asset, pending.job_of(key)));
+    takes
+}
+
 /// Asset `i` as `GET /v1/projects/{id}` lists it.
 fn row(reading: &Reading, i: usize) -> Row {
     let Reading { doc, folder, lock, stand, known } = *reading;
@@ -1745,6 +1767,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         name: asset.name.clone(),
         standing: row_standing,
         making: vec![],
+        takes: vec![],
         kind: asset.kind.clone(),
         noun: noun.into(),
         tool: doc.makes(i).then(|| doc.target(i)),
@@ -1753,6 +1776,7 @@ fn row(reading: &Reading, i: usize) -> Row {
             .filter_map(|version| {
                 Some(VersionPrefix {
                     number: version.number,
+                    id: version.id.clone(),
                     prefix: folder::prefix_of(version.main()?).to_owned(),
                     pickup: version.pickup.clone(),
                     latents: version.files.get("latents").and_then(|sha256| lock.files.get(sha256)).filter(|file| file.stays()).map(|file| file.machine.clone()),
@@ -2337,13 +2361,27 @@ async fn runs(
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
         return Err(Refusal(error));
     }
+    // The ids its asker made, one a take (cl-945): asked again with one it holds, that take isn't asked twice.
+    let resent = !asked.takes.is_empty() && !takes.is_empty() && {
+        if !one || asked.takes.len() != takes.len() {
+            let said = format!("{} take ids for {} takes: ids are for one box named, one a take", asked.takes.len(), takes.len());
+            return Err(Refusal(Error::new(Kind::Usage, "take_ids", said)));
+        }
+        if let Some(bad) = asked.takes.iter().find(|id| !is_key(id)) {
+            return Err(Refusal(Error::new(Kind::Usage, "take_id", format!("{bad} is no take id: `project-` and 32 hex digits"))));
+        }
+        let held = takes_held(&lock);
+        takes.iter_mut().zip(&asked.takes).for_each(|(take, id)| id.clone_into(&mut take.key));
+        takes.retain(|take| !held.contains(take.key.as_str()));
+        takes.is_empty()
+    };
     // Hold admission through the commit and its board. The previous walk
     // publishes its end under this same lock before a new one can begin.
     let mut walking = project.walking.lock().expect("walking lock");
     let joined = *walking;
     let new_all = all && missing && !lock.walk.asks.iter().any(|ask| ask.all && ask.digest == digest);
     let new_outdated = outdated && !lock.walk.asks.iter().any(|ask| ask.outdated && ask.digest == digest);
-    let added = takes.len() as u32 + u32::from(new_all) + u32::from(new_outdated);
+    let added = if resent { 0 } else { takes.len() as u32 + u32::from(new_all) + u32::from(new_outdated) };
     let ask = Ask { id: new_key(), text: String::new(), digest: digest.clone(), target: target.clone(), all: all && missing, outdated, whole: all, sent: BTreeSet::new(), takes };
     // One transaction: its text, the ask, and its key, so a retry however late runs nothing twice. What the project has lost is set aside,
     // and what's asked again fails no more.
@@ -2351,7 +2389,7 @@ async fn runs(
     (project.folder.act(|| {
         project.folder.keep_text(&digest, &text)?;
         project.folder.update_walk(|walk| {
-            if !joined || added > 0 {
+            if (!joined || added > 0) && !resent {
                 walk.walk.asks.push(ask.clone());
             }
         })?;
@@ -2374,7 +2412,7 @@ async fn runs(
     sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
     let board = project.jobs.board();
     drop(walking);
-    let ask = (!joined || added > 0).then_some(ask.id);
+    let ask = ((!joined || added > 0) && !resent).then_some(ask.id);
     let said = lines.into_inner();
     Ok((StatusCode::ACCEPTED, Json(Asked { id, ask, path: project.folder.dir.clone(), joined, added, skipped, queued, said, next: vec!["cozy status".into()], board })))
 }
@@ -2430,16 +2468,17 @@ async fn cancel(
 ) -> Result<Json<Cancelled>, Refusal> {
     let asked: Cancel = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
-    Ok(Json(cancelled(&api, &project, &asked.names, &|_| "canceled".to_owned())?))
+    Ok(Json(cancelled(&api, &project, &asked.names, &asked.takes, &|_| "canceled".to_owned())?))
 }
 
 /// `names`' queued work dropped, its rows saying `why`, and their runs canceled, or with `all` everything's.
-fn cancelled(api: &Arc<Api>, project: &Arc<Project>, names: &[String], why: &dyn Fn(&str) -> String) -> Result<Cancelled, Refusal> {
+fn cancelled(api: &Arc<Api>, project: &Arc<Project>, names: &[String], takes: &[String], why: &dyn Fn(&str) -> String) -> Result<Cancelled, Refusal> {
     let folder = &project.folder;
     let lock = folder.lock().map_err(Refusal)?;
     let all = matches!(names, [only] if name_key(only) == name_key(ALL));
     let keys: BTreeSet<String> = names.iter().map(|name| name_key(name)).collect();
-    let wanted = |name: &str| all || keys.contains(&name_key(name));
+    // A box's work, or one take of it by its id (cl-945).
+    let wanted = |name: &str, take: &str| all || keys.contains(&name_key(name)) || takes.iter().any(|id| id == take);
     project.join(&lock);
     let (dropped, canceled) = stop_jobs(api, project, &lock, &wanted, all, why).map_err(Refusal)?;
     project.asked.notify_one();
@@ -2460,7 +2499,7 @@ fn deleted_why(name: &str) -> String {
 
 /// Stops what `wanted` names of a project's jobs: what waits leaves, with a row saying `why`; what is being sent isn't sent; a run is canceled. None of it
 /// is asked again, a restart too. Answers what left and the runs canceled.
-fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str) -> bool, all: bool, why: &dyn Fn(&str) -> String) -> Result<(Vec<String>, Vec<u64>), Error> {
+fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str, &str) -> bool, all: bool, why: &dyn Fn(&str) -> String) -> Result<(Vec<String>, Vec<u64>), Error> {
     let sent: HashSet<&str> = lock.pending.iter().map(|(key, pending)| pending.job_of(key)).collect();
     let (dropped, unsent) = {
         let mut walker = project.walker.lock().expect("walker lock");
@@ -2476,7 +2515,7 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str) ->
     let owed: Vec<String> = dropped.iter().map(|job| name_key(&job.asset)).chain(unsent).collect();
     project.folder.update_walk(|walk| {
         for ask in &mut walk.walk.asks {
-            ask.takes.retain(|take| !wanted(&take.asset));
+            ask.takes.retain(|take| !wanted(&take.asset, &take.key));
             ask.all &= !all;
             ask.outdated &= !all;
             ask.sent.extend(owed.iter().cloned());
@@ -2484,7 +2523,7 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str) ->
     })?;
     let store = api.calcifer.store();
     let mut canceled = vec![];
-    for pending in lock.pending.values().filter(|pending| pending.run > 0 && wanted(&pending.asset)) {
+    for pending in lock.pending.iter().filter(|(key, pending)| pending.run > 0 && wanted(&pending.asset, pending.job_of(key))).map(|(_, pending)| pending) {
         let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
         if row.state != crate::store::State::Settled {
             api.calcifer.cancel(&row.id).map_err(|e| Error::new(Kind::Internal, "run_cancel", e.to_string()))?;
@@ -3712,7 +3751,7 @@ impl Walk {
         if gone.is_empty() {
             return Ok(false);
         }
-        let (dropped, _) = stop_jobs(&self.host.api(), &self.project, &lock, &|name| gone.contains(&name_key(name)), false, &deleted_why)?;
+        let (dropped, _) = stop_jobs(&self.host.api(), &self.project, &lock, &|name, _| gone.contains(&name_key(name)), false, &deleted_why)?;
         for name in &dropped {
             self.say(Told::Said { message: deleted_why(name), name: Some(name.clone()) });
         }
@@ -4270,7 +4309,8 @@ impl Walk {
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
             warnings.iter().for_each(|message| self.say(Told::Warning { message: message.clone(), name: None }));
-            let mut version = Version { inputs: inputs.clone(), warnings, text: doc.text(i), fields: Some(doc.authoring_fields(i)), ..Default::default() };
+            // Its id is its take's, from the render that asked it (cl-945).
+            let mut version = Version { id: key.clone(), inputs: inputs.clone(), warnings, text: doc.text(i), fields: Some(doc.authoring_fields(i)), ..Default::default() };
             if seeded {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
                 // Try again is a render of what failed on these inputs: the same seed, so its finished calls come from the memo.
@@ -4907,7 +4947,8 @@ impl Walk {
                 self.say(Told::Warning { message: format!("{name} reads {}'s newest {noun}, {number}, which is out of date", read.name), name: None });
             }
         }
-        let mut version = Version { inputs, fields: Some(doc.authoring_fields(i)), ..Default::default() };
+        let id = ask.takes.iter().find(|take| name_key(&take.asset) == name_key(&doc.assets[i].name)).map(|take| take.key.clone()).unwrap_or_default();
+        let mut version = Version { id, inputs, fields: Some(doc.authoring_fields(i)), ..Default::default() };
         match doc.tool(i).expect("a tool") {
             Tool::Cut => {
                 // Once a walk: what it cuts stands, or says why not.
@@ -5278,6 +5319,19 @@ fn unread(doc: &Doc, stand: &[Standing], lock: &Lock, ask: &Ask, i: usize) -> St
         _ if lock.asset(name).is_some_and(|held| !held.versions.is_empty()) => format!("{name} has no version with these inputs"),
         _ => format!("{name} has no version"),
     }
+}
+
+/// Whether `key` is one `new_key` makes: what a take's id is, whoever made it.
+fn is_key(key: &str) -> bool {
+    key.strip_prefix("project-").is_some_and(|hex| hex.len() == 32 && hex.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+}
+
+/// Every take id the project holds: asked, sent, and landed as a version.
+fn takes_held(lock: &Lock) -> HashSet<&str> {
+    let asked = lock.walk.asks.iter().flat_map(|ask| &ask.takes).map(|take| take.key.as_str());
+    let sent = lock.pending.iter().map(|(key, pending)| pending.job_of(key));
+    let landed = lock.assets.values().flat_map(|held| held.on_record()).map(|version| version.id.as_str());
+    asked.chain(sent).chain(landed).filter(|id| !id.is_empty()).collect()
 }
 
 /// A fresh idempotency key: one key names one run forever.

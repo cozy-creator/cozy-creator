@@ -10,7 +10,7 @@ use std::{
 use api::{
     calcifer::StreamEvent,
     error::{Error, Kind},
-    calcifer::project::{Asset as Row, Cut, Standing as RowStanding, State as ProjectState},
+    calcifer::project::{Asset as Row, Cut, Standing as RowStanding, State as ProjectState, TakeNow},
 };
 
 use super::{
@@ -18,7 +18,7 @@ use super::{
     folder::{Folder, Lock},
     format::{Doc, Standing, State as Stand, Tool},
     graph::name_key,
-    kept_files, known_packages, making_now, next_steps, orphans, queue, revision, row, unmade,
+    kept_files, known_packages, making_now, next_steps, orphans, queue, revision, row, takes_now, unmade,
     unseen::{self, Unseen},
 };
 use crate::api::Api;
@@ -47,6 +47,7 @@ pub(super) struct Told {
     model: Arc<Model>,
     rendering: BTreeMap<String, f64>,
     making: HashMap<String, Vec<u64>>,
+    takes: HashMap<String, Vec<TakeNow>>,
     queue: Vec<api::calcifer::project::Queued>,
     busy: bool,
     unseen: Unseen,
@@ -58,7 +59,7 @@ impl Told {
         let busy = *project.walking.lock().expect("walking lock");
         let walk = project.folder.walk_now().unwrap_or_default();
         let unseen = project.unseen.lock().expect("unseen lock").clone();
-        Self { model, rendering, making: making_now(&walk), queue: queue(project, &walk), busy, unseen }
+        Self { model, rendering, making: making_now(&walk), takes: takes_now(project, &walk), queue: queue(project, &walk), busy, unseen }
     }
 
     /// What of `row` hasn't been looked at, as this was told.
@@ -156,11 +157,18 @@ fn cuts_of(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing]) -> Vec<C
 
 /// A row with what's going this moment on it, and what of it this person hasn't looked at. A render moves in the walk's file, which this is
 /// never read again for.
-fn overlaid(row: &mut Row, rendering: &BTreeMap<String, f64>, making: &HashMap<String, Vec<u64>>, ids: &HashMap<String, String>, unseen: &Unseen) {
+fn overlaid(row: &mut Row, rendering: &BTreeMap<String, f64>, making: &HashMap<String, Vec<u64>>, takes: &HashMap<String, Vec<TakeNow>>, ids: &HashMap<String, String>, unseen: &Unseen) {
     row.unseen = unseen_in(row, ids.get(&name_key(&row.name)).and_then(|id| unseen.get(id)));
     row.rendering = rendering.get(&row.name).copied();
     if row.rendering.is_some() {
         row.standing = RowStanding::Making;
+    }
+    // Sent and its run not numbered yet, as while it binds, installs or fetches weights, it's being made all the same (cl-945).
+    if let Some(takes) = takes.get(&name_key(&row.name)) {
+        row.takes.clone_from(takes);
+        if takes.iter().any(|take| !take.queued) {
+            row.standing = RowStanding::Making;
+        }
     }
     if let Some(runs) = making.get(&name_key(&row.name)) {
         row.making.clone_from(runs);
@@ -190,10 +198,10 @@ impl Model {
         state.cuts = cuts_of(&self.doc, &project.folder, &self.lock, &self.stand);
         if assets {
             let rendering = project.rendering.lock().expect("rendering lock");
-            let making = making_now(&walk);
+            let (making, takes) = (making_now(&walk), takes_now(project, &walk));
             let unseen = project.unseen.lock().expect("unseen lock");
             state.assets = self.rows.clone();
-            state.assets.iter_mut().for_each(|row| overlaid(row, &rendering, &making, &self.ids, &unseen));
+            state.assets.iter_mut().for_each(|row| overlaid(row, &rendering, &making, &takes, &self.ids, &unseen));
         }
         state
     }
@@ -201,8 +209,9 @@ impl Model {
     /// Asset `i` of the doc, as it stands this moment.
     pub(super) fn row(&self, project: &Project, i: usize) -> Row {
         let mut row = self.rows[i].clone();
-        let making = making_now(&project.folder.walk_now().unwrap_or_default());
-        overlaid(&mut row, &project.rendering.lock().expect("rendering lock"), &making, &self.ids, &project.unseen.lock().expect("unseen lock"));
+        let walk = project.folder.walk_now().unwrap_or_default();
+        let (making, takes) = (making_now(&walk), takes_now(project, &walk));
+        overlaid(&mut row, &project.rendering.lock().expect("rendering lock"), &making, &takes, &self.ids, &project.unseen.lock().expect("unseen lock"));
         row
     }
 }
@@ -248,6 +257,7 @@ fn changed(was: &Told, now: &Told) -> (Vec<String>, Vec<String>) {
     let after: std::collections::HashSet<&str> = now.model.rows.iter().map(|row| row.name.as_str()).collect();
     let moved = |row: &&Row| before.get(row.name.as_str()).is_none_or(|old| old != row) || was.rendering.get(&row.name) != now.rendering.get(&row.name)
         || was.making.get(&name_key(&row.name)) != now.making.get(&name_key(&row.name))
+        || was.takes.get(&name_key(&row.name)) != now.takes.get(&name_key(&row.name))
         || before.get(row.name.as_str()).is_some_and(|old| was.unseen_of(old) != now.unseen_of(row));
     let assets = now.model.rows.iter().filter(moved).map(|row| row.name.clone()).collect();
     let gone = was.model.rows.iter().filter(|row| !after.contains(row.name.as_str())).map(|row| row.name.clone()).collect();

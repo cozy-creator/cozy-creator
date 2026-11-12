@@ -123,10 +123,25 @@ pub struct Queued {
     pub run: Option<u64>,
 }
 
-/// `POST /v1/projects/{id}/cancel`: these assets' queued work dropped and their runs canceled, or `all`.
+/// `POST /v1/projects/{id}/cancel`: these assets' queued work dropped and their runs canceled, or `all`; and these takes, by id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cancel {
+    #[serde(default)]
     pub names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<String>,
+}
+
+/// A take of an asset that hasn't landed, by its id, from the render that asked it to its version (`VersionPrefix::id`): queued
+/// until its turn, then sent, with its run once that has a number (cl-945).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TakeNow {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queued: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u64>,
 }
 
 /// What a cancel did: the names dropped from the queue, and the runs asked to stop.
@@ -453,6 +468,9 @@ pub struct ClipNow {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct VersionPrefix {
     pub number: u32,
+    /// Its id: the take's that made it, from the render that asked for it on.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub prefix: String,
     /// The take it picked up from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -585,6 +603,9 @@ pub struct Asset {
     /// The runs making a version of it now (`GET /v1/runs/{id}` says how far).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub making: Vec<u64>,
+    /// Its takes asked for and not landed, in the order they go, each by its id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<TakeNow>,
     /// Its file's type: `image`, `video` or `audio`.
     pub kind: String,
     /// What its alternatives are called: `take` (one that holds a video) or `version`.
@@ -900,6 +921,10 @@ pub struct Runs {
     /// Pick up from here: one box's new take goes on from this take's frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickup: Option<Pickup>,
+    /// The ids of the takes it asks for, one each, made by whoever asks (the page, as Render is pressed): a take is known by its id
+    /// from here to its version. Only for one box named; asked again with an id it already has, it's the same take. None: Calcifer's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<String>,
 }
 
 fn one() -> u32 {

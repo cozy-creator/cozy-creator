@@ -774,7 +774,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined)
   // Drawn: only the take shown, as its takes and label say, once its file is here; never another in its place (cl-942). Its neighbours,
   // or those of what showed before a take was asked for, stay decoded.
-  const nearImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watchRun: undefined, watchFrom: undefined }) : null
+  const nearImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watch: undefined }) : null
   const drawnImage = asset?.kind === "image" && shown && !shown.absent ? shown : null
   // A dropped picture shows its own bytes for as long as it shows that file: no copy of it is asked for, so nothing takes its place.
   const own = Boolean(preview && (!preview.sha256 || !nearImage || hexOf(nearImage.sha256) === preview.sha256))
