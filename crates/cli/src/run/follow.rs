@@ -79,15 +79,15 @@ pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Seriali
 /// One of Calcifer's own runs (`Kind::Here`), followed quietly to its end: its result, or the refusal it ended with, whole.
 pub(crate) async fn done<T: serde::de::DeserializeOwned>(ctx: &Context, run: Run) -> Result<T, Error> {
     let run = settle(ctx, run).await?;
-    let show = format!("cozy run watch {}", run.name());
+    let show = format!("cozy run watch {}", handle(&run));
     let result = run.result.clone().unwrap_or_default();
     match run.status {
-        Status::Completed => serde_json::from_value(result).map_err(|e| Error::new(Kind::Internal, "untyped_answer", format!("run {}'s result: {e}", run.name()))),
+        Status::Completed => serde_json::from_value(result).map_err(|e| Error::new(Kind::Internal, "untyped_answer", format!("run {}'s result: {e}", handle(&run)))),
         Status::Failed | Status::Canceled => Err(serde_json::from_value(result["error"].clone()).unwrap_or_else(|_| {
             let reason = run.reason.clone().unwrap_or_default();
             Error::new(Kind::Unavailable, "run_failed", format!("{}: {}", run.target, reason.message)).next(&show)
         })),
-        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("Stopped watching run {}; it is still running", run.name())).next(&show)),
+        _ => Err(Error::new(Kind::Unavailable, "run_unfollowed", format!("Stopped watching run {}; it is still running", handle(&run))).next(&show)),
     }
 }
 
@@ -104,6 +104,29 @@ fn replayed(ctx: &Context, submitted: &Submitted) {
     }
 }
 
+/// Whether this command's folder is in a project, once known: there a run number is the project's.
+static IN_PROJECT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub(crate) fn in_folder(project: bool) {
+    let _ = IN_PROJECT.set(project);
+}
+
+/// Asks once whether this folder is in a project; unknown, it counts as one.
+pub(crate) async fn note_folder(ctx: &Context) {
+    if IN_PROJECT.get().is_none() {
+        in_folder(!matches!(crate::project::identity(ctx).await, Err(error) if error.code == "not_in_a_project"));
+    }
+}
+
+/// What names `run` to `cozy run watch` from this folder: its number, but Calcifer's own run (a download, an
+/// update) by its id inside a project, whose numbers are the project's.
+pub(crate) fn handle(run: &Run) -> String {
+    match run.project_id.is_none() && run.machine_number.is_none() && IN_PROJECT.get() != Some(&false) {
+        true => run.id.to_string(),
+        false => run.name(),
+    }
+}
+
 /// A fresh idempotency key.
 pub(crate) fn mint_key() -> String {
     let mut bytes = [0u8; 16];
@@ -117,7 +140,7 @@ pub(crate) fn exit_code(run: &Run) -> ExitCode {
     match run.status {
         Status::Failed | Status::Canceled => ExitCode::FAILURE,
         _ if let Some(stalled) = run.stalled.as_ref().filter(|_| !settled(run)) => {
-            let n = run.name();
+            let n = handle(&run);
             output::warned(&format!("run {n}: {}. It keeps running: `cozy run watch {n}` follows it", stalled_words(stalled)));
             ExitCode::from(output::STALLED)
         }
@@ -177,7 +200,7 @@ fn saved(run: Run) -> Result<Run, Error> {
     if lost.is_empty() || !settled(&run) {
         return Ok(run);
     }
-    let show = format!("cozy run watch {}", run.name());
+    let show = format!("cozy run watch {}", handle(&run));
     Err(Error::new(
         Kind::Unavailable,
         "output_not_saved",
@@ -208,6 +231,9 @@ async fn watch(
     stop: impl Future<Output = ()>,
 ) -> Result<(Run, bool), Error> {
     let calcifer = ctx.calcifer().await?;
+    if run.project_id.is_none() {
+        note_folder(ctx).await;
+    }
     let address = RunAddress::of(&run);
     let mut events = calcifer.events_until_landed(&address, 0);
     let mut view = View::new(ctx, &run);
@@ -237,7 +263,7 @@ async fn watch(
                     _ = &mut interrupt => {
                         view.done();
                         let run = calcifer.run(&address).await?;
-                        let n = run.name();
+                        let n = handle(&run);
                         output::say(ctx, &match settled(&run) {
                             true => format!("stopped following: run {n} ended and its outputs are still being saved; `cozy run watch {n}` follows them"),
                             false => format!("stopped following: run {n} keeps running; `cozy run watch {n}` follows it again, `cozy run cancel {n}` cancels it"),
@@ -346,7 +372,7 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
         return;
     }
     if matches!(run.status, Status::Failed | Status::Canceled) {
-        let mut line = format!("Run {} {}", run.name(), status_word(run.status));
+        let mut line = format!("Run {} {}", handle(&run), status_word(run.status));
         if let Some(reason) = &run.reason {
             if !reason.code.is_empty() {
                 let _ = write!(line, " [{}]", reason.code);
@@ -365,7 +391,7 @@ pub(crate) fn record(ctx: &Context, run: &Run) {
 fn failure_next(run: &Run) -> Vec<String> {
     let mut next = Vec::new();
     for command in run.reason.iter().flat_map(|reason| &reason.next)
-        .cloned().chain([format!("cozy run watch {} --full", run.name())])
+        .cloned().chain([format!("cozy run watch {} --full", handle(&run))])
     {
         if !command.trim().is_empty() && !next.contains(&command) {
             next.push(command);
@@ -399,7 +425,7 @@ pub(super) fn keyed(basis: &str) -> &'static str {
 /// The record's fields, for a person.
 pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     let mut record = output::Record::new()
-        .field("run", run.name())
+        .field("run", handle(&run))
         .field("target", &run.target)
         .field("status", status(run))
         .field("machine", run.machine.as_deref().unwrap_or("—"));
@@ -500,13 +526,13 @@ fn adjustment(row: &Adjustment) -> String {
 
 /// What to do next with `run`: follow it while it goes on, show it when it did not succeed.
 pub(super) fn next(ctx: &Context, run: &Run) {
-    let watch = format!("cozy run watch {}", run.name());
+    let watch = format!("cozy run watch {}", handle(&run));
     match run.status {
         Status::Completed => {}
         Status::Failed | Status::Canceled => output::next(ctx, &failure_next(run).iter().map(String::as_str).collect::<Vec<_>>()),
         _ if run.stalled.is_some() => {
             let logs = run.machine.as_ref().map(|machine| format!("cozy machine logs {machine} -n 40"));
-            output::next(ctx, &[&format!("cozy run cancel {}", run.name()), logs.as_deref().unwrap_or(&watch)]);
+            output::next(ctx, &[&format!("cozy run cancel {}", handle(&run)), logs.as_deref().unwrap_or(&watch)]);
         }
         _ => output::next(ctx, &[&watch]),
     }
@@ -585,7 +611,7 @@ struct View {
 
 impl View {
     fn new(ctx: &Context, run: &Run) -> Self {
-        output::say(ctx, &format!("run {} · {}", run.name(), run.target));
+        output::say(ctx, &format!("run {} · {}", handle(&run), run.target));
         let bar = (!ctx.json && ctx.term.stderr).then(|| {
             let bar = crate::progress::Line::stderr(true, None, |s| {
                 format!("{} {} {} {}", s.spinner(), s.msg(), crate::progress::WIDE_BAR, s.elapsed())
@@ -597,7 +623,7 @@ impl View {
             term: ctx.term,
             bar,
             shown: (String::new(), -1, 0),
-            number: run.name(),
+            number: handle(&run),
             machine: None,
             state: String::new(),
             waiting: None,
