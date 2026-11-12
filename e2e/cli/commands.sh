@@ -676,7 +676,7 @@ machine_ready
 # 47791). e2e-floor 0.2.0 needs cozy-runtime>=0.45.1: local held on 0.45.0 by hand refuses it, naming `cozy machine update
 # local`, and runs 0.1.0 named; with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this shard's
 # isolated Hub: e2e.yaml), which holds nothing, and the unversioned run then moves local to the newest 0.45 release and runs
-# 0.2.0, saying so.
+# 0.2.0, saying so. e2e-capped 0.2.0 (<0.45.1) then runs as 0.1.0: a machine moves only up.
 runtime_floor() {
 step "a package release runs on a Runtime that meets its floor: publishing refuses a dishonest one; a held machine refuses, another upgrades (cl-952)"
 [ -n "$LOCAL" ] || return 0
@@ -702,6 +702,11 @@ grep -q "upgrading local.s Runtime 0.45.0 → 0.45.[1-9][0-9]* for e2e-floor 0.2
 machine_ready
 jq -e '.status.runtime | test("^0\\.45\\.([1-9]|[1-9][0-9])$")' "$OUT/machine.json" > /dev/null \
   || check "runtime floor: after its upgrade local runs $(jq -r .status.runtime "$OUT/machine.json"), not a 0.45 release from 0.45.1"
+# e2e-capped 0.2.0 needs cozy-runtime<0.45.1: local never moves down, so it runs 0.1.0 and says why.
+in_project "$RUN_PROJECT" run "$E2E_CAPPED/relay" text=capped --on local > "$OUT/floor-capped.out" 2> "$OUT/floor-capped.err" \
+  || check "runtime floor: the unversioned e2e-capped run failed: $(tail -c 400 "$OUT/floor-capped.err")"
+grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can take does: this run takes 0.1.0" "$OUT/floor-capped.err" \
+  || check "runtime floor: e2e-capped didn't say it takes 0.1.0 for 0.2.0's cap: $(tail -c 400 "$OUT/floor-capped.err")"
 cozy --json machine update local ${CAND_RT:+--runtime "$CAND_RT"} ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/floor-back.json" 2>&1 \
   || check "runtime floor: local refused its candidates again: $(tail -c 300 "$OUT/floor-back.json")"
 machine_ready

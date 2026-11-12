@@ -61,12 +61,14 @@ relay() {
 # held: e2e-relay's code published again as `e2e-held` 0.1.0 and 0.2.0rc1, as a package built for the open RC's Runtime is
 # published (cl-922): newer by PEP 440, for machines on the RC only; and as `e2e-newer` 0.1.0 and 0.1.1 (held_prerelease,
 # cl-952, se-128). Then floors (runtime_floor, cl-952): `e2e-floor` 0.1.0 (cozy-runtime>=0.45) and 0.2.0
-# (cozy-runtime>=0.45.1,<0.46); and `e2e-lies` 0.1.0, whose cozy-runtime>=0.44 lacks the `call` it imports, which publishing
-# refuses (what it said is exported).
+# (cozy-runtime>=0.45.1,<0.46); `e2e-capped` 0.1.0 and 0.2.0 (cozy-runtime>=0.45,<0.45.1, which no Runtime from 0.45.1
+# meets); and `e2e-lies` 0.1.0, whose cozy-runtime>=0.44 lacks the `call` it imports, which publishing refuses (what it said
+# is exported).
 held() {
   local copy=$seed/packages/e2e-held account name version runtime
   account=$(cozy --json whoami | jq -r '.account // empty')
-  for name in e2e-held:0.1.0 e2e-held:0.2.0rc1 e2e-newer:0.1.0 e2e-newer:0.1.1 e2e-floor:0.1.0 'e2e-floor:0.2.0:>=0.45.1,<0.46'; do
+  for name in e2e-held:0.1.0 e2e-held:0.2.0rc1 e2e-newer:0.1.0 e2e-newer:0.1.1 e2e-floor:0.1.0 'e2e-floor:0.2.0:>=0.45.1,<0.46' \
+    e2e-capped:0.1.0 'e2e-capped:0.2.0:>=0.45,<0.45.1'; do
     IFS=: read -r name version runtime <<< "$name"
     rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
     sed -i -e "s/^name = \"e2e-relay\"$/name = \"$name\"/" -e "s/^version = \"0.1.0\"$/version = \"$version\"/" "$copy/pyproject.toml"
@@ -78,7 +80,7 @@ held() {
     fi
     log "published $account/$name $version"
   done
-  export E2E_HELD=$account/e2e-held E2E_NEWER=$account/e2e-newer E2E_FLOOR=$account/e2e-floor
+  export E2E_HELD=$account/e2e-held E2E_NEWER=$account/e2e-newer E2E_FLOOR=$account/e2e-floor E2E_CAPPED=$account/e2e-capped
   rm -rf "$copy" && cp -r "$here/cli/relay" "$copy"
   sed -i -e 's/^name = "e2e-relay"$/name = "e2e-lies"/' -e 's/"cozy-runtime>=0.45"/"cozy-runtime>=0.44"/' "$copy/pyproject.toml"
   export E2E_LIES=$seed/publish-e2e-lies.json

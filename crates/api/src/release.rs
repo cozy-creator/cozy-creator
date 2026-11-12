@@ -142,9 +142,9 @@ pub enum Refused<E> {
 }
 
 /// The release of `candidates` (newest first: `candidates`, or the one asked) a run on `machine` takes, reading each one's
-/// `cozy-runtime` requirement (`requirement`) only as far as it looks: the newest its Runtime runs, else the newest it moves to a
-/// Runtime for (the newest that runs it). A machine held by hand refuses that move; one that doesn't move takes the newest its
-/// Runtime runs. A release no Runtime it could take runs is passed over.
+/// `cozy-runtime` requirement (`requirement`) only as far as it looks: the newest its Runtime runs, else the newest it moves up
+/// to a Runtime for (the newest that runs it). A machine held by hand refuses that move; one that doesn't move takes the newest
+/// its Runtime runs. A release no newer Runtime it could take runs is passed over.
 pub async fn choose<E, F, Fut>(candidates: &[&str], machine: &Machine<'_>, mut requirement: F) -> Result<Chosen, Refused<E>>
 where
     F: FnMut(String) -> Fut,
@@ -158,9 +158,12 @@ where
         if machine.runtime.is_empty() || runs(&needs, machine.runtime) {
             return Ok(chosen(release, first));
         }
+        // Only up: an older Runtime would take from what the machine runs now.
+        let running = Version::from_str(machine.runtime).ok();
         let moved = (machine.runtimes.iter())
             .filter(|runtime| runs(&needs, runtime))
             .filter_map(|runtime| Some((Version::from_str(runtime).ok()?, runtime)))
+            .filter(|(version, _)| running.as_ref().is_none_or(|running| version > running))
             .max_by(|(a, _), (b, _)| a.cmp(b))
             .map(|(_, runtime)| runtime.clone());
         match (moved, machine.moves) {
