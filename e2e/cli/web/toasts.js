@@ -8,7 +8,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, importYaml, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, STEP_MS } = require('./page');
+const { addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, STEP_MS } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const WARNED = 'a CUDA graph was refused at capture';
@@ -105,7 +105,11 @@ async function died(why) {
 
   const tool = join(folder, `toasts_${Date.now()}.py`);
   writeFileSync(tool, TOOL);
-  importYaml(folder, `version: 4\nassets:\n  warned:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n  broken:\n    tool: ${tool}/draw\n    instructions: Never made.\n    fail: true\n`);
+  // Their kind given, Calcifer reads nothing of the tool before its first render installs it.
+  addBoxes(folder, [
+    { name: 'warned', tool: `${tool}/draw`, kind: 'image', fields: { instructions: 'A still of one colour.' } },
+    { name: 'broken', tool: `${tool}/draw`, kind: 'image', fields: { instructions: 'Never made.', fail: true } },
+  ]);
   const leave = async () => {
     for (let i = 0; i < 3 && (await page.locator('.card.here').count()); i++) {
       await page.keyboard.press('Escape');
