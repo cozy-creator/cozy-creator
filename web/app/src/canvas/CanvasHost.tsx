@@ -1079,7 +1079,8 @@ export function CanvasHost(props: { projectId: string | null; active: boolean; s
   // A first drop adopts a newly created project without unmounting its in-flight placer.
   const [openedProject] = useState(props.projectId)
   const view = useQuery({ ...projectViewQuery(client, stream, props.projectId ?? ""), enabled: Boolean(openedProject && props.projectId) })
-  if (openedProject && !view.data) {
+  // A project Calcifer refuses to read (a newer schema, say) still opens its canvas: it says why there, and the tools stay.
+  if (openedProject && !view.data && !(view.error instanceof ApiError)) {
     return <div className="empty-canvas"><p>{view.error ? "Couldn't read this project's canvas view." : "Opening project…"}</p>{view.error && <button className="tb" onClick={() => void view.refetch()}>Retry</button>}</div>
   }
   return (
