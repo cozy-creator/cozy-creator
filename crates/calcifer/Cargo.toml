@@ -45,7 +45,7 @@ toml_edit.workspace = true
 zip.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["fs", "process"] }
+rustix = { workspace = true, features = ["fs", "process", "net"] }
 
 [lints]
 workspace = true
