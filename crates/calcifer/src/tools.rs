@@ -3,6 +3,7 @@
 //! Calcifer's own work first needs them.
 use std::{
     ffi::{OsStr, OsString},
+    io::Read as _,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
 };
@@ -27,6 +28,35 @@ pub(crate) struct Ffmpeg {
 /// The demuxers a file is read with: pictures, videos and sounds, and none that reads what a file names (a playlist, a `concat` script).
 /// `image2` is a sequence reader: even a `%02d` in a parent directory can make it open another file. Images use their file demuxers.
 const DEMUXERS: &str = "mov,matroska,avi,asf,mpeg,mpegts,flv,png_pipe,apng,jpeg_pipe,webp_pipe,gif,bmp_pipe,tiff_pipe,jpegxl_pipe,jpegxl_anim,psd_pipe,ico,mp3,ogg,flac,wav,aac,aiff,amr,ape,dsf";
+
+/// A picture's single-file demuxer, by what its first bytes say it is. FFmpeg's probe takes a picture's filename for an `image2`
+/// sequence, which `DEMUXERS` refuses: by its extension it beats `jpeg_pipe` on any JPEG whose end isn't in the first 2 KiB read, so
+/// nearly every photo had no thumbnail (cl-888), and with `*`, `?` or `{` in the path, every picture. None: not a picture, or one whose
+/// own probe wins (a PNG's, which tells an APNG), and its container is detected.
+fn picture(path: &Path) -> Option<&'static str> {
+    let mut head = [0u8; 12];
+    let read = std::fs::File::open(path).and_then(|mut file| file.read(&mut head)).unwrap_or(0);
+    let by_content = match &head[..read] {
+        [0xFF, 0xD8, 0xFF, ..] => Some("jpeg_pipe"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P'] => Some("webp_pipe"),
+        [b'G', b'I', b'F', b'8', ..] => Some("gif"),
+        [b'B', b'M', _, _, _, _, 0, 0, 0, 0, ..] => Some("bmp_pipe"),
+        [b'I', b'I', 0x2A, 0, ..] | [b'M', b'M', 0, 0x2A, ..] => Some("tiff_pipe"),
+        [b'8', b'B', b'P', b'S', ..] => Some("psd_pipe"),
+        _ => None,
+    };
+    if by_content.is_some() || !path.to_string_lossy().contains(['*', '?', '{']) {
+        return by_content;
+    }
+    // FFmpeg pre-probes these filenames as image2 before opening them, including Windows' \\?\ device paths.
+    path.extension().and_then(OsStr::to_str).and_then(|extension| match extension.to_ascii_lowercase().as_str() {
+        "png" => Some("png_pipe"),
+        "apng" => Some("apng"),
+        "jxl" => Some("jpegxl_pipe"),
+        "ico" => Some("ico"),
+        _ => None,
+    })
+}
 
 /// One ffmpeg or ffprobe run, and the only way Calcifer starts either. What it reads is named by `input`, `joined` or `made`
 /// alone, so it reads that file and nothing the file names: a run's output is a package's bytes, and a playlist or a `concat`
@@ -66,27 +96,8 @@ impl Media {
     /// `input`'s arguments, for a run whose arguments are put together before it.
     pub(crate) fn reading(path: impl AsRef<OsStr>) -> Vec<OsString> {
         let path = path.as_ref();
-        // FFmpeg pre-probes these filenames as image2 before opening them, including Windows' \\?\ device paths.
-        // Pick the single-file demuxer instead; ordinary paths retain their container autodetection.
-        let demuxer = if path.to_string_lossy().chars().any(|ch| matches!(ch, '*' | '?' | '{')) {
-            Path::new(path).extension().and_then(OsStr::to_str).and_then(|extension| match extension.to_ascii_lowercase().as_str() {
-                "png" => Some("png_pipe"),
-                "apng" => Some("apng"),
-                "jpg" | "jpeg" => Some("jpeg_pipe"),
-                "webp" => Some("webp_pipe"),
-                "gif" => Some("gif"),
-                "bmp" => Some("bmp_pipe"),
-                "tif" | "tiff" => Some("tiff_pipe"),
-                "jxl" => Some("jpegxl_pipe"),
-                "psd" => Some("psd_pipe"),
-                "ico" => Some("ico"),
-                _ => None,
-            })
-        } else {
-            None
-        };
         let mut args: Vec<OsString> = ["-protocol_whitelist", "file", "-format_whitelist", DEMUXERS].into_iter().map(OsString::from).collect();
-        if let Some(demuxer) = demuxer {
+        if let Some(demuxer) = picture(Path::new(path)) {
             args.extend(["-f", demuxer].into_iter().map(OsString::from));
         }
         args.extend([OsString::from("-i"), path.to_owned()]);

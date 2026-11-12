@@ -918,35 +918,8 @@ impl Store {
         })
     }
 
-    /// Renames a machine that has not served (its Hub named it): its runs move with it, and the
-    /// old name stays its alias. An ended machine that held the name gives it up: its history
-    /// keeps it as `<name>@<when it was recorded>`.
-    pub(crate) fn rename_machine(&self, old: &str, new: &str) -> Result<bool> {
-        self.write(|tx| {
-            let renamable: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM machines WHERE name = ?1 AND served = 0 AND state <> 'ended')
-                     AND NOT EXISTS (SELECT 1 FROM machines WHERE alias = ?2 AND name <> ?1)",
-                params![old, new],
-                |r| r.get(0),
-            )?;
-            let holder: Option<(String, i64)> = tx
-                .query_row("SELECT state, created_at FROM machines WHERE name = ?1", [new], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
-                .optional()?;
-            match holder {
-                _ if !renamable => return Ok(false),
-                Some((state, _)) if state != "ended" => return Ok(false),
-                Some((_, at)) => move_machine(tx, new, &format!("{new}@{at}"), None)?,
-                None => {}
-            }
-            move_machine(tx, old, new, Some(old))?;
-            Ok(true)
-        })
-    }
-
     /// Records a rental another client of the account ordered, under its name; an ended machine that
-    /// held the name gives it up (as in `rename_machine`), and a live one keeps it, so this one is
+    /// held the name gives it up (its history keeps it as `<name>@<when it was recorded>`), and a live one keeps it, so this one is
     /// named by its rental id. The row as recorded; none when its rental is recorded already.
     pub(crate) fn adopt(&self, machine: &MachineRow) -> Result<Option<MachineRow>> {
         self.write(|tx| {
@@ -965,7 +938,7 @@ impl Store {
                 })
                 .optional()?;
             match holder {
-                Some((state, at)) if state == "ended" => move_machine(tx, &row.name, &format!("{}@{at}", row.name), None)?,
+                Some((state, at)) if state == "ended" => move_machine(tx, &row.name, &format!("{}@{at}", row.name))?,
                 Some(_) => row.name = row.rental_id.clone().unwrap_or_default().to_ascii_lowercase(),
                 None => {}
             }
@@ -2298,8 +2271,8 @@ fn machine_row(r: &Row) -> rusqlite::Result<Result<MachineRow>> {
     }))
 }
 
-/// Moves a machine to another name, with its runs and asks; `alias` is its former name.
-fn move_machine(tx: &Transaction, from: &str, to: &str, alias: Option<&str>) -> Result<()> {
+/// Moves a machine to another name, with its runs and asks.
+fn move_machine(tx: &Transaction, from: &str, to: &str) -> Result<()> {
     // Its unique rental id and alias move with it.
     let (rental, held): (Option<String>, Option<String>) =
         tx.query_row("SELECT rental_id, alias FROM machines WHERE name = ?1", [from], |r| {
@@ -2311,7 +2284,7 @@ fn move_machine(tx: &Transaction, from: &str, to: &str, alias: Option<&str>) -> 
              reason, created_at, alias)
          SELECT ?2, kind, hub, ?3, worker_id, address, pin, key, state, served, reason, created_at, ?4
          FROM machines WHERE name = ?1",
-        params![from, to, rental, held.as_deref().or(alias)],
+        params![from, to, rental, held],
     )?;
     tx.execute("UPDATE runs SET machine = ?2 WHERE machine = ?1", params![from, to])?;
     tx.execute("UPDATE asks SET machine = ?2 WHERE machine = ?1", params![from, to])?;

@@ -283,8 +283,8 @@ const UNFOLLOWED: u8 = 3;
 
 /// Follows an order over Calcifer's machine events until it ends: its machine ready, or the order
 /// ended, which its Hub says only once nothing of it bills. Everything between is progress, said on
-/// stderr as it changes (an attempt that found no capacity, the order placed again elsewhere, its
-/// rename) and never a verdict: the exit code and the last line are. Ctrl-C or SIGTERM ends an order
+/// stderr as it changes (an attempt that found no capacity, the order placed again elsewhere) and
+/// never a verdict: the exit code and the last line are. Ctrl-C or SIGTERM ends an order
 /// with no pod and nothing queued on it, whose renter was all that kept it waiting; otherwise it
 /// stops following only, and says the order goes on.
 pub(crate) async fn follow(
