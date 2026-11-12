@@ -51,6 +51,12 @@ pub(crate) fn require_home(home:&platform::paths::Home, code:&LocalCode)->Result
     if admitted { Ok(()) } else { Err(refused("source_scope_required").0) }
 }
 
+/// Whether `digest` is an object derived from admitted independent source (`keep_derived`).
+pub(crate) fn admitted_object(store: &crate::store::Store, digest: &str) -> bool {
+    store.read(|conn| Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM maintenance_source_objects WHERE digest=?1)", [digest], |row| row.get::<_, bool>(0))?))
+        .unwrap_or(false)
+}
+
 /// A derived manifest belongs globally only when its original exact tree was
 /// admitted as independent, and every materialized byte still verifies.
 pub(crate) fn keep_derived(api:&Api,code:&LocalCode,source:&crate::local_code::Source)->Result<(),Error> {

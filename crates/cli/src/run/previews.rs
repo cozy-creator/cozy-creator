@@ -23,11 +23,12 @@ impl Saving {
             Error::new(api::error::Kind::Validation, "previews_dir", format!("--previews {}: {e}", dir.display()))
         })?;
         let saved = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let (id, number, into, count) = (run.id.to_string(), run.number, dir.to_path_buf(), saved.clone());
+        // A project's run is asked of its project, as it is followed.
+        let (address, number, into, count) = (crate::calcifer_client::RunAddress::of(run), run.number, dir.to_path_buf(), saved.clone());
         let task = tokio::spawn(async move {
             let mut held = String::new();
             loop {
-                if let Ok(Some((tag, _step, picture))) = calcifer.preview(&id, &held).await {
+                if let Ok(Some((tag, _step, picture))) = calcifer.preview(&address, &held).await {
                     let n = tag.trim_matches('"').trim_start_matches('p');
                     if std::fs::write(into.join(format!("{number}-preview-{n}.webp")), &picture).is_ok() {
                         count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

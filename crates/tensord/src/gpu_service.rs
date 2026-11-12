@@ -3337,19 +3337,19 @@ impl Pool {
     }
 
     /// A new executor root and its socket path (`device_executor::socket_path`).
-    fn executor_endpoint(&self) -> io::Result<(PathBuf, PathBuf, File)> { self.executor_endpoint_in(None) }
+    fn executor_endpoint(&self) -> io::Result<(PathBuf, PathBuf, File)> { self.executor_endpoint_in(None, false) }
 
-    fn executor_endpoint_in(&self, private: Option<&Path>) -> io::Result<(PathBuf, PathBuf, File)> {
+    fn executor_endpoint_in(&self, private: Option<&Path>, protected: bool) -> io::Result<(PathBuf, PathBuf, File)> {
         let base = private.map(|path| path.join("executors")).unwrap_or_else(|| self.root.clone());
         fs::create_dir_all(&base)?;
         let root = base.join(crate::uuid::simple());
         fs::create_dir(&root)?;
         let directory = platform::durable::open_dir(&root)?;
-        // Private execution uses an inherited local stream: no socket inode. Any other executor
-        // dials the root's own path, or a short private one when that is too long; never this
-        // process's /proc descriptors, which its non-dumpable state closes to other processes.
-        let socket = match private {
-            Some(_) if cfg!(target_os = "linux") => PathBuf::new(),
+        // An encrypted project's executor uses an inherited local stream: no socket inode. Any
+        // other dials the root's own path, or a short private one when that is too long; never
+        // this process's /proc descriptors, which its non-dumpable state closes to other processes.
+        let socket = match protected {
+            true if cfg!(target_os = "linux") => PathBuf::new(),
             _ => crate::device_executor::socket_path(&root, "executor")?,
         };
         Ok((root, socket, directory))
@@ -3392,7 +3392,9 @@ impl Pool {
             }
         }
         Ok(ExecutorConfig {
-            private: private.is_some(),
+            // Only an encrypted project's executor takes the protected transport and launch; an
+            // unencrypted one's storage is still the project's, its launch the ordinary one.
+            private: private.is_some_and(|scope| !scope.ordinary),
             python: held.record.python.clone(),
             root,
             socket,
@@ -3571,7 +3573,14 @@ impl Pool {
                 *disposition = Disposition::Unknown(births.clone());
                 match created {
                     Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-                        let outcome = Outcome::Failed(Failure::machine("executor_unsupported", error.to_string()));
+                        let said = error.to_string();
+                        let failure = match said.strip_prefix(crate::private_io::TRANSPORT_UNSUPPORTED) {
+                            Some(why) => Failure::machine("project_transport_unsupported", format!(
+                                "{why}: an encrypted project's code runs only on a Runtime with its protected transport. \
+                                 Let the package take this machine's Runtime (raise or drop its cozy-runtime pin), or run it from an unencrypted project")),
+                            None => Failure::machine("executor_unsupported", said),
+                        };
+                        let outcome = Outcome::Failed(failure);
                         if births.is_empty() {
                             engine.finish(id, outcome)?;
                         } else {
@@ -3659,7 +3668,7 @@ impl Pool {
     ) -> io::Result<Session> {
         let launched = Instant::now();
         let private_root = private.map(crate::private_io::root).transpose()?;
-        let (root, socket, directory) = self.executor_endpoint_in(private_root.as_deref())?;
+        let (root, socket, directory) = self.executor_endpoint_in(private_root.as_deref(), private.is_some_and(|scope| !scope.ordinary))?;
         let config = self.executor_config_in(held, root, socket, start, plan.degree, private)?;
         // A forked child takes its lane and seal with its environment, so a group forks from
         // the same import-only parent (sealed to the first GPU) as a single GPU does.

@@ -50,7 +50,10 @@ PY
 fi
 
 start() {
-step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
+step install; install_cozy
+# The newest release makes its project before the candidate's first start: Calcifer's store is one way (released.sh).
+[[ $parts != *released_project* ]] || { user_services; released_made; }
+run_project "$OUT/project" || fail "project initialization failed"
 user_services
 step status; fixture_calcifer | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
@@ -395,12 +398,12 @@ case $SHARD in
     second_executor
     lifetime
     kept_preparing
-    update
     released_project
+    update
     remove
   " ;;
-  # A project the newest release made, read by the candidate (cl-930).
-  released) parts="update released_project logs" ;;
+  # A project the newest release made, read by the candidate (cl-930); then the release refuses the candidate's store.
+  released) parts="released_project update logs" ;;
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;

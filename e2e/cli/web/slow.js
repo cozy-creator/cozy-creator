@@ -5,7 +5,7 @@
 // nodes.js. Prints what it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { join } = require('path');
-const { calcifer, launch, lastLook, lookAt, noStall, projectAction, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
+const { calcifer, launch, lastLook, lookAt, noStall, projectAction, projectFromPage, projectUrl, signIn, STEP_MS, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -39,12 +39,9 @@ const HEAT = /GPU 0 ran throttled for heat 98% of its last run \(89 °C, \d+ of 
   const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
   const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
 
-  await page.goto(`${base}/projects`);
-  await page.fill('input[aria-label="New project\'s name"]', `web-slow-${Date.now()}`);
-  await page.getByLabel('Create without encryption', { exact: true }).check();
-  await page.click('form button[type=submit]');
-  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
-  const at = page.url();
+  // A run's bar is its own project's history (run history stays in its project): the box runs in the project of slow.sh's bar runs.
+  const at = await projectUrl(process.env.SLOW_PROJECT);
+  await page.goto(at);
   const id = (await projectFromPage(page)).id;
   const state = () => api(`/v1/projects/${id}`);
   const folder = (await state()).path;

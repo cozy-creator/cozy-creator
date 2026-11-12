@@ -635,6 +635,9 @@ pub(crate) fn probe_native(_: &LocalPrivateStorage) -> io::Result<()> {
     platform::private_exec::disable_project_parent_dumps().map_err(io::Error::from)
 }
 
+/// How a Runtime without the protected project transport is refused (an encrypted project's executor).
+pub(crate) const TRANSPORT_UNSUPPORTED: &str = "project_transport_unsupported: ";
+
 pub(crate) fn transport_capabilities(bytes: &[u8]) -> io::Result<()> {
     let answer: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| io::Error::new(io::ErrorKind::Unsupported, "project_transport_unsupported: Runtime has no inherited transport capability"))?;
     if answer["inherited_local_stream"] != true || answer["transport_challenge"] != true {

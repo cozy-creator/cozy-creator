@@ -61,6 +61,11 @@ fn key(e: project_vault::Error) -> Error {
 }
 fn held(root: &FsPath) -> Option<Held> { SESSIONS.lock().expect("vault sessions").get(root).cloned() }
 pub(crate) fn mount_identity(root: &FsPath) -> Option<MountIdentity> { held(root).map(|session| session.lock().expect("vault session").identity.clone()) }
+/// Whether `view` is an unencrypted project's own folder: no keybag behind it and no mounted view's place.
+pub(crate) fn ordinary_storage(view: &FsPath) -> bool {
+    !encrypted(&logical(view)) && !view.components().any(|part| part.as_os_str() == RUNTIME_DIR)
+}
+
 pub(crate) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() || SESSIONS.lock().expect("vault sessions").contains_key(root) }
 
 /// The canonical id is available without opening the project's content database.
@@ -845,6 +850,8 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
     }
     if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate" | "passphrase" | "recovery") {
         let id = project_id(root).or_else(|| plain_project_id(root)).ok_or_else(|| error("vault_identity", "the changed project has no verified identity"))?;
+        // A conversion replaced the view its runs were owned under: the next open owns them again.
+        if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate") { api.calcifer.retire_project(&id); }
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.finish_receipt(&store, "completed")?;
     }

@@ -79,5 +79,7 @@ chrome=$(web_chrome)
 [ -n "$chrome" ] && [ -x "$chrome" ] || { check "slow-web: no Google Chrome (${chrome:-none})"; return; }
 npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "slow-web: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
 step "web-slow: the hot machine red on the page, and a box's slow run said on the box"
+# Its box runs in the project whose history holds the bar: run history is the project's own.
+SLOW_PROJECT=$(web_path "$RUN_PROJECT"); export SLOW_PROJECT
 web_proof slow "$chrome" "$pw" ''
 }

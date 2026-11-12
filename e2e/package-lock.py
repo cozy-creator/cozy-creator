@@ -11,13 +11,13 @@ import urllib.request
 import uuid
 
 from test_hub import require_ci_test_hub
-from warm import upload
+from warm import OUTSIDE, local_code
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
-    parser.add_argument("--stage-code", default=os.environ.get("RUN_CODE_STAGE"), required=not os.environ.get("RUN_CODE_STAGE"))
+    parser.add_argument("--stage-code", default=os.environ.get("RUN_CODE_STAGE"))
     parser.add_argument("--cozy", default=os.environ.get("COZY", "cozy"))
     parser.add_argument("--root", action="store_true")
     parser.add_argument("--upgrade-package", action="append", default=[])
@@ -25,16 +25,11 @@ def main() -> int:
     hub = os.environ.get("COZY_HUB_URL", "")
     require_ci_test_hub(hub)
     directory = args.directory.resolve(strict=True)
-    staged = json.loads(subprocess.check_output([args.stage_code, str(directory)], text=True))
-    for left in staged["left"]:
-        print("left out of code: " + left, file=sys.stderr)
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     base = "http://" + holder["address"]
     headers = {"Authorization": "Bearer " + holder["token"]}
-    for file in staged["files"]:
-        upload(base, headers, file["digest"], Path(file["path"]).read_bytes())
-    upload(base, headers, staged["code"]["tree"], staged["document"].encode())
-    request = {"target": "cozy/package_lock", "code": staged["code"], "hub": hub,
+    code, _ = local_code(base, headers, directory, args.stage_code)
+    request = {"target": "cozy/package_lock", "code": code, "hub": hub,
         "input": {"root": args.root, "upgrade": args.upgrade_package}}
     call = urllib.request.Request(base + "/v1/runs", data=json.dumps(request).encode(), headers={
         **headers, "Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4()),
@@ -42,13 +37,13 @@ def main() -> int:
     with urllib.request.urlopen(call) as response:
         run = json.load(response)["run"]
     if run["status"] not in {"completed", "failed", "canceled"}:
-        followed = subprocess.run([args.cozy, "--json", "--full", "run", "watch", str(run["number"])],
-            capture_output=True, text=True)
+        followed = subprocess.run([args.cozy, "--json", "--full", "run", "watch", run["id"]],
+            capture_output=True, text=True, cwd=OUTSIDE)
         print(followed.stderr, file=sys.stderr, end="")
         for line in followed.stdout.splitlines():
             value = json.loads(line)
             candidate = value.get("run", value)
-            if candidate.get("number") == run["number"]:
+            if candidate.get("id") == run["id"]:
                 run = candidate
     result = run.get("result") or {}
     if run["status"] != "completed":

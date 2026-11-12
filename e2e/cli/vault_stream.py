@@ -129,9 +129,10 @@ def main() -> None:
         assert not (Path(changed["vault"]["view"]) / "files/missing-legacy-image.jpg").exists()
     secret = changed.pop("recovery_secret")
     write_recovery(recovery, secret)
-    database = Path.home() / ".cozy/calcifer/state.db"
+    # A project's operation receipt is in its own journal, inside its view.
+    database = Path(changed["vault"]["view"]) / "project.db"
     connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
-    rows = connection.execute("SELECT id,binding,state FROM vault_operations WHERE id=?", (operation,)).fetchall()
+    rows = connection.execute("SELECT id,binding,state FROM project_vault_operations WHERE id=?", (operation,)).fetchall()
     assert len(rows) == 1 and rows[0][2] == "completed"
     assert secret not in json.dumps(rows)
     assert hashlib.sha256(secret.encode()).hexdigest() != rows[0][1]
