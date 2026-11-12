@@ -522,7 +522,7 @@ fn forget(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition) -> Resu
 fn mark_closing(session: &mut Session) {
     let changed = !session.closing;
     session.closing = true;
-    session.readable.store(false, Ordering::Release);
+    revoke(&session.readable);
     if changed { crate::events::project_vault(session.secret.project_id(), "locking"); }
 }
 
@@ -621,8 +621,11 @@ pub(crate) fn start(api: &Arc<Api>) {
                         if session.mount.reconcile().is_err() { mark_closing(&mut session); }
                         // Work in progress holds it open, its maximum included: the clocks go on when the last of it
                         // ends. Only an explicit lock ends work (owner 11-11: "runs count as activity").
-                        session.timer.hold(working);
-                        if working && !session.closing { session.active_ms = super::now_ms(); }
+                        session.timer.hold(working.is_some());
+                        if let Some(why) = working.filter(|_| !session.closing) {
+                            session.active_ms = super::now_ms();
+                            if session.idle > 0 { say(&root, "held", || format!("its idle clock is held by {why}")); }
+                        }
                         session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
                     });
                     if !needs { return; }
@@ -638,7 +641,10 @@ pub(crate) fn start(api: &Arc<Api>) {
                     });
                     if !still_needs { return; }
                     if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
-                    let Ok(transition) = exclusive(&root) else { return; };
+                    let Ok(transition) = exclusive(&root) else {
+                        say(&root, "gate", || "locking waits for a request still holding the project".into());
+                        return;
+                    };
                     if let Err(failure) = close(&api, &root, &transition, &mut browser) { idle_lock_failed(&root, &failure); }
                 });
             }
@@ -791,7 +797,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
                     session.secret = secret;
                     session.keybag = keybag;
                     session.closing = false;
-                    session.readable.store(false, Ordering::Release);
+                    revoke(&session.readable);
                     session.readable = Arc::new(AtomicBool::new(true));
                     session.began_ms = super::now_ms(); session.active_ms = session.began_ms;
                     session.idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE); session.maximum = ask.max_duration_s.unwrap_or(0);
@@ -877,17 +883,29 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
 }
 
 /// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
-fn working(api: &Arc<Api>, root: &FsPath) -> bool {
-    if api.projects.active_requests(root) || crate::local_code::private_process_active(root) { return true; }
+/// What holds an unlocked vault open now, if anything.
+fn working(api: &Arc<Api>, root: &FsPath) -> Option<&'static str> {
+    if api.projects.active_requests(root) { return Some("a project request being answered"); }
+    if crate::local_code::private_process_active(root) { return Some("a private process"); }
     let projects = api.projects.now_open();
-    let Some(project) = projects.iter().find(|project| project.root == root) else { return false };
-    if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return true; }
-    let Ok(transition) = exclusive(root) else { return true };
-    let Ok(store) = api.projects.transition_store(api, &project.id, &transition) else { return true };
+    let project = projects.iter().find(|project| project.root == root)?;
+    if *project.walking.lock().expect("walking lock") || project.moving.try_lock().is_err() || project.cutting.try_lock().is_err() { return Some("a render, move or cut"); }
+    let Ok(transition) = exclusive(root) else { return Some("a reader holding the project") };
+    let Ok(store) = api.projects.transition_store(api, &project.id, &transition) else { return Some("a journal it cannot read") };
     // The transition authority can inspect already-accepted work even if an idle
     // deadline just expired. Public viewing admission is deliberately stricter.
-    store.unsettled().map_or(true, |runs| !runs.is_empty())
-        || store.unsettled_here().map_or(true, |runs| !runs.is_empty())
+    (store.unsettled().map_or(true, |runs| !runs.is_empty()) || store.unsettled_here().map_or(true, |runs| !runs.is_empty()))
+        .then_some("runs not settled")
+}
+
+/// A sweeper's reason, said at most every 10 seconds per project: a test's diagnostics name what kept a vault open.
+fn say(root: &FsPath, what: &'static str, said: impl FnOnce() -> String) {
+    static SAID: LazyLock<Mutex<BTreeMap<(PathBuf, &'static str), std::time::Instant>>> = LazyLock::new(Mutex::default);
+    let now = std::time::Instant::now();
+    let mut times = SAID.lock().expect("vault sayings");
+    if times.get(&(root.to_owned(), what)).is_some_and(|at| now.duration_since(*at) < Duration::from_secs(10)) { return; }
+    times.insert((root.to_owned(), what), now);
+    tracing::warn!("{}: {}", root.display(), said());
 }
 
 /// Request cancellation in the owning journal before the exclusive close gate,
@@ -1858,10 +1876,38 @@ pub(crate) async fn project_reply<T: IntoResponse>(
 }
 
 fn protect_reply(response: Response, token: Option<Arc<AtomicBool>>) -> Response {
-    use futures_util::StreamExt as _;
     let response = private(response);
     let Some(token) = token else { return response };
     let (parts, body) = response.into_parts();
-    let body = body.into_data_stream().take_while(move |_| futures_util::future::ready(token.load(Ordering::Acquire)));
-    Response::from_parts(parts, axum::body::Body::from_stream(body))
+    Response::from_parts(parts, revocable(body, token))
+}
+
+/// Told each time a view's readable token is revoked.
+static REVOKED: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+fn revoke(token: &AtomicBool) {
+    token.store(false, Ordering::Release);
+    REVOKED.send_modify(|told| *told = told.wrapping_add(1));
+}
+
+/// A private body that ends once its view's lease is revoked, even while its client reads nothing: what it reads from
+/// (an open file in the view) is dropped at once, so the view can unmount.
+pub(crate) fn revocable(body: axum::body::Body, token: Arc<AtomicBool>) -> axum::body::Body {
+    use futures_util::StreamExt as _;
+    let source = Arc::new(Mutex::new(Some(body.into_data_stream())));
+    let (reading, ended) = tokio::sync::oneshot::channel::<()>();
+    let (held, open, mut told) = (Arc::downgrade(&source), token.clone(), REVOKED.subscribe());
+    tokio::spawn(async move {
+        let revoked = async { while open.load(Ordering::Acquire) { if told.changed().await.is_err() { std::future::pending::<()>().await; } } };
+        tokio::select! {
+            _ = ended => {}
+            () = revoked => { if let Some(source) = held.upgrade() { source.lock().expect("private body").take(); } }
+        }
+    });
+    axum::body::Body::from_stream(futures_util::stream::poll_fn(move |cx| {
+        let _reading = &reading;
+        let mut source = source.lock().expect("private body");
+        if !token.load(Ordering::Acquire) { source.take(); }
+        match source.as_mut() { Some(body) => body.poll_next_unpin(cx), None => std::task::Poll::Ready(None) }
+    }))
 }

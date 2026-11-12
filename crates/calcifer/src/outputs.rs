@@ -807,7 +807,7 @@ fn protect(mut response: Response, readable: Option<Arc<AtomicBool>>) -> Respons
     let Some(readable) = readable else { return response };
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
-    let body = std::mem::replace(response.body_mut(), Body::empty());
+    let body = crate::project::vault::revocable(std::mem::replace(response.body_mut(), Body::empty()), readable.clone());
     let chunks = body.into_data_stream().map(move |chunk| {
         if !readable.load(Ordering::Acquire) {
             Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the project is locked"))

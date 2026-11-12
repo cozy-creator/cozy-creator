@@ -112,7 +112,7 @@ pub fn main() -> ExitCode {
         warn!("{e}");
     }
     let served = match configuration() {
-        Ok(loaded) => match crate::health::install(&loaded.home).and_then(|()| runtime(&loaded)) {
+        Ok(loaded) => match crate::health::install(&loaded.home, loaded.config.calcifer.diagnostics).and_then(|()| runtime(&loaded)) {
             // Stopped, Calcifer exits now: nothing left on the runtime holds the process (or its
             // service) past `down`.
             Ok(runtime) => {
