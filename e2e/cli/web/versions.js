@@ -388,7 +388,8 @@ async function died(why) {
   await undoOf('other');
   await until('undo restores tool', () => asset('other'), (row) => row.tool === tool.id);
 
-  // Real local rendering appends numbered versions and selects each new output. Older explicit references remain readable.
+  // Real local rendering appends numbered versions and never approves one (cl-908 c628efb82): what's approved stays, and open, the take it was
+  // rendered to look at is the one looked at (cl-942). Older explicit references remain readable.
   if ((await api('/v1/status')).body.local_usable && !process.env.ALONE) {
     const render = (names, key) => api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names, on: ['local'] }), headers: { 'Idempotency-Key': key } });
     await api(`${at}/assets/other`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/wait`, fields: { instructions: '<self.1> in a new light.', aspect_ratio: '1:1' } }) });
@@ -396,11 +397,10 @@ async function died(why) {
     await open('other');
     await (await renderOf(page, 'other')).click();
     const second = await until('first modification is v2', () => asset('other'), (row) => row.versions === 2 && !row.making?.length, 5 * STEP_MS);
-    check('first_modification_is_v2_and_current', second.version === 2 && shaOf(second, 1) === originalSha && shaOf(second, 2) !== originalSha, second);
+    check('first_modification_is_v2_and_v1_stays_approved', second.pinned && second.approved === 1 && second.version === 1 && shaOf(second, 1) === originalSha && shaOf(second, 2) !== originalSha, second);
     check('new_output_has_requested_ratio', Math.abs(second.prefixes.find((row) => row.number === 2).main.width / second.prefixes.find((row) => row.number === 2).main.height - 1) < 0.02);
-    await open('other');
-    await until('new current state has a retained preview', () => selected('other'), (value) => value === '2');
-    check('new_output_adds_a_retained_preview', await previews('other').count() === 2);
+    await until('the new take looked at, open', () => selected('other'), (value) => value === '2');
+    check('new_output_adds_a_retained_preview', await previews('other').count() === 2 && await history('other').locator('.take.approved[data-take="1"]').count() === 1);
     await approveVersion(page, 'other', 1);
     await settled(page);
     const sourceGeometry = await geometry('other');
@@ -411,7 +411,7 @@ async function died(why) {
     await approveVersion(page, 'other', 1);
     await (await renderOf(page, 'other')).click();
     const third = await until('editing an older version appends v3', () => asset('other'), (row) => row.versions === 3 && !row.making?.length, 5 * STEP_MS);
-    check('editing_old_version_keeps_forward_history', third.version === 3 && third.prefixes.map((row) => row.number).join() === '1,2,3' && shaOf(third, 1) === originalSha && shaOf(third, 2) === shaOf(second, 2), third.prefixes);
+    check('editing_old_version_keeps_forward_history', third.approved === 1 && third.version === 1 && third.prefixes.map((row) => row.number).join() === '1,2,3' && shaOf(third, 1) === originalSha && shaOf(third, 2) === shaOf(second, 2), third.prefixes);
     const inputOf = async (row, number) => (await api(`/v1/runs/${row.prefixes.find((version) => version.number === number).run}?detail=full`)).body?.request?.input;
     const editedFrom = await inputOf(third, 3);
     check('edit_reads_the_selected_source_version', editedFrom?.instructions?.references?.length === 1 && editedFrom.instructions.references[0].file === originalSha, editedFrom);
@@ -434,7 +434,7 @@ async function died(why) {
     const beforeAll = (await asset('other')).versions;
     await page.getByRole('button', { name: /^Render all / }).click();
     const renderedAll = await until('Render all includes the selected image', () => asset('other'), (row) => row.versions === beforeAll + 1 && !row.making?.length, 5 * STEP_MS);
-    check('render_all_includes_selected_image_tools', renderedAll.version === renderedAll.prefixes.at(-1).number && shaOf(renderedAll, 1) === originalSha, renderedAll);
+    check('render_all_includes_selected_image_tools', renderedAll.approved === 2 && renderedAll.version === 2 && shaOf(renderedAll, 1) === originalSha, renderedAll);
     await until('Render all settles before rename', () => state(), (row) => !row.busy, 5 * STEP_MS);
 
     // Rename while actual work is running: the existing versions and references follow the same asset.
@@ -445,7 +445,7 @@ async function died(why) {
     const rename = await post(`${at}/rename`, { from: 'other', to: 'modified' });
     check('rename_during_render_is_accepted', rename.status === 200, rename);
     const renamed = await until('render lands under renamed asset', () => asset('modified'), (row) => row.versions === beforeRename + 1 && !row.making?.length, 5 * STEP_MS);
-    check('rename_preserves_old_versions_and_selects_new', renamed.version === renamed.prefixes.at(-1).number && shaOf(renamed, 1) === originalSha && !((await state()).orphans ?? []).some((row) => row.name === 'other'), renamed);
+    check('rename_preserves_old_versions_and_approval', renamed.approved === 2 && renamed.version === 2 && shaOf(renamed, 1) === originalSha && !((await state()).orphans ?? []).some((row) => row.name === 'other'), renamed);
     check('rename_rewrites_bare_and_explicit_references', (await asset('current_reader')).fields.instructions.includes('<modified>') && (await asset('current_reader')).fields.instructions.includes('<modified.1>'));
 
     // Canceling actual work adds no empty version to the holder.

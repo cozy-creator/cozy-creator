@@ -271,6 +271,8 @@ function replaceFile(at, text) {
   // No running total under the beats (cl-903): their own last row, as each beat's Angles group, drawn in it, has one of its own.
   const beatsLast = shotBox.locator('.beats-edit[data-field=beats] > .beats-last');
   check('no_running_total', (await shotBox.locator('.beats-edit[data-field=beats] .total').count()) === 0 && !/\b10 s\b/.test(await beatsLast.innerText()), await beatsLast.innerText());
+  // Beat 2's words, open, scroll beat 1 up out of the frame (cl-938 aeddbfe14): a person scrolls it back in to drop on it.
+  await beatRows().first().evaluate((el) => el.scrollIntoView({ block: 'nearest' }));
   const grip = await shotBox.locator('[aria-label="Move beat 2"]').boundingBox();
   const first = await beatRows().first().boundingBox();
   await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
