@@ -118,14 +118,16 @@ def lora_gaps(lane: Json) -> list[str]:
 
 
 def entries(requirements: list[Json], model: str, label: str | None, lane: Json) -> list[Json]:
-    """The entries that hold `lane`: those naming the model, else those of its families; and those of its kind alone."""
+    """The entries that hold `lane`: those naming the model, else those of its families and those of its kind alone."""
+    named = [e for e in requirements if model in e.get("models", [])]
+    if named:
+        return named
     families = {lane.get("family"), label} - {None}
     def kind(entry: Json) -> bool:
         return "kind" not in entry or entry["kind"] == lane.get("kind")
-    named = [e for e in requirements if model in e.get("models", [])]
-    by_family = [e for e in requirements if not named and families & set(e.get("families", [])) and kind(e)]
+    by_family = [e for e in requirements if families & set(e.get("families", [])) and kind(e)]
     by_kind = [e for e in requirements if not e.get("models") and not e.get("families") and kind(e)]
-    return named + by_family + by_kind
+    return by_family + by_kind
 
 
 def check(requirements: list[Json], shown: Json) -> tuple[list[tuple[str, str, str]], list[tuple[str, str]]]:
