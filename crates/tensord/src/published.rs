@@ -27,7 +27,7 @@ use std::{
 };
 use crate::{
     held_models::Pulled,
-    origin::{self, priority, Machine},
+    origin::{self, Machine},
     stop::Stop,
     storage::{self, Store},
 };
@@ -552,13 +552,13 @@ impl Publisher {
     /// A checkpoint held here, named by its header: a Hub checkpoint pulled by hash is the request's
     /// only as `checkpoint` serves it. A nonempty version can be private too. Local headers
     /// made here have no Hub provenance and keep their local-custody path.
-    pub(crate) fn held_for(&self, service: &Service, source: Option<&hub::Source>, header: &ObjectRef) -> Result<(), Failure> {
+    pub(crate) fn held_for(&self, service: &Service, source: Option<&hub::Source>, header: &ObjectRef, order: u64) -> Result<(), Failure> {
         let Some(pulled) = Pulled::of(&self.store, header).map_err(io_failure)? else {
             return Ok(());
         };
         let named = Named { model: pulled.model, lane: pulled.lane, tree: Some(pulled.tree), ..Named::default() };
         match source {
-            Some(source) => self.checkpoint(service, source, named).map(drop),
+            Some(source) => self.checkpoint(service, source, named, order).map(drop),
             None => Err(("model_resolution_failed", format!("Checkpoint {} is unavailable without Hub access. Sign in with cozy login <email> on the computer that sent this run", named.shown()))),
         }
     }
@@ -629,11 +629,11 @@ impl Publisher {
             storage::transport(&self.store, "pull-failed", &subject, &format!("origin={}: {e}", source.origin));
             failed(e)
         };
-        let mut structure = self.machine.pull(&remote, header, Some(&[]), priority::NOW, None, &stop).map_err(failed)?;
+        let mut structure = self.machine.pull(&remote, header, Some(&[]), order, None, &stop).map_err(failed)?;
         // A header by hash is recorded under a tree naming it alone.
         let tree = match &named.tree {
             Some(tree) => {
-                let landed = self.machine.objects(&remote, std::slice::from_ref(tree), priority::NOW, &stop).map_err(failed)?;
+                let landed = self.machine.objects(&remote, std::slice::from_ref(tree), order, &stop).map_err(failed)?;
                 (structure.landed.origin, structure.landed.volume) = (structure.landed.origin + landed.origin, structure.landed.volume + landed.volume);
                 structure.landed.local += landed.local;
                 tree.clone()
@@ -689,16 +689,16 @@ impl Publisher {
     /// direct (`access`). A held header asks the Hub nothing.
     fn structure(&self, source: &hub::Source, named: &Named, job: &Job) -> Result<(), Failure> {
         job.stage(format!("resolving {}", named.shown()));
-        self.pull(source, named, Some(&[]), priority::NOW, job.stop.as_ref(), &|_, _| ()).map(drop)
+        self.pull(source, named, Some(&[]), job.order, job.stop.as_ref(), &|_, _| ()).map(drop)
     }
 
     /// The checkpoint `named` is: one by hash as given, a name as the Hub resolves its release and
     /// lane (or, with no lane, `hardware`); then that checkpoint's header. Anonymous answers are
     /// journaled per GPUs; an answer older than `FRESH` is read again behind it (`refresh`).
     /// A capability's frozen roots are checked at the origin before local bytes are reused.
-    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware) -> Result<Named, Failure> {
+    pub(crate) fn resolve(&self, service: &Service, source: &hub::Source, named: Named, hardware: &Hardware, order: u64) -> Result<Named, Failure> {
         if named.tree.is_some() {
-            return self.checkpoint(service, source, named);
+            return self.checkpoint(service, source, named, order);
         }
         let (named, forward) = forward(source, named);
         let answer = if source.capability.is_some() {
@@ -770,7 +770,7 @@ impl Publisher {
     /// length and format; a checkpoint resolves to its header and lane. A hash may name a private
     /// checkpoint, so only a prior anonymous read serves an anonymous request from the journal.
     /// A capability checks its current frozen root authority at the origin before held bytes are reused.
-    pub(crate) fn checkpoint(&self, service: &Service, source: &hub::Source, named: Named) -> Result<Named, Failure> {
+    pub(crate) fn checkpoint(&self, service: &Service, source: &hub::Source, named: Named, order: u64) -> Result<Named, Failure> {
         #[derive(serde::Deserialize, serde::Serialize)]
         struct Held {
             tree: Option<ObjectRef>,
@@ -799,7 +799,7 @@ impl Publisher {
             Some(held) => held,
             None => {
                 let remote = origin::remote(&self.machine, source).map_err(failed)?;
-                self.machine.objects(&remote, std::slice::from_ref(&object), priority::NOW, &Stop::default()).map_err(failed)?;
+                self.machine.objects(&remote, std::slice::from_ref(&object), order, &Stop::default()).map_err(failed)?;
                 match storage::tree_or_header(&self.store, &object).map_err(|e| ("model_resolution_failed", e.to_string()))? {
                     Some(checkpoint) => {
                         let header = checkpoint.header().map_err(|e| ("model_resolution_failed", format!("{}: {e}", object.id())))?.1.clone();
@@ -835,7 +835,7 @@ impl Publisher {
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
         let failed = |(code, message)| Refused { code, message };
-        let named = self.resolve(service, source, named, hardware).map_err(failed)?;
+        let named = self.resolve(service, source, named, hardware, order).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
         let moved = self.pull(source, &named, components, order, stop, bytes).map_err(failed)?;
@@ -1272,7 +1272,7 @@ impl Publisher {
                 .iter()
                 .map(|file| {
                     scope.spawn(|| -> Result<PathBuf, Failure> {
-                        let path = self.hub_wheel(file, source, &wheels, job.stop.as_ref())?;
+                        let path = self.hub_wheel(file, source, &wheels, job.order, job.stop.as_ref())?;
                         let landed = moved.fetch_add(file.length, std::sync::atomic::Ordering::Relaxed);
                         job.bytes(landed + file.length, total);
                         Ok(path)
@@ -1291,11 +1291,11 @@ impl Publisher {
         file.length > 0 && self.store.holds(&ObjectRef { sha256: file.sha256.clone(), length: file.length })
     }
 
-    fn hub_wheel(&self, file: &HubFile, source: &hub::Source, wheels: &Path, stop: Option<&Stop>) -> Result<PathBuf, Failure> {
+    fn hub_wheel(&self, file: &HubFile, source: &hub::Source, wheels: &Path, order: u64, stop: Option<&Stop>) -> Result<PathBuf, Failure> {
         let stop = stop.cloned().unwrap_or_default();
         let trust = source.ca_der.as_deref().map(|der| hub::pem(der).into_bytes());
         let length = (file.length > 0).then_some(file.length);
-        let blob = crate::machine::pypi::object_at(&self.machine, &file.url, &file.sha256, length, trust, &stop)
+        let blob = crate::machine::pypi::object_at(&self.machine, &file.url, &file.sha256, length, trust, order, &stop)
             .map_err(|e| match stop.is_cancelled() {
                 true => canceled(),
                 // Named by its file: a plan's URL is presigned, its query a credential.
@@ -1377,7 +1377,7 @@ impl Publisher {
                 // A model passed by value (a ModelArtifact a run here produced): held here.
                 let grant = self.held_grant(installation, &path, reference)?;
                 let header = storage::held(&self.store, &sha256::hex(&reference.digest)).map_err(io_failure)?;
-                self.held_for(service, request.source.as_ref(), &header)?;
+                self.held_for(service, request.source.as_ref(), &header, job.order)?;
                 return Ok((grant, None, vec![]));
             }
             if choice.model.starts_with("local/") && choice.manifest.is_none() {
@@ -1397,7 +1397,7 @@ impl Publisher {
             // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only.
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
             let hardware = tensorfs::fetch::Hardware { plain, ..hardware.clone() };
-            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware)?;
+            let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, job.order)?;
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {
                 package: installation.package.clone(),
@@ -1425,7 +1425,7 @@ impl Publisher {
             let parameter = grant.slot.rsplit('.').next().unwrap_or_default().to_string();
             if let Some(choice) = request.choices.iter().find(|c| c.parameter == grant.slot || c.parameter == parameter) {
                 // An adapter resolves for the run's hardware: `--lane` is the main model's.
-                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware);
+                let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order);
                 // It adapts a component this call runs (`components=`; none declared: any).
                 let runs: Vec<String> = (slot["components"].as_array())
                     .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
