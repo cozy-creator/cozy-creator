@@ -1,0 +1,1 @@
+An image being made on the canvas shows what it's made from: the pictures its render reads, full-bleed and side by side, and the start of its words over a scrim, with mentions marked. These are the render's own, not words typed since. A live preview covers the pictures, and the take replaces them once it's made. The box never changes size.
