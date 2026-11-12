@@ -19,7 +19,7 @@ export function shownOf(view: ElementView): Shown | null {
   const asset = view.asset
   if (!asset) return view.landed ? { output: view.landed.field, path: "", sha256: view.landed.sha256, field: view.landed.field } : null
   // Looking at a take still being made: nothing of it to show yet, and no other take's picture stands in.
-  const watch = asset.kind === "image" ? null : watched(view)
+  const watch = watched(view)
   if (watch && watch.number === undefined) return null
   const versions = asset.prefixes ?? []
   const version = (number?: number | null) => versions.find((held) => held.number === number)

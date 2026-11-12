@@ -4,8 +4,10 @@
 # ///
 """The localfit cell's tool: a still made on the CPU by a tool that, as MiniMax H3's shot does, composes a GPU function of its own that
 loads a model. That is what a computer with no GPU does poorly, so rendering it there asks first. The model paints only pictures its
-words mention, and the cell mentions none, so nothing is fetched."""
+words mention, and the cell mentions none, so nothing is fetched. `seconds` holds it that long first: render-placement's runs here are
+slow beside the rental's, so this computer's fit compares the two (cl-897)."""
 
+import asyncio
 import os
 
 import msgspec
@@ -31,11 +33,13 @@ async def paint(ctx: Context, *, image: ImageFile, weights: Weights, out: Output
 class Words(msgspec.Struct, kw_only=True):
     instructions: Prompt[Image] = Prompt()
     seed: Seed | None = None
+    seconds: float = 0
 
 
 @app.tool(label="Heavy", named="heavy", accelerator=False)
 async def heavy(ctx: Context, payload: Words, out: Outputs) -> ImageResult:
     """A still of one colour, and each picture it mentions painted by the model."""
+    await asyncio.sleep(payload.seconds)
     for picture in payload.instructions.references.values():
         await call(paint, image=picture.file)
     image = out.save_image(ImageFrame(SIDE, SIDE, os.urandom(3) * SIDE**2), format="png")

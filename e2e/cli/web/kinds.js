@@ -78,7 +78,7 @@ async function died(why) {
   const row = page.locator('.tools [data-palette="tools"] .tool[data-operation="video"]');
   await row.waitFor();
   const videoId = await row.getAttribute('data-tool');
-  const listed = (await api(`/v1/tools?project=${id}&palette=true`)).body?.tools ?? [];
+  const listed = (await api(`/v1/tools?project=${id}`)).body?.tools ?? [];
   const video = listed.find((tool) => tool.id === videoId);
   seen.video_tool = { id: videoId, reads: video && readsIn(video), makes: video?.makes };
   if (!video || !readsIn(video)) throw new Error(`the palette's Video (${videoId}) reads no picture: ${JSON.stringify(video?.fields?.map((field) => field.field))}`);

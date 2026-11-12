@@ -114,7 +114,8 @@ YAML
         "upscale $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$u"), shot $(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$f")"
       request "$(approved "$P" mural_upscale | jq -r .run)" | jq -r '.video.latents // ""' | grep -q sha256 \
         || expect project-upscale-latents FAIL "the upscale was not sent the shot's latents"
-      render project-edit "$P" edit || expect project-edit FAIL "render edit: $(tail -c 300 project-edit.log)"
+      # The edit is cut here once what it reads has landed, on its own: asked for only if it isn't yet.
+      render project-edit "$P" --missing edit || expect project-edit FAIL "render edit: $(tail -c 300 project-edit.log)"
       e=$(m=$(made "$P" edit); [ -n "$m" ] && ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$P/$m")
       expect project-edit "$([ "$e" = 1920,1080 ] && echo PASS || echo FAIL)" "edit ${e:-missing}"
     fi

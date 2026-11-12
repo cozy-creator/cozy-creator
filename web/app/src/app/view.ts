@@ -36,7 +36,7 @@ const moreKey = (id: string) => `cozy.more:${id}`
 const TOOLS_KEY = "cozy.tools-shut"
 const NSFW_KEY = "cozy.show-nsfw"
 
-/** Whether lists show models tagged `nsfw` until a viewer says otherwise: shown, for now. */
+/** The global Settings preference starts on; an explicitly saved false remains off. */
 export const SHOW_NSFW = true
 export const loadShowNsfw = () => read<boolean>(NSFW_KEY) ?? SHOW_NSFW
 export const saveShowNsfw = (shown: boolean) => write(NSFW_KEY, shown)

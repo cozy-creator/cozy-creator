@@ -10,7 +10,7 @@ mod canvas;
 pub(crate) mod code;
 mod db;
 mod crdt;
-mod fit;
+pub(crate) mod fit;
 mod folder;
 mod format;
 pub(crate) mod graph;
@@ -4303,6 +4303,13 @@ impl Walk {
             }
             _ => soonest,
         };
+        // Sent here alone, as `cozy render --on local`, which asks nothing: said as a box asks it, unless Render here was said (cl-897).
+        if placed.is_local() && on.len() == 1 {
+            let tool = asset.tool.clone().unwrap_or_else(|| asset.target.clone());
+            if let Some(line) = fit::told_here(&self.host.api(), &hub, package, &renderer.function, &asset.made, &tool) {
+                self.say(Told::Said { message: format!("{name}: {line}"), name: Some(name.clone()) });
+            }
+        }
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
@@ -5104,15 +5111,15 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
 
 /// Of `on`, where a job goes (cl-816): the soonest finish its machines quoted (`offers`), a rental before this computer on a tie, and not
 /// this computer when it would run `function` poorly (`fit`) and no quote of its own runs says it ends it first (Paul, 11-05: a rented
-/// GPU is for using). With no quote that fits, the first of `on` that can take it (`placement::takes`).
+/// GPU is for using), nor when its GPU draws the screen, which a render makes lag (cl-897). With no quote that fits, the first of `on`
+/// that can take it (`placement::takes`).
 async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>), Error> {
     let now = now_ms();
     let Some(soonest) = placement::soonest(offers, now) else {
         return Ok((placement::takes(api, on, offers).await?, None));
     };
     let poorly = soonest.machine.is_local()
-        && soonest.basis != v1::Basis::Measured
-        && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made));
+        && (fit::draws_screen(api) || (soonest.basis != v1::Basis::Measured && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made))));
     let others: Vec<Offer> = offers.iter().filter(|offer| !offer.machine.is_local()).cloned().collect();
     let chosen = match poorly {
         true => placement::soonest(&others, now).unwrap_or(soonest),

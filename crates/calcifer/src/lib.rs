@@ -676,6 +676,22 @@ impl Calcifer {
         Ok(())
     }
 
+    /// Renames a machine that has not served (its Hub named it); its runs move with it, and the
+    /// old name stays its alias.
+    pub(crate) fn rename_machine(&self, old: &str, new: &str) -> Result<bool, Error> {
+        let renamed = self.store.rename_machine(old, new)?;
+        if renamed {
+            let mut machines = lock(&self.machines);
+            for name in [old, new] {
+                if let Some(entry) = machines.remove(name) {
+                    entry.changed.send_replace(());
+                }
+            }
+            self.machine_changed();
+        }
+        Ok(renamed)
+    }
+
     /// Adds a warning to an unsettled run.
     pub(crate) fn warn(&self, id: &RunId, warning: &::api::calcifer::Warning) -> Result<(), Error> {
         let events = self.store.warn(id.as_str(), warning)?;
@@ -901,6 +917,29 @@ impl Calcifer {
     /// `prior_ms`. 0: none ran.
     pub(crate) fn prior_ms(&self, target: &str, machine: &str, size: &v1::JobSize) -> u64 {
         eta::one_gpu_ms(&self.history(target), machine, &self.gpu_of(machine), size).map_or(0, |ms| ms as u64)
+    }
+
+    /// What a run of `target` like `input` takes on one GPU of each card it ran on away from this computer, by those runs: each card's
+    /// name as its machine said it, and ms (cl-897).
+    pub(crate) fn away_ms(&self, target: &str, input: &serde_json::Map<String, serde_json::Value>) -> Vec<(String, f64)> {
+        let away: Vec<eta::Took> = self.history(target).into_iter().filter(|took| took.width <= 1 && took.machine != "local").collect();
+        let mut cards: Vec<String> = away.iter().filter(|took| !took.gpu.is_empty()).map(|took| took.gpu.clone()).collect();
+        cards.sort();
+        cards.dedup();
+        let steps = input.get("steps").and_then(serde_json::Value::as_u64);
+        (cards.into_iter())
+            .filter_map(|gpu| {
+                let ms = eta::Prior::of(&away, "", &gpu, megapixels(input))?.with_steps(steps).total_ms(steps);
+                Some((gpu, ms))
+            })
+            .collect()
+    }
+
+    /// What a run of `target` like `input` takes on this computer, by its own runs of it.
+    pub(crate) fn here_ms(&self, target: &str, input: &serde_json::Map<String, serde_json::Value>) -> Option<f64> {
+        let steps = input.get("steps").and_then(serde_json::Value::as_u64);
+        let prior = eta::Prior::of(&self.history(target), "local", "", megapixels(input))?;
+        (prior.basis == ::api::calcifer::EtaBasis::Machine).then(|| prior.with_steps(steps).total_ms(steps))
     }
 
     /// The completed runs of `target`, whatever its release, newest first, each by its phases.

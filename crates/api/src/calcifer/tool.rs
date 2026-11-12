@@ -25,12 +25,12 @@ pub const EDIT: &str = "cozy/edit";
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Tools {
     pub tools: Vec<Tool>,
-    /// Why the list holds only what's installed: the Hub didn't answer.
+    /// Why the list holds only what's installed, or the Hub's as last read: the Hub didn't answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
-/// Your own tools, the same in every project: these packages' media functions, less `without`, by a tool's `id`. Installing has nothing to do with it.
+/// Your changes to the tools, the same in every project: these packages beside what the Hub lists, and `without`, tools taken off, by a tool's `id`. Installing has nothing to do with it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct ToolList {
@@ -126,6 +126,9 @@ pub struct ToolModel {
     /// That checkpoint's family, as its header says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
+    /// The kind of checkpoint this slot names by default, verified from its catalog or header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::model_ref::ModelKind>,
     /// The model class declared by the package; absent when an older interface did not name it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
@@ -336,6 +339,7 @@ fn model_slot(key: &str, slot: &crate::interface::Slot) -> ToolModel {
         slot: key.to_owned(),
         default: slot.default.clone(),
         family: None,
+        kind: None,
         class: (!slot.class.is_empty()).then(|| slot.class.clone()),
         weights: slot.weights,
     }

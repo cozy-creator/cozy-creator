@@ -759,7 +759,11 @@ export type Gpu = { index: number, name: string, memory_bytes: number, driver: s
 /**
  * The most of `memory_bytes` the machine uses; 0: all of it.
  */
-memory_limit_bytes?: number, };
+memory_limit_bytes?: number,
+/**
+ * It draws a screen now: a render on it makes the screen lag.
+ */
+display?: boolean, };
 
 /**
  * `PUT /v1/files/sha256:<hex>`: a file Calcifer holds for runs to name, by its content.
@@ -1066,7 +1070,16 @@ at?: string, };
 /**
  * One machine as Calcifer knows it: its kind, state, address, rental, latest status and runs.
  */
-export type Machine = { name: string, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null,
+export type Machine = {
+/**
+ * A rental's name is its host's, as its Hub names it once it places it there (Paul 11-12: one host, one name).
+ */
+name: string,
+/**
+ * What a rental is said as, in its name's place, until its Hub names the host it's placed on: `Renting an RTX 4090…`.
+ * Its name meanwhile is a handle, never shown. Placed again on another host, it's said so again until that host's word.
+ */
+placeholder?: string | null, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null,
 /**
  * The name it had before its Hub named it; it keeps resolving.
  */
@@ -3075,7 +3088,7 @@ bytes: number,
 here?: boolean, };
 
 /**
- * Your own tools, the same in every project: these packages' media functions, less `without`, by a tool's `id`. Installing has nothing to do with it.
+ * Your changes to the tools, the same in every project: these packages beside what the Hub lists, and `without`, tools taken off, by a tool's `id`. Installing has nothing to do with it.
  */
 export type ToolList = { packages: Array<string>, without?: Array<string>, };
 
@@ -3100,6 +3113,10 @@ default?: string | null,
  * That checkpoint's family, as its header says.
  */
 family?: string | null,
+/**
+ * The kind of checkpoint this slot names by default, verified from its catalog or header.
+ */
+kind?: ModelKind | null,
 /**
  * The model class declared by the package; absent when an older interface did not name it.
  */
@@ -3152,7 +3169,7 @@ detail: string, };
  */
 export type Tools = { tools: Array<Tool>,
 /**
- * Why the list holds only what's installed: the Hub didn't answer.
+ * Why the list holds only what's installed, or the Hub's as last read: the Hub didn't answer.
  */
 note?: string | null, };
 

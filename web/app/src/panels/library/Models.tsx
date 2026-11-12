@@ -5,7 +5,7 @@ import { useConnection } from "../../app/Connection"
 import { useTo } from "../../app/Shell"
 import type { ModelCheckpoint, ModelDetail, ModelEdit, Submitted } from "../../api/calcifer"
 import { say } from "../../ui/notes"
-import { NSFW, ShowNsfw, Tags, isNsfw, useShowNsfw } from "../../ui/Tags"
+import { NSFW, Tags, isNsfw, useShowNsfw } from "../../ui/Tags"
 import { Confirm, Failure, Section, useAsk, useSignedIn } from "../common"
 import { DropZone, FileRow, useFiles } from "../FileDrop"
 import { bytes, shown } from "../format"
@@ -60,7 +60,7 @@ export function Models() {
   const [typed, setTyped] = useState("")
   const q = useDeferredValue(typed.trim())
   const [limit, setLimit] = useState(50)
-  const [showNsfw, setShowNsfw] = useShowNsfw()
+  const [showNsfw] = useShowNsfw()
   const { data, error } = useQuery({
     queryKey: ["models", q, limit, showNsfw],
     queryFn: ({ signal }) => client.models(q, limit, signal, { noTag: showNsfw ? undefined : NSFW }),
@@ -70,7 +70,6 @@ export function Models() {
     <LibraryFrame on="models">
       <div className="row center">
         <input className="field wide" aria-label="Search models" placeholder="Search models, tags, or org/name" spellCheck={false} value={typed} onChange={(event) => setTyped(event.target.value)} />
-        <ShowNsfw shown={showNsfw} onChange={setShowNsfw} />
       </div>
       <Failure error={error} lead="Couldn't search the models" />
       <ul className="list">
