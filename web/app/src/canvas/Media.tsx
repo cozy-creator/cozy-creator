@@ -831,7 +831,7 @@ function FailedHere({ message, copy }: { message: string; copy: string }) {
   return (
     <div className="run-face lines failed" data-phase="failed">
       <p className="face-state error-text nodrag nopan">
-        <b title={message}>Didn't render: {message}</b>
+        <b title={message}><span className="face-words">Didn't render: {message}</span></b>
         <CopyError text={copy} />
       </p>
     </div>
