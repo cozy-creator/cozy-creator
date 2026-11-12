@@ -1,4 +1,4 @@
-// A video in Focus has a scrubber, and Pick up from here under it (cl-933, Paul 11-12: "when you are viewing a video in focused mode, you
+// A video in Focus picks up from where its player is (cl-933, cl-950, Paul 11-12: "when you are viewing a video in focused mode, you
 // can display the pick up from here, probably put that underneath the thumbnail. Also give us a scrubber of some sort. Also if you click on
 // an empty image / empty video node, with nothing in it, there is no point in displaying 'instructions' or anything"), in a real browser on a
 // real Calcifer. H3's Shot with a four-second take: in Focus, scrubbed a frame at a time, the time says where, and Pick up from here then
@@ -29,8 +29,13 @@ async function died(why) {
   process.exit(1);
 }
 
-/** Where a pickup lands on a tool's frame grid (ranges.ts pickupAt). */
-const pickupAt = (frame, last, snap) => (!snap ? Math.min(frame, last) : frame < snap.first ? null : Math.min(last, Math.max(snap.first, snap.offset + Math.round((frame - snap.offset) / snap.every) * snap.every)));
+/** Where a pickup lands on a tool's frame grid: its last point at or before `frame` (ranges.ts pickupAt, cl-950). */
+const pickupAt = (frame, last, snap) => {
+  const at = Math.min(frame, last);
+  return !snap ? at : at < snap.first ? null : Math.max(snap.first, snap.offset + Math.floor((at - snap.offset) / snap.every) * snap.every);
+};
+/** Seconds as the button says them, "0:12.96". */
+const clock = (seconds) => `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(2).padStart(5, '0')}`;
 
 (async () => {
   const base = calcifer();
@@ -83,54 +88,48 @@ const pickupAt = (frame, last, snap) => (!snap ? Math.min(frame, last) : frame <
   await until('the take', async () => (await api(at)).body?.assets?.find((row) => row.name === 'shot')?.versions, (n) => n >= 1);
   await fitCanvas(page);
 
-  // In Focus: scrubbed a frame at a time, the time says where.
+  // In Focus, right under the player's bottom right: Pick up from where the player is (cl-950). One scrubber, the player's own.
   await openBox(page, 'shot');
   const focus = page.locator('.focus-viewport');
-  const scrub = focus.locator('.video-scrub');
-  const range = scrub.locator('input[type=range]');
-  await range.waitFor();
-  const last = Number(await range.getAttribute('max'));
-  // Scrubbing holds the frame it's taken to: from the start, 50 on.
-  await range.focus();
-  await page.keyboard.press('Home');
-  for (let step = 0; step < 50; step++) await page.keyboard.press('ArrowRight');
-  await page.waitForTimeout(400);
-  const frame = Number(await range.inputValue());
-  const says = await scrub.locator('[aria-label="Where it is"]').innerText();
-  const time = await focus.locator('video').first().evaluate((video) => video.currentTime).catch(() => null);
-  seen.scrubbed = { frame, last, says, time };
-  check('it_scrubs_a_frame_at_a_time', frame === 50 && last >= 90, seen.scrubbed);
-  check('it_says_where_it_is', /\d/.test(says) && says.includes('/'), says);
-  check('the_video_is_there', time === null || Math.abs(time - frame / 24) < 0.2, seen.scrubbed);
-  await scrub.locator('button[aria-label="A frame on"]').click();
-  check('a_frame_on', Number(await range.inputValue()) === 51, await range.inputValue());
-  await shot('scrubbed');
-
-  // Pick up from here, under it: Render asks to keep up to that frame, on the tool's grid.
-  const pickUp = scrub.locator('button:text-is("Pick up from here")');
-  // Small, under the player, never over it.
+  const pickUp = focus.locator('.focus-under button.pick-up');
+  await pickUp.waitFor();
+  check('one_scrubber_the_players_own', (await focus.locator('.video-scrub, input[type=range]').count()) === 0, await focus.locator('input[type=range]').count());
+  const player = await focus.locator('.focus-image-transform > .media').first().boundingBox();
   const button = await pickUp.boundingBox();
-  const player = await focus.locator('.media').first().boundingBox();
-  const over = button && player && button.x < player.x + player.width && button.x + button.width > player.x && button.y < player.y + player.height && button.y + button.height > player.y;
-  seen.pick_up = { button, player };
-  check('pick_up_is_under_the_player_not_over_it', (await pickUp.count()) === 1 && (await focus.locator('.media .video-pickup-action').count()) === 0 && !over && button.y >= player.y + player.height - 1, seen.pick_up);
-  check('pick_up_is_small', button.height <= 26, button);
-  const wanted = pickupAt(51, last, shotTool.pickup);
-  seen.wanted_out_frame = wanted;
+  seen.placed = { player, button };
+  check('pick_up_is_right_under_the_players_bottom_right', Math.abs(button.y - (player.y + player.height)) <= 2 && Math.abs(button.x + button.width - (player.x + player.width)) <= 2, seen.placed);
+  check('pick_up_is_a_readable_button', button.height >= 28, button);
+
+  // Its label follows the player: played a moment, then put at two seconds by the player's own position.
+  const label = () => pickUp.innerText();
+  seen.label_at_start = await label();
+  const play = focus.locator('button[aria-label="Play"]').first();
+  if (await play.count()) await play.click();
+  const video = focus.locator('video').first();
+  await video.waitFor({ state: 'attached' });
+  await until('it plays', () => video.evaluate((element) => element.currentTime), (time) => time > 0.3).catch(() => null);
+  seen.label_while_playing = await label();
+  await video.evaluate((element) => { element.pause(); element.currentTime = 2; });
+  // Where the cut lands: the tool's grid point at or before the player's 2 s, never after it.
+  const wanted = pickupAt(48, 96, shotTool.pickup);
+  const lands = `Pick up from ${clock(wanted / 24)}`;
+  seen.wanted = { out_frame: wanted, lands };
+  const said = await until('its label at 2 s', label, (text) => text.trim() === lands).catch(() => label());
+  seen.label_at_2s = said;
+  check('its_label_is_where_the_cut_lands_and_follows_the_player', said.trim() === lands && wanted <= 48 && seen.label_while_playing !== seen.label_at_start, { start: seen.label_at_start, playing: seen.label_while_playing, said, lands });
+  await shot('pick-up-under');
+
+  // Picked up: Render asks to keep up to that frame, the one the label said.
   const asked = page.waitForRequest((request) => request.method() === 'POST' && /\/v1\/projects\/[^/]+\/runs$/.test(new URL(request.url()).pathname), { timeout: STEP_MS });
   await page.route('**/runs', (route) => (route.request().method() === 'POST' ? route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { kind: 'conflict', code: 'e2e_held', message: 'held by the cell' } }) }) : route.continue()));
   await pickUp.click();
   await focus.locator('button[aria-label=Render]').first().click();
-  // A render this computer would do poorly is asked first (localfit): here, anyway.
   const anyway = page.getByRole('button', { name: 'Run here anyway' });
   await Promise.race([asked, anyway.first().waitFor({ timeout: STEP_MS }).then(() => anyway.first().click())]).catch(() => {});
   const body = JSON.parse((await asked).postData() ?? '{}');
-  const pickup = body.pickup ?? body.asks?.[0]?.pickup ?? JSON.stringify(body).match(/"pickup":(\{[^}]*\})/)?.[1];
   seen.asked = body;
-  const out = typeof pickup === 'string' ? JSON.parse(pickup).out_frame : pickup?.out_frame;
-  check('pick_up_keeps_up_to_the_scrubbed_frame', out === wanted && String(JSON.stringify(body)).includes('<shot.1>'), { out, wanted, body });
+  check('pick_up_keeps_up_to_where_the_player_was', body.pickup?.out_frame === wanted && body.pickup?.take === '<shot.1>', { out: body.pickup, wanted });
   await page.unroute('**/runs');
-  await shot('picking-up');
   await closeBox(page);
 
   // An empty picture and an empty video with no tool ask nothing.

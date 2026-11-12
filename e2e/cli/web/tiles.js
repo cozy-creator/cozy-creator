@@ -361,7 +361,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
   check('open_still_edits', (await page.locator('.card.here[data-asset="still"] button[aria-label="Edit image"]').count()) === 1);
   await closeBox(page);
   await openBox(page, 'shot');
-  check('open_video_picks_up', (await page.locator('.card.here[data-asset="shot"] button:text-is("Pick up from here")').count()) >= 1);
+  check('open_video_picks_up', (await page.locator('.card.here[data-asset="shot"] button.pick-up').count()) >= 1);
   await shot('open-shot');
   await closeBox(page);
 

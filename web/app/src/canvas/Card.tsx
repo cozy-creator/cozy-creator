@@ -19,7 +19,7 @@ import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
-import { VideoScrub } from "./VideoScrub"
+import { PickUpHere } from "./PickUpHere"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
 import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
@@ -942,7 +942,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       </div>
       )}
       {focused && !view.placing && <FocusActions view={view} name={name} />}
-      <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text" && !(asset?.timeline && editing)}>{asset?.timeline && editing ? (
+      <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text" && !(asset?.timeline && editing)} under={focused && asset?.kind === "video" && !asset.timeline && !editing ? <PickUpHere name={name} view={view} /> : undefined}>{asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : bodyWidth(view, width)} restWidth={width}>
@@ -960,7 +960,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         </Media>
       )}</FocusFrame>
       {rendering && <span className="render-wave" aria-hidden="true" />}
-      {focused && asset?.kind === "video" && !asset.timeline && !editing && <VideoScrub name={name} view={view} />}
       {here && !lite && asset?.tool && !view.placing && <ToolLine name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {!here && !focused && <Under view={view} name={name} lite={lite} />}
