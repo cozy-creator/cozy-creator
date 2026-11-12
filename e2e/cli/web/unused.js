@@ -6,6 +6,7 @@
 //   H3's Shot (pictures, videos and sounds): nothing is.
 // Calcifer says each with the box (`unused`) and once in the project's notes, which `cozy status` shows; a run of a stand-in picture tool
 // leaves a video it can't use out of its prompt and `cozy run watch` says so once, as a note. Nothing is refused and nothing pops up.
+// What the Runtime does with what gets past the binder is web/ignored.js.
 //   node unused.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER; $COZY: the cozy under test.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -183,28 +184,6 @@ const cozy = (folder, words) => {
   const lines = `${watch.out}\n${watch.err}`.split('\n').filter((line) => line.includes('<clip> is left out:'));
   seen.watch = { code: watch.code, lines, out: watch.out.slice(-600) };
   check('watch_says_it_once_as_a_note', watch.code === 0 && lines.length === 1 && /note: /.test(lines[0]) && !/warning: /.test(lines[0]), seen.watch);
-
-  // The Runtime's own rule, for what reaches a function past Calcifer's binder (an API caller's raw prompt): a video and a sound in a
-  // picture prompt, and a picture where only words go, are left out with an `ignored` row, their mentions their names; never refused.
-  const assets = (await api(at)).body?.assets ?? [];
-  const file = (name) => { const sha = assets.find((asset) => asset.name === name)?.sha256 ?? ''; return sha.startsWith('sha256:') ? sha : `sha256:${sha}`; };
-  const raw = async (target, field, prompt) => {
-    const after = await newest();
-    const ran = cozy(project, ['--json', 'run', target, `${field}:=${JSON.stringify(prompt)}`, '--on', 'local']);
-    const record = await ended(target.split('/').at(-1), after);
-    return { code: ran.code, status: record?.status, result: record?.result, ignored: (record?.adjustments ?? []).filter((row) => row.kind === 'ignored'), name: record ? String(record.number) : null, failure: record?.failure ?? record?.error, err: ran.err.slice(-400) };
-  };
-  const pictures = await raw(still, 'instructions', { text: '<V> and <H> at dusk', references: [{ key: 'V', type: 'video', file: file('clip') }, { key: 'H', type: 'audio', file: file('hum') }] });
-  seen.runtime_pictures = pictures;
-  check('runtime_leaves_a_video_and_a_sound_out_of_a_picture_prompt', pictures.code === 0 && pictures.result?.prompt === 'V and H at dusk', pictures);
-  check('runtime_notes_each_once', pictures.ignored.length === 2 && /takes no videos/.test(pictures.ignored.find((row) => row.requested === 'V')?.reason ?? '') && /takes no audio/.test(pictures.ignored.find((row) => row.requested === 'H')?.reason ?? ''), pictures.ignored);
-  const words = await raw(join(__dirname, '..', 'project', 'tool.py') + '/words', 'prompt', { text: 'make <A> red', references: [{ key: 'A', type: 'image', file: file('pic') }] });
-  seen.runtime_words = words;
-  check('runtime_leaves_a_picture_out_of_words', words.code === 0 && words.result?.text === 'make A red' && words.ignored.length === 1 && /takes no images/.test(words.ignored[0].reason), words);
-  const shown = pictures.name ? cozy(project, ['run', 'watch', pictures.name]) : { code: -1, out: '' };
-  const rows = shown.out.split('\n').filter((line) => /ignored instructions\.references\.\d: [VH] \(/.test(line));
-  seen.runtime_watch = { code: shown.code, rows, out: shown.out.slice(-600) };
-  check('runtime_watch_says_each_once', shown.code === 0 && rows.length === 2, seen.runtime_watch);
 
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();
