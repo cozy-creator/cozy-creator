@@ -29,6 +29,7 @@ mod others;
 mod page;
 mod placement;
 mod previews;
+mod rc;
 pub(crate) mod private_io;
 mod play;
 mod project;
@@ -1122,8 +1123,8 @@ impl Calcifer {
             {
                 match machines.current(&name).await {
                     Ok(None) => {}
-                    Ok(Some(_)) => {
-                        self.waiting(id, format!("updating {name} to cozy {} first", crate::update::this_release()));
+                    Ok(Some(update)) => {
+                        self.waiting(id, format!("updating {name} first (run {}: {})", update.number, update.target));
                         pause.wait(wake, None).await;
                         continue;
                     }
@@ -1430,6 +1431,14 @@ impl Calcifer {
                     true => return Ok(None),
                     false => continue,
                 }
+            }
+            // Which RC builds it runs on, said with the run once (cl-922).
+            if row.state == State::Queued
+                && row.kind != ::api::calcifer::Kind::Update
+                && let Some(line) = self.machines().and_then(|machines| machines.rc_line(machine))
+                && let Ok(events) = self.store.note(row.id.as_str(), "machine", &line)
+            {
+                self.publish(&row.id, events);
             }
             sent.push((own, v1::RunRequest { id: row.id.to_string(), spec }));
         }

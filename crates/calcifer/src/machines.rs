@@ -86,6 +86,11 @@ pub(crate) struct Machines {
     /// This computer's machine, started when something uses it.
     pub(crate) local: crate::local::Local,
     tasks: Mutex<JoinSet<()>>,
+    /// The config's `dev = true`: its rentals follow the open RC (`rc`, cl-922).
+    pub(crate) dev: bool,
+    pub(crate) rc: crate::rc::Rc,
+    /// Told when a rental becomes ready: a dev home's moves to the RC before its first run.
+    pub(crate) rc_ready: Notify,
 }
 
 /// What Calcifer last heard of a machine, never stored.
@@ -139,6 +144,9 @@ impl Machines {
             end_waits: Notify::new(),
             local,
             tasks: Mutex::default(),
+            dev: config.dev,
+            rc: crate::rc::Rc::default(),
+            rc_ready: Notify::new(),
             calcifer,
         });
         me.calcifer.serve_with(&me);
@@ -161,6 +169,9 @@ impl Machines {
         me.spawn(me.clone().local_tasks());
         me.spawn(me.clone().place_runs());
         me.spawn(me.clone().notice_stalled());
+        if me.dev {
+            me.spawn(me.clone().follow_rcs());
+        }
         let lister = me.clone();
         me.spawn(async move { lister.list_hubs().await });
         me
@@ -687,6 +698,7 @@ impl Machines {
             status.runs = held.into_iter().map(|run| self.held(run)).collect();
             status.activity = activity.iter().map(|operation| self.operation(operation)).collect();
         }
+        machine.rc = self.rc_follow(&row.name, self.frame(&row.name).as_ref());
         let asked = match row.kind {
             MachineKind::Rental => store.rent_ask(&row.name).map_err(internal)?,
             _ => None,
@@ -889,6 +901,7 @@ impl Machines {
             let seen = seen.entry(name.to_owned()).or_default();
             if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready") {
                 self.placing.notify_one();
+                self.rc_ready.notify_one();
             }
             seen.stopped &= frame.phase == "releasing";
             seen.frame = Some(frame);

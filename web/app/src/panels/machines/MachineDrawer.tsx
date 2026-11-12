@@ -121,6 +121,7 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
         ["cozy", status && `${status.version}${status.dev ? " (dev)" : ""}`],
         ["Runtime", status?.runtime],
         ["TensorFS", status?.tensorfs],
+        ["RC", machine.rc && `${machine.rc.rc} ${machine.rc.state}: ${machine.rc.detail}`],
         ["PyTorch", status?.torch],
         ["Update", status?.update],
         ["Disk", disk],
