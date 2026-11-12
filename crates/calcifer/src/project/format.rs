@@ -24,7 +24,7 @@ use super::{
 pub(crate) const ALL: &str = "all";
 pub(super) const FORMAT: u64 = 4;
 /// What the platform reads of an asset. Any other key is an input.
-const PLATFORM: [&str; 7] = ["tool", "approved", "description", "models", "lora", NODE_KIND, SELECTED_VERSION];
+const PLATFORM: [&str; 8] = ["tool", "approved", "description", "models", "lora", NODE_KIND, SELECTED_VERSION, STARRED];
 /// What goes on a function's first call, beside its input.
 const MADE: [&str; 2] = ["models", "lora"];
 pub(super) const KINDS: [&str; 3] = ["image", "video", "audio"];
@@ -35,6 +35,8 @@ pub(super) const TEXT: &str = "text";
 pub(super) const NODE_KIND: &str = "node_kind";
 /// The exact current media version, independently of whether two versions contain identical bytes.
 pub(super) const SELECTED_VERSION: &str = "selected_version";
+/// A person's star on an asset, to find it again (cl-892): no input, so it puts nothing out of date.
+pub(super) const STARRED: &str = "starred";
 
 pub(super) fn node_kind(value: Option<&Value>) -> Result<Option<&str>, Error> {
     match value {
@@ -194,6 +196,8 @@ pub(crate) struct Asset {
     pub description: String,
     /// `approved`: the sha256 it holds. Its tool and inputs stay in the file, and can show it out of date.
     pub pin: Option<String>,
+    /// `starred: true`.
+    pub starred: bool,
     /// It has no operation: no `tool` that can make it, or the file says nothing of it.
     pub hollow: bool,
     /// What it reads, in the order its text mentions them.
@@ -464,7 +468,8 @@ impl Doc {
         }
         let hollow = body.is_empty() || tool.as_deref().is_none_or(|tool| made_here(tool) && kind_made_here(tool).is_none());
         self.index.insert(key, self.assets.len());
-        self.assets.push(Asset { name: name.to_owned(), kind, node_kind, selected_version, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, hollow, reads: vec![] });
+        let starred = body.get(STARRED).and_then(Value::as_bool).unwrap_or(false);
+        self.assets.push(Asset { name: name.to_owned(), kind, node_kind, selected_version, tool_makes: makes.is_some(), tool, target, made, inputs, written: None, inlined: vec![], text, own, description, pin, starred, hollow, reads: vec![] });
     }
 
     /// Each mention of a text asset in what a tool is given replaced by its words, and theirs in turn. Only here: what's read, what's sent and

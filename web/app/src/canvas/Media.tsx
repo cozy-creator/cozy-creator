@@ -312,7 +312,7 @@ type Source = { path: string } | { run: number; output: string }
 const FILE = /^files\/[0-9a-f]{64}(\.\w+)?$/
 
 /** Its bytes are in the project's files/, which the file route serves, so a person can download it. */
-export const downloadable = (file: MainFile) => !file.absent && FILE.test(file.path)
+export const downloadable = (file: Pick<MainFile, "path" | "absent">) => !file.absent && FILE.test(file.path)
 
 export function sourceOf(view: ElementView, shown: Shown | null): Source | null {
   const asset = view.asset
