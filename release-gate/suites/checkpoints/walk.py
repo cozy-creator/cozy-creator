@@ -53,8 +53,8 @@ def defaults(cli, jobs):
     def slots(package):
         named = f"{package['package']}@{package['latest_release']}"
         interface = cozy(cli, "--full", "run", named, "--describe").get("interface") or {}
-        return [(slot["default"], f"{named} {slot.get('path', '')}") for callable in interface.get("callables", [])
-                for slot in callable.get("models") or [] if slot.get("default")]
+        return [(slot["default"], f"{named} {slot.get('path', '')}") for entry in interface.get("entrypoints", [])
+                for slot in entry.get("models") or [] if slot.get("default")]
 
     found = {}
     with ThreadPoolExecutor(jobs) as pool:
@@ -147,7 +147,7 @@ def main():
     ask = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ask.add_argument("--cli", default="cozy")
     ask.add_argument("--requirements", default=str(HERE / "requirements.toml"))
-    ask.add_argument("--out", help="a folder for findings.json")
+    ask.add_argument("--out", help="a folder for findings.json and each release's `model show --json` (shown/)")
     ask.add_argument("--only", default="", help="org/name,... to walk alone (their newest releases)")
     ask.add_argument("--jobs", type=int, default=4)
     args = ask.parse_args()
@@ -170,7 +170,8 @@ def main():
         except Refused as why:
             return ref, None, str(why)
 
-    shown = {}
+    shown, forward = {}, {}
+    asked = set(named)
     with ThreadPoolExecutor(args.jobs) as pool:
         todo = list(named)
         while todo:
@@ -180,20 +181,27 @@ def main():
                     errors.append((ref, why))
                     continue
                 key = f"{answer['model']}@{answer['release']}"
+                # A run naming an older release takes its series' newest fix: that, not the one named, is what loads.
+                if answer.get("resolves_to"):
+                    newer = f"{answer['model']}@{answer['resolves_to']}"
+                    forward[key] = newer
+                    named.setdefault(newer, []).extend(f"{w}, named @{answer['release']}" for w in named.get(ref, []))
+                    if newer not in asked:
+                        asked.add(newer)
+                        later.append(newer)
+                    continue
                 shown.setdefault(key, answer)
-                named.setdefault(key, []).extend(w for w in named.get(ref, []) if ref != key)
-                # A run naming an older release takes its series' newest fix: that is what a default loads.
-                newer = f"{answer['model']}@{answer['resolves_to']}" if answer.get("resolves_to") else None
-                if newer and newer not in shown and newer not in named:
-                    named[newer] = [f"{w}, named @{answer['release']}" for w in named.get(ref, [])]
-                    later.append(newer)
+                if ref != key:
+                    named.setdefault(key, []).extend(named.get(ref, []))
             todo = later
 
-    findings = {"releases": {}, "gaps": [], "unchecked": [], "errors": [{"ref": r, "error": e} for r, e in errors]}
+    findings = {"releases": {}, "resolved_forward": forward, "gaps": [], "unchecked": [],
+                "errors": [{"ref": r, "error": e} for r, e in errors]}
     for key in sorted(shown):
         answer = shown[key]
         gaps, unchecked = check(requirements, answer)
-        findings["releases"][key] = {"why": sorted(set(named.get(key, []))), "lanes": [lane["lane"] for lane in answer["lanes"]]}
+        held = sorted({e.get("reads", "") for lane in answer["lanes"] for e in entries(requirements, answer["model"], answer.get("family"), lane)})
+        findings["releases"][key] = {"why": sorted(set(named.get(key, []))), "lanes": [lane["lane"] for lane in answer["lanes"]], "held_to": held}
         findings["gaps"] += [{"release": key, "lane": lane, "item": item, "reads": reads} for lane, item, reads in gaps]
         findings["unchecked"] += [{"release": key, "lane": lane, "why": why} for lane, why in unchecked]
     for gap in findings["gaps"]:
@@ -208,8 +216,10 @@ def main():
           f"{len(errors)} unread, {len(findings['unchecked'])} lanes no entry covers")
     if args.out:
         out = pathlib.Path(args.out)
-        out.mkdir(parents=True, exist_ok=True)
+        (out / "shown").mkdir(parents=True, exist_ok=True)
         (out / "findings.json").write_text(json.dumps(findings, indent=1) + "\n")
+        for key, answer in shown.items():
+            (out / "shown" / (key.replace("/", "__") + ".json")).write_text(json.dumps(answer, indent=1) + "\n")
     return 1 if findings["gaps"] or errors else 0
 
 
