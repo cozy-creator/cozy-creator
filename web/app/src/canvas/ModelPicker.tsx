@@ -34,6 +34,11 @@ const slotsOf = (tool: Tool | undefined): PickerSlot[] => {
   return slots?.length ? slots : primary ? [{ ...primary, kind: primary.kind ?? "base" }] : []
 }
 const compatible = (model: FoundModel | ModelDetail | undefined, family: string | null | undefined, kind: Kind | undefined) => Boolean(kind && family && model?.family === family && model?.kind === kind)
+const adapterFits = (model: FoundModel | ModelDetail, slot: PickerSlot) => {
+  if (!compatible(model, slot.family, "lora") || identityOf(model.model) === "alibaba-pai/qwen-image-2.1-fun-acc") return false
+  const encoder = model.tags?.some((tag) => tag.toLowerCase().replace(/_/g, "-") === "text-encoder") ?? false
+  return slot.slot === "text_encoder" ? encoder : !encoder
+}
 const fitsSlot = (model: FoundModel | ModelDetail | undefined, ref: string, slot: PickerSlot, kind: Kind | undefined, funAcc: boolean) => {
   if (funAcc && slot.slot === "model" && identityOf(ref) === "qwen/qwen-image-2.1-turbo") return false
   if (ref === slot.default) return true
@@ -180,7 +185,7 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
   const defaultVisible = !slot.default || showNsfw || Boolean(defaultModel && !isNsfw(defaultModel.tags))
   const selectedMeta = listed ?? detail ?? (identityOf(selected) === identityOf(slot.default ?? "") ? defaultModel : undefined)
   const selectedVisible = showNsfw || Boolean(selectedMeta && !isNsfw(selectedMeta.tags))
-  const availableLoras = kind ? found.filter((model) => compatible(model, slot.family, "lora") && !adapters.some((adapter) => identityOf(String(entryOf(adapter).ref ?? "")) === model.model)) : []
+  const availableLoras = kind ? found.filter((model) => adapterFits(model, slot) && !adapters.some((adapter) => identityOf(String(entryOf(adapter).ref ?? "")) === model.model)) : []
   const clearBase = () => changeSlot(store, name, slot.slot, ({ ref: _, ...rest }) => {
     if (restricted) delete rest.lora
     return rest
