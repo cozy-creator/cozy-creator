@@ -41,6 +41,14 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/status of 4\d\d|net::ERR_/.test(m.text())) errors.push(`console: ${m.text()}`); });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+  // What Calcifer refused, and why: a write the page keeps as a draft says so only in a note.
+  const refused = [];
+  page.on('response', (answer) => {
+    if (answer.status() < 400 || answer.request().method() === 'GET') return;
+    const refusal = { status: answer.status(), method: answer.request().method(), url: new URL(answer.url()).pathname, during };
+    refused.push(refusal);
+    answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
+  });
 
   await signIn(page);
   await page.waitForSelector('.top');
@@ -170,6 +178,8 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   const keys = bases.map((slot) => slot.slot);
   const after = await until('the LoRA on every segment', () => fieldsOf('scene'), (fields) => keys.every((key) => fields.models?.[key]?.lora?.length === 1)).catch(() => fieldsOf('scene'));
   seen.models = after.models;
+  seen.refused = refused;
+  seen.notes = await page.locator('.note').allInnerTexts().catch(() => []);
   const lora = after.models?.[keys[0]]?.lora?.[0]?.ref;
   check('a_lora_picked_is_on_the_box', Boolean(lora) && keys.every((key) => after.models?.[key]?.lora?.[0]?.ref === lora && after.models[key].ref === tune), after.models);
   await shot('h3-lora-picked');
