@@ -827,7 +827,8 @@ def qualify(args, receipt: Receipt) -> None:
     original_worker, worker_baseline = worker_journal(MACHINE, list(results))
     with read_db(CALCIFER / "state.db") as connection:
         maintenance_ids = sorted({row[0] for row in connection.execute("SELECT id FROM runs")} - set(results))
-    check(len(maintenance_ids) >= 3, "maintenance_runs_present", runs=len(maintenance_ids))
+    published = set(provenance["public_maintenance_run_ids"])
+    check(maintenance_ids and published <= set(maintenance_ids), "maintenance_runs_present", runs=len(maintenance_ids), published=len(published))
     maintenance_columns, maintenance = maintenance_rows(maintenance_ids)
     check(schema() == 7, "schema_v7")
     receipt.add("released_v7_subject", passed=True, runs=len(results), logs=sum(len(value["logs"]) for value in baseline.values()), outputs=sum(len(value["outputs"]) for value in baseline.values()))
