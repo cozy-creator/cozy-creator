@@ -703,7 +703,7 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 /** What beside Render is only a thing to set: the rest of the face wants a line. */
 const small = (field: ToolField) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
 
-/** What a box asks and holds, under it. On its face: prompts, groups, what a render can't go without, a filled slot, and Render. Everything else is under More, expert settings in its Advanced. On a take: what's done with that. */
+/** What a box asks and holds, under it. Advanced controls and output resolution remain visible without opening another section. */
 export function AssetEdit({ name, view, editing, prominent = false, head, actions, children }: { name: string; view: ElementView; editing: boolean; prominent?: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
@@ -716,7 +716,7 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
   const first = fields.find((field) => field.type === "prompt" || field.type === "words")
   // The box's own shape is its shape: its corner sets it.
   const rest = fields.filter((field) => field !== inFrame && field.type !== "timeline" && field.type !== "shape")
-  const faced = editing ? rest.filter((field) => prominent ? !field.advanced : onFace(field, store.valueOf(name, field.field))) : []
+  const faced = editing ? rest.filter((field) => prominent ? !field.advanced : field.field === "megapixels" || onFace(field, store.valueOf(name, field.field))) : []
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, fields)
   const folded = rest.filter((field) => !faced.includes(field))
   const plainFolded = folded.filter((field) => !field.advanced)
