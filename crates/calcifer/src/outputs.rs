@@ -127,6 +127,12 @@ fn export_warning(run: &RunRow, detail: impl std::fmt::Display) {
 }
 
 impl Calcifer {
+    pub(super) fn retire_exports(&self, ids:&std::collections::HashSet<String>) {
+        lock(&self.exports.appended).retain(|(id,..),_|!ids.contains(id.as_str()));
+        lock(&self.exports.moving).retain(|(id,..),_|!ids.contains(id.as_str()));
+        lock(&self.exports.runs).retain(|id,wake| { if ids.contains(id.as_str()) { wake.notify_waiters(); false } else { true } });
+    }
+
     /// Starts an exporter for each run that owes one, then for each run whose outputs change.
     pub(crate) fn export_outputs(self: &Arc<Self>) -> Result<(), Error> {
         let mut events = self.subscribe();
