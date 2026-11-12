@@ -207,6 +207,8 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
             .into_iter()
             .map(|s| v1::StuckProcess { pid: s.pid, command: s.command, wchan: s.wchan, since_unix_ms: s.since_unix_ms })
             .collect(),
+        heat: crate::slowed::heat(),
+        runtime_kernels: crate::slowed::runtime_kernels(),
         ..identity_frame(identity)
     }
 }

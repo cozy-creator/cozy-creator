@@ -3,9 +3,11 @@
 //! once 1 GiB has arrived, over the time any of it was arriving, and the first spawned executor's
 //! cold imports of the Runtime and torch. Each is one call, never retried; a Hub without the route
 //! answers 404 and that is fine. A marker in the machine's state keeps a restarted TensorD from
-//! reporting again.
+//! reporting again. A loaded run's heat (cl-913: how much of it a GPU was held back for heat) is told
+//! at the first such run and whenever it turns hot or cool; a Hub from before it refuses the field,
+//! which is no harm.
 use super::hub::Hub;
-use ::api::hub::types::{WorkerDownload, WorkerProbe};
+use ::api::hub::types::{WorkerDownload, WorkerGpuHeat, WorkerProbe};
 use std::{
     path::PathBuf,
     sync::{Arc, OnceLock},
@@ -47,7 +49,7 @@ pub(crate) fn serve(hub: Arc<Hub>, state: PathBuf, origin: Arc<crate::origin::Ma
                     bytes,
                     seconds: time.as_secs_f64(),
                 };
-                return send("download", Some(download), None);
+                return send("download", Some(download), None, None);
             }
         }
     });
@@ -63,7 +65,26 @@ pub(crate) fn imported(hello: Duration, stages: &[(String, f64)]) {
     }
     let leg = stages.iter().find(|(leg, _)| leg == "torch_import").map_or(0.0, |(_, ms)| ms / 1e3);
     let seconds = hello.as_secs_f64() + leg;
-    send("cpu", None, Some(WorkerProbe { probe: "executor_import".into(), seconds }));
+    send("cpu", None, Some(WorkerProbe { probe: "executor_import".into(), seconds }), None);
+}
+
+/// A loaded run on this pod ended with a GPU held back for heat `share` of its `seconds` busy, the most of its GPUs.
+pub(crate) fn heat(share: f32, seconds: f64) {
+    static TOLD: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+    let Some(reporter) = REPORTER.get() else { return };
+    let hot = share > platform::gpu::HOT_SHARE;
+    if TOLD.lock().unwrap().replace(hot) == Some(hot) {
+        return;
+    }
+    let hub = reporter.hub.clone();
+    let heat = WorkerGpuHeat { share, seconds };
+    reporter.runtime.spawn(async move {
+        let what = format!("{heat:?}");
+        match hub.report_speed(None, None, Some(heat)).await {
+            Ok(()) => tracing::info!("reported this host's GPU heat to the Hub: {what}"),
+            Err(refusal) => tracing::info!("the Hub took no GPU heat report: {refusal}"),
+        }
+    });
 }
 
 fn marker(signal: &str) -> Option<PathBuf> {
@@ -77,7 +98,7 @@ fn reported(signal: &str) -> bool {
 }
 
 /// One call for `signal`: only the caller that creates its marker sends it.
-fn send(signal: &'static str, download: Option<WorkerDownload>, cpu: Option<WorkerProbe>) {
+fn send(signal: &'static str, download: Option<WorkerDownload>, cpu: Option<WorkerProbe>, heat: Option<WorkerGpuHeat>) {
     let (Some(reporter), Some(path)) = (REPORTER.get(), marker(signal)) else {
         return;
     };
@@ -92,7 +113,7 @@ fn send(signal: &'static str, download: Option<WorkerDownload>, cpu: Option<Work
     let hub = reporter.hub.clone();
     reporter.runtime.spawn(async move {
         let what = format!("{download:?} {cpu:?}");
-        match hub.report_speed(download, cpu).await {
+        match hub.report_speed(download, cpu, heat).await {
             Ok(()) => tracing::info!("reported this host's {signal} speed to the Hub: {what}"),
             Err(refusal) => tracing::info!("the Hub took no {signal} speed report: {refusal}"),
         }

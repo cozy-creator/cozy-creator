@@ -1,0 +1,1 @@
+A render that finishes says so at the bottom left: its box, its take, a small picture of it and View, which opens the box in Focus on that take and marks it seen. Several at once are one note ("3 renders finished"), and a take landing while you look at it isn't said. A render that fails says so, with its error to copy.

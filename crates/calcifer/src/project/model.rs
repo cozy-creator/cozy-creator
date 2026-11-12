@@ -19,6 +19,7 @@ use super::{
     format::{Doc, Standing, State as Stand, Tool},
     graph::name_key,
     kept_files, known_packages, making_now, next_steps, orphans, queue, revision, row, unmade,
+    unseen::{self, Unseen},
 };
 use crate::api::Api;
 use tracing::info;
@@ -36,6 +37,8 @@ pub(super) struct Model {
     /// In the doc's order, so an asset's index in it is its index here.
     rows: Vec<Row>,
     pub stand: Vec<Standing>,
+    /// Each box's id, by its name key: what's unseen of it is kept by that.
+    ids: HashMap<String, String>,
 }
 
 /// What streams were last told of a project.
@@ -46,6 +49,7 @@ pub(super) struct Told {
     making: HashMap<String, Vec<u64>>,
     queue: Vec<api::calcifer::project::Queued>,
     busy: bool,
+    unseen: Unseen,
 }
 
 impl Told {
@@ -53,8 +57,19 @@ impl Told {
         let rendering = project.rendering.lock().expect("rendering lock").clone();
         let busy = *project.walking.lock().expect("walking lock");
         let walk = project.folder.walk_now().unwrap_or_default();
-        Self { model, rendering, making: making_now(&walk), queue: queue(project, &walk), busy }
+        let unseen = project.unseen.lock().expect("unseen lock").clone();
+        Self { model, rendering, making: making_now(&walk), queue: queue(project, &walk), busy, unseen }
     }
+
+    /// What of `row` hasn't been looked at, as this was told.
+    fn unseen_of(&self, row: &Row) -> Vec<u32> {
+        unseen_in(row, self.model.ids.get(&name_key(&row.name)).and_then(|id| self.unseen.get(id)))
+    }
+}
+
+/// Of `numbers`, those `row` still has.
+fn unseen_in(row: &Row, numbers: Option<&std::collections::BTreeSet<u32>>) -> Vec<u32> {
+    numbers.into_iter().flatten().copied().filter(|number| row.prefixes.iter().any(|held| held.number == *number)).collect()
 }
 
 /// `project`'s model as its files are this moment. One read at a time, and any other waits and takes it.
@@ -92,9 +107,10 @@ pub(super) async fn of(api: &Arc<Api>, project: &Arc<Project>) -> Result<Arc<Mod
 fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Result<Model, Error> {
     let folder = &project.folder;
     let lock = folder.lock()?;
-    let (doc, etags) = folder.reading_boxes(|written| {
+    let (doc, etags, ids) = folder.reading_boxes(|written| {
         let etags: HashMap<String, String> = written.boxes.iter().map(|held| (name_key(&held.name), held.etag())).collect();
-        Doc::of(folder, written, &lock).map(|doc| (doc, etags))
+        let ids: HashMap<String, String> = written.boxes.iter().map(|held| (name_key(&held.name), unseen::id_of(held))).collect();
+        Doc::of(folder, written, &lock).map(|doc| (doc, etags, ids))
     })??;
     let stand = doc.stand(&lock);
     let mut warnings = doc.warnings.clone();
@@ -131,15 +147,17 @@ fn read_model(api: &Arc<Api>, project: &Project, rev: String, heard: u64) -> Res
     let failed: std::collections::BTreeSet<&str> = rows.iter().filter_map(|row| Some(row.failure.as_ref()?.message.as_str())).collect();
     warnings.retain(|warning| !failed.contains(warning.message.as_str()));
     let head = ProjectState { covered: None, id: project.id.clone(), code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue: vec![], missing, stale, orphans, busy: false, absent, run_files, cuts, warnings, next, board: None, unsent: vec![], machines: vec![] };
-    Ok(Model { rev, heard, doc, lock, head, rows, stand })
+    Ok(Model { rev, heard, doc, lock, head, rows, stand, ids })
 }
 
 fn cuts_of(doc: &Doc, folder: &Folder, lock: &Lock, stand: &[Standing]) -> Vec<Cut> {
     (0..doc.assets.len()).filter(|&i| doc.tool(i) == Some(Tool::Cut)).map(|i| cut_row(doc, folder, lock, stand, i)).collect()
 }
 
-/// A row with what's going this moment on it. A render moves in the walk's file, which this is never read again for.
-fn overlaid(row: &mut Row, rendering: &BTreeMap<String, f64>, making: &HashMap<String, Vec<u64>>) {
+/// A row with what's going this moment on it, and what of it this person hasn't looked at. A render moves in the walk's file, which this is
+/// never read again for.
+fn overlaid(row: &mut Row, rendering: &BTreeMap<String, f64>, making: &HashMap<String, Vec<u64>>, ids: &HashMap<String, String>, unseen: &Unseen) {
+    row.unseen = unseen_in(row, ids.get(&name_key(&row.name)).and_then(|id| unseen.get(id)));
     row.rendering = rendering.get(&row.name).copied();
     if row.rendering.is_some() {
         row.standing = RowStanding::Making;
@@ -173,8 +191,9 @@ impl Model {
         if assets {
             let rendering = project.rendering.lock().expect("rendering lock");
             let making = making_now(&walk);
+            let unseen = project.unseen.lock().expect("unseen lock");
             state.assets = self.rows.clone();
-            state.assets.iter_mut().for_each(|row| overlaid(row, &rendering, &making));
+            state.assets.iter_mut().for_each(|row| overlaid(row, &rendering, &making, &self.ids, &unseen));
         }
         state
     }
@@ -183,7 +202,7 @@ impl Model {
     pub(super) fn row(&self, project: &Project, i: usize) -> Row {
         let mut row = self.rows[i].clone();
         let making = making_now(&project.folder.walk_now().unwrap_or_default());
-        overlaid(&mut row, &project.rendering.lock().expect("rendering lock"), &making);
+        overlaid(&mut row, &project.rendering.lock().expect("rendering lock"), &making, &self.ids, &project.unseen.lock().expect("unseen lock"));
         row
     }
 }
@@ -228,7 +247,8 @@ fn changed(was: &Told, now: &Told) -> (Vec<String>, Vec<String>) {
     let before: HashMap<&str, &Row> = was.model.rows.iter().map(|row| (row.name.as_str(), row)).collect();
     let after: std::collections::HashSet<&str> = now.model.rows.iter().map(|row| row.name.as_str()).collect();
     let moved = |row: &&Row| before.get(row.name.as_str()).is_none_or(|old| old != row) || was.rendering.get(&row.name) != now.rendering.get(&row.name)
-        || was.making.get(&name_key(&row.name)) != now.making.get(&name_key(&row.name));
+        || was.making.get(&name_key(&row.name)) != now.making.get(&name_key(&row.name))
+        || before.get(row.name.as_str()).is_some_and(|old| was.unseen_of(old) != now.unseen_of(row));
     let assets = now.model.rows.iter().filter(moved).map(|row| row.name.clone()).collect();
     let gone = was.model.rows.iter().filter(|row| !after.contains(row.name.as_str())).map(|row| row.name.clone()).collect();
     (assets, gone)

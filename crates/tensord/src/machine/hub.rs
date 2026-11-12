@@ -104,8 +104,9 @@ impl Hub {
         &self,
         download: Option<types::WorkerDownload>,
         cpu: Option<types::WorkerProbe>,
+        gpu_heat: Option<types::WorkerGpuHeat>,
     ) -> Result<(), Refusal> {
-        let report = types::WorkerSpeedReport { worker_id: self.grant.worker_id.clone(), download, cpu };
+        let report = types::WorkerSpeedReport { worker_id: self.grant.worker_id.clone(), download, cpu, gpu_heat };
         match self.client.report_worker_speed(&report).await {
             Err(::api::hub::Error::Hub { status: 404, .. }) => Ok(()),
             answer => self.heard(answer),

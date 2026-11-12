@@ -9,19 +9,19 @@ import { Bar } from "../common"
 import { workWords } from "../runs/words"
 import { Checks, Spec } from "./RenderHere"
 import { type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
-import { called, gpusWords, stableName, stateWords } from "./words"
+import { called, gpusWords, slowWords, stableName, stateWords } from "./words"
 
-type Mark = "broken" | "up" | "download" | "install" | "work" | "idle"
+type Mark = "broken" | "slow" | "up" | "download" | "install" | "work" | "idle"
 
 /** Red blinks broken and yellow coming up. Up, each thing it does: an arrow glowing while weights arrive, a package while one installs, green
- *  blinking while it runs inference; steady grey with nothing to do. */
+ *  blinking while it runs inference; steady grey with nothing to do. Steady red first while something makes its runs slow (cl-913). */
 function marksOf(machine: Machine, doing: Doing[]): Mark[] {
   if (machine.offline || machine.end_failed || machine.unreachable_since_ms || machine.rental?.unreachable_since_ms) return ["broken"]
   if (machine.state === "booting" || machine.state === "ending") return ["up"]
   if (machine.state !== "ready" && machine.state !== "stopped") return ["broken"]
   const kinds = new Set(doing.map((one) => (one.kind === "run" ? (working(one.run, one.on) ? "work" : "waits") : one.kind)))
-  const marks = (["download", "install", "work"] as const).filter((kind) => kinds.has(kind))
-  return marks.length ? marks : ["idle"]
+  const marks: Mark[] = (["download", "install", "work"] as const).filter((kind) => kinds.has(kind))
+  return [...(slowWords(machine).length ? (["slow"] as const) : []), ...(marks.length ? marks : (["idle"] as const))]
 }
 
 function MarkOf({ mark }: { mark: Mark }) {
@@ -121,6 +121,11 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
           </Link>
         </Checks>
       </header>
+      {slowWords(machine).map((line) => (
+        <p className="warn slow" key={line}>
+          {line}
+        </p>
+      ))}
       {doing.length ? (
         <ul>
           {doing.map((one) => (
@@ -165,8 +170,9 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
               type="button"
               className={`mtab ${open?.name === machine.name ? "on" : ""} ${chosen.includes(machine.name) ? "render-here" : ""}`}
               data-machine={machine.name}
+              data-slow={slowWords(machine).length ? "" : undefined}
               aria-expanded={open?.name === machine.name}
-              title={`${gpusWords(machine)}, ${stateWords(machine, Date.now())}`}
+              title={[`${gpusWords(machine)}, ${stateWords(machine, Date.now())}`, ...slowWords(machine)].join("\n")}
               onClick={(event) => {
                 const chip = event.currentTarget
                 setOpen((now) => (now?.name === machine.name ? null : { name: machine.name, chip }))

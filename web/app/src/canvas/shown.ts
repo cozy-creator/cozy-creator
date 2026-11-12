@@ -115,10 +115,12 @@ export function refusal(tool: Tool | undefined, view: ElementView | undefined): 
   return `${toolName(tool!)} takes ${takes.map((one) => SEVERAL[one]).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
 }
 
-/** The take being made that it looks at: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made, and its number once it's landed. */
+/** The take being made that it looks at: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made, and its number once it's landed.
+ *  At rest, an approved box looks at what's approved, and what's made lands beside it, unseen (cl-928). */
 export function watched(view: ElementView): { run?: number; number?: number } | undefined {
   const { watchRun, watchFrom: from } = view
   if (watchRun === undefined && from === undefined) return undefined
+  if (!view.here && view.asset?.pinned) return undefined
   const versions = view.asset?.prefixes ?? []
   const newer = (run?: number | null) => (run ?? 0) > (from ?? 0)
   const run = watchRun ?? Math.max(0, ...(view.asset?.making ?? []).filter(newer), ...versions.filter((held) => newer(held.run)).map((held) => held.run ?? 0))

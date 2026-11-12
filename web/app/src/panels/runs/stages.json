@@ -62,6 +62,7 @@
     { "match": "fp8.rowwise-{component}", "says": "Quantizing {component} to FP8", "phase": "working" },
     { "match": "nvfp4-{component}", "says": "Quantizing {component} to NVFP4", "phase": "working" },
 
+    { "match": "loading the models", "says": "Loading the models", "phase": "loading" },
     { "match": "loading {what}", "says": "Loading {what}", "phase": "loading", "counts": "bytes" },
     { "match": "compiling {what}", "says": "Compiling {what}", "phase": "compiling", "counts": "item" },
     { "match": "copying {set} kernels", "says": "Copying {set} kernels", "phase": "compiling" },

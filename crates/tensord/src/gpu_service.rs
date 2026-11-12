@@ -117,6 +117,9 @@ pub(crate) struct GpuConfig {
     /// its kernels with them at start, before any package is installed (`image_kernel_boot`).
     #[serde(default)]
     pub image_kernels: Option<ImageKernels>,
+    /// Tests only: recorded GPU readings every call reads in place of its GPUs' own (`machine.gpu_samples`, cl-913).
+    #[serde(default)]
+    pub gpu_samples: Option<PathBuf>,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct ImageKernels {
@@ -509,6 +512,8 @@ struct Session {
     /// Its TensorFS has varena v2, whose cores share each GPU through its ledger. An older one
     /// is asked for nothing and asks for nothing: TensorD makes its room (`room_outside_ledger`).
     ledger: bool,
+    /// Why its Runtime serves its GPUs none of its native kernels, as its Start said (cl-913); empty: it does.
+    kernels_absent: String,
 }
 impl Session {
     fn lane(&self) -> std::ops::Range<usize> {
@@ -3399,6 +3404,7 @@ impl Pool {
             used: Instant::now(),
             launch,
             serving: id,
+            kernels_absent: String::new(),
         })
     }
 
@@ -3423,7 +3429,17 @@ impl Pool {
         if !session.ledger && degree > 0 {
             self.room_outside_ledger(session.lane(), !session.loaded.contains_key(&construction));
         }
-        let driver = platform::gpu::Peak::watch(gpus.iter().map(|d| d.entry.clone()).collect());
+        // Its GPUs' readings (recorded ones, under `machine.gpu_samples`): one held back for heat most of its load warns as it goes.
+        let samples = self.config.gpu_samples.as_deref().and_then(crate::slowed::samples);
+        let replayed = samples.is_some();
+        let hot: platform::gpu::Hot = {
+            let (engine, id) = (engine.clone(), id.to_owned());
+            Box::new(move |used: &platform::gpu::Used| crate::slowed::ran(&engine, &id, std::slice::from_ref(used), replayed, false))
+        };
+        let driver = match samples {
+            Some(samples) => platform::gpu::Peak::replay(samples, Some(hot)),
+            None => platform::gpu::Peak::watch(gpus.iter().map(|d| d.entry.clone()).collect(), Some(hot)),
+        };
         // A call begins: the host is looked at before it grows.
         self.nudge_host();
         let retained = session.started;
@@ -3484,6 +3500,10 @@ impl Pool {
                 &mut callbacks,
             )?)?;
             session.launch.start_ms = starting.elapsed().as_secs_f64() * 1e3;
+            session.kernels_absent.clone_from(&started.kernels_absent);
+            if degree > 0 {
+                crate::slowed::started(&started.kernels_absent);
+            }
             session.launch.start =
                 serde_json::from_value(started.stages.clone()).unwrap_or_default();
             if session.launch.mode == "spawn" {
@@ -3656,6 +3676,9 @@ impl Pool {
         let operation = crate::call_memo::operation(&held.record, &record.invocation.module, api::interface::invocable(&entry))
             .map(|(operation, _)| operation)
             .unwrap_or_default();
+        if degree > 0 && !session.kernels_absent.is_empty() {
+            crate::slowed::without_kernels(engine, id, &session.kernels_absent);
+        }
         session.executor.codec().prestart();
         let invoking = session.executor.lookahead().invoking(id);
         engine.watch_previews(id, session.executor.previews(id));
@@ -3703,7 +3726,9 @@ impl Pool {
         dispatched.record(&reply, &self.config.inventory);
         session.loaded.insert(construction.clone(), Level::Gpu);
         self.note_decisions(id, session.executor.birth.pid, &lane, &reply);
-        record_measurements(engine, id, &plan, &reply, &driver.map(platform::gpu::Peak::end).unwrap_or_default());
+        let used = driver.map(platform::gpu::Peak::end).unwrap_or_default();
+        record_measurements(engine, id, &plan, &reply, &used);
+        crate::slowed::ran(engine, id, &used, replayed, true);
         phase(serde_json::json!({"phase": "measurements_recorded"}));
         if reply.attention_applied {
             if let Err(error) = engine.apply_attention(id) {

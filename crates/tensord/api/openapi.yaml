@@ -604,6 +604,24 @@ components:
           description: The lane, as machine GPU indices.
         state: {type: string}
         width: {type: integer, format: int32, minimum: 0}
+    GpuHeat:
+      type: object
+      description: >-
+        A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that
+        run's readings measured, until a later loaded run there runs cool (cl-913).
+      properties:
+        at_unix_ms: {type: integer, format: int64}
+        busy_ms: {type: integer, format: int64, description: Its busy time those readings cover., minimum: 0}
+        gpu: {type: integer, format: int32, minimum: 0}
+        replayed:
+          type: boolean
+          description: Its readings were recorded ones a test replays (`machine.gpu_samples`), not this GPU's own.
+        run: {type: string, description: 'The run it was measured in, by this machine''s id.'}
+        share: {type: number, format: float, description: 'The share of its busy readings under a heat limit, 0 to 1.'}
+        sm_mhz_limit: {type: integer, format: int32, minimum: 0}
+        sm_mhz_mean: {type: integer, format: int32, minimum: 0}
+        temperature_max_c: {type: integer, format: int32, minimum: 0}
+        throttles: {type: array, items: {type: string}, description: 'The driver''s limits it saw (`hw_thermal`, `power_cap`, ...).'}
     GpuMemory:
       type: object
       description: A GPU's page accounting, as its memory manager holds it now.
@@ -715,7 +733,14 @@ components:
       properties: {manifest: {type: string, description: '`sha256:<hex>` of the manifest object.'}}
     LogLine:
       type: object
-      properties: {level: {type: string}, text: {type: string}}
+      properties:
+        code:
+          type: string
+          description: >-
+            A warning the machine says of the run itself, by its stable code (`gpu_throttled`,
+            `runtime_without_kernels`): its controller keeps it among the run's warnings (cl-913). Empty: a line only.
+        level: {type: string}
+        text: {type: string}
     LogLines:
       type: object
       description: 'Whole lines of a machine log, as `GET /v1/logs/{name}` streams them (`event: lines`).'
@@ -1150,6 +1175,12 @@ components:
           items: {$ref: '#/components/schemas/Environment'}
           description: The caller's held package installations.
         gpus: {type: array, items: {$ref: '#/components/schemas/Gpu'}, description: Measured at boot.}
+        heat:
+          type: array
+          items: {$ref: '#/components/schemas/GpuHeat'}
+          description: >-
+            Its GPUs the driver held back for heat most of their last loaded run (cl-913): the machine is hot, and its
+            runs slow.
         hubs: {type: array, items: {$ref: '#/components/schemas/Hub'}}
         idle_deadline_unix_ms:
           type: integer
@@ -1181,6 +1212,11 @@ components:
           items: {$ref: '#/components/schemas/RunState'}
           description: The caller's live runs.
         runtime: {type: string, description: The executors' cozy-runtime.}
+        runtime_kernels:
+          type: string
+          description: >-
+            Why the executors' Runtime serves its GPUs none of its native kernels (`this cozy-runtime wheel carries no
+            kernels (the pure wheel)`), as its latest executor said; empty: it does, or none has started.
         started_at_unix_ms: {type: integer, format: int64}
         stuck:
           type: array

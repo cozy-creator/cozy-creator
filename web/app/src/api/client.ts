@@ -15,6 +15,8 @@ import type {
   CanvasPatched,
   Card,
   Code,
+  Copied,
+  Copies,
   Ended,
   ErrorBody,
   Families,
@@ -512,6 +514,11 @@ export class Client {
     return this.write("POST", `${project(id)}/assets`, body, key, write)
   }
 
+  /** Boxes copied, each with its versions: one step of the history. */
+  copies(id: string, key: string, body: Copies, write: Write = {}): Promise<Copied> {
+    return this.write("POST", `${project(id)}/copies`, body, key, write)
+  }
+
   /** These inputs set. With `read`, only if its own lines are still what that read. */
   /** The fields it names, over whatever they hold: the rest stay as anyone left them. */
   patchAsset(id: string, name: string, body: AssetPatch, write: Write = {}): Promise<AssetPatched> {
@@ -535,6 +542,12 @@ export class Client {
   /** What a version's main file says of itself, whole: `orbit` turns a video. `{}` clears it. */
   patchVersion(id: string, name: string, number: number, metadata: Record<string, unknown>, write: Write = {}): Promise<VersionPatched> {
     return this.write("PATCH", `${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}`, { metadata }, undefined, write)
+  }
+
+  /** This person looked at it: it leaves the box's `unseen`, in Calcifer's own state, never the project's (cl-928). No key: it's no edit
+   *  of the project, and saying it twice is saying it once. */
+  async seen(id: string, name: string, number: number, write: Write = {}): Promise<void> {
+    await this.send(`${project(id)}/assets/${encodeURIComponent(name)}/versions/${number}/seen`, { method: "POST" }, { once: write.once })
   }
 
   /** The project's history, newest first. */

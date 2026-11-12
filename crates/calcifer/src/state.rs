@@ -1,8 +1,8 @@
 //! Calcifer's own state beside its runs, as tables of `state.db` (cl-818): the project folders it opened, browser sessions, your tool
-//! list, Render here, what each model header said, and an ask's step after its run. Each change is one transaction; nothing is
-//! rewritten whole. The JSON files an earlier Calcifer kept these in are imported once, at open, and deleted ([`import`]).
+//! list, Render here, what each model header said, an ask's step after its run, and the takes you haven't looked at. Each change is one
+//! transaction; nothing is rewritten whole. The JSON files an earlier Calcifer kept these in are imported once, at open, and deleted ([`import`]).
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io::ErrorKind,
     path::{Path, PathBuf},
 };
@@ -60,7 +60,13 @@ pub(crate) const TABLES: &str = "
     CREATE TABLE IF NOT EXISTS after_steps (
         key_sha256 TEXT PRIMARY KEY,
         step TEXT NOT NULL
-    ) STRICT;";
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS unseen (
+        project TEXT NOT NULL,
+        box TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        PRIMARY KEY (project, box, number)
+    ) STRICT, WITHOUT ROWID;";
 
 /// A project Calcifer opened, by its id: its name, and where it last was.
 #[derive(Clone, Debug)]
@@ -362,6 +368,30 @@ impl Store {
     pub(crate) fn forget_after(&self, key: &str) -> Result<()> {
         self.write(|tx| {
             tx.execute("DELETE FROM after_steps WHERE key_sha256 = ?1", [digest(key)])?;
+            Ok(())
+        })
+    }
+
+    /// The versions of `project`'s boxes this person hasn't looked at (cl-928), by box id.
+    pub(crate) fn unseen(&self, project: &str) -> Result<BTreeMap<String, BTreeSet<u32>>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT box, number FROM unseen WHERE project = ?1")?;
+            let mut unseen: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+            for row in statement.query_map([project], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))? {
+                let (held, number) = row?;
+                unseen.entry(held).or_default().insert(number);
+            }
+            Ok(unseen)
+        })
+    }
+
+    /// Version `number` of box `held` landed unseen, or with `seen`, was looked at.
+    pub(crate) fn keep_unseen(&self, project: &str, held: &str, number: u32, seen: bool) -> Result<()> {
+        self.write(|tx| {
+            match seen {
+                true => tx.execute("DELETE FROM unseen WHERE project = ?1 AND box = ?2 AND number = ?3", params![project, held, number])?,
+                false => tx.execute("INSERT OR IGNORE INTO unseen (project, box, number) VALUES (?1, ?2, ?3)", params![project, held, number])?,
+            };
             Ok(())
         })
     }

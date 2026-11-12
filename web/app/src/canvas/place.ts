@@ -6,10 +6,11 @@ import type { Asset, Imported, Card, Tool, Opened } from "../api/calcifer"
 import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage, UNDO_MS } from "./CanvasStore"
 import { startingFields, TEXT_TOOL } from "./controls"
 import type { BasicNodeKind, Operation } from "./palette"
-import type { CopiedBox } from "./copy"
-import { asName, stemName } from "./names"
+import { type CopiedBox, copyOf } from "./copy"
+import { asName, nameKey, stemName } from "./names"
 import { pictureSize } from "./pictureSize"
 import { heightFor, underOf } from "./shown"
+import { mentionsMoved } from "./text"
 
 const GAP = 32
 /** How long a drop waits for its pictures to decode before it's placed anyway, each then drawn as it's ready. */
@@ -97,24 +98,20 @@ export class Placer {
   }
 
   /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says, `fields` with what it starts with
-   *  (a checkpoint dropped is on it). A tool's box opens on its words, the caret in them; a text box takes the keys where it stands, and an Edit stays shut. */
+   *  (a checkpoint dropped is on it). Dropping keeps the current canvas interaction mode. */
   addTool(tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>, operation?: Operation) {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const timeline = tool.fields.some((field) => field.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
     const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
-    this.store.focusing = name
     if (operation) this.store.patch(name, { operation })
-    if (!text && !timeline) this.store.openHere(name)
   }
 
   /** Basic media nodes retain their type before a model or file is assigned. */
   addNode(kind: BasicNodeKind, point: { x: number; y: number }) {
     if (kind === "text") return this.addTool(TEXT_TOOL, point)
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
-    const name = this.box(kind, { kind, fields: { node_kind: kind } }, at, `Couldn't create ${kind}`)
-    this.store.focusing = name
-    this.store.openHere(name)
+    this.box(kind, { kind, fields: { node_kind: kind } }, at, `Couldn't create ${kind}`)
   }
 
   /** An asset that holds these, there at once, with nothing made yet. */
@@ -126,19 +123,64 @@ export class Placer {
     return this.store.place(wanted, { asset: row }, at, async (clear, write, pushes) => this.client.newAsset(await this.project(), key, { ...body, at: clear, moves: pushes.moves, placed: pushes.placed }, write), (error) => say(failed, error), undefined, edit)
   }
 
-  /** Boxes copied, laid out as they were and together clear of what's there, around a point. All of them are there at once, in the queue like anything else, and a note offers Undo. */
-  paste(boxes: CopiedBox[], point: { x: number; y: number }) {
+  /**
+   * Boxes copied, laid out as they were and together clear of what's there: their middle at `point`, else beside where they stood. A box of this project
+   * is copied with its versions, all of them by one ask; one from elsewhere, or gone since, is made again. All of them are there at once, in the queue like
+   * anything else, and a note offers Undo. The names they're placed under.
+   */
+  paste(boxes: CopiedBox[], point: { x: number; y: number } | null, verb = "Pasted"): string[] {
     const left = Math.min(...boxes.map(({ at }) => at.x))
     const top = Math.min(...boxes.map(({ at }) => at.y))
     const w = Math.max(...boxes.map(({ at }) => at.x + at.w)) - left
     const h = Math.max(...boxes.map(({ at }) => at.y + at.h)) - top
-    const edit = this.store.newStep(`Pasted ${boxes.length === 1 ? "a box" : `${boxes.length} boxes`}`)
-    const spot = this.store.clearFor({ x: Math.round(point.x - w / 2), y: Math.round(point.y - h / 2), w, h }, edit)
-    const names = boxes.map((box) => {
-      const at = { x: spot.x + box.at.x - left, y: spot.y + box.at.y - top, w: box.at.w }
-      return "file" in box ? this.file(box.file, at, edit) : this.box(box.made.name, box.made, at, `Couldn't paste ${box.made.name}`, edit)
+    const middle = point ?? { x: left + w * 1.5 + GAP, y: top + h / 2 }
+    const edit = this.store.newStep(`${verb} ${boxes.length === 1 ? "a box" : `${boxes.length} boxes`}`)
+    const spot = this.store.clearFor({ x: Math.round(middle.x - w / 2), y: Math.round(middle.y - h / 2), w, h }, edit)
+    const at = (box: CopiedBox) => ({ x: Math.round(spot.x + box.at.x - left), y: Math.round(spot.y + box.at.y - top), w: Math.round(box.at.w) })
+    const here = boxes.flatMap((box) => ("made" in box && box.from && this.store.get(box.from)?.asset ? [{ from: box.from, at: at(box) }] : []))
+    const names = here.length ? this.copies(here, edit) : []
+    for (const box of boxes) {
+      if ("file" in box) names.push(this.file(box.file, at(box), edit))
+      else if (!here.some(({ from }) => from === box.from)) names.push(this.box(box.made.name, box.made, at(box), `Couldn't paste ${box.made.name}`, edit))
+    }
+    this.pasted(names, edit, verb)
+    return names
+  }
+
+  /** Each of `names` again beside where they stand, laid out as they are: Ctrl+D, and Duplicate on a box's menu. */
+  duplicate(names: string[]): string[] {
+    const boxes = names.flatMap((name) => copyOf(this.store, name, true) ?? [])
+    return boxes.length ? this.paste(boxes, null, "Duplicated") : []
+  }
+
+  /**
+   * Boxes of this project copied, each at its row, by one ask: one transaction and one entry of the history, their versions with them and no bytes copied.
+   * Each shows its box's at once, a mention of another copied with it naming that one's copy, as Calcifer writes it.
+   */
+  private copies(boxes: { from: string; at: Card }[], edit: string): string[] {
+    const key = `copies-${crypto.randomUUID()}`
+    const placing = boxes.map(({ from, at }) => {
+      const view = this.store.get(from)!
+      const asset: Asset = { ...view.asset!, fields: { ...view.asset!.fields, ...view.sent, ...view.drafts }, etag: undefined, making: undefined, rendering: undefined }
+      return { wanted: asset.name, view: { asset, aspect: view.aspect, operation: view.operation, viewed: view.viewed }, dropped: at }
     })
-    this.pasted(names, edit)
+    const said = boxes.length === 1 ? boxes[0].from : `${boxes.length} boxes`
+    const names = this.store.placeAll(
+      placing,
+      async (ats, write, pushes) => {
+        const asked = boxes.map(({ from }, i) => ({ from: this.store.servedName(from), at: ats[i] }))
+        return this.client.copies(await this.project(), key, { boxes: asked, moves: pushes.moves, placed: pushes.placed }, write)
+      },
+      (error) => say(`Couldn't copy ${said}`, error),
+      undefined,
+      edit,
+    )
+    const moved = new Map(boxes.map(({ from }, i) => [nameKey(from), names[i]]))
+    for (const name of names) {
+      const asset = this.store.get(name)?.asset
+      if (asset) this.store.patch(name, { asset: { ...asset, fields: mentionsMoved(asset.fields, moved) as Asset["fields"] } })
+    }
+    return names
   }
 
   /** Files from the system's clipboard: each a box near a point, named by what it's called there, and Undo. */
@@ -156,8 +198,8 @@ export class Placer {
     )
   }
 
-  private pasted(names: string[], edit: string) {
-    say(`Pasted ${names.length === 1 ? names[0] : `${names.length} assets`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) }, ms: UNDO_MS })
+  private pasted(names: string[], edit: string, verb = "Pasted") {
+    say(`${verb} ${names.length === 1 ? names[0] : `${names.length} assets`}`, undefined, { action: { label: "Undo", run: () => this.store.undo({ edit }) }, ms: UNDO_MS })
   }
 
   /** Files dropped on a box with no tool: each its next version, with its slot in the row until it's there. */

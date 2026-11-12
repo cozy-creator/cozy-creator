@@ -1,0 +1,3 @@
+A render's progress shows on its own box only. A box whose render waits for a box it mentions says `Waiting for <Azul_3>`, with none of that render's stage or numbers, and shows its own preparation instead, on the machine it will run on: `rabou` over `Waiting for <Azul_3> - Preparing: downloading its weights - 3.1GB / 23GB`, then `- Ready`.
+
+That preparation starts as soon as the render is asked. Of a project's several machines, a job not ready yet is quoted on its own, beginning no sooner than what it waits for ends, and the soonest finish is asked for its code and weights at once; before, nothing was fetched until it was ready. A machine whose software restarted (an update) is asked again.

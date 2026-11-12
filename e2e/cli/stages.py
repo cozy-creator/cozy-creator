@@ -3,7 +3,7 @@
 `python stages.py <run.ndjson> [stages.json]`, on a run followed with `cozy --json run`: every part of every stage it went through is
 in the map; a count the map calls steps is only where a stage denoises (`phase: working`); its executor's start or load is said before its work;
 an install says its steps in words (`…: creating its environment (2 of 5)`); a stage the map counts in bytes
-had bytes. Prints the run's phases in order, in the page's words, with when each began. Exits 1 on the first list of problems.
+had bytes; while bytes move at a known rate, it has a time left (at least theirs). Prints the run's phases in order, in the page's words, with when each began. Exits 1 on the first list of problems.
 """
 
 import json
@@ -28,7 +28,10 @@ class Progress(TypedDict, total=False):
 
     stage: str
     at_ms: int
+    bytes_done: int
     bytes_total: int
+    bytes_per_s: float | None
+    eta_s: int | None
 
 MAP = Path(__file__).resolve().parents[2] / "web/app/src/panels/runs/stages.json"
 
@@ -100,6 +103,9 @@ def main() -> int:
         entry = said(entries, re.split(r"\s+/\s+", each["stage"].strip())[-1])
         if entry and entry.get("counts") == "bytes" and entry.get("phase") == "downloading" and not each.get("bytes_total"):
             problems.append(f"{each['stage']!r} counts bytes and said none")
+        moving = (each.get("bytes_per_s") or 0) >= 1 and each.get("bytes_done", 0) < each.get("bytes_total", 0)
+        if moving and each.get("eta_s") is None:
+            problems.append(f"{each['stage']!r}: bytes move at a known rate and it has no time left")
     first = phases[0][0] or 0
     for at, phase, words in phases:
         print(f"  {(at - first) / 1000 if at else 0:7.1f}s  {phase or '?':<11}  {words}")

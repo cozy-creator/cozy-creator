@@ -14,11 +14,12 @@ import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
-import { fieldsOf, snapped } from "./controls"
+import { fieldsOf, shapesOf, snapped } from "./controls"
 import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
+import { VideoScrub } from "./VideoScrub"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
 import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
@@ -63,6 +64,12 @@ function dotOf(view: ElementView): string {
   if (asset?.failure && !(asset.pinned && faceOf(view) === "media")) return "s-failed"
   if (asset && shownOf(view)?.absent) return "s-missing"
   return DOTS[asset?.standing ?? "current"] ?? "s-missing"
+}
+
+/** Takes that landed beside an approved one and haven't been looked at (cl-928): a green dot left of its name. */
+function UnseenDot({ count, noun }: { count: number; noun: string }) {
+  const said = `${count} new ${noun}${count === 1 ? "" : "s"} you haven't looked at`
+  return <span className="unseen-dot" role="img" aria-label={said} title={said} />
 }
 
 /** A button on a card does its one thing, and a field takes the click: neither selects it. */
@@ -150,6 +157,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
       return
     }
     if (writes) return store.writeNext(name)
+    store.focusFit?.()
     store.focusing = name
     store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watchRun: undefined, watchFrom: undefined })
   }
@@ -198,7 +206,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             className={`take ${shown?.number === version.number ? "on" : ""} ${asset.pinned && version.number === asset.approved ? "approved" : ""} ${view.slid === version.number ? "fresh" : ""}`}
             aria-label={`${asset.noun} ${version.number}`}
             aria-pressed={shown?.number === version.number}
-            title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
+            title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : "", asset.unseen?.includes(version.number) ? "not looked at yet" : ""].filter(Boolean).join(", ")}
             data-take={version.number}
             style={asset.kind === "image" ? { height: 100, width: Math.min(220, 100 * (version.main?.width && version.main.height ? version.main.width / version.main.height : 1.5)), aspectRatio: "auto" } : undefined}
             onClick={() => pick(version.number)}
@@ -213,6 +221,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             {version.main && !version.main.absent ? (
               <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />
             ) : null}
+            {asset.unseen?.includes(version.number) && <span className="unseen-dot take-unseen" role="img" aria-label="Not looked at yet" />}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
@@ -463,8 +472,10 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
   const pulled = useRef<{ w: number; h: number; shape?: string } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
   const label = nearest ?? override ?? (dynamic ? "Auto" : defaultShape)
+  // Pulled, it snaps to the nearest ratio its tool makes: its own list, else the usual ones within its bounds; never an arbitrary A:B (Paul, 11-12).
   const shapeFor = (width: number, height: number) => {
-    if (ratios.length) return snapped(width / height, ratios)
+    const allowed = ratios.length ? ratios : control ? shapesOf(control) : []
+    if (allowed.length) return snapped(width / height, allowed)
     let w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height))
     const ratio = Math.min(control?.max ?? Infinity, Math.max(control?.min ?? 0, w / h))
     if (ratio !== w / h) { w = Math.round(ratio * 1_000_000); h = 1_000_000 }
@@ -502,7 +513,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
       const size = pulled.current
       pulled.current = null
       setNearest(null)
-      if (size && control) store.setShape(name, control, focused ? start.w : size.w, size.shape ?? shapeFor(size.w, size.h))
+      if (size && control) store.setShape(name, control, focused ? undefined : size.w, size.shape ?? shapeFor(size.w, size.h))
       else if (size) store.setWidth(name, size.w)
       if (owner && store.inPlace === owner) owner.pulled = false
       if (focused) { focusResize?.end(); return }
@@ -571,8 +582,8 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const field = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "shape")
   if (!field || view.shape) return null
   const held = store.valueOf(name, field.field)
-  const preset = typeof field.default === "string" && ratioOf(field.default) ? field.default : undefined
-  const fallback = String(preset ?? field.ratios?.[0] ?? "1:1")
+  const fixedRatio = field.ratios?.find((ratio): ratio is string => typeof ratio === "string" && ratioOf(ratio) !== undefined)
+  const fallback = typeof field.default === "string" && ratioOf(field.default) ? field.default : fixedRatio ?? "1:1"
   if (typeof held !== "string" || !ratioOf(held)) return <span className="ratio-rest">{field.auto ? "Auto" : fallback}</span>
   return (
     <span className="ratio-rest">
@@ -596,6 +607,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
   const tools = useSignal(store.tools)
+  const namePress = useRef<{ x: number; y: number } | null>(null)
   const self = useRef<HTMLDivElement>(null)
   const cancel = useCallback(() => {
     if (store.get(name)?.placing) store.cancel(store.resolveName(name))
@@ -718,6 +730,12 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       if (width) card.style.setProperty("width", width, priority)
     }
   }, [here, focused, name, store, flow, owner])
+  // What it shows has been looked at: its dot goes (cl-928).
+  const showing = view ? shownOf(view)?.number : undefined
+  const unseen = view?.asset?.unseen
+  useEffect(() => {
+    if (showing !== undefined && unseen?.includes(showing)) store.markSeen(name, showing)
+  }, [store, name, showing, unseen])
   if (!view) return null
 
   const asset = view.asset
@@ -736,6 +754,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   // An approved box says nothing but what's asked of it: what's wrong with its words is on its controls.
   // Looking at a take, nothing of its tool: its warnings and state are the next take's too.
   const warned = view.warnings?.length && !(asset?.pinned && canFlip && face === "media") && !looking
+  // At rest, a render on its way breathes around its edge (cl-928): its face says how far, in it.
+  const rendering = !here && !focused && Boolean(asset?.standing === "making" || view.queued || view.asked !== undefined)
   const firstImage = versions.find((version) => version.number === 1)?.main ?? versions[0]?.main
   const originalAspect = firstImage?.width && firstImage.height ? firstImage.width / firstImage.height : aspectOf(view)
   const imageHeight = width / originalAspect
@@ -746,7 +766,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   return (
     <div
       ref={self}
-      className={`card ${focused ? "focus-card" : ""} ${parameterTool ? "focus-parameter-tool focus-new-video" : ""} ${hasFocusMedia ? "has-focus-media" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${focused ? "focus-card" : ""} ${parameterTool ? "focus-parameter-tool focus-new-video" : ""} ${hasFocusMedia ? "has-focus-media" : ""} ${view.here && !view.hereWords && view.asset?.pinned && !shownOf(view)?.absent && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${rendering ? "rendering" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
       style={style}
@@ -757,12 +777,20 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
     >
       {!focused && (
       <div className="head">
+        {view.draft === undefined && unseen?.length ? <UnseenDot count={unseen.length} noun={asset?.noun ?? "take"} /> : null}
         {view.draft !== undefined ? (
           <NameField name={name} draft={view.draft} onCancel={cancel} />
         ) : (
           <span
             className="nm"
             title={view.name}
+            onPointerDown={(event) => { namePress.current = { x: event.clientX, y: event.clientY } }}
+            onClick={(event) => {
+              if (event.shiftKey || event.metaKey || event.ctrlKey) return
+              event.stopPropagation()
+              const from = namePress.current
+              if (from && Math.hypot(event.clientX - from.x, event.clientY - from.y) < 5) store.openName(name)
+            }}
           >
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
@@ -829,6 +857,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           {asset && !view.placing && !lite && (!focused || view.hereWords) && <Corner name={name} view={view} width={width} focused={focused} />}
         </Media>
       )}</FocusFrame>
+      {rendering && <span className="render-wave" aria-hidden="true" />}
+      {focused && asset?.kind === "video" && !asset.timeline && !editing && <VideoScrub name={name} view={view} />}
       {here && !lite && asset && (asset.kind === "image" || (asset.kind === "video" && !asset.timeline && !editing)) && !view.placing && <ImageVersions name={name} view={view} width={width} />}
       {!lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
@@ -848,7 +878,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
               {asset.kind !== "image" && !asset.timeline && <OrbitToggle view={view} name={name} />}
               {asset.kind !== "image" && !editing && <Bar view={view} name={name} />}
               {/* Looking at a take an image tool made, only its description: its tool and words are the next take's, behind its +. */}
-              {!looking && (asset.kind !== "image" || editing) && <AssetEdit name={name} view={view} editing={editing} prominent={parameterTool} head={asset.kind !== "image" ? <Stack name={name} /> : undefined} actions={editing && <RenderButton name={name} view={view} />} />}
+              {/* With no tool, a picture or a video asks nothing and has nothing to render (Paul, 11-12). */}
+              {!looking && (asset.kind !== "image" || editing) && Boolean(asset.tool) && <AssetEdit name={name} view={view} editing={editing} prominent={parameterTool} head={asset.kind !== "image" ? <Stack name={name} /> : undefined} actions={editing && <RenderButton name={name} view={view} />} />}
               {asset.kind !== "image" && !view.hereWords && <TakeName view={view} />}
               {view.warned && warned ? (
                 <div className="warned-lines">

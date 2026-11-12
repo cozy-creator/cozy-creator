@@ -31,7 +31,7 @@ import { Card } from "./Card"
 import { CanvasStoreProvider, useCanvasStore, useElement } from "./context"
 import { carriedAt, LET_GO, type Load, type LetGo } from "./carry"
 import { boxAt, carriedOver, letGo } from "./checkpoints"
-import { copyBoxes, ownCopy } from "./copy"
+import { copyBoxes, copyOf, middleOf, ownCopy } from "./copy"
 import { EntityCard } from "./EntityCard"
 import { FocusedViewport } from "./FocusedViewport"
 import { HistoryControls } from "./HistoryControls"
@@ -66,6 +66,7 @@ const HERE_MS = 260
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
 const pointOf = (event: Pointing) => ("clientX" in event ? event : event.changedTouches[0])
+const altHeld = (event: Pointing) => event.altKey
 
 const ACCEPT = "image/*,video/*,audio/*"
 const MULTI = ["Shift", "Meta", "Control"]
@@ -124,6 +125,7 @@ function ProjectSync({ id }: { id: string }) {
     const unsubscribe = stream.subscribe((event) => {
       if (event.type === "canvas" && event.id === id) store.applyRows(event.cards, event.seq)
       if (event.type === "history" && event.id === id) store.history.read()
+      if (event.type === "ahead.updated" && event.project === id) store.applyAhead(event.ahead)
       if (event.type === "resync" || event.type === "hello") {
         store.fellBehind()
         readHistory()
@@ -617,6 +619,19 @@ function Canvas({
     [store],
   )
 
+  /** The boxes selected. */
+  const chosen = useCallback(() => flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name), [flow])
+  /** Only these selected: what was just copied, so Ctrl+D goes on from them as in Figma. */
+  const selectOnly = useCallback(
+    (names: string[]) => {
+      if (!names.length) return
+      const wanted = new Set(names)
+      flow.setNodes((nodes) => nodes.map((node) => (Boolean(node.selected) === wanted.has(node.data.name) ? node : { ...node, selected: wanted.has(node.data.name) })))
+    },
+    [flow],
+  )
+  store.duplicate = (names) => selectOnly(placer.duplicate(names))
+
   const draggedEls = (nodes: ElementNode[]) => nodes.flatMap((node) => document.querySelector(`.react-flow__node[data-id="${CSS.escape(node.id)}"]`) ?? [])
 
   // While something's carried, what could take it says so, with no render of anything it isn't.
@@ -631,6 +646,13 @@ function Canvas({
   const dragging = useCallback(
     (event: Pointing, nodes: ElementNode[]) => {
       const { clientX, clientY } = pointOf(event)
+      // Alt or Option held, it's a copy that's carried: it goes where it's let go, into nothing.
+      const copying = altHeld(event)
+      stage.current?.toggleAttribute("data-copying", copying)
+      if (copying) {
+        stage.current?.removeAttribute("data-offering")
+        return store.setHot(null)
+      }
       const names = nodes.map((node) => node.data.name)
       const { target, why } = store.offered(clientX, clientY, names, draggedEls(nodes))
       if (!why) target?.over(names, clientX, clientY)
@@ -644,6 +666,16 @@ function Canvas({
       if (!nodes.some((node) => store.isDragging(node.data.name))) return
       carrying(false)
       stage.current?.removeAttribute("data-offering")
+      stage.current?.removeAttribute("data-copying")
+      // Let go with Alt or Option held, copies land there and what was carried goes back where it was, as in Figma.
+      if (altHeld(event)) {
+        const copies = nodes.flatMap((node) => (node.type === "element" ? (copyOf(store, node.data.name, true) ?? []) : []))
+        store.refusing.set(null)
+        store.setHot(null)
+        store.dragDropped(nodes)
+        if (copies.length) selectOnly(placer.paste(copies, middleOf(copies), "Copied"))
+        return
+      }
       const { clientX, clientY } = pointOf(event)
       const { target, why } = store.offered(clientX, clientY, nodes.map((node) => node.data.name), draggedEls(nodes))
       store.refusing.set(null)
@@ -656,7 +688,7 @@ function Canvas({
       target.drop(nodes.map((node) => node.data.name), clientX, clientY)
       store.setHot(null)
     },
-    [store],
+    [store, placer, selectOnly],
   )
 
   /** On a box's picture, the arrows walk its row one take at a time, and Enter approves the one showing, or unapproves it. */
@@ -716,6 +748,10 @@ function Canvas({
         event.preventDefault()
         if (here) leaveHere()
         store.remove(names)
+      } else if (command && !event.altKey && !event.shiftKey && letter === "d") {
+        // Duplicate, as in Figma, and never the browser's bookmark: what's selected, else the box worked on.
+        event.preventDefault()
+        store.duplicate(here ? [here] : chosen())
       } else if (command && event.key.toLowerCase() === "a") {
         event.preventDefault()
         flow.setNodes((nodes) => nodes.map((node) => ({ ...node, selected: true })))
@@ -736,7 +772,7 @@ function Canvas({
     }
     window.addEventListener("keydown", key)
     return () => window.removeEventListener("keydown", key)
-  }, [active, flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes])
+  }, [active, flow, store, fit, fitSelected, zoomTo, zoomBy, leaveHere, stepTakes, chosen])
 
   // A text copies and pastes its own, and so does any selection of words on the page.
   useEffect(() => {
@@ -744,8 +780,7 @@ function Canvas({
     const copy = (event: ClipboardEvent) => {
       if (typing(event.target) || store.viewing.get() || !event.clipboardData || !document.getSelection()?.isCollapsed) return
       const here = store.inPlace?.name
-      const names = here ? [here] : flow.getNodes().filter((node) => node.selected && node.type === "element").map((node) => node.data.name)
-      if (copyBoxes(store, client, names, event.clipboardData)) event.preventDefault()
+      if (copyBoxes(store, client, here ? [here] : chosen(), event.clipboardData)) event.preventDefault()
     }
     const paste = (event: ClipboardEvent) => {
       const data = event.clipboardData
@@ -757,12 +792,13 @@ function Canvas({
       const here = store.inPlace?.name
       // On a picture with no tool, a picture is its next version.
       const joins = here && store.joins(here) && !store.get(here)?.hereWords ? here : null
-      const point = pointer.current ? flow.screenToFlowPosition(pointer.current) : visibleCentre()
+      // At the pointer when it's on the canvas, else beside what was copied, as in Figma.
+      const point = pointer.current ? flow.screenToFlowPosition(pointer.current) : null
       const one = own?.length === 1 ? own[0] : null
       if (joins && one && "file" in one && one.file.from !== joins) store.takePicture(joins, one.file)
-      else if (own) placer.paste(own, point)
+      else if (own) selectOnly(placer.paste(own, point))
       else if (joins) placer.join(files, joins)
-      else placer.pasteFiles(files, point)
+      else placer.pasteFiles(files, point ?? visibleCentre())
     }
     window.addEventListener("copy", copy)
     window.addEventListener("paste", paste)
@@ -770,7 +806,7 @@ function Canvas({
       window.removeEventListener("copy", copy)
       window.removeEventListener("paste", paste)
     }
-  }, [active, store, client, flow, placer, visibleCentre])
+  }, [active, store, client, flow, placer, visibleCentre, chosen, selectOnly])
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
   // A click selects a box, and only it (Shift, Ctrl or Cmd add to what's selected); a double click or tap opens it (Paul, 11-12).
@@ -784,7 +820,7 @@ function Canvas({
   const focusNode = useCallback(
     (name: string) => {
       const view = store.get(name)
-      if (!store.projectId || !view?.asset || view.placing) return
+      if (!store.projectId || !view?.asset || view.placing || view.draft !== undefined) return
       if (store.focusedName.get() === name) return
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
       writeHere(name)

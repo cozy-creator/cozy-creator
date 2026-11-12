@@ -674,6 +674,12 @@ impl View {
     }
 
     fn lifecycle(&mut self, run: &Run) {
+        // What made it slow, said as it is known (cl-913); the log's warnings say the rest.
+        for warning in run.warnings.iter().filter(|warning| matches!(warning.code.as_str(), "slow_run" | "gpu_throttled" | "runtime_without_kernels")) {
+            if self.warned.insert(warning.message.clone()) {
+                self.line(&format!("  warning: {}", warning.message));
+            }
+        }
         if run.machine.is_some() && run.machine != self.machine {
             self.machine = run.machine.clone();
             self.line(&format!(
@@ -838,6 +844,8 @@ pub(crate) fn said(progress: &Progress) -> String {
 /// little trusted, or that nothing like it has run to tell yet.
 pub(crate) fn left(progress: &Progress) -> Option<String> {
     match (progress.eta_s, progress.eta_basis) {
+        // Only the bytes it moves are known: at least that.
+        (Some(left), Some(EtaBasis::Bytes)) => Some(format!("at least {} left", output::span(left))),
         (Some(left), _) => {
             let about = if progress.eta_confidence.is_some_and(|c| c < 0.5) { "about " } else { "" };
             Some(format!("{about}{} left", output::span(left)))
