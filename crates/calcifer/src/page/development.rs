@@ -15,8 +15,8 @@ fn no_store(headers: &mut HeaderMap) {
     headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
 }
 fn resource(path: &str) -> bool {
-    matches!(path, "/@react-refresh" | "/NOTICES.txt")
-        || ["/src/", "/node_modules/", "/@vite/", "/@id/", "/@fs/", "/assets/"].iter().any(|prefix| path.starts_with(prefix))
+    matches!(path, "/@react-refresh" | "/assets/NOTICES.txt")
+        || ["/src/", "/node_modules/", "/@vite/", "/@id/", "/@fs/"].iter().any(|prefix| path.starts_with(prefix))
 }
 
 fn query(query: Option<&str>) -> String {
