@@ -466,7 +466,7 @@ impl State {
     }
 
     /// Completed free pages beyond what the active phase needs, and the segments a loop keeps
-    /// whole. With no measure of it, all of them.
+    /// whole while it needs them. With no measure of it, all of them.
     fn beyond_phase(&self) -> (usize, BTreeSet<u64>) {
         let need = self.phase_need();
         if need.is_none() && !self.looping() {
@@ -481,7 +481,12 @@ impl State {
                 outside += bytes;
             }
         }
-        (reusable.saturating_sub(need.unwrap_or(0)).min(outside), kept)
+        let beyond = reusable.saturating_sub(need.unwrap_or(0));
+        // Past what the loop's own segments hold for its need, theirs go too.
+        if beyond > outside {
+            return (beyond, BTreeSet::new());
+        }
+        (beyond, kept)
     }
 
     /// A completed free block across `at` becomes two, so a handle's pages can leave alone.

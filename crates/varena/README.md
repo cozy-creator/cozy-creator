@@ -74,8 +74,10 @@ Up to 1 MiB, one-class slabs, every block 512 B aligned. Above that, runs, cut b
 when free; up to 64 MiB they share 64 MiB segments. A segment has one VMM handle per 16 MiB, since a
 handle comes back only whole: free pages stay mapped until something needs them, and then only those
 handles go. Own-stream reuse does no driver work. A plan phase seen looping keeps every segment its
-working phases touched: its weights and its own allocations take weights first, and it never waits on
-its own frees, so a step makes no driver call for working memory.
+working phases touched, up to its measured need: its weights and its own allocations take weights
+first, and its allocations never wait on its own frees, so a step makes no driver call for working
+memory. A weight's demand that would wait on another weight's use waits on the loop's frees instead,
+and takes the pages past that need: a weight goes only after them.
 
 A split (`split_select`, `split_begin`) picks the first level that fits
 `min(max(C − W, C/4), C − live − pinned)`, whatever is free right now. `C` is the card or its cap,
