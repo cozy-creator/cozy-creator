@@ -1,6 +1,6 @@
 // A box drawn from its tool's fields (tools.md, The types), in a real browser on a real Calcifer, with the every-type fixture `project/boxes.py`.
-// The wire's `Tool.fields` by type; the face and More, its Advanced shut; segments up to four, a menu past that, a dropdown for options that say
-// what they are; Auto and reset, which takes the key out of the file; Random or a kept seed. Groups: rows added, taken out and dragged into a new
+// The wire's `Tool.fields` by type; Focused video parameters without a folded Advanced control; segments up to four, a menu past that, a dropdown for options that say
+// what they are; Auto and reset, which takes the key out of the file; seed data kept without seed UI. Groups: rows added, taken out and dragged into a new
 // order, their sum, a block that may be absent, and rows two deep. Slots: what doesn't fit is refused as it's carried and at the drop, with why;
 // a filled one is on the face, and × unsets it. A video's range: in and out dragged on its frames, written `<walk:in-out>` and shown as
 // timecode, in a prompt and on a plate, whose length is set against the beats. Where this computer runs models: previews land as it renders;
@@ -94,8 +94,11 @@ function linesOf(text, name) {
   const open = (name) => openBox(page, name);
   const more = async (name) => {
     await open(name);
-    if (!(await box(name).locator('.edit-more').count())) await box(name).locator('.more-toggle').click();
-    await box(name).locator('.edit-more').waitFor();
+    const toggle = box(name).locator('.more-toggle');
+    if (await toggle.count()) {
+      if (!(await box(name).locator('.edit-more').count())) await toggle.click();
+      await box(name).locator('.edit-more').waitFor();
+    }
   };
   const field = (name, place) => box(name).locator(`[data-field="${place}"]`).first();
   const noted = (words) => page.locator(`.note:has-text("${words}")`).first();
@@ -187,15 +190,13 @@ function linesOf(text, name) {
   check('wire_described_choice', byName.edit.descriptions?.head && byName.edit.words?.head === 'Head swap', byName.edit);
   check('wire_advanced', byName.steps.advanced && !byName.segments.advanced, byName.steps);
 
-  // The face: its prompts, its beats and a filled slot. All else is under More, words too, its expert settings shut in Advanced.
+  // Focused video tools expose a large Beats-first parameter form, without an Advanced fold.
   await open('shot');
   const shotBox = box('shot');
   check('face_holds_prompts_groups_and_filled_slots', (await shotBox.locator('.mention-text[data-field=summary]').count()) === 1 && (await shotBox.locator('.mention-text[data-field=pictures]').count()) === 1 && (await shotBox.locator('.edit-shown .beats-edit[data-field=beats]').count()) === 1 && (await shotBox.locator('.edit-shown .slot-control[data-field=plate]').count()) === 1, await shotBox.innerText());
-  check('more_holds_the_rest', (await shotBox.locator('.edit-more').count()) === 0 && (await shotBox.locator('[data-field=first_frame], [data-field=negative]').count()) === 0);
+  check('video_parameters_are_prominent_without_a_more_fold', await shotBox.locator('.prominent').count() === 1 && await shotBox.locator('[data-field=first_frame]').count() === 1 && await shotBox.locator('[data-field=negative]').count() === 1);
   await more('shot');
-  check('advanced_starts_shut', (await shotBox.locator('input[aria-label=Steps]').count()) === 0 && (await shotBox.locator('.advanced-toggle').count()) === 1);
-  await shotBox.locator('.advanced-toggle').click();
-  check('advanced_opens', (await shotBox.locator('input[aria-label=Steps]').count()) === 1);
+  check('advanced_fold_is_removed', await shotBox.locator('.advanced-toggle').count() === 0 && await shotBox.locator('input[aria-label=Steps]').count() === 1);
   await shot('more');
 
   // Choices: up to four side by side, more in a menu, and options that say what they are in a dropdown, whatever their number.
@@ -230,12 +231,11 @@ function linesOf(text, name) {
   await until('megapixels auto', () => fieldsOf('shot'), (fields) => !('megapixels' in fields));
   check('number_auto_is_unset', true);
 
-  // A seed: Random is no key, a fixed one a number.
-  await shotBox.locator('[aria-label=Seed] button:text-is("Fixed")').click();
-  const fixed = await until('a seed kept', () => fieldsOf('shot'), (fields) => Number.isInteger(fields.seed));
-  await shotBox.locator('[aria-label=Seed] button:text-is("Random")').click();
-  await until('random again', () => fieldsOf('shot'), (fields) => !('seed' in fields));
-  check('seed_random_or_kept', Number.isInteger(fixed.seed));
+  // Existing seed data remains valid, but the UI deliberately has no seed control.
+  await api(`/v1/projects/${id}/assets/shot`, { method: 'PATCH', body: JSON.stringify({ fields: { seed: 17 } }) });
+  await until('stored seed remains supported', () => fieldsOf('shot'), (fields) => fields.seed === 17);
+  check('seed_input_is_hidden_without_clearing_stored_data', await shotBox.locator('[aria-label=Seed], [data-field=seed], .seed').count() === 0 && (await fieldsOf('shot')).seed === 17);
+  await api(`/v1/projects/${id}/assets/shot`, { method: 'PATCH', body: JSON.stringify({ fields: { seed: null } }) });
 
   // Groups: rows with + and ×, dragged into a new order, their sum; a block that may be absent; rows two deep.
   const beatRows = () => shotBox.locator('.beats-edit[data-field=beats] > .beat');

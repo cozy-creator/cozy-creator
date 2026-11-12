@@ -316,7 +316,7 @@ function plate(path, color, seconds, hz) {
   // Its right click: the film's shape and size, as a render makes them, and a rate that keeps every clip's times.
   const setting = async (label, value) => {
     await openBox(page, timelineName);
-    await card(timelineName).locator('.nm').click({ button: 'right' });
+    await card(timelineName).getByRole('button', { name: 'Rename node', exact: true }).click({ button: 'right' });
     await page.selectOption(`.asset-menu select[aria-label="${label}"]`, value);
     await page.keyboard.press('Escape');
   };

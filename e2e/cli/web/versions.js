@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { implementationRow, approveVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
+const { implementationRow, previewVersion, approveVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -206,12 +206,16 @@ async function died(why) {
   const noDescription = (name) => box(name).locator('.desc-field, [aria-label="Description"]').count();
   const geometry = (name) => box(name).evaluate((node) => {
     const media = node.querySelector('.media-pixels').getBoundingClientRect();
+    const viewer = node.querySelector('.focus-viewer').getBoundingClientRect();
     const controls = node.querySelector('.image-controls')?.getBoundingClientRect();
     const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-    return { width: media.width, height: media.height, zoom, controls: controls ? { x: controls.x, y: controls.y, width: controls.width, height: controls.height } : null };
+    return { width: media.width, height: media.height, zoom, viewer: { x: viewer.x, y: viewer.y, width: viewer.width, height: viewer.height }, controls: controls ? { x: controls.x, y: controls.y, width: controls.width, height: controls.height } : null };
   });
-  const stableHeightAndZoom = (before, after) => Math.abs(before.height - after.height) < 2 && Math.abs(before.zoom - after.zoom) < 0.001;
-  const displayed = (name) => box(name).locator('[data-displayed-sha]').first().getAttribute('data-displayed-sha').then((sha) => sha?.replace(/^sha256:/, ''));
+  const stableRoomAndZoom = (before, after) => Math.abs(before.zoom - after.zoom) < 0.001 && ['x', 'y', 'width', 'height'].every((field) => Math.abs(before.viewer[field] - after.viewer[field]) < 2);
+  const displayedAspect = (name) => box(name).locator('.focus-viewer .media-pixels img').evaluateAll((images) => {
+    const image = [...images].reverse().find((image) => image.complete && image.naturalWidth && image.getBoundingClientRect().width && Number(getComputedStyle(image).opacity) > 0);
+    return image ? image.naturalWidth / image.naturalHeight : 0;
+  });
 
   await open('Ada');
   await approveVersion(page, 'Ada', 3);
@@ -220,26 +224,33 @@ async function died(why) {
   check('image_has_no_description_editor', await noDescription('Ada') === 0, await box('Ada').innerText());
   await settled(page);
   const wideGeometry = await geometry('Ada');
-  await approveVersion(page, 'Ada', 2);
+  await previewVersion(page, 'Ada', 2);
   await settled(page);
   const squareGeometry = await geometry('Ada');
-  check('browsing_states_fixes_height_and_zoom_while_width_varies', stableHeightAndZoom(wideGeometry, squareGeometry) && Math.abs(wideGeometry.width - squareGeometry.width) > 20, { wideGeometry, squareGeometry });
-  await approveVersion(page, 'Ada', 3);
+  check('browsing_states_keeps_the_focus_room_and_wander_zoom', stableRoomAndZoom(wideGeometry, squareGeometry) && Math.abs(wideGeometry.width - squareGeometry.width) > 20, { wideGeometry, squareGeometry });
+  check('thumbnail_preview_does_not_change_approval', await current('Ada') === 3);
+  await previewVersion(page, 'Ada', 3);
   const beforeBrowse = (await asset('Ada')).prefixes.map((version) => [version.number, version.main.sha256]);
   const readerBefore = await asset('fixed');
+  await previewVersion(page, 'Ada', 1);
+  check('preview_keeps_bare_reference_and_approval_unchanged', await current('Ada') === 3 && (await asset('fixed')).inputs === readerBefore.inputs);
   await approveVersion(page, 'Ada', 1);
   await until('selected version is durable', () => current('Ada'), (number) => number === 1);
   const readerAfter = await until('bare reference follows selected version', () => asset('fixed'), (row) => row.inputs !== readerBefore.inputs);
   const readKey = (row, number) => row.reads.find((read) => read.name === 'Ada' && read.version === number)?.key;
-  check('plain_name_follows_selection_explicit_versions_stay_fixed', readKey(readerBefore) !== readKey(readerAfter) && readKey(readerBefore, 1) === readKey(readerAfter, 1) && readKey(readerBefore, 2) === readKey(readerAfter, 2), { before: readerBefore.reads, after: readerAfter.reads });
+  check('plain_name_follows_approval_explicit_versions_stay_fixed', readKey(readerBefore) !== readKey(readerAfter) && readKey(readerBefore, 1) === readKey(readerAfter, 1) && readKey(readerBefore, 2) === readKey(readerAfter, 2), { before: readerBefore.reads, after: readerAfter.reads });
   await page.reload();
   await history('Ada').waitFor();
   check('selected_version_survives_reload', await selected('Ada') === '1' && await current('Ada') === 1);
   check('browsing_preserves_all_versions', JSON.stringify((await asset('Ada')).prefixes.map((version) => [version.number, version.main.sha256])) === JSON.stringify(beforeBrowse));
   const warmedAda = await asset('Ada');
+  const aspectOf = (number) => {
+    const main = warmedAda.prefixes.find((version) => version.number === number).main;
+    return main.width / main.height;
+  };
   for (const number of [2, 1]) {
-    await approveVersion(page, 'Ada', number);
-    await until(`image ${number} decoded for warm switching`, () => displayed('Ada'), (sha) => sha === shaOf(warmedAda, number).replace(/^sha256:/, ''));
+    await previewVersion(page, 'Ada', number);
+    await until(`image ${number} decoded for warm switching`, () => displayedAspect('Ada'), (ratio) => Math.abs(ratio / aspectOf(number) - 1) < 0.02);
   }
   check('preview_selection_is_not_a_new_edit', await selected('Ada') === '1' && (await asset('Ada')).versions === 3);
   const flip = (number) => page.evaluate(({ number, wanted }) => {
@@ -249,7 +260,7 @@ async function died(why) {
     let emptyFrames = 0;
     return new Promise((done) => {
       const look = () => {
-        const images = [...card().querySelectorAll(':scope > .media .media-pixels img')].filter((image) => {
+        const images = [...card().querySelectorAll('.focus-viewer .media-pixels img')].filter((image) => {
           if (!image.complete || !image.naturalWidth || !image.getBoundingClientRect().width) return false;
           for (let element = image; element && !element.classList.contains('card'); element = element.parentElement) {
             const style = getComputedStyle(element);
@@ -258,14 +269,13 @@ async function died(why) {
           return true;
         });
         if (!images.length) emptyFrames++;
-        const shown = card().querySelector('[data-displayed-sha]')?.dataset.displayedSha?.replace(/^sha256:/, '');
-        if (shown === wanted && images.length) return done({ first: performance.now() - began, emptyFrames });
+        if (images.some((image) => Math.abs((image.naturalWidth / image.naturalHeight) / wanted - 1) < 0.02)) return done({ first: performance.now() - began, emptyFrames });
         if (performance.now() - began > 10_000) return done({ first: null, emptyFrames });
         requestAnimationFrame(look);
       };
       requestAnimationFrame(look);
     });
-  }, { number, wanted: shaOf(warmedAda, number).replace(/^sha256:/, '') });
+  }, { number, wanted: aspectOf(number) });
   const flips = [];
   for (const number of [2, 1, 2, 1]) {
     flips.push(await flip(number));
@@ -371,7 +381,7 @@ async function died(why) {
   await until('output aspect ratio changed in edit mode', () => asset('other'), (row) => Boolean(row.fields?.aspect_ratio) && row.fields.aspect_ratio !== ratioBefore);
   const afterShape = await referenceGeometry();
   check('output_ratio_keeps_all_reference_previews_fixed_and_uncropped', afterShape.length === beforeShape.length && afterShape.every((image, index) => image.fit === 'contain' && Math.abs(image.width - beforeShape[index].width) < 2 && Math.abs(image.height - beforeShape[index].height) < 2), { beforeShape, afterShape });
-  await box('other').getByRole('button', { name: 'View image', exact: true }).click();
+  await previewVersion(page, 'other', 1);
   check('view_mode_leaves_editor_and_keeps_selection', await box('other').locator('.in-frame .mention-text').count() === 0 && await current('other') === 1);
   await box('other').getByRole('button', { name: 'Remove image tool', exact: true }).click();
   await until('image tool removed', () => asset('other'), (row) => !row.tool);
@@ -398,7 +408,7 @@ async function died(why) {
     await approveVersion(page, 'other', 2);
     await settled(page);
     const editedGeometry = await geometry('other');
-    check('variant_browsing_keeps_height_zoom_and_tool_controls_stable', stableHeightAndZoom(sourceGeometry, editedGeometry) && ['x', 'y', 'width', 'height'].every((field) => Math.abs(sourceGeometry.controls[field] - editedGeometry.controls[field]) < 2), { sourceGeometry, editedGeometry });
+    check('variant_browsing_keeps_focus_room_zoom_and_tool_controls_stable', stableRoomAndZoom(sourceGeometry, editedGeometry) && ['x', 'y', 'width', 'height'].every((field) => Math.abs(sourceGeometry.controls[field] - editedGeometry.controls[field]) < 2), { sourceGeometry, editedGeometry });
     await approveVersion(page, 'other', 1);
     await (await renderOf(page, 'other')).click();
     const third = await until('editing an older version appends v3', () => asset('other'), (row) => row.versions === 3 && !row.making?.length, 5 * STEP_MS);
