@@ -139,10 +139,12 @@ export interface Options {
   edit?: string
   /** The outbox action this try is of: every try of one ask goes under one `Idempotency-Key`, so Calcifer does it once. */
   action?: string
+  /** It goes on as the page goes (`fetch`'s `keepalive`). */
+  keepalive?: boolean
 }
 
 /** One try of a write, the edit it's of, and its action. */
-export type Write = Pick<Options, "once" | "edit" | "action">
+export type Write = Pick<Options, "once" | "edit" | "action" | "keepalive">
 
 /** The `Idempotency-Key` of a write: the one it names, else one per action and ask, so each try of the same ask is the same key and a try
  * that asks something else (a batch grown since) is another. FNV-1a: tries of one action are all it tells apart. */
@@ -191,6 +193,7 @@ export class Client {
       options.onAttempt?.(attempt)
     }
     if (options.edit) init = { ...init, headers: { ...Object.fromEntries(new Headers(init.headers)), "Cozy-Edit": options.edit } }
+    if (options.keepalive) init = { ...init, keepalive: true }
     for (let attempt = 1; ; attempt++) {
       let failure: ApiError
       try {
@@ -510,14 +513,9 @@ export class Client {
   }
 
   /** These inputs set. With `read`, only if its own lines are still what that read. */
-  patchAsset(id: string, name: string, body: AssetPatch, read?: string, write: Write = {}): Promise<AssetPatched> {
-    const headers: Record<string, string> = { "Content-Type": "application/json" }
-    if (read) headers["If-Match"] = read
-    const path = `${project(id)}/assets/${encodeURIComponent(name)}`
-    const text = JSON.stringify(body)
-    const asked = keyOf("PATCH", path, `${read ?? ""}\n${text}`, undefined, write.action)
-    if (asked) headers["Idempotency-Key"] = asked
-    return this.json(path, { method: "PATCH", headers, body: text }, write)
+  /** The fields it names, over whatever they hold: the rest stay as anyone left them. */
+  patchAsset(id: string, name: string, body: AssetPatch, write: Write = {}): Promise<AssetPatched> {
+    return this.write("PATCH", `${project(id)}/assets/${encodeURIComponent(name)}`, body, undefined, write)
   }
 
   deleteAsset(id: string, name: string, write: Write = {}): Promise<AssetDeleted> {

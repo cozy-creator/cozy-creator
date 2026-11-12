@@ -68,6 +68,9 @@ if [ -n "$restart" ]; then
   step "web-offline: Calcifer stopped: Turbo, a prompt twice, approve, two moves, a rename, a delete and a drop, each shown at once and counted in the top bar; started again, all in project.db in its order"
   STOP=$(web_halt "$lock") START=$(web_start) web_proof offline "$chrome" "$pw" "$restart"
   jq -c '{said: .seen.said_offline, after: .seen.after}' "$OUT/web-offline.json" 2> /dev/null || true
+  step "web-durable: what's typed flushed and merged by field: read back before its answer, through a Calcifer kill -9 with no reload, the box left at once, the page reloaded at once, another writer's words meanwhile"
+  web_proof durable "$chrome" "$pw" "$restart"
+  jq -c '.seen.restart' "$OUT/web-durable.json" 2> /dev/null || true
   step "web-undo: a delete, a merge, a tool off, words, a move, approve and unapprove, a take discarded, each undone and redone; the CLI's undone from the page and the page's from the CLI; a clobbering undo refused; undo offline, then a restart"
   STOP=$(web_halt "$lock") START=$(web_start) web_proof undo "$chrome" "$pw" "$restart"
   jq -c '{refused: .seen.refused, list: .seen.list}' "$OUT/web-undo.json" 2> /dev/null || true

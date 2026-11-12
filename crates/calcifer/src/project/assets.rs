@@ -9,7 +9,7 @@ use axum::{
     Json,
     body::Bytes,
     extract::{Path, Query, State, rejection::BytesRejection},
-    http::{HeaderMap, StatusCode, header},
+    http::StatusCode,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -186,12 +186,12 @@ pub(super) struct Asked {
     call: bool,
 }
 
-/// `PATCH /v1/projects/{id}/assets/{name}`: its inputs set over what it holds this moment, in one transaction. With `If-Match`, only if it
-/// is still what that read: an edit of another asset never conflicts. A render going keeps the text it was asked with.
+/// `PATCH /v1/projects/{id}/assets/{name}`: the fields it names set over what it holds this moment, in one transaction, whoever wrote
+/// them last; the rest stay (cl-904, Paul 11-12: a page's writes merge field by field, never refused). A render going keeps the text it was
+/// asked with.
 pub(super) async fn patch(
     State(api): State<Arc<Api>>,
     Path((id, name)): Path<(String, String)>,
-    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<AssetPatched>, Refusal> {
     let asked: AssetPatch = parse(&body?)?;
@@ -233,7 +233,6 @@ pub(super) async fn patch(
         }),
         _ => None,
     };
-    let read = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok()).map(str::to_owned);
     let patched = folder.act(|| {
         let holds = match &asked.tool {
             Some(tool) => Some(pictures(folder, &name, tool, true)?.map(|(number, _)| number)),
@@ -276,10 +275,6 @@ pub(super) async fn patch(
         }
         let mut edited = written.clone();
         let warnings = edited.set(&name, &fields)?;
-        // It already says this: a retry of a write whose answer was lost, or the same words from two places. Nothing to choose between.
-        if edited != written && read.as_ref().is_some_and(|read| *read != was) {
-            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name} changed since it was read")).remedy("read it again and make the edit on what it holds"));
-        }
         folder.edit(|now| {
             *now = edited;
             Ok(())
