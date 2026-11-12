@@ -137,6 +137,13 @@ cozy --json model upload "$model@$commit" "$model-copy" --lane f16 > "$OUT/uploa
   && J --arg f "$model@$commit" '.from == $f and .lane == "f16"' "$OUT/upload-recorded.json" \
   || check "model upload of a Hub commit: $(tail -c 300 "$OUT/upload-recorded.json") $(tail -c 300 "$OUT/upload-recorded.err")"
 cozy --json model delete "$model-copy" -y > /dev/null 2>&1 || check "model delete of the recorded copy failed"
+# A Hub commit with a file added (xs-183: model data a package bundles goes into its checkpoint): only headers move, and the
+# file becomes the asset of a new component that holds it alone.
+printf '{"pdd_num_steps": 4}\n' > "$OUT/added.json"
+watched upload-added model upload "$model@$commit" "$model" --lane f16 --add extra/added.json="$OUT/added.json" --on "$ON" \
+  || check "model upload --add failed"
+grep -q '"added":\["extra/added.json"\]' "$OUT/upload-added.ndjson" 2> /dev/null \
+  || check "model upload --add: the result does not name extra/added.json: $(tail -c 300 "$OUT/upload-added.ndjson")"
 # While its commit is private (its random bytes are in no public release): a run capability reaches it and nothing else (cl-675).
 # Its own process: `cozy` there is the installed binary, not this suite's logging function.
 PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
