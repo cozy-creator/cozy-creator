@@ -228,6 +228,7 @@ fn picture(identity: &MachineIdentity, held: Held) -> v1::StatusFrame {
 
 fn disk(path: &std::path::Path) -> Option<v1::Disk> {
     let space = platform::durable::space(path).ok()?;
+    crate::reclaim::seen_free(space.free);
     let usage = crate::reclaim::usage().unwrap_or_default();
     Some(v1::Disk {
         total_bytes: space.total,

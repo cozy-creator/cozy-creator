@@ -1421,7 +1421,7 @@ impl Pool {
     /// A stalled disk is named on the log of every run in progress (`disk`).
     pub(crate) fn watch_disks(self: &Arc<Self>) {
         let pool = Arc::downgrade(self);
-        let watching = crate::disk::watch(move |stalls| {
+        let watching = crate::disk::watch(self.running.clone(), move |stalls| {
             let Some(pool) = pool.upgrade() else { return false };
             stalls.iter().for_each(|stall| pool.disk_stalled(stall));
             true
@@ -3962,7 +3962,7 @@ impl Pool {
         }).collect();
         let call = memory::Call { ranks, package: construction.clone(), shape: shape.clone() };
         let dispatched = Dispatched::new(gpus, id, &construction, &shape, self.running.clone());
-        self.running.lock().unwrap().insert(id.into(), call);
+        self.running.start(id.into(), call);
         let spool = engine.staging(id)?;
         let spool_owner = crate::execution::Spool(spool.clone());
         let input_store = engine.store_for(id)?;
