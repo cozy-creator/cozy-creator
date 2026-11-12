@@ -2296,6 +2296,16 @@ video.preview.on {
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.nm, .state-dot) {
   font-size: calc(var(--t-body) * var(--ui) * var(--name-zoom, 1));
 }
+/* A name longer than its box goes on to a second line, rising over it, rather than being cut to a few letters. */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head .nm {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.1;
+}
 .stage[data-lod="2"] .react-flow__node .card > .head :is(.node-version-label, .iconb) {
   display: none;
 }
