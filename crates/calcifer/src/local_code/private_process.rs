@@ -22,7 +22,7 @@ impl Drop for Running {
         if let Some(count)=active.get_mut(&self.root) { *count-=1; if *count==0 { active.remove(&self.root); } }
     }
 }
-fn error(why:impl std::fmt::Display)->io::Error { io::Error::new(io::ErrorKind::PermissionDenied,format!("project tool confinement unavailable: {why}")) }
+fn error(why:impl std::fmt::Display)->io::Error { io::Error::new(io::ErrorKind::PermissionDenied,format!("project tool custody unavailable: {why}")) }
 
 fn executable(command:&Command)->io::Result<PathBuf> {
     let program=Path::new(command.get_program());
@@ -55,6 +55,10 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     let stdin=File::open(input_path)?;
     let stdout=tempfile::NamedTempFile::new_in(temporary.path())?;
     let stderr=tempfile::NamedTempFile::new_in(temporary.path())?;
+    let project_handle=File::open(&root)?;
+    for file in [&stdin,stdout.as_file(),stderr.as_file()] {
+        platform::private_exec::validate_project_descriptor(&project_handle,file).map_err(error)?;
+    }
     let program=executable(command)?;
     let mut owned=Command::new(&program);
     owned.args(command.get_args()).current_dir(&cwd);
@@ -68,7 +72,10 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
         .stdin(Stdio::from(stdin.try_clone()?)).stdout(Stdio::from(stdout.as_file().try_clone()?)).stderr(Stdio::from(stderr.as_file().try_clone()?));
     let process_scope=platform::contain::Scope::create(&platform::contain::namespace(&scratch)).map_err(error)?;
     if let Some((name,value))=process_scope.environment() {owned.env(name,value);}
-    platform::process::inherit_nothing(&mut owned);
+    // Only 0/1/2 cross exec, each backed by the verified project files above.
+    // The native helper suppresses requested cores and unrelated inherited FDs;
+    // it makes no OS filesystem or arbitrary custom-Python sandbox claim.
+    platform::private_exec::prepare_managed_child(&mut owned,Vec::new()).map_err(error)?;
     let mut tree=platform::process::spawn(owned).map_err(error)?;
     running.release=false;
     let birth=platform::process::Birth::of(tree.pid()).map_err(error)?;
