@@ -91,14 +91,16 @@ async function died(why) {
   // A click selects it, and opens nothing.
   let point = await middle('first');
   await page.mouse.click(point.x, point.y);
+  const one = await until('it selected', selected, (now) => now.join() === 'first', 5000).catch(selected);
+  // Nothing opened: a box opens on a double click, a moment after the second press; that long gone, none did.
   await page.waitForTimeout(400);
-  check('a_click_selects_it', (await selected()).join() === 'first', await selected());
+  check('a_click_selects_it', one.join() === 'first', one);
   check('a_click_opens_nothing', !(await open()).focused && !(await open()).path.includes('/assets/'), await open());
   // Another click selects only that one.
   point = await middle('second');
   await page.mouse.click(point.x, point.y);
-  await page.waitForTimeout(200);
-  check('a_click_selects_only_it', (await selected()).join() === 'second', await selected());
+  const only = await until('only it selected', selected, (now) => now.join() === 'second', 5000).catch(selected);
+  check('a_click_selects_only_it', only.join() === 'second', only);
   point = await middle('first');
   await page.mouse.click(point.x, point.y);
   await shot('selected');
@@ -148,8 +150,8 @@ async function died(why) {
   await page.keyboard.press('End');
   await page.keyboard.press('Backspace');
   await page.keyboard.press('Backspace');
-  await page.waitForTimeout(300);
-  check('backspace_in_words_edits_them', (await text.innerText()).trim() === 'hello the', await text.innerText());
+  const edited = await until('the words edited', async () => (await text.innerText()).trim(), (now) => now === 'hello the', 5000).catch(async () => (await text.innerText()).trim());
+  check('backspace_in_words_edits_them', edited === 'hello the', edited);
   check('backspace_in_words_keeps_the_box', (await opened('words')) && Boolean(await asset('words')), await open());
   await away();
   const kept = await until('the words saved', () => asset('words'), (row) => row?.fields?.text === 'hello the').catch(() => null);

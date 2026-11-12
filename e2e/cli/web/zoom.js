@@ -7,7 +7,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectUrl, importFile, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { animationsDone, projectUrl, importFile, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -84,7 +84,7 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
         const images = [...document.querySelectorAll('.react-flow__node .media img')];
         return images.length >= document.querySelectorAll('.react-flow__node').length && images.every((image) => image.complete);
       }), Boolean);
-      await tab.waitForTimeout(500);
+      await settled(tab);
       return tab;
     };
     const shot = (tab, name) => (process.env.SHOT ? tab.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
@@ -146,7 +146,7 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     check('menu_shortcuts', keyOf['Zoom to fit'] === shift(1) && keyOf['Zoom to selection'] === shift(2) && keyOf['Zoom to 100%'] === shift(0) && /\+$/.test(keyOf['Zoom in']), keyOf);
     check('menu_focused', await tab.evaluate(() => document.activeElement?.getAttribute('role') === 'menuitem'));
     // Once it has opened: it fades in.
-    await tab.waitForTimeout(200);
+    if (process.env.SHOT) await animationsDone(tab.locator('.zoom-menu'));
     await shot(tab, 'zoom-menu');
     await tab.click('.zoom-menu >> text=Zoom to 100%');
     await settled(tab);

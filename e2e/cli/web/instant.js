@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
 const { rmSync } = require('fs');
 const { join } = require('path');
-const { implementationRow, projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, lookAt, openBox, renderOf, storedOf, until } = require('./page');
+const { implementationRow, projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, lookAt, openBox, renderOf, settled, storedOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -157,7 +157,7 @@ async function loseAnswers(page, method, path, times) {
   await until('its answer came at last', () => Promise.resolve(lost.keys.length), (n) => n >= 3);
   await lost.done();
   await until('in the project', () => Promise.resolve(hasAsset(second)), Boolean);
-  await page.waitForTimeout(400);
+  await until('both on the page', () => page.locator(`.card[data-asset^="${name}"]`).count(), (n) => n === 2, 5000).catch(() => {});
   check('retried_with_one_key', new Set(lost.keys).size === 1, lost.keys);
   check('retried_makes_one', count(name) === 2 && (await page.locator(`.card[data-asset^="${name}"]`).count()) === 2, names());
 
@@ -170,10 +170,9 @@ async function loseAnswers(page, method, path, times) {
   await until('the other in the project', () => Promise.resolve(hasAsset(third)), Boolean);
   await stalled.release();
   await box(`${name}_4`).waitFor();
-  await page.waitForTimeout(600);
   // What a writer elsewhere adds lands wherever it's free, which may be off screen.
   await page.keyboard.press('f');
-  await page.waitForTimeout(400);
+  await settled(page);
   const shown = await page.locator('.card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset));
   check('another_writers_name_renames_it', (await box(third).count()) === 1 && (await box(`${name}_4`).count()) === 1 && hasAsset(`${name}_4`), { shown, names: names() });
 
@@ -197,11 +196,10 @@ async function loseAnswers(page, method, path, times) {
   // A pending edit and another writer's edit of the same field: the page's unsent words stand, and then both are saved, merged by character, with
   // nothing asked (cl-904: Automerge text).
   projectJson(folder, 'POST', '/assets', { tool: '', name: 'words', exact: true, fields: { text: 'A storm.' } });
-  await page.waitForTimeout(600);
   // Nothing held open: what's open lies over what's below it.
   await page.keyboard.press('f');
   await box('words').waitFor();
-  await page.waitForTimeout(400);
+  await settled(page);
   await openBox(page, 'words');
   await box('words').locator('.mention-text[data-field="text"]').click();
   const patches = await hold(page, 'PATCH', '**/v1/projects/*/assets/*');
@@ -209,14 +207,17 @@ async function loseAnswers(page, method, path, times) {
   await page.keyboard.type('mine');
   await page.mouse.click(1500, 1050);
   await until('its PATCH is held', () => Promise.resolve(patches.calls.length), (n) => n === 1);
+  // The page's read of theirs, from the stream: what its unsent words must stand against.
+  const theirsRead = page.waitForResponse((answer) => answer.request().method() === 'GET' && new URL(answer.url()).pathname.endsWith('/assets/words'), { timeout: 20_000 }).then(() => true, () => false);
   projectJson(folder, 'PATCH', '/assets/words', { fields: { text: 'theirs' } });
   await until('theirs in the project', () => Promise.resolve(words().startsWith('theirs')), Boolean);
-  await page.waitForTimeout(600);
+  check('the_page_read_theirs', await theirsRead);
   await openBox(page, 'words');
   check('unsent_words_stand', (await box('words').locator('.mention-text[data-field="text"]').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
   await patches.release();
   await until('both in the project', () => Promise.resolve(['minetheirs', 'theirsmine'].includes(words())), Boolean);
-  check('nothing_asked', (await box('words').getByRole('button', { name: 'Keep mine' }).count()) === 0);
+  // Nothing asked of the person (cl-904), whatever it would be called.
+  check('nothing_asked', (await page.getByRole('alertdialog').count()) + (await box('words').getByRole('button', { name: /keep mine|keep theirs|take the file/i }).count()) === 0);
   await closeBox(page);
 
   // Another canonical writer commits after ours, before its delayed reply is consumed.
@@ -277,13 +278,12 @@ async function loseAnswers(page, method, path, times) {
     const primed = (await stillRuns()).length;
     addBoxes(folder, [{ name: 'fixture', tool: `${TOOL}/still`, kind: 'image', fields: { instructions: 'a whale' } }]);
     await box('fixture').waitFor();
-    await page.waitForTimeout(500);
     await openBox(page, 'fixture');
     const renders = await loseAnswers(page, 'POST', '**/v1/projects/*/runs', 1);
     await (await renderOf(page, 'fixture')).click();
-    await page.waitForTimeout(20);
-    // The selected image remains one frame; accepted work is visible there rather than in a second thumbnail column.
-    check('render_says_queued_at_once', await box('fixture').locator('.media-making, .prog, .on-its-way, .here-side .take.making').count() > 0, await box('fixture').innerText());
+    // At once: within a quarter second of the press, its take says it's on its way (StateDot's Queued or Rendering, or its making face).
+    const onItsWay = box('fixture').getByRole('img', { name: /^(Queued|Rendering)$/ }).or(box('fixture').locator('.media-making, .prog, .here-side .take.making')).first();
+    check('render_says_queued_at_once', await onItsWay.waitFor({ timeout: 250 }).then(() => true, () => false), await box('fixture').innerText());
     await until('a version of it', () => Promise.resolve(status().find((asset) => asset.name === 'fixture')?.versions ?? 0), (n) => n >= 1, FIRST_RUN_MS);
     // The take can land before the lost answer's reset reaches the page: what it asks again is seen before the route goes.
     await until('asked again', () => Promise.resolve(renders.keys.length), (n) => n >= 2, 10_000).catch(() => {});
@@ -326,7 +326,7 @@ async function loseAnswers(page, method, path, times) {
   await page.mouse.down();
   await page.mouse.move(1340, 960, { steps: 3 });
   await page.mouse.up();
-  await page.waitForTimeout(300);
+  await settled(page);
   const view = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const kept = await view();
   await tab(second_project).click();
@@ -336,7 +336,7 @@ async function loseAnswers(page, method, path, times) {
   await page.getByTitle(folder, { exact: true }).click();
   await box(name).waitFor({ timeout: 2000 });
   check('back_shows_its_boxes_at_once', true);
-  await page.waitForTimeout(300);
+  await settled(page);
   check('each_project_keeps_its_view', (await view()) === kept, { kept, now: await view() });
   if (unreadable) {
     await tab(old).click();
