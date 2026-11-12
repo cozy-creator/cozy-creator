@@ -161,8 +161,8 @@ fn installed(frame: &v1::StatusFrame, item: &v1::Ahead) -> bool {
     })
 }
 
-/// What `machine` prepares with no job: nothing while it has upcoming jobs or a queue; else the functions planned on other machines
-/// that it can run, the most-asked first, each once.
+/// What `machine` prepares with no job: nothing while it has upcoming jobs or a queue; else the published functions planned on other
+/// machines that it can run, the most-asked first, each once. Local code isn't: it is sent to a machine with the job that runs it there.
 fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str, frame: &v1::StatusFrame, idle: bool) -> Vec<(String, v1::Ahead)> {
     let queued = frame.queue.as_ref().is_some_and(|queue| !queue.is_empty());
     if !idle || queued {
@@ -172,6 +172,7 @@ fn demand(planned: &HashMap<String, HashMap<String, Vec<Listed>>>, machine: &str
     for listed in (planned.iter().filter(|(name, _)| name.as_str() != machine))
         .flat_map(|(_, lists)| lists.values().flatten())
         .filter(|listed| listed.fits.iter().any(|fits| fits == machine))
+        .filter(|listed| matches!(listed.item.source, Some(v1::Source::Release(_))))
     {
         let key = identity(&listed.item);
         match asked.iter_mut().find(|(held, ..)| *held == key) {
