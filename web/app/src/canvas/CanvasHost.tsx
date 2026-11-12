@@ -819,7 +819,7 @@ function Canvas({
   const focusNode = useCallback(
     (name: string) => {
       const view = store.get(name)
-      if (!store.projectId || !view?.asset || view.placing) return
+      if (!store.projectId || !view?.asset || view.placing || view.draft !== undefined) return
       if (store.focusedName.get() === name) return
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
       writeHere(name)

@@ -1716,6 +1716,26 @@ video.preview.on {
 .actions:empty {
   display: none;
 }
+.edit-parameters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  padding-block: 10px;
+}
+.edit-parameters > .slide {
+  width: auto;
+}
+.edit-face .actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.edit-face .actions .more-toggle {
+  margin-right: auto;
+}
+.edit-face .actions .run {
+  margin-left: auto;
+}
 .run {
   display: inline-flex;
   align-items: center;

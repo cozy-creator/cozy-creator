@@ -532,6 +532,7 @@ export class CanvasStore {
     const tools = this.tools.get()
     const control = asset && makes(view) ? fieldsOf(asset, tools).find((held) => held.type === "shape") : undefined
     if (!asset || !control) return undefined
+    if (!control.auto) return heldTo(control, ratioOf(control.default) ?? 1)
     const kind = tools.get(asset.tool ?? "")?.makes ?? asset.kind
     for (const mention of this.mentionsOf(view)) {
       const read = this.mentionOf(mention, view.name)
@@ -579,6 +580,7 @@ export class CanvasStore {
     const view = this.get(name)
     const asset = view?.asset
     if (!view || !asset?.tool) return
+    if (this.inPlace?.name === this.resolveName(name)) this.focusFit?.()
     const field = this.promptOf(asset.tool)
     const said = this.valueOf(name, field)
     const words = typeof said === "string" ? said : ""
@@ -1348,6 +1350,7 @@ export class CanvasStore {
       }
       const fps = shown.fps ?? FPS
       const frame = pickupAt(Math.round(Math.max(0, seconds) * fps), framesIn(shown.duration_ms, fps), tool.pickup)
+      this.focusFit?.()
       this.patch(key, { hereWords: true, watchFrom: undefined, watchRun: undefined, continuing: frame ? { take: `<${key}.${number}>`, out_frame: frame, beats_from: frame / fps } : undefined, continuingFps: fps })
       this.focusing = key
     } catch (error) { say("Couldn't load this video's prompts", error) }
@@ -2726,15 +2729,14 @@ export class CanvasStore {
     this.reshape(name)
   }
 
-  /** Where a pulled corner lands: what its tool makes, at the width it was pulled to. Let go at its auto shape, none set, it stays auto. */
-  setShape(name: string, control: BoxField, width: number, shape: string) {
+  /** A dragged output shape is explicit; only resetting it returns control to automatic sizing. */
+  setShape(name: string, control: BoxField, width: number | undefined, shape: string) {
     const held = this.valueOf(name, control.field)
-    const auto = this.get(name)?.auto
-    const kept = ratioOf(held) === undefined && auto !== undefined && ratioOf(shape) === auto
     const edit = this.step(`Reshaped ${this.resolveName(name)}`, [name])
-    if (held !== shape && !kept) void this.setField(name, control.field, shape, edit)
+    if (held !== shape) void this.setField(name, control.field, shape, edit)
     this.patch(name, { shape: undefined })
-    this.setWidth(name, width, true, edit)
+    if (width !== undefined) this.setWidth(name, width, true, edit)
+    else this.reshape(name)
   }
 
   /** Its shape unset: it takes its auto shape again, at the width it has. */

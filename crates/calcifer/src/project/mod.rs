@@ -2001,9 +2001,12 @@ fn renamed_under(project: &Arc<Project>, id: &str, asked: Rename, follows: bool)
             return Err(refuse(Kind::Conflict, "rename_taken", format!("{to} has versions of its own already")));
         }
         let (from, versions) = (asked.from.clone(), old.map_or(0, |old| old.versions.len() as u32));
+        let saved_reads = lock.assets.values().flat_map(|held| held.on_record())
+            .chain(lock.pending.values().map(|pending| &pending.version)).filter_map(|version| version.fields.as_ref())
+            .any(|fields| fields.values().any(|value| graph::mentions_in(value).iter().any(|name| graph::mention_moved(name, &from, &to).is_some())));
         let stamps = restamps(folder, &doc, &back, &from, &to, &said);
         canvas::moved(folder, id, &from, &to)?;
-        if follows || old.is_some() || !stamps.is_empty() {
+        if follows || old.is_some() || !stamps.is_empty() || saved_reads {
             folder.update_lock(|lock| {
                 renamed(lock, &from, &to);
                 lock.called(&from, &to);
@@ -2115,7 +2118,13 @@ pub(super) fn adopt_renames(folder: &Folder, doc: &Doc) -> Result<bool, Error> {
 pub(super) fn renamed(lock: &mut Lock, from: &str, to: &str) {
     lock.untombstone(from);
     let key = name_key(from);
+    let move_snapshot = |version: &mut Version| {
+        if let Some(fields) = &mut version.fields {
+            fields.values_mut().for_each(|value| written::mentions_renamed(value, &|name| graph::mention_moved(name, from, to)));
+        }
+    };
     for version in lock.assets.values_mut().flat_map(|held| held.versions.iter_mut().chain(&mut held.discarded)) {
+        move_snapshot(version);
         for clip in &mut version.clips {
             if let Some(moved) = graph::mentions(&clip.clip).first().and_then(|name| graph::mention_moved(name, from, to)) {
                 clip.clip = format!("<{moved}>");
@@ -2127,8 +2136,11 @@ pub(super) fn renamed(lock: &mut Lock, from: &str, to: &str) {
         held.name = to.to_owned();
         lock.assets.insert(name_key(to), held);
     }
-    for pending in lock.pending.values_mut().filter(|pending| name_key(&pending.asset) == key) {
-        pending.asset = to.into();
+    for pending in lock.pending.values_mut() {
+        move_snapshot(&mut pending.version);
+        if name_key(&pending.asset) == key {
+            pending.asset = to.into();
+        }
     }
     for ask in &mut lock.walk.asks {
         for take in ask.takes.iter_mut().filter(|take| name_key(&take.asset) == key) {

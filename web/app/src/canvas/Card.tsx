@@ -156,6 +156,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
       return
     }
     if (writes) return store.writeNext(name)
+    store.focusFit?.()
     store.focusing = name
     store.patch(name, { hereWords: true, continuing: undefined, continuingFps: undefined, watchRun: undefined, watchFrom: undefined })
   }
@@ -509,7 +510,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
       const size = pulled.current
       pulled.current = null
       setNearest(null)
-      if (size && control) store.setShape(name, control, focused ? start.w : size.w, size.shape ?? shapeFor(size.w, size.h))
+      if (size && control) store.setShape(name, control, focused ? undefined : size.w, size.shape ?? shapeFor(size.w, size.h))
       else if (size) store.setWidth(name, size.w)
       if (owner && store.inPlace === owner) owner.pulled = false
       if (focused) { focusResize?.end(); return }
@@ -578,8 +579,8 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const field = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "shape")
   if (!field || view.shape) return null
   const held = store.valueOf(name, field.field)
-  const preset = typeof field.default === "string" && ratioOf(field.default) ? field.default : undefined
-  const fallback = String(preset ?? field.ratios?.[0] ?? "1:1")
+  const fixedRatio = field.ratios?.find((ratio): ratio is string => typeof ratio === "string" && ratioOf(ratio) !== undefined)
+  const fallback = typeof field.default === "string" && ratioOf(field.default) ? field.default : fixedRatio ?? "1:1"
   if (typeof held !== "string" || !ratioOf(held)) return <span className="ratio-rest">{field.auto ? "Auto" : fallback}</span>
   return (
     <span className="ratio-rest">
@@ -603,6 +604,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
   const tools = useSignal(store.tools)
+  const namePress = useRef<{ x: number; y: number } | null>(null)
   const self = useRef<HTMLDivElement>(null)
   const cancel = useCallback(() => {
     if (store.get(name)?.placing) store.cancel(store.resolveName(name))
@@ -779,6 +781,13 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           <span
             className="nm"
             title={view.name}
+            onPointerDown={(event) => { namePress.current = { x: event.clientX, y: event.clientY } }}
+            onClick={(event) => {
+              if (event.shiftKey || event.metaKey || event.ctrlKey) return
+              event.stopPropagation()
+              const from = namePress.current
+              if (from && Math.hypot(event.clientX - from.x, event.clientY - from.y) < 5) store.openName(name)
+            }}
           >
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
