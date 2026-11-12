@@ -2,6 +2,13 @@
    over the pictures the one being written mentions (Backdrop). */
 .in-frame.sections {
   overflow: hidden;
+  container-type: size;
+}
+/* A frame too short for six lines and the heads under them opens a section at three, growing with its words. */
+@container (max-height: 520px) {
+  .in-frame.sections .beat .mention-text {
+    min-height: calc(3 * 1.55em + 24px);
+  }
 }
 .frame-sections {
   position: relative;
