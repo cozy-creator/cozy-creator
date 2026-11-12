@@ -4,7 +4,10 @@
 # (<cell>-released) and then on the candidate (<cell>): SDXL, Klein and Qwen-Image 4 MP with their prompt LMs on, H3 Turbo
 # 15 s, uncapped and under the development cap at 8 and 6 GiB (H3 not at 6: var-015); Ideogram 4 and P-H3-Image's edit
 # with its upsampler, uncapped. analyze.py notes each pair's execution, steady step and output.
-AB_RELEASED=$(awk '$1 == "runtime" {print $2}' machine-fresh.txt) AB_CANDIDATE=$rt
+AB_RELEASED=$(awk '$1 == "runtime" {print $2}' machine-fresh.txt) AB_CANDIDATE=$rt AB_BASE_ON=
+# AB_BASE=<wheel> AB_BASE_VERSION=<the version it reports>: that Runtime is the base arm instead (an RC head, to attribute a
+# change to its own commits).
+if [ -n "${AB_BASE:-}" ]; then AB_BASE_ON=$AB_BASE AB_RELEASED=${AB_BASE_VERSION:?AB_BASE needs AB_BASE_VERSION}; fi
 if [ -z "$RWF" ] || [ -z "$AB_RELEASED" ] || [ "$AB_RELEASED" = "$AB_CANDIDATE" ]; then
   expect runtime-ab FAIL "needs a runtime_wheel other than the pod's own Runtime (${AB_RELEASED:-none}; candidate ${AB_CANDIDATE:-none})"
   return 0
@@ -66,8 +69,8 @@ for lvl in off 8 6; do
     [ "$m" != ideogram ] && [ "$m" != ph3 ] || [ "$lvl" = off ] || continue
     [ "$m" != h3 ] || [ "$lvl" != 6 ] || continue  # H3 15 s at 6 GiB fails on both arms (var-015, var-016)
     [[ " ${AB_DONE:-} " != *" $m-$lvl "* ]] || continue  # rows a pod already ran (a pod lost mid-matrix)
-    [ "$lvl" = 8 ] || ab_arm "$AB_RELEASED" "$AB_RELEASED" "$lvl" "$m" "ab-$m-$lvl" -released
+    [ "$lvl" = 8 ] || ab_arm "${AB_BASE_ON:-$AB_RELEASED}" "$AB_RELEASED" "$lvl" "$m" "ab-$m-$lvl" -released
     ab_arm "$RWF" "$AB_CANDIDATE" "$lvl" "$m" "ab-$m-$lvl" ''
-    [ "$lvl" != 8 ] || ab_arm "$AB_RELEASED" "$AB_RELEASED" "$lvl" "$m" "ab-$m-$lvl" -released
+    [ "$lvl" != 8 ] || ab_arm "${AB_BASE_ON:-$AB_RELEASED}" "$AB_RELEASED" "$lvl" "$m" "ab-$m-$lvl" -released
   done
 done
