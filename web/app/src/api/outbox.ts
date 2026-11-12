@@ -62,11 +62,21 @@ export class Outbox {
   private active = new Map<Action<any>, AbortController>()
 
   /** The existing shared queue, with project ownership attached by its canvas. */
-  scoped(project: () => string | null): OutboxPort {
+  scoped(project: () => string | null, initial: string | null = null): OutboxPort {
+    let owner = initial
+    const current = () => {
+      const now = project()
+      if (now) owner = now
+      if (!now && owner) throw new DOMException("Project view retired", "AbortError")
+      return now
+    }
     return {
       owed: this.owed,
-      add: (action) => this.add({ ...action, project: project() }),
-      owing: () => this.owing(),
+      add: (action) => {
+        try { this.add({ ...action, project: current() }) }
+        catch (error) { action.refused?.(error) }
+      },
+      owing: () => { current(); return this.owing() },
       back: () => this.back(),
       wait: (tries, signal) => this.wait(tries, signal),
     }

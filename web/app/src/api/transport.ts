@@ -92,7 +92,7 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     play(path, el) {
       let live = true
       const project = guard(path)
-      void storage(project?.signal).then(() => { project?.check(); if (live) el.src = media(path) }, () => { if (live) el.dispatchEvent(new Event("error")) })
+      void storage(project?.signal).then(() => { project?.check(); if (live) el.src = media(path) }).catch(() => { if (live) el.dispatchEvent(new Event("error")) })
       return {
         stop() {
           live = false

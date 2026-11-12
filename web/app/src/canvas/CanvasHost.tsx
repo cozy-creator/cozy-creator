@@ -312,14 +312,14 @@ function Canvas({
   const flow = useReactFlow<ElementNode, Edge>()
   const navigate = useNavigate()
   const to = useTo()
-  const { client, stream, bridge, outbox, canvases } = connection
+  const { client, stream, bridge, outbox, canvases, closeBlockers } = connection
   const [saved] = useState(() => loadViewport(projectId))
   // One per project for as long as the tab is open: a tab gone to and back finds what it showed, and what's still waiting for Calcifer shows as done.
   // One a code reload left is another class's, and is made again.
   const [store] = useState(() => {
     const kept = projectId ? canvases.get(projectId) : undefined
     if (kept instanceof CanvasStore) return kept
-    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId), projectId, loadSelection(projectId), loadMore(projectId))
+    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId, projectId), projectId, loadSelection(projectId), loadMore(projectId))
     return made
   })
   const keepView = useCallback((patch: ProjectViewPatch) => {
@@ -344,6 +344,11 @@ function Canvas({
   adopt.current = onAdopt
   const [creation, setCreation] = useState<{ resolve(project: Opened): void; reject(why: Error): void } | null>(null)
   const creating = useRef<typeof creation>(null)
+  useEffect(() => {
+    const blocked = () => Boolean(creating.current)
+    closeBlockers.add(blocked)
+    return () => { closeBlockers.delete(blocked) }
+  }, [closeBlockers])
   const [placer] = useState(() => new Placer(store, client, {
     adopt: (id, code) => adopt.current(id, code),
     create: () => new Promise<Opened>((resolve, reject) => {

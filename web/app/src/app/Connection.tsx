@@ -264,6 +264,7 @@ export interface Connection {
   /** Each project's canvas as it was last shown, by its id. */
   canvases: Map<string, CanvasStore>
   /** Remount mixed-project drawers after a lock, dropping their local logs and snapshots. */
+  closeBlockers: Set<() => boolean>
   retireProject(id: string): void
   privateViewEpoch: ReturnType<typeof signal<number>>
   /** Which try a call is on, when it isn't the first; 0 otherwise. */
@@ -316,10 +317,12 @@ export async function connect(): Promise<Boot> {
     if (id) retireProject(id)
     else privateViewEpoch.set(privateViewEpoch.get() + 1)
   })
+  const closeBlockers = new Set<() => boolean>()
   const stopEdit = (event: Event) => { event.preventDefault(); event.stopImmediatePropagation() }
   const editEvents = ["pointerdown", "keydown", "beforeinput", "input", "drop", "paste", "submit"]
   const hooks = globalThis as typeof globalThis & { __cozyFreeze?: () => boolean; __cozyPrepareClose?: () => Promise<void>; __cozyResume?: () => void }
   hooks.__cozyFreeze = () => {
+    if ([...closeBlockers].some((blocked) => blocked())) return false
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
     document.documentElement.inert = true
     for (const name of editEvents) document.addEventListener(name, stopEdit, true)
@@ -343,7 +346,7 @@ export async function connect(): Promise<Boot> {
     if (event.type === "hello") outbox.back()
   })
   stream.start()
-  return { connection: { client, queries, stream, bridge, outbox, canvases, retireProject, privateViewEpoch, attempt, signedOut, status } }
+  return { connection: { client, queries, stream, bridge, outbox, canvases, closeBlockers, retireProject, privateViewEpoch, attempt, signedOut, status } }
 }
 
 const Context = createContext<Connection | null>(null)

@@ -88,7 +88,7 @@ struct RunArgs {
     /// Show the function's inputs and outputs.
     #[arg(long)]
     describe: bool,
-    /// Download outputs to this directory.
+    /// Export output copies to this directory. Project locks do not protect exported copies.
     #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
     output: Option<PathBuf>,
 }
@@ -152,7 +152,7 @@ enum Verb {
         /// Show the current state and exit.
         #[arg(long)]
         once: bool,
-        /// Download outputs to this directory.
+        /// Export output copies to this directory. Project locks do not protect exported copies.
         #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
         output: Option<PathBuf>,
     },
