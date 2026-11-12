@@ -1,4 +1,5 @@
 import type { Edge, Node, ReactFlowInstance, Viewport } from "@xyflow/react"
+import type { CSSProperties } from "react"
 import { flushSync } from "react-dom"
 import { ApiError, type Client, type Write } from "../api/client"
 import { type Action, lost, type OutboxPort } from "../api/outbox"
@@ -35,7 +36,7 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { bodyBox, bodyWidth, canvasBox, faceOf, farNameOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, sameStep, selectedOf, sentShape, type Shown, shownOf, stepOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor, type ZoomStep } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, farNameOf, HEAD, HEAD_FOOT, heightFor, hexOf, IN_BOX, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, sameStep, selectedOf, sentShape, type Shown, shownOf, stepOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor, type ZoomStep } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -371,6 +372,8 @@ export class CanvasStore {
    * only a box let go is where it was let go, as it was drawn.
    */
   private lifts = new Map<string, number>()
+  /** Far out, the boxes whose names keep to their box: one reaching past it would lie on what's beside it. */
+  private inBox = new Set<string>()
   private reflowing = false
   private nameWidth?: (text: string, px: number) => number
   /** On its way out, until a read begun after when its delete was answered: one from before doesn't bring it back, and one from after says, as
@@ -826,69 +829,97 @@ export class CanvasStore {
     })
   }
 
-  /** Each box drawn as low as its lift at the step it's at says. What a hand holds, by itself or by its corner, and all else with it, wait for it to let go. */
+  /** Each box drawn as low as its lift at the step it's at says, its name as wide. What a hand holds, by itself or by its corner, and all else
+   *  with it, wait for it to let go. */
   private reflow(glide: boolean) {
     const flow = this.flow
     if (!flow || this.dragging.size || this.pulling) return
-    const next = this.liftsAt(this.zoomStep)
+    const next = this.layoutAt(this.zoomStep)
     const moved = new Map<string, string>()
-    for (const [name, id] of this.ids) if ((this.lifts.get(name) ?? 0) !== (next.get(name) ?? 0)) moved.set(id, name)
-    this.lifts = next
-    if (!moved.size) return
+    const named = new Map<string, string>()
+    for (const [name, id] of this.ids) {
+      if ((this.lifts.get(name) ?? 0) !== (next.lifts.get(name) ?? 0)) moved.set(id, name)
+      if (this.inBox.has(name) !== next.inBox.has(name)) named.set(id, name)
+    }
+    this.lifts = next.lifts
+    this.inBox = next.inBox
+    if (!moved.size && !named.size) return
     const surface = this.surface?.id
     const ids = new Set([...moved.keys()].filter((id) => id !== surface))
     let timer: ReturnType<typeof setTimeout> | undefined
-    if (glide) timer = setTimeout(() => flow.setNodes((nodes) => nodes.map((node) => (ids.has(node.id) && this.gliding.get(node.id) === timer ? { ...node, className: undefined } : node))), GLIDE_MS)
+    if (glide && ids.size) timer = setTimeout(() => flow.setNodes((nodes) => nodes.map((node) => (ids.has(node.id) && this.gliding.get(node.id) === timer ? { ...node, className: undefined } : node))), GLIDE_MS)
     flow.setNodes((nodes) =>
       nodes.map((node) => {
+        let changed = node
+        const renamed = named.get(node.id)
+        if (renamed) changed = { ...changed, style: this.inBox.has(renamed) ? { ...changed.style, "--name-room": IN_BOX } as CSSProperties : undefined }
         const name = ids.has(node.id) ? moved.get(node.id) : undefined
         const pose = name && this.poseOf(name)
-        if (!pose) return node
+        if (!pose) return changed
         if (timer) {
           clearTimeout(this.gliding.get(node.id))
           this.gliding.set(node.id, timer)
         }
-        return { ...node, position: { x: pose.x, y: pose.y + (next.get(name) ?? 0) }, ...(timer ? { className: "glide" } : {}) }
+        return { ...changed, position: { x: pose.x, y: pose.y + (this.lifts.get(name) ?? 0) }, ...(timer ? { className: "glide" } : {}) }
       }),
     )
     if (surface && moved.has(surface)) this.paintPose(moved.get(surface)!)
   }
 
   /**
-   * How much lower each box is drawn at `step`: close in, none. Far out, from the top down, a box whose name would come nearer a box wholly
-   * above it, as they're drawn, than its room says goes down as far as that takes, and so on down the line. Its name reaches right of its box
-   * as far as it's drawn, and it's measured as it's drawn, so a short name keeps the room rows give it and a name on two lines takes two.
+   * How each box is drawn at `step`: close in, as its row says. Far out, from the top down, a box whose name would come nearer a box wholly
+   * above it, as they're drawn, than its room says goes down as far as that takes, and so on down the line. Each name is measured as it's
+   * drawn, so a short one keeps the room rows give it and one on two lines takes two. A name reaching past its box (a word wider than it,
+   * cl-958) does so only into room that's free: lying on what's beside it, it keeps to its box, and it's laid out again with that.
    */
-  private liftsAt(step: ZoomStep): Map<string, number> {
-    const lifts = new Map<string, number>()
-    if (!step.band) return lifts
+  private layoutAt(step: ZoomStep): { lifts: Map<string, number>; inBox: Set<string> } {
+    const inBox = new Set<string>()
+    if (!step.band) return { lifts: new Map(), inBox }
     const measure = this.measureName()
-    const boxes: { name: string; box: Box; rise: number; reach: number; clear: number }[] = []
+    const boxes: { name: string; text: string; box: Box }[] = []
     for (const name of this.ids.keys()) {
       const view = this.views.get(name)
       const pose = this.poseOf(name)
-      if (!view || !pose) continue
-      const box = bodyBox(view, pose)
-      const far = farNameOf(view.placing ? this.shownName(name) : view.name, box.w, step, measure)
-      boxes.push({ name, box, rise: far.rise, reach: box.x + Math.max(box.w, far.reach), clear: far.clear })
+      if (view && pose) boxes.push({ name, text: view.placing ? this.shownName(name) : view.name, box: bodyBox(view, pose) })
     }
     boxes.sort((a, b) => a.box.y - b.box.y || (a.name < b.name ? -1 : 1))
-    for (const [at, { name, box, rise, reach, clear }] of boxes.entries()) {
-      let lift = 0
-      for (let i = 0; i < at; i++) {
-        const above = boxes[i].box
-        const bottom = above.y + above.h
-        if (bottom > box.y || above.x >= reach || above.x + above.w <= box.x) continue
-        lift = Math.max(lift, bottom + (lifts.get(boxes[i].name) ?? 0) + clear + rise - box.y)
+    const meets = (a: Box, b: Box) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+    for (let pass = 0; ; pass++) {
+      const laid = boxes.map(({ name, text, box }) => ({ name, box, ...farNameOf(text, box.w, step, measure, inBox.has(name)) }))
+      const lifts = new Map<string, number>()
+      for (const [at, { name, box, rise, reach, clear }] of laid.entries()) {
+        let lift = 0
+        for (let i = 0; i < at; i++) {
+          const above = laid[i].box
+          const bottom = above.y + above.h
+          if (bottom > box.y || above.x >= box.x + Math.max(box.w, reach) || above.x + above.w <= box.x) continue
+          lift = Math.max(lift, bottom + (lifts.get(laid[i].name) ?? 0) + clear + rise - box.y)
+        }
+        if (lift > 0) lifts.set(name, Math.ceil(lift))
       }
-      if (lift > 0) lifts.set(name, Math.ceil(lift))
+      if (pass === 3) return { lifts, inBox }
+      // Where each is drawn, its picture and its name, and where a name reaching past its box goes beside it.
+      const drawn = laid.map(({ name, box, rise, reach, clear }) => {
+        const y = box.y + (lifts.get(name) ?? 0)
+        const label = { x: box.x, y: y - rise, w: reach, h: rise + (HEAD - HEAD_FOOT) }
+        const past = reach > box.w ? { x: box.x + box.w, y: label.y - clear / 2, w: reach - box.w + clear / 2, h: label.h + clear / 2 } : null
+        return { name, body: { ...box, y }, label, past }
+      })
+      let more = false
+      for (const one of drawn) {
+        if (!one.past || inBox.has(one.name)) continue
+        if (drawn.some((other) => other !== one && (meets(one.past!, other.body) || meets(one.past!, other.label)))) {
+          inBox.add(one.name)
+          more = true
+        }
+      }
+      if (!more) return { lifts, inBox }
     }
-    return lifts
   }
 
   /** What the boxes, or those whose nodes are `ids`, cover as they'd be drawn at `zoom`: what a fit landing there holds. */
   boundsAt(zoom: number, ids?: Set<string>): Box | null {
-    const lifts = this.liftsAt(stepOf(zoom))
+    const { lifts } = this.layoutAt(stepOf(zoom))
     let [left, top, right, bottom] = [Infinity, Infinity, -Infinity, -Infinity]
     for (const [name, id] of this.ids) {
       const view = this.views.get(name)
@@ -1256,6 +1287,7 @@ export class CanvasStore {
       id,
       type: view.entity ? "entity" : "element",
       position: { x: row.x, y: row.y + (this.lifts.get(name) ?? 0) },
+      ...(this.inBox.has(name) ? { style: { "--name-room": IN_BOX } as CSSProperties } : {}),
       data: { name, width },
       width: drawn.w,
       origin: [(row.x - drawn.x) / drawn.w, (row.y - drawn.y) / drawn.h],
@@ -2173,6 +2205,7 @@ export class CanvasStore {
     this.masks.delete(name)
     this.shapes.delete(name)
     this.lifts.delete(name)
+    this.inBox.delete(name)
     if (this.moreOpen.delete(name)) this.onMore?.([...this.moreOpen])
     this.notify(name)
     if (id) this.flow?.setNodes((nodes) => nodes.filter((node) => node.id !== id))
@@ -2205,6 +2238,7 @@ export class CanvasStore {
     const lift = this.lifts.get(from)
     this.lifts.delete(from)
     if (lift) this.lifts.set(to, lift)
+    if (this.inBox.delete(from)) this.inBox.add(to)
     if (this.moreOpen.delete(from)) {
       this.moreOpen.add(to)
       this.onMore?.([...this.moreOpen])

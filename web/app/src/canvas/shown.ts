@@ -79,17 +79,20 @@ export const stepOf = (zoom: number): ZoomStep => ({ band: bandOf(zoom), nameZoo
 export const sameStep = (a: ZoomStep, b: ZoomStep) => a.band === b.band && a.nameZoom === b.nameZoom
 
 // A far name as app.css draws it (cl-958): bold mono at the body step, the small step past 20%, held on screen by --name-zoom; on lines of 1.1,
-// two at most; as wide as 130% of its head (its box less 2 a side), only its box past 20%; its last line on the head's 12 of foot.
+// two at most; as wide as 130% of its head (its box less 2 a side), only its box past 20%, or kept to its box (`--name-room`); after its
+// dot, 0.7 of its size and 4 of gap; its last line on the head's 12 of foot.
 const FAR_LINE = 1.1
-const HEAD_FOOT = 12
+export const HEAD_FOOT = 12
 /** On screen, between a far name and the picture above it: twice what's between it and its own, so it reads as the lower box's. */
 const FAR_CLEAR = 8
+/** A far name kept to its box, past its dot: what `--name-room` says in app.css. */
+export const IN_BOX = "calc(100% - 0.7em - 4px)"
 
 /** A far name as it's drawn at `step`, in canvas px: how far it rises over its box, how far right of its box's left it reaches, and the room
- *  it keeps above it. `measure`: its text's width at a font size, in the font it's drawn in. */
-export function farNameOf(text: string, width: number, step: ZoomStep, measure: (text: string, px: number) => number) {
+ *  it keeps above it. `inBox`: kept to its box. `measure`: its text's width at a font size, in the font it's drawn in. */
+export function farNameOf(text: string, width: number, step: ZoomStep, measure: (text: string, px: number) => number, inBox = false) {
   const px = (step.band === 2 ? 10.5 : 12.5) * 1.35 * step.nameZoom
-  const room = (width - 4) * (step.band === 2 ? 1 : 1.3)
+  const room = inBox ? width - 4 - 0.7 * px - 4 : (width - 4) * (step.band === 2 ? 1 : 1.3)
   const drawn = measure(text, px)
   // Within a pixel of its room, it may wrap: the room for two.
   const lines = drawn > room - 1 ? 2 : 1
