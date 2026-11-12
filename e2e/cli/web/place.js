@@ -219,11 +219,23 @@ async function placedInView(page, expected) {
   check('esc_leaves_nothing', stored(folder) === before);
 
   // A file that isn't media gets one line; the one beside it lands. The same file twice is two elements and one file.
+  // Let go on bare canvas, the nearest to 900,650: on a box of pictures they'd be its next version (place.ts join). Where the coast comes
+  // races the first drop, and Hero_Shot pushes it down onto 900,650 from its home right of clash_take (Windows 43288869140).
+  const bare = await page.evaluate(() => {
+    const open = (x, y) => [[0, 0], [-40, -40], [40, -40], [-40, 40], [40, 40]].every(([dx, dy]) => document.elementFromPoint(x + dx, y + dy)?.classList.contains('react-flow__pane'));
+    const spots = [];
+    for (let y = 120; y <= innerHeight - 120; y += 20) {
+      for (let x = 320; x <= innerWidth - 120; x += 20) if (open(x, y)) spots.push({ x, y });
+    }
+    return spots.sort((a, b) => Math.hypot(a.x - 900, a.y - 650) - Math.hypot(b.x - 900, b.y - 650))[0] ?? null;
+  });
+  if (!bare) throw new Error('no bare canvas to let the copy go on');
+  seen.copy_let_go_at = bare;
   const filesBefore = readdirSync(join(folder, 'files')).length;
   await drop(page, [
     { name: 'notes.txt', type: 'text/plain', bytes: Buffer.from('these are not pictures\n'.repeat(4)) },
     { name: 'Kyogre Art (1).png', type: 'image/png', bytes: pngBytes },
-  ], 900, 650);
+  ], bare.x, bare.y);
   await until('the copy landed', () => constants(folder).kyogre_art_2, Boolean);
   const lines = await until('one line for the text file', () => page.locator('.note .line').allTextContents(), (all) => all.some((line) => line.includes('notes.txt')));
   check('one_line_for_non_media', lines.filter((line) => line.includes('notes.txt')).length === 1, lines);
