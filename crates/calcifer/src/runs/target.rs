@@ -4,6 +4,7 @@
 use std::{
     collections::HashMap,
     path::Path,
+    str::FromStr,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -234,6 +235,8 @@ struct Held {
     machine: String,
     environments: Vec<api::machine::Environment>,
     hub: String,
+    /// It runs, or moves to before this run, the open RC's Runtime (cl-922): it takes packages built for it.
+    rc: bool,
 }
 
 impl Held {
@@ -241,7 +244,26 @@ impl Held {
     /// nothing for a machine still to come.
     async fn read(api: &Arc<Api>, hub: &str, on: &On, wake: bool) -> Self {
         let (machine, environments) = api.machines.holds(on, wake).await.unwrap_or_default();
-        Self { machine, environments, hub: canonical(hub) }
+        let rc = api.machines.takes_rc(&machine, on);
+        Self { machine, environments, hub: canonical(hub), rc }
+    }
+
+    /// Of `releases`, the newest this machine runs: on the RC's Runtime, by PEP 440 alone, so a prerelease built for it
+    /// (`0.10.0rc1`) is newer than the last final; elsewhere a final before any prerelease.
+    fn newest<'a>(&self, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+        match self.rc {
+            true => releases.into_iter().filter_map(|r| Some((pep440_rs::Version::from_str(r).ok()?, r))).max_by(|a, b| a.0.cmp(&b.0)).map(|(_, r)| r),
+            false => newest_by(releases, |release| release),
+        }
+    }
+
+    /// The Hub's newest release of `read` for this machine: a prerelease included on the RC's Runtime, never a yanked one.
+    fn newest_released(&self, read: &cards::Releases, package: &str) -> Result<String, Error> {
+        let open = read.released.iter().map(String::as_str).filter(|release| !read.yanked.contains(*release));
+        match self.newest(open).filter(|_| self.rc) {
+            Some(release) => Ok(release.to_owned()),
+            None => read.newest(package),
+        }
     }
 
     /// The releases of `package` from this run's Hub.
@@ -284,8 +306,8 @@ async fn release_of(
 /// it holds when the Hub names nothing else.
 async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> Result<(String, ReleaseFrom, Option<String>), Error> {
     let holds = held.releases(package);
-    let Some(top) = newest_by(holds.iter().copied(), |release| release).map(str::to_owned) else {
-        return Ok((api.releases.now(api, hub, package).await?.newest(package)?, ReleaseFrom::Latest, None));
+    let Some(top) = held.newest(holds.iter().copied()).map(str::to_owned) else {
+        return Ok((held.newest_released(&*api.releases.now(api, hub, package).await?, package)?, ReleaseFrom::Latest, None));
     };
     let yanked = match api.releases.kept(api, hub, package).await {
         Ok(read) => read,
@@ -300,16 +322,16 @@ async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> R
     };
     // An old installation of a release the Hub no longer has can't be chosen: nothing can install or describe it.
     let holds: Vec<&str> = holds.into_iter().filter(|release| yanked.released.contains(*release)).collect();
-    let Some(top) = newest_by(holds.iter().copied(), |release| release).map(str::to_owned) else {
-        return Ok((yanked.newest(package)?, ReleaseFrom::Latest, None));
+    let Some(top) = held.newest(holds.iter().copied()).map(str::to_owned) else {
+        return Ok((held.newest_released(&yanked, package)?, ReleaseFrom::Latest, None));
     };
     let shown = package.trim_start_matches("_/");
     let machine = &held.machine;
-    if let Some(open) = newest_by(holds.iter().copied().filter(|release| !yanked.yanked.contains(*release)), |release| release) {
+    if let Some(open) = held.newest(holds.iter().copied().filter(|release| !yanked.yanked.contains(*release))) {
         let moved = (open != top).then(|| format!("{shown}@{top} on {machine} is yanked: this run uses {open}, also installed there"));
         return Ok((open.to_owned(), ReleaseFrom::Installed, moved));
     }
-    Ok(match api.releases.now(api, hub, package).await.and_then(|read| read.newest(package)) {
+    Ok(match api.releases.now(api, hub, package).await.and_then(|read| held.newest_released(&read, package)) {
         Ok(newest) => {
             let moved = format!("{shown}@{top} on {machine} is yanked: this run moves it to {newest}, the newest");
             (newest, ReleaseFrom::Latest, Some(moved))

@@ -1011,6 +1011,21 @@ impl Store {
         })
     }
 
+    /// `machine`'s settled updates that completed, newest first, each with the key it was asked under (cl-922).
+    pub(crate) fn updates(&self, machine: &str, limit: u32) -> Result<Vec<(RunRow, String)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(&format!(
+                "SELECT {RUN_COLUMNS}, idempotency_key FROM runs WHERE machine = ?1 AND kind = 'update' AND state = 'settled'
+                     AND status = 'completed' ORDER BY number DESC LIMIT ?2"
+            ))?;
+            let rows = statement.query_map(params![machine, limit], |r| {
+                let key: String = r.get(r.as_ref().column_count() - 1)?;
+                run_row(r).map(|row| row.map(|row| (row, key)))
+            })?;
+            rows.map(|row| row?).collect()
+        })
+    }
+
     /// Unsettled runs no machine was chosen for, oldest first, with where each may go.
     pub(crate) fn unplaced(&self) -> Result<Vec<RunRow>> {
         self.read(|conn| {
@@ -2454,6 +2469,7 @@ impl From<&MachineRow> for Machine {
             reach: None,
             ending: None,
             end_failed: None,
+            rc: None,
         }
     }
 }

@@ -1,0 +1,125 @@
+name: rc-dev
+# The open RC's machine software for dev homes (cl-922): each push to rc/<x.y.z> builds what it changed of the
+# Linux x86_64 `cozy` a machine runs (TensorD: the tensord crate and what it builds on) and the TensorFS wheel,
+# dev-build.yaml's builds (<version>+dev.g<sha8>), and puts them on the rolling GitHub prerelease `rc-<x.y.z>`,
+# never latest, in place of the last ones. Its SHA256SUMS names them; a dev home's Calcifer reads it and brings its
+# rentals to it. A push that changes neither builds nothing, so a machine restarts only for its own software.
+# By hand: gh workflow run rc-dev.yaml -R cozy-creator/cozy-creator --ref rc/<x.y.z>
+on:
+  push:
+    branches: ['rc/*']
+  workflow_dispatch:
+
+# One build per RC at a time: a push while one runs waits, and only the newest waiting one runs.
+concurrency:
+  group: rc-dev-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: ${{ github.repository }}
+  SHA: ${{ github.sha }}
+  BRANCH: ${{ github.ref_name }}
+
+jobs:
+  changed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.changed.outputs.build }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # Each kind is built again when its crates (and their workspace dependencies), the lock or the toolchain changed
+      # since the commit its file on the prerelease says (`+dev.g<sha8>`); with none there, it is built.
+      - id: changed
+        run: |
+          set -euo pipefail
+          case $BRANCH in rc/*) ;; *) echo "::error::$BRANCH is no RC branch"; exit 1 ;; esac
+          sums=$(gh release download "rc-${BRANCH#rc/}" -R "$REPO" -p SHA256SUMS -O - 2>/dev/null || true)
+          closure() {
+            cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json, os, sys
+          packages = {p["name"]: p for p in json.load(sys.stdin)["packages"]}
+          seen, todo = set(), [sys.argv[1]]
+          while todo:
+              name = todo.pop()
+              if name not in seen:
+                  seen.add(name)
+                  todo += [d["name"] for d in packages[name]["dependencies"] if d.get("path") and d["name"] in packages]
+          print(" ".join(sorted(os.path.relpath(os.path.dirname(packages[n]["manifest_path"])) for n in seen)))' "$1"
+          }
+          built() { sed -n "s/^[0-9a-f]\{64\} [ *]*$1-[^ ]*+dev\.g\([0-9a-f]\{8\}\)-.*/\1/p" <<< "$sums" | head -1; }
+          moved() {  # moved <kind> <paths...>
+            local from; from=$(built "$1"); shift
+            [ -n "$from" ] && git rev-parse -q --verify "$from^{commit}" >/dev/null || return 0
+            ! git diff --quiet "$from" HEAD -- "$@" Cargo.lock Cargo.toml rust-toolchain.toml
+          }
+          build=
+          if moved cozy $(closure tensord) crates/cozy; then build=cozy; fi
+          if moved tensorfs $(closure tensorfs-py); then build="${build:+$build,}tensorfs"; fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "builds: ${build:-none (nothing a machine runs changed)}" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: changed
+    if: needs.changed.outputs.build != ''
+    uses: ./.github/workflows/dev-build.yaml
+    with:
+      ref: ${{ github.sha }}
+      build: ${{ needs.changed.outputs.build }}
+
+  publish:
+    needs: [changed, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-${{ github.sha }}'
+          path: artifacts
+      # New files first, SHA256SUMS next (a reader sees the last build or this one, whole), stale files last. A kind not
+      # built this time keeps its file and line.
+      - name: The RC's prerelease holds this build
+        env:
+          BUILD: ${{ needs.changed.outputs.build }}
+        run: |
+          set -euo pipefail
+          tag="rc-${BRANCH#rc/}"
+          old=$(gh release download "$tag" -R "$REPO" -p SHA256SUMS -O - 2>/dev/null || true)
+          mkdir up
+          kept=$old
+          if [[ $BUILD == *cozy* ]]; then
+            bin=artifacts/cozy-$SHA/cozy-linux-x86_64
+            chmod +x "$bin"
+            version=$("$bin" --version | awk '{print $2}')
+            case $version in *"+dev.g${SHA:0:8}") ;; *) echo "::error::the dev cozy says $version"; exit 1 ;; esac
+            cp "$bin" "up/cozy-$version-linux-x86_64"
+            kept=$(grep -v ' [ *]*cozy-' <<< "$kept" || true)
+          fi
+          if [[ $BUILD == *tensorfs* ]]; then
+            cp artifacts/tensorfs-wheel-$SHA/*.whl up/
+            kept=$(grep -v ' [ *]*tensorfs-' <<< "$kept" || true)
+          fi
+          cd up
+          files=(*)
+          { sha256sum "${files[@]}"; [ -z "$kept" ] || echo "$kept"; } > SHA256SUMS
+          cat SHA256SUMS
+          if ! gh release view "$tag" -R "$REPO" >/dev/null 2>&1; then
+            gh release create "$tag" -R "$REPO" --target "$SHA" --prerelease --latest=false \
+              --title "$BRANCH dev builds" --notes "The newest machine builds of $BRANCH, for dev homes (cl-922). Replaced by each push."
+          fi
+          gh api -X PATCH "repos/$REPO/git/refs/tags/$tag" -f sha="$SHA" -F force=true >/dev/null
+          gh release upload "$tag" -R "$REPO" --clobber "${files[@]}"
+          gh release upload "$tag" -R "$REPO" --clobber SHA256SUMS
+          listed=" $(awk '{print $2}' SHA256SUMS | tr -d '*' | tr '\n' ' ') SHA256SUMS "
+          for name in $(gh release view "$tag" -R "$REPO" --json assets --jq '.assets[].name'); do
+            case $listed in *" $name "*) ;; *) gh release delete-asset "$tag" "$name" -R "$REPO" -y ;; esac
+          done
+          gh release edit "$tag" -R "$REPO" --notes "$BRANCH at $SHA (built: $BUILD), for dev homes (cl-922). Replaced by each push."
+          echo "$tag: $BRANCH at $SHA, built $BUILD" >> "$GITHUB_STEP_SUMMARY"

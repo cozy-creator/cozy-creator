@@ -84,7 +84,8 @@ impl Machines {
         };
         let own = this_release();
         if same_minor(&frame.version, own) {
-            return Ok(None);
+            // A dev home's rental moves to the open RC first, when it is behind it and has no work going (cl-922).
+            return Ok(self.follow_rc(name, true).await);
         }
         let row = self.named(name)?;
         let id = row.as_ref().and_then(|row| row.rental_id.clone()).unwrap_or_else(|| name.to_owned());
@@ -164,17 +165,26 @@ impl Machines {
                 return Err(Error::new(Kind::Unavailable, "machine_unanswered", format!("{} has not reported the software it runs", m.name))
                     .next(format!("cozy machine show {}", m.name)));
             };
-            let target = self.hubs.anonymous(&hub)?.get_software().await.map_err(|e| hub_refusal(&hub, e))?;
-            // An unpinned target older than the machine's software is no reason to go back.
-            let moves = |running: &str, wanted: &str| running != wanted && (target.pinned || newer(wanted, running));
-            let cozy = target.cozy.as_deref().filter(|cozy| moves(&status.version, cozy) && placed.is_none());
-            for (member, distribution, running, wanted) in [
-                ("runtime", "cozy_runtime", status.runtime.as_str(), Some(target.runtime.as_str())),
-                ("tensorfs", "tensorfs", status.tensorfs.as_str(), Some(target.tensorfs.as_str())),
-                ("tensord", "", status.version.as_str(), cozy),
-            ] {
-                if let Some(wanted) = wanted.filter(|wanted| moves(running, wanted)) {
-                    asked.push((member, distribution, Component::Version(wanted.into())));
+            if self.dev && m.kind == MachineKind::Rental {
+                // A dev home's rental moves to the open RC's builds for its platform (cl-922).
+                let sums = self.rc.now().await?;
+                for (member, version) in sums.behind(&status.platform, [status.runtime.as_str(), status.tensorfs.as_str(), status.version.as_str()]) {
+                    let distribution = match member { "runtime" => "cozy_runtime", "tensorfs" => "tensorfs", _ => "" };
+                    asked.push((member, distribution, Component::Version(version)));
+                }
+            } else {
+                let target = self.hubs.anonymous(&hub)?.get_software().await.map_err(|e| hub_refusal(&hub, e))?;
+                // An unpinned target older than the machine's software is no reason to go back.
+                let moves = |running: &str, wanted: &str| running != wanted && (target.pinned || newer(wanted, running));
+                let cozy = target.cozy.as_deref().filter(|cozy| moves(&status.version, cozy) && placed.is_none());
+                for (member, distribution, running, wanted) in [
+                    ("runtime", "cozy_runtime", status.runtime.as_str(), Some(target.runtime.as_str())),
+                    ("tensorfs", "tensorfs", status.tensorfs.as_str(), Some(target.tensorfs.as_str())),
+                    ("tensord", "", status.version.as_str(), cozy),
+                ] {
+                    if let Some(wanted) = wanted.filter(|wanted| moves(running, wanted)) {
+                        asked.push((member, distribution, Component::Version(wanted.into())));
+                    }
                 }
             }
             if asked.is_empty() && placed.is_none() {
@@ -184,7 +194,24 @@ impl Machines {
         let platform = m.status.as_ref().map(|s| s.platform.clone()).unwrap_or_default();
         let (mut payload, mut inputs, mut staged, mut named) = (serde_json::Map::new(), vec![], vec![], vec![]);
         for (member, distribution, component) in asked {
-            let path = match component {
+            let (path, built) = match component {
+                // A dev build by version is the open RC's (cl-922): a wheel the machine fetches from its prerelease, held to
+                // its digest; the `cozy` fetched here and staged with the run.
+                Component::Version(version) if api::prerelease::dev(&version) => {
+                    let version = release(&version)?;
+                    let sums = self.rc.now().await?;
+                    let Some((build, url)) = sums.build(member, &platform).filter(|(build, _)| build.version == version) else {
+                        let has = sums.build(member, &platform).map_or_else(|| format!("no build of it for {platform}"), |(build, _)| build.version);
+                        return Err(Error::new(Kind::NotFound, "rc_build_absent", format!("{member} {version} is not the open RC's build: rc-{} holds {has}", sums.rc))
+                            .remedy(format!("with no version named, `cozy machine update {}` moves it to the open RC's builds", m.name)));
+                    };
+                    named.push(format!("{member} {version} (RC)"));
+                    if member != "tensord" {
+                        payload.insert(member.into(), json!({ "url": url, "sha256": build.sha256 }));
+                        continue;
+                    }
+                    (crate::rc::held_cozy(&build, &url).await?, "RC")
+                }
                 Component::Version(version) => {
                     let version = release(&version)?;
                     // A wheel version PyPI lacks is its GitHub prerelease, an exact version being an
@@ -205,10 +232,12 @@ impl Machines {
                     }
                     continue;
                 }
-                Component::File(build) => build,
+                Component::File(build) => (build, "dev"),
             };
             let (file, input, version) = measured(path, distribution)?;
-            named.push(format!("{member} {} (dev)", version.as_deref().unwrap_or(&file)));
+            if built == "dev" {
+                named.push(format!("{member} {} (dev)", version.as_deref().unwrap_or(&file)));
+            }
             inputs.push(v1::InputFile {
                 field: member.into(),
                 digest: input.digest.to_string(),

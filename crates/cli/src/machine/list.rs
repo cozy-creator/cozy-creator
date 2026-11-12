@@ -232,7 +232,12 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
     match &m.status {
         Some(status) => {
             for (key, value) in status_fields(status) {
+                let versions = key == "tensorfs";
                 record = record.field(&key, value);
+                // A dev home's rental and the open RC (cl-922), beside its versions.
+                if let Some(rc) = m.rc.as_ref().filter(|_| versions) {
+                    record = record.field("rc", format!("{} {}: {}", rc.rc, rc.state, rc.detail));
+                }
             }
             // The warm set: each member at its level, or what it holds instead and why.
             for item in &status.warm {
