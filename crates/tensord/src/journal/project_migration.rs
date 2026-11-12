@@ -448,6 +448,70 @@ fn save(conn: &Connection, receipt: &Receipt) -> io::Result<()> {
 }
 
 impl Journal {
+    pub(crate) fn lookup_project_legacy_bindings(
+        &self,
+        actor: &str,
+        project: &str,
+        requests: &[String],
+    ) -> io::Result<api::machine::ProjectExecutionLegacyLookupAnswer> {
+        if requests.len() > 256 {
+            return Err(db_error("legacy binding lookup exceeds its protocol bound"));
+        }
+        let mut answer = api::machine::ProjectExecutionLegacyLookupAnswer::default();
+        for request in requests {
+            if request.is_empty() || request.len() > 256 || request.chars().any(char::is_control) {
+                return Err(db_error("invalid legacy request identity"));
+            }
+            let row: Option<(u64, String, String)> = self
+                .connection
+                .query_row(
+                    "SELECT id,invocation,record FROM executions WHERE actor=?1 AND request_id=?2",
+                    params![actor, request],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(db_error)?;
+            let (source_number, invocation, record) = row.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "canonical legacy request has no acceptance at this registered worker",
+                )
+            })?;
+            let invocation: Invocation = serde_json::from_str(&invocation).map_err(db_error)?;
+            if invocation
+                .local_private
+                .as_ref()
+                .is_some_and(|scope| scope.project_id != project)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "legacy request is tagged to another project",
+                ));
+            }
+            let record = decoded_execution(&record)?;
+            let accepted = record
+                .submission
+                .ok_or_else(|| db_error("legacy request has no accepted binding"))?;
+            if accepted.actor != actor
+                || accepted.request_id != *request
+                || accepted.invocation_digest.is_empty()
+            {
+                return Err(db_error("legacy accepted binding is incomplete"));
+            }
+            answer
+                .bindings
+                .push(api::machine::ProjectExecutionLegacyBinding {
+                    source_number,
+                    binding: api::machine::ProjectExecutionMigrationBinding {
+                        request_id: request.clone(),
+                        source_workspace_id: self.workspace_id.clone(),
+                        invocation_spec_digest: accepted.invocation_digest,
+                    },
+                });
+        }
+        Ok(answer)
+    }
+
     pub(crate) fn needs_project_migration(
         &self,
         target: &Journal,

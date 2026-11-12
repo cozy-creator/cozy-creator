@@ -150,6 +150,12 @@ impl Machine {
         send(self.request(Method::POST, path::PROJECT_MIGRATE, &[&scope.storage.project_id])).await.map(|_| ())
     }
 
+    pub(crate) async fn legacy_project_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, Error> {
+        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("legacy binding lookup requires a selected project proof".into()))?;
+        let query = api::machine::ProjectExecutionLegacyLookup { request_ids: request_ids.to_vec() };
+        json(send(self.request(Method::POST, path::PROJECT_LEGACY_BINDINGS, &[&scope.storage.project_id]).json(&query)).await?).await
+    }
+
     pub(crate) async fn migration_receipt(&self) -> Result<api::machine::ProjectExecutionMigrationReceipt, Error> {
         let scope = self.private.as_ref().ok_or_else(|| Error::Answer("migration coverage requires a selected project proof".into()))?;
         json(send(self.request(Method::GET, path::PROJECT_MIGRATE, &[&scope.storage.project_id])).await?).await

@@ -99,7 +99,7 @@ async fn legacy_private_request() -> Response {
 async fn project_request(State(m): State<Machine>, Path((project, rest)): Path<(String, String)>, request: Request<Body>) -> Response {
     // No private body is read while the stronger storage/security contract is being prepared.
     // This explicit refusal is removed only when the native backend and project-owned engine qualify.
-    let guarded = if rest == "close" || rest == "migrate" {
+    let guarded = if rest == "close" || rest == "migrate" || rest == "migration-bindings" {
         platform::private_exec::disable_project_parent_dumps().map_err(std::io::Error::from)
     } else { crate::private_io::require_project_execution() };
     if let Err(error) = guarded {
@@ -138,7 +138,8 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     let (descriptor, token, actor) = match proof { Ok(value) => value, Err(error) => return Refusal::from(error).into_response() };
     let selected = async {
         let checked = descriptor.clone();
-        tokio::task::spawn_blocking(move || crate::private_io::register(&checked, &token, &actor)).await
+        let registering_actor = actor.clone();
+        tokio::task::spawn_blocking(move || crate::private_io::register(&checked, &token, &registering_actor)).await
             .map_err(|_| Error::internal("private_storage_stopped", "project workspace verification stopped"))?
             .map_err(|_| Error::forbidden("private_storage_proof", "the project workspace is locked or its proof is invalid"))?;
         Ok::<_, Error>(descriptor)
@@ -147,6 +148,16 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
     if rest == "close" && request.method() == axum::http::Method::POST {
         let headers = request.headers().clone();
         return crate::private_io::request(descriptor, close_private(State(m), headers)).await.into_response();
+    }
+    if rest == "migration-bindings" {
+        if request.method() != axum::http::Method::POST { return Refusal::from(Error::validation("method_not_allowed", "Legacy acceptance lookup uses POST.")).into_response(); }
+        // Proof and actor authentication above precede even this bounded metadata-only body.
+        let bytes = match axum::body::to_bytes(request.into_body(), 65536).await { Ok(bytes) => bytes, Err(_) => return Refusal::from(Error::validation("invalid_request", "Legacy lookup exceeds its protocol bound.")).into_response() };
+        let query: v1::ProjectExecutionLegacyLookup = match serde_json::from_slice(&bytes) { Ok(query) => query, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid legacy lookup request.")).into_response() };
+        let ordinary = m.runs.clone();
+        let selected = descriptor.clone();
+        let looked = tokio::task::spawn_blocking(move || crate::private_io::within(Some(selected.clone()), || ordinary.service.engine.with_journal(|journal| journal.lookup_project_legacy_bindings(&actor, &selected.project_id, &query.request_ids)))).await;
+        return match looked { Ok(Ok(answer)) => Json(answer).into_response(), Ok(Err(error)) => Refusal::from(project_migration_error(error)).into_response(), Err(_) => Refusal::from(Error::conflict("project_storage_migration_stopped", "Legacy acceptance lookup stopped; no binding is available.")).into_response() };
     }
     if rest == "migrate" {
         if request.method() != axum::http::Method::POST && request.method() != axum::http::Method::GET { return Refusal::from(Error::validation("method_not_allowed", "Project migration uses POST; coverage uses GET.")).into_response(); }
