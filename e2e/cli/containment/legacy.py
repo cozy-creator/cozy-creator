@@ -53,13 +53,64 @@ ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_f
     "calcifer_replacement_birth", "calcifer_replacement_status", "worker_record_shape",
     "worker_projection_owner", "worker_projection_reference", "worker_projection_file",
     "worker_projection_blob", "worker_record_identity", "worker_record_submission",
-    "worker_record_unique", "worker_journal_complete", "worker_execution_preserved"})
+    "worker_record_unique", "worker_journal_complete", "worker_execution_preserved",
+    "journal_file", "stop_status", "stop_controller_ended", "stop_worker_ended", "public_reset_path",
+    "public_reset_empty", "public_reset_runs", "public_reset_maintenance", "public_reset_projects",
+    "schema_v7", "schema_v8", "settled_terminal", "worker_endpoint", "worker_tls_pin",
+    "worker_response_closed", "worker_response_size", "worker_response_reset", "wrong_binding_pending",
+    "wrong_binding_lookup_status", "wrong_binding_lookup", "wrong_binding_refused",
+    "wrong_binding_worker_unchanged", "wrong_binding_source_retained", "adoption_status",
+    "adoption_receipt", "adoption_pending", "crash_birth_ended", "history_readable", "history_listed",
+    "history_run_fields", "history_output_bytes", "history_journal_exact", "migration_pending_cleared",
+    "migration_source_retired", "old_installed", "old_version", "old_project_created",
+    "old_retry_prepared", "input_retained", "retry_replayed", "retry_journal_exact",
+    "retry_worker_exact", "old_client_refused", "old_client_journal_exact", "encrypted_identity",
+    "moved_identity", "moved_retry_replayed", "moved_worker_exact"})
+
+
+class Failed(Failure):
+    """A failed named check; its case is a fixed ASSERTIONS string."""
+    def __init__(self, case: str):
+        super().__init__("fixture_failure")
+        self.case = case
 
 
 def check(ok: object, case: str, **counts: int | bool) -> None:
     require(case in ASSERTIONS and all(type(value) in {int, bool} for value in counts.values()), "receipt_schema")
     CONTEXT["assertion"] = {"case": case, "passed": bool(ok), **counts}
-    require(ok, "fixture_failure")
+    if not ok:
+        raise Failed(case)
+
+
+def wait(read, wanted, case: str, seconds: float):
+    try:
+        return until(read, wanted, "fixture_failure", seconds)
+    except Failed:
+        raise
+    except Failure as error:
+        if error.code != "fixture_failure":
+            raise
+    check(False, case, deadline=True)
+
+
+def call(native: Native, method: str, path: str, body: dict | None = None, **options) -> dict:
+    reply = native.raw(method, path, body, **options)
+    if 200 <= reply.status < 300:
+        CONTEXT.pop("http", None)
+        return reply.json() if reply.body else {}
+    failure = {"status": reply.status, "kind": None, "code_sha256": None, "cause_sha256": None}
+    try:
+        error = json.loads(reply.body).get("error")
+    except (ValueError, AttributeError):
+        error = None
+    if isinstance(error, dict):
+        kind = error.get("kind")
+        failure["kind"] = kind if isinstance(kind, str) and kind in ERROR_KINDS else None
+        for key in ("code", "cause"):
+            value = error.get(key)
+            failure[key + "_sha256"] = sha(value.encode()) if isinstance(value, str) else None
+    CONTEXT["http"] = failure
+    raise Failure("native_http_status")
 
 
 def run_shape(run: dict) -> dict:
@@ -112,6 +163,7 @@ def exception_failure(error: BaseException) -> dict:
                (OSError, "io"), (KeyError, "key"), (TypeError, "type"),
                (ValueError, "value"), (KeyboardInterrupt, "interrupted"))
     return {"class": next((name for kind, name in classes if isinstance(error, kind)), "unclassified"),
+            "case": error.case if isinstance(error, Failed) else None,
             "code_sha256": sha(error.code.encode()) if isinstance(error, Failure) else None,
             "errno": error.errno if isinstance(error, OSError) and type(error.errno) is int else None}
 
@@ -123,7 +175,7 @@ def digest(path: Path) -> str:
 
 @contextmanager
 def read_db(path: Path):
-    require(path.is_file() and not path.is_symlink(), "fixture_failure")
+    check(path.is_file() and not path.is_symlink(), "journal_file")
     connection = sqlite3.connect("file:" + quote(str(path), safe="/") + "?mode=ro", uri=True)
     connection.execute("PRAGMA query_only=ON")
     try:
@@ -198,12 +250,12 @@ def stop(native: Native, *, old: bool) -> None:
     worker = json.loads(worker_file.read_bytes()) if worker_file.exists() else None
     tree = descendants(worker) if worker and alive(worker) else {}
     reply = native.raw("POST", "/v1/down", preflight=not old)
-    require(reply.status == 200, "fixture_failure")
-    until(lambda: alive(controller), lambda value: not value, "fixture_failure", 90)
+    check(reply.status == 200, "stop_status", status=reply.status)
+    wait(lambda: alive(controller), lambda value: not value, "stop_controller_ended", 90)
     for member in reversed(list(tree.values())):
         kill_exact(member)
     for member in tree.values():
-        until(lambda member=member: alive(member), lambda value: not value, "fixture_failure", 90)
+        wait(lambda member=member: alive(member), lambda value: not value, "stop_worker_ended", 90)
     exclusive_free(CALCIFER / "calcifer.lock")
     exclusive_free(MACHINE / "var/lib/cozy/machine/agent.lock")
 
@@ -212,9 +264,9 @@ def remove_public(path: Path) -> None:
     """Only used before any private subject exists, on explicitly owned public paths."""
     if not path.exists():
         return
-    require(not path.is_symlink(), "fixture_failure")
+    check(not path.is_symlink(), "public_reset_path")
     if path.is_dir():
-        require(not any(child.is_symlink() for child in path.rglob("*")), "fixture_failure")
+        check(not any(child.is_symlink() for child in path.rglob("*")), "public_reset_path")
         shutil.rmtree(path)
     else:
         path.unlink()
@@ -223,15 +275,15 @@ def remove_public(path: Path) -> None:
 def reset_public_bootstrap(native: Native, provenance: dict) -> None:
     # Explicit coordinator approval is limited to this fresh, zero-project public
     # bootstrap. Never call this after generating a canary or creating a project.
-    projects = native.call("GET", "/v1/projects?limit=0", preflight=False)
-    require(projects.get("projects") == [], "fixture_failure")
+    projects = call(native, "GET", "/v1/projects?limit=0", preflight=False)
+    check(projects.get("projects") == [], "public_reset_empty")
     with read_db(CALCIFER / "state.db") as source:
         rows = source.execute("SELECT id,target,kind,state,out_dir FROM runs").fetchall()
-        require({row[0] for row in rows} == set(provenance["public_maintenance_run_ids"]), "fixture_failure")
-        require(all(row[1] in {"cozy/package_publish", "cozy/package_lock"} and row[2] == "here" and row[3] == "settled" for row in rows), "fixture_failure")
-        require(source.execute("SELECT count(*) FROM projects").fetchone()[0] == 0, "fixture_failure")
+        check({row[0] for row in rows} == set(provenance["public_maintenance_run_ids"]), "public_reset_runs", runs=len(rows))
+        check(all(row[1] in {"cozy/package_publish", "cozy/package_lock"} and row[2] == "here" and row[3] == "settled" for row in rows), "public_reset_maintenance")
+        check(source.execute("SELECT count(*) FROM projects").fetchone()[0] == 0, "public_reset_projects")
     stop(native, old=True)
-    require(schema() == 7, "fixture_failure")
+    check(schema() == 7, "schema_v7")
     # These exact source/cache paths were created only by the verified public
     # publisher in this fresh runner. Account keys and installed tools survive.
     for relative in ("state.db", "state.db-wal", "state.db-shm", "code", "local", "inputs", "after"):
@@ -276,8 +328,8 @@ def settled(native: Native, identifier: str, *, old: bool, reference: str) -> di
         run = response.json()
         CONTEXT["settled"] = run_shape(run)
         return run
-    return until(read, lambda run: run.get("status") in {"completed", "failed", "canceled"}
-                 and all(item.get("url") or item.get("export_error") or item.get("stays") or item.get("checkpoint") for item in run.get("output", [])), "fixture_failure", 1200)
+    return wait(read, lambda run: run.get("status") in {"completed", "failed", "canceled"}
+                and all(item.get("url") or item.get("export_error") or item.get("stays") or item.get("checkpoint") for item in run.get("output", [])), "settled_terminal", 1200)
 
 
 def journal(path: Path, identifiers: list[str]) -> dict:
@@ -393,10 +445,10 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
     CONTEXT["worker_stage"] = "registered_endpoint"
     with read_db(CALCIFER / "state.db") as connection:
         endpoint = connection.execute("SELECT kind,worker_id,address,pin,key FROM machines WHERE name='local'").fetchone()
-    require(endpoint and endpoint[0] == "local", "fixture_failure")
+    check(endpoint and endpoint[0] == "local", "worker_endpoint")
     _, worker_id, address, pin, key_path = endpoint
     parsed = urlsplit("https://" + address)
-    require(parsed.hostname in {"127.0.0.1", "::1", "localhost"} and len(pin) == 32, "fixture_failure")
+    check(parsed.hostname in {"127.0.0.1", "::1", "localhost"} and len(pin) == 32, "worker_endpoint")
     marker = json.loads((project / ".vault-local-execution.json").read_bytes())
     private = owner_signer(Path(key_path).read_bytes())
     CONTEXT["worker_stage"] = "capability_sign"
@@ -417,8 +469,8 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
         with context.wrap_socket(tcp, server_hostname=parsed.hostname) as tls:
             # Authentication/private proof is transmitted only after the actual
             # registered native leaf pin is verified on this connection.
-            require(hashlib.sha256(tls.getpeercert(binary_form=True)).digest() == pin
-                    and tls.selected_alpn_protocol() == "h2", "fixture_failure")
+            check(hashlib.sha256(tls.getpeercert(binary_form=True)).digest() == pin
+                  and tls.selected_alpn_protocol() == "h2", "worker_tls_pin")
             CONTEXT["worker_stage"] = "worker_h2_request"
             protocol = h2.connection.H2Connection(config=h2.config.H2Configuration(client_side=True, header_encoding="utf-8"))
             protocol.initiate_connection()
@@ -432,19 +484,19 @@ def worker_request(project: Path, method: str, suffix: str, body: dict) -> tuple
             status, answer = 0, bytearray()
             while True:
                 incoming = tls.recv(65536)
-                require(incoming, "fixture_failure")
+                check(incoming, "worker_response_closed")
                 for event in protocol.receive_data(incoming):
                     if isinstance(event, h2.events.ResponseReceived):
                         status = int(dict(event.headers)[":status"])
                         CONTEXT["worker_http_status"] = status
                     elif isinstance(event, h2.events.DataReceived):
                         answer.extend(event.data)
-                        require(len(answer) <= 4 << 20, "fixture_failure")
+                        check(len(answer) <= 4 << 20, "worker_response_size")
                         protocol.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
                     elif isinstance(event, h2.events.StreamEnded):
                         return status, bytes(answer)
                     elif isinstance(event, (h2.events.StreamReset, h2.events.ConnectionTerminated)):
-                        require(False, "fixture_failure")
+                        check(False, "worker_response_reset")
                 pending = protocol.data_to_send()
                 if pending:
                     tls.sendall(pending)
@@ -458,26 +510,26 @@ def wrong_binding_stays_pending(native: Native, reference: str, project: Path, o
     try:
         blocker.execute("BEGIN IMMEDIATE")
         CONTEXT["worker_stage"] = "controller_history_read"
-        native.call("GET", project_route(reference, "/runs?limit=0"))
+        call(native, "GET", project_route(reference, "/runs?limit=1"))
     finally:
         blocker.rollback()
         blocker.close()
     with read_db(project / "project.db") as connection:
-        require(connection.execute("SELECT count(*) FROM runs WHERE custody='legacy_pending'").fetchone()[0] >= len(identifiers), "fixture_failure")
+        check(connection.execute("SELECT count(*) FROM runs WHERE custody='legacy_pending'").fetchone()[0] >= len(identifiers), "wrong_binding_pending")
     status, body = worker_request(project, "POST", "migration-bindings", {"request_ids": identifiers})
-    require(status == 200, "fixture_failure")
+    check(status == 200, "wrong_binding_lookup_status", status=status)
     lookup = json.loads(body)["bindings"]
-    require({value["binding"]["request_id"] for value in lookup} == set(identifiers), "fixture_failure")
+    check({value["binding"]["request_id"] for value in lookup} == set(identifiers), "wrong_binding_lookup")
     invalid = [dict(value["binding"]) for value in lookup]
     actual = invalid[0]["invocation_spec_digest"]
     invalid[0]["invocation_spec_digest"] = actual[:-1] + ("0" if actual[-1] != "0" else "1")
     before = worker_journal(MACHINE, identifiers)[1]
     status, _ = worker_request(project, "POST", "migrate", {"legacy_requests": invalid})
-    require(status == 409, "fixture_failure")
-    require(worker_journal(MACHINE, identifiers)[1] == before, "fixture_failure")
+    check(status == 409, "wrong_binding_refused", status=status)
+    check(worker_journal(MACHINE, identifiers)[1] == before, "wrong_binding_worker_unchanged")
     with read_db(CALCIFER / "state.db") as connection:
         for identifier in identifiers:
-            require(connection.execute("SELECT count(*) FROM legacy_project_runs WHERE id=?", (identifier,)).fetchone()[0] == 1, "fixture_failure")
+            check(connection.execute("SELECT count(*) FROM legacy_project_runs WHERE id=?", (identifier,)).fetchone()[0] == 1, "wrong_binding_source_retained")
     receipt.add("legacy_wrong_binding", passed=True, source_retained=True, canonical_pending=True, status=status)
     return [value["binding"] for value in lookup]
 
@@ -488,12 +540,12 @@ def crash_before_controller_receipt(native: Native, project: Path, bindings: lis
     # holder must recover real bindings from the inside receipt, not resubmit.
     checkpoint(receipt, "native_adoption")
     status, _ = worker_request(project, "POST", "migrate", {"legacy_requests": bindings})
-    require(status == 204, "fixture_failure")
+    check(status == 204, "adoption_status", status=status)
     status, body = worker_request(project, "GET", "migrate", {})
     covered = json.loads(body).get("bindings", []) if status == 200 else []
-    require(status == 200 and all(binding in covered for binding in bindings), "fixture_failure")
+    check(status == 200 and all(binding in covered for binding in bindings), "adoption_receipt", status=status)
     with read_db(project / "project.db") as connection:
-        require(connection.execute("SELECT count(*) FROM runs WHERE custody='legacy_pending'").fetchone()[0] >= len(bindings), "fixture_failure")
+        check(connection.execute("SELECT count(*) FROM runs WHERE custody='legacy_pending'").fetchone()[0] >= len(bindings), "adoption_pending")
     checkpoint(receipt, "calcifer_crash")
     CONTEXT["crash_stage"] = "holder_read"
     holder = native.holder()
@@ -502,7 +554,7 @@ def crash_before_controller_receipt(native: Native, project: Path, bindings: lis
     CONTEXT["crash_stage"] = "signal_exact_birth"
     kill_exact(exact)
     CONTEXT["crash_stage"] = "wait_exact_birth_ended"
-    until(lambda: alive(exact), lambda value: not value, "fixture_failure", 90)
+    wait(lambda: alive(exact), lambda value: not value, "crash_birth_ended", 90)
     # Restart=on-failure may already have installed a fresh holder. An unheld
     # lock is not required: prove the killed Birth ended and its replacement is
     # a different live daemon with positive protocol-3 authority instead.
@@ -536,25 +588,45 @@ def output_bytes(native: Native, run: dict, *, old: bool) -> list[bytes]:
     return bodies
 
 
+def history_ids(native: Native, reference: str) -> set[str]:
+    # The API clamps `limit` to 1..1000 newest first; page by `before` as `cozy run ls` does.
+    found, before = set(), ""
+    while True:
+        page = call(native, "GET", project_route(reference, "/runs?limit=1000" + before))
+        check(not page.get("unreadable"), "history_readable", unreadable=len(page.get("unreadable") or []))
+        found.update(run["id"] for run in page["runs"])
+        if not page.get("older") or not page["runs"]:
+            return found
+        before = "&before=" + str(page["runs"][-1]["number"])
+
+
 def assert_history(native: Native, reference: str, project: Path, baseline: dict, results: dict) -> None:
-    listed = native.call("GET", project_route(reference, "/runs?limit=0"))
-    require(set(baseline).issubset({run["id"] for run in listed["runs"]}), "fixture_failure")
+    listed = history_ids(native, reference)
+    check(set(baseline).issubset(listed), "history_listed", listed=len(listed), expected=len(baseline),
+          missing=len(set(baseline) - listed))
     for identifier, expected in results.items():
         current = settled(native, identifier, old=False, reference=reference)
-        require(current["number"] == expected["number"] and current["status"] == expected["status"] and current.get("result") == expected.get("result"), "fixture_failure")
-        require(output_bytes(native, current, old=False) == expected["bodies"], "fixture_failure")
-    require(journal(project / "project.db", list(baseline)) == baseline, "fixture_failure")
+        check(current["number"] == expected["number"] and current["status"] == expected["status"] and current.get("result") == expected.get("result"),
+              "history_run_fields", number=current["number"] == expected["number"], status=current["status"] == expected["status"],
+              result=current.get("result") == expected.get("result"))
+        bodies = output_bytes(native, current, old=False)
+        check(bodies == expected["bodies"], "history_output_bytes", outputs=len(bodies), expected=len(expected["bodies"]))
+    current = journal(project / "project.db", list(baseline))
+    check(current == baseline, "history_journal_exact",
+          rows=sum(current[key]["row"] == value["row"] for key, value in baseline.items()),
+          logs=sum(current[key]["logs"] == value["logs"] for key, value in baseline.items()),
+          outputs=sum(current[key]["outputs"] == value["outputs"] for key, value in baseline.items()))
 
 
 def complete_migration(native: Native, reference: str, project: Path) -> None:
     def read():
-        native.call("GET", project_route(reference, "/runs?limit=0"))
+        call(native, "GET", project_route(reference, "/runs?limit=1"))
         with read_db(project / "project.db") as connection:
             return connection.execute("SELECT count(*) FROM runs WHERE custody='legacy_pending'").fetchone()[0]
-    until(read, lambda count: count == 0, "fixture_failure", 180)
+    wait(read, lambda count: count == 0, "migration_pending_cleared", 180)
     with read_db(CALCIFER / "state.db") as connection:
         for table in ("legacy_project_runs", "legacy_project_outputs", "legacy_project_run_logs"):
-            require(connection.execute("SELECT count(*) FROM " + table).fetchone()[0] == 0, "fixture_failure")
+            check(connection.execute("SELECT count(*) FROM " + table).fetchone()[0] == 0, "migration_source_retired")
 
 
 def outside_scan(markers: list[bytes], allowed: list[Path], receipt: Receipt) -> dict:
@@ -576,8 +648,8 @@ def qualify(args, receipt: Receipt) -> None:
             and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "hosted_linux_only")
     ready = json.loads(args.ready_file.read_bytes())
     require(ready.get("ready") is True and ready.get("sha256") == digest(args.candidate), "composed_candidate_not_ready")
-    require(digest(INSTALLED) == digest(args.old), "fixture_failure")
-    require(subprocess.check_output([str(args.old), "--version"]).strip() == b"cozy 0.24.0", "fixture_failure")
+    check(digest(INSTALLED) == digest(args.old), "old_installed")
+    check(subprocess.check_output([str(args.old), "--version"]).strip() == b"cozy 0.24.0", "old_version")
     work = Path(tempfile.mkdtemp(prefix="cozy-legacy-public-", dir=os.environ["RUNNER_TEMP"]))
     # The skew runner passes the installed path. Preserve only this public
     # executable before replacing the default worker launcher later.
@@ -598,7 +670,7 @@ def qualify(args, receipt: Receipt) -> None:
     project = Path(tempfile.mkdtemp(prefix="cozy-legacy-project-", dir=os.environ["RUNNER_TEMP"]))
     opened = json.loads(command(args.old, "new", str(project)))
     reference = opened["id"]
-    require(schema() == 7 and (project / "project.db").is_file(), "fixture_failure")
+    check(schema() == 7 and (project / "project.db").is_file(), "old_project_created")
     marker = ("legacy-private-" + os.urandom(24).hex()).encode()
     source = project / "source.txt"
     source.write_bytes(marker + b"-input")
@@ -633,15 +705,15 @@ def qualify(args, receipt: Receipt) -> None:
     retry_key = "legacy-retry-" + os.urandom(16).hex()
     retry_ask = {"target": provenance["target"], "on": "local", "project": str(project),
                  "input": {"source": "sha256:" + source_sha, "text": marker.decode() + "-retry"}}
-    response = old.call("POST", "/v1/runs", retry_ask, preflight=False, extra={"Idempotency-Key": retry_key})
-    require(not response.get("preparing"), "fixture_failure")
+    response = call(old, "POST", "/v1/runs", retry_ask, preflight=False, extra={"Idempotency-Key": retry_key})
+    check(not response.get("preparing"), "old_retry_prepared")
     run = settled(old, response["run"]["id"], old=True, reference=reference)
     run["bodies"] = output_bytes(old, run, old=True)
     results[run["id"]] = run
     checkpoint(receipt, "old_subject_snapshot")
     baseline = journal(CALCIFER / "state.db", list(results))
     original_worker, worker_baseline = worker_journal(MACHINE, list(results))
-    require(schema() == 7, "fixture_failure")
+    check(schema() == 7, "schema_v7")
     receipt.add("released_v7_subject", passed=True, runs=len(results), logs=sum(len(value["logs"]) for value in baseline.values()), outputs=sum(len(value["outputs"]) for value in baseline.values()))
     checkpoint(receipt, "old_subject_stop")
     stop(old, old=True)
@@ -663,7 +735,7 @@ def qualify(args, receipt: Receipt) -> None:
     command(INSTALLED, *updates, "-y")
     checkpoint(receipt, "candidate_doctor")
     command(INSTALLED, "doctor")
-    require(schema() == 8, "fixture_failure")
+    check(schema() == 8, "schema_v8")
     checkpoint(receipt, "wrong_binding")
     bindings = wrong_binding_stays_pending(native, reference, project, original_worker, list(results), receipt)
     crash_before_controller_receipt(native, project, bindings, receipt)
@@ -674,24 +746,24 @@ def qualify(args, receipt: Receipt) -> None:
     assert_history(native, reference, project, baseline, results)
     # Input closure is required after settlement too; this is not just an API
     # view over a retained outside journal or a currently warm worker.
-    require(any(path.is_file() and path.read_bytes() == source_bytes for path in (project / ".vault-inputs").rglob("*") if not path.is_symlink()), "fixture_failure")
-    replay = native.call("POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key})
-    require(replay.get("replay") is True and replay["run"]["id"] == run["id"], "fixture_failure")
-    require(journal(project / "project.db", list(results)) == baseline, "fixture_failure")
-    require(worker_journal(project / ".vault-machine", list(results))[1] == worker_baseline, "fixture_failure")
+    check(any(path.is_file() and path.read_bytes() == source_bytes for path in (project / ".vault-inputs").rglob("*") if not path.is_symlink()), "input_retained")
+    replay = call(native, "POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key})
+    check(replay.get("replay") is True and replay["run"]["id"] == run["id"], "retry_replayed")
+    check(journal(project / "project.db", list(results)) == baseline, "retry_journal_exact")
+    check(worker_journal(project / ".vault-machine", list(results))[1] == worker_baseline, "retry_worker_exact")
     # An actual old client cannot bypass the schema/HTTP protocol fence.
     rejected = subprocess.run([str(args.old), "--json", "run", "watch", str(run["number"]), "--once"], cwd=project,
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-    require(rejected.returncode != 0, "fixture_failure")
-    require(journal(project / "project.db", list(results)) == baseline, "fixture_failure")
+    check(rejected.returncode != 0, "old_client_refused")
+    check(journal(project / "project.db", list(results)) == baseline, "old_client_journal_exact")
     receipt.add("canonical_legacy_migration", passed=True, runs=len(results), same_keys_and_numbers=True, exact_log_and_output_rows=True, old_retry_replayed=True, old_client_refused=True)
 
     checkpoint(receipt, "encrypt")
     secret = os.urandom(32).hex().encode() + b"\n"
     changed = json.loads(command(INSTALLED, "vault", "--directory", str(project), "encrypt", "--passphrase-file", "-", stdin=secret))
     view = Path(changed["vault"]["view"])
-    identity = native.call("GET", project_route(str(project), "/address"))
-    require(identity["id"] == reference, "fixture_failure")
+    identity = call(native, "GET", project_route(str(project), "/address"))
+    check(identity["id"] == reference, "encrypted_identity")
     assert_history(native, reference, view, baseline, results)
     checkpoint(receipt, "lock_scan")
     command(INSTALLED, "vault", "--directory", str(project), "lock")
@@ -710,14 +782,14 @@ def qualify(args, receipt: Receipt) -> None:
     project.rename(moved)
     # Cold holder and real unlock after moving the opaque encrypted folder.
     command(INSTALLED, "vault", "--directory", str(moved), "unlock", "--passphrase-file", "-", stdin=secret)
-    status = native.call("GET", project_route(str(moved), "/vault"))
+    status = call(native, "GET", project_route(str(moved), "/vault"))
     view = Path(status["view"])
-    identity = native.call("GET", project_route(str(moved), "/address"))
-    require(identity["id"] == reference, "fixture_failure")
+    identity = call(native, "GET", project_route(str(moved), "/address"))
+    check(identity["id"] == reference, "moved_identity")
     assert_history(native, reference, view, baseline, results)
-    replay = native.call("POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key})
-    require(replay.get("replay") is True and replay["run"]["id"] == run["id"], "fixture_failure")
-    require(worker_journal(view / ".vault-machine", list(results))[1] == worker_baseline, "fixture_failure")
+    replay = call(native, "POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key})
+    check(replay.get("replay") is True and replay["run"]["id"] == run["id"], "moved_retry_replayed")
+    check(worker_journal(view / ".vault-machine", list(results))[1] == worker_baseline, "moved_worker_exact")
     command(INSTALLED, "vault", "--directory", str(moved), "lock")
     stop(native, old=False)
     receipt.add("legacy_move_cold_retry", passed=True, runs=len(results), **outside_scan(markers, [], receipt))
