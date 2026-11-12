@@ -147,7 +147,7 @@ async function died(error) {
     const matrix = new DOMMatrix(getComputedStyle(element).transform);
     return { x: matrix.e, y: matrix.f, zoom: matrix.a };
   });
-  const decodedImage = () => card.locator('.focus-viewer .buffered-image').evaluate((element) => {
+  const decodedOf = (locator) => locator.evaluate((element) => {
     const image = element.querySelector('img');
     return {
       sha: element.dataset.displayedSha?.replace(/^sha256:/, ''),
@@ -158,6 +158,7 @@ async function died(error) {
       loaded: Boolean(image?.complete && image.naturalWidth > 0),
     };
   });
+  const decodedImage = () => decodedOf(card.locator('.focus-viewer .buffered-image'));
   const zoomOutToFit = async () => {
     const button = focus.getByRole('button', { name: 'Zoom out image', exact: true });
     for (let step = 0; step < 20 && (await imageCamera()).zoom > 1.0001; step++) {
@@ -166,6 +167,29 @@ async function died(error) {
       await until('zoom out approaches the fitted minimum', imageCamera, (position) => position.zoom < before);
     }
   };
+
+  const wideSha = (await asset()).prefixes.find((version) => version.number === 1).main.sha256.replace(/^sha256:/, '');
+  const wanderBuffer = boxOf(page, NAME).locator('.media-pixels > .buffered-image');
+  const wanderFittedPicture = await until('the fitted Wander image is decoded', () => decodedOf(wanderBuffer),
+    (picture) => picture.loaded && picture.sha === wideSha && picture.requested > 0 && picture.width >= picture.requested);
+  // Wander's supported UI range ends at 400%; Focus separately exercises the original beyond 450%.
+  await page.locator('.zoom-at').click();
+  await page.getByRole('menuitem', { name: /^Zoom to 100%/ }).click();
+  await settled(page);
+  for (let step = 0; step < 12 && (await camera()).zoom < 3.999; step++) {
+    const before = (await camera()).zoom;
+    await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+    await until('Wander zoom approaches its supported maximum', camera, (position) => position.zoom > before);
+    await settled(page);
+  }
+  const wanderZoom = await until('the Wander UI reaches 400 percent', camera, (position) => Math.abs(position.zoom - 4) < 0.001);
+  const wanderSharpPicture = await until('Wander decodes enough image pixels for the enlarged canvas node', () => decodedOf(wanderBuffer),
+    (picture) => picture.loaded && picture.sha === wideSha && picture.requested > wanderFittedPicture.requested
+      && picture.width >= Math.min(4096, picture.requested) && picture.displayed === picture.width
+      && (picture.requested <= 2048 || picture.resolution === 'original'));
+  check('free_roam_zoom_increases_decoded_image_resolution', wanderSharpPicture.width > wanderFittedPicture.width && Math.abs(wanderZoom.zoom - 4) < 0.001, { fitted: wanderFittedPicture, zoomed: wanderSharpPicture });
+  check('free_roam_quality_check_keeps_the_selected_asset_on_the_canvas', await page.locator('[data-focused-asset]').count() === 0 && (await asset()).version === 1);
+  await fitCanvas(page);
 
   const wander = await camera();
   const expanded = await palette();
@@ -190,7 +214,6 @@ async function died(error) {
   check('seed_and_advanced_fold_controls_are_absent', await focus.locator('[data-field="seed"], .seed, .advanced-toggle').count() === 0);
   await shot('wide');
 
-  const wideSha = (await asset()).prefixes.find((version) => version.number === 1).main.sha256.replace(/^sha256:/, '');
   const fittedPicture = await until('the fitted large image displays a decoded thumbnail at the requested density', decodedImage,
     (picture) => picture.loaded && picture.sha === wideSha && picture.requested > 0 && picture.requested <= 2048
       && picture.resolution !== 'original' && picture.width >= picture.requested && picture.width <= 2048);
