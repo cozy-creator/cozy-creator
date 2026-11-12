@@ -117,7 +117,12 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     play(path, el) {
       let live = true
       const project = guard(path)
-      void storage(project?.signal).then(() => { project?.check(); if (live) el.src = media(path) }).catch(() => { if (live) el.dispatchEvent(new Event("error")) })
+      const load = () => { project?.check(); if (live) el.src = media(path) }
+      const failed = () => { if (live) el.dispatchEvent(new Event("error")) }
+      // Its storage proven, the file is asked for now: the caller seeks and plays it at once, as it did before the proof.
+      if (!unproven()) {
+        try { load() } catch { failed() }
+      } else void storage(project?.signal).then(load).catch(failed)
       return {
         stop() {
           live = false
