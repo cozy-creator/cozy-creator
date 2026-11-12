@@ -8,7 +8,6 @@
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    path::Path as FsPath,
     sync::{Arc, Mutex},
 };
 

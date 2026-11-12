@@ -334,7 +334,7 @@ pub(crate) fn socket_path(root: &Path, name: &str) -> io::Result<PathBuf> {
     let natural = root.join(name);
     #[cfg(unix)]
     if natural.as_os_str().len() > 100 {
-        if crate::private_io::is_private_path(root) { return Err(io::Error::new(io::ErrorKind::Unsupported, "project path is too long for protected local IPC")); }
+        if crate::private_io::is_protected_path(root) { return Err(io::Error::new(io::ErrorKind::Unsupported, "project path is too long for protected local IPC")); }
         let digest = tensorfs::sha256::hex_digest(natural.as_os_str().as_encoded_bytes());
         return Ok(short_sockets()?.join(&digest[..24]));
     }

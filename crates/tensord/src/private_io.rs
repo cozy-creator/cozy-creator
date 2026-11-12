@@ -301,6 +301,16 @@ pub(crate) fn is_private_path(path: &std::path::Path) -> bool {
         .any(|scope| path.starts_with(&scope.descriptor.view_root))
 }
 
+/// Whether `path` is in an encrypted project's view, whose executors take the protected transport: an unencrypted project's take the
+/// ordinary one, its socket anywhere a socket goes.
+pub(crate) fn is_protected_path(path: &std::path::Path) -> bool {
+    VERIFIED
+        .lock()
+        .unwrap()
+        .values()
+        .any(|scope| !scope.descriptor.ordinary && path.starts_with(&scope.descriptor.view_root))
+}
+
 pub(crate) fn root(descriptor: &LocalPrivateStorage) -> io::Result<PathBuf> {
     let scope = verified_scope(descriptor)?;
     let root = scope.descriptor.view_root.join(AREA);

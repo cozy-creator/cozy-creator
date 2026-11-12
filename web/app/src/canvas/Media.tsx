@@ -986,25 +986,40 @@ interface Playhead {
  * shot's segments 1..k, joined) plays silent and looping at rest; opened, beside its beats or not, it waits with its controls, to play with
  * its sound and seek. A newer revision (1..k+1) loads where it was, playing on if it was.
  */
+/** Where each run's glimpse last was, by its run and the revision it played: a newer revision of it starts there, however its box redrew. */
+const glimpsedAt = new Map<string, { rev: number; at: number; playing: boolean }>()
+
 function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean; open: boolean; playhead: { current: Playhead | null } }) {
   const { client } = useConnection()
   const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
   const element = useRef<HTMLVideoElement>(null)
   const resume = useRef<{ at: number; playing: boolean } | null>(null)
+  // The revision its element plays: the newest may still be on its way.
+  const playing = useRef(0)
+  const key = `${store.projectId ?? ""}\0${glimpse.run}`
   useEffect(() => {
     if (!store.projectId) { setSrc(undefined); return }
     let live = true
     void client.transport.src(client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)).then((url) => {
       if (!live) return
+      // Where it is now, else where it last was: its element redrawn, or a revision before still on its way.
       const el = element.current
-      if (el?.currentSrc) resume.current = { at: el.currentTime, playing: !el.paused }
+      const was = glimpsedAt.get(key)
+      resume.current = el?.currentSrc && !resume.current ? { at: el.currentTime, playing: !el.paused }
+        : was && was.rev < glimpse.rev ? { at: was.at, playing: was.playing } : resume.current
+      playing.current = glimpse.rev
       setSrc(url)
     })
     return () => {
       live = false
     }
-  }, [client, store.projectId, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
+  }, [client, store.projectId, key, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
+  // Its new revision starts where the last one was: set before its metadata, it is never read at 0 s in between.
+  useLayoutEffect(() => {
+    const el = element.current
+    if (el && src && resume.current) el.currentTime = resume.current.at
+  }, [src])
   useEffect(() => {
     const el = element.current
     if (!el) return
@@ -1014,6 +1029,7 @@ function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<Ele
   }, [open])
   const heard = (el: HTMLVideoElement) => {
     playhead.current = open && !el.paused ? { run: glimpse.number, at: el.currentTime } : null
+    if (el.readyState >= 1 && !resume.current) glimpsedAt.set(key, { rev: playing.current, at: el.currentTime, playing: !el.paused })
   }
   return (
     <div className={`glimpse ${failed ? "failed" : ""}`} data-label={glimpse.label ?? ""} data-rev={glimpse.rev}>
@@ -1039,6 +1055,7 @@ function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<Ele
             }}
             onTimeUpdate={(event) => heard(event.currentTarget)}
             onPause={(event) => heard(event.currentTarget)}
+            onSeeked={(event) => heard(event.currentTarget)}
           />
         ) : (
           <img src={src} alt="" draggable={false} />

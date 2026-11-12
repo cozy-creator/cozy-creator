@@ -29,7 +29,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use api::{
-    calcifer::{CalciferActivity, CalciferStatus, Down, Event, MachineKind, MachineState, PROCESS_HEADER, Run, RunList, Status},
+    calcifer::{CalciferActivity, CalciferStatus, Down, Event, PROCESS_HEADER, Run, RunList, Status},
     error::{Envelope, Error, Kind, STOPPING},
     ids::RunId,
 };

@@ -71,6 +71,9 @@ pub(crate) struct Machines {
     pub(crate) providers: Option<v1::ProviderAccess>,
     pub(crate) seen: Mutex<HashMap<String, Seen>>,
     watching: Mutex<HashMap<String, (Endpoint, AbortHandle)>>,
+    /// What this computer's machine does for each open project's own runs, read in that project's scope (`follow_project`): the
+    /// machine's own status never lists it.
+    project_activity: Mutex<HashMap<String, Vec<v1::Operation>>>,
     /// Rentals whose boot is followed, by rental id.
     pub(crate) booting: Mutex<HashSet<String>>,
     /// Runs a rental is being asked for.
@@ -136,6 +139,7 @@ impl Machines {
             user_home: user_home.to_owned(),
             seen: Mutex::default(),
             watching: Mutex::default(),
+            project_activity: Mutex::default(),
             booting: Mutex::default(),
             renting: Mutex::default(),
             asking: Mutex::default(),
@@ -231,6 +235,11 @@ impl Machines {
     /// here or by another of its clients. `refresh` lists every Hub again first; otherwise the
     /// Hubs' last word is answered.
     pub(crate) async fn list(self: &Arc<Self>, refresh: bool) -> Result<MachineList, Error> {
+        self.list_for(refresh, &[]).await
+    }
+
+    /// The list as a page showing `projects` sees it: what each machine does for their runs too (`picture_for`).
+    pub(crate) async fn list_for(self: &Arc<Self>, refresh: bool, projects: &[String]) -> Result<MachineList, Error> {
         if refresh {
             self.list_hubs().await;
         }
@@ -242,7 +251,7 @@ impl Machines {
         let mut machines = Vec::new();
         let listed = |r: &&MachineRow| r.state != MachineState::Ended && (here || r.kind != MachineKind::Local);
         for row in rows.iter().filter(listed) {
-            machines.push(self.picture(row)?);
+            machines.push(self.picture_for(row, projects)?);
         }
         let (hubs, unanswered, signed_out) = self.hubs.listing();
         machines.extend(self.orders()?);
@@ -663,6 +672,11 @@ impl Machines {
 
     /// The machine as `GET /v1/machines` answers it.
     pub(crate) fn picture(&self, row: &MachineRow) -> Result<Machine, Error> {
+        self.picture_for(row, &[])
+    }
+
+    /// The machine, its installs and downloads with those of `projects`' own runs: never another project's, nor a locked one's.
+    pub(crate) fn picture_for(&self, row: &MachineRow, projects: &[String]) -> Result<Machine, Error> {
         let store = self.store();
         let ending = self.pending_end(&row.name)?;
         // `row` may have been read before its end settled (a list reads every row, then each one's asks): an end that is no
@@ -740,6 +754,10 @@ impl Machines {
             });
             held = seen.frame.as_ref().map(|f| f.runs.clone()).unwrap_or_default();
             activity = seen.frame.as_ref().map(|f| f.activity.clone()).unwrap_or_default();
+            if row.kind == MachineKind::Local {
+                let followed = lock(&self.project_activity);
+                activity.extend(projects.iter().filter_map(|project| followed.get(project)).flatten().cloned());
+            }
             machine.unreachable.clone_from(&seen.unreachable);
             machine.unreachable_since_ms = seen.since;
             machine.boot.clone_from(&seen.boot);
@@ -747,7 +765,7 @@ impl Machines {
         }
         if let Some(status) = &mut machine.status {
             status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
-            status.activity = activity.iter().filter_map(|operation| self.operation(operation)).collect();
+            status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
         }
         machine.rc = self.rc_follow(&row.name, self.frame(&row.name).as_ref());
         let asked = match row.kind {
@@ -790,12 +808,68 @@ impl Machines {
         Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting:run.waiting})
     }
 
-    fn operation(&self,operation:&v1::Operation)->Option<wire::Operation> {
-        if operation.runs.is_empty() {return None;}
-        let runs=operation.runs.iter().map(|id|self.calcifer.active_run(crate::store::calcifer_id(id)).map(|row|row.number)).collect::<Option<Vec<_>>>()?;
+    /// What `operation` is waited on by, by run number: maintenance runs, and runs of `projects` that are open. An operation of a
+    /// project's own is in its private scope (`resource_key`), so its runs are all that project's.
+    fn operation(&self,operation:&v1::Operation,projects:&[String])->Option<wire::Operation> {
+        let mut project=None;
+        let mut number=|id:&str| {
+            let id=crate::store::calcifer_id(id);
+            if let Some(row)=self.calcifer.maintenance_store().run(id).ok().flatten() { return Some(row.number); }
+            match self.calcifer.run_store(id).ok()? {
+                crate::store::RunStore::Project(store) if projects.iter().any(|project| project==store.project_id()) => {
+                    let row=store.run(id).ok().flatten()?;
+                    project=Some(store.project_id().to_owned());
+                    Some(row.number)
+                }
+                _ => None,
+            }
+        };
+        let runs=operation.runs.iter().map(|id|number(id)).collect::<Option<Vec<_>>>()?;
+        if runs.is_empty() {return None;}
         let rate=Some(operation.bytes_per_s).filter(|rate|*rate>=1.0);
         let left=operation.bytes_total.saturating_sub(operation.bytes_done);
-        Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs})
+        Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs,project})
+    }
+
+    /// What this computer's machine does for `project`'s own runs, followed in the project's scope while it has runs there: its runs
+    /// execute in the project's own engine, whose installs and downloads only that scope's status lists. A locked project's ends.
+    pub(crate) fn follow_project(self: &Arc<Self>, project: &str) {
+        if lock(&self.project_activity).contains_key(project) { return; }
+        lock(&self.project_activity).insert(project.to_owned(), vec![]);
+        let (me, project) = (self.clone(), project.to_owned());
+        self.spawn(async move {
+            let listed = me.project_frames(&project).await;
+            // Asked again no sooner: one that can't be followed now isn't tried in a loop.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            lock(&me.project_activity).remove(&project);
+            if listed { me.calcifer.machine_changed(); }
+        });
+    }
+
+    /// Whether it listed anything.
+    async fn project_frames(&self, project: &str) -> bool {
+        let mut listed = false;
+        let working = || self.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0);
+        while working() {
+            let scoped = (|| {
+                let store = self.calcifer.project_store(project).ok()?;
+                let (id, root) = store.execution_scope();
+                let scope = crate::private_io::scope_for_project(id, root).ok()?;
+                Some(self.calcifer.link("local").ok()??.with_private(scope))
+            })();
+            let Some(link) = scoped else { return listed };
+            if let Ok(mut frames) = link.watch().await {
+                while let Some(Ok(frame)) = frames.next().await {
+                    let quiet = frame.activity.is_empty();
+                    listed |= !quiet;
+                    if let Some(held) = lock(&self.project_activity).get_mut(project) { *held = frame.activity; }
+                    self.calcifer.machine_changed();
+                    if quiet && !working() { return listed; }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        listed
     }
 
     /// Keeps one `Status` stream open to the machine while it has an endpoint and has not ended.

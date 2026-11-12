@@ -73,7 +73,7 @@ function Row({ doing, boxes, to }: { doing: Doing; boxes: Map<number, string>; t
   return (
     <li className="doing" data-doing="run" data-run={run.number}>
       <MarkOf mark={going ? "work" : "idle"} />
-      <Link to={to(`runs/${run.number}`)} title={`Run ${run.number}: ${run.target}`}>
+      <Link to={run.project_id ? to(`runs/${run.number}`) : `/runs/${run.number}`} title={`Run ${run.number}: ${run.target}`}>
         <b>{runName(run, boxes)}</b>
       </Link>
       <span className="kind">Run {run.number}</span>
@@ -144,8 +144,11 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
 export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; projectId: string | null }) {
   const { client, stream } = useConnection()
   const { data } = useQuery(machinesQuery(client))
-  const running = useQuery(projectId ? runsQuery(client, projectId, { status: "in_progress" }, 100) : maintenanceRunsQuery(client, { status: "in_progress" }, 100))
-  const queued = useQuery(projectId ? runsQuery(client, projectId, { status: "queued" }, 100) : maintenanceRunsQuery(client, { status: "queued" }, 100))
+  // The open project's runs, and this computer's own (its downloads, its updates), as on the RC: never another project's.
+  const running = useQuery({ ...runsQuery(client, projectId ?? "", { status: "in_progress" }, 100), enabled: Boolean(projectId) })
+  const queued = useQuery({ ...runsQuery(client, projectId ?? "", { status: "queued" }, 100), enabled: Boolean(projectId) })
+  const ownRunning = useQuery(maintenanceRunsQuery(client, { status: "in_progress" }, 100))
+  const ownQueued = useQuery(maintenanceRunsQuery(client, { status: "queued" }, 100))
   const { data: project } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
   const [open, setOpen] = useState<{ name: string; chip: HTMLElement } | null>(null)
   const chosen = project?.machines ?? []
@@ -154,14 +157,14 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
     .filter((machine) => machine.kind !== "rental" || (machine.state !== "ended" && (machine.ordered !== false || chosen.includes(machine.name))))
     .sort((a, b) => Number(b.kind === "local") - Number(a.kind === "local"))
   if (!machines.length) return null
-  const runs = [...(running.data?.runs ?? []), ...(queued.data?.runs ?? [])]
+  const runs = [...(projectId ? [...(running.data?.runs ?? []), ...(queued.data?.runs ?? [])] : []), ...(ownRunning.data?.runs ?? []), ...(ownQueued.data?.runs ?? [])]
   const boxes = new Map((project?.assets ?? []).flatMap((asset) => (asset.making ?? []).map((number) => [number, asset.name] as const)))
   const shown = open && machines.find((machine) => machine.name === open.name)
   return (
     <>
       <nav className="mtabs" aria-label="Machines">
         {machines.map((machine) => {
-          const doing = doingOf(machine, runs)
+          const doing = doingOf(machine, runs, projectId)
           // Its jobs are function runs, its GPUs' work: an install or a download is listed, not counted (cl-889).
           const total = doing.filter((one) => one.kind === "run" && one.run.kind === "call").length
           return (
@@ -187,7 +190,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
           )
         })}
       </nav>
-      {open && shown && <Activity machine={shown} doing={doingOf(shown, runs)} boxes={boxes} to={to} chip={open.chip} close={() => setOpen(null)} />}
+      {open && shown && <Activity machine={shown} doing={doingOf(shown, runs, projectId)} boxes={boxes} to={to} chip={open.chip} close={() => setOpen(null)} />}
     </>
   )
 }
