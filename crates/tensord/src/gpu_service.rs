@@ -316,6 +316,10 @@ impl Plan {
     pub(crate) fn upfront(&self) -> Vec<(String, Vec<String>)> {
         merged(self.slots.iter().filter(|slot| !slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
+    /// What its calls build only when the function first reads it (`on_demand`).
+    pub(crate) fn on_demand(&self) -> Vec<(String, Vec<String>)> {
+        merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
+    }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
     /// asked for by name (`cozy machine warm`), so its first call waits on no download (cl-790).
     pub(crate) fn read(&self) -> Vec<(String, Vec<String>)> {
@@ -3561,6 +3565,9 @@ impl Pool {
         let error = {
             let mut session = session;
             let fetch = calls.map(|calls| engine.get(id).map(|record| calls.fetch(&record))).transpose()?;
+            if let Some(fetch) = &fetch {
+                fetch.on_demand(&plan.on_demand());
+            }
             match self.call(engine, id, &held, plan, &mut session, false, calls, fetch) {
                 Ok(post) => {
                     // Serialize against any old in-flight Halt before the executor becomes

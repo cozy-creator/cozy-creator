@@ -854,20 +854,63 @@ impl Store {
     /// another holds it now. A lock on `tmp/fetching-<sha256>`, which an exit lets go. A claim that can't be made is no
     /// reason to wait: the worst of one is a second download.
     pub fn claim(&self, object: &ObjectRef) -> Option<Box<dyn Send + Sync>> {
-        struct Claim(#[allow(dead_code)] File, PathBuf);
+        struct Claim(Option<File>, PathBuf);
         impl Drop for Claim {
             fn drop(&mut self) {
                 let _ = fs::remove_file(&self.1);
+                self.0.take();
+                ours(&self.1, false);
             }
         }
         let path = self.root.join("tmp").join(format!("fetching-{}", object.sha256));
         let Ok(file) = OpenOptions::new().write(true).create(true).truncate(false).open(&path) else {
             return Some(Box::new(()));
         };
+        // Named this process's before it is locked and until after it is let go (`claimed_elsewhere`).
+        ours(&path, true);
         match platform::lock::try_claim(&file) {
-            Ok(false) => None,
-            _ => Some(Box::new(Claim(file, path))),
+            Ok(false) => {
+                ours(&path, false);
+                None
+            }
+            _ => Some(Box::new(Claim(Some(file), path))),
         }
+    }
+
+    /// The objects another process sharing this store is fetching now: it holds their claims (`claim`).
+    /// An executor reading a model it builds on demand is one (cl-905).
+    pub fn claimed_elsewhere(&self) -> std::collections::HashSet<String> {
+        let Ok(entries) = fs::read_dir(self.root.join("tmp")) else { return Default::default() };
+        let ours = |path: &Path| CLAIMS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(path);
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let sha256 = entry.file_name().to_str()?.strip_prefix("fetching-")?.to_owned();
+                let path = entry.path();
+                if ours(&path) {
+                    return None;
+                }
+                // Opened and closed at once: a claim taken meanwhile waits a poll, never fails.
+                let held = OpenOptions::new().write(true).open(&path).is_ok_and(|file| matches!(platform::lock::try_claim(&file), Ok(false)));
+                (held && !ours(&path)).then_some(sha256)
+            })
+            .collect()
+    }
+}
+
+/// The claims this process holds or is taking, by path, each with how many.
+static CLAIMS: Mutex<std::collections::BTreeMap<PathBuf, usize>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// One more (`more`) or one fewer of this process's claims on `path`.
+fn ours(path: &Path, more: bool) {
+    let mut claims = CLAIMS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let count = claims.entry(path.to_owned()).or_default();
+    match more {
+        true => *count += 1,
+        false => *count = count.saturating_sub(1),
+    }
+    if *count == 0 {
+        claims.remove(path);
     }
 }
 

@@ -204,6 +204,16 @@ pub(crate) struct Fetch {
     /// A thread lists what it hinted while any is absent.
     watching: std::sync::atomic::AtomicBool,
     required: Mutex<Required>,
+    /// What its call builds on demand that no other process has begun reading (`on_demand`).
+    demand: Mutex<Vec<OnDemand>>,
+}
+
+/// A model a call builds on demand: its checkpoint and the components the call reads; their chunks once looked up
+/// (`Fetch::promote`), never on the call's way to its executor.
+struct OnDemand {
+    header: String,
+    components: Vec<String>,
+    chunks: Option<Vec<ObjectRef>>,
 }
 
 /// A checkpoint not all here when it was wanted: its repository and where it comes from, the bytes it had to fetch and those it held
@@ -242,6 +252,7 @@ impl Fetch {
             guessed: Mutex::default(),
             watching: Default::default(),
             required: Mutex::default(),
+            demand: Mutex::default(),
         })
     }
 
@@ -716,6 +727,61 @@ impl Fetch {
         each
     }
 
+    /// What its call builds on demand (`selected`: header, components), fetched only once another process sharing the
+    /// store begins reading it (its executor's own fetch, outside the machine's line), never one no stage reads (cl-804).
+    pub(crate) fn on_demand(self: &Arc<Self>, selected: &[(String, Vec<String>)]) {
+        if selected.is_empty() || self.hub.is_none() || self.ended() {
+            return;
+        }
+        let each = selected.iter().map(|(header, components)| OnDemand { header: header.clone(), components: components.clone(), chunks: None });
+        self.demand.lock().unwrap().extend(each);
+        let mut reads = READS.lock().unwrap();
+        reads.0.push(Arc::downgrade(self));
+        if !reads.1 {
+            let store = self.store().clone();
+            match std::thread::Builder::new().name("on-demand-reads".into()).spawn(move || watch_reads(store)) {
+                Ok(_) => reads.1 = true,
+                Err(error) => tracing::warn!("watching on-demand reads: {error}"),
+            }
+        }
+    }
+
+    /// Each on-demand model of which another process fetches an object (`elsewhere`) comes whole now, at a started run's
+    /// order with the line's every request: a later job's download goes on with what the link has left. What that
+    /// process claimed is its own; the rest it waits for, or takes up, as it reads (cl-905).
+    fn promote(&self, elsewhere: &HashSet<String>) {
+        let read: Vec<(String, Vec<ObjectRef>)> = {
+            let mut demand = self.demand.lock().unwrap();
+            demand.retain_mut(|d| {
+                let chunks = d.chunks.get_or_insert_with(|| checkpoint(self.store(), &d.header).map(|c| storage::chunks(&c, &d.components)).unwrap_or_default());
+                !chunks.is_empty()
+            });
+            let (read, unread) = std::mem::take(&mut *demand).into_iter()
+                .partition(|d| d.chunks.iter().flatten().any(|o| elsewhere.contains(&o.sha256)));
+            *demand = unread;
+            read.into_iter().map(|d| (d.header, d.chunks.unwrap_or_default())).collect()
+        };
+        let mut kept = self.kept.lock().unwrap();
+        for (header, chunks) in read {
+            let Ok(checkpoint) = checkpoint(self.store(), &header) else { continue };
+            let Ok(Some(remote)) = self.source(checkpoint.id()) else { continue };
+            if self.ended() {
+                return;
+            }
+            let model = Pulled::of(self.store(), checkpoint.id()).ok().flatten().map_or(header, |p| p.model);
+            let absent: Vec<ObjectRef> = chunks.into_iter().filter(|o| !elsewhere.contains(&o.sha256) && !self.store().holds(o)).collect();
+            let bytes: u64 = absent.iter().map(|o| o.length).sum();
+            tracing::info!(bytes, "another process began reading {model}, which its call builds on demand: the rest comes now, ahead of every queued run");
+            if !absent.is_empty() {
+                match self.machine.want(&remote, absent, priority::next(priority::STARTED, 0)) {
+                    Ok(task) => kept.push(task),
+                    Err(error) => tracing::warn!("{model}: {error}"),
+                }
+            }
+            self.held.lock().unwrap().push(checkpoint);
+        }
+    }
+
     /// Whether it ended (`end`).
     pub(crate) fn ended(&self) -> bool {
         self.stop.is_cancelled()
@@ -731,6 +797,33 @@ impl Fetch {
         self.held.lock().unwrap().clear();
         if let Some(replaced) = self.replaced.lock().unwrap().take() {
             replaced.end();
+        }
+    }
+}
+
+/// Calls whose on-demand models no other process has begun reading (`Fetch::on_demand`), and whether a thread looks.
+static READS: Mutex<(Vec<std::sync::Weak<Fetch>>, bool)> = Mutex::new((Vec::new(), false));
+
+/// How often the store's claims are looked at while a call has an on-demand model unread.
+const READS_LOOK: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// While any call has an on-demand model unread, each `READS_LOOK` the objects another process sharing `store` fetches
+/// (an executor's own read) go to the calls that read them (`Fetch::promote`).
+fn watch_reads(store: Arc<Store>) {
+    loop {
+        std::thread::sleep(READS_LOOK);
+        let live: Vec<Arc<Fetch>> = {
+            let mut reads = READS.lock().unwrap();
+            reads.0.retain(|fetch| fetch.upgrade().is_some_and(|fetch| !fetch.ended() && !fetch.demand.lock().unwrap().is_empty()));
+            if reads.0.is_empty() {
+                reads.1 = false;
+                return;
+            }
+            reads.0.iter().filter_map(std::sync::Weak::upgrade).collect()
+        };
+        let elsewhere = store.claimed_elsewhere();
+        if !elsewhere.is_empty() {
+            live.iter().for_each(|fetch| fetch.promote(&elsewhere));
         }
     }
 }

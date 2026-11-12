@@ -386,6 +386,8 @@ case $SHARD in
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;
+  # A running job's on-demand read beside a queued job's download, the store's link slowed (cl-905): by dispatch.
+  ondemand) parts="ondemand_first logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints
