@@ -448,7 +448,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
     return {
       body: px(document.body),
       labels: labels.map((el) => ({ text: el.textContent, px: px(el) })),
-      trash: box(document.querySelector('.react-flow .card[data-asset="plain"] .head button[aria-label="Delete"]')),
+      trash: box(document.querySelector('.react-flow .card[data-asset="still"] .head button[aria-label="Delete"]')),
       close: box(view?.querySelector('button[aria-label="Close focus"]')),
       discard: box(view?.querySelector('.take-off[aria-label^="Discard"]')),
       number: px(view?.querySelector('.variant-number')),
@@ -459,7 +459,10 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
     await page.setViewportSize({ width, height });
     await page.evaluate((dark) => localStorage.setItem('cozy.theme', dark ? 'dark' : 'paper'), dark);
     await page.reload();
-    await boxOf(page, 'still').waitFor();
+    await seeAll(['still']);
+    await boxOf(page, 'still').locator('.media').first().click();
+    if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
+    await page.getByRole('menuitem', { name: /^Zoom to selection/ }).click();
     await settled(page);
     await zoomTo(1);
     const tiled = await sizes();
