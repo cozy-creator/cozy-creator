@@ -372,16 +372,13 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
         return { tool: tools.find((tool) => tool.id === released), note };
       }, (now) => now.tool);
       check('release_lists_its_ui', listed.tool.ui === 'ui/shade.js' && !listed.tool.local, listed);
-      // At rest, a default by its card with nothing installed, and the rest only by searching. With no Hub, the card kept here stands, and one never read says why.
+      // At rest, every package the Hub lists, by its card, with nothing installed (cl-896). With no Hub, its list as last read stands.
       const resting = (await api('/v1/tools?on=local')).body;
-      const isDefault = (tool) => tool.package === 'minimax-h3';
-      check('a_default_is_listed', resting.tools.some(isDefault), resting.tools.map((tool) => tool.id));
-      check('the_rest_is_found_by_searching', !resting.tools.some((tool) => tool.id === released), resting.tools.map((tool) => tool.id));
+      check('every_hub_package_listed_at_rest', resting.tools.some((tool) => tool.id === released) && resting.tools.some((tool) => tool.package === 'e2e/shelf-59'), resting.tools.map((tool) => tool.id));
       hub.down = true;
       const noHub = (await api('/v1/tools?on=local')).body;
       hub.down = false;
-      check('a_default_outlasts_its_hub', noHub.tools.some(isDefault), noHub.tools.map((tool) => tool.id));
-      check('a_default_never_read_says_why', noHub.note?.startsWith("only what's installed"), noHub);
+      check('the_hubs_list_outlasts_it', noHub.tools.some((tool) => tool.id === released), noHub.tools.map((tool) => tool.id));
       await page.reload();
       await page.waitForSelector('.react-flow__node');
       await dropTool('from_the_hub', released);
@@ -417,14 +414,13 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
       await page.waitForSelector('.tools .tool');
       check('legacy_custom_tool_remains_off_after_reload', !(await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === released) && await operationRows.count() === 7);
       const offWire = (await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ remove: ['minimax-h3/one_field'] }) })).body;
-      check('a_default_comes_off', offWire.without?.includes('minimax-h3/one_field'), offWire);
-      check('a_default_is_off', !(await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === 'minimax-h3/one_field'));
-      const palette = await api('/v1/tools?on=local&palette=true');
-      check('fixed_palette_keeps_factory_tools', palette.status === 200 && palette.body.tools.some((tool) => tool.id === 'minimax-h3/one_field') && !palette.body.tools.some((tool) => tool.id === released), palette.body.tools.map((tool) => tool.id));
-      const listAfterPalette = (await api('/v1/tools/list', { method: 'POST', body: '{}' })).body;
-      check('palette_read_preserves_legacy_preferences', JSON.stringify(listAfterPalette) === JSON.stringify(offWire), { before: offWire, after: listAfterPalette });
+      check('another_comes_off', offWire.without?.includes('minimax-h3/one_field'), offWire);
+      await api('/v1/tools?on=local');
+      const listAfterRead = (await api('/v1/tools/list', { method: 'POST', body: '{}' })).body;
+      check('a_list_read_preserves_preferences', JSON.stringify(listAfterRead) === JSON.stringify(offWire), { before: offWire, after: listAfterRead });
+      // A package the Hub doesn't list, added, is on the list by its card.
       await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ add: 'minimax-h3' }) });
-      check('a_default_comes_back', (await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === 'minimax-h3/one_field'));
+      check('an_added_package_is_listed', (await api('/v1/tools?on=local')).body.tools.some((tool) => tool.id === 'minimax-h3/one_field'));
       await more('from_the_hub');
       await page.waitForTimeout(1000);
       check('a_box_of_a_removed_tool_opens', (await box('from_the_hub').locator('input[type=range]').count()) === 1, await box('from_the_hub').innerText());

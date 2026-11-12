@@ -3083,7 +3083,7 @@ bytes: number,
 here?: boolean, };
 
 /**
- * Your own tools, the same in every project: these packages' media functions, less `without`, by a tool's `id`. Installing has nothing to do with it.
+ * Your changes to the tools, the same in every project: these packages beside what the Hub lists, and `without`, tools taken off, by a tool's `id`. Installing has nothing to do with it.
  */
 export type ToolList = { packages: Array<string>, without?: Array<string>, };
 
@@ -3160,7 +3160,7 @@ detail: string, };
  */
 export type Tools = { tools: Array<Tool>,
 /**
- * Why the list holds only what's installed: the Hub didn't answer.
+ * Why the list holds only what's installed, or the Hub's as last read: the Hub didn't answer.
  */
 note?: string | null, };
 

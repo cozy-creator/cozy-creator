@@ -146,8 +146,9 @@ function linesOf(text, name) {
   // The two lists fold away with the canvas where it was; the sidebar has no discovery or upload controls.
   const listed = await until('tools or why none', async () => ({ tools: await page.locator('.tools .tool').count(), note: await page.locator('.tools p').allTextContents() }), (now) => now.tools > 0 || now.note.length > 0);
   seen.tools_listed = listed;
-  const resting = (await api(`/v1/tools?project=${id}&palette=true`)).body;
-  check('defaults_always_listed', ['cozy', 'qwen-image-2', 'minimax-h3', 'sdxl'].every((name) => resting.tools.some((tool) => tool.package === name)), { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
+  // Every package the Hub lists, with nothing installed (cl-896): the isolated Hub's are qwen-image-2, minimax-h3, sdxl and birefnet.
+  const resting = await until('the Hub read', async () => (await api(`/v1/tools?project=${id}`)).body, (body) => ['cozy', 'qwen-image-2', 'minimax-h3', 'sdxl', 'birefnet'].every((name) => body.tools.some((tool) => tool.package === name))).catch(() => null);
+  check('every_hub_package_listed', Boolean(resting), resting && { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
   const viewport = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const before = await viewport();
   await page.click('.tools [aria-label="Hide the tools"]');
