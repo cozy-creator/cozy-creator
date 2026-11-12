@@ -546,7 +546,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         }
     }
     if let Resolved::Release { moved: Some(moved), .. } = &resolved {
-        notes.push(Note { level: NoteLevel::Warning, message: moved.clone() });
+        notes.push(moved.clone());
     }
     Ok(Prepared::Run { submit, notes, offers })
 }

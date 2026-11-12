@@ -58,6 +58,24 @@ relay() {
   fi
 }
 
+# held: e2e-relay's code published again as `e2e-held` 0.1.0 and 0.2.0rc1, as a package built for the open RC's Runtime is
+# published (cl-922): newer by PEP 440, and for machines on the RC only (held_prerelease, cl-952).
+held() {
+  local copy=$seed/packages/e2e-held account version
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  for version in 0.1.0 0.2.0rc1; do
+    rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/cli/relay" "$copy"
+    sed -i -e 's/^name = "e2e-relay"$/name = "e2e-held"/' -e "s/^version = \"0.1.0\"$/version = \"$version\"/" "$copy/pyproject.toml"
+    if ! (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-held-$version.json" 2>&1; then
+      E2E_HELD_REFUSED="$version: $(tail -c 400 "$seed/publish-e2e-held-$version.json" | tr '\n' ' ')"
+      export E2E_HELD_REFUSED
+      return 0
+    fi
+    log "published $account/e2e-held $version"
+  done
+  export E2E_HELD=$account/e2e-held
+}
+
 # mirror <source> <org/name> <lane> <release> <page> [upload flags...]: a model uploaded by this computer's machine and
 # published, as an admin mirrors an author's model.
 mirror() {
@@ -191,7 +209,8 @@ if [ -n "$needs" ]; then
       sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
       systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
       systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
-      relay ;;
+      relay
+      held ;;
   esac
   if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* ]]; then
     update=()
