@@ -1292,7 +1292,8 @@ IDEOGRAM_CONFIG = (
 def ideogram4() -> Table[TableRow]:
     """Ideogram 4's official checkpoint: both DiTs in its original layout. Every linear's weight-only
     fp8 carrier (`.weight` + `.weight_scale`) is folded into one fp8.rowwise tensor before a table
-    row reads it, so the scales are not rows here; `qkv`'s thirds are whole rows of it."""
+    row reads it, so the scales are not rows here; `qkv`'s thirds are whole rows of it. The source's
+    config is Diffusers' `Ideogram4Transformer2DModel` config of that layout, so it stays (`keep_config`)."""
     import ast
 
     tree = ast.parse(fetch(*IDEOGRAM_CONVERTER))
@@ -1329,7 +1330,7 @@ def ideogram4() -> Table[TableRow]:
     component: Component[TableRow] = {"name": "transformer", "folders": {"transformer": "transformer",
                                                                       "unconditional_transformer": "unconditional_transformer"},
                                       "expect": dict(sorted(expect.items())), "rows": [mapped[k] for k in census]}
-    return {"name": "ideogram4.fp8", "components": [component]}
+    return {"name": "ideogram4.fp8", "keep_config": True, "components": [component]}
 
 
 #: Qwen3.5-architecture MoE checkpoints whose experts are stored fused, one table per key set.
