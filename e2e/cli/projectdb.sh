@@ -4,6 +4,7 @@
 #   db_crash        Calcifer killed (kill -9) amid writes of a box, its row and its push-aside: each whole or absent; a resend is done once
 #   db_crdt         the native CRDT: stable identities, old-schema refusal, projection damage, replica merges, append and restart
 #   db_latency      write latency at a project with 500 takes (it runs on the cozy before project.db too: --shard projectdb-latency)
+#   db_migrate      a project 0.24.0 made opens here with nothing lost: its takes, files and words, ids and history (schema 3)
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -578,4 +579,94 @@ with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
     data,kind=db.execute('SELECT snapshot,typeof(snapshot) FROM crdt_document WHERE id=1').fetchone()
 assert kind=='blob' and data==open(sys.argv[2],'rb').read()
 STREAM_RESTART
+}
+
+# A project 0.24.0 made, opened by this cozy (cl-904's schema 3: its files, versions and runs leave the Automerge document for
+# project.db's rows on its first open). 0.24.0's own cozy makes it, in this one's place as its release installs it; then this
+# cozy goes back in its place, as an update puts it, and opens it: every take, file, word and history entry reads as 0.24.0
+# read it, each take with the id it had, and Undo reaches past the upgrade.
+db_migrate() {
+step "project.db: a project 0.24.0 made opens here with nothing lost"
+local M=$OUT/migrate was=$OUT/cozy-0.24.0 now=$OUT/cozy-now old arch c source
+arch=$(uname -m); [ "$arch" != arm64 ] || arch=aarch64
+mkdir -p "$was"
+curl -fsSL --retry 3 --retry-all-errors "https://github.com/cozy-creator/cozy-creator/releases/download/v0.24.0/cozy-$arch-unknown-linux-gnu.tar.gz" \
+  | tar -xz -C "$was" || { check "migrate: 0.24.0's archive"; return; }
+old=$(find "$was" -type f -name cozy -print -quit)
+cp "$COZY" "$now"
+in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "migrate: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
+echo "migrate: Calcifer $(api "http://$ADDR/v1/status" | jq -r .version) makes it"
+mkdir -p "$M"; cp "$here/project/draw.py" "$M/"
+yaml_in "$M" <<'YAML' || { in_cozy "$now"; return; }
+version: 4
+assets:
+  notes: {text: Notes 0.24.0 wrote.}
+  drawn:
+    tool: ./draw.py/draw
+    instructions: A still.
+YAML
+for c in red teal navy olive; do still "$M/$c.png" "$c"; done
+project_import "$M" "$M/red.png" take > "$OUT/migrate-import.txt" 2>&1 || check "migrate: import take: $(tail -c 300 "$OUT/migrate-import.txt")"
+for c in teal navy; do
+  source="sha256:$(sha "$M/$c.png")"
+  api --fail-with-body -X PUT --data-binary "@$M/$c.png" "http://$ADDR/v1/files/$source" > /dev/null || check "migrate: upload $c"
+  project_api "$M" /assets/take/versions -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/migrate-version.txt" 2>&1 \
+    || check "migrate: take from $c: $(tail -c 300 "$OUT/migrate-version.txt")"
+done
+project_api "$M" /approve -X POST -H 'Content-Type: application/json' -d '{"name": "take", "version": "2"}' > /dev/null || check "migrate: approve take 2"
+in_project "$M" delete take.3 > /dev/null || check "migrate: discard take 3"
+project_api "$M" /assets/drawn -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"instructions": "A <take.2> in teal, as 0.24.0 had it."}}' > /dev/null || check "migrate: drawn's words"
+project_api "$M" /assets/notes -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"text": "Notes 0.24.0 wrote, then changed."}}' > /dev/null || check "migrate: notes' words"
+project_import "$M" "$M/olive.png" > "$OUT/migrate-import.txt" 2>&1 || check "migrate: import olive: $(tail -c 300 "$OUT/migrate-import.txt")"
+in_project "$M" delete olive > /dev/null || check "migrate: delete olive"
+[ "$(sql1 "$M" 'PRAGMA user_version')" = 2 ] || check "migrate: 0.24.0 made schema $(sql1 "$M" 'PRAGMA user_version'), not 2"
+in_project "$M" export | yaml_body > "$OUT/migrate-0240.yaml"
+migrate_facts "$M" > "$OUT/migrate-0240-facts.json"
+migrate_rows "$M" > "$OUT/migrate-0240-rows.json"
+in_project "$M" --json history | jq '.entries | length' > "$OUT/migrate-0240-history.txt"
+
+in_cozy "$now" || { check "migrate: this cozy back in its place"; return; }
+in_project "$M" --json status > "$OUT/migrate-open.json" 2> "$OUT/migrate-open.err" || { check "migrate: this cozy opening it: $(tail -c 300 "$OUT/migrate-open.err")"; return; }
+[ "$(sql1 "$M" 'PRAGMA user_version')" = 3 ] || check "migrate: project.db is schema $(sql1 "$M" 'PRAGMA user_version') after its first open here, not 3"
+migrate_facts "$M" > "$OUT/migrate-now-facts.json"
+cmp -s "$OUT/migrate-0240-facts.json" "$OUT/migrate-now-facts.json" || check "migrate: its boxes and takes read otherwise here: $(diff "$OUT/migrate-0240-facts.json" "$OUT/migrate-now-facts.json" | head -c 800)"
+migrate_rows "$M" > "$OUT/migrate-now-rows.json"
+cmp -s "$OUT/migrate-0240-rows.json" "$OUT/migrate-now-rows.json" || check "migrate: project.db's rows of its takes and files differ: $(diff "$OUT/migrate-0240-rows.json" "$OUT/migrate-now-rows.json" | head -c 800)"
+[ "$(sql1 "$M" "SELECT count(*) FROM versions WHERE coalesce(json_extract(record, '\$.id'), '') = ''")" = 0 ] || check "migrate: a take has no id"
+in_project "$M" export | yaml_body | cmp -s - "$OUT/migrate-0240.yaml" || check "migrate: its export differs: $(in_project "$M" export | yaml_body | diff "$OUT/migrate-0240.yaml" - | head -c 800)"
+[ "$(in_project "$M" --json history | jq '.entries | length')" = "$(cat "$OUT/migrate-0240-history.txt")" ] || check "migrate: its history has $(in_project "$M" --json history | jq '.entries | length') entries, not $(cat "$OUT/migrate-0240-history.txt")"
+for f in $(sql "$M" "SELECT json_extract(record, '\$.path') FROM lock_files" | jq -r '.[0]'); do [ -f "$M/$f" ] || check "migrate: $f is gone"; done
+# Undo reaches what 0.24.0 did: olive back with its take, and gone again.
+in_project "$M" undo > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: undo olive's delete: $(tail -c 300 "$OUT/migrate-undo.txt")"
+[ "$(held "$M" olive | jq -r '.versions[0].files | map(.sha256) | .[0]')" = "sha256:$(sha "$M/olive.png")" ] || check "migrate: olive undeleted has not its take: $(held "$M" olive | jq -c '.versions')"
+in_project "$M" redo > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: redo olive's delete: $(tail -c 300 "$OUT/migrate-undo.txt")"
+# A take after it: number 4 (3 is discarded), its own id, all four there across Calcifer killed.
+source="sha256:$(sha "$M/olive.png")"
+project_api "$M" /assets/take/versions -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/migrate-version.txt" 2>&1 \
+  || check "migrate: a take after: $(tail -c 300 "$OUT/migrate-version.txt")"
+kill9
+J '[.versions[].number] == [1, 2, 4] and .discarded == [3] and .asset.approved == 2' <<< "$(held "$M" take)" \
+  || check "migrate: take after a new take and a kill: $(held "$M" take | jq -c '{versions: [.versions[].number], discarded, approved: .asset.approved}')"
+[ "$(sql "$M" "SELECT json_extract(record, '\$.id') FROM versions WHERE key = 'take'" | sort -u | wc -l)" = 4 ] || check "migrate: take's four versions have not four ids"
+echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.name): [.versions[].number]}) | add' "$OUT/migrate-now-facts.json")"
+}
+# in_cozy <file>: that cozy in this one's place, as an update puts it, and its Calcifer the one serving: the last stopped as a
+# service manager stops one, and started by the next verb.
+in_cozy() {
+  local lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid
+  pid=$(jq -r .pid < "$lock" 2> /dev/null) || pid=''
+  [ -z "$pid" ] || { kill -TERM "$pid" 2> /dev/null; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done; }
+  cp "$1" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer
+}
+# migrate_facts <project>: each box's words, takes (number, approved, files by hash) and discarded, as the API reads them.
+migrate_facts() {
+  local name
+  status "$1" | jq -r '.assets[].name' | sort | while read -r name; do
+    held "$1" "$name" | jq -c --arg n "$name" '{name: $n, fields: .asset.fields, approved: .asset.approved, versions: [.versions[] | {number, files: (.files | map_values(.sha256))}], discarded: (.discarded // [])}'
+  done
+}
+# migrate_rows <project>: project.db's rows of takes, boxes' records and files, sorted.
+migrate_rows() {
+  local q
+  for q in "SELECT key, number, discarded, record FROM versions" "SELECT key, record FROM lock_assets" "SELECT sha256, record FROM lock_files"; do sql "$1" "$q" | sort; done
 }
