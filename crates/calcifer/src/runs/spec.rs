@@ -149,7 +149,11 @@ impl Call<'_> {
             code: "input_limit".into(),
             message: cut.clone(),
         });
-        let warnings = ignored.into_iter().chain(cuts).chain(limits).collect();
+        let unused = bound.into_iter().flat_map(|b| &b.unused).map(|line| Warning {
+            code: api::calcifer::MENTION_UNUSED.into(),
+            message: line.clone(),
+        });
+        let warnings = ignored.into_iter().chain(cuts).chain(limits).chain(unused).collect();
         SubmitRun {
             agreed: None,
             stays: api::calcifer::tool::stays(self.callable),

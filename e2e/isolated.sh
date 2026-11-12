@@ -235,6 +235,8 @@ if [ -n "$needs" ]; then
   done
   publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
+  # MOSS Image, which takes words only: what web/unused.js crosses out (cl-944).
+  case $shard in web-core | web-unused | '') publish "$packages/moss-image" ;; esac
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
   # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
   if [[ " $needs " == *" catalog "* ]]; then

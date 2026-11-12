@@ -588,14 +588,19 @@ function FramePicture({ sha256, open, restWidth, onSize, onShown }: { sha256: st
   )
 }
 
-/** Words as a frame draws them, read only: each mention a chip, struck through when it names nothing. */
+/** Words as a frame draws them, read only: each mention a chip, struck through when it names nothing or its tool can't use it, saying why. */
 function Said({ words, view, name }: { words: string; view: ElementView; name: string }) {
   const store = useCanvasStore()
+  const chipOf = (mention: string) => {
+    const gone = view.asset?.missing?.includes(mention) || (store.mentionOf(mention, name)?.gone ?? isSelf(mention))
+    const unused = gone ? undefined : view.asset?.unused?.find((one) => one.mention === mention)?.why
+    return { className: `chip ${gone ? "missing" : unused ? "unused" : ""}`, title: unused }
+  }
   return (
     <p className="words">
       {withMentions(words).map((part, i) =>
         part.mention ? (
-          <span key={i} className={`chip ${view.asset?.missing?.includes(part.text.slice(1, -1)) || (store.mentionOf(part.text.slice(1, -1), name)?.gone ?? isSelf(part.text.slice(1, -1))) ? "missing" : ""}`}>
+          <span key={i} {...chipOf(part.text.slice(1, -1))}>
             {chipWords(part.text.slice(1, -1))}
           </span>
         ) : (

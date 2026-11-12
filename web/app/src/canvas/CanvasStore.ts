@@ -34,7 +34,7 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -586,7 +586,7 @@ export class CanvasStore {
       // The box by its exact name first, as Calcifer reads it: `<kyogre.primordial>` is that box, not a take of `kyogre`.
       const read = this.mentionOf(mention, view.name)
       const of = read ? this.views.get(read.name) : undefined
-      if (!of?.asset || of.asset.kind !== "image" || this.refusalOf(name, mention) || seen.has(mention)) return []
+      if (!of?.asset || of.asset.kind !== "image" || view.asset?.unused?.some((one) => one.mention === mention) || seen.has(mention)) return []
       seen.add(mention)
       const file = read?.number !== undefined ? of.asset.prefixes?.find((held) => held.number === read.number)?.main : selectedOf(of)
       if (file && !file.absent && file.field === "image") return [{ mention, sha256: file.sha256, shape: file.width && file.height ? file.width / file.height : undefined }]
@@ -2294,16 +2294,9 @@ export class CanvasStore {
 
   // Names in a text
 
-  /** Why the box `name`'s tool can't send a mention of `mention`, if it can't. */
-  refusalOf(name: string, mention: string): string | null {
-    const asset = this.get(name)?.asset
-    const read = this.mentionOf(mention, name)
-    return read ? refusal(this.tools.get().get(asset?.tool ?? ""), this.get(read.name)) : null
-  }
-
-  /** Each name a mention could be, for the `<` list: nodes only, and none its tool can't send. */
+  /** Each name a mention could be, for the `<` list: nodes only. One its tool can't use is struck through once written (cl-944). */
   namesLike(typed: string, besides: string): string[] {
-    return this.mentionable(typed, besides).filter((name) => !this.refusalOf(besides, name))
+    return this.mentionable(typed, besides)
   }
 
   private mentionable(typed: string, besides: string): string[] {
@@ -2384,7 +2377,7 @@ export class CanvasStore {
   // A drag
 
   /** Whatever box is under the pointer, with `dragged` taken away. One being worked on takes a drop in the part it's let go on. */
-  dropTargetAt(x: number, y: number, dragged: Element[], names: string[] = dragged.flatMap((held) => held.querySelector<HTMLElement>(".card[data-asset]")?.dataset.asset ?? [])): DropTarget | null {
+  dropTargetAt(x: number, y: number, dragged: Element[]): DropTarget | null {
     for (const el of document.elementsFromPoint(x, y)) {
       if (dragged.some((held) => held.contains(el))) continue
       const card = el.closest<HTMLElement>(".card[data-asset]")
@@ -2399,14 +2392,7 @@ export class CanvasStore {
         this.overPart = at
         return part
       }
-      // What its tool's words don't take is refused, saying why, unless it merges in as one of its own.
-      const tool = this.tools.get().get(view?.asset?.tool ?? "")
-      const merges = (one: ElementView | undefined) => Boolean(view?.asset && !view.asset.tool && holdsPictures(view.asset) && one?.asset?.kind === view.asset.kind)
-      const refused = names.map((one) => this.get(one)).map((one) => (merges(one) ? null : refusal(tool, one))).find(Boolean)
-      if (refused) {
-        this.setHot(name, refused)
-        return { over: () => {}, drop: () => void say(refused) }
-      }
+      // What its tool can't use is taken all the same, and struck through where it's written (cl-944).
       if (view?.asset?.kind === "image" && view.asset.tool) {
         this.setHot(name)
         return { over: () => {}, drop: (names) => this.takeInto(name, names) }
@@ -2464,10 +2450,7 @@ export class CanvasStore {
   takeInto(target: string, names: string[]) {
     const key = this.resolveName(target)
     const asset = this.views.get(key)?.asset
-    const tool = this.tools.get().get(asset?.tool ?? "")
-    const refused = names.map((name) => refusal(tool, this.get(name))).find(Boolean)
-    if (refused) say(refused)
-    const given = [...new Set(names.map((name) => this.resolveName(name)))].filter((name) => name !== key && !refusal(tool, this.get(name)))
+    const given = [...new Set(names.map((name) => this.resolveName(name)))].filter((name) => name !== key)
     if (!asset || !given.length) return
     const tags = given.map((name) => `<${name}>`)
     const asText = (held: unknown) => [typeof held === "string" ? held.trimEnd() : "", ...tags].filter(Boolean).join(" ")

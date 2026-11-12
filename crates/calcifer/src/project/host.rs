@@ -235,6 +235,13 @@ impl Host {
         self.published(hub, with, Some(&first)).await
     }
 
+    /// Local code `with`, from `folder`, as described for a read that runs nothing: never made ready on a machine.
+    pub(crate) async fn described(&self, with: &str, folder: &Path) -> Result<Package, Error> {
+        let hub = self.api.machines.hubs.default_origin();
+        let found = crate::runs::target::describe(&self.api, &hub, with, None, Some(folder), &crate::runs::default_on(&self.api)).await?;
+        Ok(Package { name: found.package, release: found.release, local: None, manifest: String::new(), moved: None, named: found.function, document: found.interface })
+    }
+
     /// A published package, by `[org/]package[@release]`, for a run `on` its machine (of several, the
     /// walk's first; another installs the release); none: as this computer knows it, for a read
     /// that runs nothing.

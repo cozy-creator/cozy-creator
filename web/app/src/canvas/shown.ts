@@ -1,5 +1,4 @@
-import type { ErrorBody, ToolField, MainFile, Tool } from "../api/calcifer"
-import type { Media } from "../types"
+import type { ErrorBody, MainFile, Tool } from "../api/calcifer"
 import type { ElementView } from "./CanvasStore"
 import type { Box } from "./graph"
 
@@ -99,24 +98,6 @@ export function valueIn(view: ElementView | undefined, field: string): unknown {
   if (view?.drafts && field in view.drafts) return view.drafts[field]
   if (view?.sent && field in view.sent) return view.sent[field]
   return view?.asset?.fields?.[field]
-}
-
-const ONE: Record<string, string> = { image: "a picture", video: "a video", audio: "a sound", text: "words" }
-const SEVERAL: Record<string, string> = { image: "pictures", video: "videos", audio: "sounds" }
-const MEDIA: Media[] = ["image", "video", "audio"]
-
-/** The kinds `tool`'s prompts send a mention as, each its `takes`, else any. None: it has no prompt. */
-function takenBy(tool: Tool | undefined): Media[] {
-  const prompts = (fields: ToolField[]): ToolField[] => fields.flatMap((field) => (field.type === "prompt" ? [field] : prompts(field.members ?? [])))
-  return [...new Set(prompts(tool?.fields ?? []).flatMap((field) => (field.takes as Media[] | null) ?? MEDIA))]
-}
-
-/** Why `tool`'s words can't send a mention of `view`: a box of a kind none of its prompts takes. A text box is words, and a tool with no prompt takes anything. */
-export function refusal(tool: Tool | undefined, view: ElementView | undefined): string | null {
-  const kind = view?.asset?.kind ?? view?.landed?.field
-  const takes = takenBy(tool)
-  if (!view || !kind || !takes.length || kind === "text" || takes.includes(kind as Media)) return null
-  return `${toolName(tool!)} takes ${takes.map((one) => SEVERAL[one]).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
 }
 
 /** The take its frame looks at while it's made, open, by its id (cl-945): its run once that has a number, and its number once it's landed.

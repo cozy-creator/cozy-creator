@@ -232,6 +232,9 @@ pub struct State {
     pub cuts: Vec<Cut>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Warning>,
+    /// What its boxes' text mentions that their tools can't use, one line each: left out of their renders, nothing to act on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Warning>,
     /// Commands to run next, given what it holds and lacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
@@ -292,6 +295,25 @@ pub struct Read {
     /// does, and only then. None while it has no state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+}
+
+/// A mention a box's tool can't use where it's written, and why (cl-944): never sent, never refused.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Unused {
+    /// As written, without its brackets: `Image1`, `amy.2`, `walk:48-120`.
+    pub mention: String,
+    /// Where: `instructions`, `beats.0.description`.
+    pub at: String,
+    /// For people: `Moss Image can't use images`.
+    pub why: String,
+}
+
+impl Unused {
+    /// The one line said of it for `of`, a box or a run.
+    pub fn line(&self, of: &str) -> String {
+        format!("{of}: <{}> is left out: {}", self.mention, self.why)
+    }
 }
 
 /// An asset the project keeps versions of that it no longer names: the bytes `reclaim`
@@ -690,6 +712,9 @@ pub struct Asset {
     /// A pin lists them too, for its text: it stands, and only fails if it is run again.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<String>,
+    /// What its text mentions that its tool can't use, where: never sent, and shown struck through. Known once its package is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unused: Vec<Unused>,
     /// An Edit's: its clips as they read now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline: Option<TimelineNow>,
