@@ -7,7 +7,7 @@ import { NSFW, isNsfw, useShowNsfw } from "../ui/Tags"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
 import { loraNote } from "./loraNotes"
-import { appended, promptOf, triggersOf } from "./triggers"
+import { appended, promptOf } from "./triggers"
 import "./ModelPicker.css"
 
 type Entry = Record<string, unknown>
@@ -174,11 +174,11 @@ function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot
   store.putOn(name, { models: Object.keys(models).length ? models : null, ...also })
 }
 
-/** Box `name`'s prompt with `trigger`'s words it doesn't say yet after it (cl-968, Paul 11-12), as fields to write; none when it says them. */
-export function withTrigger(store: ReturnType<typeof useCanvasStore>, name: string, trigger: string | null | undefined): Entry {
+/** Box `name`'s prompt with the `triggers` it doesn't say yet after it, each whole (cl-968, cl-971), as fields to write; none when it says them. */
+export function withTriggers(store: ReturnType<typeof useCanvasStore>, name: string, triggers: string[]): Entry {
   const field = promptOf(store.tools.get().get(store.get(name)?.asset?.tool ?? ""))
   const said = field ? store.valueOf(name, field) : undefined
-  const text = field && appended(typeof said === "string" ? said : "", triggersOf(trigger))
+  const text = field && appended(typeof said === "string" ? said : "", triggers)
   return field && text ? { [field]: text } : {}
 }
 
@@ -225,13 +225,13 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
     return rest
   })
   // Without a strength it runs at its recommended one, which Calcifer reads from its card.
-  // Added, its trigger words go after the box's prompt, in the same step (cl-968).
+  // Added, its triggers go after the box's prompt, in the same step (cl-968).
   const addLora = async (model: PickerModel) => {
     const adapter = { ref: model.model }
     const on = (held: Entry) => adaptersOf(held.lora).some((value) => identityOf(String(entryOf(value).ref ?? "")) === identityOf(model.model))
     if (on(entryOf(entryOf(store.valueOf(name, "models"))[slot.slot]))) return
-    const trigger = await client.model(model.model).then((detail) => detail.trigger, () => null)
-    changeSlot(store, name, slot, (held) => on(held) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }), withTrigger(store, name, trigger))
+    const triggers = await client.model(model.model).then((detail) => detail.triggers ?? [], () => [])
+    changeSlot(store, name, slot, (held) => on(held) ? held : ({ ...held, lora: [...adaptersOf(held.lora), adapter] }), withTriggers(store, name, triggers))
   }
   return <section className="model-picker-slot" data-model-slot={slot.slot}>
     {!restricted && <div className="model-picker-tabs" role="group" aria-label={`Choices for ${slot.slot}`}>

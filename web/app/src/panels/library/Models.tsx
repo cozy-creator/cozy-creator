@@ -332,7 +332,7 @@ export function ModelDrawer() {
       <Failure error={error} lead={`Couldn't read ${shown(name)}`} />
       {data && (
         <p className="muted">
-          {[familyLine(data), data.author && `by ${data.author.name}${data.author.parked ? " (not claimed)" : ""}`, data.trigger && `trigger: ${data.trigger}`, data.strength !== undefined && data.strength !== null && `strength ${data.strength}`, data.source && `from ${data.source}`]
+          {[familyLine(data), data.author && `by ${data.author.name}${data.author.parked ? " (not claimed)" : ""}`, data.triggers?.length && `${data.triggers.length > 1 ? "triggers" : "trigger"}: ${data.triggers.map((trigger) => `“${trigger}”`).join(", ")}`, data.strength !== undefined && data.strength !== null && `strength ${data.strength}`, data.source && `from ${data.source}`]
             .filter(Boolean)
             .join(" · ")}{" "}
           {!member && <Tags tags={data.tags} />}

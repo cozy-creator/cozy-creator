@@ -490,11 +490,11 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   class, config keys (`full`: the config), run data with sizes, tensor count and a LoRA's modules with their α; and the
   header's records of where it came from (`inherited`, `composed`, `added`, `provenance`, `family`, `adapter`). `resolves_to`
   is the release a run naming this one takes, its series' newest fix.
-- `PATCH /v1/models/{org}/{name}` `{hub, family, tags, add_tags, remove_tags, trigger, strength}`:
+- `PATCH /v1/models/{org}/{name}` `{hub, family, tags, add_tags, remove_tags, triggers, strength}`:
   `ModelEdited {model, warnings}`, the model as `GET` reads it. Each field given is set, an absent one
   kept: `family` empty or `none` clears the label (its weights' family shows then); `tags` replaces them
-  (empty clears them), then `add_tags` are added and `remove_tags` removed; an empty `trigger` and a null
-  `strength` clear. The Hub fills a model's family from its header and its tags from its source's page;
+  (empty clears them), then `add_tags` are added and `remove_tags` removed; `triggers` are each kept whole (a word,
+  words or a prompt), and an empty list and a null `strength` clear. The Hub fills a model's family from its header and its tags from its source's page;
   what its owner sets here wins.
 - `GET /v1/families`: `Families {families}`, what a header can verify as: the owner's picks.
 - `POST /v1/models/{org}/{name}/releases` `{hub, version, commits}`: `ModelReleased`, one commit per
@@ -522,7 +522,7 @@ hand), and one a Calcifer stopped under fails `calcifer_stopped`: asking again i
   on the machine that holds the output. A commit, `org/name@sha256:…`, on no `base` is at the Hub
   already: it's recorded as a commit of `destination` when the caller may read its whole closure,
   checked against `lane` before anything is recorded. That is Calcifer's own run, its result a `RecordedCommit`, and its quote
-  `null`, since nothing rents. Its trigger and strength (the flags, else the source's own)
+  `null`, since nothing rents. Its triggers and strength (the flags, else the source's own)
   are set at the Hub once it completes (`result.after.display`).
 - `cozy/model_quantize` `ModelQuantize` (quoted for published
   packages only): Calcifer picks the commit (a release's original weights, else the commit named),
