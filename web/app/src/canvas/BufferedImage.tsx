@@ -74,9 +74,7 @@ export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedIm
 
   const discard = (buffer: Buffer, picture: Picture) => {
     picture.dead = true
-    if (picture.running) {
-      picture.running = false
-    }
+    picture.running = false
     picture.image.removeAttribute("src")
     picture.cancel?.()
     picture.image.remove()
@@ -179,7 +177,7 @@ export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedIm
       unsign()
       stop()
     }
-  }, [client, bridge, privateViewEpoch, signedOut, project])
+  }, [client, bridge, privateViewEpoch, signedOut, store, project])
 
   useLayoutEffect(() => {
     const buffer = held.current
@@ -188,7 +186,7 @@ export function BufferedImage({ sha256, neighbors, onSize, onShown }: BufferedIm
     buffer.wanted = wanted
     setFailed(false)
     refresh(buffer)
-  }, [client, project, sha256, windowKey])
+  }, [client, store, project, sha256, windowKey])
 
   return <>
     <span ref={host} className="buffered-image" style={{ position: "absolute", inset: 0, display: "block", pointerEvents: "none" }} />
