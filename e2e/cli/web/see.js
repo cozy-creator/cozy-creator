@@ -2,7 +2,7 @@
 // import` and boxes another writer makes through the project API show with no reload: elements of every kind, with no edges, each placed once, left
 // to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. A video's poster isn't its black first frame; a rest
 // on its box, or on a take, plays its preview, made as it landed, which leaving or a pan stops; playing is Range with ?media=, at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
-// leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
+// leaves is "Kept on another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
 // run. With the Hub unreachable it still answers. 300 elements, measured, and panned under a resting pointer: seen.scale. The project
 // tabs: as many as fit, still while the window resizes, "N more" opening All projects with the rest first, a search there, and + ready
 // for a new name.
@@ -315,7 +315,8 @@ async function rest(page, handle) {
   await open(page, 'clip');
   // A clip lasts a second, and one that ends lets go: paused, each keeps its place in the count.
   const held = () => page.evaluate(() => document.querySelectorAll('video').forEach((video) => video.pause()));
-  await element(page, 'clip').locator('.play').click();
+  // In Focus a video plays from the transport under it (cl-965): before Play there's no <video>.
+  await element(page, 'clip').locator('.tl-transport button[aria-label="Play"]').click();
   await until('one video', () => page.locator('video').count(), (n) => n === 1);
   await until('it has its metadata', () => page.locator('video').first().evaluate((video) => video.readyState), (ready) => ready >= 1);
   await held();
@@ -328,7 +329,7 @@ async function rest(page, handle) {
   }
   await open(page, 'clip_b');
   await until('what was playing went with its box', () => page.locator('video').count(), (n) => n === 0);
-  await element(page, 'clip_b').locator('.play').click();
+  await element(page, 'clip_b').locator('.tl-transport button[aria-label="Play"]').click();
   await until('its own', () => page.locator('video').count(), (n) => n === 1);
   check('one_box_plays', (await page.locator('video').count()) === 1, await page.locator('video').count());
   await away(page);
@@ -379,7 +380,7 @@ async function rest(page, handle) {
   renameSync(olderAt, olderAway);
   const absent = await until('absent on the wire', () => asset('older_art'), (held) => held.absent === true);
   check('wire_absent_per_file', Object.values(absent.files).every((file) => file.absent === true) && (await state()).absent > 0, absent.files);
-  await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'On another computer');
+  await until('it says so', () => element(page, 'older_art').locator('.media-note').textContent(), (text) => text === 'Kept on another computer');
   await open(page, 'older_art');
   check('no_manual_pull', (await element(page, 'older_art').getByRole('button', { name: 'Pull', exact: true }).count()) === 0);
   check('no_hash_when_absent', !(await page.evaluate(() => document.body.innerText)).includes(older.sha256.replace('sha256:', '').slice(0, 12)));
