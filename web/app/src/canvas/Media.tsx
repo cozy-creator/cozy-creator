@@ -17,7 +17,7 @@ import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
 import { BufferedImage } from "./BufferedImage"
-import { RunFace, useArriving } from "./RunFace"
+import { useArriving } from "./RunFace"
 import { bodyText, CopyError } from "../ui/CopyError"
 
 const STRIP_FRAMES = 8
@@ -643,6 +643,51 @@ function MadeFrom({ view, name, run, cardWidth }: { view: ElementView; name: str
   return <Ghosts name={name} view={view} mentions={mentionsIn(words)} cardWidth={cardWidth} />
 }
 
+/** The pictures a run was sent in a prompt, by their files (binder.rs `prompt`): none when it says nothing of them. */
+function sentPictures(sent: unknown): string[] | undefined {
+  const references = typeof sent === "object" && sent !== null ? (sent as { references?: unknown }).references : undefined
+  if (!Array.isArray(references)) return undefined
+  return references.flatMap((reference: { type?: unknown; file?: unknown } | null) =>
+    reference?.type === "image" && typeof reference.file === "string" && /^(sha256:)?[0-9a-f]{64}$/i.test(reference.file) ? [reference.file] : [],
+  )
+}
+
+/** An image being made, at rest (cl-940, Paul 11-12): the pictures its run reads, full-bleed, each at full height side by side, and the
+ *  start of the words it was sent over a scrim, its mentions marked as the editor marks them. The run's own words and pictures, not the
+ *  box's since; with no run yet, the box's own, which are what's sent. A preview of what it makes, when its package sends one, covers the
+ *  pictures; the words stay. Inside its frame: nothing of it changes the box's size. */
+function Making({ view, name, run, cardWidth }: { view: ElementView; name: string; run?: number; cardWidth: number }) {
+  const { client } = useConnection()
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  useSignal(store.names)
+  const { data, isError } = useQuery({ ...runFullQuery(client, run ?? 0, 0), enabled: run !== undefined })
+  const control = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "prompt")
+  if (!control) return null
+  const own = valueIn(view, control.field)
+  const asked = run !== undefined && !isError
+  const words = asked ? askedIn(data?.request?.input, control.field) : typeof own === "string" ? own : null
+  const sent = asked ? sentPictures(data?.request?.input?.[control.field]) : undefined
+  const pictures = sent ?? (words ? store.mentionedPictures(name, mentionsIn(words)).flatMap((ghost) => (ghost.sha256 ? [ghost.sha256] : [])) : [])
+  if (!words?.trim() && !pictures.length) return null
+  return (
+    <div className="making" data-making={run ?? ""}>
+      {pictures.length > 0 && (
+        <div className="making-pictures" aria-hidden>
+          {pictures.map((sha256) => (
+            <Thumb key={sha256} sha256={sha256} cardWidth={cardWidth / pictures.length} className="making-picture" />
+          ))}
+        </div>
+      )}
+      {words?.trim() && (
+        <p className="making-words">
+          {withMentions(words).map((part, i) => (part.mention ? <span key={i} className="chip">{chipWords(part.text.slice(1, -1))}</span> : part.text))}
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function Media({ view, name, cardWidth, restWidth = cardWidth, children }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode }) {
   const { client } = useConnection()
   const store = useCanvasStore()
@@ -652,9 +697,12 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const shown = shownOf(view)
   const watch = watched(view)
   const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined)
-  const bufferedImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watchRun: undefined, watchFrom: undefined }) : null
+  // Drawn: only the take shown, as its takes and label say, once its file is here; never another in its place (cl-942). Its neighbours,
+  // or those of what showed before a take was asked for, stay decoded.
+  const nearImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watchRun: undefined, watchFrom: undefined }) : null
+  const drawnImage = asset?.kind === "image" && shown && !shown.absent ? shown : null
   // A dropped picture shows its own bytes for as long as it shows that file: no copy of it is asked for, so nothing takes its place.
-  const own = Boolean(preview && (!preview.sha256 || !bufferedImage || hexOf(bufferedImage.sha256) === preview.sha256))
+  const own = Boolean(preview && (!preview.sha256 || !nearImage || hexOf(nearImage.sha256) === preview.sha256))
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
@@ -676,7 +724,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const clips = asset?.timeline?.tracks[0]?.clips
   const firstClip = clips?.find((clip) => clip.sha256 && !clip.missing)?.sha256
   const imageVersions = (asset?.prefixes ?? []).filter((version) => version.main?.field === "image")
-  const imageAt = imageVersions.findIndex((version) => version.main?.sha256 === bufferedImage?.sha256)
+  const imageAt = imageVersions.findIndex((version) => version.main?.sha256 === nearImage?.sha256)
   const neighbors = [1, -1, 2, -2].flatMap((offset) => {
     const next = imageVersions[imageAt + offset]?.main
     return next && !next.absent ? [next.sha256] : []
@@ -686,7 +734,9 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
   // Its take being made, with nothing of it yet: what its words mention is behind its face.
-  const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !view.glimpse
+  // An image being made at rest says what it's made from, in its frame (cl-940), over what it shows.
+  const makingImage = !view.here && asset?.kind === "image" && onItsWay && asset.rendering == null && makes(view)
+  const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !view.glimpse && !makingImage
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   // On its way, its face says so whole, unless a take is looked at, a glimpse of what it's making shows or its words are being written:
   // then along its bottom.
@@ -708,12 +758,12 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           />
         )}
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-        {bufferedImage && field === "image" && !own && <BufferedImage sha256={bufferedImage.sha256} originalPath={bufferedImage.path} neighborPaths={neighborPaths} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {nearImage && field === "image" && !own && <BufferedImage sha256={drawnImage?.sha256 ?? null} originalPath={drawnImage?.path} neighborPaths={neighborPaths} neighbors={nearImage.absent || nearImage === drawnImage ? neighbors : [nearImage.sha256, ...neighbors]} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       </div>
-      {blank && words && !madeFrom && <Said words={words} view={view} name={name} />}
+      {blank && words && !madeFrom && !makingImage && <Said words={words} view={view} name={name} />}
       {blank && !words && clips && <span className="media-note">Drag videos and stills here</span>}
       {blank && !words && field === "file" && <span className="media-note">A file</span>}
       {glyph && (
@@ -724,11 +774,13 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {view.glimpse && !shown && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
       {full && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
-      {busy && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
+      {makingImage && <Making view={view} name={name} run={run} cardWidth={cardWidth} />}
+      {/* At rest it keeps its size (cl-936): what's being made fades in over it, unless what it shows is approved; an image's covers its references (cl-940). */}
+      {(busy || (!view.here && making && (!asset?.pinned || makingImage))) && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
-      {(onItsWay || arriving !== undefined) && asset?.rendering == null && !view.here && <RunFace view={view} name={name} number={run} full={full} />}
       {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
-      {asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
+      {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}
+      {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit: open it and drag to turn">

@@ -544,6 +544,11 @@ impl Catalog {
         block(self.hub.get_package(org, name))
     }
 
+    /// A model and its public releases.
+    pub(crate) fn model(&self, org: &str, name: &str) -> Result<types::ModelCard, ::api::hub::Error> {
+        block(self.hub.get_model(org, name))
+    }
+
     /// The exact files of one committed release for this machine's CPU and selected Python:
     /// its documents' bytes and its wheels behind presigned URLs, which expire.
     pub(crate) fn install_plan(

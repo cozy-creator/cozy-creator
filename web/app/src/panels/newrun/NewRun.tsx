@@ -115,8 +115,9 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
   }, [target, id, mode, values, text, modelTerms, loras, lane, gpus])
 
   const done = ({ run, notes, replay }: Submitted) => {
-    if (replay) say(`This was asked already: run ${run.number}.`)
-    notes?.forEach((note) => say(note.message))
+    // One note for one run, whatever it has to say.
+    const lines = [replay ? `This was asked already: run ${run.number}.` : "", ...(notes ?? []).map((note) => note.message)].filter(Boolean)
+    if (lines.length) say(lines.join(" "))
     navigate(to(`runs/${run.number}`))
   }
 

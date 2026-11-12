@@ -1,5 +1,5 @@
 // A box on the canvas says what tool makes it (cl-927, Paul 11-12: "in the canvas free-roam mode, it should display what tools are attached
-// to a node ... I want to see what tools are attached"), in a real browser on a real Calcifer. Beside its name, a picture with Qwen's Image
+// to a node ... I want to see what tools are attached"), in a real browser on a real Calcifer. Under its picture (cl-932), a picture with Qwen's Image
 // and a video with H3's Shot say the package and the tool ("Qwen Image 2 · Image"), readable, and shrinking with the box as the canvas zooms
 // out; a picture and words with no tool say nothing there. A screenshot of them.
 //   node toolword.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
@@ -83,7 +83,7 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await fitCanvas(page);
   await settled(page);
 
-  /** What a box says beside its name, and how large it's drawn against the box. */
+  /** What a box says of its tool under its picture, and how large it's drawn against the box. */
   const said = (name) => boxOf(page, name).evaluate((node) => {
     const word = node.querySelector('.card .node-tool');
     const card = node.querySelector('.card').getBoundingClientRect();

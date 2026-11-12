@@ -573,6 +573,7 @@ impl Store {
         writer.execute_batch(crate::state::TABLES)?;
         crate::state::project_names(&writer)?;
         crate::state::project_codes(&writer)?;
+        crate::state::project_purges(&writer)?;
         private(path);
         let reader = Connection::open(path)?;
         reader.pragma_update(None, "query_only", "ON")?;

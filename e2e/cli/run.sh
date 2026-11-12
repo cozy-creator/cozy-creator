@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-quiet|web-palette|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-quiet|web-toasts|web-palette|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -313,6 +313,8 @@ case $SHARD in
   web-scrub) export DB_WEB=scrub; parts="tools_read db_existing_web logs" ;;
   # The tool beside a box's name (cl-927).
   web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
+  # A box's models and LoRAs, open (web/addons.js; at rest it has no chips, cl-932).
+  web-addons) export DB_WEB=addons; parts="tools_read db_existing_web logs" ;;
   # The right-side panel closed by a click off it (cl-929).
   web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;
   # No New on an empty box (cl-925).
@@ -329,19 +331,28 @@ case $SHARD in
   web-paste) export DB_WEB=paste; parts="tools_read db_existing_web logs" ;;
   # A toast when a render finishes, with View (cl-937).
   web-donetoast) export DB_WEB=donetoast; parts="tools_read db_existing_web logs" ;;
+  # A run says one thing at most: no note of a completed run's warnings, one note of a failure that stays (cl-921).
+  web-toasts) export DB_WEB=toasts; parts="tools_read db_existing_web logs" ;;
   # A rendering box at rest, and new takes not looked at (cl-928).
   web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
+  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it.
+  web-tiles) export DB_WEB="tiles newtakes"; parts="tools_read db_existing_web logs" ;;
+  # The take looked at in Focus is the one drawn when it finishes (cl-942).
+  web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
   web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
   # Files dropped: twenty pictures at once, each drawn once where and as it stays (cl-918), and Place's drop, chooser, rename and moves.
   web-dropped) export DB_WEB="dropped place"; parts="tools_read db_existing_web logs" ;;
+  # A deleted box gone from the project, its files after the undo window (cl-919): its own runner, as it waits out the window twice.
+  web-deleted) export DB_WEB=deleted; parts="tools_read db_existing_web logs" ;;
   web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
   web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
   web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
-  # computer placed on (cl-894), a new take never changing what's approved (cl-908), and one not looked at (cl-928).
-  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes prepares logs" ;;
+  # computer placed on (cl-894), a new take never changing what's approved (cl-908), one not looked at (cl-928), and the take looked at in
+  # Focus drawn when it finishes (cl-942).
+  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes focusfinish prepares logs" ;;
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;

@@ -69,6 +69,9 @@ pub struct CalciferConfig {
     /// record says which.
     #[serde(deserialize_with = "calcifer_port")]
     pub port: Option<u16>,
+    /// Tests only: a shorter window than the fixed 3 hours in which Undo can bring a deleted box back, after which its files leave
+    /// its project (cl-919).
+    pub undo_seconds: Option<u32>,
 }
 
 /// `[machine]`: this computer's machine (TensorD, `cozy machine serve`), which judges these. A

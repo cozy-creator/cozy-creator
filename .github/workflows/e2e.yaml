@@ -681,7 +681,7 @@ jobs:
       matrix:
         # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
         # Web behavior and the layout viewport partitions run separately. Manual shard selections remain available.
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","web-core","web-layout-1280","web-layout-1600","web-layout-2560","projectdb","projectvault","local-code"]') }}
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","web-core","web-deleted","web-layout-1280","web-layout-1600","web-layout-2560","projectdb","projectvault","local-code"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.

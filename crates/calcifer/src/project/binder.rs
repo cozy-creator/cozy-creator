@@ -128,10 +128,12 @@ pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
         binder.warn(format!("{}: {} reads no input {written}", call.name, call.tool));
     }
     if let Some(first) = binder.nothing.first() {
-        let said: Vec<String> = binder.nothing.iter().map(|mention| call.doc.not_there(mention, call.reserved)).collect();
+        let said: Vec<String> = binder.nothing.iter().map(|mention| call.doc.not_there(mention, call.reserved, call.lock)).collect();
         let refused = Error::new(Kind::Validation, "input_missing", format!("{}: {}", call.name, said.join("; ")));
+        let deleted = graph::mention(first).is_some_and(|mention| call.lock.was_deleted(mention.name, super::now_ms()));
         return Err(match call.own {
             Some(_) => refused.remedy(format!("bring it back, or edit {}'s text", call.name)),
+            None if deleted => refused.remedy(format!("undo its delete in the browser opened by cozy open, or leave <{first}> out")).next("cozy open"),
             // A run's own: a box of its project, or one of its own references.
             None => refused
                 .remedy(format!("make <{first}> a box of the run's project, or name it in the run: references:='[{{\"name\": \"{first}\", \"image\": \"<file>\"}}]'"))

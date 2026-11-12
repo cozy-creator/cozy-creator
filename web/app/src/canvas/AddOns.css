@@ -7,30 +7,14 @@
   pointer-events: none;
 }
 
-/* Under a box at its left, as many as it holds, in the room it keeps clear (shown.ts). The ratio has the right. */
+/* On a box being worked on, its tool is a row among the rest, at the sheet's small step. At rest a box has no stack (cl-932). */
 .add-ons {
-  position: absolute;
-  left: 0;
-  top: calc(100% + 4px);
-  width: 100%;
   margin: 0;
   padding: 0;
   list-style: none;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-}
-/* The first is short of the ratio at the right, which is at most five letters of the same face (`16:9`, `Auto`): `ch` is one of them. */
-.react-flow__node:has(.card:not(.here) > .ratio-rest) .add-on:first-child {
-  max-width: calc(100% - 5ch - 2px);
-}
-/* On a box being worked on, it's a row among the rest, at the sheet's small step. */
-.here-all .add-ons {
-  position: static;
-  width: auto;
-  flex-direction: row;
   flex-wrap: wrap;
+  gap: 4px;
 }
 .here-all .add-on {
   font-size: var(--small);
@@ -68,16 +52,6 @@
 .add-on .icon {
   width: 13px;
   height: 13px;
-}
-/* Far out a chip is only a mark. */
-.stage[data-lod="2"] .add-on-word,
-.stage[data-lod="2"] .add-on button {
-  display: none;
-}
-.stage[data-lod="2"] .add-on {
-  width: 10px;
-  height: 10px;
-  padding: 0;
 }
 
 .add-on-row {

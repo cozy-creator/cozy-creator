@@ -988,22 +988,102 @@ code {
   font-size: 17px;
   text-shadow: none;
 }
-/* At rest, how far the whole job is (cl-928): a thin meter along its box's bottom edge, line 1's numbers, drawn only once there's an
-   estimate. Nothing pulses in it. */
-.run-face .face-meter {
+/* At rest, how far the whole job is (cl-928): a thin meter along the top of its box (Paul, 11-12), line 1's numbers, drawn only once
+   there's an estimate. Nothing pulses in it. */
+.tile-meter {
   position: absolute;
+  top: var(--head);
   left: 0;
   right: 0;
-  bottom: 0;
+  z-index: 4;
   height: calc(3px * var(--ui));
-  background: color-mix(in srgb, var(--mak) 22%, transparent);
+  overflow: hidden;
+  background: color-mix(in srgb, var(--state-running) 22%, transparent);
+  pointer-events: none;
 }
-.run-face .face-meter i {
+/* Under a box at rest, as Paul drew it (cl-932): its tool and its shape, then while it renders its two lines with Cancel, at
+   the box's small step, in the room it keeps clear (shown.ts underOf). Only Cancel takes the pointer: a drag there pans. */
+.tile-under {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+.tile-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s4);
+  min-width: 0;
+}
+.card .tile-line .node-tool {
+  flex: 0 1 auto;
+  font-size: calc(var(--t-small) * var(--ui));
+}
+.card .tile-line .ratio-rest {
+  position: static;
+  flex: none;
+}
+.tile-under .run-face {
+  position: relative;
+  padding: 0;
+  text-shadow: none;
+}
+.card .head .node-version-label {
+  font: calc(var(--t-body) * var(--ui)) / 1.25 var(--mono);
+}
+.tile-meter i {
   position: absolute;
   inset: 0;
-  background: var(--mak);
+  background: var(--state-running);
   transform-origin: left;
   transition: transform 400ms linear;
+}
+/* An image being made, at rest (cl-940): what its run reads, full-bleed, each at full height side by side; over them the start of its words
+   on a scrim, under the meter. A preview of what it makes (.latent-preview) covers the pictures, never the words. */
+.making {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.making-pictures {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  background: var(--well);
+}
+.making-pictures img {
+  position: static;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+}
+.making-words {
+  position: absolute;
+  top: calc(var(--s3) + 3px * var(--ui));
+  left: var(--s3);
+  right: var(--s3);
+  z-index: 2;
+  display: -webkit-box;
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  overflow: hidden;
+  border-radius: var(--round);
+  background: var(--scrim);
+  color: var(--ink);
+  font: calc(var(--t-body) * var(--ui)) / 1.35 var(--sans);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+.making-words .chip {
+  text-shadow: none;
 }
 /* At rest, a render breathes around its box, outside its edge (cl-928, Paul 11-12): ambient, no progress. How far it is, is on its face. */
 .render-wave {
@@ -1040,21 +1120,38 @@ code {
     display: none;
   }
 }
-/* Made and not looked at yet (cl-928): green, left of its box's name, and on each such take in its list. */
-.unseen-dot {
-  --unseen: #22c55e;
+/* A node's state, left of its name wherever it's shown (Paul, 11-12): grey queued, blue running, green new and not looked at (on each such
+   take too, open), red failed; none when there's nothing to say. Its colours are tokens.css's, for both themes. */
+.state-dot,
+.take-unseen {
   flex: none;
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--unseen);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--unseen) 25%, transparent);
 }
-.card .head .unseen-dot {
+.state-dot.queued {
+  background: var(--state-queued);
+}
+.state-dot.running {
+  background: var(--state-running);
+}
+.state-dot.unseen,
+.take-unseen {
+  background: var(--state-unseen);
+}
+.state-dot.failed {
+  background: var(--state-failed);
+}
+.card .head .state-dot {
   font-size: calc(var(--t-title) * var(--ui));
   width: 0.6em;
   height: 0.6em;
   margin: 0 0.1em 0.33em 0;
+}
+.focus-title .state-dot {
+  width: 12px;
+  height: 12px;
+  align-self: center;
 }
 .take .take-unseen {
   position: absolute;

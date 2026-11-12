@@ -80,7 +80,7 @@ export class Placer {
       const stem = stemName(file.name) || "file"
       const view = { name: stem, placing: { media, stage: "waiting" as const, stem, abort: new AbortController() }, aspect: pictures[i]?.aspect }
       // As tall as it is drawn, and the room it keeps under it: no box of the drop lies on another, so none of them moves.
-      return { file, media, view, tall: heightFor(view, CARD_WIDTH) + underOf(view, 0) }
+      return { file, media, view, tall: heightFor(view, CARD_WIDTH) + underOf(view) }
     })
     for (let row = 0; row * columns < placing.length; row++) {
       const boxes = placing.slice(row * columns, (row + 1) * columns)
