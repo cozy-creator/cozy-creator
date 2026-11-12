@@ -228,6 +228,40 @@ if calcifer_stuck; then
 fi
 }
 
+# cl-885: `cozy run watch` of a run going on outlives Calcifer restarts, the first by a Calcifer whose lock record lands 5 s late (a busy
+# disk, slow-record.c): it reconnects on the new record and reaches the run's end. A Calcifer that answered before its record landed refused
+# the watch's last bearer while there was no record to find, and the watch ended ("Calcifer's API needs the bearer from its lock record").
+watch_restart() {
+[ "$RUNNER_OS" = Linux ] || return 0
+step "a run watched across Calcifer restarts, one whose lock record lands 5 s late (cl-885)"
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder dropin=$HOME/.config/systemd/user/cozy-calcifer.service.d/cl885-slow-record.conf
+local n pid submitter watcher code=0 slowed
+cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC -o "$OUT/slow-record.so" "$here/slow-record.c" -ldl || { check "watch restart: slow-record.c didn't build"; return; }
+(cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/wait" seconds:=45 --on local > "$OUT/watched-run.ndjson" 2> "$OUT/watched-run.err") & submitter=$!
+for _ in $(seq 240); do n=$(grep -m1 -oE '"number": *[0-9]+' "$OUT/watched-run.ndjson" | grep -oE '[0-9]+$') && break; sleep 0.5; done
+[ -n "$n" ] || { check "watch restart: the run never began: $(tail -c 300 "$OUT/watched-run.err")"; wait "$submitter" || true; return; }
+timeout 600 cozy --json run watch "$n" > "$OUT/watch.ndjson" 2> "$OUT/watch.err" & watcher=$!
+for _ in $(seq 60); do [ -s "$OUT/watch.ndjson" ] && break; sleep 0.5; done
+for slow in yes no; do
+  pid=$(jq -r .pid "$holder")
+  if [ "$slow" = yes ]; then
+    mkdir -p "${dropin%/*}" && printf '[Service]\nEnvironment=LD_PRELOAD=%s\n' "$OUT/slow-record.so" > "$dropin"
+  else
+    rm -f "$dropin"
+  fi
+  systemctl --user daemon-reload && systemctl --user restart cozy-calcifer || check "watch restart: systemctl --user restart cozy-calcifer failed"
+  for _ in $(seq 120); do [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] && [ -s "$holder" ] && break; sleep 0.5; done
+  [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] || check "watch restart: no new Calcifer's record 60 s after a restart"
+done
+slowed=$(grep -a 'started step="record"' "$HOME/.cozy/calcifer/calcifer.log" | tail -2 | head -1 | grep -oE 'ms=[0-9]+' | cut -d= -f2)
+[ "${slowed:-0}" -ge 4000 ] || check "watch restart: the first restart's record wasn't slowed (record step ${slowed:-?} ms): the cell proves nothing"
+wait "$watcher" || code=$?
+[ "$code" = 0 ] && J -s 'any(.[]; .type == "run.completed" and .run.status == "completed")' "$OUT/watch.ndjson" \
+  || check "watch restart: the watch of run $n didn't reach its end (exit $code): $(tail -c 300 "$OUT/watch.ndjson") $(tail -c 300 "$OUT/watch.err")"
+cozy --json run watch "$n" --once | J '.status == "completed"' || check "watch restart: run $n did not complete"
+wait "$submitter" || true
+}
+
 # cl-716 B: a run followed while Calcifer restarts goes on being followed to its end; a burst of restarts past
 # systemd's start limit (five in 10 s) leaves Calcifer startable by the next command. Last, as these stop Calcifer.
 calcifer_restarts() {
@@ -486,6 +520,7 @@ case $SHARD in
     machines
     completions
     calcifer_faults
+    watch_restart
     calcifer_restarts
     logs
   " ;;
@@ -517,6 +552,8 @@ case $SHARD in
   projectdb-migrate) parts="db_migrate logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).
   projectdb-waits) parts="db_waits logs" ;;
+  # A run watched across Calcifer restarts, one whose lock record lands late (cl-885).
+  follow-watch) parts="watch_restart logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
   projectdb-web) parts="tools_read db_existing_web logs" ;;
   projectdb-palette) parts="tools_read db_existing_web logs"; DB_WEB="nodes tools" ;;
