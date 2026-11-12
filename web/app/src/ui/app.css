@@ -1596,7 +1596,8 @@ video.preview.on {
   z-index: 1;
 }
 .media:has(.live) .take-out,
-.media:has(.orbit) .take-out {
+.media:has(.orbit) .take-out,
+.media.glimpsed .take-out {
   display: none;
 }
 /* The one being looked at, and the one approved: each plain at a glance, on the row and the tile. */
@@ -3872,6 +3873,7 @@ input[type="checkbox"] {
 .glimpse {
   position: absolute;
   inset: 0;
+  background: var(--card);
 }
 .glimpse img,
 .glimpse video {
