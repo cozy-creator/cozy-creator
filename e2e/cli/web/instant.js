@@ -2,8 +2,8 @@
 // Chrome on a real Calcifer, with the call held by a route that stalls it. A dropped tool's box is on the canvas in the frame it was dropped, with its
 // POST held; what's typed and moved meanwhile lands after it; the box's own echo costs no read of the project and no redraw; an answer lost goes again
 // under its key and makes one asset; another writer's name renames the box; a refused action rolls back with one line; a pending edit and another
-// writer's end in the conflict line; a write's answer never claims another writer's lines; kill -9 of Calcifer mid-queue lands once; and a render whose
-// answer is lost runs once.
+// writer's: the page's unsent words stand and are saved, with nothing asked; a write's answer never claims another writer's lines; kill -9 of
+// Calcifer mid-queue lands once; and a render whose answer is lost runs once.
 //   node instant.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $RESTART: a shell command that kills this Calcifer with -9 and brings it
 // back; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so it runs nothing.
@@ -189,7 +189,7 @@ async function loseAnswers(page, method, path, times) {
   const said = await until('one line', notes, (lines) => lines.some((line) => /Couldn't take out never_held/.test(line)));
   check('refused_says_one_line', said.filter((line) => /never_held/.test(line)).length === 1, said);
 
-  // A pending edit and another writer's edit of the same field: the conflict line, and neither lost.
+  // A pending edit and another writer's edit of the same field: the page's unsent words stand and are saved over theirs, with nothing asked (cl-904).
   projectJson(folder, 'POST', '/assets', { tool: '', name: 'words', exact: true, fields: { text: 'A storm.' } });
   await page.waitForTimeout(600);
   // Nothing held open: what's open lies over what's below it.
@@ -206,12 +206,11 @@ async function loseAnswers(page, method, path, times) {
   projectJson(folder, 'PATCH', '/assets/words', { fields: { text: 'theirs' } });
   await until('theirs in the file', () => Promise.resolve(yaml().includes('text: theirs')), Boolean);
   await page.waitForTimeout(600);
-  await patches.release();
   await openBox(page, 'words');
-  await until('the conflict line', () => box('words').getByRole('button', { name: 'Keep mine' }).count(), (n) => n > 0);
-  check('conflict_keeps_both', yaml().includes('text: theirs') && (await box('words').locator('.mention-text[data-field="text"]').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
-  await box('words').getByRole('button', { name: 'Keep mine' }).click();
+  check('unsent_words_stand', (await box('words').locator('.mention-text[data-field="text"]').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
+  await patches.release();
   await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
+  check('nothing_asked', (await box('words').getByRole('button', { name: 'Keep mine' }).count()) === 0);
   await closeBox(page);
 
   // Another canonical writer commits after ours, before its delayed reply is consumed.

@@ -110,12 +110,8 @@ export interface ElementView {
   drafts?: Record<string, unknown>
   /** What was written and not read back yet, by field. */
   sent?: Record<string, unknown>
-  /** The `etag` the drafts began from, moved along by writes of its own. */
-  base?: string
-  /** The `etag` its own last write left, until a read catches up: what a new draft begins from. */
+  /** The `etag` its own last write left, until a read catches up: a read of an older write of its own isn't news. */
   known?: string
-  /** The file moved under the drafts. */
-  conflict?: boolean
   /** Its render waits for a machine, with its pickup if it has one. */
   waiting?: { pickup?: Pickup }
   /** This computer would render it poorly, so it asks before it does, with its pickup if it has one. */
@@ -202,7 +198,7 @@ type Flow = ReactFlowInstance<ElementNode, Edge>
 const NOT_THERE = Symbol("the box went before its turn came")
 const NOT_YET = Number.POSITIVE_INFINITY
 export const UNDO_MS = 10_000
-const TYPING_PAUSE_MS = 800
+const TYPING_PAUSE_MS = 300
 const CLEAR_OF_FRAME = 24
 /** The gap between a box and one made beside it. */
 
@@ -395,6 +391,9 @@ export class CanvasStore {
     this.history = new PageHistory(client, () => this.projectId)
     this.selected = new Set(selected)
     this.moreOpen = new Set(moreOpen)
+    // What's typed goes as the tab is hidden, and once more as the page goes (cl-904).
+    document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && this.flush())
+    addEventListener("pagehide", () => this.leaving())
   }
 
   /** The project has been read, so what isn't here isn't in it. */
@@ -903,10 +902,10 @@ export class CanvasStore {
             else Object.assign(change, { watchRun: seen.run, watchFrom: undefined })
           }
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
+          // What's typed and what's still on its way show over it, field by field: the page's unsent words win, and every other field is what's read.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
-            // A box this page made has no one else's words under it yet: what's typed begins from this.
-            Object.assign(change, { sent: view.writing ? view.sent : undefined, known: undefined, ...(view.pending !== undefined ? { base: view.drafts ? asset.etag : undefined } : this.typedUnder(view, asset)) })
+            Object.assign(change, { sent: view.writing ? view.sent : undefined, known: undefined })
             this.own.delete(asset.name)
           }
           // Pinned where it was being looked: there's nothing left to look at.
@@ -952,17 +951,6 @@ export class CanvasStore {
       for (const { name } of fresh) this.unsettle(name)
     }
     this.names.set(this.names.get() + 1)
-  }
-
-  /** Someone wrote this asset, and what that means for what's typed in it: a field typed in is now a conflict, any other only moves what it began from. */
-  private typedUnder(view: ElementView, asset: Asset): Partial<ElementView> {
-    if (!view.drafts && !view.writing) return { base: undefined }
-    if (asset.etag === view.base) return {}
-    const same = (field: string) => JSON.stringify(asset.fields?.[field]) === JSON.stringify(view.asset?.fields?.[field])
-    // What's on its way is met by `If-Match`: Calcifer refuses it, and that's this conflict too. It only needs its base to stay, unless no field of it moved.
-    const typed = Object.keys({ ...(view.writing ? view.sent : {}), ...view.drafts })
-    if (typed.every(same)) return { base: asset.etag ?? undefined }
-    return view.drafts ? { conflict: true } : {}
   }
 
   /** A run this page hasn't heard of: its progress comes on the stream, but what it says now has to be read. */
@@ -1352,7 +1340,7 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     const asset = view?.asset
-    if (!asset || view.conflict) return
+    if (!asset) return
     const local = here || madeHere(asset.tool)
     const on = local ? ["local"] : this.machines()
     const saved = this.save(key)
@@ -1511,7 +1499,6 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
-    const was = view.asset
     const id = this.ids.get(key)
     const now = () => this.views.get(this.namesById.get(id ?? "") ?? "")
     const { ask, drop } = this.overlay(key, row)
@@ -1521,11 +1508,11 @@ export class CanvasStore {
       done: (answer) => {
         ask.until = nextProjectOrder()
         this.readAfter([id])
-        // A write of its own: what a typed field began from moves with it, so it's no conflict.
+        // A write of its own: its read back isn't news.
         const held = now()
         if (held && answer.etag) {
           this.own.set(held.name, (this.own.get(held.name) ?? new Set()).add(answer.etag))
-          this.patch(held.name, { known: answer.etag, ...(held.base === was.etag ? { base: held.drafts || held.writing ? answer.etag : undefined } : {}) })
+          this.patch(held.name, { known: answer.etag })
         }
         if (answer.stale?.length) say(`That puts ${answer.stale.join(", ")} out of date`)
         then?.done?.(answer)
@@ -1718,7 +1705,7 @@ export class CanvasStore {
   private retool(key: string, step: ToolStep, said?: string) {
     const edit = this.step(said ?? `Changed what makes ${key}`, [key])
     let note = 0
-    this.over(key, step.row, (served, write) => this.client.patchAsset(this.projectId!, served, { tool: step.tool, fields: step.fields }, undefined, write), "change what makes", edit, {
+    this.over(key, step.row, (served, write) => this.client.patchAsset(this.projectId!, served, { tool: step.tool, fields: step.fields }, write), "change what makes", edit, {
       done: (answer) => answer.warnings?.forEach((line) => say(line)),
       refused: () => dismiss(note),
     })
@@ -1745,7 +1732,7 @@ export class CanvasStore {
   star(name: string, on: boolean) {
     const key = this.resolveName(name)
     const edit = this.step(`${on ? "Starred" : "Unstarred"} ${key}`, [key])
-    this.over(key, { starred: on }, (served, write) => this.client.patchAsset(this.projectId!, served, { fields: { starred: on || null } }, undefined, write), on ? "star" : "unstar", edit)
+    this.over(key, { starred: on }, (served, write) => this.client.patchAsset(this.projectId!, served, { fields: { starred: on || null } }, write), on ? "star" : "unstar", edit)
   }
 
   /** A double tap on a take: it's approved, or if it was, nothing is, and it's still the one looked at. */
@@ -1865,9 +1852,28 @@ export class CanvasStore {
   setDraft(name: string, field: string, value: unknown) {
     const view = this.get(name)
     if (!view) return
-    this.patch(name, { drafts: { ...view.drafts, [field]: value }, base: view.base ?? view.known ?? view.asset?.etag ?? undefined })
+    this.patch(name, { drafts: { ...view.drafts, [field]: value } })
     clearTimeout(this.pauses.get(name))
     this.pauses.set(name, setTimeout(() => void this.save(name), TYPING_PAUSE_MS))
+  }
+
+  /** Everything typed is written now, not at its pause. */
+  flush() {
+    for (const [name, view] of this.views) if (view.drafts) void this.save(name)
+  }
+
+  /**
+   * The page goes: each box's words typed or on their way go once more, one write a box, which goes on past the page (`keepalive`). What was on its way
+   * may not have reached Calcifer, and what waited its turn never would. The same words twice change nothing.
+   */
+  private leaving() {
+    const project = this.projectId
+    if (!project) return
+    for (const [name, view] of this.views) {
+      const id = this.ids.get(name)
+      if (!view.asset || !id || !(view.drafts || view.writing)) continue
+      void this.client.patchAsset(project, this.served.get(id) ?? name, { fields: { ...view.sent, ...view.drafts } }, { keepalive: true }).catch(() => {})
+    }
   }
 
   /** Writes what's typed. Whether it stands: a refusal leaves it typed. */
@@ -1877,8 +1883,6 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.drafts) return Promise.resolve(true)
-    // The person says which: leaving the text doesn't.
-    if (view.conflict) return Promise.resolve(false)
     return this.write(key, view.drafts, `save ${view.name}`, { typed: true })
   }
 
@@ -1892,27 +1896,26 @@ export class CanvasStore {
   }
 
   /**
-   * `fields`, shown as written now, go in their turn, over what they began from, under `edit` (else a step of their own). Whether they stand: refused, they're
-   * typed again, and a file that moved under them is a conflict. `force`: written over it.
+   * `fields`, shown as written now, go in their turn, under `edit` (else a step of their own), over whatever those fields hold then: the other fields stay
+   * as anyone left them. Whether they stand: refused, they're typed again.
    */
-  private write(key: string, fields: Record<string, unknown>, what: string, opts: { force?: boolean; edit?: string; typed?: boolean } = {}): Promise<boolean> {
+  private write(key: string, fields: Record<string, unknown>, what: string, opts: { edit?: string; typed?: boolean } = {}): Promise<boolean> {
     const view = this.views.get(key)
     const id = this.ids.get(key)
     if (!view?.asset || !id) return Promise.resolve(true)
     const edit = opts.edit ?? this.writeStep(key, fields, opts.typed)
     const drafts = Object.fromEntries(Object.entries(view.drafts ?? {}).filter(([field]) => !(field in fields)))
-    this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields }, conflict: undefined, base: view.base ?? view.known ?? view.asset.etag ?? undefined, writing: (view.writing ?? 0) + 1 })
+    this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields }, writing: (view.writing ?? 0) + 1 })
     const now = () => this.views.get(this.namesById.get(id) ?? "")
     return new Promise((settled) => {
       this.act(key, {
-        send: (served, write) => this.client.patchAsset(this.projectId!, served, { fields }, opts.force ? undefined : now()?.base, write),
+        send: (served, write) => this.client.patchAsset(this.projectId!, served, { fields }, write),
         edit,
         done: (answer) => {
           const held = now()
           if (held) {
             this.wrote(held.name, answer)
-            const writing = (now()?.writing ?? 1) - 1
-            this.patch(held.name, { writing: writing || undefined, base: now()?.drafts || writing ? now()?.base : undefined })
+            this.patch(held.name, { writing: (held.writing ?? 1) - 1 || undefined })
           }
           settled(true)
         },
@@ -1920,9 +1923,8 @@ export class CanvasStore {
           const held = now()
           if (held) {
             const sent = Object.fromEntries(Object.entries(held.sent ?? {}).filter(([field]) => !(field in fields)))
-            const changed = error instanceof ApiError && error.body.code === "asset_changed"
-            this.patch(held.name, { drafts: { ...fields, ...held.drafts }, sent, writing: (held.writing ?? 1) - 1 || undefined, conflict: changed || held.conflict })
-            if (!changed) say(`Couldn't ${what}`, error)
+            this.patch(held.name, { drafts: { ...fields, ...held.drafts }, sent, writing: (held.writing ?? 1) - 1 || undefined })
+            say(`Couldn't ${what}`, error)
           }
           this.history.forget(edit)
           settled(false)
@@ -1931,23 +1933,11 @@ export class CanvasStore {
     })
   }
 
-  /** A write of its own moves what the drafts began from; anyone else's doesn't, so that still conflicts. */
+  /** A write of its own: its read back isn't news. */
   private wrote(key: string, answer: AssetPatched) {
-    const view = this.views.get(key)
-    if (view) this.patch(key, { known: answer.etag, ...(view.base === answer.was ? { base: answer.etag } : {}) })
+    if (this.views.has(key)) this.patch(key, { known: answer.etag })
     this.own.set(key, (this.own.get(key) ?? new Set()).add(answer.etag))
     for (const warning of answer.warnings ?? []) say(warning)
-  }
-
-  /** The file changed under what's typed: this is written over it. */
-  keepMine(name: string) {
-    const key = this.resolveName(name)
-    return this.write(key, this.views.get(key)?.drafts ?? {}, `save ${name}`, { force: true })
-  }
-
-  /** The file changed under what's typed: what's typed goes. */
-  takeTheFiles(name: string) {
-    this.patch(name, { drafts: undefined, base: undefined, conflict: undefined })
   }
 
   /** A slider let go, a choice made: one field, whatever else is typed. */
@@ -1955,11 +1945,11 @@ export class CanvasStore {
     return this.setFields(name, { [field]: value }, edit)
   }
 
-  /** A write by what keeps its own `etag`, in its turn like any other. */
-  patchInTurn(name: string, fields: Record<string, unknown>, read?: string): Promise<AssetPatched> {
+  /** A write of what keeps its own draft (an Edit's clips), in its turn like any other. */
+  patchInTurn(name: string, fields: Record<string, unknown>): Promise<AssetPatched> {
     const key = this.resolveName(name)
     const edit = this.step(`Set ${Object.keys(fields).join(", ")} on ${key}`, [key])
-    return new Promise((done, refused) => this.act(key, { send: (served, write) => this.client.patchAsset(this.projectId!, served, { fields }, read, write), edit, done, refused }))
+    return new Promise((done, refused) => this.act(key, { send: (served, write) => this.client.patchAsset(this.projectId!, served, { fields }, write), edit, done, refused }))
   }
 
   /** What belongs together, in one write. `edit`: what it's part of. */
@@ -1982,7 +1972,7 @@ export class CanvasStore {
     const known = this.tools.get().get(tool)
     const label = known ? toolName(known) : tool.split(/[/\\]/).at(-1)
     const edit = this.step(`Switched ${key} to ${label}`, [key])
-    this.over(key, { tool }, (served, write) => this.client.patchAsset(this.projectId!, served, { tool }, undefined, write), "change what makes", edit, { done: (answer) => answer.warnings?.forEach((line) => say(line)) })
+    this.over(key, { tool }, (served, write) => this.client.patchAsset(this.projectId!, served, { tool }, write), "change what makes", edit, { done: (answer) => answer.warnings?.forEach((line) => say(line)) })
     this.reshape(key)
   }
 

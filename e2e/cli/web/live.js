@@ -1,5 +1,5 @@
 // A second API client and the page edit one project on a real Calcifer. The canvas is never reloaded.
-// Each request is timed through its appearance, including typing conflicts, renders, and a 200-edit burst.
+// Each request is timed through its appearance, including writes to a field being typed in, renders, and a 200-edit burst.
 //   node live.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing; $ARGV_LOG: where each cozy call is logged for coverage. Prints what it saw as JSON and exits 1 if anything failed.
@@ -80,7 +80,6 @@ const WATCH = () => {
     if (spec.w !== undefined && Math.abs(node.offsetWidth - spec.w) > 0.5) return false;
     if (spec.dot && !node.querySelector(`.dot.${spec.dot}`)) return false;
     if (spec.picture !== undefined && Boolean(node.querySelector('.media img')) !== spec.picture) return false;
-    if (spec.conflict && !wordsOf(spec.name).includes('The file changed under this')) return false;
     return true;
   };
   /** When `spec` first holds, by the page's own frames, and whether its box was landing then. */
@@ -253,6 +252,18 @@ function linesOf(text, name) {
     check(`${label}_live`, ms <= within, { ms, within });
     return { ...done, ms, landing };
   };
+  /** The page's writes of `name` wait until the function this returns is called. */
+  const holdWrites = async (name) => {
+    let open;
+    const held = new Promise((done) => (open = done));
+    const path = `**/v1/projects/*/assets/${name}`;
+    const route = (call) => (call.request().method() === 'PATCH' ? held.then(() => call.fallback().catch(() => {})) : call.fallback());
+    await page.route(path, route);
+    return async () => {
+      open();
+      await page.unroute(path, route);
+    };
+  };
   /** A save by hand. */
   const saved = (write) => {
     write();
@@ -388,36 +399,29 @@ function linesOf(text, name) {
   check('another_field_live', times.another_field <= LIVE_MS, times.another_field);
   await page.waitForTimeout(100);
   check('another_field_leaves_it', (await typedText()).includes('TYPED-ONE'), await typedText());
-  check('another_field_no_conflict', (await box('live_tool').locator('.status.ood:has-text("changed under this")').count()) === 0);
+  check('another_field_nothing_asked', (await box('live_tool').locator('button:has-text("Keep mine")').count()) === 0);
   await page.mouse.click(1700, 1100);
   await until('typed saved over it', async () => (await held('live_tool')).fields, (fields) => fields?.instructions?.includes('TYPED-ONE') && fields?.style === 'noir');
   check('typed_and_theirs_both_stand', true);
 
-  // The command changes that field: what's typed stays, typing goes on, and the page says so within a second. Keep mine writes it over theirs.
+  // The command changes that field while what's typed is on its way: what's typed stands, shown and then saved over theirs, and typing goes on, with
+  // nothing asked (cl-904, Paul 11-12: the page's unsent words win, field by field). Its write waits until the command's is in, as a slower network's would.
   await open('live_tool');
   await words.click();
+  const release = await holdWrites('live_tool');
   await page.keyboard.press('End');
   await page.keyboard.type(' TYPED-TWO');
   const typedBefore = await typedText();
-  await timed('conflict_shows', { name: 'live_tool', conflict: true }, () => project('set', 'live_tool', 'instructions=FROM-THE-CLI'));
-  check('conflict_keeps_whats_typed', (await typedText()) === typedBefore, { typed: await typedText(), typedBefore });
-  check('conflict_file_holds_theirs', (await held('live_tool')).fields?.instructions === 'FROM-THE-CLI');
+  await project('set', 'live_tool', 'instructions=FROM-THE-CLI');
+  check('theirs_in_the_file', (await held('live_tool')).fields?.instructions === 'FROM-THE-CLI');
+  await page.waitForTimeout(LIVE_MS);
+  check('unsent_words_stand', (await typedText()) === typedBefore, { typed: await typedText(), typedBefore });
   await page.keyboard.type(' MORE');
-  check('conflict_typing_goes_on', (await typedText()).endsWith('MORE'), await typedText());
-  await shot('conflict');
-  await box('live_tool').locator('button:has-text("Keep mine")').click();
-  await until('mine kept', async () => (await held('live_tool')).fields?.instructions, (text) => text?.includes('TYPED-TWO MORE'));
-  check('conflict_keep_mine', (await box('live_tool').locator('.status.ood:has-text("changed under this")').count()) === 0);
-
-  // Take the file's: what's typed goes, and the box shows the file's.
-  await open('live_tool');
-  await words.click();
-  await page.keyboard.press('End');
-  await page.keyboard.type(' TYPED-THREE');
-  await timed('conflict_shows_again', { name: 'live_tool', conflict: true }, () => project('set', 'live_tool', 'instructions=FROM-THE-CLI-AGAIN'));
-  await box('live_tool').locator('button:has-text("Take the file\'s")').click();
-  await until("the file's words", typedText, (text) => text === 'FROM-THE-CLI-AGAIN');
-  check('conflict_take_the_files', (await held('live_tool')).fields?.instructions === 'FROM-THE-CLI-AGAIN');
+  check('typing_goes_on', (await typedText()).endsWith('MORE'), await typedText());
+  await shot('unsent-words-stand');
+  await release();
+  await until('mine saved over theirs', async () => (await held('live_tool')).fields?.instructions, (text) => text?.includes('TYPED-TWO MORE'));
+  check('nothing_asked', (await box('live_tool').locator('button:has-text("Keep mine")').count()) === 0);
 
   // Renamed by a command while being typed in: the same box, and what's typed stays.
   await open('live_tool');
@@ -734,7 +738,7 @@ function linesOf(text, name) {
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   await new Promise((done) => setTimeout(done, 300));
   // An asset gone by the time the page read it is no fault: that's how it hears it's gone.
-  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && refusal.code !== 'asset_changed' && !(refusal.code === 'asset_unknown' && refusal.method === 'GET'));
+  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && !(refusal.code === 'asset_unknown' && refusal.method === 'GET'));
   check('nothing_refused_unasked', unasked.length === 0, unasked);
   check('no_page_errors', errors.length === 0, { errors, refused });
 
