@@ -11,6 +11,8 @@ export interface Transport {
   /** Reached over a link that names any address, so it may be a fake pod: no secret is entered here (web-ui.md §6). */
   readonly channel: boolean
   fetch(path: string, init?: RequestInit): Promise<Response>
+  retireProject(project: string): void
+  allowProject(project: string): void
   /** For `<img>`: a URL, or a blob URL. */
   src(path: string): Promise<string>
   /** A URL with Range, or the MSE player. */
@@ -33,6 +35,22 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
     if (held) url.searchParams.set("media", held)
     return url.pathname + url.search
   }
+  const projects = new Map<string, { epoch: number; blocked: boolean; active: AbortController }>()
+  const scope = (path: string) => {
+    const url = resolve(path), segments = url.pathname.split("/")
+    // Vault control and reference lookup remain available while the project's content is closed.
+    if (segments[2] === "projects" && !["vault", "address"].includes(segments[4])) return decodeURIComponent(segments[3] ?? "") || null
+    return url.searchParams.get("project")
+  }
+  const guard = (path: string) => {
+    const id = scope(path)
+    if (!id) return null
+    let state = projects.get(id)
+    if (!state) projects.set(id, state = { epoch: 0, blocked: false, active: new AbortController() })
+    if (state.blocked) throw new DOMException("Project view retired", "AbortError")
+    const epoch = state.epoch
+    return { signal: state.active.signal, check: () => { if (state!.blocked || state!.epoch !== epoch) throw new DOMException("Project view retired", "AbortError") } }
+  }
   const storage = async (signal?: AbortSignal | null) => {
     const token = session()?.token
     if (!token || !ownedBirth) throw new Error("An owned private browser session is required before opening project data")
@@ -47,19 +65,34 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
   const needsStorage = (path: string) => ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/events"].some((prefix) => path.startsWith(prefix))
   return {
     channel: false,
+    retireProject(project) {
+      let state = projects.get(project)
+      if (!state) projects.set(project, state = { epoch: 0, blocked: false, active: new AbortController() })
+      state.blocked = true; state.epoch++; state.active.abort()
+    },
+    allowProject(project) {
+      const state = projects.get(project)
+      if (state?.blocked) { state.blocked = false; state.active = new AbortController() }
+    },
     async fetch(path, init = {}) {
-      if (needsStorage(path)) await storage(init.signal)
+      const project = guard(path)
+      const signal = project ? (init.signal ? AbortSignal.any([init.signal, project.signal]) : project.signal) : init.signal
+      if (needsStorage(path)) await storage(signal)
+      project?.check()
       const headers = new Headers(init.headers)
       const token = session()?.token
       if (token) headers.set("Authorization", `Bearer ${token}`)
       headers.set("Cozy-Client", `page ${TAB}`)
       headers.set(PROJECT_STORAGE_HEADER, PROJECT_STORAGE_VERSION)
-      return fetch(resolve(path), { ...init, headers })
+      const response = await fetch(resolve(path), { ...init, signal, headers })
+      try { project?.check() } catch (error) { void response.body?.cancel(); throw error }
+      return response
     },
-    src: async (path) => { await storage(); return media(path) },
+    src: async (path) => { const project = guard(path); await storage(project?.signal); project?.check(); return media(path) },
     play(path, el) {
       let live = true
-      void storage().then(() => { if (live) el.src = media(path) }, () => { if (live) el.dispatchEvent(new Event("error")) })
+      const project = guard(path)
+      void storage(project?.signal).then(() => { project?.check(); if (live) el.src = media(path) }, () => { if (live) el.dispatchEvent(new Event("error")) })
       return {
         stop() {
           live = false

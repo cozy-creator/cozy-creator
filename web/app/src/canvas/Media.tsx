@@ -95,7 +95,7 @@ const mediaKey = (project: string | null, key: string) => `${project ?? ""}\0${k
 export function revokeProjectMedia(project: string) {
   mediaEpoch.set(project, (mediaEpoch.get(project) ?? 0) + 1)
   const prefix = `${project}\0`
-  for (const [key, image] of preloaded) if (key.startsWith(prefix)) { image.removeAttribute("src"); preloaded.delete(key) }
+  for (const [key, image] of preloaded) if (key.startsWith(prefix)) { if (image.src.startsWith("blob:")) URL.revokeObjectURL(image.src); image.removeAttribute("src"); preloaded.delete(key) }
   for (const key of arrived) if (key.startsWith(prefix)) arrived.delete(key)
   for (const key of widest.keys()) if (key.startsWith(prefix)) widest.delete(key)
 }
@@ -334,9 +334,10 @@ export function sourceOf(view: ElementView, shown: Shown | null): Source | null 
 }
 
 /** Straight from the machine: `play` says where and signs a cap for this output alone, and the shared browser player follows it. */
-async function fromMachine(client: Client, source: { project: string; run: number; output: string }, el: HTMLMediaElement, failed: (why: string) => void): Promise<Playback> {
+async function fromMachine(client: Client, source: { project: string; run: number; output: string }, el: HTMLMediaElement, signal: AbortSignal, failed: (why: string) => void): Promise<Playback> {
   const [name, index] = source.output.split("/")
   const answer = await client.play({ project: source.project, run: source.run }, name, Number(index ?? 0))
+  signal.throwIfAborted()
   const player = new MachinePlayer(el, parseLink(new URL(answer.url).hash))
   let stopping = false
   player.addEventListener("status", (event) => {
@@ -425,7 +426,7 @@ export function Player({ field, path, machine, seek, auto }: { field: string; pa
         release = held
         const el = element.current
         if (!el) return stop()
-        playback = path !== undefined ? client.transport.play(path, el) : await fromMachine(client, machine!, el, failed)
+        playback = path !== undefined ? client.transport.play(path, el) : await fromMachine(client, machine!, el, waiting.signal, failed)
         if (waiting.signal.aborted) return playback.stop()
         setState("playing")
         if (wanted.current !== null) el.currentTime = wanted.current
