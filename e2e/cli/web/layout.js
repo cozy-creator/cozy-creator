@@ -1024,8 +1024,9 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     const many = names.includes('card') ? 'card' : 'still';
     await openBox(page, many);
     await edges(`open-${many}`);
+    // Open, a box is Focus: its keys zoom its picture, as the canvas's do in Wander (cl-893).
     for (const step of ['out', 'out-again']) {
-      await page.click('button[aria-label="Zoom out"]');
+      await page.keyboard.press('Control+Minus');
       await settled(page);
       await edges(`open-${many}-zoomed-${step}`);
     }
