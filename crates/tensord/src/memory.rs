@@ -441,6 +441,7 @@ impl MemoryLog {
         // Persist only the explicitly system-owned host budget globally.
         if selected.is_none() && event["event"] != "host_limit" { return; }
         let Some(dir) = selected.as_deref().or(self.0.as_deref().map(|p| p.as_path())) else { return; };
+        let Ok(writing) = crate::config::legacy_diagnostics_read() else { return };
         let path = dir.join("memory.log");
         if fs::metadata(&path).is_ok_and(|meta| meta.len() > ROTATE_BYTES) {
             let _ = fs::rename(&path, dir.join("memory.log.1"));
@@ -449,6 +450,7 @@ impl MemoryLog {
         let written = fs::create_dir_all(dir)
             .and_then(|_| OpenOptions::new().create(true).append(true).open(&path))
             .and_then(|mut file| file.write_all(line.as_bytes()));
+        drop(writing);
         if let Err(error) = written {
             if private.is_none() { tracing::warn!("memory log unavailable: {error}"); }
         }

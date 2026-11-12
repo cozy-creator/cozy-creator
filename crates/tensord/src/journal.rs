@@ -2,6 +2,7 @@
 use platform::process::Birth;
 mod project_migration;
 mod project_inventory;
+mod project_retirement;
 use crate::private_journal;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};

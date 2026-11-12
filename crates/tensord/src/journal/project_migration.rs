@@ -390,8 +390,16 @@ fn inventory(
     store: &crate::storage::Store,
     finalized: bool,
 ) -> io::Result<()> {
+    // These explicitly disposable worker diagnostics are not canonical execution history.
+    // The global store owner and terminal/exact-Birth checks proved the old writer quiescent;
+    // the diagnostics barrier fences current appenders during in-place retirement.
+    let mut retirement = super::project_retirement::retire_disposable(logs, engine)?;
+    retirement.extend(super::project_retirement::retire_store_diagnostics(
+        store.root(),
+    )?);
     receipt.inventory = project_inventory::inspect(scope, logs, engine, store, &receipt.footprint)?;
     receipt.pending = receipt.inventory.pending.clone();
+    receipt.pending.extend(retirement);
     receipt
         .pending
         .extend(verify_request_objects(&receipt.owned, scope)?);
