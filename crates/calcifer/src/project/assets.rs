@@ -149,6 +149,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             warnings: version.warnings.clone(),
             pickup: version.pickup.clone(),
             text: lock.asset(&asset.name).and_then(|held| held.text_of(version.number)).map(str::to_owned),
+            fields: fields_of(&api, &project, version),
             execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
         })
         .collect();
@@ -288,6 +289,22 @@ pub(super) async fn patch(
         Ok(AssetPatched { name: name.clone(), etag, was, warnings })
     });
     patched.map(Json).map_err(Refusal)
+}
+
+/// Older versions can recover their exact structured request while their own run is still retained.
+fn fields_of(api: &Api, project: &Project, version: &folder::Version) -> Option<Map<String, Value>> {
+    if let Some(fields) = &version.fields {
+        return Some(fields.clone());
+    }
+    let row = match &version.run_id {
+        Some(id) => api.calcifer.store().run(id.as_str()).ok().flatten(),
+        None => api.calcifer.store().run_by_number(version.run?).ok().flatten(),
+    }?;
+    let root = super::of_landing(&row.out_dir)?;
+    if super::identity(root).0 != project.id {
+        return None;
+    }
+    crate::runs::asked(&row).map(|asked| asked.input)
 }
 
 /// What a change of `tool` needs of the pictures asset `name` holds: `None` with none. A tool going on a picture nothing numbers makes it a version, as if that
