@@ -103,8 +103,8 @@ moss_cell() {  # moss_cell <name> <function> [args...]
   ONLY=$SAVED
 }
 # The gate's reference picture is a place, so MOSS makes the person the edits start from.
-moss_cell moss-person generate seed:=$((R + 49)) \
-  prompt="a full-body photo of a young woman in a plain white t-shirt and jeans standing in a city park, natural light"
+moss_cell moss-person generate seed:=$((R + 49)) aspect_ratio=3:4 \
+  prompt="a photo of one young woman with short black hair, alone, in a plain white t-shirt and jeans, standing in a city park, full body, natural light"
 SUBJECT=$(output moss-person 'png|webp|jpg')
 SUBJECT=${SUBJECT:-$REF}
 PERSON="[{\"name\": \"Person\", \"image\": \"$SUBJECT\"}]"
@@ -112,10 +112,11 @@ moss_cell moss-edit-red generate seed:=$((R + 50)) references:="$PERSON" \
   prompt="Change only the clothing of <Person> to a bright red jacket. Keep the face, hair, pose and background unchanged."
 moss_cell moss-edit-beach generate seed:=$((R + 51)) references:="$PERSON" \
   prompt="Put <Person> on a sunny beach with the sea behind, keeping the person unchanged."
-moss_cell moss-edit-watercolor generate seed:=$((R + 52)) references:="$PERSON" prompt="Turn <Person> into a soft watercolor painting."
+moss_cell moss-edit-watercolor generate seed:=$((R + 52)) references:="$PERSON" \
+  prompt="Turn <Person> into a soft watercolor painting, keeping the woman, her pose and the composition."
 moss_cell moss-hat generate seed:=$((R + 53)) prompt="a straw sun hat with a blue ribbon on a white table, studio photo"
 HAT=$(output moss-hat 'png|webp|jpg')
 [ -z "$HAT" ] || moss_cell moss-edit-two generate seed:=$((R + 54)) \
   references:="[{\"name\": \"Person\", \"image\": \"$SUBJECT\"}, {\"name\": \"Hat\", \"image\": \"$HAT\"}]" \
-  prompt="<Person> wearing the hat from <Hat>, keeping the person, pose and background unchanged."
+  prompt="Put the straw hat from <Hat> on the woman in <Person>. Keep her face, clothes, pose and the background unchanged."
 moss_cell moss-img2img image_to_image --file image="$SUBJECT" prompt="an oil painting, thick brush strokes" strength:=0.6 seed:=$((R + 55))
