@@ -714,7 +714,9 @@ impl Publisher {
         let checkpoint = named.header()?.clone();
         let own = self.read_header(&checkpoint)?;
         let mut bases: Vec<Named> = self.recorded_base(service, source, named, &own).into_iter().collect();
-        if let Some(choice) = default_choice(slot, &grant.slot) {
+        // The default itself takes nothing from itself.
+        let itself = |choice: &stored::ModelChoice| choice.model == named.model && (choice.release.is_empty() || choice.release == named.release);
+        if let Some(choice) = default_choice(slot, &grant.slot).filter(|choice| !itself(choice)) {
             let mut default = choose(&choice, &grant.slot)?;
             if default.lane.is_empty() {
                 default.lane = named.lane.clone();

@@ -151,15 +151,22 @@ fn same_class(a: &Component, b: &Component) -> bool {
     (&a.class.library, &a.class.name) == (&b.class.library, &b.class.name)
 }
 
+/// Whether a component is a LoRA's: every tensor a factor, an alpha or one it keeps.
+fn adapter(component: &Component) -> bool {
+    !component.tensors.is_empty() && component.tensors.iter().all(|t| family::lora_key(&t.key))
+}
+
 /// `child` (whose own header is `checkpoint`) with what it lacks of `base`, recorded as `from`
 /// (the base's model, release, lane, header): each component of the base it has not, whole, and
 /// for each component both have, each of the base's assets it has not and the base's config when
-/// its own is empty. Its own data always wins. None when it lacks nothing of the base, or when
-/// they are not one model: no component in common, or one in common of another class.
+/// its own is empty. Its own data always wins. None when it lacks nothing of the base, when
+/// either is a LoRA (one is applied to a base, never filled from another), or when they are not
+/// one model: no component in common, or one in common of another class.
 pub fn inherit(child: &Header, checkpoint: &ObjectRef, base: &Header, from: BTreeMap<String, Value>) -> Result<Option<(Header, Inherited)>> {
     let shared: Vec<(&Component, &Component)> =
         child.components().iter().filter_map(|c| Some((c, base.component(&c.name)?))).collect();
-    if shared.is_empty() || shared.iter().any(|(c, b)| !same_class(c, b)) {
+    let lora = child.components().iter().chain(base.components()).any(adapter);
+    if lora || shared.is_empty() || shared.iter().any(|(c, b)| !same_class(c, b)) {
         return Ok(None);
     }
     let mut gave = Inherited::default();
