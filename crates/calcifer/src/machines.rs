@@ -775,6 +775,17 @@ impl Machines {
         }
         if let Some(status) = &mut machine.status {
             status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
+            // A project's runs execute in its own engine: listed from its journal, as the machine holds them (cl-811).
+            let listed: HashSet<String> = status.runs.iter().map(|run| crate::store::calcifer_id(&run.id).to_owned()).collect();
+            for project_run in self.calcifer.project_runs_on(&row.name).into_iter().filter(|run| !listed.contains(run.id.as_str())) {
+                let Ok(run) = self.calcifer.record(&project_run) else { continue };
+                status.runs.push(wire::LiveRun {
+                    id: project_run.id.to_string(),
+                    state: run.machine_state.clone().unwrap_or_else(|| "running".into()),
+                    waiting: run.waiting.clone().unwrap_or_default(),
+                    run: Some(run),
+                });
+            }
             status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
         }
         machine.rc = self.rc_follow(&row.name, self.frame(&row.name).as_ref());
