@@ -79,7 +79,7 @@ J() { jq -e "$@" > /dev/null; }
 # order through Calcifer as the page makes them, each exactly named; the folder made a project first unless it is one.
 boxes_in() {
   local boxes box
-  boxes=$(jq -c '.[] | {tool: "", exact: true} + .') && run_project "$1" || { check "boxes in $1: no project, or not a JSON array of boxes"; return 1; }
+  boxes=$(jq -c '.[] | {tool: "", exact: true} + .') && (run_project "$1") || { check "boxes in $1: no project, or not a JSON array of boxes"; return 1; }
   while IFS= read -r box; do
     [ -n "$box" ] || continue
     project_api "$1" /assets -X POST -H 'Content-Type: application/json' -d "$box" > "$OUT/boxes-in.txt" 2>&1 \
