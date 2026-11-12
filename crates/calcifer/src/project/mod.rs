@@ -2158,18 +2158,26 @@ async fn runs(
     }
     let mut named = vec![];
     let mut first = None;
-    // Pinned, and not named: what `all` covers leaves it be. Naming one is what re-renders it.
+    // An image's selected version is its current media, not a request to exclude it
+    // from Render all. Timeline is likewise a video tool that can make its next version.
     let mut skipped = vec![];
-    let mut covering = |i: usize, named: &mut Vec<usize>| match doc.assets[i].pin.is_some() {
-        // What this asks of it is judged at its turn.
-        true if outdated && matches!(stand[i].state, Stand::Pinned { version: Some(_), .. }) => {}
-        true if !doc.assets[i].hollow && !missing => skipped.push(doc.assets[i].name.clone()),
-        true => {}
-        false => named.push(i),
+    let mut covering = |i: usize, named: &mut Vec<usize>| {
+        if doc.tool(i) == Some(Tool::Cut) {
+            named.push(i);
+            return;
+        }
+        match doc.assets[i].pin.is_some() {
+            // What this asks of it is judged at its turn.
+            true if outdated && matches!(stand[i].state, Stand::Pinned { version: Some(_), .. }) => {}
+            true if doc.assets[i].kind == "image" => named.push(i),
+            true if !doc.assets[i].hollow && !missing => skipped.push(doc.assets[i].name.clone()),
+            true => {}
+            false => named.push(i),
+        }
     };
     if all {
         if !missing {
-            for &i in doc.order.iter().filter(|&&i| doc.makes(i) && doc.tool(i).is_none()) {
+            for &i in doc.order.iter().filter(|&&i| doc.makes(i) && (doc.tool(i).is_none() || doc.assets[i].kind == "image" || doc.tool(i) == Some(Tool::Cut))) {
                 covering(i, &mut named);
             }
         }
@@ -2198,7 +2206,7 @@ async fn runs(
             said(&name, format!("{name} is made here, free, when what it reads settles"));
             // Named, it is made again, as anything named is.
             if !missing {
-                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, pickup: None });
+                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: asset.kind == "image" || doc.tool(i) == Some(Tool::Cut), new: true, pickup: None });
             }
             if approve {
                 say(format!("approve {name} in the browser once it is made; open it with `cozy open`"));
@@ -2228,7 +2236,7 @@ async fn runs(
             continue;
         }
         let makes_new = !missing || pickup.is_some();
-        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: makes_new, pickup: pickup.clone() };
+        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: approve || asset.kind == "image", new: makes_new, pickup: pickup.clone() };
         takes.extend((0..if makes_new { n } else { 1 }).map(take));
     }
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
@@ -2458,11 +2466,21 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::
             }
             Ok(())
         })?;
-        // Its file has a row, so its whole hash is known wherever its box names only the start of it.
+        // Imported media starts at v1. Its file and numbered version are committed with the box.
+        let number = std::cell::Cell::new(0);
         folder.update_lock(|lock| {
             let row = lock.files.entry(file.file.sha256.clone()).or_default();
             (row.sha256, row.path, row.here) = (file.file.sha256.clone(), file.file.path.clone(), true);
+            number.set(lock.joined(&name, file.field, Files::from([(file.field.to_owned(), file.file.sha256.clone())])).0);
         })?;
+        folder.edit(|written| {
+            written.selected(&name, number.get(), &file.file.sha256)?;
+            if api::calcifer::tool::MEDIA.contains(&file.field) {
+                written.set(&name, &Map::from_iter([(format::NODE_KIND.to_owned(), json!(file.field))]))?;
+            }
+            Ok(())
+        })?;
+        history::take(folder, &name, number.get(), if file.field == "video" { "take" } else { "version" }, history::Took::Absent, history::Took::Listed);
         Ok((name, kept))
     });
     let (name, kept) = made.map_err(Refusal)?;
@@ -2566,10 +2584,14 @@ async fn approve(
         }
     };
     let field = lock.files.get(&chosen).map_or_else(|| asset.kind.clone(), |file| file.field().to_owned());
-    let version = versions.iter().find(|version| version.main() == Some(&chosen));
+    let version = wanted.and_then(|number| versions.iter().copied().find(|version| version.number == number))
+        .or_else(|| versions.iter().copied().rev().find(|version| version.main() == Some(&chosen)));
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    folder.edit(|written| written.approved(&name, &chosen)).map_err(Refusal)?;
+    folder.edit(|written| match version {
+        Some(version) => written.selected(&name, version.number, &chosen),
+        None => written.approved(&name, &chosen),
+    }).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
@@ -4558,11 +4580,14 @@ impl Walk {
         let noun = if version.files.contains_key("video") { "take" } else { "version" };
         let key = key.to_owned();
         let number = version.number;
+        let selected = (kind == "image").then(|| version.main().cloned()).flatten();
         self.record(Some(&key), &name, &kind, version, noun, pending.approve, list_away)?;
         if coming {
             self.project.jobs.why(&name, number, "its file is on its way here".into());
         }
-        if pending.unpin.is_some() {
+        if let Some(sha256) = selected {
+            self.select_asked(&pending.ask, &name, number, &sha256)?;
+        } else if pending.unpin.is_some() {
             self.unpin_landed(&pending.ask, &name);
         }
         Ok(coming.then_some(Coming { name, number, take: noun == "take" }))
@@ -4584,6 +4609,25 @@ impl Walk {
         let Some(mine) = walk.walk.asks.iter().find(|mine| mine.id == ask) else { return Ok(()) };
         let mut written = written::Written::from_yaml(&self.folder().text_of(mine)?)?;
         written.unapproved(name)?;
+        let text = written.to_yaml();
+        let digest = hex::encode(Sha256::digest(text.as_bytes()));
+        self.folder().keep_text(&digest, &text)?;
+        let doc = Doc::read(self.folder(), &text)?;
+        self.project.walker.lock().expect("walker lock").readings.entry(digest.clone()).or_insert_with(|| AskedText::new(doc));
+        self.folder().update_walk(|walk| {
+            for mine in walk.walk.asks.iter_mut().filter(|mine| mine.id == ask) {
+                mine.digest.clone_from(&digest);
+            }
+        })
+    }
+
+    /// Readers in this render follow the image version it just made, while explicit
+    /// numbered references in the frozen text keep their original meaning.
+    fn select_asked(&self, ask: &str, name: &str, number: u32, sha256: &str) -> Result<(), Error> {
+        let walk = self.folder().walk_now()?;
+        let Some(mine) = walk.walk.asks.iter().find(|mine| mine.id == ask) else { return Ok(()) };
+        let mut written = written::Written::from_yaml(&self.folder().text_of(mine)?)?;
+        written.selected(name, number, sha256)?;
         let text = written.to_yaml();
         let digest = hex::encode(Sha256::digest(text.as_bytes()));
         self.folder().keep_text(&digest, &text)?;
@@ -4667,7 +4711,12 @@ impl Walk {
         let number = std::cell::Cell::new(0);
         self.folder().update_lock(|lock| number.set(lock.number(&name, &asset.kind)))?;
         version.number = number.get();
-        self.record_free(doc, &name, &asset.kind, version, noun(doc, lock, i))
+        let selected = version.main().cloned();
+        self.record_free(&name, &asset.kind, version, noun(doc, lock, i))?;
+        if let Some(sha256) = selected {
+            self.select_asked(&ask.id, &name, number.get(), &sha256)?;
+        }
+        Ok(())
     }
 
     /// `name` is tried this walk: it is not tried again until the next.
@@ -4868,25 +4917,21 @@ impl Walk {
         Ok(without)
     }
 
-    /// Lists a tool's version: a cut's join its others, and a frame's older ones go unless pinned, with whatever files only they named.
-    fn record_free(&self, doc: &Doc, name: &str, kind: &str, version: Version, noun: &str) -> Result<(), Error> {
+    /// Lists the built-in tool's next version, retaining its earlier media states.
+    fn record_free(&self, name: &str, kind: &str, version: Version, noun: &str) -> Result<(), Error> {
         let number = version.number;
-        let old = std::cell::RefCell::new(vec![]);
-        // What is pinned now, as a save may have moved it, else as this render read it.
-        let now = Doc::load(self.folder());
-        let doc = now.as_ref().unwrap_or(doc);
-        let pin = doc.find(name).and_then(|i| doc.assets[i].pin.clone());
-        let cut = doc.find(name).is_some_and(|i| doc.tool(i) == Some(Tool::Cut));
-        self.folder().update_lock(|lock| {
-            let held = lock.asset_mut(name, kind);
-            let (keep, going): (Vec<Version>, Vec<Version>) = held.versions.drain(..).partition(|version| cut || version.main() == pin.as_ref());
-            held.versions = keep;
-            held.versions.push(version.clone());
-            held.versions.sort_by_key(|version| version.number);
-            held.failed = None;
-            *old.borrow_mut() = going.iter().flat_map(|version| version.files.values().cloned()).collect();
+        self.folder().act(|| {
+            self.folder().update_lock(|lock| {
+                let held = lock.asset_mut(name, kind);
+                held.versions.push(version.clone());
+                held.versions.sort_by_key(|version| version.number);
+                held.failed = None;
+            })?;
+            if let Some(sha256) = version.main() {
+                self.folder().edit(|written| written.selected(name, number, sha256))?;
+            }
+            Ok(())
         })?;
-        self.folder().drop_unused(&old.into_inner())?;
         self.say_landed(name, &version, noun, number)
     }
 
@@ -4895,28 +4940,28 @@ impl Walk {
     #[allow(clippy::too_many_arguments)]
     fn record(&self, key: Option<&str>, name: &str, kind: &str, mut version: Version, noun: &str, approve: bool, settle: impl Fn(&mut Lock)) -> Result<(), Error> {
         let number = std::cell::Cell::new(version.number);
-        self.folder().update_lock(|lock| {
-            if let Some(key) = key {
-                lock.pending.remove(key);
+        self.folder().act(|| {
+            self.folder().update_lock(|lock| {
+                if let Some(key) = key {
+                    lock.pending.remove(key);
+                }
+                settle(lock);
+                let given = if version.number == 0 { lock.number(name, kind) } else { version.number };
+                number.set(given);
+                let held = lock.asset_mut(name, kind);
+                held.numbered = held.numbered.max(given);
+                let mut listed = version.clone();
+                listed.number = given;
+                held.list(listed);
+                held.tried = None;
+                held.failed = None;
+            })?;
+            if (approve || kind == "image") && let Some(sha256) = version.main() {
+                self.folder().edit(|written| written.selected(name, number.get(), sha256))?;
             }
-            settle(lock);
-            let given = if version.number == 0 { lock.number(name, kind) } else { version.number };
-            number.set(given);
-            let held = lock.asset_mut(name, kind);
-            held.numbered = held.numbered.max(given);
-            let mut listed = version.clone();
-            listed.number = given;
-            held.list(listed);
-            held.tried = None;
-            held.failed = None;
+            Ok(())
         })?;
         version.number = number.get();
-        if approve
-            && let Some(sha256) = version.main()
-            && let Err(error) = self.folder().edit(|written| written.approved(name, sha256))
-        {
-            self.say(Told::Warning { message: error.message, name: None });
-        }
         {
             let mut tally = self.tally.lock().expect("tally lock");
             match noun {

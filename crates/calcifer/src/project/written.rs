@@ -11,7 +11,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     folder::prefix_of,
-    format::{FORMAT, INSTRUCTIONS, LEADS, NODE_KIND, TEXT, canonical, end_trimmed, invalid, names_a_file, yaml_key},
+    format::{FORMAT, INSTRUCTIONS, LEADS, NODE_KIND, SELECTED_VERSION, TEXT, canonical, end_trimmed, invalid, names_a_file, yaml_key},
     graph::{mention, mention_moved, name_key},
 };
 
@@ -19,7 +19,7 @@ use super::{
 pub(super) const TOOL: &str = "tool";
 const SECTION: &str = "assets";
 /// What a box holds whatever its tool: the platform's words.
-const BOX: [&str; 7] = ["tool", "approved", "description", "models", "lora", "text", NODE_KIND];
+const BOX: [&str; 8] = ["tool", "approved", "description", "models", "lora", "text", NODE_KIND, SELECTED_VERSION];
 
 /// A project's boxes and what else it says, in order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -147,6 +147,7 @@ impl Written {
         let assets = top.get(SECTION).and_then(Value::as_object).unwrap_or(&empty);
         for body in assets.values().filter_map(Value::as_object) {
             super::format::node_kind(body.get(NODE_KIND))?;
+            super::format::selected_version(body.get(SELECTED_VERSION))?;
         }
         // Each box's fields in the order the text writes them, from one more read of it: a read per box made a 5,000-box import take minutes.
         let orders: std::collections::HashMap<String, Vec<String>> = child_keys_at(text, &[SECTION]).unwrap_or_default().into_iter().collect();
@@ -191,9 +192,14 @@ impl Written {
     /// nothing after its last word, as everything reads it: the space a chip leaves to type on isn't words, and a `|` block can't hold it.
     pub(crate) fn set(&mut self, name: &str, fields: &Map<String, Value>) -> Result<Vec<String>, Error> {
         super::format::node_kind(fields.get(NODE_KIND))?;
-        let (translated, said) = super::tools::in_the_file(fields)?;
+        super::format::selected_version(fields.get(SELECTED_VERSION))?;
+        let (mut translated, said) = super::tools::in_the_file(fields)?;
+        if fields.contains_key("approved") && !fields.contains_key(SELECTED_VERSION) {
+            translated.insert(SELECTED_VERSION.to_owned(), Value::Null);
+        }
         let held = self.get_mut(name)?;
         for (field, mut value) in translated {
+            if field == NODE_KIND && value.as_str() == Some("video_edit") { value = json!("video"); }
             end_trimmed(&mut value);
             if held.get(&field).map_or(value.is_null(), |now| canonical(now) == canonical(&value)) {
                 continue;
@@ -268,6 +274,14 @@ impl Written {
 
     pub(crate) fn approved(&mut self, name: &str, sha256: &str) -> Result<(), Error> {
         self.set(name, &Map::from_iter([("approved".to_owned(), json!(prefix_of(sha256)))])).map(drop)
+    }
+
+    /// Selecting a version retains its exact number even when another version has identical media.
+    pub(crate) fn selected(&mut self, name: &str, number: u32, sha256: &str) -> Result<(), Error> {
+        self.set(name, &Map::from_iter([
+            ("approved".to_owned(), json!(prefix_of(sha256))),
+            (SELECTED_VERSION.to_owned(), json!(number)),
+        ])).map(drop)
     }
 
     pub(crate) fn unapproved(&mut self, name: &str) -> Result<(), Error> {
