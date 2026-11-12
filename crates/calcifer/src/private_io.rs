@@ -300,14 +300,26 @@ pub(crate) async fn close_private_project(
     api: &Arc<crate::api::Api>,
     root: &Path,
 ) -> Result<(), Error> {
+    let view = crate::project::vault::resolve_path(root)?;
+    if !view.join(".vault-machine").exists() { return Ok(()); }
     if !api.machines.local.running() {
-        return Ok(());
+        return Err(Error::new(Kind::Unavailable, "project_seal_pending", "The local worker is offline; its previous project custody has not been sealed.").next("cozy doctor"));
     }
-    let scope = SCOPES.lock().unwrap().get(root).cloned();
-    let Some(scope) = scope else { return Ok(()) };
-    if !scope.storage.view_root.join(".vault-machine").exists() {
-        return Ok(());
-    }
+    let scope = match SCOPES.lock().unwrap().get(root).cloned() {
+        Some(scope) => scope,
+        None => {
+            let marker = read_marker(&view)?;
+            let logical = crate::project::vault::logical(root);
+            let id = if crate::project::vault::encrypted(&logical) {
+                let info = Keybag::load(&logical.join(KEYBAG_FILE)).map_err(|_| error("The project owner is unavailable."))?.info();
+                if marker.storage.generation != info.generation { return Err(error("The retained execution generation changed before seal.")); }
+                info.project_id
+            } else { crate::project::vault::plain_project_id(&view).ok_or_else(|| error("The project owner is unavailable."))? };
+            validate_retained(&marker, &id)?;
+            if marker.storage.view_root != view { return Err(error("The retained execution owner changed before seal.")); }
+            Scope { storage: marker.storage, token: marker.token }
+        }
+    };
     let Some(link) = api
         .calcifer
         .link("local")

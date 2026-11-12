@@ -219,7 +219,11 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     boot.at("updates");
     let running = {
         let engine = service.engine.clone();
-        Box::new(move || engine.with_journal(|journal| journal.started()).unwrap_or_default())
+        Box::new(move || {
+            let mut running = engine.with_journal(|journal| journal.started()).unwrap_or_default();
+            if crate::private_io::machine_jobs(i64::MAX).map_or(true, |(working, _)| working) { running.push("protected project execution".into()); }
+            running
+        })
     };
     let updates = crate::machine::update::Updates::open(
         paths.clone(),

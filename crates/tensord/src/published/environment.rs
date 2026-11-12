@@ -580,7 +580,7 @@ fn ask_runtime(python: &Path, request: &Value, stop: Option<&crate::stop::Stop>)
     }
     platform::process::own_group(&mut command);
     let mut private_io = crate::private_io::command_io(&mut command, true, true, false).map_err(io_failure)?;
-    let process_scope = crate::private_io::current().map(|_| platform::contain::Scope::create("project-description").map(Arc::new)).transpose().map_err(|error| io_failure(error.into()))?;
+    let process_scope = crate::private_io::current().map(|_| crate::private_io::new_process_scope()).transpose().map_err(|error| io_failure(error.into()))?;
     crate::private_io::apply_native(&mut command, private_io.as_mut(), process_scope.as_ref()).map_err(io_failure)?;
     let mut child = command.spawn().map_err(io_failure)?;
     drop(command);

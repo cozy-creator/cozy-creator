@@ -408,6 +408,7 @@ impl Publisher {
         *ready = Some(python.clone());
         Ok(python)
     }
+    pub(crate) fn process_namespace(&self) -> &str { &self.scope_namespace }
     pub(crate) fn public_sdk_trees(&self) -> Vec<PathBuf> { self.sdk.find_links.iter().cloned().chain(self.sdk.torch.base()).collect() }
     pub(crate) fn sdk_executables(&self) -> Vec<PathBuf> { std::fs::canonicalize(self.sdk.uv.executable()).into_iter().collect() }
     pub(crate) fn origin_machine(&self) -> Arc<Machine> { self.machine.clone() }

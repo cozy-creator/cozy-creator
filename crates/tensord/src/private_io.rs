@@ -35,6 +35,7 @@ struct Verified {
     public_trees: Mutex<Vec<PathBuf>>,
     executables: Mutex<Vec<PathBuf>>,
     process_scopes: Mutex<Vec<Arc<platform::contain::Scope>>>,
+    process_namespace: Mutex<Option<String>>,
 }
 
 /// Full execution ownership, including the existing Engine/Journal, belongs to the view.
@@ -75,6 +76,21 @@ pub(crate) fn open_execution(scope: &LocalPrivateStorage, ordinary: &Arc<crate::
     runs.restore_warm_sets()?;
     crate::runs::resume_private(&runs, &scope.project_id)?;
     Ok(runs)
+}
+
+/// Machine lifecycle consumes only aggregate busy/idle facts, never project/run identities.
+pub(crate) fn machine_jobs(since: i64) -> io::Result<(bool, i64)> {
+    let scopes: Vec<_> = VERIFIED.lock().unwrap().values().cloned().collect();
+    let mut total = (false, 0);
+    for scope in scopes {
+        let execution = scope.execution.lock().unwrap();
+        if let Some(project) = execution.as_ref() {
+            let (working, ended) = project.runs.service.engine.jobs(since)?;
+            total.0 |= working;
+            total.1 = total.1.max(ended);
+        }
+    }
+    Ok(total)
 }
 
 static VERIFIED: LazyLock<Mutex<HashMap<String, Arc<Verified>>>> = LazyLock::new(Mutex::default);
@@ -223,6 +239,7 @@ pub(crate) fn register(
             public_trees: Mutex::default(),
             executables: Mutex::default(),
             process_scopes: Mutex::default(),
+            process_namespace: Mutex::default(),
         }),
     );
     Ok(true)
@@ -283,6 +300,7 @@ pub(crate) fn close(descriptor: &LocalPrivateStorage, actor: &str) -> io::Result
         return Err(denied());
     }
     if scope.sealed.load(std::sync::atomic::Ordering::Acquire) { return Ok(()); }
+    if !platform::contain::stuck().is_empty() { return Err(io::Error::new(io::ErrorKind::ResourceBusy, "a previous kernel scope has not quiesced")); }
     let mut execution = scope.execution.lock().unwrap();
     crate::storage::close_project_views(&descriptor.project_id);
     if let Some(project) = execution.as_ref() {
@@ -500,6 +518,20 @@ pub(crate) fn check_model_source(source: &str) -> io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn bind_process_namespace(scope: &LocalPrivateStorage, namespace: &str) -> io::Result<()> {
+    let verified = verified_scope(scope)?;
+    let mut current = verified.process_namespace.lock().unwrap();
+    if current.as_ref().is_some_and(|old| old != namespace) { return Err(denied()); }
+    *current = Some(namespace.to_owned());
+    Ok(())
+}
+pub(crate) fn new_process_scope() -> io::Result<Arc<platform::contain::Scope>> {
+    let scope = current().ok_or_else(denied)?;
+    let verified = verified_scope(&scope)?;
+    let namespace = verified.process_namespace.lock().unwrap().clone().ok_or_else(denied)?;
+    Ok(Arc::new(platform::contain::Scope::create(&namespace)?))
+}
+
 /// Known IPC endpoints exist before spawn, so the policy can review their native identity.
 pub(crate) struct CommandIo {
     pub input: Option<File>,
@@ -573,7 +605,7 @@ pub(crate) fn probe_native(scope: &LocalPrivateStorage) -> io::Result<()> {
     if verified.prepared.load(std::sync::atomic::Ordering::Acquire) { return Ok(()); }
     let mut command = std::process::Command::new("/usr/bin/true");
     command.env_clear().stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    let process_scope = Arc::new(platform::contain::Scope::create("protected-project")?);
+    let process_scope = new_process_scope()?;
     apply_native(&mut command, None, Some(&process_scope))?;
     let status = command.status()?;
     drop(command);
@@ -594,7 +626,7 @@ pub(crate) fn transport_capabilities(bytes: &[u8]) -> io::Result<()> {
 
 /// The installed/pinned Runtime is checked without running .pth files or authored Start/Invoke.
 pub(crate) fn probe_runtime(python: &std::path::Path) -> io::Result<()> {
-    let process_scope = Arc::new(platform::contain::Scope::create("protected-runtime-probe")?);
+    let process_scope = new_process_scope()?;
     let mut command = crate::launch_identity::module(python, "cozy_runtime.internal.executor")?;
     command.arg("--transport-capabilities").env_clear().stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
     protect_command(&mut command)?;
@@ -635,7 +667,7 @@ pub(crate) fn probe_transport(scope: &LocalPrivateStorage, ordinary: &crate::pub
     seal.tensorfs_home = Some(store(scope)?.root().to_owned());
     let config = crate::device_executor::ExecutorConfig { private: true, python: python.to_owned(), root: probe_root,
         socket: PathBuf::new(), environment: std::collections::BTreeMap::new(), seal, generation_hold: None,
-        cgroup_namespace: Some("protected-project".into()) };
+        cgroup_namespace: Some(ordinary.process_namespace().to_owned()) };
     let launcher = crate::child_launcher::ChildLauncher::new()?;
     let executor = crate::device_executor::DeviceExecutor::spawn_owned(config, &launcher, |_, _| Ok(()))?;
     executor.terminate()?;
