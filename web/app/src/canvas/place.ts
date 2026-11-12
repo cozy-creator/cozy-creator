@@ -8,12 +8,35 @@ import { startingFields, TEXT_TOOL } from "./controls"
 import type { BasicNodeKind, Operation } from "./palette"
 import type { CopiedBox } from "./copy"
 import { asName, stemName } from "./names"
+import { pictureSize } from "./pictureSize"
+import { heightFor, underOf } from "./shown"
 
 const GAP = 32
+/** How long a drop waits for its pictures to decode before it's placed anyway, each then drawn as it's ready. */
+const DECODE_MS = 1500
 
 function mediaOf(file: File): MediaKind {
   const [type] = file.type.split("/")
   return type === "image" || type === "video" || type === "audio" ? type : "file"
+}
+
+type Readied = { url: string; aspect?: number }
+
+/** A dropped picture's own bytes, to show until it's somewhere else: decoded, so its box is drawn with it, and its shape as it's drawn, from its header, else
+ *  its decode. What the browser decodes says last, as that's what's shown. */
+async function readied(file: File): Promise<Readied> {
+  const url = URL.createObjectURL(file)
+  const image = new Image()
+  image.src = url
+  const decoded = image.decode().then(
+    () => (image.naturalWidth && image.naturalHeight ? image.naturalWidth / image.naturalHeight : undefined),
+    () => undefined,
+  )
+  const [header, drawn] = await Promise.all([
+    pictureSize(file).catch(() => null),
+    Promise.race([decoded, new Promise<undefined>((done) => setTimeout(done, DECODE_MS))]),
+  ])
+  return { url, aspect: drawn ?? (header ? header.width / header.height : undefined) }
 }
 
 export interface Hooks {
@@ -40,29 +63,37 @@ export class Placer {
     this.hooks = hooks
   }
 
-  /** One file is named by its field, focused; several take their stems, laid out from the point, with no focus. With `then`, none asks: it's told the name each gets. `edit`: what they're part of. */
+  /** One file is named by its field, focused; several take their stems, laid out from the point, with no focus. With `then`, none asks: it's told the name each gets. `edit`: what they're part of.
+   *  A picture is placed once its shape is read and it's decoded, all of a drop together: each box is there at its own shape, showing its own file, and stays as it is
+   *  while the file goes to Calcifer (cl-918). */
   add(files: File[], point: { x: number; y: number }, then?: (name: string) => void, edit?: string) {
+    void Promise.all(files.map((file) => (mediaOf(file) === "image" ? readied(file) : undefined))).then((pictures) => this.lay(files, pictures, point, then, edit))
+  }
+
+  private lay(files: File[], pictures: (Readied | undefined)[], point: { x: number; y: number }, then: ((name: string) => void) | undefined, edit: string | undefined) {
     const columns = Math.ceil(Math.sqrt(files.length))
     const left = point.x - CARD_WIDTH / 2
-    const top = point.y - 16
-    files.forEach((file, i) => {
-      const key = `placing:${++this.nextKey}`
+    let top = point.y - 16
+    const placing = files.map((file, i) => {
       const media = mediaOf(file)
       const stem = stemName(file.name) || "file"
-      const abort = new AbortController()
-      const at = {
-        x: Math.round(left + (i % columns) * (CARD_WIDTH + GAP)),
-        y: Math.round(top + Math.floor(i / columns) * (CARD_WIDTH * 0.75 + 30 + GAP)),
-        w: CARD_WIDTH,
-      }
-      // Its step is made when it's sent; what it pushes aside as it's dropped is part of it already.
-      const by = edit ?? crypto.randomUUID()
-      this.store.addPlacing(key, stem, { media, stage: "waiting", done: 0, stem, abort }, at, {
-        naming: files.length === 1 && !then,
-        preview: media === "image" ? URL.createObjectURL(file) : undefined,
-      }, by)
-      void this.run(key, file, abort.signal, at, then, by, !edit)
+      const view = { name: stem, placing: { media, stage: "waiting" as const, stem, abort: new AbortController() }, aspect: pictures[i]?.aspect }
+      // As tall as it is drawn, and the room it keeps under it: no box of the drop lies on another, so none of them moves.
+      return { file, media, view, tall: heightFor(view, CARD_WIDTH) + underOf(view, 0) }
     })
+    for (let row = 0; row * columns < placing.length; row++) {
+      const boxes = placing.slice(row * columns, (row + 1) * columns)
+      boxes.forEach(({ file, view }, column) => {
+        const i = row * columns + column
+        const key = `placing:${++this.nextKey}`
+        const at = { x: Math.round(left + column * (CARD_WIDTH + GAP)), y: Math.round(top), w: CARD_WIDTH }
+        // Its step is made when it's sent; what it pushes aside as it's dropped is part of it already.
+        const by = edit ?? crypto.randomUUID()
+        this.store.addPlacing(key, view.name, view.placing, at, { naming: files.length === 1 && !then, preview: pictures[i]?.url, aspect: view.aspect }, by)
+        void this.run(key, file, view.placing.abort.signal, at, then, by, !edit)
+      })
+      top += Math.max(...boxes.map(({ tall }) => tall)) + GAP
+    }
   }
 
   /** A tool dropped at a point: an asset of it, there at once, as wide as what it makes and called what its tool says, `fields` with what it starts with
@@ -206,7 +237,7 @@ export class Placer {
   }
 
   private async ask(key: string, digest: string, dropped: { x: number; y: number; w: number }, edit: string, own: boolean): Promise<string> {
-    this.stage(key, "adding", 1)
+    this.stage(key, "adding")
     const at = this.store.position(key) ?? dropped
     const name = this.store.get(key)!.name
     if (own && !this.store.history.stepOf({ edit })) this.store.newStep(`Added ${name}`, [], edit)
@@ -229,19 +260,15 @@ export class Placer {
     }
   }
 
-  private stage(key: string, stage: Stage, done: number) {
-    this.store.patchPlacing(key, { stage, done, attempt: undefined })
+  /** Where it's got, which nothing shows: only Cancel reads it. */
+  private stage(key: string, stage: Stage) {
+    if (this.store.get(key)?.placing?.stage !== stage) this.store.patchPlacing(key, { stage })
   }
 
   private async hashAndSend(key: string, file: File, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted()
-    this.stage(key, "reading", 0)
-    let shown = 0
-    const digest = await hashFile(file, signal, (done) => {
-      if (done - shown < 0.01 && done < 1) return
-      shown = done
-      this.stage(key, "reading", done)
-    })
+    this.stage(key, "reading")
+    const digest = await hashFile(file, signal, () => {})
     // A file the project has needs no bytes: its import moved them out of what's held, so `held` wouldn't know.
     if (!this.store.holdsFile(digest.slice("sha256:".length))) await this.send(key, file, digest, signal)
     return digest
@@ -250,16 +277,8 @@ export class Placer {
   private async send(key: string, file: File, digest: string, signal: AbortSignal) {
     const projectId = await this.project()
     return this.reaching(() => {
-      this.stage(key, "sending", 0)
-      return sendFile(
-        this.client,
-        file,
-        digest,
-        signal,
-        (done) => this.stage(key, "sending", done),
-        (attempt) => this.store.patchPlacing(key, { attempt: attempt || undefined }),
-        projectId,
-      )
+      this.stage(key, "sending")
+      return sendFile(this.client, file, digest, signal, () => {}, () => {}, projectId)
     }, signal)
   }
 

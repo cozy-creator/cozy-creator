@@ -730,8 +730,68 @@ pub(crate) fn measured(ffmpeg: &Path, ffprobe: &Path, path: &Path, field: &str) 
     let (width, height) = probe.size;
     Some(match field {
         "video" => folder::File { width, height, fps: probe.rate, frames: probe.frames, ..Default::default() },
-        _ => folder::File { width, height, alpha: transparent_share(ffmpeg, path), ..Default::default() },
+        // As it's drawn: a camera's JPEG turned a quarter by its EXIF is as tall as it's wide (cl-918).
+        _ => {
+            let (width, height) = if orientation(path) >= 5 { (height, width) } else { (width, height) };
+            folder::File { width, height, alpha: transparent_share(ffmpeg, path), ..Default::default() }
+        }
     })
+}
+
+/// A JPEG's EXIF orientation, 1 to 8, which every browser draws it by: 1 for one that says none, or anything else. FFmpeg draws and
+/// measures a picture as it's stored.
+pub(crate) fn orientation(path: &Path) -> u8 {
+    use std::io::Read as _;
+    let mut head = Vec::with_capacity(256 * 1024);
+    let read = std::fs::File::open(path).and_then(|file| file.take(256 * 1024).read_to_end(&mut head));
+    if read.is_err() { 1 } else { orientation_in(&head) }
+}
+
+fn orientation_in(bytes: &[u8]) -> u8 {
+    let u16_at = |at: usize, little: bool| bytes.get(at..at + 2).map(|b| if little { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) });
+    if bytes.get(..2) != Some(&[0xff, 0xd8][..]) {
+        return 1;
+    }
+    let mut at = 2;
+    while at + 4 <= bytes.len() {
+        if bytes[at] != 0xff {
+            return 1;
+        }
+        let marker = bytes[at + 1];
+        if marker == 0xff {
+            at += 1;
+            continue;
+        }
+        if marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+            at += 2;
+            continue;
+        }
+        // The frame or its scan, with no EXIF before it.
+        if marker == 0xda || ((0xc0..=0xcf).contains(&marker) && ![0xc4, 0xc8, 0xcc].contains(&marker)) {
+            return 1;
+        }
+        let Some(length) = u16_at(at + 2, false).map(usize::from) else { return 1 };
+        if marker == 0xe1 && bytes.get(at + 4..at + 10) == Some(&b"Exif\0\0"[..]) {
+            let tiff = at + 10;
+            let end = (at + 2 + length).min(bytes.len());
+            let little = match bytes.get(tiff..tiff + 2) {
+                Some(b"II") => true,
+                Some(b"MM") => false,
+                _ => return 1,
+            };
+            let Some(ifd) = bytes.get(tiff + 4..tiff + 8).map(|b| if little { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) }) else { return 1 };
+            let ifd = tiff + ifd as usize;
+            let Some(entries) = u16_at(ifd, little).filter(|_| ifd + 2 <= end) else { return 1 };
+            for entry in (0..usize::from(entries)).map(|i| ifd + 2 + i * 12).take_while(|entry| entry + 12 <= end) {
+                if u16_at(entry, little) == Some(0x0112) {
+                    return u16_at(entry + 8, little).and_then(|turn| u8::try_from(turn).ok()).filter(|turn| (1..=8).contains(turn)).unwrap_or(1);
+                }
+            }
+            return 1;
+        }
+        at += 2 + length;
+    }
+    1
 }
 
 /// How many frames the video at `path` holds, when ffprobe reads it.
