@@ -12,7 +12,7 @@ const { execSync, execFileSync } = require('child_process');
 const { existsSync, mkdtempSync, readdirSync, writeFileSync } = require('fs');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, drop, launch, lastLook, lookAt, noStall, png, pointAt, until, rowsOf, upload } = require('./page');
+const { projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, drop, launch, lastLook, lookAt, noStall, openBox, png, pointAt, renderOf, until, rowsOf, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -74,16 +74,17 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   };
   const imported = async (name, path, x) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, path), name, exact: true, at: { x, y: 560 } }) });
 
-  // What reads it: a box of words, and a picture tool's prompt. Two boxes share one file, one of which is deleted later.
-  await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: '', name: 'words', exact: true, fields: { text: '' }, at: { x: 80, y: 120 } }) });
+  // What reads it: a picture tool's prompt, and a box of words, clear of the tools on the left. Two boxes share one file, one of which is
+  // deleted later.
   await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: `${drawer}/draw`, kind: 'image', name: 'reader', exact: true, fields: { instructions: 'a hat' }, at: { x: 480, y: 120 } }) });
+  await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: '', name: 'words', exact: true, fields: { text: 'notes ' }, at: { x: 880, y: 120 } }) });
   const shared = picture('shared', 70);
-  await imported('twin_a', shared, 80);
-  await imported('twin_b', shared, 480);
+  await imported('twin_a', shared, 480);
+  await imported('twin_b', shared, 880);
   for (const name of ['words', 'reader', 'twin_a', 'twin_b']) await box(name).waitFor();
 
   // 1. A picture dropped: its own box.
-  await drop(page, [{ name: 'pic.png', type: 'image/png', bytes: png(30) }], 1100, 300);
+  await drop(page, [{ name: 'pic.png', type: 'image/png', bytes: png(30) }], 1400, 300);
   await page.waitForSelector('.nm-field');
   await page.keyboard.press('Enter');
   await box('pic').waitFor();
@@ -100,29 +101,53 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   await until('pic gone', () => asset('pic'), (held) => held === null);
   check('deleted_box_gone', (await box('pic').count()) === 0);
 
-  // 3. `<` in another box offers the rest, not it.
-  const words = box('words').locator('.mention-text[data-field="text"]');
-  await words.click();
-  await page.keyboard.type('<');
-  const offered = await until('names offered', () => page.locator('.name-menu li').allTextContents(), (names) => names.length > 0).catch(() => []);
+  // 3. `<` in another box's prompt, a picture tool's, offers the rest, not it; nor does a box of words.
+  const prompt = box('reader').locator('.mention-text[data-field=instructions]');
+  const shown = box('reader').locator('.mention-thumb, .ghosts img');
+  const openReader = async () => {
+    await openBox(page, 'reader');
+    await renderOf(page, 'reader');
+    await prompt.waitFor();
+  };
+  const menu = () => until('names offered', () => page.locator('.name-menu li').allTextContents(), (names) => names.length > 0).catch(() => []);
+  await openReader();
+  await prompt.click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.type('a hat on <');
+  const offered = await menu();
   seen.offered = offered;
-  check('less_than_offers_the_rest', offered.includes('twin_b') && offered.includes('reader'), offered);
+  check('less_than_offers_the_rest', offered.includes('twin_b'), offered);
   check('less_than_never_offers_it', !offered.includes('pic'), offered);
   await page.keyboard.type('p');
   const pOffered = await page.locator('.name-menu li').allTextContents();
   check('typed_start_never_offers_it', !pOffered.includes('pic'), pOffered);
   await page.keyboard.press('Backspace');
   await page.keyboard.press('Backspace');
-
-  // 4. Typed anyway: marked deleted once saved, and a render of what mentions it, or the CLI's run of it, fails free, naming it.
-  await page.keyboard.type('a picture of <pic> ');
   await away();
-  const chip = box('words').locator('.chip[data-mention="pic"]');
-  const marked = await until('its chip marked', async () => ({ count: await chip.count(), cls: await chip.first().getAttribute('class').catch(() => null), title: await chip.first().getAttribute('title').catch(() => null) }), (held) => held.count === 1 && /missing/.test(held.cls ?? '')).catch((why) => String(why));
+  const words = box('words').locator('.mention-text[data-field="text"]');
+  await words.click();
+  await page.keyboard.press('End');
+  await page.keyboard.type('<');
+  const wordsOffered = await menu();
+  check('a_box_of_words_never_offers_it', wordsOffered.includes('twin_b') && !wordsOffered.includes('pic'), wordsOffered);
+  await page.keyboard.press('Backspace');
+  await away();
+
+  // 4. Typed anyway: struck as deleted once saved, and a render of what mentions it, or the CLI's run of it, fails free, naming it.
+  await openReader();
+  await prompt.click();
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.type('a hat on <pic> ');
+  await away();
+  await until('its words saved', async () => (await asset('reader'))?.fields?.instructions ?? '', (said) => said.includes('<pic>'));
+  await openReader();
+  const chip = prompt.locator('.chip[data-mention="pic"]');
+  const marked = await until('its chip struck', async () => ({ count: await chip.count(), cls: await chip.first().getAttribute('class').catch(() => null), title: await chip.first().getAttribute('title').catch(() => null) }), (held) => held.count === 1 && /missing/.test(held.cls ?? '')).catch((why) => String(why));
   seen.marked = marked;
   check('mention_marked_deleted', marked?.title?.includes('pic was deleted') === true, marked);
+  check('no_picture_behind_the_words', (await shown.count()) === 0);
   await shot('marked');
-  await api(`${at}/assets/reader`, { method: 'PATCH', body: JSON.stringify({ fields: { instructions: 'a hat on <pic>' } }) });
+  await away();
   const runsBefore = (await api(`/v1/runs?project=${id}&limit=100`)).body?.runs?.length ?? null;
   await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['reader'] }) });
   const failed = await until('reader refused', () => asset('reader'), (held) => Boolean(held?.failure)).catch(() => null);
@@ -138,34 +163,35 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
     check('cli_run_refused', /<pic> was deleted/.test(cli), cli.slice(-600));
   }
 
-  // 5. No view shows its picture: no thumbnail under the words, no Files row, nothing of it asked for.
-  check('no_thumbnail_under_the_words', (await box('words').locator('.mention-thumb').count()) === 0);
+  // 5. No view shows its picture: no Files row, nothing of it asked for, and none behind the words after a reload.
   await page.goto(await projectUrl(id, '/files'));
   const list = page.locator('.drawer .assetlist');
   await list.locator('.assetrow').first().waitFor();
   const rows = await list.locator('.assetrow').evaluateAll((all) => all.map((row) => row.dataset.asset));
   check('no_files_row', !rows.includes('pic') && rows.includes('twin_b'), rows);
   await page.goto(await projectUrl(id));
-  await box('words').waitFor();
+  await box('reader').waitFor();
+  await openReader();
   await page.waitForTimeout(500);
+  check('no_picture_after_a_reload', (await shown.count()) === 0);
   check('nothing_of_it_asked_for', asked.length === 0, asked);
-  check('no_thumbnail_after_a_reload', (await box('words').locator('.mention-thumb').count()) === 0);
 
-  // 6. Undo: back, offered, and its chip a picture again.
+  // 6. Undo: back, offered, and its mention a picture again.
   await away();
   await page.keyboard.press('ControlOrMeta+z');
   await box('pic').waitFor();
   await until('pic back', () => asset('pic'), (held) => held?.sha256 === pic.sha256);
-  await words.click();
+  await openReader();
+  const back = await until('its chip a picture', async () => ({ cls: await chip.first().getAttribute('class').catch(() => null), shown: await shown.count() }), (held) => !/missing/.test(held.cls ?? 'missing') && held.shown > 0).catch((why) => String(why));
+  check('undo_resolves_its_mention', typeof back === 'object', back);
+  await prompt.click();
   await page.keyboard.press('End');
   await page.keyboard.type('<');
-  const again = await until('names offered again', () => page.locator('.name-menu li').allTextContents(), (names) => names.includes('pic')).catch(() => []);
+  const again = await menu();
   check('undo_offers_it_again', again.includes('pic'), again);
   await page.keyboard.press('Backspace');
-  await away();
-  const back = await until('its chip a picture', async () => ({ cls: await chip.first().getAttribute('class').catch(() => null), thumbs: await box('words').locator('.mention-thumb').count() }), (held) => !/missing/.test(held.cls ?? 'missing') && held.thumbs === 1).catch((why) => String(why));
-  check('undo_resolves_its_mention', typeof back === 'object', back);
   await shot('undone');
+  await away();
 
   // Deleted again with the page closed, and a box sharing its file with another deleted: once the window ends, their files leave the
   // project unless a box still shows them, and Undo can't bring them back.
@@ -191,7 +217,7 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
 
   // With Calcifer stopped across the window: gone once it starts.
   const late = picture('late', 110);
-  await imported('late', late, 880);
+  await imported('late', late, 1280);
   const lateSha = (await until('late held', () => asset('late'), (held) => Boolean(held?.sha256))).sha256;
   await api(`${at}/assets/late`, { method: 'DELETE' });
   execSync(process.env.STOP, { shell: 'bash', stdio: 'ignore' });
