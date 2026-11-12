@@ -190,6 +190,10 @@
 .beat-toggle > span { color: var(--mute); font: var(--small) var(--mono); }
 .beat-toggle > .beat-status { font-family: var(--sans); }
 .beat-kept .beat-body { opacity: .6; }
+.beat-progress { height: 3px; background: var(--line); overflow: hidden; }
+.beat-progress > span { display: block; height: 100%; background: var(--cur); transition: width 180ms ease; }
+.beat[data-beat-status="in_progress"] .beat-status { color: var(--mak); }
+.beat[data-beat-status="completed"] .beat-status { color: var(--cur); }
 .beat-toggle > .icon { transition: transform 180ms ease; }
 .beat-toggle[aria-expanded="true"] > .icon { transform: rotate(90deg); }
 .beat-panel { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 180ms ease; }
@@ -202,7 +206,7 @@
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beat-accordion.can-go .video-reference-field .mention-text { padding-right: 16px; }
 @media (prefers-reduced-motion: reduce) {
   .focus-viewport .focus-card.focus-parameter-tool .prominent .beat { transition: none; }
-  .beat-panel, .beat-toggle > .icon { transition: none; }
+  .beat-panel, .beat-toggle > .icon, .beat-progress > span { transition: none; }
 }
 @media (max-width: 1050px) {
   .focus-viewport .focus-card.focus-parameter-tool.has-focus-media {

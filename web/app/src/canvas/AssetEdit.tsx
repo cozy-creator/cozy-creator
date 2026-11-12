@@ -1,10 +1,14 @@
+import { useQuery } from "@tanstack/react-query"
 import { type DragEvent, type PointerEvent, type ReactNode, useEffect, useId, useRef, useState } from "react"
 import type { ToolField, Tool } from "../api/calcifer"
+import { runFullQuery } from "../api/queries"
+import { useConnection } from "../app/Connection"
 import type { Media } from "../types"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AddOnRows } from "./AddOns"
+import { progressOfBeats } from "./beatProgress"
 import { addOnsOf } from "./checkpoints"
 import type { CanvasStore, ElementView } from "./CanvasStore"
 import { carriedAt, carriedFile, LET_GO } from "./carry"
@@ -14,7 +18,7 @@ import { atDefault, empty, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, o
 import { Ghosts, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
-import { makes } from "./shown"
+import { makes, watched } from "./shown"
 import { mentionsIn, type Row, rowsIn } from "./text"
 import { ToolBox } from "./ToolBox"
 import "./FocusParameters.css"
@@ -488,8 +492,22 @@ function Members({ name, group, bound, view, place, label }: { name: string; gro
 
 /** Rows, each its members, with + and × down to its least and up to its most, dragged by the grip to reorder. A file holding fewer shows them, to write in, and holds them once one's touched. */
 function ListGroup({ name, field, bound, view, place }: Drawn) {
+  const store = useCanvasStore()
+  const { client } = useConnection()
+  const focused = useSignal(store.focusedName)
   const rows = fullRows(field, rowsIn(bound.value))
   const accordion = view.asset?.kind === "video" && view.hereWords && field.field === "beats"
+  const run = accordion && focused === name ? watched(view)?.run : undefined
+  const live = view.run?.number === run ? view.run : undefined
+  const settled = (status: string | undefined) => status === "completed" || status === "failed" || status === "canceled"
+  const enabled = run !== undefined && !settled(live?.status)
+  const { data: full } = useQuery({
+    ...runFullQuery(client, run ?? 0, live?.settled_at_ms ?? 0),
+    enabled,
+    refetchInterval: (query) => enabled && !settled(query.state.data?.status) ? 1000 : false,
+    refetchIntervalInBackground: false,
+  })
+  const progress = run === undefined ? null : progressOfBeats(field, rows, full)
   const timing = field.members?.find((member) => member.total)
   const cut = accordion && view.continuing ? view.continuing.beats_from ?? view.continuing.out_frame / (view.continuingFps ?? 24) : 0
   let elapsed = 0
@@ -581,6 +599,8 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
         drop()
       }}>
       {rows.map((value, i) => {
+        const status = progress?.[i]
+        const statusWord = status?.state === "skipped" ? "Skipped" : kept[i] || status?.state === "kept" ? "Kept" : status?.state === "completed" ? "Complete" : status?.state === "in_progress" ? "Generating" : run !== undefined && progress ? "Queued" : null
         const handle = !kept[i] && rows.length - keptCount > 1 && <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>⋮⋮</span>
         const remove = !kept[i] && rows.length > least && <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
           bound.write(rows.filter((_, at) => at !== i))
@@ -589,9 +609,10 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
         const body = <div className="beat-body" inert={kept[i]}><Members name={name} group={field} bound={rowBound(i)} view={view} place={`${place}.${i}`} label={`${called} ${i + 1}`} /></div>
         const duration = timing ? value[timing.field] ?? timing.default : undefined
         const open = expanded === i
-        return <div className={`beat ${accordion ? "beat-accordion" : ""} ${kept[i] ? "beat-kept" : rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} data-beat-index={i} data-beat-kept={kept[i] || undefined} key={i}>
+        return <div className={`beat ${accordion ? "beat-accordion" : ""} ${kept[i] ? "beat-kept" : rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} data-beat-index={i} data-beat-kept={kept[i] || undefined} data-beat-status={status?.state} key={i}>
           {accordion ? <>
-            <div className="beat-heading">{handle}<button type="button" className="beat-toggle" aria-label={`${called} ${i + 1}${kept[i] ? ", kept from the original video" : ""}`} aria-expanded={open} aria-controls={`${panelId}-${i}`} onClick={() => setExpanded(open ? null : i)}><b>{called} {i + 1}</b>{kept[i] && <span className="beat-status">Kept</span>}{duration != null && <span>{String(duration)} {timing?.unit ?? ""}</span>}<Icon name="forward" /></button>{remove}</div>
+            <div className="beat-heading">{handle}<button type="button" className="beat-toggle" aria-label={`${called} ${i + 1}${statusWord ? `, ${statusWord.toLowerCase()}` : ""}`} aria-expanded={open} aria-controls={`${panelId}-${i}`} onClick={() => setExpanded(open ? null : i)}><b>{called} {i + 1}</b>{statusWord && <span className="beat-status">{statusWord}</span>}{duration != null && <span>{String(duration)} {timing?.unit ?? ""}</span>}<Icon name="forward" /></button>{remove}</div>
+            {status && status.state !== "kept" && status.state !== "skipped" && <div className="beat-progress" role="progressbar" aria-label={`${called} ${i + 1} published frames`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(status.completed * 100)}><span style={{ width: `${status.completed * 100}%` }} /></div>}
             <div className="beat-panel" id={`${panelId}-${i}`} data-open={open || undefined} aria-hidden={!open} inert={!open}>{body}</div>
           </> : <>{handle}{body}{remove}</>}
         </div>
