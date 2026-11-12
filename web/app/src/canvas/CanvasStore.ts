@@ -865,7 +865,7 @@ export class CanvasStore {
     for (const failure of state.unsent ?? []) {
       if (this.unsentSaid.has(failure.message)) continue
       this.unsentSaid.add(failure.message)
-      say(failure.message, new ApiError(0, failure))
+      say(failure.message, new ApiError(0, failure), { stays: true })
     }
     const queued = new Set((state.queue ?? []).filter((item) => !item.running).map((item) => item.name))
     const warnings = warningsOf(state).byElement
@@ -883,11 +883,12 @@ export class CanvasStore {
       const view = this.views.get(asset.name)
       if (view) {
         const change: Partial<ElementView> = { ...said(view, asset.name) }
-        // What a new take's run warned of is said as it lands: a box's own mark is only seen opened.
-        if (this.hasRead && view.asset && asset.version !== view.asset.version) for (const line of warnings.get(asset.name) ?? []) if (!view.warnings?.includes(line)) say(line)
-        // A render that fails says so as it fails, wherever the person is looking, the same failure again too once this page asked for it. One that failed before this page opened is the box's to show.
+        // What a take's run warned of, once it made the take, is the box's to show (its Warnings), never a note: a handled fallback
+        // is no error (Paul, 11-12: a burst of "CUDA graph" notes over a picture that came out fine).
+        // A render that fails says so as it fails, wherever the person is looking, the same failure again too once this page asked for it,
+        // in one note that stays until it's dismissed. One that failed before this page opened is the box's to show.
         const answered = view.asked !== undefined && view.asked < this.began
-        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }))
+        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }), { stays: true })
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.canceling && !asset.making?.length && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
