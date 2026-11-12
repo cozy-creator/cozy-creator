@@ -40,8 +40,17 @@ class Take(msgspec.Struct):
     latents: Latents
     given: File
     warnings: list[str]
-    #: Where its second segment starts (se-130).
+    #: Where each segment after the first starts, as H3 says them (se-130).
     seams: list[int] = []
+
+
+#: Its takes' second segment starts at this frame: H3's contract with no model (se-130).
+SEAM = 6
+
+
+def _frames(video: VideoFile) -> int:
+    probe = video.probe()
+    return round(probe.duration * (probe.frame_rate or 24))
 
 
 def _said(prompt: Prompt[Image | Video | Audio]) -> dict[str, object]:
@@ -68,8 +77,14 @@ def shoot(payload: ShotBox, out: Outputs) -> Take:
     }
     with source.stream() as events:
         video = out.save_video_stream(iter(events)).video
+    # A pickup starts at its take's seam at or before its frame, saying so when that moved it, and keeps that seam; at or past the end
+    # it goes on from the end.
+    warnings: list[str] = []
+    if pickup is not None and SEAM <= pickup.out_frame < _frames(pickup.take.file) and pickup.out_frame != SEAM:
+        warnings.append(f"a pickup starts where a segment does, so this keeps up to frame {SEAM}, not {pickup.out_frame}")
+    seams = [SEAM] if _frames(video) > SEAM else []
     # cast: Runtime takes a saved file of its kind in a Latents field (_invoke._fills)
-    return Take(video, cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(json.dumps(given).encode(), media_type="application/json"), [], [6])
+    return Take(video, cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(json.dumps(given).encode(), media_type="application/json"), warnings, seams)
 
 
 class Bare(msgspec.Struct, kw_only=True):

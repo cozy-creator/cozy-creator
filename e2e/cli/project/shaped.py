@@ -6,12 +6,11 @@
 with no model. `shot` takes a summary and beats, a first and last frame, a plate and a pickup. `up` is an upscale whose video slot reads
 the latents of a take this package made. Each makes a short grey clip of its own. `picture` takes pictures by its prompt."""
 
-import json
 from typing import Annotated, Literal, cast
 
 import msgspec
 import numpy as np
-from cozy_runtime.author import App, ImageFrame, InvalidRequest, Outputs, Seed
+from cozy_runtime.author import App, ImageFrame, Outputs, Seed
 from cozy_runtime.fields import (
     Advanced,
     AspectRatio,
@@ -71,42 +70,18 @@ class Shot(msgspec.Struct):
     video: VideoFile
     latents: Latents
     warnings: list[str] = []
-    #: Where each segment after the first starts, as H3 says them (se-130): segments of 39, 34 and 34 frames.
-    seams: list[int] = []
 
 
-#: Its takes: 107 frames, on its grid, in three segments; their seams are in their latents, as H3 keeps them.
-FRAMES, SEAMS = 107, (39, 73)
-
-
-def _held(take: Made) -> list[int] | None:
-    try:
-        return [int(seam) for seam in json.loads(take.latents.read_bytes())["seams"]] if take.latents is not None else None
-    except (ValueError, KeyError, TypeError):
-        return None
-
-
-def _clip(out: Outputs, level: int, frames: int = 24) -> VideoFile:
-    return out.save_video(np.full((frames, SIDE, SIDE, 3), level, np.uint8), fps=24)
+def _clip(out: Outputs, level: int) -> VideoFile:
+    return out.save_video(np.full((24, SIDE, SIDE, 3), level, np.uint8), fps=24)
 
 
 @app.tool(label="Shaped Shot", reserved=["d"])
 def shot(payload: ShotInput, out: Outputs) -> Shot:
     """A video in its own words, beat by beat."""
     warned = [f"beat {at + 1} says nothing" for at, beat in enumerate(payload.beats) if not beat.description.text]
-    seams = list(SEAMS)
-    # H3's contract (se-130): a pickup starts at its take's seam at or before its frame, saying so when that moved it; every
-    # segment before it stays, and the rest goes again on the shot's own plan.
-    if payload.pickup is not None and (held := _held(payload.pickup.take)) is not None:
-        asked = payload.pickup.out_frame
-        cut = max((seam for seam in [*held, FRAMES] if seam <= asked), default=None) if asked < FRAMES else FRAMES
-        if cut is None:
-            raise InvalidRequest(f"picking up at frame {asked} keeps nothing: render without a pickup to make it all again", fields=["pickup.out_frame"])
-        if cut != asked:
-            warned.append(f"a pickup starts where a segment does, so this keeps up to frame {cut}, not {asked}")
-        seams = sorted(seam for seam in {*(seam for seam in held if seam < cut), cut, *(seam for seam in SEAMS if seam > cut)} if 0 < seam < FRAMES)
-    latents = out.save_bytes(json.dumps({"seams": seams, "seed": payload.seed}).encode(), media_type="application/octet-stream")
-    return Shot(_clip(out, 64, FRAMES), cast(Latents, latents), warned, seams)  # a saved file fills a Latents field: the Runtime checks its kind
+    latents = out.save_bytes(b"latents of this package" + str(payload.seed).encode(), media_type="application/octet-stream")
+    return Shot(_clip(out, 64), cast(Latents, latents), warned)  # a saved file fills a Latents field: the Runtime checks its kind
 
 
 class UpInput(msgspec.Struct, kw_only=True):
