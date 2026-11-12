@@ -296,7 +296,8 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const cancel = (asset) => page.locator(`.card[data-asset="${asset}"] .face-cancel`).evaluate((button) => button.click());
   const sayOf = (asset) => page.locator(`.card[data-asset="${asset}"] .run-face .face-state b`).first().textContent().catch(() => '');
   await projectAction(folder, 'render', 'slow', 'after', '--on', 'local', '--queue');
-  const waited = await until('after waits its turn', () => sayOf('after'), (text) => /^Waits for <slow>/.test(text ?? ''), 60_000).catch((why) => String(why));
+  // Its first line says what it waits for as Paul wrote it (cl-898, 3898a5d72): "Waiting for <slow>".
+  const waited = await until('after waits its turn', () => sayOf('after'), (text) => /^Waiting for <slow>/.test(text ?? ''), 60_000).catch((why) => String(why));
   const rendering = await until('slow renders its steps', () => sayOf('slow'), (text) => /^Segment 1 of 2: Denoising/.test(text ?? ''), 120_000).catch((why) => String(why));
   seen.cancel = { waited, rendering };
   // On the canvas: one box waiting its turn, one denoising, each its two lines (Paul's examples, 11-12).

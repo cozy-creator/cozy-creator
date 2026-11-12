@@ -79,7 +79,8 @@ async function died(why) {
   await here.getByRole('button', { name: 'Edit image', exact: true }).click();
   const prompt = here.locator('.in-frame .mention-text').first();
   await prompt.waitFor();
-  await until('the picture behind the prompt', () => here.locator('[data-image-reference] img, img[data-image-reference]').first().evaluate((image) => image.complete && image.naturalWidth > 0).catch(() => false), Boolean);
+  // The picture behind the words is the frame's backdrop, a spread of every picture the edit uses (cl-938 aeddbfe14, cl-949 7f2181749), loaded.
+  await until('the picture behind the prompt', () => here.locator('.in-frame .backdrop .spread-picture img').first().evaluate((image) => image.complete && image.naturalWidth > 0).catch(() => false), Boolean);
   await prompt.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' a lighthouse at dusk, waves breaking white on black rocks, gulls over the lamp');
