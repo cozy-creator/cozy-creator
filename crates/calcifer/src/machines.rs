@@ -177,21 +177,31 @@ impl Machines {
         me
     }
 
-    /// Each minute, says once of each run that stopped moving that it has.
+    /// Each minute while a run is unsettled, says once of each one that stopped moving that it has. With none, nothing
+    /// wakes until one is created.
     async fn notice_stalled(self: Arc<Self>) {
         const EVERY: std::time::Duration = std::time::Duration::from_secs(60);
-        let mut every = tokio::time::interval(EVERY);
-        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last = crate::store::now_ms();
         loop {
-            every.tick().await;
+            let mut events = self.calcifer.subscribe();
+            if !self.calcifer.notice_stalled() {
+                loop {
+                    match events.recv().await {
+                        Ok((_, Event::Created { .. })) | Err(RecvError::Lagged(_)) => break,
+                        Ok(_) => {}
+                        Err(RecvError::Closed) => return,
+                    }
+                }
+                last = crate::store::now_ms();
+            }
+            drop(events);
+            tokio::time::sleep(EVERY).await;
             let now = crate::store::now_ms();
             // The clock moved on by more than this timer did: this computer slept.
             if now - last > 2 * EVERY.as_millis() as i64 {
                 self.calcifer.woke();
             }
             last = now;
-            self.calcifer.notice_stalled();
         }
     }
 
