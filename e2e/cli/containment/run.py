@@ -92,7 +92,7 @@ EDIT_FACTS = frozenset({
     "visible", "has_focus", "animation_frame", "inert", "hit_target", "hit_node",
     "mousedown", "click", "dblclick", "mousedown_in_node", "click_in_node", "dblclick_in_node",
     "centre_in_view", "centre_hit", "centre_on_pane", "centre_on_other_node", "centre_on_tools", "centre_on_top",
-    "centre_on_zoom", "centre_on_drawer", "box_visible_point",
+    "centre_on_zoom", "centre_on_drawer", "box_visible_point", "node_hidden",
 })
 PAGE_FACTS = frozenset({
     "blank", "error_page", "loopback", "reloaded", "navigation_status", "owned_injected", "vite_client", "refresh_preamble",
