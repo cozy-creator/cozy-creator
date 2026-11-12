@@ -1,0 +1,1 @@
+Pasted words mark their mentions at once, as typing and loading do: `<Azul_3>`, `<Azul_3.1>`, `<walk:48-120>` and `<cat:120deg>`, over several lines and from rich-text programs, in any prompt or beat. A box being typed in re-marks a mention as soon as its box appears or Calcifer says it names nothing, keeping the caret where it was.
