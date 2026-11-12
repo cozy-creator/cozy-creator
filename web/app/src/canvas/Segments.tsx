@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import type { CSSProperties } from "react"
 import type { Pickup } from "../api/calcifer"
-import { machinesQuery, runQuery } from "../api/queries"
+import { machinesQuery, runResultQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
@@ -16,8 +16,7 @@ import { rowsIn } from "./text"
  *  for a take its tool didn't say them of. */
 export function useSeams(run: number | undefined): number[] | null {
   const { client } = useConnection()
-  const { data } = useQuery({ ...runQuery(client, run ?? 0), enabled: Boolean(run) })
-  const result = data?.result
+  const { data: result } = useQuery({ ...runResultQuery(client, run ?? 0), enabled: Boolean(run) })
   const seams = result && typeof result === "object" && !Array.isArray(result) ? (result as Record<string, unknown>).seams : undefined
   return Array.isArray(seams) && seams.every((seam) => Number.isInteger(seam)) ? (seams as number[]) : null
 }
