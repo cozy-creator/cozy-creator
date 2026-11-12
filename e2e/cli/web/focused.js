@@ -635,8 +635,8 @@ async function died(error) {
   }), Boolean);
   const completedGeometry = await videoFocus.locator('.focus-viewer').boundingBox();
   check('completed_video_has_a_prominent_view_only_face', completedGeometry.width > videoRoom.width * 0.5 && completedGeometry.height > 120 && !await summaryPrompt.isVisible() && !await beatPrompt.isVisible() && await videoFocus.locator('.mention-text:visible').count() === 0, { completedGeometry, videoRoom });
-  // Pick up from here is under its scrubber (cl-933).
-  const pickUp = videoFocus.locator('.video-scrub button:text-is("Pick up from here")');
+  // Pick up from where the player is, right under its bottom right (cl-950).
+  const pickUp = videoFocus.locator('.focus-under button.pick-up');
   check('completed_video_has_models_and_an_explicit_pick_up_action', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await pickUp.isVisible());
   await pickUp.click();
   await videoFocus.locator('.focus-new-video').waitFor();

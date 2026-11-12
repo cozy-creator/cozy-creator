@@ -1,5 +1,5 @@
 // A package's own UI (crates/calcifer/docs/PACKAGE-UI.md), in a real browser on a real Calcifer. Local code a project names: a component draws
-// one field, saved through setFields and read back by the file, `cozy status` and a reload; one draws the whole face; one that throws,
+// one field, saved through setFields and read back by project.db, `cozy status` and a reload; one draws the whole face; one that throws,
 // one from a later API and one that isn't there leave the declared box, with the canvas up. What's served: a module's type and CSP, and that a
 // wrong hash, a climb out, a file that's no module and a foreign origin get nothing. A release: Calcifer on a Hub this cell stands up: not
 // installed, it doesn't load; installed, it loads under the wheel's digest; a Hub whose file isn't what it says doesn't load. The Hub's own API
@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, watchBoxes, yamlOf } = require('./page');
+const { projectFromPage, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, storedOf, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -170,8 +170,8 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const state = async () => (await api(`/v1/projects/${id}`)).body;
   const folder = (await state()).path;
   seen.project = { id, folder };
-  // The project as the YAML export API writes it (cl-803: its state is project.db).
-  const yaml = () => yamlOf(folder);
+  // A box's fields as project.db stores them (cl-803).
+  const stored = (name) => storedOf(folder)[name] ?? {};
   const status = () => projectJson(folder);
   const held = (name) => status().assets.find((asset) => asset.name === name);
   const box = (name) => boxOf(page, name);
@@ -241,7 +241,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     // Saved through setFields, read back three ways.
     await shade.locator('button[aria-label="Shade 0.75"]').click();
     await until('it stood', () => shade.getAttribute('data-saved'), (saved) => saved === 'true');
-    check('saved_in_the_file', /shade: 0\.75/.test(yaml()), yaml());
+    check('saved_in_the_file', stored('shaded').shade === 0.75, stored('shaded'));
     check('status_agrees', held('shaded').fields.shade === 0.75, held('shaded'));
     await page.reload();
     await page.waitForSelector('.react-flow__node');
@@ -263,7 +263,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     const panel = box('faced').locator('.here-under');
     const { width, height } = await panel.boundingBox();
     await panel.click({ position: { x: width * 0.9, y: height / 2 } });
-    await until('its words in the file', () => Promise.resolve(yaml()), (text) => text.includes('Its own words'));
+    await until('its words in the file', () => Promise.resolve(stored('faced').instructions), (text) => text?.includes('Its own words'));
     check('whole_face_saves', held('faced').fields.instructions === 'Its own words', held('faced').fields);
 
     // What doesn't draw leaves the declared box and the canvas.

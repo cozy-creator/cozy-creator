@@ -79,6 +79,7 @@ class Payload(TypedDict, total=False):
     sha256: str
     entries: list[object]
     error: dict[str, str]
+    assets: list[dict[str, object]]
 
 
 class CommandBase(TypedDict, total=False):
@@ -430,8 +431,11 @@ class Proof:
         project = self.project_id if project_id is None else project_id
         return '/v1/projects/' + urllib.parse.quote(project, safe='')
 
-    def yaml(self, project_id: str | None = None) -> str:
-        return self.request('GET', self.project_route(project_id) + '/yaml', json_output=False)
+    def graph(self, project_id: str | None = None) -> str:
+        """The project's boxes as the API answers them, canonical: what conversion, rekey, decryption or a copy must not change."""
+        kept = ['name', 'tool', 'fields', 'approved', 'pinned', 'sha256']
+        assets = self.request('GET', self.project_route(project_id))['assets']
+        return json.dumps([{key: asset.get(key) for key in kept} for asset in assets], indent=1, sort_keys=True)
 
     def import_media(self, path: Path, name: str) -> None:
         data = path.read_bytes()
@@ -821,17 +825,6 @@ foreach ($rule in $allowed) {
             for chunk in iter(lambda: handle.read(1024 * 1024), b''):
                 digest.update(chunk)
         return digest.hexdigest()
-
-    @staticmethod
-    def graph_export(text: str) -> tuple[str, str]:
-        header, separator, body = text.partition('\n')
-        prefix = '# cozy-project-base: '
-        if not separator or not header.startswith(prefix):
-            raise RuntimeError('the actual YAML export has no project/base marker')
-        owner, etag = header[len(prefix):].split(' ', 1)
-        if json.loads(etag) != hashlib.sha256(body.encode()).hexdigest():
-            raise RuntimeError('the actual YAML export marker does not verify its graph body')
-        return owner, body
 
     def find_media(self, view: Path, source: Path) -> Path:
         expected = self.digest(source)
@@ -1258,7 +1251,7 @@ foreach ($rule in $allowed) {
         # The compact code is for display. Project routes and upload scope use the canonical ID.
         self.project_id = created['id']
         assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
-        before = self.yaml()
+        before = self.graph()
         unsafe_backing = self.project / 'unsafe-recovery.txt'
         refused = self.vault('encrypt', '--passphrase-file', initial, '--recovery-out', unsafe_backing,
                              '--idle', 0, refusal=True)
@@ -1267,7 +1260,7 @@ foreach ($rule in $allowed) {
         unchanged = self.status()
         assert unchanged['state'] == 'plain' and not unchanged['encrypted']
         assert unchanged['idle_timeout_s'] == 1800
-        assert before == self.yaml()
+        assert before == self.graph()
         self.cell('recovery_output_refuses_backing_before_conversion')
         self.project.joinpath('files').mkdir(exist_ok=True)
         stream_fixture = Path(__file__).resolve().parents[1] / 'cli' / 'vault_stream.py'
@@ -1278,7 +1271,7 @@ foreach ($rule in $allowed) {
         self.cell('vault_acknowledgment_reattach_and_missing_media')
         assert self.status()['idle_timeout_s'] == 0
         self.check_recovery('recovery1')
-        assert before == self.yaml()
+        assert before == self.graph()
         self.cell('convert_without_changing_logical_state')
         sources = self.media()
         for path, name in zip(sources, ['proof_image', 'proof_video', 'proof_audio']):
@@ -1287,7 +1280,7 @@ foreach ($rule in $allowed) {
             self.pinned_winarm_media()
         self.request('PATCH', self.project_route() + '/assets/proof_image',
                      body={'fields': {'description': self.canary}})
-        state = self.yaml()
+        state = self.graph()
         assert self.canary in state
         assert self.request('GET', self.project_route() + '/history')['entries']
         view = self.view(self.status())
@@ -1307,7 +1300,7 @@ foreach ($rule in $allowed) {
         self.open_unlocks_locked_project(initial, wrong)
         self.vault('unlock', '--passphrase-file', wrong, refusal=True)
         self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery1'), '--idle', 0))
-        assert self.yaml() == state
+        assert self.graph() == state
         self.cell('recovery_output_refuses_view_without_rotating_recovery')
         self.cell('lock_refusal_and_saved_recovery')
         self.vault('passphrase', '--passphrase-file', changed)
@@ -1322,7 +1315,7 @@ foreach ($rule in $allowed) {
                              '--recovery-out', self.recovery('recovery3'))
         self.check_recovery('recovery3')
         view = self.view(rotated)
-        assert state == self.yaml()
+        assert state == self.graph()
         for path in sources:
             self.find_media(view, path)
         self.cell('full_rekey_preserves_media_bytes')
@@ -1347,7 +1340,7 @@ foreach ($rule in $allowed) {
         self.assert_locked()
         self.cell('idle_expiry_without_activity')
         view = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery3'), '--idle', 0))
-        assert state == self.yaml()
+        assert state == self.graph()
         old_file = self.find_media(view, sources[0])
         # The normal graceful shutdown must close the still-unlocked project.
         self.shutdown()
@@ -1400,7 +1393,7 @@ foreach ($rule in $allowed) {
         assert (self.project / readonly.name).read_text() == self.canary
         file_modes['decrypted'] = (self.project / readonly.name).stat().st_mode & 0o222
         assert file_modes['decrypted'] == write_mode
-        assert self.yaml() == state
+        assert self.graph() == state
         assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
         assert self.vault('decrypt')['vault']['state'] == 'plain'
         self.cell('decrypt_in_place_preserves_identity_graph_and_media')
@@ -1408,19 +1401,16 @@ foreach ($rule in $allowed) {
         copied_path = self.out / 'plain-folder-copy'
         shutil.copytree(self.project, copied_path)
         reopened = self.command('status', cwd=self.project, full=True)['project']
-        assert reopened['id'] == self.project_id and self.yaml() == state
+        assert reopened['id'] == self.project_id and self.graph() == state
         self.cell('decrypted_project_reopens_after_controller_restart')
         copied = self.command('status', cwd=copied_path, full=True)['project']
-        copied_state = self.yaml(copied['id'])
-        original_id, original_graph = self.graph_export(state)
-        copied_id, copied_graph = self.graph_export(copied_state)
-        assert original_id == self.project_id and copied_id == copied['id']
+        copied_state = self.graph(copied['id'])
         # A plain folder copy intentionally receives a new project identity when the original
-        # remains registered. Compare the entire graph body, not that anti-stale-edit marker.
-        if original_graph != copied_graph:
-            difference = ''.join(difflib.unified_diff(original_graph.splitlines(True), copied_graph.splitlines(True), fromfile='original graph', tofile='copied graph'))
+        # remains registered. Its whole graph is the original's.
+        if state != copied_state:
+            difference = ''.join(difflib.unified_diff(state.splitlines(True), copied_state.splitlines(True), fromfile='original graph', tofile='copied graph'))
             raise RuntimeError('plaintext folder copy graph changed: ' + self.redact(difference[:16384]))
-        if original_id == copied_id:
+        if copied['id'] == self.project_id:
             raise RuntimeError('the independent folder copy reused the registered project identity')
         self.cell('decrypted_folder_copy_opens_with_its_own_identity')
         sources_before = set(self.out.glob('.cozy-project-source-*'))
@@ -1431,7 +1421,7 @@ foreach ($rule in $allowed) {
         self.cell('api_encryption_removes_verified_plaintext')
         copied_view = self.view(copied_encrypted)
         assert self.command('status', cwd=copied_path, full=True)['project']['id'] == copied['id']
-        assert self.yaml(copied['id']) == copied_state
+        assert self.graph(copied['id']) == copied_state
         marker = json.loads((copied_view / '.vault-local-execution.json').read_text())
         assert marker['storage']['project_id'] == copied['id']
         assert marker['storage']['project_id'] != self.project_id
@@ -1446,7 +1436,7 @@ foreach ($rule in $allowed) {
         assert set(self.out.glob('.cozy-project-source-*')) == sources_before
         self.check_recovery('recovery4')
         view = self.view(reencrypted)
-        assert self.yaml() == state
+        assert self.graph() == state
         assert self.command('status', cwd=self.project, full=True)['project']['id'] == self.project_id
         for path in sources:
             self.find_media(view, path)

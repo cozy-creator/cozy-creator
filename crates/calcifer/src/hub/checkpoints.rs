@@ -302,7 +302,7 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, target: &str, slots: &[(
                     (false, false) => {
                         if let Some(why) = unloadable(slot, &default_facts, &facts) {
                             return Err(Error::new(Kind::Validation, "model_choice_unloadable", format!("{named} can't load {reference}: {why}"))
-                                .next(format!("cozy model ls --fits {target}:{named}")));
+                                .next(format!("cozy model ls --fits {}:{named}", api::names::shown(target))));
                         }
                     }
                     (true, false) => {

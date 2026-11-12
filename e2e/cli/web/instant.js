@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
 const { rmSync } = require('fs');
 const { join } = require('path');
-const { implementationRow, projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, importYaml, lastLook, lookAt, openBox, renderOf, until, yamlOf } = require('./page');
+const { implementationRow, projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, lookAt, openBox, renderOf, storedOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -83,14 +83,15 @@ async function loseAnswers(page, method, path, times) {
   }, [path, init]);
   const folder = (await api(`/v1/projects/${id}`)).body.path;
   seen.project = { id, folder };
-  // The project as the YAML export API writes it, and its canvas as Calcifer answers it (cl-803: both are project.db's), asked from here: what
-  // the page reads is counted.
-  const yaml = () => yamlOf(folder);
+  // The project and its canvas as Calcifer answers them (cl-803: both are project.db's), asked from here: what the page reads is counted.
   const token = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token);
   const cards = async () => (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}` } })).json()).cards ?? {};
   const status = () => projectJson(folder).assets;
-  const hasAsset = (name) => new RegExp(`^  ${name}:`, 'm').test(yaml());
-  const count = (name) => yaml().match(new RegExp(`^  ${name}(_\\d+)?:`, 'gm'))?.length ?? 0;
+  const names = () => status().map((asset) => asset.name);
+  const hasAsset = (name) => names().includes(name);
+  const count = (name) => names().filter((held) => new RegExp(`^${name}(_\\d+)?$`).test(held)).length;
+  // The box `words`'s text as project.db holds it.
+  const words = () => storedOf(folder).words?.text ?? '';
   const box = (name) => boxOf(page, name);
   // The composition node, independent of any generative Edit Video operation.
   const editor = () => implementationRow(page, 'timeline', 'cozy/edit');
@@ -143,7 +144,7 @@ async function loseAnswers(page, method, path, times) {
   check('own_echo_moves_nothing', (await place()) === moved, { moved, now: await place() });
   check('own_echo_reads_no_whole_project', !reads.some((read) => read === '/' || read === '/canvas'), reads);
   seen.reads_after_a_drop = reads.slice();
-  check('one_box', (await box(name).count()) === 1 && count(name) === 1, yaml());
+  check('one_box', (await box(name).count()) === 1 && count(name) === 1, names());
 
   // An answer lost: the same key again, and one asset.
   const lost = await loseAnswers(page, 'POST', '**/v1/projects/*/assets', 2);
@@ -152,10 +153,10 @@ async function loseAnswers(page, method, path, times) {
   await box(second).waitFor();
   await until('its answer came at last', () => Promise.resolve(lost.keys.length), (n) => n >= 3);
   await lost.done();
-  await until('in the file', () => Promise.resolve(hasAsset(second)), Boolean);
+  await until('in the project', () => Promise.resolve(hasAsset(second)), Boolean);
   await page.waitForTimeout(400);
   check('retried_with_one_key', new Set(lost.keys).size === 1, lost.keys);
-  check('retried_makes_one', count(name) === 2 && (await page.locator(`.card[data-asset^="${name}"]`).count()) === 2, yaml());
+  check('retried_makes_one', count(name) === 2 && (await page.locator(`.card[data-asset^="${name}"]`).count()) === 2, names());
 
   // Another writer takes the name while this one's asked: the box takes what it got, and the other shows.
   const stalled = await hold(page, 'POST', '**/v1/projects/*/assets');
@@ -163,7 +164,7 @@ async function loseAnswers(page, method, path, times) {
   const third = `${name}_3`;
   await box(third).waitFor();
   projectJson(folder, 'POST', '/assets', { tool: 'cozy/edit', name: third, exact: true, fields: {} });
-  await until('the other in the file', () => Promise.resolve(hasAsset(third)), Boolean);
+  await until('the other in the project', () => Promise.resolve(hasAsset(third)), Boolean);
   await stalled.release();
   await box(`${name}_4`).waitFor();
   await page.waitForTimeout(600);
@@ -171,7 +172,7 @@ async function loseAnswers(page, method, path, times) {
   await page.keyboard.press('f');
   await page.waitForTimeout(400);
   const shown = await page.locator('.card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset));
-  check('another_writers_name_renames_it', (await box(third).count()) === 1 && (await box(`${name}_4`).count()) === 1 && hasAsset(`${name}_4`), { shown, yaml: yaml() });
+  check('another_writers_name_renames_it', (await box(third).count()) === 1 && (await box(`${name}_4`).count()) === 1 && hasAsset(`${name}_4`), { shown, names: names() });
 
   // Refused: Calcifer holds no such file. The box goes, one line says why, and what's behind it in line goes on.
   const notes = () => page.locator('.notes .note .line').allInnerTexts();
@@ -205,12 +206,12 @@ async function loseAnswers(page, method, path, times) {
   await page.mouse.click(1500, 1050);
   await until('its PATCH is held', () => Promise.resolve(patches.calls.length), (n) => n === 1);
   projectJson(folder, 'PATCH', '/assets/words', { fields: { text: 'theirs' } });
-  await until('theirs in the file', () => Promise.resolve(yaml().includes('text: theirs')), Boolean);
+  await until('theirs in the project', () => Promise.resolve(words().startsWith('theirs')), Boolean);
   await page.waitForTimeout(600);
   await openBox(page, 'words');
   check('unsent_words_stand', (await box('words').locator('.mention-text[data-field="text"]').allInnerTexts()).join(' ').includes('mine'), await box('words').innerText());
   await patches.release();
-  await until('mine in the file', () => Promise.resolve(yaml().includes('text: mine')), Boolean);
+  await until('mine in the project', () => Promise.resolve(words().startsWith('mine')), Boolean);
   check('nothing_asked', (await box('words').getByRole('button', { name: 'Keep mine' }).count()) === 0);
   await closeBox(page);
 
@@ -226,11 +227,11 @@ async function loseAnswers(page, method, path, times) {
     const response = await route.fetch();
     try {
       oursHeld = canonicalWords();
-      order.ours_recorded = oursHeld?.fields?.text === 'ours' && yaml().includes('text: ours');
+      order.ours_recorded = oursHeld?.fields?.text === 'ours' && words() === 'ours';
       if (!order.ours_recorded) throw new Error('the native PATCH did not commit our canonical text');
       projectJson(folder, 'PATCH', '/assets/words', { fields: { text: 'outside' } });
       nowHeld = canonicalWords();
-      order.outside_committed_before_reply = nowHeld?.fields?.text === 'outside' && yaml().includes('text: outside');
+      order.outside_committed_before_reply = nowHeld?.fields?.text === 'outside' && words() === 'outside';
     } catch (error) {
       writerError = error.message;
     } finally {
@@ -244,7 +245,7 @@ async function loseAnswers(page, method, path, times) {
   } finally {
     await page.unroute(path, delayReply);
   }
-  check('a_write_answers_for_its_own_lines', !writerError && order.ours_recorded && order.outside_committed_before_reply && wrote.status === 200 && typeof oursHeld?.etag === 'string' && wrote.body.etag === oursHeld.etag && wrote.body.etag !== nowHeld?.etag && yaml().includes('text: outside'), { wrote, ours_etag: oursHeld?.etag, outside_etag: nowHeld?.etag, order, writerError });
+  check('a_write_answers_for_its_own_lines', !writerError && order.ours_recorded && order.outside_committed_before_reply && wrote.status === 200 && typeof oursHeld?.etag === 'string' && wrote.body.etag === oursHeld.etag && wrote.body.etag !== nowHeld?.etag && words() === 'outside', { wrote, ours_etag: oursHeld?.etag, outside_etag: nowHeld?.etag, order, writerError });
 
   // kill -9 with a box in line: it lands once, when Calcifer's back, with no reload.
   if (process.env.RESTART) {
@@ -257,7 +258,7 @@ async function loseAnswers(page, method, path, times) {
     await restarted;
     await until('it landed after the restart', () => Promise.resolve(hasAsset(fifth)), Boolean);
     await page.waitForTimeout(800);
-    check('restart_mid_queue_lands_once', (await box(fifth).count()) === 1 && (yaml().match(new RegExp(`^  ${fifth}(_\\d+)?:`, 'gm'))?.length ?? 0) === 1 && !hasAsset(`${name}_6`), yaml());
+    check('restart_mid_queue_lands_once', (await box(fifth).count()) === 1 && count(fifth) === 1 && !hasAsset(`${name}_6`), names());
     await until('the top bar says nothing waits', () => page.locator('.top .pill').allInnerTexts(), (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
     check('nothing_left_saying_not_saved', true);
   }
@@ -269,7 +270,7 @@ async function loseAnswers(page, method, path, times) {
     const stillRuns = async () => (await api(`/v1/runs?project=${id}&limit=50`)).body.runs.filter((run) => run.function === 'still' || /\/still$/.test(run.target ?? ''));
     execFileSync(COZY, ['--json', 'run', `${TOOL}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], timeout: FIRST_RUN_MS });
     const primed = (await stillRuns()).length;
-    importYaml(folder, `${yaml().trimEnd()}\n  fixture:\n    tool: ${TOOL}/still\n    instructions: a whale\n`);
+    addBoxes(folder, [{ name: 'fixture', tool: `${TOOL}/still`, kind: 'image', fields: { instructions: 'a whale' } }]);
     await box('fixture').waitFor();
     await page.waitForTimeout(500);
     await openBox(page, 'fixture');

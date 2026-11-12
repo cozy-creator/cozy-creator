@@ -13,7 +13,7 @@ import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
 import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
-import { Ghosts, Thumb } from "./Media"
+import { Ghosts, Spread, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { makes, watched } from "./shown"
@@ -738,7 +738,8 @@ export function framedOf(view: ElementView, fields: ToolField[], tool: Tool | un
   return [...(first ? [first] : []), ...(rows ? [rows] : [])]
 }
 
-/** Behind what's written, faded, each picture it mentions at the frame's full height, side by side; a new set fades in as the writing moves. */
+/** Behind what's written, faded, every picture it uses, mentioned or an image input, filling the frame as large as they can (`Spread`, cl-949);
+ *  a new set fades in as the writing moves. */
 function Backdrop({ name, view, mentions }: { name: string; view: ElementView; mentions: string[] }) {
   const store = useCanvasStore()
   useSignal(store.names)
@@ -746,17 +747,7 @@ function Backdrop({ name, view, mentions }: { name: string; view: ElementView; m
   if (!pictures.length) return null
   return (
     <div key={pictures.map((ghost) => ghost.mention).join(" ")} className="backdrop" aria-hidden>
-      {pictures.map((ghost) => (
-        <span key={ghost.mention} className="backdrop-picture" data-mention={ghost.mention}>
-          {ghost.sha256 ? (
-            <Thumb sha256={ghost.sha256} cardWidth={960 / pictures.length} />
-          ) : (
-            <svg className={`ghost-blank ${ghost.making ? "making" : ""}`} viewBox={`0 0 ${100 * (ghost.shape ?? 1)} 100`} preserveAspectRatio="xMidYMid meet">
-              <rect x="2" y="2" width={100 * (ghost.shape ?? 1) - 4} height="96" rx="3" />
-            </svg>
-          )}
-        </span>
-      ))}
+      <Spread pictures={pictures.map((ghost) => ({ key: ghost.mention, sha256: ghost.sha256, shape: ghost.shape, making: ghost.making }))} cardWidth={960} />
     </div>
   )
 }
@@ -776,7 +767,10 @@ export function InFrame({ name, view }: { name: string; view: ElementView }) {
   const values = (field: ToolField) => store.valueOf(name, field.field)
   const rows = list ? rowsIn(values(list)) : []
   const mentionsOf = (texts: string[]) => [...new Set(texts.flatMap(mentionsIn))]
-  const mentions = writing === "first" ? mentionsOf(textsIn(values(first))) : typeof writing === "number" ? mentionsOf(textsIn(rows[writing])) : mentionsOf([...textsIn(values(first)), ...rows.flatMap(textsIn)])
+  // What it's made from: what the words being written mention, and its pictures given as inputs (cl-949: every one, never one picked).
+  const inputs = view.asset ? fieldsOf(view.asset, tools).filter((field) => field.type === "slot").flatMap((field) => textsIn(values(field))) : []
+  const written = writing === "first" ? textsIn(values(first)) : typeof writing === "number" ? textsIn(rows[writing]) : [...textsIn(values(first)), ...rows.flatMap(textsIn)]
+  const mentions = mentionsOf([...written, ...inputs])
   if (!list) {
     return (
       <div className="in-frame">

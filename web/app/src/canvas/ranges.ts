@@ -7,10 +7,11 @@ import type { Snap } from "../api/calcifer"
 /** A video's frames a second when its file doesn't say. */
 export const FPS = 24
 
-/** A continuation starts only on the tool's supported frame grid. */
+/** Where a continuation starts on the tool's frame grid: its last point at or before `frame`, never after what's shown (cl-950). */
 export function pickupAt(frame: number, last: number, snap: Snap | undefined): number | null {
   if (!snap) return Math.min(frame, last)
-  return frame < snap.first ? null : Math.min(last, Math.max(snap.first, snap.offset + Math.round((frame - snap.offset) / snap.every) * snap.every))
+  const at = Math.min(frame, last)
+  return at < snap.first ? null : Math.max(snap.first, snap.offset + Math.floor((at - snap.offset) / snap.every) * snap.every)
 }
 
 export interface Ranged {
