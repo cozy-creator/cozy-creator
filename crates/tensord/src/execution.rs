@@ -225,6 +225,17 @@ impl Engine {
         let mut target = self.journal.lock().unwrap();
         source.migrate_project_into(&mut target, scope, logs, ordinary.root.parent().unwrap_or(&ordinary.root), &ordinary.store, actor, bindings)
     }
+    /// Only receipt-proven retired generations without any remaining authoritative source
+    /// owner may release their old idle runtime/retention caches.
+    pub(crate) fn retired_migration_generations(&self,ordinary:&Engine)->io::Result<std::collections::BTreeSet<String>>{
+        let source=ordinary.journal.lock().unwrap();
+        let target=self.journal.lock().unwrap();
+        let mut eligible=std::collections::BTreeSet::new();
+        for generation in target.retired_migration_generations()? {
+            if !source.legacy_generation_has_owner(&generation)? {eligible.insert(generation);}
+        }
+        Ok(eligible)
+    }
     /// Registers run `id`'s preparation until the answer is dropped. A cancel journaled before
     /// it registered stops it at once.
     /// A verified scope rebind may resume a queued preparation exactly once.

@@ -259,6 +259,17 @@ impl Plan {
         }
         Ok(plan)
     }
+    /// Runtime-only resource coordinates for one verified project execution namespace.
+    /// Canonical preparation IDs remain unchanged in the project journal.
+    pub(crate) fn in_scope(mut self, scope: Option<&api::machine::LocalPrivateStorage>) -> Self {
+        if let Some(scope) = scope {
+            let prefix = crate::private_io::executor_prefix(scope);
+            if !self.executor.starts_with(&prefix) { self.executor = format!("{prefix}{}",self.executor); }
+            if !self.construction.starts_with(&prefix) { self.construction = format!("{prefix}{}",self.construction); }
+        }
+        self
+    }
+
     /// The same plan on `degree` GPUs: the machine picks a root's width as it starts (cl-816).
     pub(crate) fn at(mut self, degree: u32) -> io::Result<Self> {
         if degree == self.degree || self.degree == 0 || degree == 0 {
@@ -1572,14 +1583,21 @@ impl Pool {
     /// Every warm set's pass, off the caller's thread: after a call ends, when room may
     /// have come back for a member a request pushed down.
     pub(crate) fn keep_all(self: &Arc<Self>, engine: &Arc<Engine>) {
-        let actors: Vec<String> = self.members.lock().unwrap().keys().cloned().collect();
+        let private_scope = crate::private_io::current();
+        let prefix = private_scope.as_ref().map(|_| crate::private_io::resource_key(""));
+        let actors: Vec<String> = self.members.lock().unwrap().keys()
+            .filter(|actor| match &prefix { Some(prefix) => actor.starts_with(prefix), None => !actor.starts_with("local-private:") }).cloned().collect();
         if actors.is_empty() {
             return;
         }
+        let lease = match crate::private_io::lease() { Ok(lease) => lease, Err(_) => return };
         let (pool, engine) = (self.clone(), engine.clone());
         let started = std::thread::Builder::new()
             .name("warm-set".into())
-            .spawn(move || actors.iter().for_each(|actor| pool.keep(&engine, actor)));
+            .spawn(move || crate::private_io::within(private_scope, || {
+                let _lease = lease;
+                actors.iter().for_each(|actor| pool.keep(&engine, actor));
+            }));
         if let Err(error) = started {
             tracing::warn!("warm set: {error}");
         }
@@ -2467,12 +2485,16 @@ impl Pool {
     /// It takes the GPU's call slot like any call, so a child call in flight finishes first, and
     /// loads only inside its root's lane: once bound, until released.
     pub(crate) fn prefetch(self: &Arc<Self>, engine: &Arc<Engine>, held: HeldGeneration, plan: Plan, (root, family): (u64, Option<String>), owner: String, fetch: Arc<crate::access::Fetch>) {
+        let private_scope = crate::private_io::current();
+        let plan = plan.in_scope(private_scope.as_ref());
+        let lease = match crate::private_io::lease() { Ok(lease) => lease, Err(_) => return };
         let root = engine.scheduler_root(root);
         let family = engine.scheduler_family(family.as_deref());
         let (pool, engine) = (self.clone(), engine.clone());
         let started = std::thread::Builder::new()
             .name("executor-prefetch".into())
-            .spawn(move || {
+            .spawn(move || crate::private_io::within(private_scope, || {
+                let _lease = lease;
                 let active = || pool.allocations.registered(root) && engine.get(&owner).is_ok_and(|record| {
                     record.state == State::Running && record.cancel_actor.is_none()
                 });
@@ -2527,7 +2549,7 @@ impl Pool {
                     engine.notify_activity();
                     result
                 });
-            });
+            }));
         if let Err(error) = started {
             tracing::warn!("executor prefetch: {error}");
         }
@@ -2544,6 +2566,11 @@ impl Pool {
         fetch: Option<Arc<crate::access::Fetch>>,
         preparation: Option<&Stoppable>,
     ) -> io::Result<&'static str> {
+        let private = crate::private_io::current();
+        let plan = plan.in_scope(private.as_ref());
+        if crate::private_io::is_private_path(&held.record.python) && private.is_none() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "protected prewarm has no project custody"));
+        }
         let retained = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start));
         let cancellation = Mutex::new(None::<Cancellation>);
         let halt = Mutex::new(None);
@@ -2566,7 +2593,7 @@ impl Pool {
             }
             None => {
                 let born = Mutex::new(vec![]);
-                let created = self.new_session(engine, held, &plan, start, None, |birth, cancel| {
+                let created = self.new_session(engine, held, &plan, start, private.as_ref(), |birth, cancel| {
                     born.lock().unwrap().push(birth.clone());
                     serve(cancel);
                     Ok(())
@@ -3084,13 +3111,8 @@ impl Pool {
         result
     }
 
-    fn private_plan(&self, engine: &Engine, id: &str, mut plan: Plan) -> io::Result<Plan> {
-        if let Some(scope) = engine.private_storage(id)? {
-            let identity = tensorfs::sha256::hex_digest(&crate::boundary_json::exact(&serde_json::json!([scope.project_id, scope.generation])));
-            let prefix = format!("private-{identity}:");
-            if !plan.executor.starts_with(&prefix) { plan.executor = format!("{prefix}{}", plan.executor); }
-        }
-        Ok(plan)
+    fn private_plan(&self, engine: &Engine, id: &str, plan: Plan) -> io::Result<Plan> {
+        Ok(plan.in_scope(engine.private_storage(id)?.as_ref()))
     }
 
     pub(crate) fn memo_for_private(&self, scope: &api::machine::LocalPrivateStorage) -> io::Result<Arc<crate::memo::Memo>> {
