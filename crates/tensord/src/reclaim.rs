@@ -462,6 +462,69 @@ fn uv_pass(cache: &Path, environments: &[PathBuf], disk: &dyn Fn() -> io::Result
     Ok(())
 }
 
+// Existing environments can symlink individual payload files as well as METADATA.
+fn uv_archive_links(path: &Path, archives: &Path, found: &mut HashSet<OsString>, remaining: &mut usize) -> io::Result<()> {
+    if *remaining==0 {return Err(io::Error::other("uv environment reference inventory limit"));}
+    *remaining-=1;
+    let metadata=match fs::symlink_metadata(path){Ok(metadata)=>metadata,Err(error) if error.kind()==io::ErrorKind::NotFound=>return Ok(()),Err(error)=>return Err(error)};
+    if metadata.file_type().is_symlink(){
+        let target=fs::read_link(path)?;
+        let target=if target.is_absolute(){target}else{path.parent().unwrap_or(Path::new("/")).join(target)};
+        let target=durable::canonical(&target)?;
+        found.extend(target.strip_prefix(archives).ok().and_then(|rest|rest.iter().next()).map(OsString::from));
+    } else if metadata.is_dir(){
+        for entry in fs::read_dir(path)? {uv_archive_links(&entry?.path(),archives,found,remaining)?;}
+    }
+    Ok(())
+}
+
+/// Retire recognized machine-owned uv cache metadata and archives not named by any
+/// remaining environment. The caller has retained private source/generation history and
+/// proven its managed native writers quiescent. Never use this on a seeded or user cache.
+/// Results belong only in the caller's protected receipt; this path emits no cache labels.
+pub(crate) fn retire_uv_cache(cache: &Path, environments: &[PathBuf]) -> io::Result<Vec<String>> {
+    let metadata=match fs::symlink_metadata(cache){Ok(metadata)=>metadata,Err(error) if error.kind()==io::ErrorKind::NotFound=>return Ok(vec![]),Err(error)=>return Err(error)};
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || durable::canonical(cache)?!=cache {return Err(io::Error::other("unsafe managed uv cache"));}
+    let lock=durable::open_nofollow(&cache.join(".lock"),File::options().write(true))?;
+    if lock.try_lock().is_err(){return Ok(vec!["legacy_uv_cache_writer_active".into()]);}
+    let archives=cache.join("archive-v0");
+    let mut linked=HashSet::new();
+    let mut remaining=1_000_000;
+    for environment in environments {symlinked(environment,&archives,&mut linked)?;uv_archive_links(environment,&archives,&mut linked,&mut remaining)?;}
+    // Snapshot all current root bindings and environment archive references before mutation.
+    let entries=fs::read_dir(cache)?.collect::<io::Result<Vec<_>>>()?;
+    let mut planned=vec![];let mut pending=vec![];
+    for entry in entries {
+        let name=entry.file_name();let text=name.to_string_lossy();
+        let kind=entry.file_type()?;
+        if matches!(text.as_ref(),".lock"|".gitignore"|"CACHEDIR.TAG"){
+            if !kind.is_file(){pending.push("legacy_uv_unknown_cache_marker".into());}
+            continue;
+        }
+        if text=="archive-v0" && kind.is_dir(){
+            for archive in fs::read_dir(entry.path())? {
+                let archive=archive?; if linked.contains(&archive.file_name()){continue;}
+                let name=archive.file_name();let text=name.to_string_lossy();
+                if !archive.file_type()?.is_dir() || text.is_empty() || !text.bytes().all(|b|b.is_ascii_alphanumeric()||matches!(b,b'_'|b'-')) {
+                    pending.push("legacy_uv_unknown_archive_entry".into());continue;
+                }
+                planned.push((archive.path(),FileId::at(&archive.path())?));
+            }
+        } else {
+            let recognized=text.rsplit_once("-v").is_some_and(|(family,version)|
+                matches!(family,"wheels"|"sdists"|"builds"|"simple"|"flat-index"|"interpreter"|"git"|"environments") && !version.is_empty() && version.bytes().all(|b|b.is_ascii_digit()));
+            if !recognized || !kind.is_dir(){pending.push("legacy_uv_unknown_cache_entry".into());continue;}
+            planned.push((entry.path(),FileId::at(&entry.path())?));
+        }
+    }
+    for (path,identity) in planned {
+        if FileId::at(&path)?!=identity || fs::symlink_metadata(&path)?.file_type().is_symlink(){return Err(io::Error::other("managed uv cache binding changed"));}
+        fs::remove_dir_all(&path)?;
+        durable::sync_dir(path.parent().unwrap())?;
+    }
+    pending.sort();pending.dedup();Ok(pending)
+}
+
 /// The site directories of every environment under `dir`, however deep and never through a link: a
 /// venv's (`pyvenv.cfg`), not looked into further, or an install target's (the toolchain's), any
 /// directory holding a `.dist-info`. A directory already gone has none. Anything else unreadable is an
@@ -503,7 +566,11 @@ fn symlinked(dir: &Path, archives: &Path, found: &mut HashSet<OsString>) -> io::
                 continue;
             }
             match fs::read_link(entry.path().join("METADATA")) {
-                Ok(target) => found.extend(target.strip_prefix(archives).ok().and_then(|rest| rest.iter().next()).map(OsString::from)),
+                Ok(target) => {
+                    let target=if target.is_absolute(){target}else{entry.path().join(target)};
+                    let target=durable::canonical(&target)?;
+                    found.extend(target.strip_prefix(archives).ok().and_then(|rest|rest.iter().next()).map(OsString::from));
+                },
                 // None, or a copied or hard-linked one: it links nothing here.
                 Err(error) if matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => {}
                 Err(error) => return Err(error),

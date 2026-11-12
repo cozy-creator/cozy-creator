@@ -260,5 +260,23 @@ pub(super) fn retire(
             platform::durable::sync_dir(candidate.parent().unwrap())?;
         }
     }
+    if pending.is_empty() {
+        // Only the machine's own cache: never a user cache or the image dependency seed.
+        let mut environments = vec![
+            generations,
+            engine.join("editable"),
+            crate::machine::toolchain::dir(engine),
+            engine.join("sdk-runtime-probe"),
+        ];
+        environments.extend(
+            crate::published::layer::bases(engine)
+                .into_iter()
+                .map(|(path, _)| path),
+        );
+        pending.extend(crate::reclaim::retire_uv_cache(
+            &engine.join("published/uv-cache"),
+            &environments,
+        )?);
+    }
     Ok(pending)
 }
