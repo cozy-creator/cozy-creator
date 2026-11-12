@@ -438,9 +438,15 @@ async function placedInView(page, expected) {
     check('a_crowded_drop_stays_where_it_was_let_go', crowded.now.w >= 360 * 0.8 && seen.crowded.by <= 3 && Object.keys(crowded.moved).length > 0, seen.crowded);
     check('a_crowded_drop_lies_on_nothing', crowded.lying.length === 0, crowded.lying);
 
-    await nearer([...Object.keys(lay).filter((name) => name.startsWith('row_')), 'squeezed']);
-    const squeezed = await letGo('squeezed', -400);
-    seen.squeezed = { ...squeezed, by: stays(squeezed) };
+    const rowNames = Object.keys(lay).filter((name) => name.startsWith('row_'));
+    const laneLaid = () => Object.fromEntries(Object.entries(rows(folder)).filter(([name]) => rowNames.includes(name) || name === 'squeezed').map(([name, row]) => [name, row.y - lay[name].y]));
+    const shiftedBefore = laneLaid();
+    await nearer([...rowNames, 'squeezed']);
+    const shiftedNearer = laneLaid();
+    // Onto the rows' line, wherever they stand now.
+    const now = rows(folder);
+    const squeezed = await letGo('squeezed', now.row_l3.y - now.squeezed.y);
+    seen.squeezed = { ...squeezed, by: stays(squeezed), lane_moved_since_laid: { before_nearer: shiftedBefore, after_nearer: shiftedNearer } };
     const pushedRows = Object.values(squeezed.moved).reduce((sum, by) => sum + by, 0);
     check('a_tight_gap_shrinks_it_a_little', squeezed.now.w < 240 && squeezed.now.w >= 240 * 0.8 && seen.squeezed.by <= 3 && pushedRows < 8 * 18, seen.squeezed);
     check('a_shrunk_drop_lies_on_nothing', squeezed.lying.length === 0, squeezed.lying);
