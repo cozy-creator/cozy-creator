@@ -660,15 +660,25 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let op = operation(&root); let _guard = op.lock().expect("vault operation");
     let mut ended = vec![];
     if ask.action == "lock" {
-        if held(root).is_some() {
-            let transition = exclusive(root)?;
-            let id = project_id(root).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
-            let store = api.projects.transition_store(api, &id, &transition)?;
-            progress.admit_receipt(&store)?;
-        }
+        let busy = match held(root).map(|_| exclusive(root)) {
+            Some(Ok(transition)) => {
+                let id = project_id(root).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
+                let store = api.projects.transition_store(api, &id, &transition)?;
+                progress.admit_receipt(&store)?;
+                None
+            }
+            Some(Err(busy)) => Some(busy),
+            None => None,
+        };
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
         // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
         ended = end_work(&api, &root)?;
+        // A request still holds the project: its view is revoked, and the sweeper locks once it ends.
+        if let Some(busy) = busy {
+            if ended.is_empty() { return Err(busy); }
+            progress.readable = readable_token(root);
+            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![] });
+        }
     }
     let transition = exclusive(&root)?;
     progress.phase("preparing");
