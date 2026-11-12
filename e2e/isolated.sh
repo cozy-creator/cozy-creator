@@ -251,10 +251,12 @@ PYH3
   if [[ " $needs " == *" slots "* ]]; then
     # What slot_choices (cl-943) asks about: Klein's package, and stand-ins of the models its slots and Qwen Image's and H3's judge.
     publish "$packages/flux.3-klein"
-    python3 -I "$here/cli/slot_models.py" "$seed/slots" > "$seed/slots.txt"
-    while read -r -u 3 dir model release page; do
+    # Written by TensorFS's own writer: the candidate's when there is one.
+    case $tensorfs in '') with=tensorfs ;; [0-9]*) with=tensorfs==$tensorfs ;; *) with=$tensorfs ;; esac
+    uv run -q --no-project --python 3.12 --with "$with" python "$here/cli/slot_models.py" "$seed/slots" > "$seed/slots.txt"
+    while read -r -u 3 file model release page; do
       name=${model//\//-}-$release
-      cozy --json model upload "$dir" "$model" --lane bf16 --mirror "$page" --on local -y > "$seed/upload-$name.json" 2>&1 \
+      cozy --json model upload "$file" "$model" --lane bf16 --mirror "$page" --on local -y > "$seed/upload-$name.json" 2>&1 \
         || { echo "uploading $model $release failed: $(tail -c 600 "$seed/upload-$name.json")" >&2; exit 1; }
       commit=$(python3 "$here/model-details.py" "$model" | jq -r '[.checkpoints[] | select((.releases // []) | length == 0)][0].checkpoint // empty')
       [ -n "$commit" ] || { echo "$model has no unreleased checkpoint after its upload" >&2; exit 1; }

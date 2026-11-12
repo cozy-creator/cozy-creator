@@ -1,113 +1,101 @@
 """Stand-ins for the models whose slots `slot_choices` (commands.sh) asks about (cl-943): tiny checkpoints with production's
 components, classes and run files, so what a slot offers is judged as production's headers are.
 
-    python3 slot_models.py OUT   writes one folder per release under OUT and prints `<folder> <org/name> <release> <page>` per line
+    python3 slot_models.py OUT   writes one .cozytensors per release under OUT and prints `<file> <org/name> <release> <page>` per line
 """
 import json
-import struct
+import shutil
 import sys
 from pathlib import Path
 
-QWEN35 = "Qwen3_5ForConditionalGeneration"
-TOKENIZER: dict[str, object] = {
-    "tokenizer_config.json": {"tokenizer_class": "Qwen2Tokenizer", "eos_token": "<|im_end|>"},
-    "tokenizer.json": {"version": "1.0", "model": {"type": "BPE", "vocab": {"a": 0}, "merges": []}},
+import tensorfs
+
+# A component: its name, class (library, version, class), config (JSON), tensors' shapes and run files.
+Part = tuple[str, tuple[str, str, str], str, dict[str, list[int]], dict[str, str]]
+
+QWEN35 = ("transformers", "4.57.0", "Qwen3_5ForConditionalGeneration")
+TOKENIZER = {
+    "tokenizer_config.json": json.dumps({"tokenizer_class": "Qwen2Tokenizer", "eos_token": "<|im_end|>"}),
+    "tokenizer.json": json.dumps({"version": "1.0", "model": {"type": "BPE", "vocab": {"a": 0}, "merges": []}}),
     "chat_template.jinja": "{% for m in messages %}{{ m.content }}{% endfor %}",
 }
+VOCABULARY = {"vocab.json": json.dumps({"a": 0}), "merges.txt": "#version: 0.2\n"}
+IMAGES = {"preprocessor_config.json": json.dumps({"image_processor_type": "Qwen2VLImageProcessor"})}
+VIDEOS = {"video_preprocessor_config.json": json.dumps({"video_processor_type": "Qwen3VLVideoProcessor"})}
 
 
-def weights(path: Path, shapes: dict[str, list[int]]) -> None:
-    """A safetensors file of BF16 zeros."""
-    header: dict[str, object] = {}
-    at = 0
-    for key, shape in shapes.items():
-        size = 2 * shape[0] * shape[1]
-        header[key] = {"dtype": "BF16", "shape": shape, "data_offsets": [at, at + size]}
-        at += size
-    raw = json.dumps(header).encode()
-    raw += b" " * (-len(raw) % 8)
+def write(path: Path, parts: list[Part]) -> None:
+    """A portable checkpoint of BF16 zeros."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(struct.pack("<Q", len(raw)) + raw + bytes(at))
+    cache = path.with_suffix(".cache")
+    writer = tensorfs.Writer(path, cache_dir=cache)
+    for name, cls, config, tensors, files in parts:
+        component = writer.component(name, cls=cls, config=json.loads(config))
+        for key, shape in tensors.items():
+            component.put(key, bytes(2 * shape[0] * shape[1]), dtype="BF16", shape=shape)
+        for file, text in files.items():
+            component.asset(file, text.encode())
+    writer.commit().close()
+    shutil.rmtree(cache)
 
 
-def files(folder: Path, named: dict[str, object]) -> None:
-    folder.mkdir(parents=True, exist_ok=True)
-    for name, body in named.items():
-        (folder / name).parent.mkdir(parents=True, exist_ok=True)
-        (folder / name).write_text(body if isinstance(body, str) else json.dumps(body))
-
-
-def lm(folder: Path, cls: str, width: int, parts: tuple[str, ...], run: dict[str, object]) -> None:
-    """A Qwen3.5-class LM: its vision tower, language model and head, a multi-token-prediction head among `parts`."""
-    shapes: dict[str, dict[str, list[int]]] = {
+def lm(cls: tuple[str, str, str], width: int, held: tuple[str, ...], files: dict[str, str]) -> list[Part]:
+    """A Qwen3.5-class LM, its one component `model`: of its vision tower, language model (and head) and multi-token-prediction
+    head, those `held`."""
+    shapes = {
         "vision": {"model.visual.blocks.0.attn.qkv.weight": [3 * width, width]},
         "language": {"model.language_model.layers.0.mlp.up_proj.weight": [2 * width, width], "lm_head.weight": [16, width]},
         "mtp": {"mtp.layers.0.mlp.up_proj.weight": [2 * width, width], "mtp.fc.weight": [width, 2 * width]},
     }
-    weights(folder / "model.safetensors", {key: shape for part in parts for key, shape in shapes[part].items()})
-    files(folder, {"config.json": {"architectures": [cls], "model_type": "qwen3_5", "text_config": {"hidden_size": width}}, **run})
+    tensors = {key: shape for part in held for key, shape in shapes[part].items()}
+    config = json.dumps({"architectures": [cls[2]], "model_type": "qwen3_5", "text_config": {"hidden_size": width}})
+    return [("model", cls, config, tensors, files)]
 
 
-def h3(folder: Path, processor: bool) -> None:
+def h3(processor: bool) -> list[Part]:
     """MiniMax-H3's five components; its text encoder's processor only when `processor`."""
-    diffusers = {"transformer": "MiniMaxH3Transformer3DModel", "transformer_ref": "MiniMaxH3Transformer3DModel", "vae": "AutoencoderKLMiniMaxH3",
-                 "audio_vae": "AutoencoderKLMiniMaxH3Audio"}
-    index: dict[str, object] = {"_class_name": "MiniMaxH3Pipeline", "_diffusers_version": "0.37.0", "text_encoder": ["transformers", "Qwen3VLForConditionalGeneration"]}
-    for name, cls in diffusers.items():
-        index[name] = ["diffusers", cls]
-        weights(folder / name / "diffusion_pytorch_model.safetensors", {"blocks.0.attn.qkv.weight": [12, 4], "proj_out.linear.weight": [4, 4]})
-        run: dict[str, object] = {"config.json": {"_class_name": cls, "_diffusers_version": "0.37.0", "width": 4}}
-        if name.startswith("transformer"):
-            run["timestep-plan.json"] = {"steps": [1000, 500]}
-        files(folder / name, run)
-    weights(folder / "text_encoder/model.safetensors", {"model.language_model.layers.0.mlp.up_proj.weight": [8, 4], "model.visual.blocks.0.attn.qkv.weight": [12, 4]})
-    run = {"config.json": {"architectures": ["Qwen3VLForConditionalGeneration"], "model_type": "qwen3_vl"}}
-    if processor:
-        run |= {"processor/tokenizer_config.json": TOKENIZER["tokenizer_config.json"], "processor/vocab.json": {"a": 0}, "processor/merges.txt": "#version: 0.2\n",
-                "processor/preprocessor_config.json": {"image_processor_type": "Qwen2VLImageProcessor"},
-                "processor/video_preprocessor_config.json": {"video_processor_type": "Qwen3VLVideoProcessor"}}
-    files(folder / "text_encoder", run)
-    files(folder, {"model_index.json": index})
+    parts: list[Part] = []
+    for name, cls in [("transformer", "MiniMaxH3Transformer3DModel"), ("transformer_ref", "MiniMaxH3Transformer3DModel"),
+                      ("vae", "AutoencoderKLMiniMaxH3"), ("audio_vae", "AutoencoderKLMiniMaxH3Audio")]:
+        plan = {"timestep-plan.json": json.dumps({"steps": [1000, 500]})} if name.startswith("transformer") else {}
+        parts.append((name, ("diffusers", "0.37.0", cls), json.dumps({"_class_name": cls, "width": 4}),
+                      {"blocks.0.attn.qkv.weight": [12, 4], "proj_out.linear.weight": [4, 4]}, plan))
+    files = TOKENIZER | VOCABULARY | IMAGES | VIDEOS
+    held = {f"processor/{file}": text for file, text in files.items() if file != "tokenizer.json"} if processor else {}
+    parts.append(("text_encoder", ("transformers", "4.57.0", "Qwen3VLForConditionalGeneration"), json.dumps({"architectures": ["Qwen3VLForConditionalGeneration"]}),
+                  {"model.language_model.layers.0.mlp.up_proj.weight": [8, 4], "model.visual.blocks.0.attn.qkv.weight": [12, 4]}, held))
+    return parts
 
 
 def main() -> None:
     out = Path(sys.argv[1])
-    enhancer = TOKENIZER | {"processor_config.json": {"image_processor": {"image_processor_type": "Qwen2VLImageProcessor"}}, "generation_config.json": {"top_p": 0.8},
-                            "system_prompt.txt": "Rewrite the request."}
-    qwen = TOKENIZER | {"vocab.json": {"a": 0}, "merges.txt": "#version: 0.2\n", "preprocessor_config.json": {"image_processor_type": "Qwen2VLImageProcessor"},
-                        "video_preprocessor_config.json": {"video_processor_type": "Qwen3VLVideoProcessor"}, "generation_config.json": {"top_p": 0.95}}
-    upsampler = TOKENIZER | {"preprocessor_config.json": {"image_processor_type": "Qwen2VLImageProcessor"},
-                             "video_preprocessor_config.json": {"video_processor_type": "Qwen3VLVideoProcessor"}, "system_prompts.json": {"t2i": "Describe."}}
-    made = [
+    enhancer = TOKENIZER | {"processor_config.json": json.dumps({"image_processor": {"image_processor_type": "Qwen2VLImageProcessor"}}),
+                            "generation_config.json": json.dumps({"top_p": 0.8}), "system_prompt.txt": "Rewrite the request."}
+    qwen = TOKENIZER | VOCABULARY | IMAGES | VIDEOS | {"generation_config.json": json.dumps({"top_p": 0.95})}
+    upsampler = TOKENIZER | IMAGES | VIDEOS | {"system_prompts.json": json.dumps({"t2i": "Describe."})}
+    moe = ("transformers", "4.57.0", "Qwen3_5MoeForConditionalGeneration")
+    made: list[tuple[str, str, str, list[Part]]] = [
         # Qwen Image's prompt enhancers (its rewriter's and expander's defaults), Qwen3.6-27B at another size with run files
         # spelled otherwise, Qwen3.6-35B-A3B of another class, and Qwen3.5-9B's head-only lane.
-        ("pe-i2i", "darrellbest/qwen-image-2.1-pe-i2i-abliterated", "0.1.0"),
-        ("pe-t2i", "pottokao/qwen-image-2.1-pe-t2i-abliterated", "0.1.0"),
-        ("qwen3.6-27b", "qwen/qwen3.6-27b", "0.1.0"),
-        ("qwen3.6-35b-a3b", "qwen/qwen3.6-35b-a3b", "0.1.0"),
-        ("qwen3.5-9b-mtp", "qwen/qwen3.5-9b-mtp", "0.2.0"),
+        ("pe-i2i", "darrellbest/qwen-image-2.1-pe-i2i-abliterated", "0.1.0", lm(QWEN35, 4, ("vision", "language"), enhancer)),
+        ("pe-t2i", "pottokao/qwen-image-2.1-pe-t2i-abliterated", "0.1.0", lm(QWEN35, 4, ("vision", "language"), enhancer)),
+        ("qwen3.6-27b", "qwen/qwen3.6-27b", "0.1.0", lm(QWEN35, 8, ("vision", "language", "mtp"), qwen)),
+        ("qwen3.6-35b-a3b", "qwen/qwen3.6-35b-a3b", "0.1.0", lm(moe, 8, ("vision", "language", "mtp"), qwen)),
+        ("qwen3.5-9b-mtp", "qwen/qwen3.5-9b-mtp", "0.2.0", lm(QWEN35, 4, ("mtp",), qwen)),
         # Klein's upsampler (its default) and BFL's.
-        ("klein-upsampler-abliterated", "atomicchat/flux-3-klein-upsampler-abliterated", "0.1.0"),
-        ("klein-upsampler", "black-forest-labs/flux-3-klein-upsampler", "0.2.0"),
+        ("klein-upsampler-abliterated", "atomicchat/flux-3-klein-upsampler-abliterated", "0.1.0", lm(QWEN35, 4, ("vision", "language"), upsampler)),
+        ("klein-upsampler", "black-forest-labs/flux-3-klein-upsampler", "0.2.0", lm(QWEN35, 4, ("vision", "language"), upsampler)),
         # H3's default; a fine-tune whose first release lacks the text encoder's processor and whose next carries it; one that never does.
-        ("minimax-h3", "minimaxai/minimax-h3", "1.0.0-rc.8"),
-        ("pinkcherry-0.1.0", "sexgod1979/pinkcherry", "0.1.0"),
-        ("pinkcherry-0.1.1", "sexgod1979/pinkcherry", "0.1.1"),
-        ("eros-max", "tenstrip/eros-max", "0.1.0"),
+        ("minimax-h3", "minimaxai/minimax-h3", "1.0.0-rc.8", h3(True)),
+        ("pinkcherry-0.1.0", "sexgod1979/pinkcherry", "0.1.0", h3(False)),
+        ("pinkcherry-0.1.1", "sexgod1979/pinkcherry", "0.1.1", h3(True)),
+        ("eros-max", "tenstrip/eros-max", "0.1.0", h3(False)),
     ]
-    lm(out / "pe-i2i", QWEN35, 4, ("vision", "language"), enhancer)
-    lm(out / "pe-t2i", QWEN35, 4, ("vision", "language"), enhancer)
-    lm(out / "qwen3.6-27b", QWEN35, 8, ("vision", "language", "mtp"), qwen)
-    lm(out / "qwen3.6-35b-a3b", "Qwen3_5MoeForConditionalGeneration", 8, ("vision", "language", "mtp"), qwen)
-    lm(out / "qwen3.5-9b-mtp", QWEN35, 4, ("mtp",), qwen)
-    lm(out / "klein-upsampler-abliterated", QWEN35, 4, ("vision", "language"), upsampler)
-    lm(out / "klein-upsampler", QWEN35, 4, ("vision", "language"), upsampler)
-    h3(out / "minimax-h3", True)
-    h3(out / "pinkcherry-0.1.0", False)
-    h3(out / "pinkcherry-0.1.1", True)
-    h3(out / "eros-max", False)
-    for folder, model, release in made:
-        print(out / folder, model, release, f"https://huggingface.co/{model}")
+    for name, model, release, parts in made:
+        path = out / f"{name}.cozytensors"
+        write(path, parts)
+        print(path, model, release, f"https://huggingface.co/{model}")
+
 
 if __name__ == "__main__":
     main()
