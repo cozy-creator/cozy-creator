@@ -119,7 +119,7 @@
 
 /* A zoom scales the landscape (Sheet.tsx) about the bottom of the window, so the land stays on it. Each layer of land is laid out at its rung
    by `--landscape-scale`, and wide enough to cover the window drawn at 0.75 of it. The sky zooms out to 0.91 (0.05 to its 0.03): it goes on
-   above the window, its wash's top on cream, and the window and a tile wider. */
+   above the window, its wash stretched over it all and its clouds where they were, and the window and a tile wider. */
 .paper-landscape-mountains,
 .paper-landscape-hills,
 .paper-landscape-meadow {
@@ -131,13 +131,5 @@
   top: calc(-32px - var(--above));
   width: calc(110% + 2048px);
   transform-origin: 0 calc(100% - 32px);
-  background-position: 0 var(--above), 0 var(--above), 0 0, 0 0, 0 0;
-  background-size: 2048px 2048px, 2048px calc(100% - var(--above)), 1024px 1024px, 2048px 2048px, 512px 512px;
-}
-.paper-landscape-sky::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: var(--above);
-  background: #7eb6ea44;
+  background-position: 0 var(--above), 0 0, 0 0, 0 0, 0 0;
 }
