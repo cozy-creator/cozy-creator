@@ -14,7 +14,7 @@ import time
 
 
 PUBLIC = {
-    "new", "open", "run", "status", "vault", "machine", "model", "lora", "package", "box", "update", "restart", "doctor", "completion", "login", "logout", "whoami",
+    "new", "open", "run", "status", "vault", "machine", "model", "lora", "package", "update", "restart", "doctor", "completion", "login", "logout", "whoami",
 }
 REMOVED = {
     "help",
