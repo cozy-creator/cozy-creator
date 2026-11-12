@@ -186,6 +186,13 @@ if [ "$suite" = cpu ]; then
     systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
   fi
+  # The binder installs on the candidates' Runtime and TensorFS, as every RC machine runs them with the RC's cozy (cl-952):
+  # with no pair of its own, a machine runs a lock's pair only in its own TensorFS series.
+  update=()
+  [ -z "$runtime" ] || update+=(--runtime "$runtime")
+  [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
+  [ ${#update[@]} -eq 0 ] || cozy --json machine update local "${update[@]}" -y > "$seed/machine-update.json" 2>&1 \
+    || { echo "the cpu suite's machine refused the candidates: $(tail -c 600 "$seed/machine-update.json")" >&2; exit 1; }
   (cd "$project" && cozy --json new --unencrypted > /dev/null)
   log "the cpu suite starts against its owned Hub with the installed candidate"
   exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project"
