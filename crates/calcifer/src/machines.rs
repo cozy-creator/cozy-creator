@@ -313,6 +313,13 @@ impl Machines {
         Some((name, frame.environments))
     }
 
+    /// What local holds for one project: its runs install into the project's own worker area, which the machine's frame
+    /// never lists. Nothing while local is down.
+    pub(crate) async fn project_holds(&self, scope: crate::private_io::Scope) -> Vec<v1::Environment> {
+        let Some(link) = self.local_runs().then(|| self.calcifer.link("local").ok().flatten()).flatten() else { return vec![] };
+        link.with_private(scope).status().await.map(|frame| frame.environments).unwrap_or_default()
+    }
+
     /// Adds another computer's machine: it must present the leaf `fingerprint` names and admit
     /// this controller's key before anything is recorded.
     pub(crate) async fn add(
