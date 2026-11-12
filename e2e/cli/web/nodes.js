@@ -251,9 +251,18 @@ function replaceFile(at, text) {
 
   // Local implementations are chosen inside the Image operation, then named on their node.
   const fromTheList = await implementationRow(page, 'image');
+  // Let go on bare canvas, the first from (x, y) down: a box keeps room under it for its tool and shape since cl-932 (4ae6c085a), so
+  // named_here now reaches 500,600, and the tool let go there went onto it (43244714071).
+  const bareFrom = (x, y) => page.evaluate(({ x, y }) => {
+    for (let at = y; at < innerHeight - 60; at += 10) if (document.elementFromPoint(x, at)?.classList.contains('react-flow__pane')) return { x, y: at };
+    throw new Error(`no bare canvas under ${x},${y}`);
+  }, { x, y });
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
-    const fresh = await dragOut(fromTheList, x, y);
+    const bare = await bareFrom(x, y);
+    const fresh = await dragOut(fromTheList, bare.x, bare.y);
+    // Its model is carried onto it, in view as toolOnto has it: let go near the window's foot, most of a box is under it.
+    await fitCanvas(page);
     await chooseModel(page, fresh.name, tool, "image");
     await until("local model selected", () => of(fresh.name), (held) => held.tool === tool);
     await box(fresh.name).getByRole('button', { name: 'Rename node', exact: true }).click();
@@ -598,6 +607,8 @@ function replaceFile(at, text) {
       await away();
       const point = await openCanvas(page);
       const fresh = await dragOut(await implementationRow(page, 'image'), point.x, point.y);
+      // Let go at the window's corner, most of it is past it: in view, as toolOnto has it, for its model to be carried onto it.
+      await fitCanvas(page);
       await chooseModel(page, fresh.name, implementationOf(name).id, 'image');
       await until('the selected implementation lands', () => of(fresh.name), (held) => held.tool === implementationOf(name).id);
       await box(fresh.name).getByRole('button', { name: 'Rename node', exact: true }).click();

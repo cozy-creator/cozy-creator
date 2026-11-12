@@ -310,7 +310,15 @@ async function died(why) {
 
   // A category click only opens implementations; clicking an implementation also creates nothing.
   const namesBeforePalette = (await state()).assets.map((row) => row.name).sort();
-  const toolRow = await implementationRow(page, 'edit_image');
+  // The Edit Image tool here is one with words to write: BiRefNet, on this Hub as in production since 411998301 and listed first, takes a
+  // picture and nothing else.
+  await implementationRow(page, 'edit_image');
+  const worded = await until('an Edit Image tool with a prompt', async () => {
+    const ids = await page.locator('.tools [data-implementation][data-tool-operation="edit_image"]').evaluateAll((rows) => rows.map((row) => row.dataset.tool));
+    const listed = (await api(`/v1/tools?project=${id}`)).body?.tools ?? [];
+    return ids.find((held) => listed.find((one) => one.id === held)?.fields?.some((field) => field.type === 'prompt'));
+  }, Boolean);
+  const toolRow = await implementationRow(page, 'edit_image', worded);
   await toolRow.click();
   await page.waitForTimeout(250);
   check('clicking_a_tool_creates_no_node', JSON.stringify((await state()).assets.map((row) => row.name).sort()) === JSON.stringify(namesBeforePalette));

@@ -174,12 +174,18 @@ function replaceFile(at, text) {
   const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
   await picker.waitFor();
   const slots = qwen.models?.length ? qwen.models : qwen.model ? [qwen.model] : [];
-  check('tool_badge_opens_its_declared_model_slots', slots.length > 0 && await picker.locator('[data-model-slot]').count() === slots.length);
+  // Every slot it declares, once, but one prompt helper, the operation's: an edit's words are rewritten from its pictures, so Qwen's rewriter
+  // and not its expander (0cf0389f3, 6c5b17fec).
+  const offered = (await picker.locator('[data-model-slot]').evaluateAll((all) => all.map((one) => one.dataset.modelSlot))).sort();
+  const declared = slots.map((slot) => slot.slot).filter((slot) => slot !== 'expander').sort();
+  check('tool_badge_opens_its_declared_model_slots', declared.length > 0 && JSON.stringify(offered) === JSON.stringify(declared), { offered, declared });
   check('model_picker_uses_global_nsfw_setting', await picker.getByLabel(/Show NSFW/).count() === 0);
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   check('model_picker_keeps_tool_identity_and_versions', (await of(choosing.name)).tool === qwen.id && (await of(choosing.name)).versions === versionsBeforePicker);
-  check('model_configuration_keeps_category_structure', JSON.stringify(await listed()) === JSON.stringify(atRest));
   await closeBox(page);
+  // Focus shuts the tools list and gives it back as it was once it's left (3263005b1): the picker has put nothing in it.
+  const listedAfter = await until('the tools list back', listed, (now) => JSON.stringify(now) === JSON.stringify(atRest), 5000).catch(listed);
+  check('model_configuration_keeps_category_structure', JSON.stringify(listedAfter) === JSON.stringify(atRest), listedAfter);
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
   await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);
   // The rest stand beside it, in reach while it's worked on.
@@ -262,8 +268,9 @@ function replaceFile(at, text) {
   await shotBox.locator('.mention-text[data-field="beats.1.description"]').click();
   await page.keyboard.type('The second.');
   await until('both beats in the file', () => fieldsOf('shot'), (fields) => fields.beats?.length === 2 && fields.beats[1].description?.includes('The second.'));
-  // No running total under the beats (cl-903).
-  check('no_running_total', (await shotBox.locator('.beats-edit[data-field=beats] .total').count()) === 0 && !/\b10 s\b/.test(await shotBox.locator('.beats-last').innerText()), await shotBox.locator('.beats-last').innerText());
+  // No running total under the beats (cl-903): their own last row, as each beat's Angles group, drawn in it, has one of its own.
+  const beatsLast = shotBox.locator('.beats-edit[data-field=beats] > .beats-last');
+  check('no_running_total', (await shotBox.locator('.beats-edit[data-field=beats] .total').count()) === 0 && !/\b10 s\b/.test(await beatsLast.innerText()), await beatsLast.innerText());
   const grip = await shotBox.locator('[aria-label="Move beat 2"]').boundingBox();
   const first = await beatRows().first().boundingBox();
   await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
