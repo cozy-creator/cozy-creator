@@ -3421,8 +3421,11 @@ input[type="checkbox"] {
 .beat {
   position: relative;
 }
+/* A beat's words have room: six lines to start, and it grows with them (Paul, 11-12). */
 .beat .mention-text {
   font-size: var(--body);
+  min-height: calc(6 * 18px + 12px);
+  max-height: none;
 }
 .beat.can-go .mention-text {
   padding-right: 22px;
@@ -3438,9 +3441,13 @@ input[type="checkbox"] {
   gap: 6px;
   margin-top: 2px;
 }
+/* Its length: a short slider beside its value, not the whole row. */
 .beat-time .slide {
-  flex: 1;
-  min-width: 0;
+  flex: none;
+}
+.beat-time .slide input[type="range"] {
+  flex: none;
+  width: 120px;
 }
 .add-beat {
   flex: none;
@@ -3703,9 +3710,6 @@ input[type="checkbox"] {
   color: var(--faint);
   cursor: grab;
   touch-action: none;
-}
-.total {
-  font: 11px var(--mono);
 }
 .advanced {
   display: flex;
