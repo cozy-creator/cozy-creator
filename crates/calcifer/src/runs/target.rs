@@ -30,8 +30,11 @@ pub(crate) enum Resolved {
         /// The release the target named, if it named one.
         release: Option<String>,
         from: ReleaseFrom,
-        /// What the run moved to and from, in a line: off a yanked release (a warning), or onto one newer than its machine's (said).
+        /// What the run moved to and from, in a line: off a yanked release (a warning), onto one newer than its machine's, or
+        /// an older one than the newest its machine's Runtime doesn't run (said).
         moved: Option<Note>,
+        /// Its machine's Runtime moves first, to one that runs it (cl-952): started by whatever sends the run.
+        upgrade: Option<crate::floor::Upgrade>,
     },
     Local {
         local: Box<crate::local_code::Prepared>,
@@ -195,17 +198,17 @@ fn parse(document: &serde_json::Value) -> Result<Interface, Error> {
 /// machine holding account x's package y and not root package x asks the Hub nothing.
 pub(crate) async fn published(api: &Arc<Api>, hub: &str, text: &str, on: Option<&On>, wake: bool) -> Result<Resolved, Error> {
     let Published { package, function, release, owned } = Published::parse(text.trim())?;
-    let held = match (&release, on) {
-        (None, Some(on)) => Some(Held::read(api, hub, on, wake).await),
-        _ => None,
+    let held = match on {
+        Some(on) => Some(Held::read(api, hub, on, wake).await),
+        None => None,
     };
     let holds = |package: &str| held.as_ref().is_some_and(|held| !held.releases(package).is_empty());
-    if let Some(owned) = owned.as_ref().filter(|owned| holds(owned) && !holds(&package)) {
-        let (card, from, moved) = release_of(api, hub, owned, None, held.as_ref()).await?;
-        return Ok(Resolved::Release { package: owned.clone(), function: None, card, release, from, moved });
+    if let Some(owned) = owned.as_ref().filter(|owned| release.is_none() && holds(owned) && !holds(&package)) {
+        let Found { card, from, moved, upgrade } = release_of(api, hub, owned, None, held.as_ref()).await?;
+        return Ok(Resolved::Release { package: owned.clone(), function: None, card, release, from, moved, upgrade });
     }
     let root = release_of(api, hub, &package, release.as_deref(), held.as_ref()).await;
-    let (package, function, (card, from, moved)) = match (root, owned) {
+    let (package, function, Found { card, from, moved, upgrade }) = match (root, owned) {
         (Ok(found), _) => (package, function, found),
         (Err(e), Some(owned)) if matches!(e.kind, Kind::NotFound | Kind::Usage) => {
             match release_of(api, hub, &owned, release.as_deref(), held.as_ref()).await {
@@ -224,16 +227,21 @@ pub(crate) async fn published(api: &Arc<Api>, hub: &str, text: &str, on: Option<
         }
         (Err(e), _) => return Err(e),
     };
-    Ok(Resolved::Release { package, function, card, release, from, moved })
+    Ok(Resolved::Release { package, function, card, release, from, moved, upgrade })
 }
 
-/// What the machine a run goes to holds.
+/// What the machine a run goes to holds and runs.
 struct Held {
     machine: String,
     environments: Vec<api::machine::Environment>,
     hub: String,
     /// It runs, or moves to before this run, the open RC's Runtime (cl-922): it takes packages built for it.
     rc: bool,
+    /// Its Runtime; empty for a machine still to come.
+    runtime: String,
+    /// The Runtimes it can move to for a release that needs one, and whether it does (cl-952).
+    runtimes: Vec<String>,
+    moves: api::release::Moves,
 }
 
 impl Held {
@@ -242,7 +250,19 @@ impl Held {
     async fn read(api: &Arc<Api>, hub: &str, on: &On, wake: bool) -> Self {
         let (machine, environments) = api.machines.holds(on, wake).await.unwrap_or_default();
         let rc = api.machines.takes_rc(&machine, on);
-        Self { machine, environments, hub: canonical(hub), rc }
+        let (runtime, runtimes, moves) = match api.machines.frame(&machine).filter(|frame| !frame.runtime.is_empty()) {
+            Some(frame) => {
+                let (runtimes, moves) = api.machines.runtimes(&machine, &frame, rc).await;
+                (frame.runtime, runtimes, moves)
+            }
+            None => (String::new(), vec![], api::release::Moves::No),
+        };
+        Self { machine, environments, hub: canonical(hub), rc, runtime, runtimes, moves }
+    }
+
+    /// As `choose` reads it.
+    fn machine(&self) -> api::release::Machine<'_> {
+        api::release::Machine { runtime: &self.runtime, runtimes: &self.runtimes, moves: self.moves }
     }
 
     /// Of `releases`, the newest this machine runs (`api::release::newest`: prereleases only on the RC).
@@ -250,26 +270,22 @@ impl Held {
         api::release::newest(releases, self.rc)
     }
 
-    /// The Hub's newest release of `read` for this machine, never a yanked one: a prerelease included on the RC's Runtime;
-    /// elsewhere the Hub's newest final, and with none, a refusal that says how to run the prerelease (cl-952).
-    fn newest_released(&self, read: &cards::Releases, package: &str) -> Result<String, Error> {
+    /// The Hub's releases of `read` this machine takes, newest first, never a yanked one: prereleases too on the RC's Runtime,
+    /// elsewhere finals, and with none, a refusal that says how to run the prerelease (cl-952).
+    fn candidates<'a>(&self, read: &'a cards::Releases, package: &str) -> Result<Vec<&'a str>, Error> {
         let open = read.released.iter().map(String::as_str).filter(|release| !read.yanked.contains(*release));
-        if self.rc {
-            return self.newest(open).map_or_else(|| read.newest(package), |release| Ok(release.to_owned()));
+        let candidates = api::release::candidates(open, self.rc);
+        if !candidates.is_empty() {
+            return Ok(candidates);
         }
         let latest = read.newest(package)?;
-        if !api::release::prerelease(&latest) {
-            return Ok(latest);
-        }
         let machine = if self.machine.is_empty() { "<machine>" } else { self.machine.as_str() };
-        self.newest(open).map(str::to_owned).ok_or_else(|| {
-            Error::new(
-                Kind::Conflict,
-                "package_rc_only",
-                format!("{package} has only {latest}, built for the open RC's Runtime, which {machine} doesn't run"),
-            )
-            .next(format!("cozy machine update {machine}"))
-        })
+        Err(Error::new(
+            Kind::Conflict,
+            "package_rc_only",
+            format!("{package} has only {latest}, built for the open RC's Runtime, which {machine} doesn't run"),
+        )
+        .next(format!("cozy machine update {machine}")))
     }
 
     /// The releases of `package` from this run's Hub.
@@ -279,60 +295,118 @@ impl Held {
     }
 }
 
-/// Which release a run binds against and runs, once, before binding, and why, with a line when it moved: the one asked;
-/// else the Hub's newest its machine runs (`unversioned`), which it installs if it holds an older one. So inputs bind
-/// against what will run and the run is pinned to it. With no machine (`held`), the newest as this computer last read it.
-async fn release_of(
-    api: &Arc<Api>,
-    hub: &str,
-    package: &str,
-    release: Option<&str>,
-    held: Option<&Held>,
-) -> Result<(Card, ReleaseFrom, Option<Note>), Error> {
+/// The release a run binds against and runs, why, a line when it moved, and its machine's Runtime move when it needs one.
+struct Found {
+    card: Card,
+    from: ReleaseFrom,
+    moved: Option<Note>,
+    upgrade: Option<crate::floor::Upgrade>,
+}
+
+/// Which release a run binds against and runs, once, before binding: the one asked, else the Hub's newest its machine takes
+/// (`unversioned`), which it installs if it holds an older one; on a Runtime that runs it (`api::release::choose`, cl-952). So
+/// inputs bind against what will run and the run is pinned to it. With no machine (`held`), as this computer last read it.
+async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&str>, held: Option<&Held>) -> Result<Found, Error> {
+    let shown = package.trim_start_matches("_/");
+    let read = std::sync::Mutex::new(HashMap::<String, Card>::new());
+    let requirement = |release: String| {
+        let read = &read;
+        async move {
+            let card = card_of(api, hub, package, &release).await?;
+            let needs = api::release::required(card.requirements().unwrap_or_default(), "cozy-runtime");
+            read.lock().expect("cards lock").insert(release, card);
+            Ok::<_, Error>(needs)
+        }
+    };
+    let (asked, from, said) = match (release, held) {
+        (Some(release), Some(held)) => (vec![release.to_owned()], ReleaseFrom::Asked, None),
+        (Some(release), None) => return Ok(Found { card: card_of(api, hub, package, release).await?, from: ReleaseFrom::Asked, moved: None, upgrade: None }),
+        (None, Some(held)) => match unversioned(api, hub, package, held).await? {
+            Ok(installed) => return Ok(Found { card: card_of(api, hub, package, &installed).await?, from: ReleaseFrom::Installed, moved: None, upgrade: None }),
+            Err(Unversioned { candidates, said }) => (candidates, ReleaseFrom::Latest, said),
+        },
+        (None, None) => {
+            let newest = api.releases.kept(api, hub, package).await?.newest(package)?;
+            return Ok(Found { card: card_of(api, hub, package, &newest).await?, from: ReleaseFrom::Latest, moved: None, upgrade: None });
+        }
+    };
+    let held = held.expect("a machine's run");
+    let candidates: Vec<&str> = asked.iter().map(String::as_str).collect();
+    let machine = &held.machine;
+    let chosen = api::release::choose(&candidates, &held.machine(), requirement).await.map_err(|refused| match refused {
+        api::release::Refused::Held { release, needs, .. } => Error::new(
+            Kind::Conflict,
+            "runtime_held",
+            format!("{shown} {release} needs cozy-runtime{needs}, and {machine} is held on Runtime {} by hand: `cozy machine update {machine}` lets it move", held.runtime),
+        )
+        .next(format!("cozy machine update {machine}")),
+        api::release::Refused::Unmet { release, needs } => Error::new(
+            Kind::Conflict,
+            "runtime_unmet",
+            format!("{shown} {release} needs cozy-runtime{needs}: {machine} runs {}, and no Runtime it can take meets it", held.runtime),
+        )
+        .remedy(format!("name a release it runs: {shown}@<release>")),
+        api::release::Refused::Unread(e) => e,
+    })?;
+    let (release, moved, upgrade) = match chosen {
+        api::release::Chosen::Runs(release) => (release, said, None),
+        api::release::Chosen::Older { release, newest, needs } => {
+            let message = format!("{shown} {newest} needs cozy-runtime{needs}, which {machine}'s {} doesn't meet, and it isn't this computer's to move: this run takes {release}", held.runtime);
+            (release, Some(Note { level: NoteLevel::Info, message }), None)
+        }
+        api::release::Chosen::Moves { release, runtime } => {
+            let upgrade = crate::floor::Upgrade { machine: machine.clone(), from: held.runtime.clone(), to: runtime, release: format!("{shown} {release}") };
+            (release, said, Some(upgrade))
+        }
+    };
+    let card = read.lock().expect("cards lock").remove(&release).expect("choose read the card it chose");
+    let from = if from == ReleaseFrom::Latest && held.releases(package).contains(&release.as_str()) { ReleaseFrom::Installed } else { from };
+    Ok(Found { card, from, moved, upgrade })
+}
+
+/// The card of `release`, with its requirements: `v0.2.0` for the release named `0.2.0` too.
+async fn card_of(api: &Arc<Api>, hub: &str, package: &str, release: &str) -> Result<Card, Error> {
     let hubs = &api.machines.hubs;
     let root = hubs.home().root();
     let client = || hubs.reader(hub);
-    let (release, from, moved) = match (release, held) {
-        (Some(release), _) => (release.to_owned(), ReleaseFrom::Asked, None),
-        (None, Some(held)) => unversioned(api, hub, package, held).await?,
-        (None, None) => (api.releases.kept(api, hub, package).await?.newest(package)?, ReleaseFrom::Latest, None),
-    };
-    let card = match (cards::card(client, root, hub, package, &release).await, release.strip_prefix('v')) {
-        // `v0.2.0` for the release named `0.2.0`.
-        (Err(e), Some(bare)) if e.kind == Kind::NotFound => cards::card(client, root, hub, package, bare).await?,
-        (card, _) => card?,
-    };
-    Ok((card, from, moved))
+    match (cards::card_requiring(client, root, hub, package, release).await, release.strip_prefix('v')) {
+        (Err(e), Some(bare)) if e.kind == Kind::NotFound => cards::card_requiring(client, root, hub, package, bare).await,
+        (card, _) => card,
+    }
 }
 
-/// An unversioned run's release on the machine that holds `held`: the Hub's newest that machine runs (finals off the RC,
-/// prereleases on it, never a yanked one), read at most a minute ago; installed there if it holds an older one, and the
-/// run says so ("minimax-h3 0.12.0rc2, newer than rabou's 0.11.1"). Unversioned means newest, so a fix reaches machines that
-/// already hold a release (se-128, cl-952). With the Hub unanswering, what the machine holds runs.
-async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> Result<(String, ReleaseFrom, Option<Note>), Error> {
+/// An unversioned run's releases to choose from, newest first, and the line it says when it moves off what its machine holds.
+struct Unversioned {
+    candidates: Vec<String>,
+    said: Option<Note>,
+}
+
+/// An unversioned run's releases on the machine that holds `held`: the Hub's its machine takes (finals off the RC,
+/// prereleases on it, never a yanked one), read at most a minute ago, for `choose` to pick from; installed there if it holds an
+/// older one, and the run says so ("minimax-h3 0.12.0rc2, newer than rabou's 0.11.1"). Unversioned means newest, so a fix
+/// reaches machines that already hold a release (se-128, cl-952). With the Hub unanswering, what the machine holds runs (`Ok`).
+async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> Result<Result<String, Unversioned>, Error> {
     let holds = held.releases(package);
     let read = match api.releases.fresh(api, hub, package).await {
         Ok(read) => read,
         Err(why) => {
             return match held.newest(holds.iter().copied()) {
-                Some(top) => Ok((top.to_owned(), ReleaseFrom::Installed, None)),
+                Some(top) => Ok(Ok(top.to_owned())),
                 None => Err(why),
             };
         }
     };
-    let newest = held.newest_released(&read, package)?;
-    if holds.contains(&newest.as_str()) {
-        return Ok((newest, ReleaseFrom::Installed, None));
-    }
+    let candidates: Vec<String> = held.candidates(&read, package)?.into_iter().map(str::to_owned).collect();
+    let newest = candidates.first().cloned().unwrap_or_default();
     let shown = package.trim_start_matches("_/");
     let machine = &held.machine;
     // What it holds that the Hub still has: an older one is said; a yanked one is said as moved off.
-    let had = held.newest(holds.iter().copied().filter(|release| read.released.contains(*release)));
-    let said = had.map(|had| match read.yanked.contains(had) {
+    let had = held.newest(holds.iter().copied().filter(|release| read.released.contains(*release) && *release != newest));
+    let said = had.filter(|_| !holds.contains(&newest.as_str())).map(|had| match read.yanked.contains(had) {
         true => Note { level: NoteLevel::Warning, message: format!("{shown}@{had} on {machine} is yanked: this run moves it to {newest}, the newest") },
         false => Note { level: NoteLevel::Info, message: format!("{shown} {newest}, newer than {machine}'s {had}") },
     });
-    Ok((newest, ReleaseFrom::Latest, said))
+    Ok(Err(Unversioned { candidates, said }))
 }
 
 /// A Hub's one spelling.

@@ -245,9 +245,15 @@ impl Host {
         }
         // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, function, card, moved, .. } = target::published(&self.api, &hub, with, on, true).await? else {
+        let Resolved::Release { package, function, card, mut moved, upgrade, .. } = target::published(&self.api, &hub, with, on, true).await? else {
             unreachable!("a published target resolves to a release");
         };
+        // Its machine's Runtime moves first to one that runs the release (cl-952): the render waits behind that update.
+        if let Some(upgrade) = &upgrade
+            && self.api.machines.upgrade(upgrade).await?.is_some()
+        {
+            moved = Some(upgrade.note());
+        }
         let found = Package { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })

@@ -548,6 +548,13 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     if let Resolved::Release { moved: Some(moved), .. } = &resolved {
         notes.push(moved.clone());
     }
+    // Its machine's Runtime moves first to one that runs the release (cl-952): the run waits behind that update.
+    if let (Resolved::Release { upgrade: Some(upgrade), .. }, For::Run) = (&resolved, purpose)
+        && matches!(&submit.on, On::Machine(name) if *name == upgrade.machine)
+        && api.machines.upgrade(upgrade).await?.is_some()
+    {
+        notes.push(upgrade.note());
+    }
     Ok(Prepared::Run { submit, notes, offers })
 }
 

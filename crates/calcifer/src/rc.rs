@@ -18,7 +18,7 @@ use api::{
 use sha2::{Digest as _, Sha256};
 use tracing::{info, warn};
 
-use crate::machines::Machines;
+use crate::{floor::FLOOR, machines::Machines};
 
 /// How long a read of the RC's prereleases stands.
 const FRESH: Duration = Duration::from_secs(60);
@@ -67,19 +67,14 @@ impl Sums {
             .collect()
     }
 
-    /// The RC's builds for `platform`, in words: `Runtime b976b092 · TensorFS 1a2b3c4d · cozy 5e6f7a8b`.
+    /// The RC's builds for `platform`, in words: `Runtime 0.46.0.dev312 · TensorFS 1a2b3c4d · cozy 5e6f7a8b`.
     fn said(&self, platform: &str) -> String {
         [("runtime", "Runtime"), ("tensorfs", "TensorFS"), ("tensord", "cozy")]
             .into_iter()
-            .filter_map(|(member, label)| Some(format!("{label} {}", commit(&self.build(member, platform)?.0.version))))
+            .filter_map(|(member, label)| Some(format!("{label} {}", prerelease::shown(&self.build(member, platform)?.0.version))))
             .collect::<Vec<_>>()
             .join(" · ")
     }
-}
-
-/// A dev build's commit (`b976b092` of `0.45.0+dev.gb976b092`), else the version.
-pub(crate) fn commit(version: &str) -> &str {
-    version.split_once("+dev.g").map_or(version, |(_, commit)| commit)
 }
 
 /// The RC's prereleases, read at most once a [`FRESH`].
@@ -147,10 +142,10 @@ pub(crate) async fn held_cozy(build: &Build, url: &str) -> Result<DevBuild, Erro
     Ok(held)
 }
 
-/// Whether an update's words (`runtime 0.45.0 (prerelease), mode dedicated`) gave its machine software other than the
-/// RC's: each component it named that isn't marked `(RC)`. A mode or a GPU memory limit gives none.
+/// Whether an update's words (`runtime 0.45.0 (prerelease), mode dedicated`) named its machine's software by hand: a
+/// component not marked `(RC)` or `(Hub)`, as one with nothing named moves it. A mode or a GPU memory limit names none.
 fn by_hand(target: &str) -> bool {
-    target.split(", ").any(|named| software(named) && !named.ends_with("(RC)"))
+    target.split(", ").any(|named| software(named) && !named.ends_with("(RC)") && !named.ends_with("(Hub)"))
 }
 
 /// Whether an update's named component is software (`runtime 0.45.0`), not a mode or a GPU memory limit.
@@ -159,15 +154,17 @@ fn software(named: &str) -> bool {
 }
 
 impl Machines {
-    /// The update by hand that holds `name` (on `frame`) off the RC, in its words: the newest that changed its software,
-    /// while it runs what that gave it, unless it was the RC's or this cozy's own (an update to its minor before work). A
-    /// rental since placed on the same host under the same name runs its image's again, and isn't held.
+    /// The update by hand that holds `name` (on `frame`) on its software, in its words: the newest that changed its software,
+    /// while it runs what that gave it, unless it was the RC's, the Hub's, this cozy's own (an update to its minor before work)
+    /// or a package's floor's (`crate::floor`). A rental since placed on the same host under the same name runs its image's
+    /// again, and isn't held. A held machine moves to neither the RC nor a Runtime a package needs (cl-952).
     pub(crate) fn held_by_hand(&self, name: &str, frame: &v1::StatusFrame) -> Option<String> {
         let updates = self.store().updates(name, 20).ok()?;
         let (row, key) = updates.into_iter().find(|(row, _)| row.target.split(", ").any(software))?;
         let running = serde_json::json!({ "runtime": frame.runtime, "tensorfs": frame.tensorfs, "version": frame.version, "dev": frame.dev, "mode": frame.mode });
         let runs = crate::update::wanted(&row.spec).iter().all(|(field, value)| running[*field] == *value);
-        (!key.starts_with("rc-") && !key.starts_with("minor-") && by_hand(&row.target) && runs).then_some(row.target)
+        let unasked = ["rc-", "minor-", FLOOR].iter().any(|prefix| key.starts_with(prefix));
+        (!unasked && by_hand(&row.target) && runs).then_some(row.target)
     }
 
     /// Whether `name` is a rental of this dev home that follows the RC: one this computer ordered, up.
@@ -269,13 +266,13 @@ impl Machines {
         self.dev && machine.is_empty() && matches!(on, api::calcifer::On::New(_))
     }
 
-    /// The line a run on `name` says when it runs dev builds: `RC: Runtime b976b092 · cozy 1a2b3c4d`.
+    /// The line a run on `name` says when it runs dev builds: `RC: Runtime 0.46.0.dev312 · cozy 1a2b3c4d`.
     pub(crate) fn rc_line(&self, name: &str) -> Option<String> {
         let frame = self.frame(name)?;
         let built: Vec<String> = [("Runtime", &frame.runtime), ("TensorFS", &frame.tensorfs), ("cozy", &frame.version)]
             .into_iter()
             .filter(|(_, version)| prerelease::dev(version))
-            .map(|(label, version)| format!("{label} {}", commit(version)))
+            .map(|(label, version)| format!("{label} {}", prerelease::shown(version)))
             .collect();
         (!built.is_empty()).then(|| format!("{name} runs RC builds: {}", built.join(" · ")))
     }

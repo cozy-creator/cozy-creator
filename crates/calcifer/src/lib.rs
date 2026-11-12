@@ -16,6 +16,7 @@ mod coming;
 mod eta;
 mod events;
 mod files;
+mod floor;
 mod hub;
 mod kept;
 mod lanes;

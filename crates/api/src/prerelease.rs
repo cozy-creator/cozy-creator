@@ -1,7 +1,9 @@
 //! Where a Runtime or TensorFS version PyPI lacks lives: a GitHub prerelease (cozy-runtime
 //! `v<version>`, cozy-creator `tensorfs-v<version>`), whose `SHA256SUMS` names its wheels. The open
-//! RC's newest builds (`<version>+dev.g<sha8>`, cl-922) are on its rolling prerelease `rc-<x.y.z>` in
-//! each repository, with the `cozy` a machine runs (`cozy-<version>-linux-<arch>`).
+//! RC's newest builds (cl-922) are on its rolling prerelease `rc-<x.y.z>` in each repository, with the
+//! `cozy` a machine runs (`cozy-<version>-linux-<arch>`): its Runtime as the next minor's dev release
+//! (`0.46.0.dev312+g1a2b3c4d`, cl-952), so a package's floor can name it, and pure wheels kept for
+//! locks; TensorFS and cozy as `<version>+dev.g<sha8>`.
 
 fn repo_and_prefix(distribution: &str) -> (&'static str, &'static str) {
     let repo = repo(distribution);
@@ -95,8 +97,30 @@ pub fn rc_build(sums: &str, distribution: &str, platform: &str) -> Option<Build>
     Some(Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
 }
 
-/// Whether `version` is a dev build (`0.45.0+dev.gb976b092`): an RC's, or one built by hand.
+/// The pure wheel (`-py3-none-any.whl`) of `distribution` an RC's `SHA256SUMS` names: what a lock and a publish's floor check
+/// read, on any platform.
+pub fn rc_pure(sums: &str, distribution: &str) -> Option<Build> {
+    let prefix = format!("{}-", distribution.replace('-', "_"));
+    let (file, sha256) = listed(sums).find(|(file, _)| file.starts_with(&prefix) && file.ends_with("-py3-none-any.whl"))?;
+    let version = file.split('-').nth(1).filter(|version| !version.is_empty())?;
+    Some(Build { file: file.to_owned(), sha256: sha256.to_owned(), version: version.to_owned() })
+}
+
+/// Whether `version` is a dev build: the open RC's Runtime (`0.46.0.dev312+g1a2b3c4d`), or one built from a commit
+/// (`0.45.0+dev.gb976b092`), the RC's TensorFS and cozy or one by hand.
 pub fn dev(version: &str) -> bool {
-    version.contains("+dev.g")
+    version.contains("+dev.g") || version.parse::<pep440_rs::Version>().is_ok_and(|version| version.is_dev())
+}
+
+/// What a dev build is called in a line: the RC's Runtime by its version (`0.46.0.dev312`), another by its commit
+/// (`b976b092` of `0.45.0+dev.gb976b092`); a release as it is.
+pub fn shown(version: &str) -> &str {
+    if let Some((_, commit)) = version.split_once("+dev.g") {
+        return commit;
+    }
+    match version.split_once('+') {
+        Some((public, _)) if dev(public) => public,
+        _ => version,
+    }
 }
 
