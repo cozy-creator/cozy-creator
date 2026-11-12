@@ -83,7 +83,8 @@ const SCHEMA: &str = "
         stays TEXT NOT NULL DEFAULT '[]',
         batch TEXT NOT NULL DEFAULT '',
         job BLOB,
-        owner TEXT NOT NULL DEFAULT ''
+        owner TEXT NOT NULL DEFAULT '',
+        custody TEXT NOT NULL DEFAULT 'owned' CHECK(custody IN ('owned','legacy_pending'))
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
     CREATE TABLE outputs (
@@ -402,6 +403,7 @@ pub(crate) enum State {
 pub(crate) struct RunRow {
     pub project_root: Option<PathBuf>,
     pub owner: String,
+    pub custody_pending: bool,
     pub id: RunId,
     pub number: u64,
     pub kind: Kind,
@@ -619,7 +621,7 @@ macro_rules! journal_methods {
     pub(crate) fn working(&self, machine: &str) -> Result<u32> {
         self.read(|conn| {
             let going = conn.query_row(
-                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND kind <> 'update' AND state IN ('sent', 'accepted') AND (?2 IS NULL OR owner=?2)",
+                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND kind <> 'update' AND state IN ('sent', 'accepted') AND (?2 IS NULL OR owner=?2) AND custody='owned'",
                 params![machine,self.owner_id()],
                 |r| r.get(0),
             )?;
@@ -641,7 +643,7 @@ macro_rules! journal_methods {
     pub(crate) fn unplaced(&self) -> Result<Vec<RunRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM runs WHERE state = 'queued' AND machine IS NULL AND (?1 IS NULL OR owner=?1) ORDER BY number"
+                "SELECT {RUN_COLUMNS} FROM runs WHERE state = 'queued' AND machine IS NULL AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY number"
             ))?;
             let rows = statement.query_map([self.owner_id()], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             unlocked_rows(rows)
@@ -974,7 +976,7 @@ macro_rules! journal_methods {
     /// The machines' runs not yet settled, oldest first: what a starting Calcifer drives.
     pub(crate) fn unsettled(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND (?1 IS NULL OR owner=?1) ORDER BY number")?;
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY number")?;
             let ids = statement
                 .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -987,7 +989,7 @@ macro_rules! journal_methods {
     /// Calcifer's own runs not yet settled: those an earlier Calcifer stopped under, or that are going now.
     pub(crate) fn unsettled_here(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' AND (?1 IS NULL OR owner=?1) ORDER BY number")?;
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY number")?;
             let ids = statement
                 .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1364,7 +1366,7 @@ macro_rules! journal_methods {
     pub(crate) fn runs_on_ended_machine(&self, machine: &str, served: bool, reason: &str) -> Result<Vec<(RunId, Event)>> {
         self.write(|tx| {
             let mut statement = tx.prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM runs WHERE machine = ?1 AND state <> 'settled' AND (?2 IS NULL OR owner=?2) ORDER BY number"
+                "SELECT {RUN_COLUMNS} FROM runs WHERE machine = ?1 AND state <> 'settled' AND (?2 IS NULL OR owner=?2) AND custody='owned' ORDER BY number"
             ))?;
             let rows = statement.query_map(params![machine,self.owner_id()], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             let mut events = vec![];
@@ -1473,7 +1475,7 @@ macro_rules! journal_methods {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT DISTINCT runs.id, runs.number FROM outputs JOIN runs ON runs.id = outputs.run
-                 WHERE {OWED} AND (?1 IS NULL OR runs.owner=?1) ORDER BY runs.number"
+                 WHERE {OWED} AND (?1 IS NULL OR runs.owner=?1) AND runs.custody='owned' ORDER BY runs.number"
             ))?;
             let rows = statement
                 .query_map([self.owner_id()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
@@ -1491,7 +1493,7 @@ macro_rules! journal_methods {
             let mut statement = conn.prepare(&format!(
                 "SELECT runs.id, runs.number, outputs.name, outputs.idx, outputs.length
                  FROM outputs JOIN runs ON runs.id = outputs.run
-                 WHERE runs.machine = ?1 AND {OWED} AND (?2 IS NULL OR runs.owner=?2)
+                 WHERE runs.machine = ?1 AND {OWED} AND (?2 IS NULL OR runs.owner=?2) AND runs.custody='owned'
                  ORDER BY runs.number, outputs.created_seq"
             ))?;
             let rows = statement
@@ -2379,7 +2381,7 @@ fn put_machine_in(tx: &Transaction, machine: &MachineRow) -> Result<()> {
 
 const RUN_COLUMNS: &str = "id, number, kind, target, hub, machine, pinned, spec, out_dir, state, cancel_requested,
     cursor, machine_state, status, reason_code, reason, state_seq, created_at, accepted_at, settled_at, warnings,
-    inputs, outcome, wants, agreed, started_at, cozy_project_root(), owner";
+    inputs, outcome, wants, agreed, started_at, cozy_project_root(), owner, custody";
 
 const RUN_LIST_SCOPE: &str = "FROM runs WHERE number < ?1
     AND (?2 IS NULL OR CASE state WHEN 'accepted' THEN 'in_progress' WHEN 'settled' THEN status ELSE 'queued' END = ?2)
@@ -2499,6 +2501,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
         Ok(RunRow {
             project_root,
             owner:r.get(27)?,
+            custody_pending:r.get::<_,String>(28)?!="owned",
             id: RunId::try_from(id).map_err(|_| corrupt("a run id"))?,
             number: r.get::<_, i64>(1)? as u64,
             kind: Kind::parse(&kind).ok_or_else(|| corrupt("a run kind"))?,

@@ -305,7 +305,7 @@ impl Calcifer {
             let (run, items) = match self.next_exports(id) {
                 Ok(Some(next)) => next,
                 Ok(None) => return,
-                Err(StoreError::Locked(_)) => return,
+                Err(StoreError::Locked(code)) if code!="project_busy" => return,
                 Err(e) => {
                     warn!(run = %id, "{e}");
                     pause.wait(wake, None).await;

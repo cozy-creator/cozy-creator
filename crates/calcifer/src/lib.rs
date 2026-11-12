@@ -340,7 +340,11 @@ impl Calcifer {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
-            let scope=match me.run_scope(id.as_str()) { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); lock(&me.drivers).remove(&id); return; } };
+            let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); lock(&me.drivers).remove(&id); return; } };
+            if let Ok(Some(row))=me.with_run_store(id.as_str(),|store|store.run(id.as_str())) {
+                if row.state==State::Settled {lock(&me.drivers).remove(&id);return;}
+                if row.cancel_requested {me.ended_here(&id,Err(::api::error::Error::new(::api::error::Kind::Conflict,"canceled","canceled")));lock(&me.drivers).remove(&id);return;}
+            }
             let canceled = async {
                 loop {
                     wake.notified().await;
@@ -408,7 +412,7 @@ impl Calcifer {
         let owner = store.owner();
         if lock(&self.project_owners).get(owner.project_id()).is_some_and(|prior|prior.same_view(&owner)) { return Ok(false); }
         let ids:Vec<String>=store.read(|conn| {
-            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE owner=?1 AND (state<>'settled' OR EXISTS(SELECT 1 FROM outputs WHERE run=runs.id AND {}))",store::OWED))?;
+            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE owner=?1 AND custody='owned' AND (state<>'settled' OR EXISTS(SELECT 1 FROM outputs WHERE run=runs.id AND {}))",store::OWED))?;
             Ok(stmt.query_map([store.project_id()],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })?;
         let mut routes=lock(&self.run_owners);
@@ -445,7 +449,14 @@ impl Calcifer {
 
     fn run_scope(&self,id:&str)->Result<Option<private_io::Scope>,::api::error::Error> {
         let owner=lock(&self.run_owners).get(id).cloned().ok_or_else(||::api::error::Error::new(::api::error::Kind::Conflict,"run_owner_required","the run's storage owner is unavailable"))?;
-        owner.map(|owner|private_io::scope_for_project(owner.project_id(),owner.root())).transpose()
+        owner.map(|owner| {
+            let _admission=owner.store().map_err(|error|match error {StoreError::Locked(code)=>::api::error::Error::new(::api::error::Kind::Conflict,code,"the project storage is changing"),error=>api::Refusal::from(Error::from(error)).0})?;
+            private_io::scope_for_project(owner.project_id(),owner.root())
+        }).transpose()
+    }
+    async fn run_scope_when_ready(&self,id:&str,wake:&Notify)->Result<Option<private_io::Scope>,::api::error::Error> {
+        let mut pause=Pause::default();
+        loop {match self.run_scope(id) {Err(error) if error.code=="project_busy"=>pause.wait(wake,None).await,result=>return result}}
     }
 
     fn with_run_store<T>(&self, id: &str, f: impl FnOnce(&store::RunStore<'_>) -> store::Result<T>) -> store::Result<T> {
@@ -717,6 +728,7 @@ impl Calcifer {
             };
         }
         run.stalled=owned.then(||self.stalled(&run)).flatten();
+        if row.custody_pending && row.state!=State::Settled {run.waiting=Some("legacy worker custody must be verified before this execution can resume".into());run.progress=None;run.queue_position=None;}
         if !owned && row.state!=State::Settled {run.waiting=Some("copied history; this execution is not resumed".into());run.progress=None;run.queue_position=None;}
         Ok(run)
     }
@@ -1135,7 +1147,7 @@ impl Calcifer {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
-            let scope=match me.run_scope(id.as_str()) { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); lock(&me.drivers).remove(&id); return; } };
+            let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); lock(&me.drivers).remove(&id); return; } };
             private_io::context(scope,me.follow_to_end(&id,&wake)).await;
             lock(&me.drivers).remove(&id);
             lock(&me.live).remove(&id);
@@ -1150,7 +1162,7 @@ impl Calcifer {
             let run = match self.with_run_store(id.as_str(), |store| store.run(id.as_str())) {
                 Ok(Some(run)) => run,
                 Ok(None) => return,
-                Err(StoreError::Locked(_)) => return,
+                Err(StoreError::Locked(code)) if code!="project_busy" => return,
                 Err(e) => {
                     warn!(run = %id, "{e}");
                     pause.wait(wake, None).await;

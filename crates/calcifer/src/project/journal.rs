@@ -45,6 +45,10 @@ pub(crate) struct SealingStore<'a> {
 }
 impl SealingStore<'_> {
     pub(crate) fn owner_id(&self)->Option<&str> {Some(&self.project.id)}
+    pub(crate) fn legacy_worker_pending(&self)->store::Result<bool> { self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending')",[self.project_id()],|row|row.get(0))?)) }
+    pub(crate) fn legacy_worker_requests(&self)->store::Result<Vec<(String,String,Option<u64>)>> {
+        self.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' ORDER BY number")?;Ok(stmt.query_map([self.project_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get::<_,Option<i64>>(2)?.map(|value|value as u64))))?.collect::<rusqlite::Result<_>>()?)})
+    }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn execution_scope(&self) -> (&str,&std::path::Path) { (&self.project.id,&self.project.root) }
     pub(crate) fn input_root(&self) -> store::Result<PathBuf> {
@@ -141,9 +145,13 @@ impl ProjectStore {
             Access::Work=>vault::try_admit_work(&self.project).map(drop).map_err(project_error),
         }
     }
-    pub(crate) fn admit_new_work(&self)->store::Result<()> { self.project.require_view().map_err(project_error) }
+    pub(crate) fn admit_new_work(&self)->store::Result<()> {self.project.require_view().map_err(project_error)?;if self.legacy_worker_pending()? {return Err(StoreError::Protected("legacy_worker_custody_pending".into()));} Ok(())}
     pub(crate) fn owner_id(&self)->Option<&str> {Some(&self.project.id)}
-    pub(crate) fn resume_allowed(&self)->store::Result<bool> { self.read(|conn|Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner<>?1)",[self.project_id()],|row|row.get::<_,bool>(0))?)) }
+    pub(crate) fn resume_allowed(&self)->store::Result<bool> { if self.legacy_worker_pending()? {return Ok(false);} self.read(|conn|Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner<>?1)",[self.project_id()],|row|row.get::<_,bool>(0))?)) }
+    pub(crate) fn legacy_worker_pending(&self)->store::Result<bool> { self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending')",[self.project_id()],|row|row.get(0))?)) }
+    pub(crate) fn legacy_worker_requests(&self)->store::Result<Vec<(String,String,Option<u64>)>> {
+        self.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' ORDER BY number")?;Ok(stmt.query_map([self.project_id()],|row|Ok((row.get(0)?,row.get(1)?,row.get::<_,Option<i64>>(2)?.map(|value|value as u64))))?.collect::<rusqlite::Result<_>>()?)})
+    }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn owner(&self) -> RunOwner { RunOwner { project: self.project.clone(), controller: self.controller.clone() } }
     pub(crate) fn input_root(&self) -> store::Result<PathBuf> {
@@ -252,7 +260,8 @@ pub(super) const SCHEMA: &str = "    CREATE TABLE runs (
         stays TEXT NOT NULL DEFAULT '[]',
         batch TEXT NOT NULL DEFAULT '',
         job BLOB,
-        owner TEXT NOT NULL DEFAULT ''
+        owner TEXT NOT NULL DEFAULT '',
+        custody TEXT NOT NULL DEFAULT 'owned' CHECK(custody IN ('owned','legacy_pending'))
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
     CREATE TABLE outputs (

@@ -220,12 +220,12 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
         .route("/v1/session", post(legacy_session))
         .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
-        .layer(middleware::from_fn(no_store))
         .merge(crate::page::routes())
         .fallback(unknown_route)
         .method_not_allowed_fallback(unknown_route)
         .layer(middleware::from_fn(guard))
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(middleware::from_fn(no_store))
         .with_state(api)
 }
 
