@@ -585,8 +585,8 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
         return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked"));
     }
     progress.phase("waiting");
-    let op = operation(&root); let _guard = op.lock().expect("vault operation");
     let mut browser = if matches!(ask.action.as_str(), "lock" | "encrypt" | "decrypt" | "rotate") { prepare_browser(api)? } else { None };
+    let op = operation(&root); let _guard = op.lock().expect("vault operation");
     let mut ended = vec![];
     if ask.action == "lock" {
         if held(root).is_some() {
@@ -825,6 +825,8 @@ struct Conversion {
     #[serde(default)]
     source_id: Option<[u64; 2]>,
     #[serde(default)]
+    root_id: Option<[u64; 2]>,
+    #[serde(default)]
     staged_id: Option<[u64; 2]>,
     #[serde(default)]
     ready: bool,
@@ -940,6 +942,20 @@ fn root_control_paths(record: &Conversion) -> Vec<PathBuf> {
     vec![record.staged.clone(), record.saved.clone(), record.root.join(RUNTIME_DIR), record.root.join(TRANSITION_RECEIPT)]
 }
 
+/// Only exact recorded directories may be moved or retired, including recovery after restart.
+fn verify_owned_directories(record: &Conversion) -> Result<(), Error> {
+    for (path, expected) in [(&record.staged, record.staged_id.or_else(|| record.plain.as_ref().map(|plain| plain.staged_id))),
+        (&record.saved, record.source_id.or_else(|| if record.internal { None } else { record.plain.as_ref().map(|plain| plain.source_id) }))] {
+        if exists(path)? && expected != Some(directory_id(path)?) {
+            return Err(error("vault_recovery", "a recorded storage directory changed or has no verified identity; all copies were preserved"));
+        }
+    }
+    if record.internal && record.root_id != Some(directory_id(&record.root)?) {
+        return Err(error("vault_recovery", "the project directory changed during storage conversion; all copies were preserved"));
+    }
+    Ok(())
+}
+
 fn internal_target(record: &Conversion) -> Result<bool, Error> {
     Ok(Keybag::load(&record.root.join(KEYBAG_FILE)).is_ok_and(|bag| bag.info().key_id == record.key_id)
         && record.backing_id.is_some_and(|expected| directory_id(&record.root.join(BACKING)).ok() == Some(expected)))
@@ -949,6 +965,16 @@ fn internal_target(record: &Conversion) -> Result<bool, Error> {
 /// leave members in either owned subdirectory; it cannot strand another project
 /// beside the directory the user copies or deletes.
 fn recover_internal(record: &Conversion) -> Result<(), Error> {
+    verify_owned_directories(record)?;
+    if record.plain.is_none() && !record.ready {
+        if record.root_id != Some(directory_id(&record.root)?)
+            || fs::read_dir(&record.saved).map_err(io)?.next().is_some() {
+            return Err(error("vault_recovery", "the original project changed before storage cutover; all copies were preserved"));
+        }
+        if record.staged.exists() { fs::remove_dir_all(&record.staged).map_err(io)?; }
+        if record.saved.exists() { fs::remove_dir(&record.saved).map_err(io)?; }
+        return clear_conversion(record);
+    }
     if let Some(plain) = &record.plain {
         if !plain.ready {
             if !original_plain_source(record, &record.root)? {
@@ -1047,6 +1073,7 @@ fn recover_under_guards(root: &FsPath) -> Result<(), Error> {
     }
     let _converting = Converting(root.to_owned());
     if record.internal { return recover_internal(&record); }
+    verify_owned_directories(&record)?;
     if record.plain.is_some() { return recover_plain(&record); }
     let target = |path: &FsPath| Keybag::load(&path.join(KEYBAG_FILE)).is_ok_and(|bag| bag.info().key_id == record.key_id);
     if target(root) { return Ok(()); } // Unlock completes the private journal transaction and cleanup.
@@ -1064,6 +1091,7 @@ fn finish_conversion(root: &FsPath) -> Result<(), Error> {
     let Some(record) = conversion(root)? else { return Ok(()); };
     if record.plain.is_some() { return Err(error("vault_recovery", "a plaintext conversion must finish its own recorded cleanup; retry decrypt")); }
     if Keybag::load(&root.join(KEYBAG_FILE)).map_err(key)?.info().key_id != record.key_id { return Err(error("vault_recovery", "replacement keybag does not match the verified conversion")); }
+    verify_owned_directories(&record)?;
     if record.internal {
         let view = work_view(root)?;
         verify_snapshot(&view)?;
@@ -1223,9 +1251,12 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &
     let staged = root.join(format!(".cozy-vault-stage-{suffix}"));
     fs::create_dir(&staged).map_err(io)?;
     platform::durable::set_mode(&staged, 0o700).map_err(provider)?;
+    let saved = root.join(format!(".cozy-project-source-{suffix}"));
+    fs::create_dir(&saved).map_err(io)?;
+    platform::durable::set_mode(&saved, 0o700).map_err(provider)?;
     let mut record = Conversion {
-        root: root.to_owned(), staged: staged.clone(), saved: root.join(format!(".cozy-project-source-{suffix}")),
-        key_id: info.key_id, remove_source: true, source_id: None, staged_id: None, ready: false, internal: true, source_key: None, backing_id: None,
+        root: root.to_owned(), staged: staged.clone(), saved: saved.clone(),
+        key_id: info.key_id, remove_source: true, source_id: Some(directory_id(&saved)?), root_id: Some(directory_id(root)?), staged_id: Some(directory_id(&staged)?), ready: false, internal: true, source_key: None, backing_id: None,
         plain: Some(PlainConversion { project_id: info.project_id.clone(), generation: info.generation, ready: false,
             source_id: directory_id(root)?, staged_id: directory_id(&staged)?, cleanup_started: false }),
     };
@@ -1255,7 +1286,7 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &
         retire_runtime(&runtime)?;
         record.plain.as_mut().expect("plaintext conversion").ready = true;
         save_conversion(&record)?;
-        if !original_plain_source(&record, root)? || exists(&record.saved)? { return Err(error("vault_recovery", "the encrypted source changed before cutover")); }
+        if !original_plain_source(&record, root)? || fs::read_dir(&record.saved).map_err(io)?.next().is_some() { return Err(error("vault_recovery", "the encrypted source changed before cutover")); }
         progress.phase("committing");
         recover_internal(&record)
     })();
@@ -1313,15 +1344,18 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     let saved = root.join(format!(".cozy-project-source-{suffix}"));
     fs::create_dir(&staged).map_err(io)?;
     platform::durable::set_mode(&staged, 0o700).map_err(provider)?;
+    fs::create_dir(&saved).map_err(io)?;
+    platform::durable::set_mode(&saved, 0o700).map_err(provider)?;
+    let mut receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(),
+        key_id: target_keybag.info().key_id, remove_source: true, source_id: Some(directory_id(&saved)?), root_id: Some(directory_id(root)?),
+        staged_id: Some(directory_id(&staged)?), ready: false, internal: true,
+        source_key: Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|bag| bag.info().key_id),
+        backing_id: None, plain: None };
+    save_conversion(&receipt)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
     secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(provider)?;
     keybag.save(&staged.join(KEYBAG_FILE)).map_err(key)?;
-    let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(),
-        key_id: target_keybag.info().key_id, remove_source: true, source_id: None, staged_id: None, ready: false, internal: true,
-        source_key: Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|bag| bag.info().key_id),
-        backing_id: Some(directory_id(&staged.join(BACKING))?), plain: None };
-    fs::create_dir(&saved).map_err(io)?;
-    platform::durable::set_mode(&saved, 0o700).map_err(provider)?;
+    receipt.backing_id = Some(directory_id(&staged.join(BACKING))?);
     save_conversion(&receipt)?;
     // Retire the published old view BEFORE snapshotting an encrypted project. A native editor
     // must release its stale handles (Busy refuses). The replacement source mount is never
@@ -1352,6 +1386,9 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     retire_runtime(&runtime)?;
     if let Some(mut source) = source_mount.take() { source.try_unmount().map_err(provider)?; }
     if let Some(runtime) = source_runtime { retire_runtime(&runtime)?; }
+    receipt.ready = true;
+    save_conversion(&receipt)?;
+    verify_owned_directories(&receipt)?;
     progress.phase("committing");
     move_children(root, &saved, &root_control_paths(&receipt))?;
     move_children(&staged, root, &[staged.join(RUNTIME_DIR)])?;
