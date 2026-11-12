@@ -361,6 +361,16 @@ impl<'a> Sequence<'a> {
     }
 }
 
+/// Of `came` bytes outside this process since its quietest sample, what other programs took
+/// (`cooperative::others_came`), never this process's own; where no ledger or NVML can say (not
+/// Linux), all of it, as before.
+fn theirs(device: i32, came: usize) -> usize {
+    #[cfg(target_os = "linux")]
+    return came.min(crate::cooperative::others_came(device));
+    #[cfg(not(target_os = "linux"))]
+    { let _ = device; came }
+}
+
 fn idle_peers_gave(device: i32, bytes: usize) -> bool {
     #[cfg(target_os = "linux")]
     return crate::cooperative::peers_idle(device) && crate::cooperative::ask_idle_peers(device, bytes);
@@ -423,9 +433,17 @@ pub(crate) fn acquire<T>(
             // kesshouban H3's 207 MB GEMM output waited 300 s beside 19.6 GB free (run 43277).
             if protect.outside && wait == Wait::Yes && physical && sequence.gpu.in_request() {
                 let start = free_now(sequence.gpu)?;
-                let came = sequence.gpu.outside.load(Ordering::Acquire)
-                    .saturating_sub(sequence.gpu.outside_floor.load(Ordering::Acquire));
+                // Of it, only what other programs took may come back: never wait on this process's own.
+                let came = theirs(device, sequence.gpu.outside.load(Ordering::Acquire)
+                    .saturating_sub(sequence.gpu.outside_floor.load(Ordering::Acquire)));
                 if came >= want {
+                    if waiting.is_none() {
+                        eprintln!(
+                            "varena: GPU {device}: {need} bytes wait up to {} s for the {came} bytes other programs \
+                             took since this process began: {start} bytes free",
+                            OUTSIDE_WAIT.as_secs(),
+                        );
+                    }
                     let began = *waiting.get_or_insert_with(Instant::now);
                     if outside_gave(sequence.gpu, want, start, began + OUTSIDE_WAIT)? {
                         sequence = Sequence::new(device, usize::MAX, wait, protect, ReclaimReason::Allocator)?;
@@ -433,7 +451,7 @@ pub(crate) fn acquire<T>(
                     }
                     eprintln!(
                         "varena: GPU {device}: {need} bytes found no room after every lever and {} s waiting \
-                         for the {came} bytes that came outside this process: {start} bytes free",
+                         for the {came} bytes other programs took: {start} bytes free",
                         began.elapsed().as_secs(),
                     );
                 }
