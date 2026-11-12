@@ -56,13 +56,14 @@ async function died(why) {
 
   // H3's Shot with three beats of 10 s, the third with a paragraph of words.
   const searched = (await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? [];
-  const shotTool = searched.find((tool) => tool.package === 'minimax-h3' && tool.fields.some((field) => field.field === 'beats'));
+  const beated = searched.filter((tool) => tool.package === 'minimax-h3' && tool.fields.some((field) => field.field === 'beats'));
+  const shotTool = beated.find((tool) => tool.id === 'minimax-h3/generate') ?? beated[0];
   seen.tool = shotTool?.id ?? searched.map((tool) => tool.id);
   if (!shotTool) throw new Error('the Hub lists no H3 tool with beats');
   const long = 'She steps out of the rain into the bar. The neon over the door hums and flickers. She shakes off her coat, looks along the counter, finds the man in grey at the end, and walks to him without a word. He doesn\'t look up from his glass.';
   const beats = [{ description: 'A wide street at night, rain on the stones.', duration: 10 }, { description: 'Closer: the door of the bar.', duration: 10 }, { description: long, duration: 10 }];
   const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: shotTool.id, kind: 'video', name: 'scene', exact: true, fields: { beats }, at: { x: 80, y: 80 } }) });
-  if (made.status !== 200) throw new Error(`the Shot box: ${JSON.stringify(made)}`);
+  if (made.status >= 300) throw new Error(`the Shot box: ${JSON.stringify(made)}`);
   await fitCanvas(page);
   await openBox(page, 'scene');
   // Open, the box is where it's worked on, on the canvas or over it (Focus).
