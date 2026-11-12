@@ -7,7 +7,7 @@
 // rows and nothing else (no Edit, no Pick up from here, no chips), the render's lines under its picture with Cancel, at zoom 1 and 0.5, each
 // a screenshot. Labels at the page's body size and controls at least 28, on the tiles and in Focus, at 1440×900 and 1920×1080, light and
 // dark, each a screenshot (cl-963). Two boxes stacked as close as side by side, nothing hanging on the lower, at 100% and 75%. Open, Edit
-// and Pick up from here are still there. Cancel on the tile stops its render. A render's whole life, from Render to
+// is still there; an uploaded video offers no segment to redo. Cancel on the tile stops its render. A render's whole life, from Render to
 // its take landing, leaves the tile's size as it was (cl-936).
 //   node tiles.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so
@@ -386,7 +386,8 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
   check('open_still_edits', (await page.locator('.card.here[data-asset="still"] button[aria-label="Edit image"]').count()) === 1);
   await closeBox(page);
   await openBox(page, 'shot');
-  check('open_video_picks_up', (await page.locator('.card.here[data-asset="shot"] button.pick-up').count()) >= 1);
+  // Its take was uploaded, so no run says its segments and none is offered to redo (cl-951; web-scrub's rendered take is).
+  check('open_video_offers_no_redo_without_its_seams', (await page.locator('.card.here[data-asset="shot"] .redo-segment').count()) === 0);
   await shot('open-shot');
   await closeBox(page);
 

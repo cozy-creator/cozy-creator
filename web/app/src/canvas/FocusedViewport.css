@@ -297,6 +297,49 @@ body:has(.focus-viewport) .zoom {
   position: relative;
   z-index: 8;
 }
+/* A take's segments under its player (cl-951): blocks by their frames, the one it's in marked, then Redo. */
+.segments {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+.segment-blocks {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+  height: 28px;
+}
+.segment {
+  flex-basis: 0;
+  min-width: 18px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--well);
+  color: var(--mute);
+  font-size: var(--body);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.segment:hover {
+  border-color: var(--line2);
+}
+.segment.here {
+  border: 2px solid var(--ember);
+  background: color-mix(in srgb, var(--ember) 40%, var(--card));
+  color: var(--ink);
+  font-weight: 600;
+}
+.segments .continues {
+  flex: none;
+  font-size: var(--body);
+  white-space: nowrap;
+}
+.redo-segment {
+  flex: none;
+}
 .image-tool-name {
   flex: 1;
   min-width: 0;

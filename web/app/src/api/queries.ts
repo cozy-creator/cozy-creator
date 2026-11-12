@@ -110,6 +110,14 @@ export const runQuery = (client: Client, number: number) =>
     queryFn: ({ signal }) => client.run(number, signal),
   })
 
+/** A run's result, under a key of its own: `run.updated` writes `["run", n]` with runs that carry none. A settled result never changes. */
+export const runResultQuery = (client: Client, number: number) =>
+  queryOptions({
+    queryKey: ["run", number, "result"],
+    queryFn: async ({ signal }) => (await client.run(number, signal)).result ?? null,
+    staleTime: (query) => (query.state.data ? Number.POSITIVE_INFINITY : 0),
+  })
+
 /** What only `?detail=full` says, read again when `settled` moves: its report comes once it ended. */
 export const runFullQuery = (client: Client, number: number, settled: number) =>
   queryOptions({

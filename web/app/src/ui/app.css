@@ -1322,6 +1322,83 @@ video.preview.on {
   flex-direction: column;
   z-index: 1;
 }
+/* A draft that goes on from a take says so across the top of its frame (cl-951): the kept part's last frame, what's kept and redone, and Cancel. */
+.lead-in {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+/* Its words start under it; the pictures behind them still fill the frame. */
+.media:has(.lead-in) .in-frame {
+  padding-top: 56px;
+}
+.lead-in-frame {
+  position: relative;
+  flex: none;
+  height: 44px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--well);
+}
+.lead-in-frame img.strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+}
+.lead-in-words {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lead-in-words b {
+  overflow: hidden;
+  font-size: var(--body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lead-in-line {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+}
+.lead-in-line .kept {
+  flex: var(--kept) 0 0;
+  border-radius: 3px;
+  background: var(--mute);
+}
+.lead-in-line .new {
+  flex: var(--new) 0 0;
+  border-radius: 3px;
+  background: var(--ember);
+}
+.lead-in-gone {
+  flex: none;
+  color: var(--warn, var(--ember));
+  font-size: var(--body);
+}
+/* A take that went on from another box's, on its tile: as its tool's name is. */
+.continues-rest {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mute);
+  font: calc(var(--t-body) * var(--ui)) / 1.25 var(--sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .in-frame .mention-text {
   flex: 1;
   min-height: 0;
@@ -1945,16 +2022,6 @@ video.preview.on {
 }
 .run:active {
   transform: scale(0.96);
-}
-/* Pick up from here: what's kept is marked, under the take it's picked up from. */
-.from-here {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.tc-inline {
-  font: var(--tiny) var(--mono);
-  color: var(--mute);
 }
 /* Its takes or versions, side by side. */
 .takes {
@@ -4087,24 +4154,6 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.beats-from input {
-  width: 72px;
-}
-.pickup-frame {
-  position: relative;
-  overflow: hidden;
-  border-radius: 4px;
-  background: var(--well);
-}
-.pickup-frame img.strip {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 800%;
-  max-width: none;
-  object-fit: fill;
-}
 .desc-row {
   display: flex;
   align-items: center;
@@ -4590,34 +4639,6 @@ p.warn.slow {
   visibility: visible;
 }
 
-.from-here .keeps {
-  flex: none;
-  width: 100%;
-  height: 10px;
-  margin: 0;
-  appearance: none;
-  border-radius: 5px;
-  background: linear-gradient(to right, var(--ember) var(--kept), var(--line) var(--kept));
-}
-.from-here .keeps::-webkit-slider-thumb {
-  appearance: none;
-  width: 6px;
-  height: 18px;
-  border-radius: 3px;
-  background: var(--ink);
-}
-.from-here .keeps::-moz-range-thumb {
-  width: 6px;
-  height: 18px;
-  border: 0;
-  border-radius: 3px;
-  background: var(--ink);
-}
-.from-here .row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
 /* A file looked at large: the one thing over the canvas. */
 .viewer {
   position: fixed;

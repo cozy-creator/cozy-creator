@@ -2,7 +2,7 @@
 // on the left, each dragged out to make a box. A box is its picture or its text at rest. Text with chips, the file still plain; a name dragged in; a fresh box as its prompt, or its prompt
 // and one beat, with all else behind More; controls from what it holds; reshaping; beats; another's edits merged; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
 // picture in, type, render, approve, delete the picture: what's approved stands, rendering it again fails naming what's gone, the rest goes on,
-// Undo brings it back. Takes side by side, one dragged out, Pick up from here, Render all.
+// Undo brings it back. Takes side by side, one dragged out, a segment redone, Render all.
 //   node nodes.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
@@ -923,8 +923,8 @@ function replaceFile(at, text) {
     const appended = await of('Other');
     check('render_appends_and_selects_new_state', appended.version === appended.prefixes.at(-1).number && appended.prefixes.length === beforeAppend + 1, appended);
 
-    // Pick up from here: scrubbed to a frame, its words as they were, and the function told to keep up to there, for that render alone.
-    // The dropped clip is 11 frames: frame 6 is one it has.
+    // Redo a segment: its words as they were, and the function told to keep up to its seam, for that render alone. The dropped clip is 11
+    // frames, and shots.py says its second segment starts at frame 6.
     // One file dropped asks its name first: Enter takes the one offered.
     await away();
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
@@ -942,9 +942,11 @@ function replaceFile(at, text) {
     // Rendered from its words, it's still on them: its take, pressed, is what's kept from.
     await box('Clip').locator('.take[aria-label="take 1"]').click();
     const clipFile = JSON.stringify(storedBox('Clip'));
-    await more('Clip');
-    await box('Clip').locator('.from-here .keeps').fill('6');
-    await box('Clip').locator('button:text-is("Pick up from here")').click();
+    const segments = page.locator('.focus-viewport .focus-under .segments');
+    await segments.locator('.segment').nth(1).click();
+    await segments.locator('button.redo-segment:text-is("Redo segment 2")').click();
+    await page.locator('.focus-viewport .lead-in').waitFor();
+    await page.locator('.focus-viewport button[aria-label=Render]').first().click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
     const given = (await api(`/v1/projects/${id}/assets/Clip`)).body.versions.at(-1).files.given.path;
     // Listed as its run ends, it lands in files/ a moment later (Firefox, 42110239536).
