@@ -1,0 +1,68 @@
+{
+ "note": "Five published MOSS-Image LoRAs: axiomofmind's ComfyUI export (upstream names under diffusion_model., PEFT config in lora_adapter_metadata), NoelleKFC's Sagging Breasts (Fizgig, kohya's lora_unet_), Danrisi's Lenovo UltraReal (AI-Toolkit, ComfyUI's fused proj.qkv), Better Nudes (kohya factors under diffusion_model., fused proj.qkv) the 4-step Turbo LoRA, darask0's color/depth control adapter (Comfy-Org's copy: bare names, a widened video_embedder kept whole) and thedeoxen's pose edit LoRA (AI-Toolkit); moss.lora maps them",
+ "members": [
+  {
+   "source": "civitai://3437772",
+   "member": "sagging-moss-v0.4.safetensors",
+   "header_file": "sagging-moss-v0.4.safetensors.header",
+   "header_sha256": "80b258cebf8de1bfeae6da8bbcaf5a921d76386d5641c9283c9a17f869861123",
+   "header_bytes": 157800,
+   "full_length": 74476632,
+   "declared_source_sha256": "11d75fdc6c19f7664e130ca92f667ddd39737b52aa39779a155d76bc11e370a0"
+  },
+  {
+   "source": "civitai://3410543",
+   "member": "lenovo_moss.safetensors",
+   "header_file": "lenovo_moss.safetensors.header",
+   "header_sha256": "a6eae9a2aa9834cd0801c3abfac5a985955a6a428f508d4a49ceb9c7391629c0",
+   "header_bytes": 40536,
+   "full_length": 64527960,
+   "declared_source_sha256": "f28ab12e33e60146c8740a86730385cf5ba488e9f6eda50b14383d6ddbf300fb"
+  },
+  {
+   "source": "civitai://3452414",
+   "member": "moss_pussy_lora_v3.0_8steps.safetensors",
+   "header_file": "moss_pussy_lora_v3.0_8steps.safetensors.header",
+   "header_sha256": "d7f0bcf86b8f9babdce1bcfe510506c4eee9adb0a7ca6e3a1fd24a54ab389ca2",
+   "header_bytes": 59816,
+   "full_length": 1189145672,
+   "declared_source_sha256": "667b0fdce0caef95acfbc2730a7587044634c9bc907744b6c2529e28468faa73"
+  },
+  {
+   "source": "civitai://3414934",
+   "member": "moss_image_sft_4step_v2.0.safetensors",
+   "header_file": "moss_image_sft_4step_v2.0.safetensors.header",
+   "header_sha256": "59b2e02c367624fae5bf3423328fcce68e27d049ea84d6111f57b38b9d99ace3",
+   "header_bytes": 90560,
+   "full_length": 1189176752,
+   "declared_source_sha256": "154c7f1455c3bf9925945c2f1ea2e4f09d0d0c67256081384a094b2b585f913f"
+  },
+  {
+   "source": "axiomofmind/Moss-image-nsfw-uncensored-lora@5f24e258ebb2a7d8aa77ee4940504dd57b54d5b9",
+   "member": "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors",
+   "header_file": "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors.header",
+   "header_sha256": "0e93258d26f2b11fd6e0af49368082a0a7cdda5c9e54ee9df7414bda18ffcf45",
+   "header_bytes": 61768,
+   "full_length": 74379592,
+   "declared_source_sha256": "4480e3154fd663d5ee6daa86ac59d0fd211ce495b9dfeedfb914c38f777f3a0b"
+  },
+  {
+   "source": "Comfy-Org/MOSS-Image@2929efe3cdd506c0a430bcfca70a9a8d805cc095",
+   "member": "loras/moss_image_color_depth_control.safetensors",
+   "header_file": "moss_image_color_depth_control.safetensors.header",
+   "header_sha256": "675232e74ec44404d8082406965e398cd3968203e26be16d16da3f5931db7f27",
+   "header_bytes": 57288,
+   "full_length": 313063368,
+   "declared_source_sha256": "e5c0c3efd05e4269207a39de6005798f14c90c6687c89c54eaffe4b76c43a763"
+  },
+  {
+   "source": "thedeoxen/MOSS-Image-pose-controlnet@e7d16fcb8eb81b4a0ab3d3a5bb3b17119d834307",
+   "member": "moss_image_sft_pose_control_lora.safetensors",
+   "header_file": "moss_image_sft_pose_control_lora.safetensors.header",
+   "header_sha256": "f2909bddc5cfe3f55684c55e3938c77644428a68ead2a85bad6f96555548492c",
+   "header_bytes": 60928,
+   "full_length": 290254336,
+   "declared_source_sha256": "2063c9bff0563d256cadf4bd02c185a2622aa2746ca60e1fc2daa40457d9c732"
+  }
+ ]
+}
