@@ -187,10 +187,11 @@ function replaceFile(at, text) {
   check('model_configuration_keeps_category_structure', JSON.stringify(configured) === JSON.stringify(atRest), { atRest, configured });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
   await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);
-  // The rest stand beside it, in reach while it's worked on.
+  // The rest stand beside it, in reach while it's worked on. Focus leaves only the canvas right of it in view, where two fit: the two
+  // carried in (coast and walk) go first; amy and hum are only typed.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const at = cards.shot;
-  await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { coast: { x: at.x + 400, y: at.y }, amy: { x: at.x + 400, y: at.y + 180 }, walk: { x: at.x + 400, y: at.y + 360 }, hum: { x: at.x + 400, y: at.y + 540 } } }) });
+  await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { coast: { x: at.x + 400, y: at.y }, walk: { x: at.x + 400, y: at.y + 180 }, amy: { x: at.x + 400, y: at.y + 360 }, hum: { x: at.x + 400, y: at.y + 540 } } }) });
 
   // The wire: each field by its type, and what it is.
   const byName = Object.fromEntries(tool.fields.map((held) => [held.field, held]));
@@ -354,7 +355,8 @@ function replaceFile(at, text) {
   check('a_filled_slot_is_on_the_face', (await shotBox.locator('.edit-shown .slot-control[data-field=first_frame]').count()) === 1);
   await shotBox.locator('[aria-label="Take coast out of First frame"]').click();
   await until('first frame unset', () => fieldsOf('shot'), (fields) => !('first_frame' in fields));
-  check('unset_goes_back_under_more', (await shotBox.locator('.edit-shown [data-field=first_frame]').count()) === 0);
+  // In Focus nothing goes under More (cl-934): unset, it stays among the fields, empty.
+  check('unset_goes_back_to_empty', (await shotBox.locator('.edit-shown .slot-control[data-field=first_frame]:not(.filled)').count()) === 1 && (await shotBox.locator('.edit-shown .slot-control[data-field=first_frame] .chip').count()) === 0);
   // Typed in: the same rule.
   await more('shot');
   await field('shot', 'sound').locator('input.slot-type').fill('walk');

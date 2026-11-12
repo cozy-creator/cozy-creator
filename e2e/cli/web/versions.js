@@ -444,7 +444,8 @@ async function died(why) {
     await render(['canceled_edit'], `canceled-edit-${Date.now()}`);
     const running = await until('image run is active before cancellation', () => asset('canceled_edit'), (row) => row.making?.length === 1, 2 * STEP_MS);
     const canceled = await post(`/v1/runs/${running.making[0]}/cancel`, {});
-    check('image_render_can_be_canceled', canceled.status === 200, canceled);
+    // A run still going answers 202, asked to stop (api.rs `cancel`); 200 is for one already over.
+    check('image_render_can_be_canceled', canceled.status === 202 && canceled.body?.cancel_requested === true, canceled);
     const canceledImage = await until('canceled image run leaves no work', () => asset('canceled_edit'), (row) => !row.making?.length, 2 * STEP_MS);
     check('canceled_render_adds_no_version', canceledImage.versions === 0 && !canceledImage.sha256, canceledImage);
 
