@@ -1,0 +1,1 @@
+Undo of a delete whose 3-hour window has ended brings the box back without its files: its tool, words and place, and none of its takes. The page says "<name>'s files were removed (deleted more than 3 hours ago)" where it said "Couldn't undo", and Redo deletes it again. `POST /v1/projects/{id}/history/undo` and `…/redo` list each such box in `lost`; `history_lapsed` is gone.

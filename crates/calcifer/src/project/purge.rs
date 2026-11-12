@@ -1,8 +1,8 @@
 //! A deleted box is gone (cl-919; Paul, 11-12: "when you delete a picture it should be _gone_ ... deleted permanently within a few hours").
 //! Nothing resolves its name, and Undo brings it back for `UNDO_WINDOW`. Then its files leave the project for good: from `files/`, and
 //! Calcifer's thumbnails and clips of them, unless a box still there holds the same file. Calcifer does it at the window's end whether or not
-//! anything has the project open, and a Calcifer that was stopped then does it as it starts. An Undo after that says it can't, and brings
-//! back nothing (`history`).
+//! anything has the project open, and a Calcifer that was stopped then does it as it starts. An Undo after that brings the box back
+//! without them, its fields, words and place, and says so (`history`).
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -97,8 +97,8 @@ fn purged(api: &Api, path: &Path) -> Option<i64> {
 
 /// `folder`'s deleted boxes whose undo window ended by `now`, gone for good: each file of theirs that no box still there, nothing on its
 /// way, no run's output and no box Undo can still bring back holds, from `files/`, its record and the `caches` named by its hash, and a
-/// cut's film at the root. A box keeps its name, its id and when, so an Undo of it says why it can't, until the history no longer reaches
-/// it. One deleted before cl-919, which says no time, is dated now (`dated`): its window starts here. When the next is due, if any is.
+/// cut's film at the root. A box keeps its name, its id and when, so an Undo of it says its files were removed, until the history no
+/// longer reaches it. One deleted before cl-919, which says no time, is dated now (`dated`): its window starts here. When the next is due, if any is.
 pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Option<i64>, Error> {
     let window = window_ms();
     // Held throughout: a file kept meanwhile isn't deleted.
