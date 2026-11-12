@@ -261,16 +261,19 @@ async function died(why) {
   check('decoded_state_switching_has_no_empty_flash', flips.every((look) => look.first !== null && look.first < 400 && look.emptyFrames === 0), flips);
   check('warm_thumbnail_clicks_do_not_change_approval', await current('Ada') === 1);
 
-  // A longer state history keeps the original scrollable previews, with both mouse and touch scrolling.
+  // A longer state history keeps the original scrollable previews, with both mouse and touch scrolling. Sixteen 100px previews are
+  // longer than Focus's full-height column at this window, so there's always something to scroll (at nine they can just fit).
+  const MANY = 16;
   await imported('many', 50);
-  for (const shade of [51, 52, 53, 54, 55, 56, 57, 58]) await joined('many', shade);
+  for (let shade = 51; shade < 50 + MANY; shade++) await joined('many', shade);
   await open('many');
-  await approveVersion(page, 'many', 9);
-  check('all_alternative_states_keep_previews', await previews('many').count() === 9 && await selected('many') === '9');
+  await approveVersion(page, 'many', MANY);
+  check('all_alternative_states_keep_previews', await previews('many').count() === MANY && await selected('many') === String(MANY));
   const side = history('many');
   await settled(page);
   const sideBox = await side.boundingBox();
   const scrolled = () => side.evaluate((element) => element.scrollTop);
+  const room = await side.evaluate((element) => element.scrollHeight - element.clientHeight);
   const across = sideBox.x + sideBox.width / 2;
   await page.mouse.move(across, sideBox.y + sideBox.height - 12);
   await page.mouse.down();
@@ -281,7 +284,7 @@ async function died(why) {
   await page.waitForTimeout(500);
   const coasted = await scrolled();
   const looks = await side.evaluate((element) => ({ bar: element.offsetWidth - element.clientWidth, mask: getComputedStyle(element).maskImage || getComputedStyle(element).webkitMaskImage, top: element.style.getPropertyValue('--fade-top') }));
-  check('right_previews_scroll_with_a_mouse', byMouse > 40 && coasted >= byMouse && looks.bar === 0 && looks.top === '24px' && /gradient/.test(looks.mask), { byMouse, coasted, looks });
+  check('right_previews_scroll_with_a_mouse', byMouse > 40 && coasted >= byMouse && looks.bar === 0 && looks.top === '24px' && /gradient/.test(looks.mask), { room, byMouse, coasted, looks });
   const cdp = await context.newCDPSession(page);
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
   const beforeFinger = await scrolled();
@@ -295,7 +298,7 @@ async function died(why) {
   await cdp.detach();
   check('right_previews_scroll_with_a_finger', byFinger > beforeFinger + 40, { beforeFinger, byFinger });
   const unmarked = await until('scroll marker gone', () => page.locator('.scroll-marker.on').count(), (count) => count === 0, 4000).then(() => true, (why) => String(why));
-  check('scroll_marker_does_not_carry_or_remove_a_state', scrolling.marked === 1 && scrolling.ghosts === 0 && unmarked === true && (await asset('many')).versions === 9, { scrolling, unmarked });
+  check('scroll_marker_does_not_carry_or_remove_a_state', scrolling.marked === 1 && scrolling.ghosts === 0 && unmarked === true && (await asset('many')).versions === MANY, { scrolling, unmarked });
   await approveVersion(page, 'many', 5);
   await until('fifth version selected', () => current('many'), (number) => number === 5);
   check('preview_selects_fifth_retained_state', await selected('many') === '5');
@@ -303,7 +306,12 @@ async function died(why) {
 
   // A category click only opens implementations; clicking an implementation also creates nothing.
   const namesBeforePalette = (await state()).assets.map((row) => row.name).sort();
-  const toolRow = await implementationRow(page, 'edit_image');
+  // Of Edit Image's tools, the first that edits from words: BiRefNet, listed first on this Hub (f2ccc98ef), takes no prompt.
+  await implementationRow(page, 'edit_image');
+  const listedTools = (await api(`/v1/tools?project=${id}`)).body?.tools ?? [];
+  const takesWords = (toolId) => listedTools.find((one) => one.id === toolId)?.fields?.some((field) => field.type === 'prompt');
+  const editIds = await page.locator('.tools [data-implementation][data-tool-operation="edit_image"]').evaluateAll((rows) => rows.map((row) => row.dataset.tool));
+  const toolRow = await implementationRow(page, 'edit_image', editIds.find(takesWords));
   await toolRow.click();
   await page.waitForTimeout(250);
   check('clicking_a_tool_creates_no_node', JSON.stringify((await state()).assets.map((row) => row.name).sort()) === JSON.stringify(namesBeforePalette));
@@ -336,18 +344,25 @@ async function died(why) {
   await prompt.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' beside <Ada.2> ');
-  const reference = box('other').locator('.ghosts[data-image-reference]');
+  // Behind the words, every picture they use, the backdrop's spread (cl-949).
+  const reference = box('other').locator('.in-frame .backdrop');
   await until('all referenced image previews load behind editor', () => reference.locator('img').evaluateAll((images) => images.length === 2 && images.every((image) => image.complete && image.naturalWidth > 0)), Boolean);
   const referenceGeometry = () => reference.evaluate((element) => {
+    const frame = element.getBoundingClientRect();
     return [...element.querySelectorAll('img')].map((image) => {
       const rect = image.getBoundingClientRect();
       let opacity = 1;
       for (let node = image; node && !node.classList.contains('card'); node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
-      return { width: rect.width, height: rect.height, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity };
+      return { width: rect.width, height: rect.height, share: (rect.width * rect.height) / (frame.width * frame.height), naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity };
     });
   });
+  // A new set of pictures fades in (240 ms, FocusParameters.css): read once it has.
+  const faded = () => reference.evaluate((element) => Promise.all(element.getAnimations({ subtree: true }).map((one) => one.finished))).catch(() => null);
+  await faded();
   const beforeShape = await referenceGeometry();
-  check('edit_mode_shows_all_faded_references_without_cropping', beforeShape.length === 2 && beforeShape.every((image) => image.opacity > 0 && image.opacity < 1 && image.fit === 'contain'), beforeShape);
+  // Full-bleed, as large as they can (Paul 11-12, cl-949): each covers its share, together the frame.
+  const fills = (shape) => shape.length === 2 && shape.every((image) => image.opacity > 0 && image.opacity < 1 && image.fit === 'cover' && image.share >= 0.12) && shape.reduce((sum, image) => sum + image.share, 0) >= 0.93;
+  check('edit_mode_shows_all_faded_references_full_bleed', fills(beforeShape), beforeShape);
   const ratioBefore = (await asset('other')).fields?.aspect_ratio;
   check('output_ratio_uses_the_corner_not_a_new_dropdown', await box('other').getByRole('combobox', { name: 'Output aspect ratio', exact: true }).count() === 0);
   const corner = await box('other').getByRole('slider', { name: 'Its size', exact: true }).boundingBox();
@@ -356,8 +371,9 @@ async function died(why) {
   await page.mouse.move(corner.x + corner.width / 2 + 110, corner.y + corner.height / 2 - 50, { steps: 8 });
   await page.mouse.up();
   await until('output aspect ratio changed in edit mode', () => asset('other'), (row) => Boolean(row.fields?.aspect_ratio) && row.fields.aspect_ratio !== ratioBefore);
+  await faded();
   const afterShape = await referenceGeometry();
-  check('output_ratio_keeps_all_reference_previews_fixed_and_uncropped', afterShape.length === beforeShape.length && afterShape.every((image, index) => image.fit === 'contain' && Math.abs(image.width - beforeShape[index].width) < 2 && Math.abs(image.height - beforeShape[index].height) < 2), { beforeShape, afterShape });
+  check('output_ratio_keeps_all_references_filling_the_frame', fills(afterShape), { beforeShape, afterShape });
   await previewVersion(page, 'other', 1);
   check('view_mode_leaves_editor_and_keeps_selection', await box('other').locator('.in-frame .mention-text').count() === 0 && await current('other') === 1);
   await box('other').getByRole('button', { name: 'Remove image tool', exact: true }).click();
@@ -366,19 +382,24 @@ async function died(why) {
   await undoOf('other');
   await until('undo restores tool', () => asset('other'), (row) => row.tool === tool.id);
 
-  // Real local rendering appends numbered versions and selects each new output. Older explicit references remain readable.
+  // Real local rendering appends numbered versions; a box with an approved take keeps showing it as one lands (cl-928, Paul 11-12),
+  // and an imported picture's first take is approved. Older explicit references remain readable.
   if ((await api('/v1/status')).body.local_usable && !process.env.ALONE) {
     const render = (names, key) => api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names, on: ['local'] }), headers: { 'Idempotency-Key': key } });
     await api(`${at}/assets/other`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/wait`, fields: { instructions: '<self.1> in a new light.', aspect_ratio: '1:1' } }) });
     await until('local image tool ready', () => asset('other'), (row) => row.tool === `${fixture}/wait`);
     await open('other');
-    await (await renderOf(page, 'other')).click();
+    const renderIt = await renderOf(page, 'other');
+    // Render sends what the page holds: the 1:1 written over the API reaches it first.
+    const shapeSaid = await until('the page holds 1:1', () => box('other').locator('.ratio-rest').getAttribute('data-output-aspect').catch(() => null), (label) => (label ?? '').includes('1:1'), 10_000).catch(() => box('other').locator('.ratio-rest').getAttribute('data-output-aspect').catch(() => null));
+    await renderIt.click();
     const second = await until('first modification is v2', () => asset('other'), (row) => row.versions === 2 && !row.making?.length, 5 * STEP_MS);
-    check('first_modification_is_v2_and_current', second.version === 2 && shaOf(second, 1) === originalSha && shaOf(second, 2) !== originalSha, second);
-    check('new_output_has_requested_ratio', Math.abs(second.prefixes.find((row) => row.number === 2).main.width / second.prefixes.find((row) => row.number === 2).main.height - 1) < 0.02);
+    check('first_modification_is_v2_beside_the_approved', second.version === 1 && second.approved === 1 && second.pinned && shaOf(second, 1) === originalSha && shaOf(second, 2) !== originalSha, second);
+    const made = second.prefixes.find((row) => row.number === 2).main;
+    check('new_output_has_requested_ratio', Math.abs(made.width / made.height - 1) < 0.02, { width: made.width, height: made.height, shapeSaid, aspect_ratio: second.fields?.aspect_ratio });
     await open('other');
-    await until('new current state has a retained preview', () => selected('other'), (value) => value === '2');
-    check('new_output_adds_a_retained_preview', await previews('other').count() === 2);
+    await until('the new take has a retained preview', () => previews('other').count(), (count) => count === 2);
+    check('new_output_adds_a_retained_preview', await selected('other') === '1');
     await approveVersion(page, 'other', 1);
     await settled(page);
     const sourceGeometry = await geometry('other');
@@ -389,7 +410,7 @@ async function died(why) {
     await approveVersion(page, 'other', 1);
     await (await renderOf(page, 'other')).click();
     const third = await until('editing an older version appends v3', () => asset('other'), (row) => row.versions === 3 && !row.making?.length, 5 * STEP_MS);
-    check('editing_old_version_keeps_forward_history', third.version === 3 && third.prefixes.map((row) => row.number).join() === '1,2,3' && shaOf(third, 1) === originalSha && shaOf(third, 2) === shaOf(second, 2), third.prefixes);
+    check('editing_old_version_keeps_forward_history', third.version === 1 && third.approved === 1 && third.prefixes.map((row) => row.number).join() === '1,2,3' && shaOf(third, 1) === originalSha && shaOf(third, 2) === shaOf(second, 2), third.prefixes);
     const inputOf = async (row, number) => (await api(`/v1/runs/${row.prefixes.find((version) => version.number === number).run}?detail=full`)).body?.request?.input;
     const editedFrom = await inputOf(third, 3);
     check('edit_reads_the_selected_source_version', editedFrom?.instructions?.references?.length === 1 && editedFrom.instructions.references[0].file === originalSha, editedFrom);
@@ -409,10 +430,10 @@ async function died(why) {
     check('rendered_version_selection_survives_reload', await current('other') === 2 && await selected('other') === '2' && await previews('other').count() === 3);
 
     // Selecting a state must not make its image tool disappear from Render all.
-    const beforeAll = (await asset('other')).versions;
+    const { versions: beforeAll, approved: approvedBefore } = await asset('other');
     await page.getByRole('button', { name: /^Render all / }).click();
     const renderedAll = await until('Render all includes the selected image', () => asset('other'), (row) => row.versions === beforeAll + 1 && !row.making?.length, 5 * STEP_MS);
-    check('render_all_includes_selected_image_tools', renderedAll.version === renderedAll.prefixes.at(-1).number && shaOf(renderedAll, 1) === originalSha, renderedAll);
+    check('render_all_includes_selected_image_tools', renderedAll.version === approvedBefore && renderedAll.approved === approvedBefore && shaOf(renderedAll, 1) === originalSha, renderedAll);
     await until('Render all settles before rename', () => state(), (row) => !row.busy, 5 * STEP_MS);
 
     // Rename while actual work is running: the existing versions and references follow the same asset.
@@ -423,7 +444,7 @@ async function died(why) {
     const rename = await post(`${at}/rename`, { from: 'other', to: 'modified' });
     check('rename_during_render_is_accepted', rename.status === 200, rename);
     const renamed = await until('render lands under renamed asset', () => asset('modified'), (row) => row.versions === beforeRename + 1 && !row.making?.length, 5 * STEP_MS);
-    check('rename_preserves_old_versions_and_selects_new', renamed.version === renamed.prefixes.at(-1).number && shaOf(renamed, 1) === originalSha && !((await state()).orphans ?? []).some((row) => row.name === 'other'), renamed);
+    check('rename_preserves_old_versions_and_its_approved', renamed.version === approvedBefore && renamed.approved === approvedBefore && shaOf(renamed, 1) === originalSha && !((await state()).orphans ?? []).some((row) => row.name === 'other'), renamed);
     check('rename_rewrites_bare_and_explicit_references', (await asset('current_reader')).fields.instructions.includes('<modified>') && (await asset('current_reader')).fields.instructions.includes('<modified.1>'));
 
     // Canceling actual work adds no empty version to the holder.
@@ -431,7 +452,8 @@ async function died(why) {
     await render(['canceled_edit'], `canceled-edit-${Date.now()}`);
     const running = await until('image run is active before cancellation', () => asset('canceled_edit'), (row) => row.making?.length === 1, 2 * STEP_MS);
     const canceled = await post(`/v1/runs/${running.making[0]}/cancel`, {});
-    check('image_render_can_be_canceled', canceled.status === 200, canceled);
+    // A run still going answers 202, asked to stop (api.rs `cancel`); 200 is for one already over.
+    check('image_render_can_be_canceled', canceled.status === 202 && canceled.body?.cancel_requested === true, canceled);
     const canceledImage = await until('canceled image run leaves no work', () => asset('canceled_edit'), (row) => !row.making?.length, 2 * STEP_MS);
     check('canceled_render_adds_no_version', canceledImage.versions === 0 && !canceledImage.sha256, canceledImage);
 

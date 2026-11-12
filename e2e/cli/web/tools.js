@@ -160,6 +160,8 @@ function replaceFile(at, text) {
   check('edit_image_available_for_reference_capable_models', availability.some((row) => row.operation === 'edit_image' && !row.disabled), availability);
   const qwen = metadata.find((tool) => defaults(tool).some((model) => model?.startsWith('qwen/qwen-image-2.1@')));
   const editQwen = await implementationRow(page, 'edit_image', qwen.id);
+  // Left a moment ago, Focus's canvas is still on its way back: measured mid-way, the drop lands on another box.
+  await require('./page').settled(page);
   const target = await box(choosing.name).locator('.media').boundingBox();
   await require('./page').carry(page, editQwen, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   await until('dragged tool attaches to image holder', () => of(choosing.name), (asset) => asset.tool === qwen.id);
@@ -172,12 +174,17 @@ function replaceFile(at, text) {
   const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
   await picker.waitFor();
   const slots = qwen.models?.length ? qwen.models : qwen.model ? [qwen.model] : [];
-  check('tool_badge_opens_its_declared_model_slots', slots.length > 0 && await picker.locator('[data-model-slot]').count() === slots.length);
+  // Each declared slot by its parameter, but of Qwen's two prompt enhancers only the one its operation runs: an edit's I2I `rewriter`, not T2I's `expander` (0cf0389f3).
+  const declaredSlots = slots.map((slot) => slot.slot.split('.models.').at(-1)).filter((slot) => slot !== 'expander').sort();
+  const pickerSlots = (await picker.locator('[data-model-slot]').evaluateAll((rows) => rows.map((row) => row.dataset.modelSlot))).sort();
+  check('tool_badge_opens_its_declared_model_slots', declaredSlots.length > 0 && JSON.stringify(pickerSlots) === JSON.stringify(declaredSlots), { declaredSlots, pickerSlots });
   check('model_picker_uses_global_nsfw_setting', await picker.getByLabel(/Show NSFW/).count() === 0);
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   check('model_picker_keeps_tool_identity_and_versions', (await of(choosing.name)).tool === qwen.id && (await of(choosing.name)).versions === versionsBeforePicker);
-  check('model_configuration_keeps_category_structure', JSON.stringify(await listed()) === JSON.stringify(atRest));
+  // Focus puts the palette away (CanvasHost `setShut(true)`); left, it's back as it was.
   await closeBox(page);
+  const configured = await until('the palette back', listed, (rows) => rows.length > 0, 10_000).catch(() => listed());
+  check('model_configuration_keeps_category_structure', JSON.stringify(configured) === JSON.stringify(atRest), { atRest, configured });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
   await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);
   // The rest stand beside it, in reach while it's worked on.
@@ -203,8 +210,17 @@ function replaceFile(at, text) {
   // Focused video tools expose a large parameter form, without an Advanced fold.
   await open('shot');
   const shotBox = box('shot');
-  check('face_holds_prompts_groups_and_filled_slots', (await shotBox.locator('.mention-text[data-field=summary]').count()) === 1 && (await shotBox.locator('.mention-text[data-field=pictures]').count()) === 1 && (await shotBox.locator('.edit-shown .beats-edit[data-field=beats]').count()) === 1 && (await shotBox.locator('.edit-shown .slot-control[data-field=plate]').count()) === 1, await shotBox.innerText());
-  check('video_parameters_are_prominent_without_a_more_fold', await shotBox.locator('.prominent').count() === 1 && await shotBox.locator('[data-field=first_frame]').count() === 1 && await shotBox.locator('[data-field=negative]').count() === 1);
+  // Summary and the Beats are written in the frame; the other prompts and the slots are under it (cl-938).
+  const face = {
+    summary: await shotBox.locator('.in-frame .mention-text[data-field=summary]').count(),
+    pictures: await shotBox.locator('.edit-shown .mention-text[data-field=pictures]').count(),
+    beats: await shotBox.locator('.in-frame .beats-edit[data-field=beats]').count(),
+    plate: await shotBox.locator('.edit-shown .slot-control[data-field=plate]').count(),
+  };
+  check('face_holds_prompts_groups_and_filled_slots', face.summary === 1 && face.pictures === 1 && face.beats === 1 && face.plate === 1, { face, text: await shotBox.innerText() });
+  // In Focus every field shows at once, under the frame (cl-934, cl-938): no More.
+  const form = { focused: await shotBox.locator('.edit-face.focused').count(), more: await shotBox.locator('.more-toggle').count(), first_frame: await shotBox.locator('[data-field=first_frame]').count(), negative: await shotBox.locator('[data-field=negative]').count() };
+  check('video_parameters_are_prominent_without_a_more_fold', form.focused === 1 && form.more === 0 && form.first_frame === 1 && form.negative === 1, form);
   await more('shot');
   check('advanced_fold_is_removed', await shotBox.locator('.advanced-toggle').count() === 0 && await shotBox.locator('input[aria-label=Steps]').count() === 1);
   await shot('more');
@@ -260,7 +276,12 @@ function replaceFile(at, text) {
   await page.keyboard.type('The second.');
   await until('both beats in the file', () => fieldsOf('shot'), (fields) => fields.beats?.length === 2 && fields.beats[1].description?.includes('The second.'));
   // No running total under the beats (cl-903).
-  check('no_running_total', (await shotBox.locator('.beats-edit[data-field=beats] .total').count()) === 0 && !/\b10 s\b/.test(await shotBox.locator('.beats-last').innerText()), await shotBox.locator('.beats-last').innerText());
+  check('no_running_total', (await shotBox.locator('.beats-edit[data-field=beats] .total').count()) === 0 && !/\b10 s\b/.test(await shotBox.locator('.beats-edit[data-field=beats] > .beats-last').innerText()), await shotBox.locator('.beats-edit[data-field=beats] > .beats-last').innerText());
+  // In the frame one section is open at a time, and the sections scroll (cl-938): Beat 2 shut, both heads are in view to drag between.
+  await beatRows().nth(1).getByRole('button', { name: 'Beat 2', exact: true }).click();
+  await until('the beats shut', () => beatRows().evaluateAll((rows) => rows.every((row) => row.querySelector(':scope > .beat-heading .beat-toggle')?.getAttribute('aria-expanded') === 'false')), Boolean, 5_000);
+  await shotBox.locator('[aria-label="Move beat 2"]').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(400);
   const grip = await shotBox.locator('[aria-label="Move beat 2"]').boundingBox();
   const first = await beatRows().first().boundingBox();
   await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
@@ -272,6 +293,8 @@ function replaceFile(at, text) {
   await shotBox.locator('[aria-label="Remove beat 2"]').click();
   await until('one beat left', () => fieldsOf('shot'), (fields) => fields.beats?.length === 1);
   check('a_row_goes', (await beatRows().count()) === 1);
+  // Its blocks are in its section, open to write in.
+  if (await beatRows().first().locator(':scope > .beat-heading .beat-toggle').getAttribute('aria-expanded') !== 'true') await beatRows().first().getByRole('button', { name: 'Beat 1', exact: true }).click();
   // A block in a row: absent until it's added, and × takes it out.
   await shotBox.locator('[data-field="beats.0.look"] .add-beat').click();
   await until('a look', () => fieldsOf('shot'), (fields) => fields.beats?.[0]?.look?.lens === 'wide');
@@ -314,6 +337,15 @@ function replaceFile(at, text) {
     return said;
   };
   await more('shot');
+  // Focus leaves the canvas right of its fields in view: the two carried in stand there, one over the other, the others out of the way.
+  const strip = await page.evaluate(() => {
+    const at = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+    const right = Math.max(...[...document.querySelectorAll('.focus-viewport .focus-card > .here-under, .focus-viewport .focus-card .media')].map((el) => el.getBoundingClientRect().right));
+    return { x: Math.round((right + 24 - at.e) / at.a), y: Math.round((150 - at.f) / at.a), h: Math.round((innerHeight - 170) / at.a) };
+  });
+  seen.strip = strip;
+  await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { coast: { x: strip.x, y: strip.y }, walk: { x: strip.x, y: strip.y + Math.round(strip.h / 2) }, amy: { x: strip.x + 4000, y: strip.y }, hum: { x: strip.x + 4000, y: strip.y + 1000 } } }) });
+  await until('coast and walk in reach', () => Promise.all(['coast', 'walk'].map((name) => reach(name).catch(() => null))), (both) => both.every(Boolean), 10_000);
   const firstFrame = field('shot', 'first_frame');
   const whileCarried = await carry('walk', firstFrame, async () => ({ refuses: (await firstFrame.getAttribute('class')).includes('refuses'), why: await firstFrame.locator('.refusal').textContent().catch(() => '') }));
   check('wrong_kind_said_as_carried', whileCarried.refuses && whileCarried.why.includes('takes a picture'), whileCarried);
@@ -331,7 +363,8 @@ function replaceFile(at, text) {
   check('a_filled_slot_is_on_the_face', (await shotBox.locator('.edit-shown .slot-control[data-field=first_frame]').count()) === 1);
   await shotBox.locator('[aria-label="Take coast out of First frame"]').click();
   await until('first frame unset', () => fieldsOf('shot'), (fields) => !('first_frame' in fields));
-  check('unset_goes_back_under_more', (await shotBox.locator('.edit-shown [data-field=first_frame]').count()) === 0);
+  // In Focus nothing goes under More (cl-934): unset, it stays among the fields, empty.
+  check('unset_goes_back_to_empty', (await shotBox.locator('.edit-shown .slot-control[data-field=first_frame]:not(.filled)').count()) === 1 && (await shotBox.locator('.edit-shown .slot-control[data-field=first_frame] .chip').count()) === 0);
   // Typed in: the same rule.
   await more('shot');
   await field('shot', 'sound').locator('input.slot-type').fill('walk');
@@ -363,7 +396,10 @@ function replaceFile(at, text) {
   check('a_video_in_pictures_is_marked', await struck('pictures'));
   check('a_picture_in_words_is_marked', await struck('negative'));
 
-  // A video's range in a prompt: in and out on its frames, written in frames, shown as timecode.
+  // A video's range in a prompt: in and out on its frames, written in frames, shown as timecode. One section of the frame is open at a
+  // time (cl-938): Summary's, to write in.
+  const summaryToggle = shotBox.locator('.in-frame .frame-first .beat-toggle');
+  if ((await summaryToggle.getAttribute('aria-expanded')) !== 'true') await summaryToggle.click();
   await shotBox.locator('.mention-text[data-field=summary]').click();
   await page.keyboard.type('Along <walk> ');
   const range = shotBox.locator('.mention-thumbs .clip-range').first();
@@ -431,15 +467,17 @@ function replaceFile(at, text) {
     const pickedLines = JSON.stringify(stored('shot'));
     check('pickup_writes_nothing', pickedLines === typed && !afterPickup.includes('pickup'), { before: typed, after: pickedLines, hasPickup: afterPickup.includes('pickup') });
 
-    // Another box's take let go on it: it continues that take from its end, the grid's last frame in it (7 of 11), and says so.
+    // Another box's take, continued: from its end, the grid's last frame in it (7 of 11), and it says so.
     addBoxes(folder, [{ name: 'other', tool: `${fixture}/shot`, kind: 'video', fields: { plate: '<walk>' } }]);
     await until('other in the project', () => of('other'), Boolean);
     await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { other: { x: at.x - 420, y: at.y } } }) });
     await render('other', 1);
-    await open('other');
-    await box('other').locator('.take[aria-label="take 1"]').click();
-    const onto = await reach('shot');
-    await box('other').locator('.take-out').dragTo(page.locator('body'), { targetPosition: onto });
+    // Chosen in a draft's Continue (cl-951; a take's .take-out is the canvas's, not Focus's): it goes on from that take's end.
+    await open('shot');
+    const from = page.locator('.focus-viewport .continue-from select');
+    if (!(await from.count())) await page.locator('.card.here[data-asset="shot"] .focus-actions .focus-new').first().click();
+    await from.waitFor();
+    await from.selectOption({ label: '<other.1>' });
     const leadIn = page.locator('.card.here[data-asset="shot"] .lead-in');
     await leadIn.waitFor();
     check('another_take_continues', (await leadIn.locator('.lead-in-words b').innerText()).startsWith('Continues <other.1> from its end'), await leadIn.innerText());
@@ -450,7 +488,10 @@ function replaceFile(at, text) {
     await shot('picked-up');
   }
 
-  check('sidebar_still_only_nodes_and_tools', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .browse, .tools .box-shelf-head, .tools .tool-off, .tools input').count() === 0);
+  // Read at rest: Focus puts the palette away.
+  await closeBox(page);
+  const sidebar = { heads: await until('the palette back', () => page.locator('.tools h4').allTextContents(), (heads) => heads.length > 0, 10_000).catch(() => page.locator('.tools h4').allTextContents()), extra: await page.locator('.tools .browse, .tools .box-shelf-head, .tools .tool-off, .tools input').count() };
+  check('sidebar_still_only_nodes_and_tools', JSON.stringify(sidebar.heads) === JSON.stringify(['Nodes', 'Tools']) && sidebar.extra === 0, sidebar);
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   check('nothing_refused', refused.filter((refusal) => refusal.url.includes('/v1/projects/')).length === 0, refused);
   check('no_page_errors', errors.length === 0, errors);
