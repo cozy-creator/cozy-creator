@@ -100,7 +100,8 @@ mod linux {
             Request::Snapshot => {
                 let targets = live.pipe.call("Target.getTargets", json!({}), None).await?;
                 let pages = targets["targetInfos"].as_array().ok_or_else(unavailable)?.iter().filter(|target| target["type"] == "page" && target["browserContextId"] == live.context).count();
-                Ok(json!({ "present": true, "birth": live.birth, "profile": live.profile.path(), "pages": pages }))
+                let processes = super::super::OwnedBrowser::processes(&live.birth).into_iter().map(|process| process.birth().clone()).collect::<Vec<_>>();
+                Ok(json!({ "present": true, "birth": live.birth, "profile": live.profile.path(), "pages": pages, "processes": processes }))
             }
             Request::CloseOwned => {
                 let targets = live.pipe.call("Target.getTargets", json!({}), None).await?;

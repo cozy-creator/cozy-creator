@@ -222,7 +222,7 @@ def main() -> int:
         require(json.loads(stdout)["vault"]["state"] == "locked", "a_lock_after_b_saved")
         saved = native.call("GET", project_route(b["id"], "/assets/" + quote(b["asset"], safe="")))
         require(saved["asset"]["fields"]["text"] == b["edit"], "b_edit_not_persisted")
-        until(lambda: alive(browser_birth), lambda live: not live, "owned_browser_not_retired")
+        until(lambda: [alive(process) for process in snapshot["processes"]], lambda live: not any(live), "owned_browser_tree_not_retired")
         require(not profile.exists() and foreign.preserved() and not (a["view"] / "root-data.txt").exists(), "whole_browser_retirement")
         receipt.add("queued_b_edit_then_a_lock", saved=True, owned_retired=True, profile_removed=True, unrelated_preserved=True, busy_refusal=busy)
         scan_case(scanner, receipt, "a_locked_outside_scan", roots, [b["view"]])
@@ -234,7 +234,7 @@ def main() -> int:
             proof.ask("close_owned")
         except Failure:
             pass  # Closing the final page can close its pipe before the response; observe the birth.
-        until(lambda: alive(last["birth"]), lambda live: not live, "last_window_process_alive")
+        until(lambda: [alive(process) for process in last["processes"]], lambda live: not any(live), "last_window_process_tree_alive")
         until(lambda: Path(last["profile"]).exists(), lambda exists: not exists, "last_window_profile_left")
         require(foreign.preserved(), "foreign_browser_changed")
         receipt.add("last_window_close", process_gone=True, profile_removed=True, unrelated_preserved=True)
@@ -243,6 +243,7 @@ def main() -> int:
         until(lambda: proof.exercise(b["id"], "ready"), lambda value: value.get("page_ready"), "crash_page_ready")
         crashed = proof.ask("snapshot")
         kill_exact(crashed["birth"])
+        until(lambda: [alive(process) for process in crashed["processes"]], lambda live: not any(live), "crashed_browser_tree_not_retired")
         until(lambda: Path(crashed["profile"]).exists(), lambda exists: not exists, "crashed_profile_not_retired")
         require(foreign.preserved(), "foreign_browser_changed")
         receipt.add("browser_crash", process_gone=not alive(crashed["birth"]), profile_removed=True, unrelated_preserved=True)
