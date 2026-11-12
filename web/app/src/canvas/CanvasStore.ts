@@ -328,7 +328,7 @@ export class CanvasStore {
   hereRenamed: (name: string) => void = () => {}
   /** The name a just-dropped tool will have: its text takes the keys. */
   focusing: string | null = null
-  /** The machines a render may go to, a rental before this computer: the walk places it on whichever is free. */
+  /** The machines a render may go to, for what the page asks first (none, or this computer alone); Calcifer says which (cl-894). */
   machines: () => string[] = () => []
   private ids = new Map<string, string>()
   /** The last `GET canvas` taken in: a canvas drawn again is handed it again, and what's happened since stands. */
@@ -1353,7 +1353,8 @@ export class CanvasStore {
     const view = this.views.get(key)
     const asset = view?.asset
     if (!asset || view.conflict) return
-    const on = here || madeHere(asset.tool) ? ["local"] : this.machines()
+    const local = here || madeHere(asset.tool)
+    const on = local ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
       this.patch(key, { waiting: also, asking: undefined })
@@ -1374,7 +1375,8 @@ export class CanvasStore {
     const settle = (asked?: number) => this.patchId(id, { asked })
     const once = `take-${crypto.randomUUID()}`
     this.act(key, {
-      send: async (served, write) => ((await saved) ? this.client.render(this.projectId!, [served], on, once, also, write.once) : null),
+      // None named but here: Calcifer places it, as a `cozy run` naming none.
+      send: async (served, write) => ((await saved) ? this.client.render(this.projectId!, [served], local ? on : [], once, also, write.once) : null),
       done: (answer) => {
         settle(answer ? nextProjectOrder() : undefined)
         this.readAfter([id])
@@ -1421,7 +1423,8 @@ export class CanvasStore {
   /** Render all. What's approved stays. */
   runAll(here = false) {
     const candidates = [...this.views].filter(([, view]) => view.asset?.tool && (view.asset.kind === "image" || view.asset.tool === "cozy/edit" || (!madeHere(view.asset.tool) && !view.asset.pinned)))
-    const on = here || (candidates.length > 0 && candidates.every(([, view]) => madeHere(view.asset!.tool))) ? ["local"] : this.machines()
+    const local = here || (candidates.length > 0 && candidates.every(([, view]) => madeHere(view.asset!.tool)))
+    const on = local ? ["local"] : this.machines()
     const id = this.projectId
     if (!id) return
     this.allAsking.set(null)
@@ -1433,7 +1436,7 @@ export class CanvasStore {
     if (!here && onlyHere(on)) return void this.askAllFirst(id, saved, settle)
     const once = `all-${crypto.randomUUID()}`
     this.outbox.add({
-      send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], on, once, {}, signal) : null),
+      send: async (signal) => ((await Promise.all(saved)).every(Boolean) ? this.client.render(id, ["all"], local ? on : [], once, {}, signal) : null),
       done: (answer) => {
         settle(answer ? nextProjectOrder() : undefined)
         this.readAfter(going)

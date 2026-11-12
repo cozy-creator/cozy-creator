@@ -484,7 +484,7 @@ export class Client {
     return this.write("POST", `${project(id)}/unpin`, { name }, undefined, write)
   }
 
-  /** A new version of each of `names`, on these machines. A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
+  /** A new version of each of `names`, on these machines; none: Calcifer's to say (cl-894). A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
   render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated"> = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
   }
