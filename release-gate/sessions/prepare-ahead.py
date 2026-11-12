@@ -246,7 +246,8 @@ if a_download.start and p_gpu.end:
     check(a_download.start < p_gpu.end, "the video's weights didn't start coming while the picture rendered")
 starts = objects[("run", own[0])].fetching if own else []
 if starts:
-    between = [at for k, seen in objects.items() if k[0] in ("ahead", "guess") for at in seen.fetching if min(starts) + 2000 < at < max(starts)]
+    # The video's: its fetch ahead's and guesses, never the picture's own on-demand guesses (its job's, cl-966).
+    between = [at for k, seen in objects.items() if k[0] in ("ahead", "guess") and k[1] != own[0] for at in seen.fetching if min(starts) + 2000 < at < max(starts)]
     check(not between, f"{len(between)} of the video's objects started while the picture's were starting: the download line is in job order")
 if waited is not None and ahead_took:
     check(waited < ahead_took / 2, "the video's run waited about as long as its download takes: nothing was saved")
