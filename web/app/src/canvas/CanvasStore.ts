@@ -2161,7 +2161,7 @@ export class CanvasStore {
   // A drag
 
   /** Whatever box is under the pointer, with `dragged` taken away. One being worked on takes a drop in the part it's let go on. */
-  dropTargetAt(x: number, y: number, dragged: Element[], names: string[] = dragged.flatMap((held) => held.querySelector<HTMLElement>(".card[data-asset]")?.dataset.asset ?? [])): DropTarget | null {
+  dropTargetAt(x: number, y: number, dragged: Element[]): DropTarget | null {
     for (const el of document.elementsFromPoint(x, y)) {
       if (dragged.some((held) => held.contains(el))) continue
       const card = el.closest<HTMLElement>(".card[data-asset]")
