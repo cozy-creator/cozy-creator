@@ -822,8 +822,10 @@ export class CanvasStore {
   /** What a run says of the asset it's making: the lowest going, when there are several. */
   applyRun(run: Run) {
     this.runs.set(run.number, run)
-    const owner = this.owners.get(run.number)
+    const owner = this.owners.get(run.number) ?? [...this.views].find(([, view]) => watched(view)?.run === run.number)?.[0]
     if (!owner) return
+    const viewed = this.get(owner)
+    if (viewed && watched(viewed)?.run === run.number && (run.status === "failed" || run.status === "canceled")) this.patch(owner, { watchRun: undefined, watchFrom: undefined })
     const making = this.get(owner)?.asset?.making ?? []
     if (run.number !== Math.min(...making)) return
     // Only what's here: an output of a run on another machine, or a revision that hasn't landed, has nothing yet to show. A preview published
@@ -894,8 +896,12 @@ export class CanvasStore {
           // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at.
           const seen = watched({ ...view, asset })
           if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number })
-          // The take picked stopped without one: nothing's being looked at.
-          else if (view.watchRun !== undefined && !asset.making?.includes(view.watchRun)) change.watchRun = undefined
+          // Bind a queued preview to its run and retain it through the gap between execution and the version landing.
+          else if (seen?.run !== undefined) {
+            const status = this.runs.get(seen.run)?.status
+            if (status === "failed" || status === "canceled") Object.assign(change, { watchRun: undefined, watchFrom: undefined })
+            else Object.assign(change, { watchRun: seen.run, watchFrom: undefined })
+          }
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
@@ -904,7 +910,8 @@ export class CanvasStore {
             this.own.delete(asset.name)
           }
           // Pinned where it was being looked: there's nothing left to look at.
-          if (view.viewed !== undefined && (view.viewed === asset.version || !asset.prefixes?.some((held) => held.number === view.viewed))) change.viewed = undefined
+          const previewed = "viewed" in change ? change.viewed : view.viewed
+          if (previewed !== undefined && (previewed === asset.version || !asset.prefixes?.some((held) => held.number === previewed))) change.viewed = undefined
         }
         if (Object.keys(change).length) {
           this.patch(asset.name, change)

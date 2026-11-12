@@ -789,7 +789,7 @@ function Canvas({
   // Far out, a card shows its picture, its name and little else.
   const band = useStore((state) => (state.transform[2] < 0.2 ? 2 : state.transform[2] < 0.45 ? 1 : 0))
   useLayoutEffect(() => store.far.set(band === 2), [store, band])
-  const sharpness = useStore((state) => 2 ** Math.min(2, Math.max(-2, Math.ceil(Math.log2(state.transform[2] || 1)))))
+  const sharpness = useStore((state) => 2 ** Math.max(-2, Math.ceil(Math.log2(state.transform[2] || 1))))
   useLayoutEffect(() => store.sharpness.set(sharpness), [store, sharpness])
   // How large a box's words are drawn goes on the stage as the zoom crosses a step: no render, so a zoom draws no box again.
   const flowStore = useStoreApi<ElementNode, Edge>()
