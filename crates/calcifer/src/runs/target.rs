@@ -351,7 +351,11 @@ async fn release_of(api: &Arc<Api>, hub: &str, package: &str, release: Option<&s
     let (release, moved, upgrade) = match chosen {
         api::release::Chosen::Runs(release) => (release, said, None),
         api::release::Chosen::Older { release, newest, needs } => {
-            let message = format!("{shown} {newest} needs cozy-runtime{needs}, which {machine}'s {} doesn't meet, and it isn't this computer's to move: this run takes {release}", held.runtime);
+            let why = match held.moves {
+                api::release::Moves::No => "it isn't this computer's to move",
+                _ => "no Runtime it can take does",
+            };
+            let message = format!("{shown} {newest} needs cozy-runtime{needs}, which {machine}'s {} doesn't meet, and {why}: this run takes {release}", held.runtime);
             (release, Some(Note { level: NoteLevel::Info, message }), None)
         }
         api::release::Chosen::Moves { release, runtime } => {

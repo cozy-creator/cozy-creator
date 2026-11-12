@@ -671,6 +671,42 @@ cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&
 machine_ready
 }
 
+# cl-952: a machine runs only a package release its Runtime can run. Publishing refused isolated.sh's e2e-lies, whose floor
+# cozy-runtime>=0.44 lacks the `call` it imports (minimax-h3 0.12.0rc3 declared 0.45 and imported the RC's `preview`: run
+# 47791). e2e-floor 0.2.0 needs cozy-runtime>=0.45.1: local held on 0.45.0 by hand refuses it, naming `cozy machine update
+# local`, and runs 0.1.0 named; with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this shard's
+# isolated Hub: e2e.yaml), which holds nothing, and the unversioned run then moves local to the newest 0.45 release and runs
+# 0.2.0, saying so.
+runtime_floor() {
+step "a package release runs on a Runtime that meets its floor: publishing refuses a dishonest one; a held machine refuses, another upgrades (cl-952)"
+[ -n "$LOCAL" ] || return 0
+[ -n "${E2E_FLOOR:-}" ] || { check "runtime floor: isolated.sh published no e2e-floor: ${E2E_HELD_REFUSED:-not seeded}"; return; }
+grep -q '"runtime_floor_lacks"' "$E2E_LIES" && grep -q 'call from cozy_runtime.author' "$E2E_LIES" && grep -q 'cozy-runtime>=0\.45' "$E2E_LIES" \
+  || check "runtime floor: publishing e2e-lies (cozy-runtime>=0.44, imports call) wasn't refused naming call and cozy-runtime>=0.45: $(tail -c 400 "$E2E_LIES")"
+local code=0
+cozy --json machine update local --runtime 0.45.0 -y > "$OUT/floor-hold.json" 2>&1 \
+  || { check "runtime floor: local refused Runtime 0.45.0: $(tail -c 300 "$OUT/floor-hold.json")"; return; }
+machine_ready
+in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=held --on local > "$OUT/floor-held.ndjson" 2> "$OUT/floor-held.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-held.ndjson" "$OUT/floor-held.err" && grep -q 'cozy machine update local' "$OUT/floor-held.ndjson" "$OUT/floor-held.err" \
+  || check "runtime floor: held on 0.45.0, e2e-floor (0.2.0 needs >=0.45.1) wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 400 "$OUT/floor-held.ndjson") $(tail -c 300 "$OUT/floor-held.err")"
+cell floor-held-older "$E2E_FLOOR/relay@0.1.0" "text=asked 0.1.0" || true
+cozy --json machine update local -y > "$OUT/floor-unhold.json" 2>&1 \
+  || { check "runtime floor: cozy machine update local (its Hub's pin) failed: $(tail -c 300 "$OUT/floor-unhold.json")"; return; }
+machine_ready
+jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null || check "runtime floor: off its hold, local runs $(jq -r .status.runtime "$OUT/machine.json"), not its Hub's pinned 0.45.0"
+in_project "$RUN_PROJECT" run "$E2E_FLOOR/relay" text=upgrade --on local > "$OUT/floor-upgrade.out" 2> "$OUT/floor-upgrade.err" \
+  || check "runtime floor: the unversioned e2e-floor run on local (0.45.0, not held) failed: $(tail -c 400 "$OUT/floor-upgrade.err")"
+grep -q "upgrading local.s Runtime 0.45.0 → 0.45.[1-9][0-9]* for e2e-floor 0.2.0" "$OUT/floor-upgrade.err" \
+  || check "runtime floor: the run didn't say it upgrades local's Runtime for e2e-floor 0.2.0: $(tail -c 400 "$OUT/floor-upgrade.err")"
+machine_ready
+jq -e '.status.runtime | test("^0\\.45\\.([1-9]|[1-9][0-9])$")' "$OUT/machine.json" > /dev/null \
+  || check "runtime floor: after its upgrade local runs $(jq -r .status.runtime "$OUT/machine.json"), not a 0.45 release from 0.45.1"
+cozy --json machine update local ${CAND_RT:+--runtime "$CAND_RT"} ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/floor-back.json" 2>&1 \
+  || check "runtime floor: local refused its candidates again: $(tail -c 300 "$OUT/floor-back.json")"
+machine_ready
+}
+
 # cr-276: a package calling another package's function whose result holds a `Latents` field, as orbit calls minimax-h3's
 # `generate` for its `ShotResult`: the callee, a path dependency, fills the field with a file it saved. The caller gets that
 # field as a `Latents` holding the callee's bytes, and the `File` beside it as a `File`. Runtime 0.45.0 failed the call in the

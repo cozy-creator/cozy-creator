@@ -54,6 +54,13 @@ impl Sums {
         Some((build, url))
     }
 
+    /// The RC's pure Runtime wheel and its URL: what a lock and a publish's floor check read on any platform (cl-952).
+    pub(crate) fn pure_runtime(&self) -> Option<(Build, String)> {
+        let build = prerelease::rc_pure(&self.runtime, "cozy_runtime")?;
+        let url = format!("{}/{}", prerelease::rc("cozy-runtime", &self.rc), build.file);
+        Some((build, url))
+    }
+
     /// Each member of the RC a machine on `platform` running `[runtime, tensorfs, cozy]` doesn't run, with the RC's
     /// version of it.
     pub(crate) fn behind(&self, platform: &str, running: [&str; 3]) -> Vec<(&'static str, String)> {
