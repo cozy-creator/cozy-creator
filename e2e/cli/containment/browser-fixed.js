@@ -5,6 +5,25 @@ async function containmentProof(input) {
   switch (input.kind) {
     case 'ready':
       return { page_ready: typeof globalThis.__cozyFreeze === 'function' && typeof globalThis.__cozyPrepareClose === 'function', cards: document.querySelectorAll('.card[data-asset]').length };
+    case 'diagnose': {
+      // Closed booleans and counts only: no URL, resource name or page text leaves the page.
+      const gate = document.querySelector('main.gate')?.textContent ?? '';
+      const resources = performance.getEntriesByType('resource');
+      const status = (code) => resources.filter((entry) => entry.responseStatus === code).length;
+      const navigation = performance.getEntriesByType('navigation')[0];
+      return {
+        blank: location.href === 'about:blank', error_page: location.protocol === 'chrome-error:',
+        loopback: location.protocol === 'http:' && location.hostname === '127.0.0.1', reloaded: navigation?.type === 'reload',
+        navigation_status: navigation?.responseStatus ?? -1, owned_injected: typeof globalThis.__cozyOwned === 'object' && globalThis.__cozyOwned !== null,
+        vite_client: [...document.scripts].some((script) => script.src && new URL(script.src).pathname === '/@vite/client'),
+        refresh_preamble: typeof globalThis.$RefreshReg$ === 'function', app_mounted: (document.getElementById('root')?.childElementCount ?? 0) > 0,
+        gate_connecting: gate.startsWith('Connecting'), gate_signed_out: gate.includes("isn't signed in"), gate_unreachable: gate.includes("isn't answering"),
+        gate_opening_project: gate.startsWith('Opening project'), gate_project_failed: gate.startsWith("Couldn't open"), gate_broke: gate.startsWith('That broke'),
+        vite_overlay: document.querySelector('vite-error-overlay') !== null, visible: document.visibilityState === 'visible',
+        resources: resources.length, resources_failed: resources.filter((entry) => entry.responseStatus >= 400).length, resources_unanswered: status(0),
+        resources_403: status(403), resources_404: status(404), resources_503: status(503), resources_504: status(504),
+      };
+    }
     case 'locate': {
       const box = card(), target = box?.classList.contains('here') ? box : box?.querySelector('.media');
       if (!target) return { found: false };

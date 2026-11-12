@@ -85,6 +85,14 @@ class ForeignBrowsers:
             shutil.rmtree(profile)
 
 
+PAGE_FACTS = frozenset({
+    "blank", "error_page", "loopback", "reloaded", "navigation_status", "owned_injected", "vite_client", "refresh_preamble",
+    "app_mounted", "gate_connecting", "gate_signed_out", "gate_unreachable", "gate_opening_project", "gate_project_failed",
+    "gate_broke", "vite_overlay", "visible", "resources", "resources_failed", "resources_unanswered", "resources_403",
+    "resources_404", "resources_503", "resources_504",
+})
+
+
 def observe_ready(proof: Proof, project: str, seen: dict) -> dict:
     # Keeps only closed readiness facts for a sanitized failure receipt.
     try:
@@ -360,6 +368,12 @@ def main() -> int:
                             pages=pages if type(pages) is int else -1, **readiness)
             except BaseException:
                 receipt.add("browser_open_failure", snapshot_unavailable=True, caf_alive=alive(proof.birth), **readiness)
+            if readiness["slot"] >= 0:
+                try:
+                    page = proof.exercise(projects[readiness["slot"]]["id"], "diagnose")
+                    receipt.add("owned_page_diagnostic", **{key: value for key, value in page.items() if key in PAGE_FACTS and type(value) in (bool, int)})
+                except BaseException:
+                    receipt.add("owned_page_diagnostic", unavailable=True)
         receipt.save()
         return 1
     finally:
