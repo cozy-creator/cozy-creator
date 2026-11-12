@@ -123,7 +123,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
       const face = document.querySelector(`.card[data-asset="${name}"] .run-face`);
       if (!face) return;
       const text = (selector) => face.querySelector(selector)?.textContent ?? '';
-      const now = { phase: face.dataset.phase, says: text('.face-state b'), stage: text('.face-state b'), left: text('.face-left'), where: text('.face-where'), detail: text('.face-detail'), bar: face.querySelector('.face-track i')?.style.transform ?? '' };
+      const now = { phase: face.dataset.phase, says: text('.face-state b'), stage: text('.face-state b'), left: text('.face-left'), where: text('.fact-where dd'), facts: [...face.querySelectorAll('.face-fact dt')].map((label) => label.textContent).join(','), time: text('.fact-time dd'), detail: text('.face-detail'), bar: face.querySelector('.face-track i')?.style.transform ?? '' };
       const list = (said.faces[name] ??= []);
       if (JSON.stringify(list.at(-1)) !== JSON.stringify(now)) list.push(now);
     };
@@ -167,6 +167,8 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   check('face_steps_with_time_left', faces.some((face) => /^Segment [12] of 2 · Denoising · step [2-4] of 4$/.test(face.stage) && /\d+ (s|min) left$/.test(face.left)), faces);
   check('face_whole_render_bar', second.length > 0 && second.every((face) => (fraction(face) ?? 0) >= 0.4) && second.some((face) => /\d+ (s|min) left$/.test(face.left)), second);
   check('face_says_where', faces.some((face) => /^local\b/.test(face.where)), faces);
+  // Its facts (Paul, 11-12): where, what's ahead and how many wait, its weights, its package, its time elapsed and left.
+  check('face_lists_its_facts', faces.some((face) => /Where/.test(face.facts) && /Queue/.test(face.facts) && /Weights/.test(face.facts) && /Package/.test(face.facts) && /\d+:\d\d elapsed/.test(face.time)), faces.map((face) => [face.facts, face.time]).slice(-4));
   const gone = await until('its face gone with its take', () => page.locator('.card[data-asset="waits"] .run-face').count(), (n) => n === 0, 15_000).catch(() => 1);
   check('face_gone_with_its_take', gone === 0);
   check('install_listed_with_its_waiter', said.rows.some((row) => /^install: activity_\d+ Install .* for run \d+$/.test(row)), said.rows);
