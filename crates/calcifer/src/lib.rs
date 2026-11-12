@@ -419,8 +419,13 @@ impl Calcifer {
     pub(crate) fn maintenance_waiting_for(&self,ids:&[String])->Option<String> {self.waiting_in(None,ids)}
     fn waiting_in(&self,project:Option<&str>,ids:&[String])->Option<String> {
         let name=|id:&String| {
-            let row=match project {Some(project)=>self.project_store(project).and_then(|store|store.run(id)),None=>self.maintenance_store().run(id)};
-            row.ok().flatten().map(|row|format!("run {}",row.number)).unwrap_or_else(||"other work".into())
+            // Outside a project, a project's run is named by its own number while that project is open.
+            let row=match project {Some(project)=>self.project_store(project).and_then(|store|store.run(id)).ok().flatten(),
+                None=>self.maintenance_store().run(id).ok().flatten().or_else(||{
+                    let owner=lock(&self.run_owners).get(id).cloned().flatten()?;
+                    owner.store().ok()?.run(id).ok().flatten()
+                })};
+            row.map(|row|format!("run {}",row.number)).unwrap_or_else(||"other work".into())
         };
         match ids {[]=>None,[one]=>Some(format!("waiting for {} to end",name(one))),many=>Some(format!("waiting for {} to end",many.iter().map(name).collect::<Vec<_>>().join(", ")))}
     }

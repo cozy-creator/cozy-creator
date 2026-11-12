@@ -666,8 +666,8 @@ impl Client {
 
     /// A running run's newest preview when it isn't `held` (its `ETag`): its tag, its step and its
     /// picture (cr-282); none while there is no newer one. Asking keeps its machine making them.
-    pub(crate) async fn preview(&self, id: &str, held: &str) -> Result<Option<(String, String, bytes::Bytes)>, Error> {
-        let path = path(&["v1", "runs", id, "preview"]);
+    pub(crate) async fn preview(&self, run: &RunAddress, held: &str) -> Result<Option<(String, String, bytes::Bytes)>, Error> {
+        let path = format!("{}/preview", run.path());
         let answer = self
             .send(Ask::Read, |c, base| match held {
                 "" => c.get(format!("{base}{path}")),

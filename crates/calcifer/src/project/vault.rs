@@ -843,6 +843,8 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
     }
     if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate" | "passphrase" | "recovery") {
         let id = project_id(root).or_else(|| plain_project_id(root)).ok_or_else(|| error("vault_identity", "the changed project has no verified identity"))?;
+        // A conversion replaced the view its runs were owned under: the next open owns them again.
+        if matches!(ask.action.as_str(), "encrypt" | "decrypt" | "rotate") { api.calcifer.retire_project(&id); }
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.finish_receipt(&store, "completed")?;
     }
