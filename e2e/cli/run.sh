@@ -28,6 +28,7 @@ parse "$@"
 . "$(dirname "$0")/previews.sh"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
+. "$(dirname "$0")/oldtakes.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
@@ -351,6 +352,8 @@ case $SHARD in
   web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
   # A take is one id from Render to its version, listed at once and never off, through a slow Calcifer and a reload (cl-945), with cl-942's.
   web-takeids) export DB_WEB="takeids focusfinish"; parts="tools_read db_existing_web logs" ;;
+  # A project cozy 0.24.0 made keeps every take under this cozy, and a take asked by id lands as that version (cl-945).
+  old-takes) parts="old_takes logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
   web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
   # Files dropped: twenty pictures at once, each drawn once where and as it stays (cl-918), and Place's drop, chooser, rename and moves.
@@ -363,8 +366,8 @@ case $SHARD in
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
   # computer placed on (cl-894), a new take never changing what's approved (cl-908), one not looked at (cl-928), the take looked at in
-  # Focus drawn when it finishes (cl-942), and a take one id from Render to its version (cl-945).
-  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes focusfinish takeids prepares logs" ;;
+  # Focus drawn when it finishes (cl-942), and a take one id from Render to its version, a 0.24.0 project's takes kept (cl-945).
+  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes focusfinish takeids old_takes prepares logs" ;;
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
