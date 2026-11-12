@@ -39,7 +39,7 @@ fn run(lifetime: Lifetime) -> io::Result<()> {
     }
     // Before config/journal records: trusted parents can retain private allocator bytes for
     // their lifetime. Unsupported private execution still leaves ordinary maintenance usable.
-    let _ = platform::private_exec::disable_private_core_dumps();
+    let _ = platform::private_exec::disable_project_parent_dumps();
     // Linux names the calling thread: this one, before any other starts.
     if let Err(error) = platform::process::set_name("tensord") {
         if !error.is_unsupported() {
