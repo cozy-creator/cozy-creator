@@ -1065,8 +1065,9 @@ code {
   transition: transform 400ms linear;
 }
 /* An image or video being made, at rest (cl-940, cl-947): what its run reads, full-bleed, each at full height side by side; over them the start of its words
-   on a scrim, under the meter. A preview of what it makes (.latent-preview) covers the pictures, never the words. */
-.making {
+   on a scrim, under the meter. A preview of what it makes (.latent-preview) covers the pictures, never the words. Only that: a take being made
+   in the takes column is `.take.making`, and pressable (cl-945; Paul 11-12, "I cannot click on it"). */
+.media > .making {
   position: absolute;
   inset: 0;
   pointer-events: none;
