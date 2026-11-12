@@ -639,36 +639,28 @@ async function implementationRow(page, operation, id) {
   return row;
 }
 
-/** Navigate through stored versions using only the visible back/forward controls. */
+/** Select one of the retained states through the original right-hand preview rail. */
 async function selectVersion(page, name, wanted) {
   await openBox(page, name);
   const folder = (await projectFromPage(page)).path;
   const card = boxOf(page, name);
-  const counter = card.getByLabel('Current version', { exact: true });
-  const current = async () => Number((await counter.innerText()).match(/(\d+)\s*\/\s*\d+/)?.[1]);
-  for (let step = 0; step < 100; step++) {
-    const at = await current();
-    if (at === wanted) {
-      await until(`${name} current version is persisted`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.version), (number) => number === wanted);
-      return;
-    }
-    if (!Number.isFinite(at)) throw new Error(`invalid version counter for ${name}: ${await counter.innerText()}`);
-    await card.getByRole('button', { name: at < wanted ? 'Next version' : 'Previous version', exact: true }).click();
-    await until(`${name} version moves from ${at}`, current, (now) => now !== at);
-  }
-  throw new Error(`${name} did not reach version ${wanted}`);
+  const take = card.locator(`.image-history.here-side .take[data-take="${wanted}"]`);
+  await take.waitFor();
+  await take.scrollIntoViewIfNeeded();
+  await take.click();
+  await until(`${name} current version is persisted`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.version), (number) => number === wanted);
+  await until(`${name} selected thumbnail is current`, () => card.locator('.image-history.here-side .take.on[data-take]').getAttribute('data-take'), (number) => number === String(wanted));
 }
 
-/** Pick a real implementation inside a node's operation configuration. */
+/** Replace the tool with a real compatible implementation dragged from its category. */
 async function chooseModel(page, name, id, operation) {
   await openBox(page, name);
+  const folder = (await projectFromPage(page)).path;
   const card = boxOf(page, name);
-  const tool = card.locator('select[aria-label="Tool"]');
-  if (operation && await tool.inputValue() !== operation) await tool.selectOption(operation);
-  const model = card.locator('select[aria-label="Model"]');
-  await model.locator('option').filter({ hasText: /./ }).first().waitFor({ state: 'attached' });
-  await until(`model ${id} is available`, () => model.locator('option').evaluateAll((options) => options.map((option) => option.value)), (ids) => ids.includes(id));
-  await model.selectOption(id);
+  const tool = await implementationRow(page, operation, id);
+  const target = await card.locator('.media').boundingBox();
+  await carry(page, tool, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
+  await until(`tool ${id} attached`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.tool), (held) => held === id);
 }
 
 /** Python as this OS names it: Windows has no python3 of its own. */

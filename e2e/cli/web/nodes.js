@@ -298,10 +298,10 @@ function linesOf(text, name) {
   await away();
   await page.waitForTimeout(100);
 
-  // The image keeps its deletion target and its current-version controls at rest.
+  // A plain imported image keeps its deletion target at rest, with no linear counter/arrow control.
   const atRest = box('source-a').locator('.head button[aria-label="Delete"]');
   check('at_rest_delete_is_always_visible', await atRest.isVisible() && ((await atRest.boundingBox())?.width ?? 0) >= 24, await box('source-a').innerText());
-  check('at_rest_image_has_version_controls', await box('source-a').getByLabel('Current version', { exact: true }).innerText() === '1/1' && await box('source-a').getByRole('button', { name: 'Previous version', exact: true }).isDisabled() && await box('source-a').getByRole('button', { name: 'Next version', exact: true }).isDisabled());
+  check('at_rest_image_has_no_linear_version_controls', await box('source-a').getByLabel('Current version', { exact: true }).count() === 0 && await box('source-a').getByRole('button', { name: /^(Previous|Next) version$/ }).count() === 0);
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
   await open('Sheet');
   check('hover_shows_render', (await box('Sheet').locator('button[aria-label=Render]').count()) === 1);
@@ -666,13 +666,13 @@ function linesOf(text, name) {
     check('rendered_with_no_reload', await page.evaluate(() => window.notReloaded === true));
     await render('Sheet', 2);
     await open('Sheet');
-    await until('its count', () => box('Sheet').getByLabel('Current version', { exact: true }).textContent(), (text) => text === '2/2');
+    await until('its two retained previews', () => box('Sheet').locator('.image-history.here-side .take[data-take]').count(), (count) => count === 2);
 
-    // Back/forward changes the one selected state, durably, without adding versions.
+    // The original right-hand previews change the selected state durably without adding or pruning alternatives.
     await selectVersion(page, 'Sheet', 1);
     await until('first version selected in the project', () => of('Sheet'), (held) => held.version === 1);
-    check('selected_version_is_persistent', (await box('Sheet').getByLabel('Current version', { exact: true }).innerText()) === '1/2');
-    check('images_have_no_thumbnail_strip', await box('Sheet').locator('.here-side .take, .takes .take[data-take]').count() === 0);
+    check('selected_version_is_persistent', await box('Sheet').locator('.image-history .take.on[data-take]').getAttribute('data-take') === '1');
+    check('images_keep_the_original_right_previews', await box('Sheet').locator('.image-history.here-side .take[data-take]').count() === 2);
     check('image_view_has_no_description', await box('Sheet').locator('.desc-field').count() === 0);
     await openBox(page, 'Sheet');
     const viewButton = box('Sheet').getByRole('button', { name: 'View image', exact: true });
@@ -875,7 +875,7 @@ function linesOf(text, name) {
     // The box is back as it's asked for, ahead of the file and its versions: then all its versions, in the project and on the page.
     const restored = await until('its versions back', () => versions('Other'), (n) => n === takes).catch(() => versions('Other'));
     await open('Other');
-    const shown = Number((await box('Other').getByLabel('Current version', { exact: true }).innerText()).split('/')[1]);
+    const shown = await box('Other').locator('.image-history.here-side .take[data-take]').count();
     check('undo_brings_its_versions', restored === takes && shown === takes, { takes, restored, shown });
     await away();
 
