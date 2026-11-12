@@ -293,6 +293,7 @@ pub(crate) fn root(descriptor: &LocalPrivateStorage) -> io::Result<PathBuf> {
     let metadata = fs::symlink_metadata(&root)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() || platform::durable::canonical(&root)? != root { return Err(denied()); }
     let file = platform::durable::open_nofollow(&root, &fs::OpenOptions::new().read(true))?;
+    platform::durable::set_file_mode(&file, 0o700)?;
     let mut pinned = scope.area.lock().unwrap();
     if let Some(known) = pinned.as_ref() {
         if platform::durable::FileId::of(known)? != platform::durable::FileId::of(&file)? { return Err(denied()); }
@@ -303,6 +304,8 @@ fn owned_directory(path: &std::path::Path) -> io::Result<()> {
     match fs::create_dir(path) { Ok(()) => (), Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (), Err(error) => return Err(error) }
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() || platform::durable::canonical(path)? != path { return Err(denied()); }
+    let directory = platform::durable::open_nofollow(path, &fs::OpenOptions::new().read(true))?;
+    platform::durable::set_file_mode(&directory, 0o700)?;
     Ok(())
 }
 
