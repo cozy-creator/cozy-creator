@@ -44,7 +44,8 @@ const SCHEMA: &str = "
         served INTEGER NOT NULL DEFAULT 0,
         reason TEXT,
         created_at INTEGER NOT NULL,
-        alias TEXT
+        alias TEXT,
+        held TEXT
     ) STRICT;
     CREATE UNIQUE INDEX machines_rental ON machines (rental_id) WHERE rental_id IS NOT NULL;
     CREATE UNIQUE INDEX machines_alias ON machines (alias) WHERE alias IS NOT NULL;
@@ -167,6 +168,42 @@ fn job_column(writer: &mut Connection) -> Result<()> {
     if !has {
         writer.execute_batch("ALTER TABLE runs ADD COLUMN job BLOB")?;
     }
+    Ok(())
+}
+
+/// A store made before a hold by hand was kept (cl-952) gains that column: no machine held.
+fn held_column(writer: &mut Connection) -> Result<()> {
+    let has: bool = writer.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('machines') WHERE name = 'held')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has {
+        return Ok(());
+    }
+    // Each machine's hold as its updates leave it, newest first: what an older Calcifer read from them (minus whether the machine
+    // still runs it, which only it says).
+    let tx = writer.transaction()?;
+    tx.execute_batch("ALTER TABLE machines ADD COLUMN held TEXT")?;
+    let updates: Vec<(String, String, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT machine, target, idempotency_key FROM runs WHERE kind = 'update' AND machine IS NOT NULL
+                 AND state = 'settled' AND status = 'completed' ORDER BY number DESC",
+        )?;
+        let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut seen = std::collections::HashSet::new();
+    for (machine, target, key) in updates {
+        if seen.contains(&machine) {
+            continue;
+        }
+        if let Some(hold) = crate::rc::hold_of(&key, &target) {
+            tx.execute("UPDATE machines SET held = ?2 WHERE name = ?1", params![machine, hold])?;
+            seen.insert(machine);
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -606,6 +643,7 @@ impl Store {
                 batch_column(&mut writer)?;
                 job_column(&mut writer)?;
                 attempt_column(&mut writer)?;
+                held_column(&mut writer)?;
             }
             other => return Err(StoreError::Version(other)),
         }
@@ -956,6 +994,24 @@ impl Store {
     }
 
     /// The name a renamed machine had before.
+    /// The update by hand that holds `name` on its software, in its words (cl-952).
+    pub(crate) fn held(&self, name: &str) -> Result<Option<String>> {
+        self.read(|conn| {
+            Ok(conn
+                .query_row("SELECT held FROM machines WHERE name = ?1", [name], |r| r.get(0))
+                .optional()?
+                .flatten())
+        })
+    }
+
+    /// Holds `name` on its software by hand (`words`, the update's), or lets it go (none).
+    pub(crate) fn hold(&self, name: &str, words: Option<&str>) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("UPDATE machines SET held = ?2 WHERE name = ?1", params![name, words])?;
+            Ok(())
+        })
+    }
+
     pub(crate) fn alias(&self, name: &str) -> Result<Option<String>> {
         self.read(|conn| {
             Ok(conn
@@ -2145,7 +2201,8 @@ fn put_machine_in(tx: &Transaction, machine: &MachineRow) -> Result<()> {
              served, reason, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT (name) DO UPDATE SET kind = ?2, hub = ?3, rental_id = ?4, worker_id = ?5,
-             address = ?6, pin = ?7, key = ?8, state = ?9, served = served OR ?10, reason = ?11",
+             address = ?6, pin = ?7, key = ?8, state = ?9, served = served OR ?10, reason = ?11,
+             held = CASE WHEN rental_id IS ?4 THEN held END",
         params![
             machine.name,
             machine_kind(machine.kind),

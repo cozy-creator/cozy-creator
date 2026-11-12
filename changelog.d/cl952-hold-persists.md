@@ -1,0 +1,1 @@
+A machine held on its software by hand (`cozy machine update <machine> --runtime …`) stays held across Calcifer's restarts until `cozy machine update <machine>` names nothing: the hold is kept in Calcifer's store. Before, a dev home could move a held rental to the RC after a restart.
