@@ -1128,6 +1128,11 @@ export class CanvasStore {
     }
   }
 
+  /** A model's Hub card, as Calcifer reads it. */
+  modelDetail(name: string) {
+    return this.client.model(name)
+  }
+
   /** What's on it changed, in one write: the room it takes changes with it. */
   putOn(name: string, fields: Record<string, unknown>) {
     void this.setFields(name, fields)

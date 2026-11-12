@@ -248,6 +248,64 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await page.waitForTimeout(300);
   await shot('lora-strength-light');
   await page.setViewportSize({ width: 1600, height: 1100 });
+  // cl-968: a LoRA added with trigger words puts them after the box's prompt once; any prompt of the box that says them draws them in a token
+  // colour, typed or appended; its row beneath the box shows them and puts one at the caret; removed, the words stay and the colour goes.
+  const lit = (field) => page.evaluate((field) => {
+    const held = [...document.querySelectorAll(`.card.here[data-asset="scene"] [data-field="${field}"]`)];
+    const marks = globalThis.CSS?.highlights?.get('lora-trigger');
+    return marks ? [...marks].filter((range) => held.some((el) => el.contains(range.startContainer))).map((range) => range.toString()) : [];
+  }, field);
+  const loraRef = (await fieldsOf('scene')).models?.base_model?.lora?.[0]?.ref ?? '';
+  const words = String((await api(`/v1/models/${loraRef.split('@')[0]}`)).body?.trigger ?? '').split(',').map((word) => word.trim()).filter(Boolean);
+  const times = (text, word) => String(text ?? '').toLowerCase().split(word.toLowerCase()).length - 1;
+  const added = await fieldsOf('scene');
+  seen.triggers = { lora: loraRef, words, summary: added.summary };
+  check('a_lora_added_puts_its_trigger_after_the_prompt_once', words.length > 0 && words.every((word) => times(added.summary, word) === 1) && String(added.summary).startsWith('A harbour at dusk.'), seen.triggers);
+  const litSummary = await until('the trigger drawn in the summary', () => lit('summary'), (marks) => words.every((word) => marks.some((mark) => mark.toLowerCase() === word.toLowerCase()))).catch(() => lit('summary'));
+  check('the_appended_trigger_is_drawn', words.every((word) => litSummary.some((mark) => mark.toLowerCase() === word.toLowerCase())), litSummary);
+  // Typed in another prompt of the box.
+  const music = scene.locator('[data-field="music"]').first();
+  await music.click();
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.type(`${words[0]} under a slow drum`);
+  await scene.locator('[data-field="summary"]').first().click();
+  const typed = await until('the typed trigger stored', () => fieldsOf('scene'), (fields) => times(fields.music, words[0]) === 1).catch(() => fieldsOf('scene'));
+  const litMusic = await until('the typed trigger drawn', () => lit('music'), (marks) => marks.some((mark) => mark.toLowerCase() === words[0].toLowerCase())).catch(() => lit('music'));
+  check('a_trigger_typed_in_another_prompt_is_drawn', times(typed.music, words[0]) === 1 && litMusic.length >= 1, { music: typed.music, litMusic });
+  // Its row beneath the box shows its triggers; one clicked goes at the caret of the prompt last typed in.
+  const row = models.locator('.active-models .lora-triggers').first();
+  seen.trigger_row = await row.allInnerTexts().catch(() => []);
+  const soundscape = scene.locator('[data-field="soundscape"]').first();
+  await soundscape.click();
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.type('Wind,');
+  await row.locator('.lora-trigger').first().click();
+  const inserted = await until('a clicked trigger at the caret', () => fieldsOf('scene'), (fields) => times(fields.soundscape, words[0]) === 1).catch(() => fieldsOf('scene'));
+  check('its_row_shows_its_triggers_and_one_goes_at_the_caret', words.every((word) => seen.trigger_row.join(' ').includes(word) || words.length > 4) && /^Wind,\s*/.test(String(inserted.soundscape)) && times(inserted.soundscape, words[0]) === 1, { row: seen.trigger_row, soundscape: inserted.soundscape });
+  // Shown at 1440×900 and 1920×1080, light and dark (Paul's UI rule).
+  for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+    await page.setViewportSize({ width, height });
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, theme === 'dark');
+      await page.waitForTimeout(300);
+      await shot(`triggers-${width}x${height}-${theme}`);
+    }
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.setViewportSize({ width: 1600, height: 1100 });
+  // The LoRA removed: its words stay as written, no longer drawn.
+  await button.click();
+  await picker.waitFor();
+  await picker.locator('[data-model-slot]', { hasText: /^Base Model$/ }).click();
+  await picker.getByRole('button', { name: 'LoRAs', exact: true }).click();
+  await picker.locator('.model-picker-adapters button[aria-label^="Remove "]').first().click();
+  const removed = await until('the LoRA removed', () => fieldsOf('scene'), (fields) => !(fields.models?.base_model?.lora?.length)).catch(() => fieldsOf('scene'));
+  await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
+  await picker.waitFor({ state: 'detached' });
+  const unlit = await until('no trigger drawn', async () => [...await lit('summary'), ...await lit('music'), ...await lit('soundscape')], (marks) => marks.length === 0).catch(() => lit('summary'));
+  seen.trigger_removed = { summary: removed.summary, music: removed.music, unlit };
+  check('the_lora_removed_its_words_stay_undrawn', !(removed.models?.base_model?.lora?.length) && words.every((word) => times(removed.summary, word) === 1) && times(removed.music, words[0]) === 1 && unlit.length === 0, seen.trigger_removed);
+
   // Calcifer refuses a box naming one slot twice with two models, in one line (cl-960).
   const twice = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: shotTool.id, kind: 'video', name: 'twice', exact: true, at: { x: 80, y: 900 },
     fields: { summary: 'Twice.', beats: [{ description: 'Boats.', duration: 5 }], models: { base_model: { ref: 'sexgod1979/pinkcherry' }, [bases[0].slot.includes('.models.') ? bases[0].slot : 'ref2va_segment.models.base_model']: { ref: 'tenstrip/eros-max' } } } }) });

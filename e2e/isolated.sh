@@ -327,7 +327,9 @@ PYH3
       [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; exit 1; }
       cozy --json lora publish "$lora" 0.1.0 "$commit" -y > "$seed/publish-${lora##*/}.json" 2>&1 \
         || { echo "publishing $lora failed: $(tail -c 600 "$seed/publish-${lora##*/}.json")" >&2; exit 1; }
-      cozy --json lora edit "$lora" --family minimax-h3 > "$seed/edit-${lora##*/}.json" 2>&1 \
+      # Trigger words, as their Hub cards record them (cl-968).
+      case $lora in nrdx/*) trigger='bfs_swap, head swap' ;; *) trigger='vfx_edit' ;; esac
+      cozy --json lora edit "$lora" --family minimax-h3 --trigger "$trigger" > "$seed/edit-${lora##*/}.json" 2>&1 \
         || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; exit 1; }
     done
     log "published ${h3%@*}@${h3#*@} (a stand-in) and two LoRAs of family minimax-h3"

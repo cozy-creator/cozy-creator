@@ -10,6 +10,7 @@ import { useCanvasStore, useElement } from "./context"
 import { Thumb } from "./Media"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, retext, timecode } from "./ranges"
 import { chipWords, mentionsIn, withMentions } from "./text"
+import { paintTriggers, takesWords, typedIn, unpaint, useTriggers } from "./triggers"
 import { isSelf, mentionFrom, NO_BARE_SELF } from "./versions"
 
 /** What a chip says: its name in its brackets, a range of a video as timecode, and an orbit's angle in degrees. */
@@ -151,6 +152,10 @@ export function MentionText({
   // What its tool can't use here, as Calcifer said it: struck through, never sent.
   const told = useElement(asset)?.asset?.unused
   const unused = useMemo(() => (told ?? []).filter((one) => one.at === place), [told, place])
+  // Its box's LoRAs' trigger words, drawn where it says them, typed or appended (cl-968).
+  const triggers = useTriggers(store, asset)
+  const triggerKey = triggers.join("\u0000")
+  const paint = useCallback(() => { if (box.current) paintTriggers(box.current, triggerKey ? triggerKey.split("\u0000") : []) }, [triggerKey])
 
   // While it's being typed in, what it holds is what's typed. Left alone it shows names as they now stand, painted only if that differs,
   // so its caret survives a blur and a drop can still land there.
@@ -177,9 +182,38 @@ export function MentionText({
     caret.current = null
   }, [value, missing, store, names, asset, unused])
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: what it says, painted again whenever it's shown anew
+  useLayoutEffect(() => paint(), [paint, value, names, missing])
+  useEffect(() => {
+    const el = box.current
+    return () => { if (el) unpaint(el) }
+  }, [])
+
   const emit = useCallback(() => {
     if (box.current) onDraft(read(box.current))
   }, [onDraft])
+
+  /** Words where `at` says, else at the end, spaced from what's beside them: a trigger clicked on its LoRA's row. */
+  const insertWords = useCallback(
+    (words: string, at: Range | null) => {
+      const el = box.current
+      if (!el) return
+      const inside = at && el.contains(at.startContainer)
+      const before = inside ? (at.startContainer.textContent ?? "").slice(0, at.startOffset) : read(el)
+      const after = inside ? (at.endContainer.textContent ?? "").slice(at.endOffset) : ""
+      const node = document.createTextNode(`${before && !/\s$/.test(before) ? " " : ""}${words}${after && !/^\s/.test(after) ? " " : ""}`)
+      if (inside) {
+        at.deleteContents()
+        at.insertNode(node)
+      } else el.append(node)
+      if (document.activeElement === el) document.getSelection()?.collapse(node, node.length)
+      emit()
+      paint()
+      onSave()
+    },
+    [emit, paint, onSave],
+  )
+  useEffect(() => takesWords(asset, place, (words) => insertWords(words, caret.current)), [asset, place, insertWords])
 
   const remember = useCallback(() => {
     const selection = document.getSelection()
@@ -409,7 +443,9 @@ export function MentionText({
         onInput={() => {
           emit()
           look()
+          paint()
         }}
+        onFocus={() => typedIn(asset, place)}
         onKeyDown={keys}
         onClick={clickName}
         onCopy={copy}
