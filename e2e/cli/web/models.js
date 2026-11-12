@@ -4,7 +4,9 @@
 // or Advanced; no fine-tune or LoRA rows of its own; beneath it its tool with Models & LoRAs beside it, the picker listing H3's Base Model once
 // (its segments' slots as one, written `base_model`), a LoRA picked there set on the box; its tool named once, "<Package> · <Tool>", under its media, nothing of it
 // beside the title. Qwen's Image has the same component beneath it, and its Models & LoRAs opens the same picker. Screenshots of each.
-// The isolated Hub holds H3's default model (a stand-in) and an H3 LoRA of its family (e2e/isolated.sh, `loras`).
+// Its VAE slot offers the VAEs of its family and its Model slot none of them; a VAE picked is the box's `vae` (se-131).
+// The isolated Hub holds H3's default model (a stand-in) and an H3 LoRA of its family (e2e/isolated.sh, `loras`), and Qwen's
+// default model and a VAE of its family (stand-ins, `vaes`).
 //   node models.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -326,6 +328,28 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   seen.shapes = { h3: h3Shape, image: imageShape };
   check('an_image_opens_the_same_picker', JSON.stringify(h3Shape) === JSON.stringify(imageShape) && (await picker.locator('[data-model-slot]').count()) >= 1 && (await picker.locator('[data-model-slot]').count()) <= imageSlots, { h3Shape, imageShape, imageSlots });
   await shot('image-picker');
+  // Qwen's VAE: its own slot, offering its default and the VAE of its family, not its fine-tunes; the Model slot offers no VAE.
+  const vae = 'madebyollin/texture-fix-vae';
+  // A slot's page, once its list holds what `listed` says it should.
+  const slotOpen = async (label, listed) => {
+    await picker.locator('button[data-model-slot]', { hasText: new RegExp(`^${label}$`) }).click();
+    return until(`${label} lists its choices`, () => radios.allInnerTexts(), listed).catch(() => radios.allInnerTexts());
+  };
+  const back = () => picker.getByRole('button', { name: 'Back to model slots', exact: true }).click();
+  seen.image_slots = await picker.locator('button[data-model-slot]').allInnerTexts();
+  const vaes = await slotOpen('VAE', (said) => said.some((one) => /Texture Fix VAE/.test(one)));
+  seen.vae_choices = vaes;
+  check('the_vae_slot_offers_its_familys_vaes', vaes.length === 2 && /Qwen Image 2\.1/.test(vaes[0]) && /madebyollin \/ Texture Fix VAE/.test(vaes[1]), vaes);
+  await shot('qwen-vae');
+  await radios.filter({ hasText: 'Texture Fix VAE' }).first().click();
+  const picked = await until('the VAE on the box', () => fieldsOf('still'), (fields) => fields.models?.vae?.ref === vae).catch(() => fieldsOf('still'));
+  seen.vae_models = picked.models;
+  check('a_vae_picked_is_the_boxs_vae', picked.models?.vae?.ref === vae && Object.keys(picked.models).length === 1, picked.models);
+  await shot('qwen-vae-picked');
+  await back();
+  const modelChoices = await slotOpen('Model', (said) => said.length >= 1);
+  seen.model_choices = modelChoices;
+  check('the_model_slot_offers_no_vae', modelChoices.length >= 1 && !modelChoices.some((one) => /Texture Fix VAE/.test(one)), modelChoices);
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   await closeBox(page);
 
