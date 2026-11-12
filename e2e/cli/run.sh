@@ -370,7 +370,7 @@ case $SHARD in
   local-code) parts="unseen local_edits hub_dependency hub_published child_latents path_manifest rental_end logs" ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
-  # A machine's install, download and run lines with two jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
+  # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="machine_show_runs writes_once page_resend hub_away broken_answers logs" ;;
