@@ -79,7 +79,10 @@ const RECORD = () => {
     return { open: Boolean(side), making: ids('.take.making[data-take-id]'), landed: ids('.take[data-take][data-take-id]'), drawn: (host?.querySelector('img') && host.dataset.displayedSha?.replace(/^sha256:/, '')) || null };
   };
   window.takesNow = look;
+  // Every note said, as it's said: one that's gone by the time it's looked for was still said.
+  const said = (window.notesSaid = []);
   const note = () => {
+    for (const shown of document.querySelectorAll('.notes .note')) if (!said.includes(shown.innerText)) said.push(shown.innerText);
     const now = look();
     const last = log.at(-1);
     if (!last || JSON.stringify({ ...last, t: 0 }) !== JSON.stringify({ ...now, t: 0 })) log.push({ ...now, t: Math.round(performance.now()) });
@@ -142,9 +145,11 @@ const RECORD = () => {
     return { from, pressed, take: pressed.after.making.find((take) => !pressed.before.making.includes(take)) };
   };
   // From the press on, the take is listed in every look, being made and then landed, never off in between.
+  // From its first listing on (the press's own frame is a_listed…), every look lists it, made or landed: never off in between.
   const steady = (log, take) => {
-    const off = log.filter((look) => look.open && !look.making.includes(take) && !look.landed.includes(take));
-    return { off: off.slice(0, 4), landed: log.some((look) => look.landed.includes(take)) };
+    const first = log.findIndex((look) => look.making.includes(take) || look.landed.includes(take));
+    const off = first < 0 ? [] : log.slice(first).filter((look) => look.open && !look.making.includes(take) && !look.landed.includes(take));
+    return { first, off: off.slice(0, 4), landed: log.some((look) => look.landed.includes(take)) };
   };
   const versionOf = (row, take) => row.prefixes.find((version) => version.id === take);
 
@@ -162,7 +167,7 @@ const RECORD = () => {
   const versionA = versionOf(two, a.take);
   const drawnA = await until('take 2 drawn', now, (look) => look.drawn === versionA?.main?.sha256?.replace(/^sha256:/, ''), 20_000).catch(() => null);
   seen.a = { take: a.take, version: versionA?.number, steady: steadyA };
-  check('a_never_off_until_it_lands', steadyA.off.length === 0 && steadyA.landed, { ...steadyA, log: logA.slice(0, 12) });
+  check('a_never_off_until_it_lands', steadyA.first >= 0 && steadyA.off.length === 0 && steadyA.landed, { ...steadyA, log: logA.slice(0, 12) });
   check('a_lands_as_the_version_of_its_id', versionA?.number === 2, two.prefixes.map((version) => [version.number, version.id]));
   check('a_viewer_draws_it', drawnA !== null, await now());
 
@@ -203,7 +208,7 @@ const RECORD = () => {
   const logB = await logFrom(b.from);
   const steadyB = steady(logB, b.take);
   seen.b = { take: b.take, steady: steadyB };
-  check('b_never_off_until_it_lands', steadyB.off.length === 0 && steadyB.landed, { ...steadyB, log: logB.slice(0, 12) });
+  check('b_never_off_until_it_lands', steadyB.first >= 0 && steadyB.off.length === 0 && steadyB.landed, { ...steadyB, log: logB.slice(0, 12) });
   check('b_lands_as_the_version_of_its_id', versionOf(three, b.take)?.number === 3, three.prefixes.map((version) => [version.number, version.id]));
 
   // C: reloaded while it's being made: the same take, by its id, listed again and landing.
@@ -300,10 +305,14 @@ const RECORD = () => {
   const secondDone = await until('the second lands', asset, (row) => row.prefixes.some((version) => version.id === e2.take), FIRST_RUN_MS);
   const v2 = versionOf(secondDone, e2.take);
   const note = page.locator('.notes .note', { hasText: `card finished: version ${v2.number}` });
+  // Its toast's View opens it. Both takes may run at once and the second land first, while the first is looked at: its toast may have gone
+  // by now, said all the same; one that landed while it was the one looked at isn't said, and it's drawn.
   const said = await note.waitFor({ timeout: 15_000 }).then(() => true, () => false);
   if (said) await note.locator('button:text-is("View")').click();
-  const drawn2 = said ? await until('the second drawn by View', now, (look) => look.drawn === v2.main.sha256.replace(/^sha256:/, ''), 20_000).catch(() => null) : null;
-  check('e_view_opens_the_right_take', drawn2 !== null, { said, look: await now(), v2: v2.number });
+  const sha2 = v2.main.sha256.replace(/^sha256:/, '');
+  const drawn2 = said ? await until('the second drawn by View', now, (look) => look.drawn === sha2, 20_000).catch(() => null) : null;
+  const gone = !said && (await page.evaluate((text) => window.notesSaid.some((one) => one.includes(text)), `card finished: version ${v2.number}`));
+  check('e_view_opens_the_right_take', said ? drawn2 !== null : gone || (await now()).drawn === sha2, { said, gone, look: await now(), v2: v2.number });
   check('e_tiles_pressable', covered.length === 0, covered);
   await shot('e-two');
 
