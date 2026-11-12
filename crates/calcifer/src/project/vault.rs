@@ -633,8 +633,11 @@ pub(crate) fn start(api: &Arc<Api>) {
                     // The browser's save acknowledgements may include activity writes
                     // under this operation mutex. Never wait for them while owning it.
                     drop(_operation);
-                    let Ok(mut browser) = prepare_browser(&api) else { return; };
-                    let Ok(_operation) = op.try_lock() else { return; };
+                    let mut browser = match prepare_browser(&api) {
+                        Ok(browser) => browser,
+                        Err(why) => { say(&root, "browser", || format!("its idle lock waits for Cozy's browser to prepare: {}", why.message)); return; }
+                    };
+                    let Ok(_operation) = op.try_lock() else { say(&root, "operation", || "its idle lock waits for a vault operation".into()); return; };
                     let still_needs = held(&root).is_some_and(|session| {
                         let session = session.lock().expect("vault session");
                         session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
