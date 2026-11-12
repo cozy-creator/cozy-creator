@@ -3031,8 +3031,7 @@ impl Pool {
             .unwrap_or_else(|error| ZygoteState::Failed(format!("import-only executor: {error}")))
     }
 
-    /// A new executor root and its socket path. The socket is named through this process's
-    /// descriptor of the root (Linux `sun_path` limit).
+    /// A new executor root and its socket path (`device_executor::socket_path`).
     fn executor_endpoint(&self) -> io::Result<(PathBuf, PathBuf, File)> { self.executor_endpoint_in(None) }
 
     fn executor_endpoint_in(&self, private: Option<&Path>) -> io::Result<(PathBuf, PathBuf, File)> {
@@ -3041,19 +3040,13 @@ impl Pool {
         let root = base.join(crate::uuid::simple());
         fs::create_dir(&root)?;
         let directory = platform::durable::open_dir(&root)?;
-        // Linux names it through this process's descriptor of the root; elsewhere it is the
-        // root's own, or a short private one when that is too long.
-        #[cfg(target_os = "linux")]
-        let socket = if private.is_some() {
-            // Private execution uses an inherited local stream; no socket inode is created.
-            PathBuf::new()
-        } else { PathBuf::from(format!(
-            "/proc/{}/fd/{}/executor",
-            std::process::id(),
-            std::os::fd::AsRawFd::as_raw_fd(&directory)
-        )) };
-        #[cfg(not(target_os = "linux"))]
-        let socket = crate::device_executor::socket_path(&root, "executor")?;
+        // Private execution uses an inherited local stream: no socket inode. Any other executor
+        // dials the root's own path, or a short private one when that is too long; never this
+        // process's /proc descriptors, which its non-dumpable state closes to other processes.
+        let socket = match private {
+            Some(_) if cfg!(target_os = "linux") => PathBuf::new(),
+            _ => crate::device_executor::socket_path(&root, "executor")?,
+        };
         Ok((root, socket, directory))
     }
 
