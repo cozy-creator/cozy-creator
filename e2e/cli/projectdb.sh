@@ -597,15 +597,10 @@ cp "$COZY" "$now"
 in_cozy "$old" && [ "$(cozy --version)" = "cozy 0.24.0" ] || { check "migrate: 0.24.0 in this cozy's place: $(cozy --version)"; in_cozy "$now"; return; }
 echo "migrate: Calcifer $(api "http://$ADDR/v1/status" | jq -r .version) makes it"
 mkdir -p "$M"; cp "$here/project/draw.py" "$M/"
-yaml_in "$M" <<'YAML' || { in_cozy "$now"; return; }
-version: 4
-assets:
-  notes: {text: Notes 0.24.0 wrote.}
-  drawn:
-    tool: ./draw.py/draw
-    instructions: A still.
-YAML
-for c in red teal navy olive; do still "$M/$c.png" "$c"; done
+# As its page makes boxes (cl-930). A tool box named, with its kind, is made with no machine to read the tool.
+jq -n '[{name: "notes", fields: {text: "Notes 0.24.0 wrote."}}, {name: "drawn", tool: "./draw.py/draw", kind: "image", fields: {instructions: "A still."}}]' \
+  | boxes_in "$M" || { check "migrate: 0.24.0 made no boxes"; in_cozy "$now"; return; }
+for c in red teal navy olive; do ffmpeg -v error -y -f lavfi -i "color=c=$c:size=832x480" -frames:v 1 "$M/$c.png"; done
 project_import "$M" "$M/red.png" take > "$OUT/migrate-import.txt" 2>&1 || check "migrate: import take: $(tail -c 300 "$OUT/migrate-import.txt")"
 for c in teal navy; do
   source="sha256:$(sha "$M/$c.png")"
@@ -695,7 +690,7 @@ migrate_facts() {
 # migrate_read <project> <tag>: what it holds, to $OUT/migrate-<tag>-{facts,rows,yaml,history}.
 migrate_read() {
   migrate_facts "$1" > "$OUT/migrate-$2-facts" && migrate_rows "$1" > "$OUT/migrate-$2-rows" \
-    && project_api "$1" /yaml | yaml_body > "$OUT/migrate-$2-yaml" \
+    && project_api "$1" /yaml | sed '/^# cozy-project-base: /d' > "$OUT/migrate-$2-yaml" \
     && project_api "$1" /history | jq -c '[.entries[] | {words, undone: (.undone != null)}]' > "$OUT/migrate-$2-history"
 }
 # dump_of <project.db>: its schema version and the hash of all it holds (read; a WAL copy no one has open needs its -shm made).
