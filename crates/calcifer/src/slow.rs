@@ -2,7 +2,7 @@
 //! known to take, its bar: this machine's runs of it, else runs on other machines of its card, else runs on another card scaled by
 //! the Hub's per-SKU speeds; at its lane and size (megapixels and steps as its time left reads them, and frames, tokens and media
 //! duration asked), never from a run itself slow or slowed (a hot GPU, a Runtime without its kernels). A run whose bar has stages is
-//! timed from its first one, so a cold start's load is no slowness. Far is 1.4× the bar and 20 s more: said once, as soon as its
+//! timed from its first one, so a cold start's load is no slowness, and what a run spends downloading weights is never counted. Far is 1.4× the bar and 20 s more: said once, as soon as its
 //! time so far is and a cause is known (`tick`), else at its end with what its record measured.
 use ::api::{
     calcifer::{EtaBasis, Kind, Status, Warning},
@@ -94,6 +94,18 @@ impl Extent {
             .filter_map(|(a, b)| Some(a? / b.filter(|b| *b > 0.0)?))
             .product()
     }
+}
+
+/// What a run spent downloading weights at or after `from_ms`, on its machine's clock: each `downloading …` or `saving …` stage it
+/// entered (`entered`, each name's first), up to the next it entered, else `to_ms`. A first run on a fresh machine is no slower for it.
+fn downloading_ms(entered: &[(String, i64)], from_ms: i64, to_ms: i64) -> f64 {
+    let mut entered: Vec<&(String, i64)> = entered.iter().collect();
+    entered.sort_by_key(|(_, at)| *at);
+    let fetching = |stage: &str| (stage.starts_with("downloading ") || stage.starts_with("saving ")) && stage != crate::outputs::ARRIVING;
+    (entered.iter().enumerate())
+        .filter(|(_, (stage, at))| *at >= from_ms && fetching(stage))
+        .map(|(i, (_, at))| (entered.get(i + 1).map_or(to_ms, |(_, next)| *next).min(to_ms) - at).max(0) as f64)
+        .sum()
 }
 
 /// How many times its bar `took_ms` is, when far past it.
@@ -207,12 +219,12 @@ impl Calcifer {
 
     /// As it runs: far past its bar already, it says so now.
     pub(crate) fn slow_so_far(&self, id: &RunId) {
-        let (bar, since, width) = {
+        let (bar, since, width, entered) = {
             let live = lock(&self.live);
             let Some(live) = live.get(id).filter(|live| !live.slow_said) else { return };
             let Some(bar) = live.bar.clone() else { return };
             let first = live.entered.iter().find(|(stage, _)| bar.stages.contains(stage)).map(|(_, at)| *at);
-            (bar, first, live.width)
+            (bar, first, live.width, live.entered.clone())
         };
         let Ok(Some(row)) = self.store.run(id.as_str()) else { return };
         let (staged, since) = match (bar.lead_ms, since, row.started_at_ms) {
@@ -220,7 +232,8 @@ impl Calcifer {
             (None, _, Some(started)) => (false, started),
             _ => return,
         };
-        let took = (store::now_ms() - since) as f64;
+        let now = store::now_ms();
+        let took = (now - since) as f64 - downloading_ms(&entered, since, now);
         let allowed = bar.ms(staged, &Extent::of(&input(&row)));
         let Some(times) = far(took, allowed) else { return };
         // As it runs, only with a cause known: what its input doesn't say of its size, its end does.
@@ -256,6 +269,14 @@ impl Calcifer {
             (Some(took), Some(_)) if !took.stages.is_empty() => (true, took.total_ms() - took.lead_ms),
             _ => (false, outcome.execution_ms as f64),
         };
+        // Less what it spent downloading weights in that time: timed from its first stage, what came before is out already.
+        let entered = lock(&self.live).get(id).map(|live| live.entered.clone()).unwrap_or_default();
+        let from = match (staged, &took) {
+            (true, Some(took)) => entered.iter().filter(|(stage, _)| took.stages.iter().any(|own| own.name == *stage)).map(|(_, at)| *at).min().unwrap_or(i64::MIN),
+            _ => i64::MIN,
+        };
+        let last = entered.iter().map(|(_, at)| *at).max().unwrap_or(i64::MIN);
+        let took_ms = took_ms - downloading_ms(&entered, from, last);
         let allowed = bar.ms(staged, &Extent::of(&input(&row)));
         let Some(times) = far(took_ms, allowed) else { return };
         let width = lock(&self.live).get(id).map_or(0, |live| live.width);

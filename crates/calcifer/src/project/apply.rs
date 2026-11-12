@@ -183,6 +183,7 @@ struct Planning<'a> {
     told: Told,
     changes: Vec<Changed>,
     conflicts: Vec<Conflict>,
+    kept: Vec<Said>,
 }
 
 impl Planning<'_> {
@@ -228,7 +229,7 @@ impl Planning<'_> {
             self.told.error(format!("{name}.approved"), format!("a new node's takes are its files: it has {}", wrote.files.len()));
         }
         let mut changed: Vec<String> = [("description", wrote.description.is_some()), (TEXT, wrote.text.is_some())].into_iter().filter(|(_, said)| *said).map(|(key, _)| key.to_owned()).collect();
-        let (ask, element) = match &wrote.tool {
+        let (ask, element, kind) = match &wrote.tool {
             Some((id, None)) => {
                 self.told.error(format!("{name}.{id}"), "null takes a tool off; a new node has none");
                 return None;
@@ -246,7 +247,7 @@ impl Planning<'_> {
                 fields.extend(writes(&Map::new(), &empty, &merged, &tool));
                 changed.push(id.clone());
                 let media = if kind == "edit" { "video".to_owned() } else { tool.makes.clone() };
-                (NewAsset { tool: id.clone(), name: Some(name.clone()), exact: true, fields, kind: Some(media), ..empty_ask() }, false)
+                (NewAsset { tool: id.clone(), name: Some(name.clone()), exact: true, fields, kind: Some(media), ..empty_ask() }, false, kind)
             }
             None => match (wrote.files.first(), wrote.kind.as_deref()) {
                 (Some(first), kind) => {
@@ -256,7 +257,8 @@ impl Planning<'_> {
                     {
                         self.told.error(format!("{name}.kind"), format!("its file is {field}, not {kind}"));
                     }
-                    (NewAsset { name: Some(name.clone()), exact: true, fields, ..empty_ask() }, true)
+                    let shown = field.or(kind).unwrap_or("image").to_owned();
+                    (NewAsset { name: Some(name.clone()), exact: true, fields, ..empty_ask() }, true, shown)
                 }
                 (None, Some("edit")) => {
                     self.told.error(format!("{name}.kind"), "an edit's tool is cozy/edit: write its block, cozy/edit: {timeline: …}");
@@ -264,14 +266,14 @@ impl Planning<'_> {
                 }
                 (None, Some(TEXT)) | (None, None) if wrote.text.is_some() || wrote.kind.is_some() => {
                     fields.insert(TEXT.to_owned(), json!(wrote.text.clone().unwrap_or_default()));
-                    (NewAsset { name: Some(name.clone()), exact: true, fields, kind: Some(TEXT.to_owned()), ..empty_ask() }, false)
+                    (NewAsset { name: Some(name.clone()), exact: true, fields, kind: Some(TEXT.to_owned()), ..empty_ask() }, false, TEXT.to_owned())
                 }
                 (None, Some(kind)) => {
                     if wrote.text.is_some() {
                         self.told.error(format!("{name}.text"), "only a text node has text");
                     }
                     fields.insert(NODE_KIND.to_owned(), json!(kind));
-                    (NewAsset { name: Some(name.clone()), exact: true, fields, kind: Some(kind.to_owned()), ..empty_ask() }, false)
+                    (NewAsset { name: Some(name.clone()), exact: true, fields, kind: Some(kind.to_owned()), ..empty_ask() }, false, kind.to_owned())
                 }
                 (None, None) => {
                     self.told.error(name.as_str(), "a new node needs a kind, a tool's block or a take's file");
@@ -280,7 +282,17 @@ impl Planning<'_> {
             },
         };
         changed.extend((1..=wrote.files.len()).map(|number| format!("take {number}")));
-        self.changes.push(Changed { path: name.clone(), before: Value::Null, after: json!(changed) });
+        // As kubectl diff shows an object made: its name and kind, then each field it sets on a line of its own.
+        self.changes.push(Changed { path: name.clone(), before: Value::Null, after: json!({"kind": kind}) });
+        if !ask.tool.is_empty() {
+            self.changes.push(Changed { path: format!("{name}.tool"), before: Value::Null, after: json!(ask.tool) });
+        }
+        for (field, value) in ask.fields.iter().filter(|(field, _)| *field != NODE_KIND) {
+            self.changes.push(Changed { path: format!("{name}.{field}"), before: Value::Null, after: value.clone() });
+        }
+        for number in 1..=wrote.files.len() {
+            self.changes.push(Changed { path: format!("{name}.takes.{}", number - 1), before: Value::Null, after: json!(format!("take {number}, from its file")) });
+        }
         Some(Planned { name: name.clone(), did: "created", changed, write: Some(Write::New { ask, element, files: wrote.files.clone(), approved }), on: None })
     }
 
@@ -305,6 +317,9 @@ impl Planning<'_> {
         let mut ask = AssetPatch { fields: Map::new(), tool: None, typed: None };
         let mut changed = vec![];
         let path = |key: &str| format!("{name}.{key}");
+        if let Some(kind) = &wrote.kind {
+            self.kept(&path("kind"), &json!(kind), &json!(was.kind), &json!(now.kind), &name, Some(NODE_KIND), rev);
+        }
         if let Some(kind) = &wrote.kind
             && let Some(kind) = self.scalar(&path("kind"), &json!(kind), &json!(was.kind), &json!(now.kind), rev, &name, Some(NODE_KIND))
         {
@@ -330,6 +345,7 @@ impl Planning<'_> {
                 continue;
             };
             let was_words = was_words.cloned().unwrap_or_default();
+            self.kept(&path(key), &json!(mine), &json!(was_words), &json!(now_words), &name, Some(key), rev);
             if let Some(words) = self.words(&path(key), &now.id, key, &heads, rev, &name, &was_words, mine, now_words)
                 && canonical(&json!(words)) != canonical(&json!(now_words))
             {
@@ -352,6 +368,7 @@ impl Planning<'_> {
                     self.told.error(path("approved"), format!("{name} has no take {number}: it has {has}"));
                 }
                 _ => {
+                    self.kept(&path("approved"), &json!(mine), &json!(was.approved), &json!(now.approved), &name, Some("approved"), rev);
                     if let Some(merged) = self.scalar(&path("approved"), &json!(mine), &json!(was.approved), &json!(now.approved), rev, &name, Some("approved"))
                         && merged != json!(now.approved)
                     {
@@ -470,6 +487,7 @@ impl Planning<'_> {
             let at = format!("{name}.{key}");
             let base = then.get(&key).cloned().unwrap_or(Value::Null);
             let theirs = held.get(&key).cloned().unwrap_or(Value::Null);
+            self.kept(&at, &mine, &base, &theirs, name, Some(&key), rev);
             let text = Text { id: &now.id, heads, at: key.clone() };
             let value = self.merge(&at, &mine, &base, &theirs, field, &text, rev, name, &key);
             merged.insert(key, value);
@@ -794,12 +812,30 @@ impl Planning<'_> {
 
     /// Both changed it: with `--force-conflicts` the file's stands, else it's said and nothing is written.
     fn conflict(&mut self, path: &str, yours: Value, theirs: Value, name: &str, field: Option<&str>, rev: &str) {
-        let by = history::last_by(self.folder, name, field).map_or_else(|| "the project".to_owned(), |by| match by.via.as_str() {
+        let by = self.who(name, field);
+        self.conflicts.push(Conflict { path: path.to_owned(), yours, theirs, by, rev: rev.to_owned() });
+    }
+
+    /// Who last changed `field` of `name`, as the history says: `the page`.
+    fn who(&self, name: &str, field: Option<&str>) -> String {
+        history::last_by(self.folder, name, field).map_or_else(|| "the project".to_owned(), |by| match by.via.as_str() {
             "page" => "the page".to_owned(),
             "cli" => "the CLI".to_owned(),
             _ => "the API".to_owned(),
-        });
-        self.conflicts.push(Conflict { path: path.to_owned(), yours, theirs, by, rev: rev.to_owned() });
+        })
+    }
+
+    /// Each value at `path` the project changed since `rev` and the file left as it was then: it stands, and that's said, as nothing
+    /// changes silently. A value the file changed too is the merge's to settle.
+    #[allow(clippy::too_many_arguments)]
+    fn kept(&mut self, path: &str, mine: &Value, base: &Value, theirs: &Value, name: &str, field: Option<&str>, rev: &str) {
+        for (at, was, now) in leaves(path, base, theirs) {
+            let left = pick(mine, &at[path.len()..]).is_none_or(|mine| canonical(mine) == canonical(&was));
+            if left {
+                let message = format!("{}'s change since {rev} stands ({})", self.who(name, field), briefly(&now));
+                self.kept.push(Said::new(at, message));
+            }
+        }
     }
 }
 
@@ -817,6 +853,27 @@ fn leaves(at: &str, before: &Value, after: &Value) -> Vec<(String, Value, Value)
             was.iter().zip(now).enumerate().flat_map(|(index, (was, now))| leaves(&format!("{at}.{index}"), was, now)).collect()
         }
         _ => vec![(at.to_owned(), before.clone(), after.clone())],
+    }
+}
+
+/// What `value` holds at `path` (`.beats.0.duration`; empty, itself).
+fn pick<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.').filter(|step| !step.is_empty()).try_fold(value, |at, step| match at {
+        Value::Array(items) => items.get(step.parse::<usize>().ok()?),
+        Value::Object(map) => map.get(step),
+        _ => None,
+    })
+}
+
+/// A value in a line: words as they are, cut at 60 characters; anything else as JSON.
+fn briefly(value: &Value) -> String {
+    let said = match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    match said.chars().count() > 60 {
+        true => format!("{}…", said.chars().take(59).collect::<String>()),
+        false => said,
     }
 }
 
@@ -1024,9 +1081,9 @@ pub(super) async fn apply(State(api): State<Arc<Api>>, Path(id): Path<String>, b
         }
     }
     let names = written.boxes.iter().map(|held| name_key(&held.name)).chain(asked.nodes.keys().map(|name| name_key(name))).collect();
-    let mut planning = Planning { folder, lock: &lock, written: &written, document: &document, tools: &tools, bases: &bases, names, fields: &fields, force: asked.force_conflicts, told, changes: vec![], conflicts: vec![] };
+    let mut planning = Planning { folder, lock: &lock, written: &written, document: &document, tools: &tools, bases: &bases, names, fields: &fields, force: asked.force_conflicts, told, changes: vec![], conflicts: vec![], kept: vec![] };
     let planned: Vec<Planned> = wrote.iter().filter_map(|wrote| planning.plan(wrote)).collect();
-    let Planning { told, changes, conflicts, .. } = planning;
+    let Planning { told, changes, conflicts, kept: stood, .. } = planning;
     let mut answer = Applied {
         applied: false,
         nodes: planned.iter().map(|planned| Outcome { name: planned.name.clone(), did: planned.did.to_owned(), changed: planned.changed.clone() }).collect(),
@@ -1035,6 +1092,7 @@ pub(super) async fn apply(State(api): State<Arc<Api>>, Path(id): Path<String>, b
         errors: told.errors,
         warnings: told.warnings,
         notes: told.notes,
+        kept: stood,
         merged: None,
         next: vec![],
     };

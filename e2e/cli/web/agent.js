@@ -158,8 +158,9 @@ function page(verb, ...words) {
     try { return { code: ran.code, ...JSON.parse(ran.out) }; } catch { return { code: ran.code, out: ran.out, err: ran.err }; }
   };
   const pageAt = (verb, ...words) => execFileSync(PYTHON, [PAGE, verb, pier, ...words], { encoding: 'utf8', timeout: RUN_MS }).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  execFileSync('cp', [clip, join(pier, 'look.mp4')]);
-  execFileSync('cp', [picture, join(pier, 'mara.png')]);
+  // Files of its own, so what the first apply sends is theirs.
+  execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=240x136:rate=24:duration=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', join(pier, 'look.mp4')]);
+  execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=blue:size=64x96', '-frames:v', '1', join(pier, 'mara.png')]);
   execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24:duration=3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', join(pier, 'look2.mp4')]);
   const file = join(pier, 'pier.yaml');
   const written = `look:
@@ -195,15 +196,22 @@ film:
   writeFileSync(file, written);
   const misspelt = at('apply', '-f', file);
   seen.misspelt = misspelt;
+  // Off a terminal, uploads say what they sent in one line, with no progress.
+  check('uploads_say_one_line', !misspelt.err.includes('Sending files') && /^sent 2 files, [0-9.]+ MiB$/m.test(misspelt.err), misspelt.err);
   check('a_typo_refuses_the_whole_file', misspelt.code === 1 && /^nothing applied: 1 error$/m.test(misspelt.err)
     && misspelt.err.includes(`  shot_2.beat: ${tool} has no field beat. Did you mean beats?`) && at('get').out.startsWith('0 nodes'), misspelt);
   check('diff_says_it_would_refuse', at('diff', '-f', file).code === 2);
   writeFileSync(file, written.replace('    beat:\n', '    beats:\n'));
   const plan = at('diff', '-f', file);
   seen.plan = plan.out;
-  check('diff_shows_what_it_would_make', plan.code === 1 && /^\+ look \(take 1\)$/m.test(plan.out) && /^\+ film/m.test(plan.out) && /^next: cozy apply -f /m.test(plan.out) && at('get').out.startsWith('0 nodes'), plan);
+  check('diff_shows_what_it_would_make', plan.code === 1 && /^\+ look \(video\)\n  \+ takes\.0: take 1, from its file$/m.test(plan.out)
+    && /^\+ mara \(image\)\n  \+ description: Mara, in her thirties, red raincoat, short black hair\.$/m.test(plan.out)
+    && /^\+ shot_1 \(video\)\n  \+ tool: .*shots\.py\/shoot\n  \+ summary: <mara> walks along <look> at dawn, handheld, one continuous shot\.$/m.test(plan.out)
+    && /^\+ film \(edit\)$/m.test(plan.out) && !/^\+ \w+ \(.*(take|description|tool)/m.test(plan.out)
+    && /^next: cozy apply -f /m.test(plan.out) && at('get').out.startsWith('0 nodes'), plan);
   const applied = at('apply', '-f', file);
   seen.applied = applied;
+  check('no_progress_when_nothing_moves', !applied.err.includes('Sending files'), applied.err);
   check('apply_makes_them', applied.code === 0 && /^created: look \(take 1\), mara \(take 1\), shot_1, shot_2, film$/m.test(applied.out)
     && /warning: shot_2\.beats\.0\.duration: 20 is over 15 s, so 15/.test(applied.err)
     && /pier\.yaml rewritten: each node as it stands, with its rev$/m.test(applied.out) && /^next: cozy render film$/m.test(applied.out), applied);
@@ -276,6 +284,14 @@ film:
   check('a_take_from_a_file_and_an_approval', more.code === 0 && /configured: look \(take 2\), film \(approved 1\)/.test(more.out) && !/^next:/m.test(more.out), more);
   const rows2 = atJson('get');
   check('approved_on_the_list', rows2.nodes?.find((row) => row.name === 'film')?.approved === 1 && rows2.nodes?.find((row) => row.name === 'look')?.latest === '2 done', rows2.nodes);
+  // The page's Undo of that apply, then the file read before it applied again: the page's change stands, said in one line.
+  writeFileSync(file, at('get', 'film').out);
+  pageAt('undo');
+  const stood = at('apply', '-f', file);
+  seen.stood = stood;
+  check('a_page_change_the_file_kept_is_said', stood.code === 0 && /^unchanged: film$/m.test(stood.out)
+    && /^film\.approved: the page's change since [0-9a-f]{8} stands \(null\); .*pier\.yaml now shows it$/m.test(stood.err)
+    && /^  approved: null$/m.test(readFileSync(file, 'utf8')), stood);
   const piped = spawnSync(process.env.COZY, ['apply', '-f', '-'], { cwd: pier, input: at('get', 'shot_1').out, encoding: 'utf8' });
   if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, `apply\x1f-f\x1f-\x1f\x1e`);
   check('stdin_prints_the_merged_nodes', piped.status === 0 && /^shot_1:\n  kind: video\n/.test(piped.stdout) && /unchanged: shot_1/.test(piped.stderr), { out: piped.stdout.slice(0, 300), err: piped.stderr });
@@ -286,6 +302,23 @@ film:
   check('delete_removes_them', gone.code === 0 && /^deleted: shot_2, look$/m.test(gone.out) && atJson('get').nodes?.length === 3, gone);
   pageAt('undo');
   check('the_page_brings_them_back', atJson('get').nodes?.length === 5, atJson('get').nodes);
+
+  // Time downloading weights is no slowness: tool.py's `fetching`, its bar three quick runs, then a run 30 s slower drawing, which
+  // warns, and one that spends 30 s in the stage a weight download is first, which doesn't.
+  const fetching = `${join(__dirname, '..', 'project', 'tool.py')}/fetching`;
+  const warned = (...words) => {
+    const ran = at('--json', 'run', fetching, ...words, '--on', 'local');
+    const runs = ran.out.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line)).filter((line) => line.run?.number);
+    const number = runs.at(-1)?.run?.number;
+    const record = number ? JSON.parse(at('--json', 'run', 'watch', String(number), '--once').out.split('\n').find((line) => line.startsWith('{')) ?? '{}') : {};
+    return { code: ran.code, number, codes: (record.warnings ?? record.run?.warnings ?? []).map((warning) => warning.code), err: ran.err.slice(-400) };
+  };
+  for (let i = 0; i < 3; i += 1) warned('seconds:=1', 'download:=0');
+  const drawn = warned('seconds:=30');
+  const fetched = warned('seconds:=1', 'download:=30');
+  seen.slow = { drawn, fetched };
+  check('a_slow_run_warns', drawn.code === 0 && drawn.codes.includes('slow_run'), drawn);
+  check('downloading_weights_is_no_slowness', fetched.code === 0 && !fetched.codes.includes('slow_run'), fetched);
 })().catch(async (error) => {
   failures.push(`died: ${error.stack ?? error}`);
 }).finally(() => {

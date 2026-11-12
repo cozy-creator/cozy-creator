@@ -113,6 +113,9 @@ pub struct Applied {
     /// What it left as it is: a take's own fields, which are read-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Said>,
+    /// What the project changed since a node's rev that the file left as it was: the project's stands, and the file is rewritten to say so.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<Said>,
     /// Once written, each node of the file as it stands, with its new rev.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged: Option<Nodes>,
