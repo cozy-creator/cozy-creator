@@ -27,6 +27,9 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
     return () => cancelAnimationFrame(frame)
   }, [entering, name, store])
   useEffect(() => {
+    if (!entering && store.get(name)?.hereWords) element.current?.querySelector<HTMLElement>(".focus-body [contenteditable=true], .focus-body textarea")?.focus({ preventScroll: true })
+  }, [entering, name, store])
+  useEffect(() => {
     const held = element.current
     if (!held) return
     const drop = (event: Event) => {
