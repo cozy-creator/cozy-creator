@@ -124,6 +124,46 @@ explicit_restart() {
   cozy --json machine ls > /dev/null || check "cozy restart: the next command was not served"
 }
 
+# slow_upload <bytes>: a PUT /v1/files of that many random bytes at 200 KB/s to the running Calcifer, in the background ($UP),
+# its status in $OUT/slow.code.
+slow_upload() {
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder digest
+  head -c "$1" /dev/urandom > "$OUT/slow.bin"
+  digest=sha256:$(sha "$OUT/slow.bin")
+  curl -sS -o "$OUT/slow.json" -w '%{http_code}' --limit-rate 200k -T "$OUT/slow.bin" -H "Authorization: Bearer $(jq -r .token "$holder")" \
+    "http://$(jq -r .address "$holder")/v1/files/$digest" > "$OUT/slow.code" 2> "$OUT/slow.err" & UP=$!
+  sleep 2
+}
+
+# cl-962: the laptop's dev-local.sh restarts Calcifer through scripts/restart-calcifer-when-idle.py once it serves nothing: an
+# upload in flight holds the restart until it lands, and past its bound it restarts anyway and says so. Linux, where Calcifer is
+# the systemd user unit cozy-calcifer.
+idle_restart() {
+  [ "$RUNNER_OS" = Linux ] || return 0
+  local holder=$HOME/.cozy/calcifer/calcifer.lock.holder restart=$E2E/../scripts/restart-calcifer-when-idle.py pid code t0
+  step "a Calcifer restart waits for an upload in flight"
+  pid=$(jq -r .pid "$holder") t0=$SECONDS
+  slow_upload 3000000
+  python3 "$restart" --wait 120 --every 1 > "$OUT/idle-restart.txt" 2>&1 || check "idle restart failed: $(tail -c 300 "$OUT/idle-restart.txt")"
+  wait "$UP"; code=$(cat "$OUT/slow.code")
+  cat "$OUT/idle-restart.txt"
+  { grep -q 'restart waits: [0-9]* request' "$OUT/idle-restart.txt" && grep -q 'restarted idle' "$OUT/idle-restart.txt"; } \
+    || check "idle restart: it did not wait for the upload in flight"
+  [ "$code" = 201 ] || [ "$code" = 200 ] || check "idle restart: the upload in flight was cut ($code: $(tail -c 300 "$OUT/slow.err" "$OUT/slow.json"))"
+  [ $((SECONDS - t0)) -ge 10 ] || check "idle restart: Calcifer restarted after $((SECONDS - t0))s, before a 15 s upload landed"
+  cozy --json machine ls > /dev/null || check "idle restart: the next command was not served"
+  [ "$(jq -r .pid "$holder")" != "$pid" ] || check "idle restart: Calcifer kept pid $pid"
+  step "past its bound a Calcifer restart goes ahead and says so"
+  pid=$(jq -r .pid "$holder")
+  slow_upload 6000000
+  python3 "$restart" --wait 3 --every 1 > "$OUT/idle-bound.txt" 2>&1 || check "bounded restart failed: $(tail -c 300 "$OUT/idle-bound.txt")"
+  wait "$UP"
+  cat "$OUT/idle-bound.txt"
+  grep -q 'restarted while busy after [0-9]*s, the most it waits: [0-9]* request' "$OUT/idle-bound.txt" || check "bounded restart: it did not say it restarted busy"
+  cozy --json machine ls > /dev/null || check "bounded restart: the next command was not served"
+  [ "$(jq -r .pid "$holder")" != "$pid" ] || check "bounded restart: Calcifer kept pid $pid"
+}
+
 sha() { { sha256sum "$1" 2> /dev/null || shasum -a 256 "$1"; } | cut -c1-64; }
 J() { jq -e "$@" > /dev/null; }
 # boxes_in <folder>: stdin's JSON array of boxes, each a `POST /v1/projects/{id}/assets` body ({name, tool, kind, fields, at}), made in

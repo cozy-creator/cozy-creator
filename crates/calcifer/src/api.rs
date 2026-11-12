@@ -420,6 +420,8 @@ async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) ->
     }
     let process = request.headers().get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
     api.activity.note(if page { "page" } else { process });
+    // Served until its answer is made (a stream's body is the open page's, not this); `/v1/activity` counts no one.
+    let _serving = (request.uri().path() != "/v1/activity").then(|| Counted::of(&api.activity.requests));
     // A read is answered while Calcifer stops: a HEAD's refusal would lose its body.
     if matches!(*request.method(), Method::GET | Method::HEAD) || request.uri().path() == "/v1/down" {
         let response = next.run(request).await;
@@ -647,12 +649,15 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
 /// Who uses this Calcifer now (cl-962): a `cozy` of another version restarts it only when no page, run or other client does.
 async fn activity(State(api): State<Arc<Api>>, headers: axum::http::HeaderMap) -> Result<Json<CalciferActivity>, Refusal> {
     let store = api.calcifer.store();
-    let runs = store.unsettled().map_err(store_refusal)?.len() + store.unsettled_here().map_err(store_refusal)?.len();
+    let here = store.unsettled_here().map_err(store_refusal)?.len();
+    let runs = store.unsettled().map_err(store_refusal)?.len() + here;
     let asker = headers.get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();
     Ok(Json(CalciferActivity {
         version: env!("CARGO_PKG_VERSION").into(),
         pages: api.activity.pages.load(Ordering::Relaxed),
         runs: u32::try_from(runs).unwrap_or(u32::MAX),
+        here: u32::try_from(here).unwrap_or(u32::MAX),
+        requests: api.activity.requests.load(Ordering::Relaxed),
         others_request_ms: api.activity.others(asker),
         now_ms: crate::store::now_ms(),
     }))
@@ -662,12 +667,29 @@ fn store_refusal(e: StoreError) -> Refusal {
     refuse(Kind::Internal, "store_unreadable", e.to_string())
 }
 
-/// Each client's newest request, by the process it names (`PROCESS_HEADER`; a page is `page`, a client that names none ``), and
-/// the pages' open streams.
+/// Each client's newest request, by the process it names (`PROCESS_HEADER`; a page is `page`, a client that names none ``), the
+/// requests being served, and the pages' open streams.
 #[derive(Default)]
 struct Activity {
     pages: Arc<AtomicU32>,
+    requests: Arc<AtomicU32>,
     seen: Mutex<HashMap<String, i64>>,
+}
+
+/// One of `Activity`'s counts, held while this lives.
+struct Counted(Arc<AtomicU32>);
+
+impl Counted {
+    fn of(count: &Arc<AtomicU32>) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        Self(count.clone())
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl Activity {
@@ -691,14 +713,7 @@ impl Activity {
 
     /// `response`, a page's stream, counted among the open pages while its body lives.
     fn held_open(&self, response: Response) -> Response {
-        struct Open(Arc<AtomicU32>);
-        impl Drop for Open {
-            fn drop(&mut self) {
-                self.0.fetch_sub(1, Ordering::Relaxed);
-            }
-        }
-        self.pages.fetch_add(1, Ordering::Relaxed);
-        let open = Open(self.pages.clone());
+        let open = Counted::of(&self.pages);
         let (parts, body) = response.into_parts();
         let body = Body::from_stream(body.into_data_stream().map(move |chunk| {
             let _open = &open;

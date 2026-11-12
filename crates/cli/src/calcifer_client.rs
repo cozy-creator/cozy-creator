@@ -597,7 +597,7 @@ impl Client {
 
     /// Why the Calcifer `holder` names must keep running, which none of another version is restarted
     /// past (cl-962): only the installed cozy's own path replaces it, and only while nobody uses it:
-    /// no page has a stream open, no run is unsettled, and nobody else asked anything for `IN_USE`.
+    /// no page has a stream open, no run is unsettled, no request is being served, and nobody else asked anything for `IN_USE`.
     /// One too old to say who uses it is kept.
     async fn kept(&self, holder: &Holder) -> Option<String> {
         if !self.is_installed() {
@@ -623,6 +623,11 @@ impl Client {
             0 => {}
             1 => uses.push("a run is going".to_owned()),
             n => uses.push(format!("{n} runs are going")),
+        }
+        match activity.requests {
+            0 => {}
+            1 => uses.push("it is serving a request".to_owned()),
+            n => uses.push(format!("it is serving {n} requests")),
         }
         if let Some(ago) = recent.filter(|ago| *ago < IN_USE) {
             uses.push(format!("someone asked it something {}s ago", ago.as_secs()));

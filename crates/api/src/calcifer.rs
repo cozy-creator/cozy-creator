@@ -2225,8 +2225,12 @@ pub struct CalciferActivity {
     pub version: String,
     /// Pages with a stream open.
     pub pages: u32,
-    /// Runs not yet settled.
+    /// Runs not yet settled, Calcifer's own among them (`here`).
     pub runs: u32,
+    /// Calcifer's own runs not yet settled: an upload, a publish.
+    pub here: u32,
+    /// Requests it is serving now, other than this one: an upload, a submission, a page's write.
+    pub requests: u32,
     /// The newest request of anyone but the asking process (`PROCESS_HEADER`): a page, another `cozy`, one that sends no pid.
     pub others_request_ms: Option<i64>,
     pub now_ms: i64,
