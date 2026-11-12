@@ -98,15 +98,14 @@ PY
 
 case $suite:$shard in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake) needs='' ;;
-  cli:runs | cli:local-code) needs='packages birefnet' ;;
-  cli:commands) needs='packages birefnet slots' ;;
+  cli:runs | cli:commands | cli:local-code) needs='packages birefnet' ;;
   # web-localfit's heavy tool paints its edit base with BiRefNet (a take is one since cl-909); only Linux's web-core runs it.
   cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras' ;;
-  cli:) needs='packages birefnet downloads slots' ;;
+  cli:) needs='packages birefnet downloads' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).
@@ -250,24 +249,6 @@ PYH3
     done
     log "published ${h3%@*}@${h3#*@} (a stand-in) and two LoRAs of family minimax-h3"
     rm -f "$seed"/*.safetensors
-  fi
-  if [[ " $needs " == *" slots "* ]]; then
-    # What slot_choices (cl-943) asks about: Klein's package, and stand-ins of the models its slots and Qwen Image's and H3's judge.
-    publish "$packages/flux.3-klein"
-    # Written by TensorFS's own writer: the candidate's when there is one.
-    case $tensorfs in '') with=tensorfs ;; [0-9]*) with=tensorfs==$tensorfs ;; *) with=$tensorfs ;; esac
-    uv run -q --no-project --python 3.12 --with "$with" python "$here/cli/slot_models.py" "$seed/slots" > "$seed/slots.txt"
-    while read -r -u 3 file model release page; do
-      name=${model//\//-}-$release
-      cozy --json model upload "$file" "$model" --lane bf16 --mirror "$page" --on local -y > "$seed/upload-$name.json" 2>&1 \
-        || { echo "uploading $model $release failed: $(tail -c 600 "$seed/upload-$name.json")" >&2; exit 1; }
-      commit=$(python3 "$here/model-details.py" "$model" | jq -r '[.checkpoints[] | select((.releases // []) | length == 0)][0].checkpoint // empty')
-      [ -n "$commit" ] || { echo "$model has no unreleased checkpoint after its upload" >&2; exit 1; }
-      cozy --json model publish "$model" "$release" "$commit" -y > "$seed/publish-$name.json" 2>&1 \
-        || { echo "publishing $model $release failed: $(tail -c 600 "$seed/publish-$name.json")" >&2; exit 1; }
-    done 3< "$seed/slots.txt"
-    log "published $(wc -l < "$seed/slots.txt") stand-ins for slot_choices"
-    rm -rf "$seed/slots"
   fi
   cd "$start"
 fi

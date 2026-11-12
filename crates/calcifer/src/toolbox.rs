@@ -438,7 +438,7 @@ pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<
     tool::tools_of(&found.package, "", &interface).into_iter().find(|held| held.function == function).map(|held| held.fields)
 }
 
-/// A box's model choices, bound as a run binds them, refused where their slot can't load them (`checkpoints::check_choices`).
+/// A box's model choices, bound as a run binds them, refused where their slot can't take them (`checkpoints::check_choices`).
 pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fields: &Map<String, Value>) -> Result<(), Error> {
     let hub = api.machines.hubs.default_origin();
     let Ok(found) = runs::target::describe(api, &hub, target, None, Some(dir), &runs::default_on(api)).await else { return Ok(()) };
@@ -451,27 +451,7 @@ pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fi
     choices.take(&mut document)?;
     let choices = choices.into_choices();
     choices::wire(&choices)?;
-    crate::hub::checkpoints::check_choices(api, &hub, target, &crate::hub::checkpoints::slots_of(&interface, callable), &choices).await
-}
-
-/// The slots `key` names in `tool`'s function, read as a run of it is (`checkpoints::slots_named`), each with the default a choice
-/// for it is judged by: what `cozy model ls --fits <tool>:<key>` and the page's Models & LoRAs offer for. `dir` finds local code.
-pub(crate) async fn slots_for(api: &Arc<Api>, hub: &str, tool: &str, key: &str, dir: Option<&Path>) -> Result<Vec<api::interface::Slot>, Error> {
-    let found = runs::target::describe(api, hub, tool, None, dir, &runs::default_on(api)).await?;
-    let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;
-    let function = found.function.as_deref().or(target::only_function(&interface));
-    let Some(callable) = function.and_then(|function| interface.callables.iter().find(|callable| callable.name == function)) else {
-        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: name one of its functions")).next(format!("cozy run {tool}")));
-    };
-    let slots: Vec<api::interface::Slot> = crate::hub::checkpoints::slots_named(&interface, callable, key).into_iter().cloned().collect();
-    if slots.is_empty() {
-        let keys: Vec<&str> = crate::hub::checkpoints::slots_of(&interface, callable).into_iter().map(|(key, _)| key).collect();
-        return Err(Error::new(Kind::Usage, "model_slot_unknown", format!("{tool} has no model slot {key:?}")).remedy(format!("its slots: {}", keys.join(", "))));
-    }
-    if slots.iter().any(|slot| slot.default.is_none()) {
-        return Err(Error::new(Kind::Usage, "model_slot_no_default", format!("{tool}'s {key} names no default model to judge a choice by")));
-    }
-    Ok(slots)
+    crate::hub::checkpoints::check_choices(api, &hub, &crate::hub::checkpoints::slots_of(&interface, callable), &choices).await
 }
 
 /// What `tool` makes, `image`, `video` or `audio`, as its function's output says, and what a new box of it is called, read as a run of it
