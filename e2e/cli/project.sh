@@ -93,7 +93,7 @@ open_page() {
   sleep 2
   kill -0 "$PAGE_PID" 2> /dev/null || { check "page: its events stream did not stay open: $(tail -c 300 "$OUT/page.sse")"; return 1; }
 }
-close_page() { [ -z "${PAGE_PID:-}" ] || kill "$PAGE_PID" 2> /dev/null; PAGE_PID=''; }
+close_page() { [ -z "${PAGE_PID:-}" ] || kill "$PAGE_PID" 2> /dev/null || true; PAGE_PID=''; }
 
 # cl-962: a cozy of another version never restarts a Calcifer someone uses. With a page's stream open, the candidate CLI asks the
 # release's Calcifer what it lacks (`machine use`, cl-873's route): it says "Calcifer here is <v>, this cozy is <w>" and exits, and
