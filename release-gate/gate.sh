@@ -161,6 +161,22 @@ again() {
 }
 trap 'end_it; again' EXIT
 trap 'exit 143' TERM INT
+# A `machine update` that names no TensorD also moves the pod to this computer's own cozy when that differs from the pod's (a
+# dev Calcifer's build: calcifer/src/update.rs `placed`), so hand gates from the development laptop ran the RC's TensorD
+# (0.24.0+dev.gebaccba3 on the 0.45.1 gate, xs-182). Every update the gate and its suites make names one: the candidate's,
+# else the one the pod booted with (gate-tensord, written once the pod is up).
+REAL_CLI=$(type -P "$CLI" || echo "$CLI")
+cat > "$OUT/cozy-gate" <<EOF
+#!/bin/bash
+args=("\$@") up= td=
+for ((i = 0; i < \${#args[@]}; i++)); do
+  [ "\${args[i]}" = machine ] && [ "\${args[i+1]:-}" = update ] && up=1
+  [[ \${args[i]} != --tensord* ]] || td=1
+done
+[ -z "\$up" ] || [ -n "\$td" ] || [ ! -s "$OUT/gate-tensord" ] || args+=(--tensord "\$(cat "$OUT/gate-tensord")")
+exec "$REAL_CLI" "\${args[@]}"
+EOF
+chmod +x "$OUT/cozy-gate"; CLI=$OUT/cozy-gate
 RUN_CLI=$CLI; . "$HERE/../e2e/run.sh"
 # The gate's own throwaway project (Paul 11-11: from 0.24 the current folder is the project; never one in a checkout or
 # ~/cozy_v2): under ~/cozy-scratch, linked here as project/ for the cells that read its files.
@@ -441,6 +457,7 @@ hold() {
 }
 hold & KEEP=$!
 "$CLI" machine show "$M" > machine-fresh.txt 2>&1
+{ [ -n "$TDF" ] && echo "$TDF" || awk '$1 == "version" {print $2}' machine-fresh.txt; } > gate-tensord
 # reported: $M's cozy, Runtime and TensorFS into $v $rt $tfs once it reports them (a fresh pod does once up); empty
 # when it ends first, or Calcifer answers a typed error.
 reported() {
