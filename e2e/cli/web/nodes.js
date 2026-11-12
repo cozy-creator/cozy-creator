@@ -1,6 +1,6 @@
 // Assets as a person works them (web-ui.md, Tools and nodes), in a real browser on a real Calcifer. The shell: a name, Render all, a menu; tools
 // on the left, each dragged out to make a box. A box is its picture or its text at rest. Text with chips, the file still plain; a name dragged in; a fresh box as its prompt, or its prompt
-// and one beat, with all else behind More; controls from what it holds; reshaping; beats; conflicts; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
+// and one beat, with all else behind More; controls from what it holds; reshaping; beats; another's edits merged; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
 // picture in, type, render, approve, delete the picture: what's approved stands, rendering it again fails naming what's gone, the rest goes on,
 // Undo brings it back. Takes side by side, one dragged out, Pick up from here, Render all.
 //   node nodes.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
@@ -505,7 +505,8 @@ function linesOf(text, name) {
   await api(`/v1/projects/${id}/assets/knobs`, { method: 'DELETE' });
   await until('knobs gone', () => box('knobs').count(), (n) => n === 0);
 
-  // Conflicts are per asset: another's edit doesn't count, its own does, and neither side is lost.
+  // Another's edit merges field by field (cl-904): of another asset, or another field, it applies; of the words being typed, the page's unsent
+  // words stand and are saved, with nothing asked.
   await open('Sheet');
   await sheetText.click();
   await page.keyboard.press('End');
@@ -514,16 +515,23 @@ function linesOf(text, name) {
   // Read again: the canvas is drawn in on Sheet, so what else is on it may not be drawn.
   await until('its etag read again', async () => (await of('kept_words'))?.fields?.description ?? '', (text) => text.includes('Rewritten'));
   await until('another\'s edit is no conflict', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('mine'));
+  // Its write waits until theirs is in, as a slower network's would.
+  let theirsIn;
+  const going = new Promise((done) => (theirsIn = done));
+  const late = (call) => (call.request().method() === 'PATCH' ? going.then(() => call.fallback().catch(() => {})) : call.fallback());
+  await page.route('**/v1/projects/*/assets/Sheet', late);
   await sheetText.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' again');
   importYaml(folder, yaml().replace(' mine', ' theirs'));
-  await box('Sheet').locator('.status.ood:has-text("changed under this")').waitFor();
-  await shot('conflict');
-  check('a_conflict_writes_nothing', linesOf(yaml(), 'Sheet').includes(' theirs') && !linesOf(yaml(), 'Sheet').includes(' again'), linesOf(yaml(), 'Sheet'));
-  await box('Sheet').locator('button:has-text("Keep mine")').click();
-  await until('mine kept', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes(' again'));
-  check('kept_mine', true);
+  check('theirs_in_the_file', linesOf(yaml(), 'Sheet').includes(' theirs'), linesOf(yaml(), 'Sheet'));
+  await page.waitForTimeout(1000);
+  await shot('unsent-words-stand');
+  check('unsent_words_stand', (await sheetText.innerText()).includes('mine again'), await sheetText.innerText());
+  theirsIn();
+  await page.unroute('**/v1/projects/*/assets/Sheet', late);
+  await until('mine saved over theirs', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes(' mine again'));
+  check('nothing_asked', (await box('Sheet').locator('button:has-text("Keep mine")').count()) === 0);
 
   // A caret never rests in a name, where what's typed goes nowhere: a click on one puts it just after, and what's typed there is saved there.
   await open('Sheet');
@@ -543,7 +551,7 @@ function linesOf(text, name) {
     await page.keyboard.type(' typed');
     typedAfter.box = await until('typed after the name, in the box', () => sheetText.innerText(), (text) => /source-a>?\s+typed/i.test(text));
     await page.mouse.click(1500, 1000);
-    typedAfter.file = await until('typed after the name, in the file', async () => ({ lines: linesOf(yaml(), 'Sheet'), conflict: await box('Sheet').locator('.status.ood:has-text("changed under this")').count() }), (now) => now.lines?.includes('<source-a> typed') || now.conflict > 0);
+    typedAfter.file = await until('typed after the name, in the file', async () => ({ lines: linesOf(yaml(), 'Sheet') }), (now) => now.lines?.includes('<source-a> typed'));
   } catch (error) {
     typedAfter.error = String(error.message ?? error).slice(0, 400);
   }
@@ -953,9 +961,9 @@ function linesOf(text, name) {
   check('sidebar_still_only_nodes_and_tools', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .browse, .tools .box-shelf-head, .tools .tool-off, .tools input').count() === 0);
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   await new Promise((done) => setTimeout(done, 300));
-  // Only the conflict it asked for: anything else a project's route refused is a fault, however the page took it.
+  // Anything a project's route refused is a fault, however the page took it.
   // Nor a read of what the stream said changed, gone by then: that's how the page hears it's gone.
-  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && !(refusal.code === 'asset_changed' && refusal.url.endsWith('/assets/Sheet')) && !(refusal.code === 'asset_unknown' && refusal.method === 'GET'));
+  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && !(refusal.code === 'asset_unknown' && refusal.method === 'GET'));
   check('nothing_refused_unasked', unasked.length === 0, unasked);
   check('no_page_errors', errors.length === 0, { errors, refused });
   console.log(JSON.stringify({ failures, seen }, null, 2));

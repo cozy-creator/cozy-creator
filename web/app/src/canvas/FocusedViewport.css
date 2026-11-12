@@ -191,6 +191,32 @@ body:has(.focus-viewport) .zoom {
   max-height: calc(var(--focus-footer-room, 200px) - 48px);
   transform: none;
 }
+.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video {
+  grid-template-columns: minmax(0, 1fr) min(22vw, 260px);
+  grid-template-rows: minmax(0, 1fr);
+}
+.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .focus-viewer {
+  display: none;
+}
+.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-under {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: stretch;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+}
+.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-side {
+  grid-column: 2;
+}
+.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-under > .here-all {
+  min-height: 0;
+  overflow-y: auto;
+}
+.media:has(video.live) .video-pickup-action {
+  bottom: 52px;
+}
 .image-tool-name {
   flex: 1;
   min-width: 0;

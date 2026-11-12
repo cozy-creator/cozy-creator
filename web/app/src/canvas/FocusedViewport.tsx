@@ -34,7 +34,11 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
     if (!held) return
     const drop = (event: Event) => {
       const { load, x, y } = (event as LetGo).detail
-      if (load.take) { event.stopPropagation(); onCopyVersion(load.take, x, y) }
+      const onAsset = (event.target as Element).closest(".media, .here-under, .image-controls")
+      const target = store.get(name)?.asset
+      if (onAsset && target?.kind === "image" && target.tool && load.name) { event.stopPropagation(); store.takeInto(name, [load.name]) }
+      else if (onAsset && target?.kind === "image" && target.tool && load.take) { event.stopPropagation(); store.takePicture(name, load.take) }
+      else if (load.take) { event.stopPropagation(); onCopyVersion(load.take, x, y) }
       else if (load.tool) { event.stopPropagation(); store.putTool(name, load.tool, load.operation) }
     }
     held.addEventListener(LET_GO, drop)

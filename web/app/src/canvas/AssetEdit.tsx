@@ -681,23 +681,6 @@ export function TextAsset({ name, view }: { name: string; view: ElementView }) {
         onSave={() => void store.save(name)}
         onSubmit={() => void store.save(name)}
       />
-      {view.conflict && <Conflict name={name} />}
-    </div>
-  )
-}
-
-/** The file changed under what's typed. */
-export function Conflict({ name }: { name: string }) {
-  const store = useCanvasStore()
-  return (
-    <div className="status ood">
-      The file changed under this{" "}
-      <button type="button" className="act nodrag" onClick={() => void store.keepMine(name)}>
-        Keep mine
-      </button>{" "}
-      <button type="button" className="act nodrag" onClick={() => store.takeTheFiles(name)}>
-        Take the file's
-      </button>
     </div>
   )
 }
@@ -818,7 +801,6 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
           )
         }}
       </ToolBox>
-      {view.conflict && <Conflict name={name} />}
     </div>
   )
 }

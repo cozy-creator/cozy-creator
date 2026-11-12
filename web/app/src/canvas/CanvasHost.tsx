@@ -138,8 +138,10 @@ function ProjectSync({ id }: { id: string }) {
 }
 
 /**
- * Where model renders go: the project's machines (`cozy machine use`, cl-873; Render here in the machines panel, cl-887), each render to
- * whichever finishes first, one that's unavailable too, so nothing falls back elsewhere. With none, every machine automatic placement considers.
+ * What the page asks before a render, not where it goes: Calcifer places it, as a `cozy run` naming no machine (cl-894). That is the
+ * project's machines (`cozy machine use`, cl-873; Render here in the machines panel, cl-887), else every machine a run would go to
+ * (`MachineList::render_set`): each rental of yours up or on its way, another computer's that's up, and this one, stopped or not, which
+ * starts when used. With none, the page asks for one; with this computer alone, it asks first whether it would do the render poorly.
  */
 function useMachines(store: CanvasStore, pinned: string[]) {
   const { client, status } = useConnection()
@@ -147,8 +149,8 @@ function useMachines(store: CanvasStore, pinned: string[]) {
   const held = (data?.machines ?? []).filter((machine) => machine.ordered !== false && !machine.offline)
   // One still booting takes what's sent to it, which waits for it there.
   const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting"))
-  const up = held.filter((machine) => machine.kind !== "rental" && machine.state === "ready" && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
-  const automatic = [...rented, ...up.filter((machine) => machine.kind !== "local"), ...up.filter((machine) => machine.kind === "local")].map((machine) => machine.name)
+  const up = held.filter((machine) => machine.kind !== "rental" && machine.kind !== "local" && machine.state === "ready" && !machine.unreachable)
+  const automatic = [...rented, ...up].map((machine) => machine.name).concat(status.local_usable ? ["local"] : [])
   const names = pinned.length ? pinned : automatic
   const key = names.join()
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text

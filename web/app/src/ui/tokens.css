@@ -21,7 +21,8 @@
 /* Paper, the default. Text passes 4.5:1 on every surface it sits on, and --ember, which is also the focus ring, 3:1. */
 :root {
   --bg: #ecdfc7;
-  --dot: #cfbfa2;
+  /* The canvas's dots: ink, so they read alike on the sheet, the sky and the meadow, about 1.6:1. */
+  --dot: #4d3b2e47;
   --card: #fdf8ef;
   --card2: #f1e7d4;
   --panel: #fbf6ea;
@@ -81,7 +82,7 @@
 
 :root[data-theme="dark"] {
   --bg: #141415;
-  --dot: #26272b;
+  --dot: #ffffff26;
   --card: #17181b;
   --card2: #1e2024;
   --panel: #121316;

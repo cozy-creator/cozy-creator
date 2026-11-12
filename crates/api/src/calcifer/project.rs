@@ -832,11 +832,14 @@ pub struct Version {
     /// The words it was made from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Its saved editable inputs, before prompt binding, including model choices; absent when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Map<String, Value>>,
 }
 
 /// `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
 /// only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
-/// is settled; `on` lists the machines they may go to.
+/// is settled; `on` lists the machines they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Runs {
