@@ -65,6 +65,63 @@ fn error(detail: &'static str) -> Error {
     Error::new(Kind::Conflict, "private_storage_unavailable", detail)
 }
 
+/// Placement policy is resolved before pricing or renting. Automatic project work cannot drift to a remote worker.
+pub(crate) fn check_project_placement(
+    project_id: &str,
+    project_root: &Path,
+    on: &[api::calcifer::On],
+) -> Result<Vec<api::calcifer::On>, Error> {
+    if project_id.is_empty() || !project_root.is_absolute() {
+        return Err(error("The project storage owner is unavailable."));
+    }
+    if on.iter().any(|choice| !matches!(choice, api::calcifer::On::Any)
+        && !matches!(choice, api::calcifer::On::Machine(name) if name == "local")) {
+        return Err(Error::new(Kind::Conflict, "project_remote_execution_unavailable",
+            "Remote workers cannot yet keep project execution in protected storage.")
+            .remedy("Run again with --on local. Renting a machine separately remains available."));
+    }
+    Ok(vec![api::calcifer::On::Machine("local".into())])
+}
+
+/// Called with the admitted project's identity/root after its bounded DB operation has ended.
+pub(crate) async fn execution_link(
+    project_id: &str,
+    project_root: &Path,
+    machine: &str,
+    base: &crate::link::Link,
+) -> Result<crate::link::Link, Error> {
+    check_project_placement(project_id, project_root, &[api::calcifer::On::Machine(machine.into())])?;
+    let logical = crate::project::vault::logical(project_root);
+    let scope = if crate::project::vault::encrypted(&logical) {
+        of_output(&crate::project::landing(&logical))?
+            .ok_or_else(|| error("The encrypted project storage is unavailable."))?
+    } else {
+        let view = platform::durable::canonical(project_root)
+            .map_err(|_| error("The project storage is unavailable."))?;
+        if crate::project::vault::plain_project_id(&view).as_deref() != Some(project_id) {
+            return Err(error("The project storage owner changed before execution."));
+        }
+        match retained_scope(&view, project_id)? {
+            Some(scope) => scope,
+            None => descriptor_for_mounted(&view, project_id, 1)?,
+        }
+    };
+    if scope.storage.project_id != project_id {
+        return Err(error("The execution storage belongs to another project."));
+    }
+    let selected = base.with_private(scope);
+    selected.probe_private().await.map_err(|failure| match failure {
+        crate::link::LinkError::Refused { code, message, remedy, next } => Error {
+            remedy, next, ..Error::new(Kind::Conflict, code, message)
+        },
+        crate::link::LinkError::NotFound => Error::new(Kind::Conflict, "project_worker_upgrade_required",
+            "This worker does not support project-owned execution.").next("cozy doctor"),
+        _ => Error::new(Kind::Unavailable, "project_worker_unavailable",
+            "The local worker could not verify protected execution. Project files were not sent.").next("cozy doctor"),
+    })?;
+    Ok(selected)
+}
+
 /// Root calls this after a successful mount/unlock and after rekey cutover. Replacing
 /// an old owned marker renews its proof without exposing the filesystem encryption key.
 pub(crate) fn descriptor_for_mounted(
