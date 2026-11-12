@@ -239,6 +239,16 @@ struct Held {
     rc: bool,
 }
 
+/// Of `releases`, the newest a machine runs: on the RC's Runtime (`rc`), by PEP 440 alone, so a prerelease built for it
+/// (`0.10.0rc1`) is newer than the last final; elsewhere a final before any prerelease. The tool list reads a machine's
+/// packages by the same rule, so a box offers the fields its run will take (se-128).
+pub(crate) fn newest_on<'a>(rc: bool, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    match rc {
+        true => releases.into_iter().filter_map(|r| Some((pep440_rs::Version::from_str(r).ok()?, r))).max_by(|a, b| a.0.cmp(&b.0)).map(|(_, r)| r),
+        false => newest_by(releases, |release| release),
+    }
+}
+
 impl Held {
     /// The machine `on` names, or the rental `any` would take now, as it answers now (`wake`: `local` starts for it);
     /// nothing for a machine still to come.
@@ -248,13 +258,9 @@ impl Held {
         Self { machine, environments, hub: canonical(hub), rc }
     }
 
-    /// Of `releases`, the newest this machine runs: on the RC's Runtime, by PEP 440 alone, so a prerelease built for it
-    /// (`0.10.0rc1`) is newer than the last final; elsewhere a final before any prerelease.
+    /// Of `releases`, the newest this machine runs (`newest_on`).
     fn newest<'a>(&self, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-        match self.rc {
-            true => releases.into_iter().filter_map(|r| Some((pep440_rs::Version::from_str(r).ok()?, r))).max_by(|a, b| a.0.cmp(&b.0)).map(|(_, r)| r),
-            false => newest_by(releases, |release| release),
-        }
+        newest_on(self.rc, releases)
     }
 
     /// The Hub's newest release of `read` for this machine: a prerelease included on the RC's Runtime, never a yanked one.
