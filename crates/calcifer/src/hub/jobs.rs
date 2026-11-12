@@ -72,7 +72,7 @@ fn code(ask: &RunRequest) -> Result<LocalCode, Refusal> {
 
 async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) -> Result<Planned, Refusal> {
     let scope=match ask.project.as_deref() {
-        Some(named)=>{ let (id,root)={ let store=api.projects.store(api,named).await.map_err(Refusal)?; let(id,root)=store.execution_scope(); (id.to_owned(),root.to_owned()) }; Some(crate::private_io::scope_for_project(&id,&root).map_err(Refusal)?) },
+        Some(named)=>{ let (id,root)={ let store=api.projects.store(api,named).await.map_err(Refusal)?; store.admit_new_work()?; let(id,root)=store.execution_scope(); (id.to_owned(),root.to_owned()) }; Some(crate::private_io::scope_for_project(&id,&root).map_err(Refusal)?) },
         None=>None,
     };
     crate::private_io::context(scope,plan_scoped(api,key,hub,ask)).await

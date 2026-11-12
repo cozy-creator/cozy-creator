@@ -66,12 +66,20 @@ pub(crate) async fn submit_project(
     let bytes = body?;
     prebuilt(&bytes)?;
     let mut ask: RunRequest = parse(&bytes)?;
-    let id = { let store = api.projects.store(&api, &project).await.map_err(Refusal)?; store.project_id().to_owned() };
+    let (id,recorded) = { let store = api.projects.store(&api, &project).await.map_err(Refusal)?; (store.project_id().to_owned(),store.recorded(&key)?) };
+    // A migrated retry keeps its exact original body digest. Its old locator
+    // may have moved; the existing row inside this admitted owner is authority.
+    if let Some((row,recorded))=recorded {
+        if recorded!=digest(&ask) {return Err(Refusal(crate::api::conflict(&key)));}
+        return vault::project_reply(&api,Some(&project),async {
+            Ok((StatusCode::OK,Json(Submitted {run:api.calcifer.record(&row)?,replay:true,notes:vec![],preparing:false,lock:None})))
+        }).await;
+    }
     if let Some(named) = ask.project.as_deref() {
         let actual = { let store = api.projects.store(&api, named).await.map_err(Refusal)?; store.project_id().to_owned() };
         if actual != id { return Err(Refusal(Error::new(Kind::Validation, "project_scope_mismatch", "the route and request name different projects"))); }
     }
-    ask.project = Some(id);
+    if ask.project.is_none() {ask.project = Some(id);}
     vault::project_reply(&api, Some(&project), async {
         let submitted = request(&api, &key, ask).await.map_err(Refusal)?;
         let status = if submitted.replay { StatusCode::OK } else { StatusCode::ACCEPTED };
@@ -422,6 +430,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     let set = if let Some(named) = ask.project.as_deref() {
         let (project, root) = {
             let store = api.projects.store(api, named).await?;
+            store.admit_new_work().map_err(|error|refused(error.into()))?;
             let (project, root) = store.execution_scope();
             (project.to_owned(), root.to_owned())
         };

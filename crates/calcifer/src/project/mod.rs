@@ -2200,6 +2200,7 @@ async fn runs(
     };
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
+    api.calcifer.project_store(&project.id)?.admit_new_work()?;
     asked.on=crate::private_io::check_project_placement(&project.id,&project.root,&asked.on).map_err(Refusal)?;
     let id = project.id.clone();
     project.unsent.lock().expect("unsent lock").clear();

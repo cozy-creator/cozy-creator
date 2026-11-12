@@ -105,7 +105,7 @@ pub(crate) struct Calcifer {
     machines_changed: watch::Sender<()>,
     exports: outputs::Exports,
     /// Each machine's warm set as it last reported it, and as this Calcifer since sent it.
-    warm: Mutex<HashMap<String, Vec<v1::WarmItem>>>,
+    warm: Mutex<HashMap<(Option<String>,String), Vec<v1::WarmItem>>>,
     /// Each machine's runs whose downloads wait behind other runs' (`observe_downloads`), by id, with what each says.
     behind: Mutex<HashMap<String, HashMap<String, String>>>,
     /// The machines and their Hubs, which mint what a send carries to its Hub.
@@ -163,6 +163,11 @@ const RESAID: Duration = Duration::from_secs(5);
 /// How soon a machine answering an internal failure about a run is asked again, at first and at most. Only its journal settles the run.
 const BROKEN_ASKED_FIRST: Duration = Duration::from_secs(5);
 const BROKEN_ASKED_MOST: Duration = Duration::from_secs(60);
+fn same_warm(left:&v1::WarmItem,right:&v1::WarmItem)->bool {
+    let mut left=left.clone();let mut right=right.clone();
+    left.holds.clear();left.held_back.clear();right.holds.clear();right.held_back.clear();left==right
+}
+
 /// How long a run goes without moving before its record says so, with what that costs.
 const STALLED_MS: i64 = 10 * 60 * 1000;
 /// How often a run waiting behind other runs' downloads says its progress moved with theirs: well inside the
@@ -337,7 +342,11 @@ impl Calcifer {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
-            let scope=match me.run_scope(id.as_str()) { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); lock(&me.drivers).remove(&id); return; } };
+            let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); lock(&me.drivers).remove(&id); return; } };
+            if let Ok(Some(row))=me.with_run_store(id.as_str(),|store|store.run(id.as_str())) {
+                if row.state==State::Settled {lock(&me.drivers).remove(&id);return;}
+                if row.cancel_requested {me.ended_here(&id,Err(::api::error::Error::new(::api::error::Kind::Conflict,"canceled","canceled")));lock(&me.drivers).remove(&id);return;}
+            }
             let canceled = async {
                 loop {
                     wake.notified().await;
@@ -381,16 +390,17 @@ impl Calcifer {
 
     /// What a run waits for when the machine names the runs (`waiting_for`, by id): those runs by
     /// this controller's numbers ("waiting for run 38 to end"); None when it names none.
-    pub(crate) fn waiting_for(&self, ids: &[String]) -> Option<String> {
-        let name = |id: &String| match self.with_run_store(id, |store| store.run(id)) {
-            Ok(Some(row)) => format!("run {}", row.number),
-            _ => format!("run {id}"),
+    pub(crate) fn waiting_for(&self,ids:&[String])->Option<String> {
+        let scope=private_io::current();
+        self.waiting_in(scope.as_ref().map(|scope|scope.storage.project_id.as_str()),ids)
+    }
+    pub(crate) fn maintenance_waiting_for(&self,ids:&[String])->Option<String> {self.waiting_in(None,ids)}
+    fn waiting_in(&self,project:Option<&str>,ids:&[String])->Option<String> {
+        let name=|id:&String| {
+            let row=match project {Some(project)=>self.project_store(project).and_then(|store|store.run(id)),None=>self.maintenance_store().run(id)};
+            row.ok().flatten().map(|row|format!("run {}",row.number)).unwrap_or_else(||"other work".into())
         };
-        match ids {
-            [] => None,
-            [one] => Some(format!("waiting for {} to end", name(one))),
-            many => Some(format!("waiting for {} to end", many.iter().map(name).collect::<Vec<_>>().join(", "))),
-        }
+        match ids {[]=>None,[one]=>Some(format!("waiting for {} to end",name(one))),many=>Some(format!("waiting for {} to end",many.iter().map(name).collect::<Vec<_>>().join(", ")))}
     }
 
     pub(crate) fn maintenance_store(&self) -> &Store { &self.store }
@@ -404,7 +414,7 @@ impl Calcifer {
         let owner = store.owner();
         if lock(&self.project_owners).get(owner.project_id()).is_some_and(|prior|prior.same_view(&owner)) { return Ok(false); }
         let ids:Vec<String>=store.read(|conn| {
-            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE owner=?1 AND (state<>'settled' OR EXISTS(SELECT 1 FROM outputs WHERE run=runs.id AND {}))",store::OWED))?;
+            let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE owner=?1 AND custody='owned' AND (state<>'settled' OR EXISTS(SELECT 1 FROM outputs WHERE run=runs.id AND {}))",store::OWED))?;
             Ok(stmt.query_map([store.project_id()],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })?;
         let mut routes=lock(&self.run_owners);
@@ -441,7 +451,14 @@ impl Calcifer {
 
     fn run_scope(&self,id:&str)->Result<Option<private_io::Scope>,::api::error::Error> {
         let owner=lock(&self.run_owners).get(id).cloned().ok_or_else(||::api::error::Error::new(::api::error::Kind::Conflict,"run_owner_required","the run's storage owner is unavailable"))?;
-        owner.map(|owner|private_io::scope_for_project(owner.project_id(),owner.root())).transpose()
+        owner.map(|owner| {
+            let _admission=owner.store().map_err(|error|match error {StoreError::Locked(code)=>::api::error::Error::new(::api::error::Kind::Conflict,code,"the project storage is changing"),error=>api::Refusal::from(Error::from(error)).0})?;
+            private_io::scope_for_project(owner.project_id(),owner.root())
+        }).transpose()
+    }
+    async fn run_scope_when_ready(&self,id:&str,wake:&Notify)->Result<Option<private_io::Scope>,::api::error::Error> {
+        let mut pause=Pause::default();
+        loop {match self.run_scope(id) {Err(error) if error.code=="project_busy"=>pause.wait(wake,None).await,result=>return result}}
     }
 
     fn with_run_store<T>(&self, id: &str, f: impl FnOnce(&store::RunStore<'_>) -> store::Result<T>) -> store::Result<T> {
@@ -713,6 +730,7 @@ impl Calcifer {
             };
         }
         run.stalled=owned.then(||self.stalled(&run)).flatten();
+        if row.custody_pending && row.state!=State::Settled {run.waiting=Some("legacy worker custody must be verified before this execution can resume".into());run.progress=None;run.queue_position=None;}
         if !owned && row.state!=State::Settled {run.waiting=Some("copied history; this execution is not resumed".into());run.progress=None;run.queue_position=None;}
         Ok(run)
     }
@@ -889,8 +907,18 @@ impl Calcifer {
     }
 
     /// Records the warm set the machine reported, which a warm run's item is merged into.
-    pub(crate) fn observe_warm(&self, machine: &str, items: Vec<v1::WarmItem>) {
-        lock(&self.warm).insert(machine.to_owned(), items);
+    pub(crate) fn observe_warm(&self,machine:&str,items:Vec<v1::WarmItem>) {
+        let mut warm=lock(&self.warm);
+        if let Some(known)=warm.get_mut(&(None,machine.into())) {
+            for prior in known { if let Some(item)=items.iter().find(|item|same_warm(prior,item)) {prior.holds.clone_from(&item.holds);prior.held_back.clear();} }
+        }
+    }
+    pub(super) fn maintenance_rows(&self,machine:&str)->Vec<RunRow> {
+        self.maintenance_store().runs(&store::RunFilter {machine:Some(machine.into()),limit:u64::MAX,..Default::default()}).map(|(rows,..)|rows).unwrap_or_default()
+    }
+    pub(super) fn maintenance_warm(&self,machine:&str,items:Vec<v1::WarmItem>)->Vec<v1::WarmItem> {
+        let rows=self.maintenance_rows(machine);
+        items.into_iter().filter(|item|rows.iter().flat_map(|row|row.spec.set.iter().flat_map(|set|&set.items)).any(|known|same_warm(known,item))).map(|mut item|{item.held_back.clear();item}).collect()
     }
 
     /// The machine's downloads, as its Status lists them (none: it went quiet). A run with bytes still to come, none of
@@ -1144,7 +1172,7 @@ impl Calcifer {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
-            let scope=match me.run_scope(id.as_str()) { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); lock(&me.drivers).remove(&id); return; } };
+            let scope=match me.run_scope_when_ready(id.as_str(),&wake).await { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); lock(&me.drivers).remove(&id); return; } };
             private_io::context(scope,me.follow_to_end(&id,&wake)).await;
             lock(&me.drivers).remove(&id);
             lock(&me.live).remove(&id);
@@ -1159,7 +1187,7 @@ impl Calcifer {
             let run = match self.with_run_store(id.as_str(), |store| store.run(id.as_str())) {
                 Ok(Some(run)) => run,
                 Ok(None) => return,
-                Err(StoreError::Locked(_)) => return,
+                Err(StoreError::Locked(code)) if code!="project_busy" => return,
                 Err(e) => {
                     warn!(run = %id, "{e}");
                     pause.wait(wake, None).await;
@@ -1920,10 +1948,13 @@ impl Calcifer {
     /// yet.
     async fn known_warm(&self, run: &RunRow, machine: &str, link: &Link) -> Result<(), Stop> {
         let merges = run.spec.kind == v1::RunKind::Warm && run.spec.set.is_some();
-        if !merges || lock(&self.warm).contains_key(machine) {
+        let key=(run.project_root.as_ref().map(|_|run.owner.clone()),machine.to_owned());
+        if !merges || lock(&self.warm).contains_key(&key) {
             return Ok(());
         }
-        self.observe_warm(machine, link.status().await?.warm);
+        let items=link.status().await?.warm;
+        let items=if run.project_root.is_some() {items} else {self.maintenance_warm(machine,items)};
+        lock(&self.warm).insert(key,items);
         Ok(())
     }
 
@@ -1932,7 +1963,7 @@ impl Calcifer {
     async fn sent_spec(&self, run: &RunRow) -> Result<v1::RunSpec, Stop> {
         let mut spec = run.spec.clone();
         if let Some(machine) = &run.machine
-            && let Some(warm) = lock(&self.warm).get_mut(machine)
+            && let Some(warm) = lock(&self.warm).get_mut(&(run.project_root.as_ref().map(|_|run.owner.clone()),machine.clone()))
         {
             machines::merge_warm(warm, &mut spec);
         }
@@ -2158,6 +2189,7 @@ fn copy_checked(inputs: &Path, source: &StagedInput, target: &Path) -> Result<()
         .sync_all()
         .map_err(|e| failed(e.to_string()))?;
     part.persist(target).map_err(|e| failed(e.to_string()))?;
+    platform::durable::sync_dir(inputs).map_err(|e|failed(e.to_string()))?;
     Ok(())
 }
 
