@@ -212,12 +212,16 @@ def main() -> int:
             development.no_api_bridge()
             initial = proof.exercise(b["id"], "hmr_start")
             require(initial.get("development") and initial.get("value") == 1, "owned_hmr_initial_module")
+            require(initial.get("csp_nonce") and initial.get("refresh_nonce") and initial.get("style_nonce"), "owned_hmr_nonce_missing")
+            headers = native.raw("GET", "/").headers
+            policy = headers.get("content-security-policy", "")
+            require("'nonce-" in policy and "'unsafe-inline'" not in policy and "ws://" + native.holder()["address"] in policy and "no-store" in headers.get("cache-control", ""), "owned_hmr_csp_header")
             development.update()
             updated = until(lambda: proof.exercise(b["id"], "hmr_observe"), lambda value: value.get("value") == 2, "owned_hmr_update")
             require(updated.get("document_sha256") == initial["document_sha256"], "owned_hmr_reloaded_document")
             refused_dev = native.raw("GET", "/files/" + a["marker"])
             require(refused_dev.status == 404, "development_private_path_forwarded")
-            receipt.add("owned_development_hmr", same_origin=True, actual_update=True, document_retained=True, private_path_refused=True, direct_vite_api_refused=True)
+            receipt.add("owned_development_hmr", same_origin=True, actual_update=True, document_retained=True, csp_nonce=True, refresh_nonce=True, style_nonce=True, private_path_refused=True, direct_vite_api_refused=True)
         phase = "queued_b_edit"
         held = sqlite3.connect(b["view"] / "project.db", timeout=1)
         held.execute("BEGIN IMMEDIATE")

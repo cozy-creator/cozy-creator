@@ -24,7 +24,10 @@ async function containmentProof(input) {
       if (!development) return { development: false };
       globalThis.__cozyHmrDocument = crypto.randomUUID();
       const module = await import('/src/__cozy_hmr_proof.ts');
-      return { development: true, value: module.value, document_sha256: await hash(new TextEncoder().encode(globalThis.__cozyHmrDocument)) };
+      const nonce = document.querySelector('meta[property="csp-nonce"]')?.nonce;
+      const inline = [...document.scripts].filter((script) => !script.src && script.textContent.trim());
+      const styles = [...document.querySelectorAll('style[data-vite-dev-id]')];
+      return { development: true, value: module.value, csp_nonce: Boolean(nonce && nonce !== '__COZY_DEVELOPMENT_NONCE__'), refresh_nonce: inline.length > 0 && inline.every((script) => script.nonce === nonce), style_nonce: styles.length > 0 && styles.every((style) => style.nonce === nonce), document_sha256: await hash(new TextEncoder().encode(globalThis.__cozyHmrDocument)) };
     }
     case 'hmr_observe':
       return { value: globalThis.__cozyHmrProof ?? 0, document_sha256: await hash(new TextEncoder().encode(globalThis.__cozyHmrDocument ?? '')) };
