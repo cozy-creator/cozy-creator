@@ -317,6 +317,8 @@ export class CanvasStore {
   leaveHere: () => void = () => {}
   /** Opens a box where it stands, as a click on it does. */
   openHere: (name: string) => void = () => {}
+  /** Each of these again beside where they stand, selected: Ctrl+D. */
+  duplicate: (names: string[]) => void = () => {}
   /** The box to open on its next take's words: an image tool was just put on its pictures. */
   writeOnOpen: string | null = null
   /** Fits the canvas to the box being worked on, and all around it. `only`: only if something no longer fits. */
@@ -465,6 +467,12 @@ export class CanvasStore {
 
   resolveName(name: string): string {
     return this.aliases.get(name) ?? name
+  }
+
+  /** What Calcifer calls it: a rename on its way says the name it had until it lands. */
+  servedName(name: string): string {
+    const key = this.resolveName(name)
+    return this.served.get(this.ids.get(key) ?? "") ?? key
   }
 
   get = (name: string): ElementView | undefined => this.views.get(this.resolveName(name))
@@ -2772,48 +2780,70 @@ export class CanvasStore {
     done?: (name: string, answer: T, edit: string) => void,
     edit?: string,
   ): string {
-    const name = this.nameFor(wanted)
-    const asset = view.asset && { ...view.asset, name }
-    this.adding += 1
-    this.views.set(name, { ...view, name, asset, pending: NOT_YET, landing: true })
-    this.reauto(name, this.views.get(name)!)
-    const by = edit ?? this.step(`Added ${name}`, [])
-    const at = this.clearOf(name, dropped, by)
-    this.rows?.set(name, at)
-    const node = this.node(name, at)
-    this.flow?.addNodes(node)
-    this.history.stepOf({ edit: by })?.before.push({ name, node: node.id })
+    const one = async ([at]: Card[], write: Write, pushes: Pushes) => {
+      const answer = await ask(at, write, pushes)
+      return { made: [answer], kept: answer.kept }
+    }
+    return this.placeAll([{ wanted, view, dropped }], one, refused, done, edit)[0]
+  }
+
+  /** Boxes, now, each as `place` has one, made in the project by one ask: one request, one transaction, one entry, and refused together. */
+  placeAll<T extends { name: string; etag?: string }>(
+    boxes: { wanted: string; view: Omit<ElementView, "name">; dropped: Card }[],
+    ask: (at: Card[], write: Write, pushes: Pushes) => Promise<{ made: T[]; kept?: Record<string, Card | null> }>,
+    refused: (error: unknown) => void,
+    done?: (name: string, answer: T, edit: string) => void,
+    edit?: string,
+  ): string[] {
+    const by = edit ?? this.step(`Added ${this.nameFor(boxes[0].wanted)}`, [])
+    this.adding += boxes.length
+    const placed = boxes.map(({ wanted, view, dropped }) => {
+      const name = this.nameFor(wanted)
+      const asset = view.asset && { ...view.asset, name }
+      this.views.set(name, { ...view, name, asset, pending: NOT_YET, landing: true })
+      this.reauto(name, this.views.get(name)!)
+      const at = this.clearOf(name, dropped, by)
+      this.rows?.set(name, at)
+      const node = this.node(name, at)
+      this.flow?.addNodes(node)
+      this.history.stepOf({ edit: by })?.before.push({ name, node: node.id })
+      return { name, at, node }
+    })
     const left = () => {
-      this.adding -= 1
+      this.adding -= boxes.length
       if (this.adding === 0 && this.state && this.rows && this.flow) this.reconcile()
     }
-    // What its drop pushed aside goes with it, the same on every try: one request, one transaction, one entry.
+    // What their drop pushed aside goes with them, the same on every try: one request, one transaction, one entry.
     let pushes: Pushes | undefined
-    this.outbox.add<T>({
+    this.outbox.add<{ made: T[]; kept?: Record<string, Card | null> }>({
       send: (once, action) => {
         pushes ??= this.pushesFor(by)
-        return ask(at, { once, edit: by, action }, pushes)
+        return ask(placed.map(({ at }) => at), { once, edit: by, action }, pushes)
       },
       done: (answer) => {
         if (pushes) this.pushesSent(pushes, answer.kept)
-        this.served.set(node.id, answer.name)
-        // Another writer took the name, unless a rename has moved it on since.
-        if (answer.name !== name && this.namesById.get(node.id) === name) this.moveName(name, answer.name)
-        const now = this.namesById.get(node.id)
-        if (now) {
+        placed.forEach(({ name, at, node }, i) => {
+          const made = answer.made[i]
+          if (!made) return
+          this.served.set(node.id, made.name)
+          // Another writer took the name, unless a rename has moved it on since.
+          if (made.name !== name && this.namesById.get(node.id) === name) this.moveName(name, made.name)
+          const now = this.namesById.get(node.id)
+          if (!now) return
           const row = this.views.get(now)?.asset
-          this.patch(now, { ...(answer.etag ? { known: answer.etag, asset: row && { ...row, etag: answer.etag } } : {}), pending: nextProjectOrder() })
+          this.patch(now, { ...(made.etag ? { known: made.etag, asset: row && { ...row, etag: made.etag } } : {}), pending: nextProjectOrder() })
           // What it pushed aside goes with its own row, in one write: one entry of the history.
           if (this.pushedFor(by)) this.move(now, this.rows?.get(now) ?? at, undefined, by)
-          done?.(now, answer, by)
-        }
-        this.readAfter([node.id])
+          done?.(now, made, by)
+        })
+        this.readAfter(placed.map(({ node }) => node.id))
         left()
         this.sendMoves()
       },
       refused: (error) => {
-        const now = this.namesById.get(node.id)
-        if (now) {
+        for (const { node } of placed) {
+          const now = this.namesById.get(node.id)
+          if (!now) continue
           this.rows?.delete(now)
           this.removeNode(now)
         }
@@ -2824,7 +2854,7 @@ export class CanvasStore {
         this.sendMoves()
       },
     })
-    return name
+    return placed.map(({ name }) => name)
   }
 
   /** Its row, written in its turn, with whatever else this turn moves. `from`: the page's own doing, worked out from that row (null: none), which

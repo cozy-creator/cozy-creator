@@ -728,6 +728,38 @@ pub struct AssetMade {
     pub kept: BTreeMap<String, Option<Card>>,
 }
 
+/// `POST /v1/projects/{id}/copies`: boxes copied, in one transaction and one entry of the history. Under an `Idempotency-Key`, a retry makes no more.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Copies {
+    pub boxes: Vec<CopyOf>,
+    /// What their drop pushed aside, written with them, each only if no other client wrote it after the revision in `placed`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub moves: BTreeMap<String, Card>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub placed: BTreeMap<String, u64>,
+}
+
+/// A copy of box `from`: a new box called its name counted up (`hei_2`), with its tool, fields and words, and its versions and approval, their
+/// files the same files by hash. `<self…>` in its words is the copy, a mention of a box copied with it names that box's copy, and any other is unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CopyOf {
+    pub from: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Card>,
+}
+
+/// What `POST /v1/projects/{id}/copies` made: each copy, in the order asked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Copied {
+    pub made: Vec<AssetMade>,
+    /// Each of its `moves` another wrote since, left as it is: its row now (null: none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub kept: BTreeMap<String, Option<Card>>,
+}
+
 /// `PATCH /v1/projects/{id}/assets/{name}`: these inputs set, each by a control's `field`, and nothing else moved. A null clears one.
 /// `tool` changes what makes it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

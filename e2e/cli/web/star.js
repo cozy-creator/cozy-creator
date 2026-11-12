@@ -97,7 +97,7 @@ async function died(why) {
 
   // Starred: in project.db, the YAML, its history; nothing out of date, and no approval.
   const items = await fromMenu('third', 'Star');
-  check('menu_says_star', items.join() === 'Download,Star,Rename,Delete', items);
+  check('menu_says_star', items.join() === 'Download,Star,Duplicate,Rename,Delete', items);
   const now = await until('starred in its state', () => asset('third'), (row) => row?.starred === true);
   check('project_db_holds_it', starred().length === 1 && starred()[0][0] === 'third' && [true, 'true', 1].includes(starred()[0][1]), starred());
   check('yaml_says_it', /third:\n(?: {4}.*\n)* {4}starred: true/.test(yamlOf(folder)), yamlOf(folder));

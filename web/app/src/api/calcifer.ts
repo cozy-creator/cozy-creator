@@ -566,6 +566,30 @@ export type CodeRequest = { hub?: string | null, purpose: Purpose, email?: strin
 export type Component = { "version": string } | { "file": DevBuild };
 
 /**
+ * What `POST /v1/projects/{id}/copies` made: each copy, in the order asked.
+ */
+export type Copied = { made: Array<AssetMade>,
+/**
+ * Each of its `moves` another wrote since, left as it is: its row now (null: none).
+ */
+kept?: { [key in string]: Card | null }, };
+
+/**
+ * `POST /v1/projects/{id}/copies`: boxes copied, in one transaction and one entry of the history. Under an `Idempotency-Key`, a retry makes no more.
+ */
+export type Copies = { boxes: Array<CopyOf>,
+/**
+ * What their drop pushed aside, written with them, each only if no other client wrote it after the revision in `placed`.
+ */
+moves?: { [key in string]: Card }, placed?: { [key in string]: number }, };
+
+/**
+ * A copy of box `from`: a new box called its name counted up (`hei_2`), with its tool, fields and words, and its versions and approval, their
+ * files the same files by hash. `<self…>` in its words is the copy, a mention of a box copied with it names that box's copy, and any other is unchanged.
+ */
+export type CopyOf = { from: string, at?: Card | null, };
+
+/**
  * A `cozy/cut` asset's film at the project's root (`GET /v1/projects/{id}/cuts/{cut}`; its timeline
  * beside it, `<name>.otio`): its file, when it was last cut and how many frames long at `fps`
  * (None: not yet), the takes it retimed to that rate (`<asset> (<fps> fps)`), and what it cuts that

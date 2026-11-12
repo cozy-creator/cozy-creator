@@ -6,26 +6,42 @@ import type { Box } from "./graph"
 import { shownOf, valuesOf } from "./shown"
 import { lineOf } from "./text"
 
-/** A box copied: a file, which is a box of its own, or what makes it, with no takes. `at` is where it stood, which a paste keeps among the others. */
-export type CopiedBox = { at: Box } & ({ file: CarriedFile } | { made: Pick<Asset, "kind" | "tool" | "fields" | "timeline"> & { name: string } })
+/** What makes a box, which a paste where it isn't makes again, with no takes. */
+export type Made = Pick<Asset, "kind" | "tool" | "fields" | "timeline"> & { name: string }
+
+/**
+ * A box copied: the take a box being worked on shows, which a paste makes a box of its own; else the box, by its name in this project (`from`), and what
+ * makes it. `at` is where it stood, which a paste keeps among the others.
+ */
+export type CopiedBox = { at: Box } & ({ file: CarriedFile } | { made: Made; from?: string })
 
 /** What Ctrl+C took: the system's clipboard holds only a picture or words, so this is how a paste knows them for its own. */
 let copied: { project: string | null; boxes: CopiedBox[]; words: string } | null = null
 
-/** What `name` is as a copy. A picture with no tool is that picture, and so is the take a box being worked on is showing. */
-function copyOf(store: CanvasStore, name: string): CopiedBox | null {
+/** What `name` is as a copy, where it stands. Being worked on and showing a take, it's that take, unless `whole`. */
+export function copyOf(store: CanvasStore, name: string, whole = false): CopiedBox | null {
   const view = store.get(name)
   const asset = view?.asset
-  const at = store.boxOf(name)
+  const at = store.poseOf(name)
   if (!view || !asset || !at) return null
   const shown = shownOf(view)
-  const held = store.valueOf(name, "description")
-  const description = typeof held === "string" ? held : undefined
-  if (shown && !shown.absent && (!asset.tool || (view.here && !view.hereWords))) {
+  if (!whole && shown && !shown.absent && view.here && !view.hereWords) {
+    const held = store.valueOf(name, "description")
+    const description = typeof held === "string" ? held : undefined
     const called = shown.number === undefined || !asset.prefixes?.length || !asset.tool ? asset.name : `${asset.name}_${shown.number}`
     return { at, file: { sha256: shown.sha256, field: shown.field, name: called, description, from: asset.name } }
   }
-  return { at, made: { kind: asset.kind, tool: asset.tool, fields: { ...asset.fields, ...view.sent, ...view.drafts }, timeline: asset.timeline, name: asset.name } }
+  const made = { kind: asset.kind, tool: asset.tool, fields: { ...asset.fields, ...view.sent, ...view.drafts }, timeline: asset.timeline, name: asset.name }
+  return { at, made, from: asset.name }
+}
+
+/** The middle of where they stood. */
+export function middleOf(boxes: CopiedBox[]): { x: number; y: number } {
+  const left = Math.min(...boxes.map(({ at }) => at.x))
+  const top = Math.min(...boxes.map(({ at }) => at.y))
+  const right = Math.max(...boxes.map(({ at }) => at.x + at.w))
+  const bottom = Math.max(...boxes.map(({ at }) => at.y + at.h))
+  return { x: (left + right) / 2, y: (top + bottom) / 2 }
 }
 
 /** A picture as the system's clipboard takes it, which is PNG. */
@@ -59,8 +75,13 @@ export function copyBoxes(store: CanvasStore, client: Client, names: string[], d
   return true
 }
 
-/** What a paste of `data` brings that this page copied. In another project a file isn't there to be had, and the picture goes by the clipboard like any other. */
+/**
+ * What a paste of `data` brings that this page copied. In another project its boxes and files aren't there to be had: what makes a box is made again,
+ * and a picture goes by the clipboard like any other.
+ */
 export function ownCopy(store: CanvasStore, data: DataTransfer): CopiedBox[] | null {
   if (!copied || data.getData("text/plain") !== copied.words) return null
-  return copied.project === store.projectId || !copied.boxes.some((box) => "file" in box) ? copied.boxes : null
+  if (copied.project === store.projectId) return copied.boxes
+  const made = copied.boxes.flatMap((box) => ("made" in box && (box.made.tool || box.made.kind === "text") ? [{ at: box.at, made: box.made }] : []))
+  return made.length === copied.boxes.length ? made : null
 }
