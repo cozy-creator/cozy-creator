@@ -12,7 +12,7 @@ use super::{auth::VerifiedActor, v1, MachineIdentity};
 use crate::runs::{actor_id, Runs};
 use crate::machine::update::{Choice, Request, Status as Update, Updates, BINARY};
 use api::error::Error;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc};
 use futures_util::Stream;
 
 /// Whether run `id` is an update this machine holds or reserved.
@@ -159,6 +159,7 @@ pub(super) async fn events(
     let first = updates.update(&id).ok_or_else(absent)?;
     let (sender, receiver) = tokio::sync::mpsc::channel(16);
     let _ = sender.try_send(Ok(event(0, 0, v1::Event::State(state(&id, &first)))));
+    let mut written = updates.written();
     tokio::spawn(async move {
         let mut sent = after;
         loop {
@@ -181,7 +182,7 @@ pub(super) async fn events(
             }
             tokio::select! {
                 _ = sender.closed() => return,
-                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                changed = written.changed() => if changed.is_err() { return },
             }
         }
     });

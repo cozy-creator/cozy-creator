@@ -45,12 +45,16 @@ impl Machines {
                 Ok(Some(row)) if row.state != MachineState::Ended => {}
                 _ => return,
             }
-            if self.offline(&name).is_none() {
-                // A log not written yet (or not kept by this machine) is asked again, paced; a
-                // place kept that this machine does not know (it restarted) is read anew.
-                if let Err(LinkError::Refused { .. }) = self.keep_some(&name, log, &mut pause).await {
-                    let _ = fs::remove_file(self.kept(&name).join(format!("{}.after", file(log))));
-                }
+            // Offline, it's followed again once what's known of it changes.
+            let mut changed = self.calcifer.machine_watch(&name);
+            if self.offline(&name).is_some() {
+                let _ = changed.changed().await;
+                continue;
+            }
+            // A log not written yet (or not kept by this machine) is asked again, paced; a
+            // place kept that this machine does not know (it restarted) is read anew.
+            if let Err(LinkError::Refused { .. }) = self.keep_some(&name, log, &mut pause).await {
+                let _ = fs::remove_file(self.kept(&name).join(format!("{}.after", file(log))));
             }
             pause = (pause * 2).clamp(Duration::from_secs(1), Duration::from_secs(30));
             tokio::time::sleep(pause).await;

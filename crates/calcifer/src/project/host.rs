@@ -323,10 +323,7 @@ impl Host {
             if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) && and(&run) {
                 return Ok(run);
             }
-            tokio::select! {
-                _ = tail.recv() => {}
-                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
-            }
+            crate::Calcifer::moved(&mut tail, id).await;
         }
     }
 

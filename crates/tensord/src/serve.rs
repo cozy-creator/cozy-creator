@@ -214,15 +214,11 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     };
     let sdk = crate::published::PackageSdk::selected(&paths.sdk(), &paths.update("staged"), crate::machine::uv::Uv::of(&layout.root, &engine, rental), torch.clone());
     boot.at("updates");
-    let running = {
-        let engine = service.engine.clone();
-        Box::new(move || engine.with_journal(|journal| journal.started()).unwrap_or_default())
-    };
     let updates = crate::machine::update::Updates::open(
         paths.clone(),
         sdk.uv.clone(),
         sdk.python.clone(),
-        running,
+        service.engine.clone(),
         Some(lifecycle.clone()),
         Some(machine.clone()),
     )?;
