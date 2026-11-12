@@ -166,8 +166,9 @@ pub(crate) fn of_classes<'a>(classes: impl IntoIterator<Item = &'a str>) -> Vec<
 /// What a LoRA's tensors end in: its factors, alpha and a DoRA's magnitude.
 pub(crate) const FACTORS: [&str; 4] = [".lora_A.weight", ".lora_B.weight", ".alpha", ".lora_magnitude_vector"];
 /// What a LoRA keeps beside its factors that adapts no base weight: a parallel decoder's per-step
-/// output heads (PDD, `qwenimage21.lora`'s `proj_out.heads`).
-pub(crate) const KEPT: [&str; 1] = [".heads"];
+/// output heads (PDD, `qwenimage21.lora`'s `proj_out.heads`), and a whole module it was trained with in
+/// place of the base's (a Krea 2 control LoRA's widened image input, `krea2.lora`'s `img_in.modules_to_save`).
+pub(crate) const KEPT: [&str; 3] = [".heads", ".modules_to_save.weight", ".modules_to_save.bias"];
 
 /// Whether a key is a LoRA's: a factor, an alpha or a tensor it keeps.
 pub(crate) fn lora_key(key: &str) -> bool {

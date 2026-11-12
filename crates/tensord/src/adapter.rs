@@ -88,6 +88,8 @@ pub(crate) struct Composed {
     pub adapted: Vec<Vec<String>>,
     /// What each selection's run is told: a LoRA trained on another component than it adapts.
     pub warnings: Vec<Vec<String>>,
+    /// How many of each selection's layers adapt the base.
+    pub layers: Vec<usize>,
 }
 
 fn refuse(code: &str, detail: impl Into<String>) -> io::Error {
@@ -246,9 +248,9 @@ fn infer_component(base: &Header, runs: &[String], factors: &BTreeMap<String, Te
 /// is the base, `i + 1` adapter `i`.
 type Take = (String, String, usize, String, String);
 
-/// What the view takes, in execution order, its graph, and what each selection's run is told of
-/// what did not apply. Nothing is written.
-fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(Vec<Take>, Graph, Vec<Vec<String>>)> {
+/// What the view takes, in execution order, its graph, what each selection's run is told of
+/// what did not apply, and how many of its layers do. Nothing is written.
+fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(Vec<Take>, Graph, Vec<Vec<String>>, Vec<usize>)> {
     if base.components().iter().any(|c| c.assets.contains_key(GRAPH_FILE)) {
         return Err(refuse("nested", "select the original base and one complete ordered adapter stack"));
     }
@@ -258,7 +260,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
     let mut graph = Graph { format: FORMAT, layers: vec![], adapters: vec![] };
     // The base's verified family, and each stored component's family component (tfs-137).
     let family = tensorfs::family::Record::of(header);
-    let mut warnings = vec![];
+    let (mut warnings, mut layers) = (vec![], vec![]);
     for (index, (selection, adapter)) in adapters.iter().enumerate() {
         let declared = tensorfs::family::Adapter::read_all(&adapter.header().metadata);
         let trained_on = |name: &str| declared.get(name).and_then(|a| a.trained_on.as_ref()).map(|t| t.component.as_str());
@@ -412,6 +414,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
             return Err(refuse("target", format!("no layer of this LoRA applies to {}: {}", ran(), said.join("; "))));
         }
         warnings.push(said);
+        layers.push(took);
     }
     let mut takes = vec![];
     for component in header.components() {
@@ -425,7 +428,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
         takes.extend(renames);
         takes.extend(grafts.remove(name).unwrap_or_default());
     }
-    Ok((takes, graph, warnings))
+    Ok((takes, graph, warnings, layers))
 }
 
 /// The adapter view of `base` with `selections`, composed by reference (the same bytes, so the
@@ -435,7 +438,7 @@ pub(crate) fn compose(store: &Store, base: &ObjectRef, selections: &[Selection])
     let base_ref = base;
     let base = checkpoint(base)?;
     let adapters = selections.iter().map(|s| Ok((s.clone(), checkpoint(&s.checkpoint)?))).collect::<io::Result<Vec<_>>>()?;
-    let (takes, mut graph, warnings) = plan(&base, &adapters)?;
+    let (takes, mut graph, warnings, layers) = plan(&base, &adapters)?;
     let each = (selections.iter())
         .map(|s| {
             let id = s.checkpoint.id();
@@ -470,7 +473,7 @@ pub(crate) fn compose(store: &Store, base: &ObjectRef, selections: &[Selection])
             .collect(),
     };
     let checkpoint = storage::keep_view(store, header, vec![graph], recipe)?;
-    Ok(Composed { name: id, checkpoint, adapted: each, warnings })
+    Ok(Composed { name: id, checkpoint, adapted: each, warnings, layers })
 }
 
 /// The view's header: each take's tensor as its source header has it, renamed, its parts in the

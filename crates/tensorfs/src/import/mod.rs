@@ -977,6 +977,18 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
             lora::normalize(&mut planned, &sources, &tabled, &mut files, &set)?
         }
     };
+    // An adapter nothing can apply is refused, never stored for nothing: another LyCORIS kind, or kohya's
+    // flattened names no table maps.
+    for g in recognized.unclaimed.iter().filter(|_| !as_is) {
+        let group = &set.groups[*g];
+        if let Some(why) = lora::unusable(group) {
+            let near = engine::closest(group, tables);
+            let near = if near.is_empty() { String::new() } else { format!("; nearest {}", near.join(", ")) };
+            return refuse(Code::ADAPTER_TARGET_UNSUPPORTED, format!(
+                "{}: {why}{near}. Keep it unconverted (--source-format {AS_IS}) only for code that reads it raw",
+                group.label()));
+        }
+    }
     // A PEFT adapter's keys are its base model's module names: canonical once unwrapped.
     let peft = |g: &usize| adapters.get(&identity(&set.groups[*g])).is_some_and(|a| a.stated);
     if !as_is && recognized.unclaimed.iter().any(peft) {
