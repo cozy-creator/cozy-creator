@@ -33,6 +33,13 @@ projectvault() (
   in_project "$plain" --json vault status > "$work/plain-status.json"
   jq -e '.encrypted == false and .state == "plain"' "$work/plain-status.json" > /dev/null || fail "ordinary project unexpectedly needs encryption"
   in_project "$plain" --json --full status > "$work/plain-project.json" || fail "ordinary project no longer opens"
+  step "a new project encrypted from the start: its passphrase from a file, its recovery secret saved outside it"
+  cozy --json new "$work/born" --passphrase-file "$secrets/initial" --recovery-out "$secrets/born-recovery" > "$work/born.json" 2> "$work/born.err" \
+    || fail "new --passphrase-file --recovery-out: $(tail -c 300 "$work/born.err")"
+  in_project "$work/born" --json vault status > "$work/born-status.json"
+  jq -e '.encrypted == true and .state == "unlocked"' "$work/born-status.json" > /dev/null || fail "new --passphrase-file made no unlocked encrypted project: $(cat "$work/born-status.json")"
+  [ -s "$secrets/born-recovery" ] || fail "new --recovery-out saved no recovery secret"
+  in_project "$work/born" --json vault lock > /dev/null || fail "the new encrypted project doesn't lock"
   cozy --json new --unencrypted "$P" > "$work/created.json"
   project_api "$P" /yaml > "$work/before.yaml"
   mkdir -p "$P/files"

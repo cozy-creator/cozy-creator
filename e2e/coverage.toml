@@ -32,6 +32,9 @@ test = "pr: signed out, whoami says so (release: signed in as fidika, its balanc
 
 [new]
 test = "pr: entrypoints, explicit creation in the current directory or a named directory"
+"--unencrypted" = "pr: entrypoints, projectvault, machine_set: a project with plain storage"
+"--passphrase-file" = "pr: projectvault: a new project encrypted from the start, its passphrase from a file"
+"--recovery-out" = "pr: projectvault: a new encrypted project's recovery secret saved outside it"
 
 [status]
 test = "pr: entrypoints, current-project health counts and warnings with an expanded full record"
