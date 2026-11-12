@@ -464,15 +464,17 @@ function replaceFile(at, text) {
     const pickedLines = JSON.stringify(stored('shot'));
     check('pickup_writes_nothing', pickedLines === typed && !afterPickup.includes('pickup'), { before: typed, after: pickedLines, hasPickup: afterPickup.includes('pickup') });
 
-    // Another box's take let go on it: it continues that take from its end, the grid's last frame in it (7 of 11), and says so.
+    // Another box's take, continued: from its end, the grid's last frame in it (7 of 11), and it says so.
     addBoxes(folder, [{ name: 'other', tool: `${fixture}/shot`, kind: 'video', fields: { plate: '<walk>' } }]);
     await until('other in the project', () => of('other'), Boolean);
     await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { other: { x: at.x - 420, y: at.y } } }) });
     await render('other', 1);
-    await open('other');
-    await box('other').locator('.take[aria-label="take 1"]').click();
-    const onto = await reach('shot');
-    await box('other').locator('.take-out').dragTo(page.locator('body'), { targetPosition: onto });
+    // Chosen in a draft's Continue (cl-951; a take's .take-out is the canvas's, not Focus's): it goes on from that take's end.
+    await open('shot');
+    const from = page.locator('.focus-viewport .continue-from select');
+    if (!(await from.count())) await page.locator('.card.here[data-asset="shot"] .focus-actions .focus-new').first().click();
+    await from.waitFor();
+    await from.selectOption({ label: '<other.1>' });
     const leadIn = page.locator('.card.here[data-asset="shot"] .lead-in');
     await leadIn.waitFor();
     check('another_take_continues', (await leadIn.locator('.lead-in-words b').innerText()).startsWith('Continues <other.1> from its end'), await leadIn.innerText());
