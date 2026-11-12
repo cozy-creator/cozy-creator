@@ -276,7 +276,7 @@ cozy --json package uninstall local/one_script --on local > /dev/null || check "
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine slow_runs completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine slow_runs prepares completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   local-wake) parts="local_wake_update logs" ;;
@@ -322,7 +322,9 @@ case $SHARD in
   follow) parts="script_package one_name_two_paths image_ratio run_follow time_left broken_answers queued_download machines completions calcifer_faults calcifer_restarts logs" ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
   # computer placed on (cl-894), a new take never changing what's approved (cl-908), and one not looked at (cl-928).
-  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes logs" ;;
+  projectdb) parts="projectdb statedb local_idle machine_set fall_back approvals newtakes prepares logs" ;;
+  # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
+  projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
   projectdb-existing) parts="db_existing logs" ;;

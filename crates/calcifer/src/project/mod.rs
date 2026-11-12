@@ -932,8 +932,12 @@ struct Walker {
     again: HashSet<String>,
     /// The assets project.yaml names now, as of its stamp.
     names: Option<(String, Arc<HashSet<String>>)>,
-    /// What machines were asked to fetch ahead: machine, function and its model choices.
-    asked_ahead: HashSet<(String, String, String)>,
+    /// What machines were asked to fetch ahead, by machine, function and its model choices (`ahead_key`): when the machine's
+    /// software last started, so a restart (an update) prepares again.
+    asked_ahead: HashMap<String, Option<i64>>,
+    /// Where each job not ready yet, of several machines, will most likely go, by its key, once its quote said; none while it's
+    /// asked, or when none could take it.
+    foreseen: HashMap<String, Option<On>>,
     /// Where each job whose turn is next would finish soonest, by its key, as its machines last quoted (cl-816), and when they did.
     placed: HashMap<String, Placed>,
     quoted_at: Option<Instant>,
@@ -2932,13 +2936,24 @@ enum Done {
     Ahead,
 }
 
-/// What a queued job's machine can fetch before its turn: a function as its text names it, on one machine.
+/// What a queued job's machine can fetch before its turn: a function as its text names it, on the machine it will most likely go
+/// to; none yet: of its several machines, a quote of its own says which first.
 struct Wanted {
-    machine: On,
+    job: String,
+    machine: Option<On>,
+    on: Vec<On>,
     hub: String,
     with: String,
     kind: String,
     made: Map<String, Value>,
+    /// The keys of the jobs it waits for: it begins no sooner than they end.
+    after: Vec<String>,
+}
+
+/// What one fetch ahead is, as `asked_ahead` and the board know it: machine, function and its model choices.
+fn ahead_key(machine: &str, with: &str, made: &Map<String, Value>) -> String {
+    let chosen = serde_json::to_string(&(made.get("models"), made.get("lora"))).unwrap_or_default();
+    format!("{machine}\n{with}\n{chosen}")
 }
 
 /// A run being sent, until it has gone or hasn't.
@@ -3303,8 +3318,13 @@ impl Walk {
             }
             for wanted in self.wanted_ahead() {
                 work.push(async move {
-                    if let Err(error) = self.ask_ahead(wanted).await {
-                        warn!("fetching ahead in {}: {}", self.folder().dir.display(), error.message);
+                    match wanted.machine {
+                        Some(_) => {
+                            if let Err(error) = self.ask_ahead(wanted).await {
+                                warn!("fetching ahead in {}: {}", self.folder().dir.display(), error.message);
+                            }
+                        }
+                        None => self.foresee(wanted).await,
                     }
                     Done::Ahead
                 }.boxed());
@@ -3358,44 +3378,89 @@ impl Walk {
         }
     }
 
-    /// What jobs waiting for their turn will need that no machine was asked for. Only where the machine is known: with several it is chosen when a job goes.
+    /// What jobs waiting for their turn will need that no machine was asked for, on the machine each will most likely go to: its
+    /// one, else the soonest its machines quoted, else, not ready yet, a quote of its own first (`foresee`). A machine whose software
+    /// started again since (an update) is asked again. Each box waiting is named on what's fetched for it.
     fn wanted_ahead(&self) -> Vec<Wanted> {
         let Ok(walk) = self.folder().walk_now() else { return vec![] };
-        let mut walker = self.project.walker.lock().expect("walker lock");
-        let Walker { graph, readings, asked_ahead, placed, .. } = &mut *walker;
+        let api = self.host.api();
+        let going = self.project.jobs.ahead_keys_going();
+        let mut named = vec![];
         let mut wanted = vec![];
-        for id in graph.open_jobs() {
-            let job = &graph.jobs[id];
-            if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) {
-                continue;
-            }
-            let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
-            let Some(reading) = readings.get(&ask.digest) else { continue };
-            // Where it will most likely go: its one machine, or of several the soonest its machines quoted. With `any` that isn't known.
-            let machine = match ask.target.on.as_slice() {
-                [only] => only,
-                _ => match placed.get(&job.key) {
-                    Some(placed) => &placed.soonest.machine,
-                    None => continue,
-                },
-            };
-            if !matches!(machine, On::Machine(_)) {
-                continue;
-            }
-            let asset = &reading.doc.assets[job.node];
-            let (with, kind) = (reading.doc.target(job.node), asset.kind.clone());
-            let chosen = serde_json::to_string(&(asset.made.get("models"), asset.made.get("lora"))).unwrap_or_default();
-            if asked_ahead.insert((machine.to_string(), with.clone(), chosen)) {
-                wanted.push(Wanted { machine: machine.clone(), hub: ask.target.hub.clone(), with, kind, made: asset.made.clone() });
+        {
+            let mut walker = self.project.walker.lock().expect("walker lock");
+            let Walker { graph, readings, asked_ahead, placed, foreseen, .. } = &mut *walker;
+            for id in graph.open_jobs() {
+                let job = &graph.jobs[id];
+                if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) {
+                    continue;
+                }
+                let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
+                let Some(reading) = readings.get(&ask.digest) else { continue };
+                let target = ask.takes.iter().find(|take| take.key == job.key).map_or(&ask.target, |take| &take.target);
+                let asset = &reading.doc.assets[job.node];
+                let (with, kind, made) = (reading.doc.target(job.node), asset.kind.clone(), asset.made.clone());
+                let machine = match target.on.as_slice() {
+                    [only] => Some(only.clone()),
+                    _ => placed.get(&job.key).map(|placed| placed.soonest.machine.clone()).or_else(|| foreseen.get(&job.key).cloned().flatten()),
+                };
+                let Some(machine) = machine else {
+                    // With `any` or a rental yet to come, where isn't known.
+                    if target.on.iter().all(|on| matches!(on, On::Machine(_))) && !foreseen.contains_key(&job.key) {
+                        foreseen.insert(job.key.clone(), None);
+                        let after = job.needs.iter().map(|&need| graph.jobs[need].key.clone()).collect();
+                        wanted.push(Wanted { job: job.key.clone(), machine: None, on: target.on.clone(), hub: target.hub.clone(), with, kind, made, after });
+                    }
+                    continue;
+                };
+                let On::Machine(name) = &machine else { continue };
+                let key = ahead_key(name, &with, &made);
+                named.push((key.clone(), job.asset.clone()));
+                let boot = api.machines.frame(name).map(|frame| frame.started_at_unix_ms);
+                if asked_ahead.get(&key).is_some_and(|asked| *asked == boot || going.contains(&key)) {
+                    continue;
+                }
+                asked_ahead.insert(key, boot);
+                wanted.push(Wanted { job: job.key.clone(), machine: Some(machine), on: target.on.clone(), hub: target.hub.clone(), with, kind, made, after: vec![] });
             }
         }
+        for (key, name) in named {
+            self.project.jobs.wants_ahead(&key, &name);
+        }
         wanted
+    }
+
+    /// Where job `wanted`, not ready yet, will most likely go of its several machines, kept for what it fetches ahead: the soonest finish
+    /// its machines quote, none beginning before what it waits for ends; quoted by none, where an unquoted job goes (`takes`). Its own
+    /// task, so its package takes as long as it takes to say what it calls.
+    async fn foresee(&self, wanted: Wanted) {
+        let Wanted { job, on, hub, with, made, after, .. } = wanted;
+        let api = self.host.api();
+        let offers = match self.quotable(job.clone(), on.clone(), &hub, &with, made, None).await {
+            Some(quotable) => placement::offers(&api, &[quotable], false).await.0.into_iter().next().unwrap_or_default(),
+            None => vec![],
+        };
+        let soonest = {
+            let walker = self.project.walker.lock().expect("walker lock");
+            let ends = |key: &String| walker.sent.get(key).map(|offer| offer.finish_at_ms).or_else(|| walker.placed.get(key).map(|placed| placed.soonest.finish_at_ms));
+            let begins = after.iter().filter_map(ends).max();
+            let offers: Vec<Offer> = offers.iter().map(|offer| begins.map_or_else(|| offer.clone(), |at| offer.from(at))).collect();
+            placement::soonest(&offers, now_ms()).map(|offer| offer.machine.clone())
+        };
+        let machine = match soonest {
+            Some(machine) => Some(machine),
+            None => placement::takes(&api, &on, &offers).await.ok(),
+        };
+        info!("{}: {job} will most likely go to {}: its look-ahead goes there", self.folder().dir.display(), machine.as_ref().map_or("none".into(), ToString::to_string));
+        self.project.walker.lock().expect("walker lock").foreseen.insert(job, machine);
     }
 
     /// Asks a machine for a function's code and weights, in the background: a warm run, which holds no GPU and starts no executor. The
     /// function is what the text names, else the first of its package that makes this kind. Nothing here can fail a render.
     async fn ask_ahead(&self, wanted: Wanted) -> Result<(), Error> {
-        let Wanted { machine, hub, with, kind, made } = wanted;
+        let Wanted { machine, hub, with, kind, made, .. } = wanted;
+        let Some(machine) = machine else { return Ok(()) };
+        let key = ahead_key(&machine.to_string(), &with, &made);
         let on = [machine.clone()];
         let package = self.host.package(&hub, &with, &self.folder().dir, &on).await?;
         let Some(renderer) = package.first_making(&kind) else { return Ok(()) };
@@ -3423,10 +3488,26 @@ impl Walk {
         let target = format!("{}{called}", api::calcifer::project::AHEAD);
         let shown = package.name.clone() + "/" + &renderer.function;
         let submit = SubmitRun { on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None, stays: vec![] };
-        let key = format!("project-ahead-{}", new_key());
-        let run = self.send_run(&key, submit).await?;
-        self.project.jobs.ahead(run.id.clone(), with, shown, placed.to_string(), run.number);
+        let run = self.send_run(&format!("project-ahead-{}", new_key()), submit).await?;
+        info!("{}: fetching {shown} ahead on {placed}: run {}", self.folder().dir.display(), run.number);
+        self.project.jobs.ahead(run.id.clone(), key, with, shown, placed.to_string(), run.number);
         Ok(())
+    }
+
+    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices. None when its package doesn't say in
+    /// time what it calls.
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Option<placement::Job> {
+        let api = self.host.api();
+        let late = late.unwrap_or(std::time::Duration::MAX);
+        let found = tokio::time::timeout(late, self.host.package(hub, with, &self.folder().dir, &on)).await;
+        let package = found.ok()?.ok()?;
+        let renderer = package.maker().ok()??;
+        let models = tokio::time::timeout(late, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
+        let size = v1::JobSize::of(&Value::Object(made));
+        let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
+            interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
+        });
+        Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
     }
 
     /// The jobs whose turn is next, each quoted by the machines it may go to, each machine asked once for all of them (cl-816): where
@@ -3454,20 +3535,8 @@ impl Walk {
             return;
         }
         let api = self.host.api();
-        let called = ready.into_iter().map(|(key, ask, target, with, made)| {
-            let api = api.clone();
-            async move {
-                let on = self.sending(&ask, &target.on);
-                let found = tokio::time::timeout(QUOTE_LATE, self.host.package(&target.hub, &with, &self.folder().dir, &on)).await;
-                let package = found.ok()?.ok()?;
-                let renderer = package.maker().ok()??;
-                let models = tokio::time::timeout(QUOTE_LATE, fit::checkpoints(&api, &target.hub, &package, &renderer.function, &made)).await.unwrap_or_default();
-                let size = v1::JobSize::of(&Value::Object(made));
-                let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
-                    interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
-                });
-                Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
-            }
+        let called = ready.into_iter().map(|(key, ask, target, with, made)| async move {
+            self.quotable(key, self.sending(&ask, &target.on), &target.hub, &with, made, Some(QUOTE_LATE)).await
         });
         let jobs: Vec<placement::Job> = futures_util::future::join_all(called).await.into_iter().flatten().collect();
         let (offers, said) = placement::offers(&api, &jobs, true).await;
