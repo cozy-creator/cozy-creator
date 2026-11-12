@@ -8,7 +8,11 @@
 # - <cell>-max: the longest prompt (65,536 characters, the describer's field limit, where a field sets none), the most
 #   pictures the function takes at the largest size it reads, and its prompt LM on; -noup the same with the LM off.
 # - describer-max: 16 pictures, the longest prompt and the longest answer (max_tokens 16384) the describer's fields allow.
-# - <cell>-cap8: the LM-heavy cells again with the GPU capped at 8 GiB (`machine update --gpu-memory-limit`).
+# - qwen2-noup: qwen2-max with its prompt LM off, so the DiT's first joint pass reads the whole edit, ~65k tokens (cr-286:
+#   refused at 8 GiB in the fused block's MLP, runs 46964, 47278).
+# - <cell>-cap8: the LM-heavy cells again with the GPU capped at 8 GiB (`machine update --gpu-memory-limit`), qwen2-noup's
+#   too. qwen2-max also holds its model loads under 120 s (`loads`; cr-286: at 8 GiB its edit rewriter's whole-model
+#   hold filled 7 GB, then waited 300 s for memory that could never make it fit, runs 46944, 47309).
 LONG=65536
 # words <chars> <mentions>: a scene described at length, <chars> long, every sentence naming the pictures.
 words() {
@@ -37,6 +41,14 @@ fits() {
   s=$(run_get "$OUT" "$c" .status)
   expect "$1-fits" "$([ "$s" = completed ] && echo PASS || echo FAIL)" "run $(cat "$c.number") $s \
 $(run_get "$OUT" "$c" '(.reason.code // "") + " " + (.reason.message // "")' | head -c 300)"
+}
+# loads <cell>: its longest model load, under 120 s.
+loads() {
+  local c=$1${TWIN:-} ms
+  [ -f "$c.number" ] || return 0
+  ms=$(run_get "$OUT" "$c" '[.measurements.attribution.stages // {} | to_entries[] | select(.key | endswith("loading model")) | .value.total_ms] | max // 0')
+  ms=${ms%.*}
+  expect "$1-loads" "$([ "${ms:-0}" -lt 120000 ] && echo PASS || echo FAIL)" "run $(cat "$c.number"): its longest model load $((${ms:-0} / 1000)) s"
 }
 PH3_46479="<p1> make her hair light brunette pastel pink, she holds a small pistol in her right hand. Get rid of the orange blob at the bottom left"
 INPUTS_RELEASED=$(awk '$1 == "runtime" {print $2}' machine-fresh.txt)
@@ -76,6 +88,10 @@ run_inputs() {  # run_inputs <suffix> <seed offset>: every cell, named with <suf
   cell "qwen2-max$x" "$(pkg qwen-image-2 generate)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
     megapixels:=4 prompt_upsampling:=true seed:=$((R + 906 + o))
   fits "qwen2-max$x"
+  loads "qwen2-max$x"
+  cell "qwen2-noup$x" "$(pkg qwen-image-2 generate)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
+    megapixels:=4 prompt_upsampling:=false seed:=$((R + 913 + o))
+  fits "qwen2-noup$x"
   cell "flux2-max$x" "$(pkg flux-2 generate_turbo)" references:="$PICS" prompt="$MENTIONS$(words $LONG "$MENTIONS")" \
     megapixels:=4 prompt_upsampling:=true seed:=$((R + 907 + o))
   fits "flux2-max$x"
@@ -99,10 +115,10 @@ run_inputs() {  # run_inputs <suffix> <seed offset>: every cell, named with <suf
   fits "h3-max$x"
 }
 run_inputs "" 0
-# The capped pass: the LM-heavy cells --only names (all four when it names none), on a card over 20 GB.
+# The capped pass: the LM-heavy cells --only names (all five when it names none), on a card over 20 GB.
 GIB=$(grep -oE '· [0-9]+ GiB ·' machine.txt | head -1 | grep -oE '[0-9]+' || true)
 INPUTS_ONLY=$ONLY INPUTS_CAP=,
-for c in ph3-edit-max klein-max qwen2-max describer-max; do
+for c in ph3-edit-max klein-max qwen2-max qwen2-noup describer-max; do
   [ -n "$ONLY" ] && [[ $ONLY != *",$c,"* && $ONLY != *",$c-cap8,"* ]] || INPUTS_CAP+="$c-cap8,"
 done
 if [ "${GIB:-0}" -gt 20 ] && [ "$INPUTS_CAP" != , ]; then
