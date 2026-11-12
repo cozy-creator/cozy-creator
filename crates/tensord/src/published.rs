@@ -700,6 +700,7 @@ impl Publisher {
         if named.tree.is_some() {
             return self.checkpoint(service, source, named);
         }
+        let (named, forward) = forward(source, named);
         let answer = if source.capability.is_some() {
             // An account's earlier read does not authorize this capability's frozen root set.
             Answer::ask(&self.machine, source, &named, hardware)?
@@ -723,7 +724,8 @@ impl Publisher {
                 }
             }
         };
-        Ok(Named { release: answer.release, lane: answer.lane, tree: Some(answer.checkpoint), header: Some(answer.header), reasons: answer.reasons, ..named })
+        let reasons = forward.into_iter().chain(answer.reasons).collect();
+        Ok(Named { release: answer.release, lane: answer.lane, tree: Some(answer.checkpoint), header: Some(answer.header), reasons, ..named })
     }
 
     /// Reads held name `name` again at its Hub on a thread of its own, once at a time. An answer
@@ -1487,6 +1489,49 @@ impl Publisher {
             .map_err(io_failure)?;
         Ok((plan, warnings))
     }
+}
+
+/// A named release as the newest of its series (xs-183): a model republished complete as a patch
+/// serves whatever names the old release, as cargo's `^` and PEP 440's `~=` read a version. The
+/// series is the release's prefix (`0.1` of `0.1.0`), and a prerelease is taken only for one. Its
+/// public releases are read at most once a minute; unread, the release stands.
+fn forward(source: &hub::Source, named: Named) -> (Named, Option<String>) {
+    static READ: Mutex<BTreeMap<(String, String), (Instant, Vec<String>)>> = Mutex::new(BTreeMap::new());
+    let Some((org, name)) = named.model.split_once('/').filter(|_| !named.release.is_empty() && !named.model.starts_with("local/")) else {
+        return (named, None);
+    };
+    let key = (source.origin.clone(), named.model.clone());
+    let held = READ.lock().unwrap().get(&key).filter(|(at, _)| at.elapsed() < Duration::from_secs(60)).map(|(_, r)| r.clone());
+    let releases = match held {
+        Some(releases) => releases,
+        None => {
+            let card = hub::Catalog::new(source).ok().and_then(|catalog| catalog.model(org, name).ok());
+            let Some(card) = card else { return (named, None) };
+            let releases: Vec<String> = card.releases.into_iter().map(|r| r.version).collect();
+            READ.lock().unwrap().insert(key, (Instant::now(), releases.clone()));
+            releases
+        }
+    };
+    match newest_fix(&named.release, &releases) {
+        Some(newer) => {
+            let said = format!("{} resolves to {newer}, its newest fix", named.release);
+            (Named { release: newer, ..named }, Some(said))
+        }
+        None => (named, None),
+    }
+}
+
+/// The newest of `releases` in `release`'s series and after it, when one is.
+fn newest_fix(release: &str, releases: &[String]) -> Option<String> {
+    let version = |text: &str| pep440_rs::Version::from_str(text).ok();
+    let named = version(release)?;
+    let series = &named.release()[..named.release().len().saturating_sub(1).max(1)];
+    releases
+        .iter()
+        .filter_map(|text| Some((version(text)?, text)))
+        .filter(|(v, _)| v.release().starts_with(series) && *v > named && (named.is_pre() || !v.any_prerelease()))
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, text)| text.clone())
 }
 
 /// A function's main model, the one a run's `--lane` names (owner, 10-22): its first slot
