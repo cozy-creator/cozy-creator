@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { readFileSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { boxOf, calcifer, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, STEP_MS, until, watchBoxes } = require('./page');
+const { boxOf, calcifer, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -67,15 +67,15 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   const fixture = join(folder, 'segments.py');
   writeFileSync(fixture, `${readFileSync(FIXTURE, 'utf8')}\n# ${id}\n`);
   // A box names it, so the project lists it; its first run installs it, by the CLI as a person's would (as tools.js).
-  // The new project's whole file, as web.sh's web_held writes one: it has no other box.
-  importYaml(folder, `version: 4\nassets:\n  shot:\n    tool: ${fixture}/segments\n    summary: Along the coast, segment after segment.\n    segments: 3\n    seconds: 10\n    wait: 30\n`);
+  // The new project's whole file, as web.sh's web_held writes one: it has no other box. A video box, before its tool is read.
+  importYaml(folder, `version: 4\nassets:\n  shot:\n    node_kind: video\n    tool: ${fixture}/segments\n    summary: Along the coast, segment after segment.\n    segments: 3\n    seconds: 10\n    wait: 30\n`);
   const box = boxOf(page, 'shot');
   await box.waitFor();
   execFileSync(process.env.COZY, ['--json', 'run', `${fixture}/segments`, 'segments=1', 'seconds=1', 'wait=0', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: RUN_MS });
   await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/segments`), Boolean, RUN_MS);
 
   await openBox(page, 'shot');
-  await (await renderOf(page, 'shot')).click();
+  await page.locator('.card.here[data-asset="shot"] button[aria-label=Render]').click();
   const making = await until('its run', async () => (await state()).assets.find((held) => held.name === 'shot')?.making?.[0], Boolean, RUN_MS);
   seen.run = making;
   const video = box.locator('.glimpse video');
