@@ -83,12 +83,12 @@ const RECORD = () => {
     if (!last || JSON.stringify({ ...last, t: 0 }) !== JSON.stringify({ ...now, t: 0 })) log.push({ ...now, t: Math.round(performance.now()) });
   };
   new MutationObserver(note).observe(document.body, { subtree: true, childList: true, attributes: true });
-  // React handles a press at its root, so this hears it after the page has: the next frame is what the press drew.
-  document.addEventListener('click', (event) => {
+  // Heard first, before the page's own handler (which may stop it): the column as it was, and in the next frame what the press drew.
+  window.addEventListener('click', (event) => {
     if (!event.target.closest?.('button[aria-label=Render], .take-off')) return;
     const before = look();
     requestAnimationFrame(() => { window.pressed = { before, after: look(), at: log.length } });
-  });
+  }, true);
   note();
 };
 

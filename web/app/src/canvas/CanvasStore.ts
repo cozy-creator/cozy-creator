@@ -916,6 +916,13 @@ export class CanvasStore {
         if (view.canceling && !asset.making?.length && !asset.takes?.length && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (answered) change.asked = undefined
+        // Its own takes (cl-945): each listed from the click until Calcifer lists it, as a take or as its version, or a read begun after
+        // its render's answer still doesn't (nothing was made, and the answer said why). No read from before then takes one off.
+        const listed = new Set([...(asset.takes ?? []).map((take) => take.id), ...(asset.prefixes ?? []).map((held) => held.id).filter(Boolean)])
+        const taking = view.taking?.filter((take) => !listed.has(take.id) && take.until >= this.began)
+        if (view.taking && taking?.length !== view.taking.length) change.taking = taking?.length ? taking : undefined
+        const gone = view.gone?.filter((id) => asset.takes?.some((take) => take.id === id))
+        if (view.gone && gone?.length !== view.gone.length) change.gone = gone?.length ? gone : undefined
         const over = view.over?.filter((ask) => ask.until >= this.began)
         if (view.over && over?.length !== view.over.length) change.over = over?.length ? over : undefined
         if (view.asset !== asset || view.landed) {
@@ -931,13 +938,6 @@ export class CanvasStore {
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: open, it's the one looked at. At rest a box goes on
           // showing what it showed (cl-936), what's approved staying and what lands beside it unseen (cl-928): its watch goes once nothing is on its way.
-          // Its own takes (cl-945): each listed from the click until Calcifer lists it, as a take or as its version, or a read begun after
-          // its render's answer still doesn't (nothing was made, and the answer said why). No read from before then takes one off.
-          const listed = new Set([...(asset.takes ?? []).map((take) => take.id), ...(asset.prefixes ?? []).map((held) => held.id).filter(Boolean)])
-          const taking = view.taking?.filter((take) => !listed.has(take.id) && take.until >= this.began)
-          if (view.taking && taking?.length !== view.taking.length) change.taking = taking?.length ? taking : undefined
-          const gone = view.gone?.filter((id) => asset.takes?.some((take) => take.id === id))
-          if (view.gone && gone?.length !== view.gone.length) change.gone = gone?.length ? gone : undefined
           const seen = watched({ ...view, asset })
           const still = (id: string) => listed.has(id) || Boolean(taking?.some((take) => take.id === id))
           if (!view.here && view.watch !== undefined && !asset.takes?.length && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
@@ -1879,10 +1879,10 @@ export class CanvasStore {
     const taking = view.taking?.filter((held) => held.id !== take.id)
     if (taking?.length !== view.taking?.length) this.patch(name, { taking: taking?.length ? taking : undefined })
     if (take.id) this.patch(name, { gone: [...(view.gone ?? []), take.id] })
-    const takes = asset.takes?.filter((held) => held.id !== take.id)
-    const making = asset.making?.filter((number) => number !== take.run)
+    // One with an id is off by it (`gone`), and what's listed after stays as read; a run no take names is off its runs until a read.
+    const making = take.id ? {} : { making: asset.making?.filter((number) => number !== take.run) }
     const send = take.run !== undefined ? (_: string, write: Write) => this.client.cancelRun(String(take.run), write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(this.projectId!, [take.id], write.once).then(() => ({}))
-    this.over(name, { takes, making }, send, take.run !== undefined ? `cancel run ${take.run} of` : "cancel a take of", undefined)
+    this.over(name, making, send, take.run !== undefined ? `cancel run ${take.run} of` : "cancel a take of", undefined)
   }
 
   /** Its render stops, wherever it is: what's queued leaves, its runs are canceled (as `cozy run cancel`), and it says Cancelling… until
