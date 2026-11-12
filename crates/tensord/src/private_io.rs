@@ -11,11 +11,11 @@ use std::{
 };
 
 use crate::storage::Store;
-use api::machine::{LOCAL_PRIVATE_MARKER, LocalPrivateMarker, LocalPrivateStorage};
+use api::machine::{LOCAL_PRIVATE_MARKER, LocalPrivateMarker, LocalPrivateStorage, project_area as area};
 use sha2::{Digest, Sha256};
 use tracing::instrument::WithSubscriber as _;
 
-pub(crate) const AREA: &str = ".vault-machine";
+pub(crate) const AREA: &str = area::DIR;
 
 /// Trusted parents stop dumping before proof/project bytes; unsupported hosts refuse early.
 pub(crate) fn require_project_execution() -> io::Result<()> {
@@ -64,7 +64,7 @@ pub(crate) fn open_execution(scope: &LocalPrivateStorage, ordinary: &Arc<crate::
     let objects = Arc::new(crate::objects::Objects::new(service.engine.clone()));
     service.engine.hold_memos(&objects);
     let runs = Arc::new(crate::runs::Runs { service: service.clone(), objects: objects.clone(),
-        local: Arc::new(crate::local_source::LocalSources::new(objects, publisher.clone(), &root.join("generations"))),
+        local: Arc::new(crate::local_source::LocalSources::new(objects, publisher.clone(), &root.join(area::GENERATIONS))),
         publisher: publisher.clone(), own_hub: ordinary.own_hub.clone(), contexts: Mutex::default(), projection: Mutex::default() });
     service.engine.on_settled(Box::new({ let runs = Arc::downgrade(&runs); move |record| { if let Some(runs) = runs.upgrade() { runs.settled(record); } } }));
     crate::calls::Calls::configure(&service, publisher.origin_machine(), Some(&runs))?;
@@ -524,14 +524,14 @@ pub(crate) fn cache_root(ordinary: PathBuf, name: &str) -> io::Result<PathBuf> {
 /// admissions and metadata authorization still require the explicit request namespace.
 pub(crate) fn generation_path(identity: &str) -> io::Result<Option<PathBuf>> {
     if let Some(scope) = current() {
-        let path = root(&scope)?.join("generations").join(identity);
+        let path = root(&scope)?.join(area::GENERATIONS).join(identity);
         return Ok(path.is_dir().then_some(path));
     }
     let scopes: Vec<_> = VERIFIED.lock().unwrap().values().map(|value| value.descriptor.clone()).collect();
     let mut found = None;
     for scope in scopes {
         let Ok(root) = root(&scope) else { continue };
-        let path = root.join("generations").join(identity);
+        let path = root.join(area::GENERATIONS).join(identity);
         if path.is_dir() {
             if found.is_some() { return Err(io::Error::new(io::ErrorKind::InvalidData, "private generation identity is ambiguous")); }
             found = Some(path);
@@ -545,20 +545,20 @@ pub(crate) fn generation_path(identity: &str) -> io::Result<Option<PathBuf>> {
 pub(crate) fn protect_command(command: &mut std::process::Command) -> io::Result<bool> {
     let Some(scope) = current() else { return Ok(false) };
     let root = root(&scope)?;
-    let temp = root.join("tmp");
+    let temp = root.join(area::TMP);
     fs::create_dir_all(&temp)?;
     command.current_dir(&root)
-        .env("UV_CACHE_DIR", root.join("uv-cache"))
-        .env("UV_TOOL_DIR", root.join("uv-tools"))
-        .env("UV_PYTHON_INSTALL_DIR", root.join("python"))
+        .env("UV_CACHE_DIR", root.join(area::UV_CACHE))
+        .env("UV_TOOL_DIR", root.join(area::UV_TOOLS))
+        .env("UV_PYTHON_INSTALL_DIR", root.join(area::PYTHON))
         .env("UV_LINK_MODE", "copy")
-        .env("HOME", root.join("home"))
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_STATE_HOME", root.join("state"))
-        .env("XDG_CACHE_HOME", root.join("cache"))
-        .env("PYTHONPYCACHEPREFIX", root.join("bytecode"))
-        .env("MPLCONFIGDIR", root.join("matplotlib"))
+        .env("HOME", root.join(area::HOME))
+        .env("XDG_CONFIG_HOME", root.join(area::CONFIG))
+        .env("XDG_DATA_HOME", root.join(area::DATA))
+        .env("XDG_STATE_HOME", root.join(area::STATE))
+        .env("XDG_CACHE_HOME", root.join(area::CACHE))
+        .env("PYTHONPYCACHEPREFIX", root.join(area::BYTECODE))
+        .env("MPLCONFIGDIR", root.join(area::MATPLOTLIB))
         .env("TMPDIR", &temp).env("TEMP", &temp).env("TMP", &temp)
         .env("PYTHONDONTWRITEBYTECODE", "1");
     Ok(true)

@@ -668,15 +668,25 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let op = operation(&root); let _guard = op.lock().expect("vault operation");
     let mut ended = vec![];
     if ask.action == "lock" {
-        if held(root).is_some() {
-            let transition = exclusive(root)?;
-            let id = project_id(root).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
-            let store = api.projects.transition_store(api, &id, &transition)?;
-            progress.admit_receipt(&store)?;
-        }
+        let busy = match held(root).map(|_| exclusive(root)) {
+            Some(Ok(transition)) => {
+                let id = project_id(root).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
+                let store = api.projects.transition_store(api, &id, &transition)?;
+                progress.admit_receipt(&store)?;
+                None
+            }
+            Some(Err(busy)) => Some(busy),
+            None => None,
+        };
         if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
         // An explicit lock ends the project's work first, so nothing goes on billing behind a locked vault.
         ended = end_work(&api, &root)?;
+        // A request still holds the project: its view is revoked, and the sweeper locks once it ends.
+        if let Some(busy) = busy {
+            if ended.is_empty() { return Err(busy); }
+            progress.readable = readable_token(root);
+            return Ok(VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended, skipped_files: vec![] });
+        }
     }
     let transition = exclusive(&root)?;
     progress.phase("preparing");
@@ -1064,7 +1074,7 @@ fn recover_internal(record: &Conversion) -> Result<(), Error> {
             || fs::read_dir(&record.saved).map_err(io)?.next().is_some() {
             return Err(error("vault_recovery", "the original project changed before storage cutover; all copies were preserved"));
         }
-        if record.staged.exists() { fs::remove_dir_all(&record.staged).map_err(io)?; }
+        remove_stage(&record.staged)?;
         if record.saved.exists() { fs::remove_dir(&record.saved).map_err(io)?; }
         return clear_conversion(record);
     }
@@ -1073,7 +1083,7 @@ fn recover_internal(record: &Conversion) -> Result<(), Error> {
             if !original_plain_source(record, &record.root)? {
                 return Err(error("vault_recovery", "the original encrypted source could not be verified; all copies were preserved"));
             }
-            if record.staged.exists() { fs::remove_dir_all(&record.staged).map_err(io)?; }
+            remove_stage(&record.staged)?;
             if record.saved.exists() { fs::remove_dir(&record.saved).map_err(io)?; }
             return clear_conversion(record);
         }
@@ -1101,7 +1111,7 @@ fn recover_internal(record: &Conversion) -> Result<(), Error> {
         }
         register_plain_root(&record.root, &plain.project_id)?;
         if record.saved.exists() { fs::remove_dir_all(&record.saved).map_err(io)?; }
-        if record.staged.exists() { fs::remove_dir_all(&record.staged).map_err(io)?; }
+        remove_stage(&record.staged)?;
         clear_conversion(record)?;
         let _ = fs::remove_file(record.root.join(TRANSITION_VERIFY));
         return Ok(());
@@ -1127,7 +1137,7 @@ fn recover_internal(record: &Conversion) -> Result<(), Error> {
         None => plain_project_id(&record.root).as_deref() == Some(target.info().project_id.as_str()),
     };
     if !restored { return Err(error("vault_recovery", "the original project identity could not be restored; all copies were preserved")); }
-    if record.staged.exists() { fs::remove_dir_all(&record.staged).map_err(io)?; }
+    remove_stage(&record.staged)?;
     if record.saved.exists() { fs::remove_dir(&record.saved).map_err(io)?; }
     clear_conversion(record)
 }
@@ -1171,7 +1181,11 @@ fn recover_under_guards(root: &FsPath) -> Result<(), Error> {
         return Err(error("vault_busy", "the project's storage transition is already active"));
     }
     let _converting = Converting(root.to_owned());
-    if record.internal { return recover_internal(&record); }
+    if record.internal {
+        // No session: any view of this root is a dead Calcifer's.
+        if held(root).is_none() { retire_orphaned_views(root)?; }
+        return recover_internal(&record);
+    }
     verify_owned_directories(&record)?;
     if record.plain.is_some() { return recover_plain(&record); }
     let target = |path: &FsPath| Keybag::load(&path.join(KEYBAG_FILE)).is_ok_and(|bag| bag.info().key_id == record.key_id);
@@ -1201,7 +1215,7 @@ fn finish_conversion(root: &FsPath) -> Result<(), Error> {
     if record.remove_source && record.saved.exists() {
         fs::remove_dir_all(&record.saved).map_err(|e| error("vault_cleanup_pending", format!("replacement verified, but old source cleanup is pending at {}: {e}", record.saved.display())))?;
     }
-    if record.internal && record.staged.exists() { fs::remove_dir_all(&record.staged).map_err(io)?; }
+    if record.internal { remove_stage(&record.staged)?; }
     let receipt = receipt_path(root);
     fs::remove_file(&receipt).map_err(io)?;
     platform::durable::sync_dir(receipt.parent().ok_or_else(|| error("vault_root", "the transition receipt has no parent"))?).map_err(provider)?;
@@ -1212,6 +1226,14 @@ fn finish_conversion(root: &FsPath) -> Result<(), Error> {
         let _ = fs::remove_file(work_view(root)?.join(TRANSITION_VERIFY));
     }
     platform::durable::sync_dir(root.parent().ok_or_else(|| error("vault_root", "project has no parent"))?).map_err(provider)
+}
+
+/// A killed conversion's target view can outlive its provider as a dead mount inside the
+/// stage: detach it first, or removing the stage fails on it.
+fn remove_stage(staged: &FsPath) -> Result<(), Error> {
+    if !exists(staged)? { return Ok(()); }
+    retire_orphaned_views(staged)?;
+    fs::remove_dir_all(staged).map_err(io)
 }
 
 fn exists(path: &FsPath) -> Result<bool, Error> {
@@ -1570,9 +1592,9 @@ fn walk_tree(source: &FsPath, target: Option<&FsPath>, relative: &FsPath, manage
             let mut parts = relative.components();
             let first = parts.next().and_then(|part| part.as_os_str().to_str());
             let second = parts.next().and_then(|part| part.as_os_str().to_str());
+            use api::machine::project_area;
             if first == Some(api::machine::LOCAL_PRIVATE_MARKER) || first == Some(".vault-calcifer")
-                || (first == Some(".vault-machine") && matches!(second,
-                    Some("editable" | "generations" | "executors" | "home" | "jit" | "kernels" | "tmp" | "cache" | "matplotlib" | "uv-cache" | "uv-tools"))) { continue; }
+                || (first == Some(project_area::DIR) && second.is_some_and(project_area::rebuildable)) { continue; }
         }
         if kind.is_symlink() {
             // Legacy media links with no bytes already represent missing media. Keep

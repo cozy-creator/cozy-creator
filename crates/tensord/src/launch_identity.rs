@@ -219,19 +219,20 @@ impl Seal {
             Ok(path)
         };
         fs::create_dir_all(root)?;
-        for boundary in ["home", "kernels", "jit"] {
+        use api::machine::project_area as area;
+        for boundary in [area::HOME, area::KERNELS, area::JIT] {
             boundary_directory(&root.join(boundary))?;
         }
-        boundary_directory(&root.join("jit").join(incarnation))?;
-        let jit = owned(root.join("jit").join(incarnation).join(generation))?;
+        boundary_directory(&root.join(area::JIT).join(incarnation))?;
+        let jit = owned(root.join(area::JIT).join(incarnation).join(generation))?;
         // On a low disk the persistent kernel store is an optional write: compiled kernels
         // then live in this run's JIT scope, removed with it.
         let (kernels, kernel_hold) = if crate::reclaim::measure(root)?.short().is_some() {
             (owned(jit.join("kernels"))?, None)
         } else {
-            let hold = crate::reclaim::kernel_hold(&root.join("kernels"), &namespace)?;
+            let hold = crate::reclaim::kernel_hold(&root.join(area::KERNELS), &namespace)?;
             hold.lock_shared()?; // waits out a sweep deleting in this namespace
-            let kernels = owned(root.join("kernels").join(&namespace))?;
+            let kernels = owned(root.join(area::KERNELS).join(&namespace))?;
             (kernels, Some(Arc::new(hold)))
         };
         owned(kernels.join(format!("torch-kernels.{generation}")))?;
@@ -239,7 +240,7 @@ impl Seal {
             devices: devices.into(),
             tensorfs_home: None,
             group: false,
-            home: owned(root.join("home").join(&namespace))?,
+            home: owned(root.join(area::HOME).join(&namespace))?,
             jit,
             kernels,
             kernel_hold,
@@ -325,7 +326,7 @@ impl Seal {
 /// JIT scopes belong to one machine run (Runtime: one worker boot); the executors of
 /// earlier runs are gone before a new one starts, so their scopes are unowned.
 pub(crate) fn remove_stale_jit(root: &Path, incarnation: &str) {
-    let Ok(entries) = fs::read_dir(root.join("jit")) else {
+    let Ok(entries) = fs::read_dir(root.join(api::machine::project_area::JIT)) else {
         return;
     };
     for entry in entries.flatten() {

@@ -83,7 +83,7 @@ impl Service {
         Self::open_in(root, generations, parallelism, store, None, None, Arc::default(), local_project_custody)
     }
     pub(crate) fn open_project(root: &Path, store: Arc<crate::storage::Store>, parent: &Arc<Service>, scope: api::machine::LocalPrivateStorage) -> io::Result<Arc<Self>> {
-        let service = Self::open_in(root, &root.join("generations"), parent.parallelism, store, parent.pool(), Some(scope), parent.held.clone(), false)?;
+        let service = Self::open_in(root, &root.join(api::machine::project_area::GENERATIONS), parent.parallelism, store, parent.pool(), Some(scope), parent.held.clone(), false)?;
         service.engine.bind_machine_activity(&parent.engine);
         Ok(service)
     }
