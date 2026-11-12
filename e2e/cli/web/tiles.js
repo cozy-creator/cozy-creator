@@ -158,6 +158,8 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
       // Under its picture: its tool and shape first, then its render.
       ordered: (!line || r(line).top >= m.bottom - 1) && (!face || r(face).top >= (line ? r(line).bottom : m.bottom) - 1),
       chips: node.querySelectorAll('.add-on, .add-ons').length,
+      // Its delete is a trash can that says what it deletes; ✕ only closes (cl-939).
+      remove: (() => { const button = card.querySelector(':scope > .head button[aria-label="Delete"]'); return button && { icon: button.querySelector('svg')?.dataset.icon ?? null, title: button.title }; })(),
       // What its tool is called, as many times as the tile says it; and no Models & LoRAs on it.
       text: node.innerText,
       stray: card.querySelectorAll(':scope > .ratio-rest, .head .node-tool').length,
@@ -205,6 +207,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
     check(`${z}_nothing_else`, Object.values(tiles).every((one) => one.chips === 0 && one.stray === 0 && one.ordered && !/Models\s*&\s*LoRAs/i.test(one.text)), tiles);
     // Paul, 11-12: the tool once, beneath the picture, "MiniMax H3 · Shot".
     const times = (text, word) => text.split(word).length - 1;
+    check(`${z}_delete_is_a_trash_can`, [still, film, plain].every((one) => one.remove?.icon === 'trash' && /^Delete /.test(one.remove.title)), Object.fromEntries(Object.entries(tiles).map(([name, one]) => [name, one.remove])));
     check(`${z}_tool_once_beneath`, times(still.text, named(image)) === 1 && times(film.text, named(video)) === 1 && times(still.text, image.package_title ?? named(image)) === 1 && times(film.text, video.package_title ?? named(video)) === 1, { still: still.text, shot: film.text });
     check(`${z}_idle_say_no_render`, [still, film, plain].every((one) => one.lines === null && !one.wave), tiles);
     if (slow) check(`${z}_rendering_dot_left_of_its_name`, /^state-dot\[(Rendering|Queued)\]$/.test(slow.head[0] ?? '') && slow.head[1] === 'nm:slow', slow.head);
