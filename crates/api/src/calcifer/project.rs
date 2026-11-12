@@ -668,6 +668,10 @@ pub struct Asset {
     /// An Edit being rendered here: how far, 0 to 1. It runs on no machine, so it has no run to ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rendering: Option<f64>,
+    /// The versions that landed beside an approved one that this person hasn't looked at (cl-928). Calcifer's own (`state.db`), never the
+    /// project's: each person has theirs. `POST …/versions/{number}/seen` clears one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unseen: Vec<u32>,
 }
 
 /// `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.

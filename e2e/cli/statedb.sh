@@ -96,7 +96,7 @@ stores=$(cd "$dir" && find . -maxdepth 1 -name '*.json' ! -name refused.json | s
 [ -z "$stores" ] || check "state: JSON stores in $dir: $stores"
 [ ! -e "$dir/after" ] || check "state: $dir/after is still there: $(ls -A "$dir/after" | head -5 | paste -sd' ')"
 [ "$(stat -c %a "$dir/state.db")" = 600 ] || check "state: state.db is $(stat -c %a "$dir/state.db"), not 600"
-for table in projects sessions tool_list tools_off rendered_here headers after_steps; do
+for table in projects sessions tool_list tools_off rendered_here headers after_steps unseen; do
   [ "$(state1 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '$table'")" = 1 ] || check "state: state.db has no $table"
 done
 echo "state: $dir holds $(cd "$dir" && ls -A | paste -sd' ')"

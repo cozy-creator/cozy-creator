@@ -30,6 +30,7 @@ mod thumbs;
 mod binder;
 pub(crate) use binder::Inline;
 mod tools;
+mod unseen;
 mod walker;
 mod written;
 pub(crate) mod vault;
@@ -138,6 +139,8 @@ struct Project {
     said: Mutex<Vec<String>>,
     /// What kept its last render from reaching a machine (`State::unsent`).
     unsent: Mutex<Vec<Error>>,
+    /// The versions this person hasn't looked at, by box id (cl-928): `state.db`'s, held here.
+    unseen: Mutex<unseen::Unseen>,
 }
 
 impl Drop for Project {
@@ -188,6 +191,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/assets/{name}", get(assets::read).patch(assets::patch).delete(assets::delete))
         .route("/v1/projects/{id}/assets/{name}/versions", post(assets::join))
         .route("/v1/projects/{id}/assets/{name}/versions/{number}", delete(assets::discard).patch(assets::patch_version))
+        .route("/v1/projects/{id}/assets/{name}/versions/{number}/seen", post(unseen::seen))
         .route("/v1/projects/{id}/files/{file}", get(file))
         .route("/v1/projects/{id}/cuts/{cut}", get(cut))
         .route("/v1/projects/{id}/history", get(history::list))
@@ -304,6 +308,7 @@ impl Projects {
                     moving: tokio::sync::Mutex::default(),
                     said: Mutex::default(),
                     unsent: Mutex::default(),
+                    unseen: Mutex::new(unseen::read(api.calcifer.store(), &id)),
                 });
                 // What closed since the last open goes from the list.
                 open.retain(|_, held| held.strong_count() > 0);
@@ -1779,6 +1784,7 @@ fn row(reading: &Reading, i: usize) -> Row {
             tools::timeline_now(tools::clips(&asset.inputs, &standing.reads), Canvas::of(&asset.inputs, &mut vec![]).fps, files, lock)
         }),
         rendering: None,
+        unseen: vec![],
     }
 }
 
@@ -5035,6 +5041,7 @@ impl Walk {
             }
             Ok(())
         })?;
+        self.landed_unseen(name, number, approve);
         self.say_landed(name, &version, noun, number)
     }
 
@@ -5073,7 +5080,15 @@ impl Walk {
             }
             tally.execution_ms += version.execution_ms;
         }
+        self.landed_unseen(name, number.get(), approve);
         self.say_landed(name, &version, noun, number.get())
+    }
+
+    /// A version that lands beside an approved one, which the box goes on showing, is unseen until it's looked at (cl-928).
+    fn landed_unseen(&self, name: &str, number: u32, approve: bool) {
+        if !approve {
+            unseen::landed(self.host.api().calcifer.store(), &self.project, name, number);
+        }
     }
 
     fn say_landed(&self, name: &str, version: &Version, noun: &str, number: u32) -> Result<(), Error> {

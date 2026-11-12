@@ -265,7 +265,12 @@ timeline?: TimelineNow | null,
 /**
  * An Edit being rendered here: how far, 0 to 1. It runs on no machine, so it has no run to ask.
  */
-rendering?: number | null, };
+rendering?: number | null,
+/**
+ * The versions that landed beside an approved one that this person hasn't looked at (cl-928). Calcifer's own (`state.db`), never the
+ * project's: each person has theirs. `POST …/versions/{number}/seen` clears one.
+ */
+unseen?: Array<number>, };
 
 /**
  * What `DELETE /v1/projects/{id}/assets/{name}` took, and where its box sat: undo puts it back, its versions with it.
