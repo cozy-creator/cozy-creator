@@ -1,0 +1,148 @@
+.focus-viewport .focus-card.focus-parameter-tool {
+  grid-template-columns: minmax(0, 1fr) min(22vw, 260px);
+  grid-template-rows: minmax(0, 1fr);
+}
+.focus-viewport .focus-card.focus-parameter-tool:not(.has-focus-media) > .focus-viewer {
+  display: none;
+}
+.focus-viewport .focus-card.focus-parameter-tool > .here-under {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: stretch;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  border-radius: var(--round2);
+  --body: 18px;
+  --small: 16px;
+  --tiny: 14px;
+  --heading: 22px;
+}
+.focus-viewport .focus-card.focus-parameter-tool > .here-under > .here-all {
+  flex: 1;
+  padding: 24px;
+  gap: 18px;
+}
+.focus-viewport .focus-card.focus-parameter-tool.has-focus-media {
+  grid-template-columns: minmax(0, .9fr) minmax(360px, 1.3fr) min(18vw, 220px);
+}
+.focus-viewport .focus-card.focus-parameter-tool.has-focus-media > .here-under {
+  grid-column: 2;
+}
+.focus-viewport .focus-card.focus-parameter-tool.has-focus-media > .here-side {
+  grid-column: 3;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .edit-shown,
+.focus-viewport .focus-card.focus-parameter-tool .prominent .edit-more {
+  gap: 24px;
+  padding-block: 12px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .field-block,
+.focus-viewport .focus-card.focus-parameter-tool .prominent .focus-parameter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .focus-parameter-group > h3 {
+  margin: 0;
+  font: var(--w-heading) 24px / 1.25 var(--sans);
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .block-label {
+  color: var(--ink);
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .mention-text {
+  min-height: 100px;
+  max-height: 360px;
+  padding: 14px;
+  font-size: 18px;
+  line-height: 1.5;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beats-edit {
+  gap: 18px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat {
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line2);
+  border-radius: var(--round2);
+  background: var(--card);
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat-body {
+  gap: 12px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat .mention-text {
+  min-height: 140px;
+  font-size: 20px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat.can-go .mention-text {
+  padding-right: 38px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat > .iconb {
+  top: 18px;
+  right: 18px;
+  width: 28px;
+  height: 28px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .grip {
+  padding-top: 10px;
+  font-size: 18px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat-time {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat-time .slide {
+  flex: 1 1 220px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .slide {
+  gap: 12px;
+  min-height: 40px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .slide input[type="range"] {
+  height: 30px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .slide .num,
+.focus-viewport .focus-card.focus-parameter-tool .prominent .total {
+  font: 16px var(--mono);
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .slot-control,
+.focus-viewport .focus-card.focus-parameter-tool .prominent .group-block {
+  gap: 12px;
+  padding: 14px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .group-head {
+  font-size: 18px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .add-beat {
+  min-height: 44px;
+  padding: 10px 18px;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .actions {
+  position: sticky;
+  bottom: -24px;
+  z-index: 2;
+  gap: 12px;
+  padding-block: 16px;
+  background: var(--panel);
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .run {
+  min-height: 48px;
+  padding: 10px 20px;
+  font-size: 20px;
+}
+@media (max-width: 1050px) {
+  .focus-viewport .focus-card.focus-parameter-tool.has-focus-media {
+    grid-template-columns: minmax(0, 1fr) min(20vw, 180px);
+    grid-template-rows: minmax(150px, .6fr) minmax(0, 1fr);
+  }
+  .focus-viewport .focus-card.focus-parameter-tool.has-focus-media > .here-under {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .focus-viewport .focus-card.focus-parameter-tool.has-focus-media > .here-side {
+    grid-column: 2;
+  }
+  .focus-viewport .focus-card.focus-parameter-tool > .here-under > .here-all {
+    padding: 16px;
+  }
+}
