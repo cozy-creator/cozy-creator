@@ -351,7 +351,7 @@ impl<'a> Follow<'a> {
             self.mine.extend(found);
         }
         for job in self.jobs.iter().filter(|job| self.mine.contains(&job.id)) {
-            self.width = self.width.max(label(job).len());
+            self.width = self.width.max(job.asset.len() + format!(" take {}", job.number.unwrap_or(1)).len());
         }
         self.tell();
     }

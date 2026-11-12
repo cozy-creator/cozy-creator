@@ -557,8 +557,8 @@ case $SHARD in
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
-  # cozy render alone (cl-956).
-  agent-render) parts="agent_render logs" ;;
+  # cozy render alone (cl-956), with the project part's fixtures.
+  projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).
