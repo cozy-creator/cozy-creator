@@ -356,6 +356,9 @@ async function died(why) {
       return { width: rect.width, height: rect.height, share: (rect.width * rect.height) / (frame.width * frame.height), naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, fit: getComputedStyle(image).objectFit, opacity };
     });
   });
+  // A new set of pictures fades in (240 ms, FocusParameters.css): read once it has.
+  const faded = () => reference.evaluate((element) => Promise.all(element.getAnimations({ subtree: true }).map((one) => one.finished))).catch(() => null);
+  await faded();
   const beforeShape = await referenceGeometry();
   // Full-bleed, as large as they can (Paul 11-12, cl-949): each covers its share, together the frame.
   const fills = (shape) => shape.length === 2 && shape.every((image) => image.opacity > 0 && image.opacity < 1 && image.fit === 'cover' && image.share >= 0.12) && shape.reduce((sum, image) => sum + image.share, 0) >= 0.93;
@@ -368,6 +371,7 @@ async function died(why) {
   await page.mouse.move(corner.x + corner.width / 2 + 110, corner.y + corner.height / 2 - 50, { steps: 8 });
   await page.mouse.up();
   await until('output aspect ratio changed in edit mode', () => asset('other'), (row) => Boolean(row.fields?.aspect_ratio) && row.fields.aspect_ratio !== ratioBefore);
+  await faded();
   const afterShape = await referenceGeometry();
   check('output_ratio_keeps_all_references_filling_the_frame', fills(afterShape), { beforeShape, afterShape });
   await previewVersion(page, 'other', 1);
@@ -385,10 +389,14 @@ async function died(why) {
     await api(`${at}/assets/other`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/wait`, fields: { instructions: '<self.1> in a new light.', aspect_ratio: '1:1' } }) });
     await until('local image tool ready', () => asset('other'), (row) => row.tool === `${fixture}/wait`);
     await open('other');
-    await (await renderOf(page, 'other')).click();
+    const renderIt = await renderOf(page, 'other');
+    // Render sends what the page holds: the 1:1 written over the API reaches it first.
+    const shapeSaid = await until('the page holds 1:1', () => box('other').locator('.ratio-rest').getAttribute('data-output-aspect').catch(() => null), (label) => (label ?? '').includes('1:1'), 10_000).catch(() => box('other').locator('.ratio-rest').getAttribute('data-output-aspect').catch(() => null));
+    await renderIt.click();
     const second = await until('first modification is v2', () => asset('other'), (row) => row.versions === 2 && !row.making?.length, 5 * STEP_MS);
     check('first_modification_is_v2_beside_the_approved', second.version === 1 && second.approved === 1 && second.pinned && shaOf(second, 1) === originalSha && shaOf(second, 2) !== originalSha, second);
-    check('new_output_has_requested_ratio', Math.abs(second.prefixes.find((row) => row.number === 2).main.width / second.prefixes.find((row) => row.number === 2).main.height - 1) < 0.02);
+    const made = second.prefixes.find((row) => row.number === 2).main;
+    check('new_output_has_requested_ratio', Math.abs(made.width / made.height - 1) < 0.02, { width: made.width, height: made.height, shapeSaid, aspect_ratio: second.fields?.aspect_ratio });
     await open('other');
     await until('the new take has a retained preview', () => previews('other').count(), (count) => count === 2);
     check('new_output_adds_a_retained_preview', await selected('other') === '1');

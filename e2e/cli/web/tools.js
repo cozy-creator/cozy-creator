@@ -187,11 +187,10 @@ function replaceFile(at, text) {
   check('model_configuration_keeps_category_structure', JSON.stringify(configured) === JSON.stringify(atRest), { atRest, configured });
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
   await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);
-  // The rest stand beside it, in reach while it's worked on. Focus leaves only the canvas right of it in view, where two fit: the two
-  // carried in (coast and walk) go first; amy and hum are only typed.
+  // The rest stand beside it, in reach while it's worked on.
   const cards = (await api(`/v1/projects/${id}/canvas`)).body.cards;
   const at = cards.shot;
-  await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { coast: { x: at.x + 400, y: at.y }, walk: { x: at.x + 400, y: at.y + 180 }, amy: { x: at.x + 400, y: at.y + 360 }, hum: { x: at.x + 400, y: at.y + 540 } } }) });
+  await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { coast: { x: at.x + 400, y: at.y }, amy: { x: at.x + 400, y: at.y + 180 }, walk: { x: at.x + 400, y: at.y + 360 }, hum: { x: at.x + 400, y: at.y + 540 } } }) });
 
   // The wire: each field by its type, and what it is.
   const byName = Object.fromEntries(tool.fields.map((held) => [held.field, held]));
@@ -338,6 +337,15 @@ function replaceFile(at, text) {
     return said;
   };
   await more('shot');
+  // Focus leaves the canvas right of its fields in view: the two carried in stand there, one over the other, the others out of the way.
+  const strip = await page.evaluate(() => {
+    const at = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+    const right = Math.max(...[...document.querySelectorAll('.focus-viewport .focus-card > .here-under, .focus-viewport .focus-card .media')].map((el) => el.getBoundingClientRect().right));
+    return { x: Math.round((right + 24 - at.e) / at.a), y: Math.round((150 - at.f) / at.a), h: Math.round((innerHeight - 170) / at.a) };
+  });
+  seen.strip = strip;
+  await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { coast: { x: strip.x, y: strip.y }, walk: { x: strip.x, y: strip.y + Math.round(strip.h / 2) }, amy: { x: strip.x + 4000, y: strip.y }, hum: { x: strip.x + 4000, y: strip.y + 1000 } } }) });
+  await until('coast and walk in reach', () => Promise.all(['coast', 'walk'].map((name) => reach(name).catch(() => null))), (both) => both.every(Boolean), 10_000);
   const firstFrame = field('shot', 'first_frame');
   const whileCarried = await carry('walk', firstFrame, async () => ({ refuses: (await firstFrame.getAttribute('class')).includes('refuses'), why: await firstFrame.locator('.refusal').textContent().catch(() => '') }));
   check('wrong_kind_said_as_carried', whileCarried.refuses && whileCarried.why.includes('takes a picture'), whileCarried);
