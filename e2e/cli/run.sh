@@ -470,6 +470,7 @@ case $SHARD in
   web-dropped) export DB_WEB="dropped place"; parts="tools_read db_existing_web logs" ;;
   # A deleted box gone from the project, its files after the undo window (cl-919): its own runner, as it waits out the window twice.
   web-deleted) export DB_WEB=deleted; parts="tools_read db_existing_web logs" ;;
+  web-undo) export DB_WEB=undo; parts="tools_read db_existing_web logs" ;;
   web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
   web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
   web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;

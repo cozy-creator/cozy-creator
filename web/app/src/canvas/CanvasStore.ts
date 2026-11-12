@@ -1902,13 +1902,17 @@ export class CanvasStore {
     this.over(key, { starred: on }, (served, write) => this.client.patchAsset(this.projectId!, served, { fields: { starred: on || null } }, write), on ? "star" : "unstar", edit)
   }
 
-  /** A double tap on a take: it's approved, or if it was, nothing is, and it's still the one looked at. */
+  /** A double tap on a take toggles it (Paul, 11-12): it's approved, or if it was, nothing is, and it's still the one looked at. A picture's
+   *  approval selects it as its box's picture (`selectVersion`). */
   toggleApproved(name: string, number: number) {
     const asset = this.get(name)?.asset
+    if (asset?.pinned && asset.approved === number) {
+      this.unpin(name)
+      this.view(name, number)
+      return
+    }
     if (asset?.kind === "image") return this.selectVersion(name, number)
-    if (!asset?.pinned || asset.approved !== number) return this.pin(name, number)
-    this.unpin(name)
-    this.view(name, number)
+    this.pin(name, number)
   }
 
   unpin(name: string) {
