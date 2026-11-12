@@ -1025,9 +1025,10 @@ code {
 }
 /* Under a box at rest, as Paul drew it (cl-932): its tool and its shape, then while it renders its two lines with Cancel, at
    the box's small step, in the room it keeps clear (shown.ts underOf). Only Cancel takes the pointer: a drag there pans. */
+/* Clear of a selected box's ring (3 of gap and 6 of line, kept on screen by --unzoom): it never covers the tool's words (cl-963). */
 .tile-under {
   position: absolute;
-  top: calc(100% + 2px);
+  top: calc(100% + 2px + 9px * var(--unzoom, 1));
   left: 0;
   right: 0;
   display: flex;

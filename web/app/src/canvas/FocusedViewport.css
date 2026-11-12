@@ -173,6 +173,18 @@
 .focus-card .image-tool-name {
   font-size: 20px;
 }
+/* Its trash can a control of its own: 36 square, the can readable (cl-963). */
+.focus-card .image-tool > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+}
+.focus-card .image-tool .icon {
+  width: 20px;
+  height: 20px;
+}
 .focus-card .image-models {
   min-height: 40px;
   padding: 6px 12px;

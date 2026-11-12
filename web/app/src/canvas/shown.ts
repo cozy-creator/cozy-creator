@@ -50,6 +50,8 @@ const HANG = 1
 const TITLE_LINE = 15.5 * 1.35 * 1.25
 const BODY_LINE = 12.5 * 1.35 * 1.25
 const CLOSE = 30
+/** A selected box's ring, outside its picture, that the line under it starts past. */
+const RING = 9
 /** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
 const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
 /** A render's two lines (RunFace, on lines of 1.35), with the gap over them. */
@@ -59,7 +61,7 @@ const RUN = 2 * 10.5 * 1.35 * 1.35 + 4
  *  below it rises into. */
 export function underOf(view: ElementView): number {
   const asset = view.asset
-  const line = asset && (asset.tool || asset.kind !== "text") ? BODY_LINE + 2 : 0
+  const line = asset && (asset.tool || asset.kind !== "text") ? RING + BODY_LINE + 2 : 0
   return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
 const ENTITY_DESC = 60

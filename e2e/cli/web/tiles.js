@@ -451,6 +451,13 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
       trash: box(document.querySelector('.react-flow .card[data-asset="still"] .head button[aria-label="Delete"]')),
       close: box(view?.querySelector('button[aria-label="Close focus"]')),
       discard: box(view?.querySelector('.take-off[aria-label^="Discard"]')),
+      untool: box(view?.querySelector('.image-tool button[aria-label$=" tool"]')),
+      // Its tool's words start past a selected box's ring, never under it.
+      ring: (() => {
+        const card = document.querySelector('.react-flow__node.selected .card[data-asset="still"]');
+        const line = card?.querySelector(':scope > .tile-under .tile-line');
+        return line ? line.getBoundingClientRect().top - card.querySelector(':scope > .media').getBoundingClientRect().bottom : null;
+      })(),
       number: px(view?.querySelector('.variant-number')),
     };
   });
@@ -476,7 +483,8 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
     seen[`look_${look}`] = { tiled, focused };
     check(`look_${look}_tile_labels_at_body_size`, tiled.labels.length >= 3 && tiled.labels.every((one) => one.px >= tiled.body - 0.01), tiled);
     check(`look_${look}_tile_trash_28`, tiled.trash?.w >= 28 && tiled.trash?.h >= 28, tiled.trash);
-    check(`look_${look}_focus_close_and_discard_28`, focused.close?.w >= 28 && focused.close?.h >= 28 && focused.discard?.w >= 28 && focused.discard?.h >= 28, focused);
+    check(`look_${look}_tool_words_clear_of_the_ring`, tiled.ring >= 9, tiled.ring);
+    check(`look_${look}_focus_close_and_discard_28`, focused.close?.w >= 28 && focused.close?.h >= 28 && focused.discard?.w >= 28 && focused.discard?.h >= 28 && focused.untool?.w >= 28 && focused.untool?.h >= 28, focused);
     check(`look_${look}_focus_take_number_at_body_size`, focused.number >= focused.body - 0.01, focused);
   }
 
