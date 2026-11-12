@@ -624,7 +624,7 @@ const newPage = async () => {
   await until('second in-place decryption complete', () => JSON.parse(vault(folder, 'status')), (status) => status.encrypted === false && status.state === 'plain', 45000);
   await until('second plain transition awaits status', covered, Boolean, 45000);
   check('decrypt_removes_one_time_recovery_disclosure', await page.locator('[aria-label="Save recovery secret"]').count() === 0 && !(await page.locator('body').innerText()).includes(replacementRecovery));
-  const competing = JSON.parse(execFileSync(process.env.COZY, ['--json', 'vault', '--directory', folder, 'encrypt', '--passphrase-file', '-', '--remove-plaintext', '--idle', '0'], { cwd: scratch, input: 'synthetic browser passphrase\n', encoding: 'utf8', timeout: 180000 }));
+  const competing = JSON.parse(execFileSync(process.env.COZY, ['--json', 'vault', '--directory', folder, 'encrypt', '--passphrase-file', '-', '--idle', '0'], { cwd: scratch, input: 'synthetic browser passphrase\n', encoding: 'utf8', timeout: 180000 }));
   if (!competing.vault.encrypted || competing.vault.state !== 'unlocked') throw new Error('competing encryption did not finish unlocked');
   delete competing.recovery_secret;
   requestLock(folder);

@@ -857,10 +857,14 @@ fn finish_plain(record: &Conversion) -> Result<(), Error> {
 /// A mount's folder under `vaults/`. It is never removed recursively: a view still mounted refuses.
 struct Runtime(PathBuf);
 
+/// The runtime folders this process made and has not retired: a sweep never touches them, or what holds them.
+static OWNED: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::default);
+
 impl Runtime {
     fn new(path: PathBuf) -> Result<Self, Error> {
-        fs::create_dir_all(&path).map_err(io)?;
+        OWNED.lock().expect("vault runtime folders").insert(path.clone());
         let runtime = Self(path);
+        fs::create_dir_all(&runtime.0).map_err(io)?;
         platform::durable::set_mode(&runtime.0, 0o700).map_err(provider)?;
         Ok(runtime)
     }
@@ -882,33 +886,31 @@ fn retire_runtime(runtime: &FsPath) {
     if let Some(parent) = runtime.parent().filter(|parent| parent.file_name().is_some_and(|name| name != "vaults")) {
         let _ = fs::remove_dir(parent);
     }
+    if !runtime.exists() { OWNED.lock().expect("vault runtime folders").remove(runtime); }
 }
 
-/// Every runtime folder no session of this process holds is an earlier one's: a mount it left is gone with it,
-/// and one an orphaned provider still serves refuses removal until it ends. True once none is left.
+/// An earlier process's runtime folder, its view detached first if that process's provider left it mounted.
+fn retire_stale(runtime: &FsPath) {
+    if let Ok(view) = project_mount::view_path(runtime) { project_mount::detach_stale(&view); }
+    retire_runtime(runtime);
+}
+
+/// Every runtime folder this process doesn't own is an earlier process's. True once none is left.
 pub(crate) fn sweep_runtime(calcifer: &FsPath) -> bool {
-    let sessions: Vec<Held> = SESSIONS.lock().expect("vault sessions").values().cloned().collect();
-    let mut live = vec![];
-    for session in sessions {
-        // A session busy unmounting is swept on a later pass.
-        let Ok(session) = session.try_lock() else { return false };
-        live.push(session.runtime.clone());
-    }
+    let owned = OWNED.lock().expect("vault runtime folders").clone();
+    let holds = |path: &FsPath| owned.iter().any(|held| held.starts_with(path));
     let Ok(entries) = fs::read_dir(calcifer.join("vaults")) else { return true };
     let mut clean = true;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if live.iter().any(|held| held.starts_with(&path)) {
-            let Ok(children) = fs::read_dir(&path) else { continue };
-            for child in children.flatten().map(|child| child.path()) {
-                if !live.contains(&child) { retire_runtime(&child); clean &= !child.exists(); }
-            }
-            continue;
-        }
+    for path in entries.flatten().map(|entry| entry.path()) {
         if let Ok(children) = fs::read_dir(&path) {
-            for child in children.flatten().filter(|child| child.file_name() != "view") { retire_runtime(&child.path()); }
+            for child in children.flatten().map(|child| child.path()) {
+                if child.file_name().is_some_and(|name| name == "view") || holds(&child) { continue; }
+                retire_stale(&child);
+                clean &= !child.exists();
+            }
         }
-        retire_runtime(&path);
+        if holds(&path) { continue; }
+        retire_stale(&path);
         clean &= !path.exists();
     }
     clean
