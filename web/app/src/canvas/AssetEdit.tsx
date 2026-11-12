@@ -490,8 +490,20 @@ function Members({ name, group, bound, view, place, label }: { name: string; gro
 function ListGroup({ name, field, bound, view, place }: Drawn) {
   const rows = fullRows(field, rowsIn(bound.value))
   const accordion = view.asset?.kind === "video" && view.hereWords && field.field === "beats"
-  const [expanded, setExpanded] = useState<number | null>(0)
+  const timing = field.members?.find((member) => member.total)
+  const cut = accordion && view.continuing ? view.continuing.beats_from ?? view.continuing.out_frame / (view.continuingFps ?? 24) : 0
+  let elapsed = 0
+  const kept = rows.map((value) => {
+    const duration = timing ? Number(value[timing.field] ?? timing.default) : NaN
+    elapsed += Number.isFinite(duration) && duration > 0 ? duration : NaN
+    return cut > 0 && elapsed <= cut + 1e-6
+  })
+  const keptCount = kept.filter(Boolean).length
+  const [expanded, setExpanded] = useState<number | null>(() => keptCount < rows.length ? keptCount : null)
   const panelId = useId()
+  // A new continuation opens its first unfinished Beat; editing rows keeps the chosen accordion open.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a changed continuation resets which Beat is open
+  useEffect(() => setExpanded(keptCount < rows.length ? keptCount : null), [view.continuing])
   const called = field.label.replace(/s$/, "")
   const least = field.min_items ?? 0
   const total = totalOf(field, rows)
@@ -512,15 +524,15 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
   }
   const rowBound = (i: number): Bound => ({
     value: rows[i],
-    draft: (next) => bound.draft(rows.map((other, at) => (at === i ? next : other))),
-    write: (next) => bound.write(rows.map((other, at) => (at === i ? next : other))),
-    unset: () => bound.write(rows.filter((_, at) => at !== i)),
-    save: bound.save,
+    draft: (next) => { if (!kept[i]) bound.draft(rows.map((other, at) => (at === i ? next : other))) },
+    write: (next) => { if (!kept[i]) bound.write(rows.map((other, at) => (at === i ? next : other))) },
+    unset: () => { if (!kept[i]) bound.write(rows.filter((_, at) => at !== i)) },
+    save: () => { if (!kept[i]) bound.save() },
   })
   const slotAt = (y: number) => {
     const held = [...(list.current?.querySelectorAll<HTMLElement>(":scope > .beat") ?? [])]
     const at = held.findIndex((el) => y < el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2)
-    return at < 0 ? held.length - 1 : at
+    return Math.max(keptCount, at < 0 ? held.length - 1 : at)
   }
   const grip = (i: number) => ({
     onPointerDown(event: PointerEvent<HTMLElement>) {
@@ -569,18 +581,17 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
         drop()
       }}>
       {rows.map((value, i) => {
-        const handle = rows.length > 1 && <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>⋮⋮</span>
-        const remove = rows.length > least && <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
+        const handle = !kept[i] && rows.length - keptCount > 1 && <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>⋮⋮</span>
+        const remove = !kept[i] && rows.length > least && <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
           bound.write(rows.filter((_, at) => at !== i))
           if (accordion) setExpanded((open) => open === null ? null : open === i ? Math.max(0, Math.min(i, rows.length - 2)) : open > i ? open - 1 : open)
         }}><Icon name="close" /></button>
-        const body = <div className="beat-body"><Members name={name} group={field} bound={rowBound(i)} view={view} place={`${place}.${i}`} label={`${called} ${i + 1}`} /></div>
-        const timing = field.members?.find((member) => member.total)
+        const body = <div className="beat-body" inert={kept[i]}><Members name={name} group={field} bound={rowBound(i)} view={view} place={`${place}.${i}`} label={`${called} ${i + 1}`} /></div>
         const duration = timing ? value[timing.field] ?? timing.default : undefined
         const open = expanded === i
-        return <div className={`beat ${accordion ? "beat-accordion" : ""} ${rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} data-beat-index={i} key={i}>
+        return <div className={`beat ${accordion ? "beat-accordion" : ""} ${kept[i] ? "beat-kept" : rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} data-beat-index={i} data-beat-kept={kept[i] || undefined} key={i}>
           {accordion ? <>
-            <div className="beat-heading">{handle}<button type="button" className="beat-toggle" aria-label={`${called} ${i + 1}`} aria-expanded={open} aria-controls={`${panelId}-${i}`} onClick={() => setExpanded(open ? null : i)}><b>{called} {i + 1}</b>{duration != null && <span>{String(duration)} {timing?.unit ?? ""}</span>}<Icon name="forward" /></button>{remove}</div>
+            <div className="beat-heading">{handle}<button type="button" className="beat-toggle" aria-label={`${called} ${i + 1}${kept[i] ? ", kept from the original video" : ""}`} aria-expanded={open} aria-controls={`${panelId}-${i}`} onClick={() => setExpanded(open ? null : i)}><b>{called} {i + 1}</b>{kept[i] && <span className="beat-status">Kept</span>}{duration != null && <span>{String(duration)} {timing?.unit ?? ""}</span>}<Icon name="forward" /></button>{remove}</div>
             <div className="beat-panel" id={`${panelId}-${i}`} data-open={open || undefined} aria-hidden={!open} inert={!open}>{body}</div>
           </> : <>{handle}{body}{remove}</>}
         </div>
