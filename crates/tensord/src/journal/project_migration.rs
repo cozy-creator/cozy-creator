@@ -341,6 +341,7 @@ fn footprint(
     Ok(found)
 }
 fn copy_run_directory(source: &Path, target: &Path) -> io::Result<()> {
+    use sha2::Digest as _;
     use std::io::{Read as _, Write as _};
     let metadata = match fs::symlink_metadata(source) {
         Ok(metadata) => metadata,
@@ -373,33 +374,87 @@ fn copy_run_directory(source: &Path, target: &Path) -> io::Result<()> {
         } else if kind.is_file() {
             let mut input =
                 platform::durable::open_nofollow(&path, fs::OpenOptions::new().read(true))?;
-            let mut bytes = Vec::new();
-            input.read_to_end(&mut bytes)?;
-            if destination.exists() {
-                let mut old = platform::durable::open_nofollow(
-                    &destination,
-                    fs::OpenOptions::new().read(true),
-                )?;
-                let mut previous = Vec::new();
-                old.read_to_end(&mut previous)?;
-                if previous != bytes {
-                    return Err(db_error(
-                        "project run file conflicts with canonical legacy bytes",
-                    ));
-                }
+            let mut output = if destination.exists() {
+                None
             } else {
-                let mut output = platform::durable::open_nofollow(
+                Some(platform::durable::open_nofollow(
                     &destination,
                     fs::OpenOptions::new().write(true).create_new(true),
-                )?;
-                output.write_all(&bytes)?;
+                )?)
+            };
+            let mut hash = sha2::Sha256::new();
+            let mut total = 0u64;
+            let mut buffer = [0u8; 65536];
+            loop {
+                let count = input.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                hash.update(&buffer[..count]);
+                total += count as u64;
+                if let Some(output) = output.as_mut() {
+                    output.write_all(&buffer[..count])?;
+                }
+            }
+            if let Some(output) = output {
                 output.sync_all()?;
+            }
+            let mut copied =
+                platform::durable::open_nofollow(&destination, fs::OpenOptions::new().read(true))?;
+            let mut verified = sha2::Sha256::new();
+            let mut length = 0u64;
+            loop {
+                let count = copied.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                verified.update(&buffer[..count]);
+                length += count as u64;
+            }
+            if total != length || hash.finalize() != verified.finalize() {
+                return Err(db_error(
+                    "project run file conflicts with canonical legacy bytes",
+                ));
             }
         } else {
             return Err(db_error("legacy run closure contains an unknown object"));
         }
     }
     platform::durable::sync_dir(target)?;
+    Ok(())
+}
+fn retire_run_directory(source: &Path) -> io::Result<()> {
+    fn pin(path: &Path, files: &mut Vec<fs::File>) -> io::Result<()> {
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(db_error("legacy run source changed to a link"));
+        }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path)? {
+                pin(&entry?.path(), files)?;
+            }
+        } else if metadata.is_file() {
+            let file = platform::durable::open_nofollow(path, fs::OpenOptions::new().read(true))?;
+            match file.try_lock() {
+                Ok(()) => files.push(file),
+                Err(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ResourceBusy,
+                        "a canonical legacy run file still has an active reader",
+                    ))
+                }
+            }
+        } else {
+            return Err(db_error("unknown legacy source object"));
+        }
+        Ok(())
+    }
+    let mut files = vec![];
+    pin(source, &mut files)?;
+    fs::remove_dir_all(source)?;
+    if let Some(parent) = source.parent() {
+        platform::durable::sync_dir(parent)?;
+    }
     Ok(())
 }
 fn copy_attributed_run_files(
@@ -414,12 +469,16 @@ fn copy_attributed_run_files(
             let source = source_engine.join(kind).join(id.to_string());
             if source.exists() {
                 copy_run_directory(&source, &target.join(kind).join(id.to_string()))?;
-                // Canonical data is copied and durable. Deletion needs source-reader/folder
-                // retirement proof; keep the exact remaining source explicit until then.
-                pending.push(format!(
-                    "legacy_run_files_copied_source_retirement_pending:{}",
-                    source.display()
-                ));
+                if let Err(error) = retire_run_directory(&source) {
+                    if error.kind() == io::ErrorKind::ResourceBusy {
+                        pending.push(format!(
+                            "legacy_run_files_reader_pending:{}",
+                            source.display()
+                        ));
+                    } else {
+                        return Err(error);
+                    }
+                }
             }
         }
     }
@@ -1252,11 +1311,7 @@ impl Journal {
                 }
             }
         }
-        let raw_dependencies = if attributed_ids.is_empty() {
-            vec![]
-        } else {
-            vec!["legacy_unscoped_dependency_metadata_requires_reference_retirement".to_owned()]
-        };
+        let raw_dependencies: Vec<String> = vec![];
         let mut references = BTreeMap::new();
         for table in &mut owned {
             for row in &mut table.rows {
