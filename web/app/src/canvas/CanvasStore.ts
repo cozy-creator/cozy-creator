@@ -1805,6 +1805,18 @@ export class CanvasStore {
     })
   }
 
+  /** The box run `number` makes, where this project has it. */
+  boxOfRun(number: number): string | undefined {
+    return this.owners.get(number)
+  }
+
+  /** The boxes ahead of `name` in its project's line, the first going first. */
+  aheadOf(name: string): string[] | undefined {
+    const queue = this.state?.queue ?? []
+    const at = queue.findIndex((item) => item.name === name)
+    return at < 0 ? undefined : queue.slice(0, at).map((item) => item.name)
+  }
+
   private removeNode(name: string) {
     const id = this.ids.get(name)
     if (this.surface?.id === id) this.surface = null

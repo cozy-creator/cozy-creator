@@ -1,6 +1,7 @@
 import { Copyable } from "./Copyable"
+import { CopyError } from "./CopyError"
 import { Icon } from "./Icon"
-import { dismiss, notes } from "./notes"
+import { dismiss, held, notes } from "./notes"
 import { useSignal } from "./signal"
 
 export function Notes() {
@@ -9,8 +10,9 @@ export function Notes() {
   return (
     <div className="notes" role="status">
       {lines.map((note) => (
-        <div className="note" key={note.id}>
+        <div className="note" key={note.id} data-note={note.id} onPointerEnter={() => held.add(note.id)} onPointerLeave={() => held.delete(note.id)}>
           <span className="line">{note.message}</span>
+          {note.copy && <CopyError text={note.copy} />}
           {note.remedy && <span className="remedy">{note.remedy}</span>}
           {note.next?.map((command) => (
             <Copyable key={command} text={command} />

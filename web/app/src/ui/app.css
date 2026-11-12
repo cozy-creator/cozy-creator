@@ -870,24 +870,24 @@ code {
   pointer-events: none;
   z-index: 2;
 }
-.prog i {
+.prog > i {
   display: block;
   height: 100%;
   background: linear-gradient(90deg, color-mix(in srgb, var(--mak) 8%, transparent), color-mix(in srgb, var(--mak) 25%, transparent));
   border-right: 2px solid var(--mak);
   transition: transform 300ms linear;
 }
-.prog.unknown i {
+.prog.unknown > i {
   transform: none;
   border-right: 0;
   animation: pulse 1.2s infinite;
 }
 /* Weights arriving aren't its render: another colour, and the arrow's. */
-.prog.download i {
+.prog.download > i {
   background: linear-gradient(90deg, #2f8fe014, #2f8fe03d);
   border-right-color: #2f8fe0;
 }
-.prog.install i {
+.prog.install > i {
   background: #b5762a24;
 }
 .take .icon {
@@ -895,7 +895,7 @@ code {
   height: 12px;
   vertical-align: -2px;
 }
-.prog b {
+.prog > b {
   position: absolute;
   left: 8px;
   bottom: 6px;
@@ -905,35 +905,205 @@ code {
   color: #cfe6ff;
   font: var(--small) var(--sans);
 }
-/* Cancel, by what says how far it's got: on every box on its way, in every phase (Paul, 11-12). */
-.prog-cancel {
+/* A render on its way, on its box's face (RunFace.tsx): its state and Cancel, one bar for the whole of it and its time left, then where it
+   runs, what it's doing with its numbers, and what it warned of. Over a take looked at, or a glimpse, only the first two, along the bottom.
+   At rest at the box's small step; open (Focus), between its name and its picture, large. */
+.run-face {
   position: absolute;
-  right: 8px;
-  bottom: 6px;
-  padding: 1px 8px;
-  border: 1px solid #fff6;
-  border-radius: 5px;
-  background: #000a;
-  color: #fff;
-  font: var(--small) var(--sans);
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 3;
+  --face-font: calc(var(--t-small) * var(--ui));
+}
+.card.here .run-face {
+  --face-font: var(--small);
+}
+.run-face.strip {
+  justify-content: flex-end;
+}
+.run-face .face {
+  display: flex;
+  flex-direction: column;
+  gap: calc(0.35 * var(--face-font));
+  max-height: 100%;
+  overflow: hidden;
+  padding: calc(0.8 * var(--face-font));
+  color: var(--ink);
+  font: var(--face-font) / 1.35 var(--sans);
+}
+.run-face.strip .face,
+.run-face.full .face {
+  background: color-mix(in srgb, var(--card) 86%, transparent);
+}
+.run-face .face-state {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s4);
+  min-width: 0;
+}
+.run-face .face-state b {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: calc(1.2 * var(--face-font));
+  font-weight: var(--w-heading);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-face .face-cancel {
+  flex: none;
+  padding: 0 calc(0.6 * var(--face-font));
+  border: 1px solid var(--line2);
+  border-radius: var(--round);
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.6;
   pointer-events: auto;
   cursor: pointer;
 }
-.prog-cancel:hover {
-  border-color: #ff8a80;
-  color: #ffd2cc;
+.run-face .face-cancel:hover {
+  border-color: var(--bad);
+  color: var(--bad);
 }
-.card:not(.here) .prog-cancel {
-  right: var(--s3);
-  bottom: var(--s3);
-  padding: 1px var(--s3);
-  font: calc(var(--t-small) * var(--ui)) / 1.4 var(--sans);
+.run-face .face-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
 }
-/* At rest, one line, so nothing hangs under it but what its box keeps room for; clear of its Cancel. */
-.card:not(.here) .prog b {
+.run-face .face-track {
+  position: relative;
+  flex: 1;
+  height: calc(0.5 * var(--face-font));
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--tint2);
+}
+.run-face .face-track i {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--mak);
+  transition: transform 300ms linear;
+}
+/* How far isn't said yet: a part of the bar goes along it, beside the words that say what it's doing. */
+.run-face.unknown .face-track i {
+  width: 30%;
+  animation: face-going 1.6s ease-in-out infinite;
+}
+@keyframes face-going {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+.run-face.download .face-track i {
+  background: #2f8fe0;
+}
+.run-face.install .face-track i,
+.run-face.renting .face-track i {
+  background: #b5762a;
+}
+.run-face.canceling .face-track i {
+  background: var(--mute);
+}
+.run-face .face-left {
+  flex: none;
+  color: var(--mute);
+  white-space: nowrap;
+}
+.run-face p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--mute);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-face .face-warning {
+  color: var(--ood);
+}
+.run-face.failed .face-state b {
+  color: var(--bad);
+  font-size: var(--face-font);
+  font-weight: normal;
+}
+/* The stage it's in, within its parts, and that stage's own bar, thin, under the whole render's. */
+.run-face .face-part {
+  display: flex;
+  flex-direction: column;
+  gap: calc(0.25 * var(--face-font));
+}
+.run-face .face-stage {
+  color: var(--ink);
+}
+.run-face .face-track.thin {
+  flex: none;
+  height: calc(0.2 * var(--face-font));
+}
+.run-face .face-track.thin i {
+  background: var(--mute);
+}
+/* Open (focus), between its name and its picture, across its width and large: its state and time left read as a heading over a thick
+   bar, the numbers first. Its picture stays below, uncovered. */
+.focus-viewport > .run-face.above {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  flex: none;
+  pointer-events: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--round2);
+  background: var(--card);
+  /* The Focus card's body step (FocusedViewport.css). */
+  --face-font: 20px;
+}
+.focus-viewport > .run-face.above .face {
+  gap: calc(0.5 * var(--face-font));
+  padding: calc(0.9 * var(--face-font)) calc(1.1 * var(--face-font));
+}
+.focus-viewport > .run-face.above .face-state b {
+  font-size: calc(2 * var(--face-font));
+  font-weight: var(--w-title);
+  line-height: 1.2;
+}
+.focus-viewport > .run-face.above .face-left {
+  color: var(--ink);
+  font-size: calc(1.6 * var(--face-font));
+  font-weight: var(--w-heading);
+  font-variant-numeric: tabular-nums;
+}
+.focus-viewport > .run-face.above .face-track {
+  height: calc(0.9 * var(--face-font));
+}
+.focus-viewport > .run-face.above .face-track.thin {
+  height: calc(0.3 * var(--face-font));
+}
+.focus-viewport > .run-face.above .face-stage {
+  font-size: calc(1.2 * var(--face-font));
+  font-variant-numeric: tabular-nums;
+}
+.focus-viewport > .run-face.above .face-cancel {
+  font-size: var(--face-font);
+  line-height: 2;
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-face.unknown .face-track i {
+    width: 100%;
+    opacity: 0.35;
+    animation: none;
+  }
+}
+/* At rest, one line, so nothing hangs under it but what its box keeps room for. */
+.card:not(.here) .prog > b {
   left: var(--s3);
   bottom: var(--s3);
-  max-width: calc(100% - 2 * var(--s3) - 6em);
+  max-width: calc(100% - 2 * var(--s3));
   padding: 1px var(--s3);
   overflow: hidden;
   font: calc(var(--t-small) * var(--ui)) / 1.4 var(--sans);
@@ -1093,27 +1263,9 @@ video.preview.on {
 .card.here .words {
   visibility: hidden;
 }
-/* A take being made with nothing of it yet: the words it's made from, as they were written in its frame, read only, until it lands. How far
-   it's got moves under them, and they stop short of what says so. */
-.made-from {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  z-index: 3;
-  pointer-events: none;
-  /* What says so (.prog b), at rest; open, below. */
-  padding-bottom: calc(var(--s3) + 1.4 * var(--t-small) * var(--ui) + 2px);
-}
-.card .made-from .words {
-  visibility: visible;
-}
-/* Open, what says how far it's got is at its box's small step, as its timecode is. */
-.card.here .prog b {
+/* Open, what says how far it's got (an import placed, an Edit rendered) is at its box's small step, as its timecode is. */
+.card.here .prog > b {
   font-size: calc(var(--t-small) * var(--ui));
-}
-.card.here .made-from {
-  padding-bottom: calc(10px + 1.4 * var(--t-small) * var(--ui));
 }
 .card.here .in-frame {
   background: var(--card);
@@ -1367,19 +1519,11 @@ video.preview.on {
   width: 150px;
   height: 100px;
 }
-/* Being rendered: the box says so, in place of what it made last. A take picked in its row still shows. */
+/* Being rendered: its face says how (.run-face), in place of what it made last. A take picked in its row still shows. */
 .media-making {
   position: absolute;
   inset: 0;
   background: var(--card);
-}
-.media-making::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: var(--ember);
-  opacity: 0.1;
-  animation: pulse 2.4s ease-in-out infinite;
 }
 /* The big tile, picked up: a take leaves from here. It stops short of the corner, and gives way to what's playing. */
 .take-out {
@@ -1954,8 +2098,32 @@ video.preview.on {
   pointer-events: none;
 }
 .note button,
-.note code {
+.note code,
+.note .line {
   pointer-events: auto;
+}
+/* An error is text to select and copy (Paul, 11-12): selecting it drags, opens and dismisses nothing. */
+.error-text,
+.note .line {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+.run-face .error-text {
+  pointer-events: auto;
+}
+.copy-error {
+  flex: none;
+  padding: 0 calc(0.6em);
+  border: 1px solid var(--line2);
+  border-radius: var(--round);
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9em;
+  line-height: 1.6;
+  pointer-events: auto;
+  cursor: pointer;
 }
 .note {
   display: flex;

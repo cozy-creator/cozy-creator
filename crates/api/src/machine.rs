@@ -645,6 +645,9 @@ pub struct Progress {
     pub fraction: f64,
     pub completed: u64,
     pub total: u64,
+    /// What `completed` counts: empty for steps, `tokens` for a decode's (`calcifer::Progress::unit`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
     pub bytes_done: u64,
     pub bytes_total: u64,
     /// The latest step's time, while a stage steps.

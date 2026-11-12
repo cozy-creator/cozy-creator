@@ -805,7 +805,10 @@ impl View {
 /// time is said as the first's, never as the pace.
 pub(crate) fn said(progress: &Progress) -> String {
     let mut text = progress.stage.clone();
-    if progress.total > 0 {
+    // A decode's tokens are a count: its total is only a cap.
+    if progress.tokens() {
+        let _ = write!(text, " {} tokens", progress.completed);
+    } else if progress.total > 0 {
         let _ = write!(text, " {}/{}", progress.completed, progress.total);
     }
     let (done, total) = (progress.bytes_done, progress.bytes_total);

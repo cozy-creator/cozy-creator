@@ -139,6 +139,13 @@ struct Live {
     clock: Option<eta::Clock>,
     /// What its machine quoted as it was sent, which its clock takes.
     quoted: Option<eta::Quoted>,
+    /// What its log has warned of while it goes, each once: its record says them with its own warnings.
+    warned: Vec<String>,
+}
+
+/// A log line at a level its followers are warned at, as `cozy run` says it.
+pub(crate) fn warns(level: &str) -> bool {
+    matches!(level, "warn" | "warning" | "error")
 }
 
 /// How often a running run's time left is said again as it counts down.
@@ -550,6 +557,11 @@ impl Calcifer {
         if let Some(live) = lock(&self.live).get(&row.id) {
             run.waiting.clone_from(&live.waiting);
             run.progress.clone_from(&live.progress);
+            let said: Vec<Warning> = (live.warned.iter())
+                .filter(|text| !run.warnings.iter().any(|warning| warning.message == **text))
+                .map(|text| Warning { code: "log".into(), message: text.clone() })
+                .collect();
+            run.warnings.extend(said);
         }
         if queued(&run) {
             // Its machine's count, else the runs waiting ahead of it for that machine.
@@ -1009,7 +1021,9 @@ impl Calcifer {
                 return;
             }
             let Some(name) = run.machine.clone() else {
-                if run.wants != "any" {
+                // A rental ordered for it says what it rents (`Rentals::rent_for`) until it is named.
+                let renting = lock(&self.live).get(id).and_then(|live| live.waiting.as_deref()).is_some_and(|w| w.starts_with("renting "));
+                if run.wants != "any" && !renting {
                     self.waiting(id, "waiting for a machine to be chosen".into());
                 }
                 wake.notified().await;
@@ -1518,7 +1532,16 @@ impl Calcifer {
             frames += 1;
             let durable = frame.sequence;
             match frame.event {
-                Frame::Log(line) => batch.logs.push((frame.at_ms, line.level, line.text)),
+                Frame::Log(line) => {
+                    if warns(&line.level) {
+                        let mut live = lock(&self.live);
+                        let warned = &mut live.entry(id.clone()).or_default().warned;
+                        if !warned.contains(&line.text) {
+                            warned.push(line.text.clone());
+                        }
+                    }
+                    batch.logs.push((frame.at_ms, line.level, line.text));
+                }
                 Frame::Call(call) => {
                     let call = ::api::calcifer::Call {
                         run: call.run,
@@ -1851,6 +1874,7 @@ pub(crate) fn progress_of(p: v1::Progress, at_ms: i64) -> Progress {
         stage_fraction: p.stage_fraction.filter(|f| *f >= 0.0),
         completed: p.completed,
         total: p.total,
+        unit: p.unit,
         bytes_done: p.bytes_done,
         bytes_total: p.bytes_total,
         step_ms: p.step_ms,
@@ -1877,13 +1901,19 @@ fn megapixels(input: &serde_json::Map<String, serde_json::Value>) -> Option<f64>
     number("megapixels").or_else(|| Some(number("width")? * number("height")? / 1e6))
 }
 
-/// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'.
+/// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'; within a part of a whole its scope names
+/// (`Segment 2 of 3`), that part's share of the whole. A decode's tokens are no share of their cap.
 fn done_fraction(progress: &Progress) -> Option<f64> {
     let of = |done: u64, total: u64| (total > 0).then(|| done as f64 / total as f64);
-    (progress.fraction.filter(|f| *f >= 0.0))
-        .or(progress.stage_fraction)
-        .or_else(|| of(progress.completed, progress.total))
-        .or_else(|| of(progress.bytes_done, progress.bytes_total))
+    let steps = (!progress.tokens()).then(|| of(progress.completed, progress.total)).flatten();
+    let stage = (progress.stage_fraction)
+        .or(steps)
+        .or_else(|| of(progress.bytes_done, progress.bytes_total));
+    let whole = match progress.part() {
+        Some((at, of)) => Some((at - 1) as f64 / of as f64 + stage.unwrap_or(0.0).clamp(0.0, 1.0) / of as f64),
+        None => stage,
+    };
+    progress.fraction.filter(|f| *f >= 0.0).or(whole)
 }
 
 /// A stage's bytes a second over its last 10 s (and at least its last two counts), once a second

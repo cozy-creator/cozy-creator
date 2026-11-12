@@ -84,7 +84,7 @@ if [ "$scope" = native ]; then
 fi
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
-step "web-activity: each machine top right, an install and a download listed once under it with their waiters, a box saying it waits"
+step "web-activity: each machine top right, an install and a download listed once under it with their waiters; a cold render's face, each phase in order with its numbers and time left; Cancel waiting and rendering"
 web_proof activity "$chrome" "$pw" ''
 step "web-signin: AuthKit's form to a stand-in Hub: a new account, a wrong code, too soon, either email's code, signed out, a deleted account restored"
 if [ -z "${WEB_ALONE:-}" ]; then

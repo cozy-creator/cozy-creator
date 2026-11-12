@@ -591,8 +591,9 @@ impl Seen {
         if self.stage.0 != frame.stage {
             self.stage = (frame.stage.clone(), now);
         }
+        // A decode's tokens are no share of their cap: it may stop at any count.
         let done = match (frame.position, frame.total) {
-            (Some(position), Some(total)) if total > 0 => Some(position as f64 / total as f64),
+            (Some(position), Some(total)) if total > 0 && frame.unit != api::calcifer::TOKENS => Some(position as f64 / total as f64),
             _ => frame.stage_fraction,
         };
         let paced = done
@@ -644,6 +645,9 @@ pub(crate) fn observe(engine: &Engine, id: &str, seen: &mut Seen, frame: &Frame,
         if let Some(value) = value {
             payload[name] = value;
         }
+    }
+    if frame.unit == api::calcifer::TOKENS {
+        payload["unit"] = api::calcifer::TOKENS.into();
     }
     if let Some(overall) = seen.overall(engine, id, frame) {
         payload["overall_fraction"] = overall.into();

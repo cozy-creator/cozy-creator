@@ -861,7 +861,8 @@ ${local ? `  card:
         const rendered = Boolean(media?.checkVisibility?.(visibility));
         const inBounds = Boolean(rect && rect.width && rect.height && rect.left >= left && rect.top >= top && rect.right <= innerWidth && rect.bottom <= innerHeight);
         const progressVisible = Boolean(progress?.checkVisibility?.(visibility));
-        const text = progress?.innerText ?? null;
+        // Its state, and under it the part and step it's on (cl-898): `Segment 3 of 600 · Denoising · step 2 of 5`.
+        const text = media?.querySelector('.prog .face-stage')?.innerText || (progress?.innerText ?? null);
         let reason = null;
         if (!media) reason = 'missing-media';
         else if (!rendered) reason = 'hidden-media';
@@ -878,7 +879,7 @@ ${local ? `  card:
         };
       });
       const restingMaking = (at) => at.zoom === 0.75 && at.mounted && at.visible && !at.open.length && !at.selected.length;
-      const makingProgress = (at) => restingMaking(at) && at.progressVisible && /steps/i.test(at.text ?? '');
+      const makingProgress = (at) => restingMaking(at) && at.progressVisible && /\bstep \d+ of \d+/.test(at.text ?? '');
       await making.waitFor().catch(async (error) => {
         const state = await makingState();
         (seen.making_setup ??= []).push({ size: size.name, phase: 'mount', ...state });
@@ -910,7 +911,7 @@ ${local ? `  card:
         return null;
       });
       const said = progress?.text ?? '';
-      check(`making_says_how_far_${size.name}`, /steps/i.test(said), said);
+      check(`making_says_how_far_${size.name}`, /\bstep \d+ of \d+/.test(said), said);
       await look('rest-making', true, true, async () => {
         const state = await makingState();
         (seen.making_audit ??= []).push({ size: size.name, ...state });
