@@ -7,13 +7,18 @@ use api::calcifer::{Event, Run, Status, VideoProgress, VideoSegmentProgress, Vid
 const FPS: u32 = 24;
 
 pub(crate) fn of(run: &Run, events: &[Event]) -> Option<VideoProgress> {
-    let plan = events.iter().rev().find_map(|event| match event {
-        Event::Log { text, .. } => Plan::read(text),
-        _ => None,
-    })?;
+    let plan = plan_of(events)?;
     let label = run.output.iter().filter(|item| item.name == "video" && item.index == 0)
         .max_by_key(|item| item.rev).map(|item| item.label.as_str());
     Some(plan.project(label, run.progress.as_ref().map(|progress| progress.stage.as_str()), run.status == Status::InProgress))
+}
+
+fn plan_of(events: &[Event]) -> Option<Plan> {
+    let text = events.iter().rev().find_map(|event| match event {
+        Event::Log { text, .. } if text.starts_with("h3 shot segments ") => Some(text),
+        _ => None,
+    })?;
+    Plan::read(text)
 }
 
 struct Plan {
@@ -127,5 +132,9 @@ mod tests {
         let plan = Plan::read(PLAN).unwrap();
         assert_eq!(plan.project(Some("Segment 2 of 9"), None, true).completed_frames, 0);
         assert!(plan.project(None, Some("Segment 1 of 3 / denoise"), false).segments.iter().all(|segment| segment.status == VideoSegmentStatus::Pending));
+        let events: Vec<_> = [PLAN, "h3 shot segments segments=2"].into_iter().enumerate().map(|(index, text)| Event::Log {
+            sequence_number: index as u64 + 1, at_ms: 0, level: "info".into(), text: text.into(),
+        }).collect();
+        assert!(plan_of(&events).is_none(), "a malformed new plan cannot reuse an older plan");
     }
 }
