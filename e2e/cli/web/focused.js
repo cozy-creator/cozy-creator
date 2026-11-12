@@ -144,11 +144,12 @@ async function died(error) {
     const loaded = [...media.querySelectorAll('.media-pixels img')].some((image) => image.complete && image.naturalWidth > 0);
     return { viewer: rect(viewer), media: rect(media), controls: rect(element.querySelector('.image-controls')), loaded };
   });
-  const fits = (look, ratio) => look.loaded && look.media.width > 20 && look.media.height > 20
+  const frameFits = (look, ratio) => look.media.width > 20 && look.media.height > 20
     && look.media.x >= look.viewer.x - 2 && look.media.y >= look.viewer.y - 2
     && look.media.right <= look.viewer.right + 2 && look.media.bottom <= look.viewer.bottom + 2
     && Math.abs((look.media.width / look.media.height) / ratio - 1) < 0.03
     && Math.min(Math.abs(look.media.width - look.viewer.width), Math.abs(look.media.height - look.viewer.height)) < 3;
+  const fits = (look, ratio) => look.loaded && frameFits(look, ratio);
   const expectFit = (ratio) => until('the full image fits the Focus viewer', measure, (look) => fits(look, ratio));
   const imageCamera = () => card.locator('.focus-image-transform').evaluate((element) => {
     const matrix = new DOMMatrix(getComputedStyle(element).transform);
@@ -355,6 +356,45 @@ async function died(error) {
     await choose(2);
     await expectFit(0.25);
     check('old_tall_state_stays_previewable_after_generation', await history.locator('.take.on[data-take]').getAttribute('data-take') === '2' && (await asset()).versions === 11);
+
+    // The weightless tool declares a continuous AspectRatio, with no discrete ratio list.
+    await newImage.click();
+    const aspectBadge = card.locator('.focus-viewer .media > [data-output-aspect]');
+    await aspectBadge.waitFor();
+    const beforeResize = await until('the square edit frame is fitted before resizing', measure, (look) => frameFits(look, 1));
+    const beforeResizeCamera = await camera();
+    const beforeResizeWidth = (await api(`${at}/canvas`)).cards[NAME].w;
+    const corner = await card.getByRole('slider', { name: 'Its size', exact: true }).boundingBox();
+    const fromCorner = { x: corner.x + corner.width / 2, y: corner.y + corner.height / 2 };
+    await page.mouse.move(fromCorner.x, fromCorner.y);
+    await page.mouse.down();
+    await card.locator('.focus-viewer[data-resizing="true"]').waitFor();
+    await page.mouse.move(fromCorner.x - 150, fromCorner.y + 90, { steps: 12 });
+    const heldResize = await measure();
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    const stableResize = await measure();
+    const requestedShape = await aspectBadge.getAttribute('data-output-aspect');
+    const [ratioWidth, ratioHeight] = requestedShape.split(':').map(Number);
+    const requestedRatio = ratioWidth / ratioHeight;
+    check('aspect_drag_holds_free_bounds_until_release', sameRect(beforeResize.viewer, heldResize.viewer) && sameRect(heldResize.media, stableResize.media)
+      && Math.abs(heldResize.media.x - beforeResize.media.x) < 2 && Math.abs(heldResize.media.y - beforeResize.media.y) < 2
+      && Math.abs(heldResize.media.width - (beforeResize.media.width - 150)) < 4 && Math.abs(heldResize.media.height - (beforeResize.media.height + 90)) < 4
+      && !frameFits(heldResize, requestedRatio), { beforeResize, heldResize, stableResize, requestedShape });
+    await shot('aspect-dragging');
+    await page.mouse.up();
+    await until('aspect dragging ends after release', () => card.locator('.focus-viewer').getAttribute('data-resizing'), (value) => value === null);
+    await until('the exact requested ratio is saved', asset, (item) => item.fields?.aspect_ratio === requestedShape);
+    const afterResize = await until('the output refits to the exact released ratio', measure, (look) => frameFits(look, requestedRatio)
+      && Math.abs((look.media.width / look.media.height) / requestedRatio - 1) < 0.001);
+    check('aspect_release_refits_without_changing_the_Wander_width_or_camera', Number.isFinite(beforeResizeWidth) && (await api(`${at}/canvas`)).cards[NAME].w === beforeResizeWidth
+      && sameCamera(beforeResizeCamera, await camera()) && Math.abs((await imageCamera()).zoom - 1) < 0.0001, { beforeResizeWidth, afterResize });
+    const badgeRect = await aspectBadge.boundingBox();
+    check('requested_aspect_badge_stays_inside_the_output_frame', badgeRect.x >= afterResize.media.x - 2 && badgeRect.y >= afterResize.media.y - 2
+      && badgeRect.x + badgeRect.width <= afterResize.media.right + 2 && badgeRect.y + badgeRect.height <= afterResize.media.bottom + 2);
+    const automatic = focus.getByRole('button', { name: 'Auto aspect ratio', exact: true });
+    if (await automatic.count()) await automatic.click();
+    await choose(2);
+    await expectFit(0.25);
   } else seen.skipped_render = 'no free local execution in this cell';
 
   await approve(2);
