@@ -4065,7 +4065,7 @@ input[type="checkbox"] {
   white-space: nowrap;
 }
 .activity .more,
-.activity .render-here {
+.activity .render-check {
   flex: none;
 }
 .activity ul {
@@ -4343,7 +4343,27 @@ input[type="checkbox"] {
   }
 }
 
-/* The open project's machines (Render here, cl-887): green wherever the machines panel lists them. */
+/* The open project's machines (cl-887): checked, and green wherever they're listed. */
+.render-check {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--cur);
+  cursor: pointer;
+}
+.runrow:has(> .render-check) {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.runrow:has(> .render-check) > .render-check {
+  margin-top: 9px;
+}
+.runrow:has(> .render-check) > a {
+  flex: 1;
+  min-width: 0;
+}
 .runrow.render-here > a,
 .run-head.render-here,
 .mtab.render-here {
@@ -4357,8 +4377,4 @@ input[type="checkbox"] {
   padding: 4px 8px;
   border-radius: 5px;
 }
-.tb.render-here.on {
-  background: var(--cur);
-  border-color: var(--cur);
-  color: var(--on-ember);
-}
+

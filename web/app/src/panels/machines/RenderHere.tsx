@@ -36,21 +36,19 @@ export function useRenderMachines() {
   return { project: id, chosen, toggle }
 }
 
-/** A machine's toggle, on its chip top right and in its drawer: the open project's renders go here too, and pressed again, no longer.
- *  Several can be on: the project's preferred machines (Paul 11-12). */
-export function RenderHere({ name }: { name: string }) {
+/** A machine's checkbox, beside it wherever it's listed (Paul 11-12: "Just make it a checkbox"): checked, the open project's renders
+ *  go here too, and it's green; several can be checked, the project's preferred machines; none is automatic. */
+export function RenderCheck({ name, called = name }: { name: string; called?: string }) {
   const { project, chosen, toggle } = useRenderMachines()
   if (!project) return null
-  const on = chosen.includes(name)
   return (
-    <button
-      type="button"
-      className={`tb render-here ${on ? "on" : ""}`}
-      aria-pressed={on}
-      title={on ? "This project renders here. Press again to stop." : "This project's renders go here, or to another green machine if it finishes first."}
-      onClick={() => toggle(name)}
-    >
-      Render here
-    </button>
+    <input
+      type="checkbox"
+      className="render-check"
+      aria-label={`Render on ${called}`}
+      title="This project renders here (any checked machine, whichever finishes first)"
+      checked={chosen.includes(name)}
+      onChange={() => toggle(name)}
+    />
   )
 }

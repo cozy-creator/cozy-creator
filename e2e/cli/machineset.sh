@@ -87,11 +87,11 @@ head -n $(($(wc -l < "$OUT/set-pair.txt") - before)) "$OUT/set-pair.txt" > "$OUT
 code=0; in_project "$P" --json run "$echo" text=mixed --on stand-a,new > "$OUT/set-mixed.json" 2>&1 || code=$?
 [ "$code" != 0 ] && J '.error.code == "on_set"' "$OUT/set-mixed.json" || check "run --on stand-a,new: exit $code: $(head -c 300 "$OUT/set-mixed.json")"
 
-# The machines panel's Render here: the same pin, green where the panel lists it, Render all inside it, and the CLI's choice live.
+# The machines' checkboxes: the same pin, green where they're listed, Render all inside it, and the CLI's choice live.
 local pw=$OUT/playwright chrome
 chrome=$(web_chrome)
 if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1; then
-  step "web-renderhere: Render here pins a project to local and stand-a, green in the panel; Render all stays inside; the CLI's choice shows live"
+  step "web-renderhere: two machines checked in the panel, green and the project's machines; Render all stays on them; the CLI's choice shows live; a chip's flyout checks one"
   STANDS="stand-a stand-b" web_proof renderhere "$chrome" "$pw" ''
   jq -c '.seen.placed // empty' "$OUT/web-renderhere.json" 2> /dev/null || true
 else

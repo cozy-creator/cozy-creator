@@ -10,7 +10,7 @@ import { DrawerFrame } from "../Drawer"
 import { usd } from "../format"
 import { End } from "./End"
 import { Rent } from "./Rent"
-import { useRenderMachines } from "./RenderHere"
+import { RenderCheck, useRenderMachines } from "./RenderHere"
 import { called, endsWords, gpusWords, stableName, stateClass, stateWords } from "./words"
 
 function MachineRow({ machine, now, here }: { machine: Machine; now: number; here: boolean }) {
@@ -18,6 +18,7 @@ function MachineRow({ machine, now, here }: { machine: Machine; now: number; her
   const trying = machine.state === "booting" && machine.kind === "rental"
   return (
     <li className={`runrow ${trying ? "trying" : ""} ${here ? "render-here" : ""}`} data-machine={machine.name}>
+      <RenderCheck name={machine.name} called={called(machine)} />
       <Link to={to(`machines/${encodeURIComponent(stableName(machine))}`)}>
         <span className="line">
           <span className={`dot ${stateClass(machine)}`} />
@@ -141,13 +142,14 @@ export function Machines() {
           {problem.hub} didn't answer: {problem.message}. Its rentals may still be billing.
         </p>
       ))}
-      {project && data && !chosen.length && <p className="muted">No machine is green, so this project's renders are placed automatically. Open one and press Render here to keep them on it.</p>}
+      {project && data && !chosen.length && <p className="muted">Nothing checked: this project's renders are placed automatically. Check machines to keep them there.</p>}
       <ul className="rows">
         {mine.map((machine) => (
           <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} />
         ))}
         {gone.map((name) => (
           <li key={name} className="runrow render-here" data-machine={name}>
+            <RenderCheck name={name} />
             <Link to={to(`machines/${encodeURIComponent(name)}`)}>
               <span className="line">
                 <b>{name}</b>

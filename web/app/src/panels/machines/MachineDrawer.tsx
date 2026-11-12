@@ -13,7 +13,7 @@ import { bytes, shown, span, usd } from "../format"
 import { End } from "./End"
 import { Installed } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
-import { RenderHere, useRenderMachines } from "./RenderHere"
+import { RenderCheck, useRenderMachines } from "./RenderHere"
 import { called, endsWords, gpusWords, kindWords, named, spentWords, stateClass, stateWords } from "./words"
 
 /** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
@@ -209,6 +209,7 @@ export function MachineDrawer() {
   return (
     <DrawerFrame title={called(machine)} back={to("machines")}>
       <div className={`run-head ${here ? "render-here" : ""}`}>
+        {(!ended || here) && <RenderCheck name={machine.name} called={called(machine)} />}
         <span className={`dot ${stateClass(machine)}`} />
         <b>{stateWords(machine, now)}</b>
         <span className="sp" />
@@ -231,7 +232,6 @@ export function MachineDrawer() {
       )}
       {!ended && <Doing machine={machine} now={now} />}
       <div className="machine-actions">
-        {(!ended || here) && <RenderHere name={machine.name} />}
         <KeepRunning machine={machine} />
         <End machine={machine} />
       </div>
