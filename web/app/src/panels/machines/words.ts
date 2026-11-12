@@ -1,5 +1,5 @@
 import type { Machine } from "../../api/calcifer"
-import { span, usd } from "../format"
+import { bytes, span, usd } from "../format"
 
 /** What `name` in a route means: a machine's name, former name or rental id. */
 export const named = (machine: Machine, name: string) => [machine.name, machine.alias, machine.rental_id].some((known) => known?.toLowerCase() === name.toLowerCase())
@@ -15,7 +15,7 @@ export const stableName = (machine: Machine) => machine.rental_id ?? machine.nam
 
 export const gpusWords = (machine: Machine) => {
   const gpus = machine.status?.gpus
-  if (gpus?.length) return `${gpus.length}× ${gpus[0].name}`
+  if (gpus?.length) return `${gpus.length}× ${gpus[0].name}${gpus[0].memory_bytes ? ` · ${bytes(gpus[0].memory_bytes)}` : ""}`
   const rental = machine.rental
   if (!rental || !rental.gpus || rental.accelerator.toLowerCase() === "cpu") return rental ? "CPU" : ""
   return `${rental.gpus}× ${rental.accelerator}`

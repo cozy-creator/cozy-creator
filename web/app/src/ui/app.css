@@ -4202,21 +4202,11 @@ input[type="checkbox"] {
   animation: open-up 90ms ease-out;
 }
 .activity header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   padding: 2px 4px 8px;
   border-bottom: 1px solid var(--line);
 }
-.activity header .said {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .activity .more,
-.activity .render-here {
+.activity .render-check {
   flex: none;
 }
 .activity ul {
@@ -4494,22 +4484,64 @@ input[type="checkbox"] {
   }
 }
 
-/* The open project's machines (Render here, cl-887): green wherever the machines panel lists them. */
-.runrow.render-here > a,
-.run-head.render-here,
+/* The open project's machines (cl-887): checked, and green wherever they're listed. */
+.render-check {
+  flex: none;
+  width: 1em;
+  height: 1em;
+  margin: 0;
+  accent-color: var(--cur);
+  cursor: pointer;
+}
+/* A machine wherever it's listed (Paul 11-12): its full spec, a row of its own that wraps rather than cuts; under it its check and its
+   Details. */
+.spec {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.spec b {
+  font: var(--w-heading) var(--heading) var(--mono);
+}
+.spec span {
+  color: var(--mute);
+}
+.checks {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+}
+.checks button.more {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+.runrow.machine,
+.runrow.machine.trying {
+  display: block;
+  padding: 6px 8px;
+  margin: 2px 0;
+  border-radius: 5px;
+}
+.runrow.machine .under {
+  margin-left: 0;
+}
+.machine-head {
+  margin-bottom: 8px;
+  padding: 4px 8px;
+  border-radius: 5px;
+}
+.runrow.machine.render-here,
+.machine-head.render-here,
 .mtab.render-here {
   background: color-mix(in srgb, var(--cur) 14%, transparent);
   box-shadow: inset 0 0 0 1.5px var(--cur);
 }
-.runrow.render-here > a {
-  margin: 2px 0;
-}
-.run-head.render-here {
-  padding: 4px 8px;
-  border-radius: 5px;
-}
-.tb.render-here.on {
-  background: var(--cur);
-  border-color: var(--cur);
-  color: var(--on-ember);
-}
+

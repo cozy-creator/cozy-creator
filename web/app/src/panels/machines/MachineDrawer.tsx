@@ -9,12 +9,12 @@ import { Copyable } from "../../ui/Copyable"
 import { say } from "../../ui/notes"
 import { Failure, KV, Section, useAsk, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
-import { bytes, shown, span, usd } from "../format"
+import { bytes, shown, span } from "../format"
 import { End } from "./End"
 import { Installed } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
-import { RenderHere, useRenderMachines } from "./RenderHere"
-import { called, endsWords, gpusWords, kindWords, named, spentWords, stateClass, stateWords } from "./words"
+import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
+import { called, endsWords, kindWords, named, spentWords } from "./words"
 
 /** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
 function KeepRunning({ machine }: { machine: Machine }) {
@@ -103,8 +103,8 @@ function DiskShort({ machine }: { machine: Machine }) {
   )
 }
 
-/** All the rest it knows, folded, for whoever asks: versions, disk, addresses and keys, its runs one by one, updating it, what it holds,
- *  its logs (Paul 11-12: its face is what it is, what it costs, what it's doing, when it ends, and what to do with it). */
+/** All the rest it knows, shown when its Details is: versions, disk, addresses and keys, its runs one by one, updating it, what it holds,
+ *  its logs (Paul 11-12: its face is its spec, what it's doing, when it ends, and what to do with it). */
 function Details({ machine, now }: { machine: Machine; now: number }) {
   const to = useTo()
   const ended = machine.state === "ended"
@@ -112,8 +112,7 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
   const rental = machine.rental
   const disk = status?.disk_total_bytes ? `${bytes(status.disk_free_bytes ?? 0)} free of ${bytes(status.disk_total_bytes)}` : rental?.disk_gb ? `${rental.disk_gb} GB` : ""
   return (
-    <details className="sect">
-      <summary>Details</summary>
+    <div className="sect machine-details">
       <KV
       rows={[
         ["Kind", kindWords(machine)],
@@ -168,17 +167,19 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
       {machine.state === "ready" && <Update machine={machine} />}
       {!ended && <Installed machine={machine} />}
       {!ended && <MachineLogs machine={machine} />}
-    </details>
+    </div>
   )
 }
 
-/** What it's doing, in jobs, its GPUs' work (cl-889), and when it ends. */
+/** What it's doing, in jobs, its GPUs' work (cl-889), what it's cost so far, and when it ends. */
 function Doing({ machine, now }: { machine: Machine; now: number }) {
   const jobs = machine.running || machine.queued ? `${machine.running} running, ${machine.queued} queued` : "No jobs"
   const ends = endsWords(machine, now)
+  const spent = spentWords(machine)
   return (
     <p className="doing-now">
       <span>{jobs}</span>
+      {spent && <span className="muted">{spent} so far</span>}
       {ends && <span className={machine.status?.idle_deadline_ms ? "warn" : "muted"}>{ends}</span>}
     </p>
   )
@@ -195,6 +196,7 @@ export function MachineDrawer() {
   const machine = listed ?? record
   const now = useNow(Boolean(machine && machine.state !== "ended"))
   const { chosen } = useRenderMachines()
+  const [details, setDetails] = useState(false)
 
   if (!machine) {
     return (
@@ -208,11 +210,14 @@ export function MachineDrawer() {
   const here = chosen.includes(machine.name)
   return (
     <DrawerFrame title={called(machine)} back={to("machines")}>
-      <div className={`run-head ${here ? "render-here" : ""}`}>
-        <span className={`dot ${stateClass(machine)}`} />
-        <b>{stateWords(machine, now)}</b>
-        <span className="sp" />
-        <small>{gpusWords(machine)}</small>
+      <div className={`machine-head ${here ? "render-here" : ""}`}>
+        <Spec machine={machine} now={now} name={false} />
+        <div className="checks">
+          {(!ended || here) && <RenderCheck name={machine.name} called={called(machine)} />}
+          <button type="button" className="more" aria-expanded={details} onClick={() => setDetails(!details)}>
+            Details
+          </button>
+        </div>
       </div>
       {ended && <p className="muted">Ended. Nothing of it bills now, and what landed here stays.</p>}
       {machine.state === "booting" && (
@@ -223,15 +228,8 @@ export function MachineDrawer() {
       )}
       {machine.offline && <p className="warn">It's offline and refuses runs. It returns if its provider resumes it, and ends after 15 minutes idle.</p>}
       {machine.unreachable && !ended && <p className="muted">It didn't answer just now ({machine.unreachable}). This is from its last report.</p>}
-      {machine.rental && !ended && (
-        <p className="cost">
-          <b>{usd(machine.rental.usd_micros_per_hour)}/h</b>
-          {spentWords(machine) && <small>{spentWords(machine)} so far</small>}
-        </p>
-      )}
       {!ended && <Doing machine={machine} now={now} />}
       <div className="machine-actions">
-        {(!ended || here) && <RenderHere name={machine.name} />}
         <KeepRunning machine={machine} />
         <End machine={machine} />
       </div>
@@ -241,7 +239,7 @@ export function MachineDrawer() {
           {problem}
         </p>
       ))}
-      <Details machine={machine} now={now} />
+      {details && <Details machine={machine} now={now} />}
     </DrawerFrame>
   )
 }

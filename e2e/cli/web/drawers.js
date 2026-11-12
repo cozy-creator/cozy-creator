@@ -155,8 +155,8 @@ async function runs(page, base, id, folder) {
   check('prices_are_gpu_only', !/storage|bandwidth|\/GB/i.test(await body(page)));
   if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-machines.png` });
   if (listed.includes('local')) {
-    await page.click('.runrow a:has-text("local")');
-    await page.click('summary:text-is("Details")');
+    await page.click('.runrow[data-machine="local"] a:has-text("Details")');
+    await page.click('.checks button:text-is("Details")');
     await page.waitForSelector('.kv');
     check('local_has_no_end', (await page.locator('.machine-actions button:text-is("End")').count()) === 0);
     if (runsHere) {

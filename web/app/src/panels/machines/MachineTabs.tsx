@@ -7,7 +7,7 @@ import type { Machine } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
 import { Bar } from "../common"
 import { workWords } from "../runs/words"
-import { RenderHere } from "./RenderHere"
+import { Checks, Spec } from "./RenderHere"
 import { type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
 import { called, gpusWords, stableName, stateWords } from "./words"
 
@@ -114,12 +114,12 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
   return (
     <div className="activity" ref={held} role="dialog" aria-label={`What ${called(machine)} is doing`} style={at ? { top: at.top, right: at.right } : { visibility: "hidden" }}>
       <header>
-        <b>{called(machine)}</b>
-        <span className="said">{[gpusWords(machine), stateWords(machine, Date.now())].filter(Boolean).join(", ")}</span>
-        <RenderHere name={machine.name} />
-        <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)} onClick={close}>
-          Details
-        </Link>
+        <Spec machine={machine} now={Date.now()} />
+        <Checks machine={machine}>
+          <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)} onClick={close}>
+            Details
+          </Link>
+        </Checks>
       </header>
       {doing.length ? (
         <ul>
