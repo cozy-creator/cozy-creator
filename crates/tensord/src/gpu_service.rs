@@ -824,6 +824,8 @@ pub(crate) struct Pool {
     levels: Mutex<BTreeMap<String, (App, Level, Birth)>>,
     /// Each envelope GPU and its measurement book, in envelope order.
     devices: Vec<Device>,
+    /// Every pair of its GPUs reaches the other over NVLink (NVML): the link a group crosses.
+    nvlinked: bool,
     /// Measured peaks, persisted per GPU model.
     peaks: memory::Peaks,
     /// Woken by memory events alongside the GPU permits' scheduling events.
@@ -1040,6 +1042,7 @@ impl Pool {
                 root: root.to_path_buf(),
                 serving: Arc::default(),
                 allocations: crate::gpu_allocation::Allocations::new(envelope.len()),
+                nvlinked: platform::gpu::nvlinked(&envelope.iter().map(String::as_str).collect::<Vec<_>>()),
                 devices,
                 peaks,
                 engine: Default::default(),
@@ -1239,6 +1242,12 @@ impl Pool {
     /// GPUs this machine may group.
     pub(crate) fn width(&self) -> usize {
         self.devices.len()
+    }
+    /// Its card (the first GPU's name) and whether its GPUs share NVLink: what a width's speed is
+    /// known for (`estimate::KNOWN`).
+    pub(crate) fn hardware_class(&self) -> (String, bool) {
+        let card = self.devices.first().and_then(|d| self.inventory(&d.entry)).map(|g| g.device_name.clone());
+        (card.unwrap_or_default(), self.nvlinked)
     }
     /// The first `degree` GPUs as the lane rule reads them; one the inventory does not name
     /// runs no native format.
@@ -2366,7 +2375,9 @@ impl Pool {
         if plan.degree == 0 {
             if !admit()? { return Ok(false); }
             let width = match record.invocation.gpus {
-                0 => width.unwrap_or_else(|| held.record.widest_group(self.width())) as usize,
+                // Unpacked, it takes its narrowest width: never wider than proven (cr-268).
+                0 => width.or_else(|| record.invocation.widths.first().copied())
+                    .unwrap_or_else(|| held.record.widest_group(self.width()).min(1)) as usize,
                 gpus => gpus as usize,
             };
             let root = (record.invocation.parent.is_empty() && self.width() > 0)
@@ -2397,6 +2408,7 @@ impl Pool {
             },
             false => None,
         };
+        let width = width.or_else(|| record.invocation.widths.first().copied());
         let plan = match width.filter(|_| record.invocation.parent.is_empty() && record.invocation.gpus == 0) {
             Some(width) => plan.at(width)?,
             None => plan,
