@@ -43,24 +43,10 @@ cozy --json machine show local > "$OUT/set-local.json" || { check "coming: machi
 stand_in stand-c || return
 signin "$E2E_HUB_EMAIL" > "$OUT/coming-login.json" || { check "coming: cozy login: $(tail -c 300 "$OUT/coming-login.json")"; return; }
 cozy --json new --unencrypted "$P" > "$OUT/coming-new.json" 2>&1 || { check "coming: new: $(tail -c 300 "$OUT/coming-new.json")"; return; }
-yaml_in "$P" <<YAML || return
-version: 4
-assets:
-  learned:
-    tool: $tool
-    instructions: What stand-c learns the tool takes, $RANDOM.
-    megapixels: 0.25
-    seconds: 480
-  small:
-    tool: $here/project/tool.py/slow
-    instructions: Sooner on stand-c than on the rental, $RANDOM.
-    seconds: 1
-  large:
-    tool: $tool
-    instructions: Sooner on the rental than on stand-c, $RANDOM.
-    megapixels: 0.25
-    seconds: 1
-YAML
+jq -n --arg wait "$tool" --arg slow "$here/project/tool.py/slow" --arg r "$RANDOM" '[
+  {name: "learned", tool: $wait, kind: "image", fields: {instructions: "What stand-c learns the tool takes, \($r).", megapixels: 0.25, seconds: 480}},
+  {name: "small", tool: $slow, kind: "image", fields: {instructions: "Sooner on stand-c than on the rental, \($r).", seconds: 1}},
+  {name: "large", tool: $wait, kind: "image", fields: {instructions: "Sooner on the rental than on stand-c, \($r).", megapixels: 0.25, seconds: 1}}]' | boxes_in "$P" || return
 coming_go learned '["stand-c"]'
 coming_done learned 900
 

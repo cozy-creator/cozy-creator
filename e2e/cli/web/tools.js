@@ -1,6 +1,6 @@
 // A box drawn from its tool's fields (tools.md, The types), in a real browser on a real Calcifer, with the every-type fixture `project/boxes.py`.
 // The wire's `Tool.fields` by type; Focused video parameters without a folded Advanced control; segments up to four, a menu past that, a dropdown for options that say
-// what they are; Auto and reset, which takes the key out of the file; seed data kept without seed UI. Groups: rows added, taken out and dragged into a new
+// what they are; Auto and reset, which takes the key out of what's stored; seed data kept without seed UI. Groups: rows added, taken out and dragged into a new
 // order, their sum, a block that may be absent, and rows two deep. Slots: what doesn't fit is refused as it's carried and at the drop, with why;
 // a filled one is on the face, and × unsets it. A video's range: in and out dragged on its frames, written `<walk:in-out>` and shown as
 // timecode, in a prompt and on a plate, whose length is set against the beats. Where this computer runs models: previews land as it renders;
@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { implementationRow, projectFromPage, MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav, importYaml, yamlOf } = require('./page');
+const { implementationRow, projectFromPage, MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav, addBoxes, storedOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -29,15 +29,6 @@ const BOXES = join(__dirname, '..', 'project', 'boxes.py');
 function replaceFile(at, text) {
   writeFileSync(`${at}.part`, text);
   renameSync(`${at}.part`, at);
-}
-
-/** One asset's lines of a project.yaml. */
-function linesOf(text, name) {
-  const lines = text.split('\n');
-  const at = lines.findIndex((line) => line.startsWith(`  ${name}:`));
-  if (at < 0) return null;
-  const end = lines.findIndex((line, n) => n > at && /^ {0,2}\S/.test(line));
-  return lines.slice(at, end < 0 ? undefined : end).join('\n');
 }
 
 (async () => {
@@ -87,7 +78,8 @@ function linesOf(text, name) {
   // The fixture as new code, so this machine has never installed it: what lists it before the install lands is PyPI's Runtime's reading.
   const fixture = join(folder, 'boxes.py');
   writeFileSync(fixture, `${readFileSync(BOXES, 'utf8')}\n# ${id}\n`);
-  const yaml = () => yamlOf(folder);
+  // A box's fields as project.db stores them.
+  const stored = (name) => storedOf(folder)[name];
   const of = async (name) => (await state()).assets.find((held) => held.name === name);
   const fieldsOf = async (name) => (await of(name))?.fields ?? {};
   const box = (name) => boxOf(page, name);
@@ -106,9 +98,10 @@ function linesOf(text, name) {
   // A picture, another, a video and a sound, each a box; and the every-type tool, read as a run reads it.
   await drop(page, [{ name: 'Coast.png', type: 'image/png', bytes: png(40) }, { name: 'Amy.png', type: 'image/png', bytes: png(160) }, { name: 'Walk.mp4', type: 'video/mp4', bytes: MP4 }, { name: 'Hum.wav', type: 'audio/wav', bytes: wav() }], 900, 300);
   for (const name of ['coast', 'amy', 'walk', 'hum']) await box(name).waitFor();
-  await until('all four in the file', () => Promise.resolve(yaml()), (text) => ['coast', 'amy', 'walk', 'hum'].every((name) => text.includes(`  ${name}:`)));
-  // Named first, it's read by PyPI's Runtime, which knows no tool; the install a run makes on this machine's Runtime takes its place.
-  importYaml(folder, `${yaml().trimEnd()}\n  shot:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
+  await until('all four in the project', () => Promise.resolve(storedOf(folder)), (boxes) => ['coast', 'amy', 'walk', 'hum'].every((name) => name in boxes));
+  // Named first, it's read by PyPI's Runtime, which knows no tool; the install a run makes on this machine's Runtime takes its place. Its kind is
+  // given, so Calcifer makes the box without reading the tool.
+  addBoxes(folder, [{ name: 'shot', tool: `${fixture}/shot`, kind: 'video', fields: { plate: '<walk>' } }]);
   await box('shot').waitFor();
   // No box shows a description field for now (cl-900, Paul 11-12: "remove all of the 'description' boxes since they are confusing"): a
   // picture, a video, a sound, a box with a tool; a stored one stays in the file.
@@ -225,14 +218,14 @@ function linesOf(text, name) {
   await shotBox.locator('.dropdown-list [role=option]:has-text("Head swap")').click();
   await until('head in the file', () => fieldsOf('shot'), (fields) => fields.edit === 'head');
   check('dropdown_shut_shows_its_words', (await shotBox.locator('button.dropdown[aria-label=Edit]').textContent()) === 'Head swap');
-  // A reset takes the key out of the file.
+  // A reset takes the key out of what's stored.
   await shotBox.locator('[aria-label="Reset Edit"]').click();
   await until('edit unset', () => fieldsOf('shot'), (fields) => !('edit' in fields));
   await shotBox.locator('[role=radiogroup][aria-label=Quality] [role=radio]:text-is("full")').click();
   await until('quality full', () => fieldsOf('shot'), (fields) => fields.quality === 'full');
   await shotBox.locator('[aria-label="Reset Quality"]').click();
   await until('quality unset', () => fieldsOf('shot'), (fields) => !('quality' in fields));
-  check('reset_unsets', !/^\s+quality:/m.test(linesOf(yaml(), 'shot')), linesOf(yaml(), 'shot'));
+  check('reset_unsets', !('quality' in stored('shot')), stored('shot'));
 
   // Auto: a toggle's third state, and a number's, unset either way.
   await shotBox.locator('[role=radiogroup][aria-label=Bright] [role=radio]:text-is("On")').click();
@@ -414,7 +407,7 @@ function linesOf(text, name) {
     const glimpse = await until('a preview on the box', () => box('shot').locator('.glimpse').getAttribute('data-label').catch(() => null), (label) => label?.startsWith('Segment'), FIRST_RUN_MS);
     check('previews_land_on_the_box', glimpse.startsWith('Segment 1 of 2') || glimpse.startsWith('Segment 2 of 2'), glimpse);
     await until('its take', () => versions('shot'), (n) => n === 1, FIRST_RUN_MS);
-    const typed = linesOf(yaml(), 'shot');
+    const typed = JSON.stringify(stored('shot'));
     const asTyped = await given('shot');
     check('each_type_reaches_the_function', asTyped.summary?.text === 'Along the coast.' && Array.isArray(asTyped.beats) && asTyped.beats[0].angles?.[0]?.framing?.text?.includes('<amy>') && asTyped.plate?.file === 'VideoFile', asTyped);
     check('a_mention_two_deep_is_its_prompts_reference', Object.keys(asTyped.beats[0].angles[0].framing.references ?? {}).join() === 'amy', asTyped.beats[0].angles[0].framing);
@@ -428,12 +421,12 @@ function linesOf(text, name) {
     await until('a picked-up take', () => versions('shot'), (n) => n === 2, FIRST_RUN_MS);
     const picked = await given('shot');
     check('pickup_reaches_the_function', picked.pickup?.out_frame === 2 && picked.pickup.take?.file?.file === 'VideoFile', picked.pickup);
-    const afterPickup = yaml();
-    const pickedLines = linesOf(afterPickup, 'shot');
+    const afterPickup = JSON.stringify(storedOf(folder));
+    const pickedLines = JSON.stringify(stored('shot'));
     check('pickup_writes_nothing', pickedLines === typed && !afterPickup.includes('pickup'), { before: typed, after: pickedLines, hasPickup: afterPickup.includes('pickup') });
 
     // Another box's take let go on it: from that take, at a frame chosen on it.
-    importYaml(folder, `${yaml().trimEnd()}\n  other:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
+    addBoxes(folder, [{ name: 'other', tool: `${fixture}/shot`, kind: 'video', fields: { plate: '<walk>' } }]);
     await until('other in the project', () => of('other'), Boolean);
     await api(`/v1/projects/${id}/canvas`, { method: 'PATCH', body: JSON.stringify({ cards: { other: { x: at.x - 420, y: at.y } } }) });
     await render('other', 1);

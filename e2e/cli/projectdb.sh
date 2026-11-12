@@ -1,10 +1,8 @@
 # e2e/cli/projectdb.sh: a project's state is one SQLite database, project.db (cl-803), each cell through the CLI and Calcifer's HTTP
 # as the page calls it, no machine or model needed.
 #   db_first_open   current creation/reopen and stable undo identity; old physical project formats are refused
-#   db_concurrent   the CLI and the page write at once, one box's fields, new boxes and rows: no write is lost
 #   db_crash        Calcifer killed (kill -9) amid writes of a box, its row and its push-aside: each whole or absent; a resend is done once
-#   db_restart      undo and redo across Calcifer killed
-#   db_roundtrip    export, import of it changes nothing; an edited export imports as one entry, a renamed box keeps its takes
+#   db_crdt         the native CRDT: stable identities, old-schema refusal, projection damage, replica merges, append and restart
 #   db_latency      write latency at a project with 500 takes (it runs on the cozy before project.db too: --shard projectdb-latency)
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -21,8 +19,6 @@ PY
 # sql1 <project> <query>: its first row's first value, plain.
 sql1() { sql "$1" "$2" | head -1 | jq -r '.[0] // empty'; }
 db_calcifer() { local lock=$HOME/.cozy/calcifer/calcifer.lock.holder; ADDR=$(jq -r .address "$lock") TOKEN=$(jq -r .token "$lock"); }
-# The page's own writes: its client, a key per action.
-page() { local method=$1 path=$2 body=$3; api -X "$method" -H 'Content-Type: application/json' -H 'Cozy-Client: page e2e-tab' -H "Idempotency-Key: page-$RANDOM$RANDOM$RANDOM" -d "$body" "http://$ADDR/v1/projects/$ID$path"; }
 id_of() { status "$1" | jq -r .id; }
 # kill9 Calcifer by its lock's pid, and wait for it gone.
 kill9() {
@@ -32,28 +28,13 @@ kill9() {
 }
 tiny() { base64 -d > "$1" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='; }
 
-# The cells from before project.db that it changes most: the project setup and its first eleven, and the page's
-# tools, versions, nodes, place, undo, live, layout, offline and held.
+# The cells project.db changes most: its first open and a crash, and the page's tools, versions, nodes, place, undo, live, layout,
+# offline and held.
 db_existing() {
 tools_read
 db_first_open
 db_crash
 db_existing_web
-}
-
-db_existing_projects() {
-step "a project: new, named, a folder of it, -p"
-local P=$OUT/garden ID
-starter_project "$P" > "$OUT/project-new.txt" 2>&1 || check "project new failed: $(tail -c 300 "$OUT/project-new.txt")"
-[ "$(ls -A "$P" 2>/dev/null | grep -vxE 'project\.db-(wal|shm)')" = project.db ] || check "project new made $(ls -A "$P" 2>/dev/null | tr '\n' ' '), not only project.db"
-mkdir -p "$P/sub"
-# A subdirectory uses the project holding it.
-(cd "$P/sub" && cozy --json status) > "$OUT/project-cwd.json" || check "status did not use its working directory"
-J --arg p "$P" '.path == $p' "$OUT/project-cwd.json" || check "status did not find the containing project"
-in_project "$P/sub" --json status > "$OUT/project-status.json" 2> "$OUT/project-status.err" || check "status of a folder in it failed: $(tail -c 300 "$OUT/project-status.err")"
-local cell
-# Each on its own: one that stops on its `set -e` is said, and the next goes on.
-for cell in cut_of_takes said_once film_is_its_file short_film_heals cut_versions by_asset hard_cut upgrades first_open version_text old_landing; do ( $cell ) || check "$cell stopped part way (exit $?)"; done
 }
 
 db_existing_web() {
@@ -99,8 +80,7 @@ python3 "$here/cancel_undo.py" "$P" "$OUT" "$tool" > "$OUT/cancel-undo-proof.jso
 cat "$OUT/cancel-undo-proof.json"
 }
 
-# The deleted asset CLI's concurrent-write, undo/redo and YAML roundtrip cases
-# are retired; the retained checks exercise the project API and storage directly.
+# project.db's cells, through the project API and on its storage directly.
 projectdb() {
 db_crdt
 db_cancel_undo
@@ -148,51 +128,13 @@ for file in project.yaml project.lock project.db.new; do
 done
 }
 
-db_concurrent() {
-step "project.db: the CLI and the page write at once: no write is lost"
-local P=$OUT/db-together n=30 i
-starter_project "$P" > /dev/null 2>&1 || { check "together: project new"; return; }
-db_calcifer; ID=$(id_of "$P")
-local seq; seq=$(api "http://$ADDR/v1/projects/$ID/canvas" | jq .seq)
-# The CLI: a field of kyogre each time, and a box of its own. The page: another field of kyogre, its own boxes, and rows it moves.
-(for ((i = 1; i <= n; i++)); do
-  in_project "$P" set kyogre "cli_$i=$i" > /dev/null 2>> "$OUT/db-together-cli.err" || echo "set cli_$i" >> "$OUT/db-together-lost"
-  in_project "$P" add text "cli_box_$i" "text=From the CLI $i." > /dev/null 2>> "$OUT/db-together-cli.err" || echo "add cli_box_$i" >> "$OUT/db-together-lost"
-done) &
-local cli=$!
-(for ((i = 1; i <= n; i++)); do
-  page PATCH /assets/kyogre "{\"fields\": {\"page_$i\": $i}}" > /dev/null || echo "patch page_$i" >> "$OUT/db-together-lost"
-  page POST /assets "{\"tool\": \"\", \"name\": \"page_box_$i\", \"exact\": true, \"fields\": {\"text\": \"From the page $i.\"}, \"at\": {\"x\": $((i * 400)), \"y\": 900}}" > /dev/null || echo "create page_box_$i" >> "$OUT/db-together-lost"
-  page PATCH /canvas "{\"cards\": {\"groudon\": {\"x\": $i, \"y\": $((i * 2))}}}" > /dev/null || echo "move $i" >> "$OUT/db-together-lost"
-done) &
-local pg=$!
-wait "$cli" "$pg"
-[ ! -s "$OUT/db-together-lost" ] || check "together: requests failed: $(head -5 "$OUT/db-together-lost") $(tail -c 300 "$OUT/db-together-cli.err")"
-in_project "$P" export > "$OUT/db-together.yaml"
-local missing=()
-for ((i = 1; i <= n; i++)); do
-  grep -q "^    cli_$i: $i$" "$OUT/db-together.yaml" || missing+=("cli_$i")
-  grep -q "^    page_$i: $i$" "$OUT/db-together.yaml" || missing+=("page_$i")
-  grep -q "^  cli_box_$i:" "$OUT/db-together.yaml" || missing+=("cli_box_$i")
-  grep -q "^  page_box_$i:" "$OUT/db-together.yaml" || missing+=("page_box_$i")
-done
-[ ${#missing[@]} = 0 ] || check "together: lost writes: ${missing[*]}"
-! grep -qE '^  (cli|page)_box_[0-9]+_[0-9]+:' "$OUT/db-together.yaml" || check "together: a box was made twice: $(grep -E '^  (cli|page)_box_[0-9]+_[0-9]+:' "$OUT/db-together.yaml" | head -3)"
-[ "$(sql "$P" "SELECT x, y, by FROM canvas WHERE name = 'groudon'" | tr -d '\n')" = "[$n.0, $((n * 2)).0, \"page e2e-tab\"]" ] || check "together: groudon's row: $(sql "$P" "SELECT x, y, by FROM canvas WHERE name = 'groudon'")"
-local entries; entries=$(in_project "$P" --json history -n 200 | jq '.entries | length')
-echo "together: all $((5 * n)) writes kept (fields, boxes and rows, from both), $entries history entries, groudon at its last row"
-[ "$entries" -ge $((5 * n)) ] || check "together: $entries history entries for $((5 * n)) edits"
-}
-
 db_crash() {
 step "project.db: Calcifer killed amid writes: each is whole or absent, and its resend is done once"
-local K=$OUT/db-crash n=150 i seq yaml writer answer
+local K=$OUT/db-crash n=150 i seq writer answer
 run_project "$K" > "$OUT/db-crash-new.txt" 2>&1 || { check "crash: native bootstrap"; return; }
-yaml="version: 4\nassets:\n"
-for ((i = 1; i <= n; i++)); do yaml+="  m_$i: {text: Marker $i.}\n  r_$i: {text: Renamed $i.}\n"; done
-printf '%b' "$yaml" > "$OUT/db-crash-seed.yaml"
-project_api "$K" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/db-crash-seed.yaml" > "$OUT/db-crash-seed.txt" 2>&1 || { check "crash: seed current native project"; return; }
 db_calcifer; ID=$(id_of "$K")
+seed() { api -f -o /dev/null -X POST -H 'Content-Type: application/json' -d "{\"tool\": \"\", \"name\": \"$1\", \"exact\": true, \"fields\": {\"text\": \"$2\"}}" "http://$ADDR/v1/projects/$ID/assets"; }
+for ((i = 1; i <= n; i++)); do seed "m_$i" "Marker $i." && seed "r_$i" "Renamed $i." || { check "crash: seed m_$i and r_$i"; return; }; done
 for ((i = 1; i <= n; i++)); do echo "\"m_$i\": {\"x\": 0, \"y\": $((i * 10))}"; done | paste -sd, | sed 's/^/{"cards": {/; s/$/}}/' > "$OUT/db-crash-rows.json"
 api -X PATCH -H 'Content-Type: application/json' -d @"$OUT/db-crash-rows.json" "http://$ADDR/v1/projects/$ID/canvas" > /dev/null
 seq=$(api "http://$ADDR/v1/projects/$ID/canvas" | jq .seq)
@@ -240,55 +182,6 @@ echo "crash: resent all $n: $replayed answered as before"
 [ "$replayed" -ge "$whole" ] || check "crash: $whole were done but only $replayed resends were answered as before"
 [ "$(sql1 "$K" "SELECT count(*) FROM boxes WHERE name LIKE 'made_%'")" = "$n" ] || check "crash: after the resends, $(sql1 "$K" "SELECT count(*) FROM boxes WHERE name LIKE 'made_%'") boxes, not $n"
 [ "$(sql1 "$K" "SELECT count(*) FROM boxes WHERE name LIKE 's_%'")" = "$n" ] || check "crash: after the resends, $(sql1 "$K" "SELECT count(*) FROM boxes WHERE name LIKE 's_%'") renamed, not $n"
-}
-
-db_restart() {
-step "project.db: undo and redo across Calcifer killed"
-local U=$OUT/db-undo
-starter_project "$U" > /dev/null 2>&1 || { check "undo: project new"; return; }
-in_project "$U" export > "$OUT/db-undo-0.yaml"
-in_project "$U" set kyogre aspect_ratio=1:1 > /dev/null || check "undo: set"
-in_project "$U" delete coast > /dev/null || check "undo: delete"
-in_project "$U" set groudon at=700,700 > /dev/null || check "undo: move"
-in_project "$U" export > "$OUT/db-undo-3.yaml"
-kill9
-local k
-for k in 1 2 3; do in_project "$U" undo > "$OUT/db-undo-step.txt" 2>&1 || check "undo: undo $k after the kill: $(tail -c 300 "$OUT/db-undo-step.txt")"; done
-in_project "$U" export | cmp -s - "$OUT/db-undo-0.yaml" || check "undo: three undone isn't what it was: $(in_project "$U" export | diff - "$OUT/db-undo-0.yaml" | head -10)"
-kill9
-for k in 1 2 3; do in_project "$U" redo > "$OUT/db-undo-step.txt" 2>&1 || check "undo: redo $k after the kill: $(tail -c 300 "$OUT/db-undo-step.txt")"; done
-in_project "$U" export | cmp -s - "$OUT/db-undo-3.yaml" || check "undo: three redone isn't what it was: $(in_project "$U" export | diff - "$OUT/db-undo-3.yaml" | head -10)"
-db_calcifer
-[ "$(sql "$U" "SELECT x, y FROM canvas WHERE name = 'groudon'" | tr -d '\n')" = '[700.0, 700.0]' ] || check "undo: groudon's row after redo: $(sql "$U" "SELECT x, y FROM canvas WHERE name = 'groudon'")"
-echo "undo: three undone and redone, each across a kill -9: $(in_project "$U" --json history | jq -c '[.entries[] | {id, undone: (.undone != null)}]')"
-}
-
-db_roundtrip() {
-step "project.db: export then import changes nothing; an edited export is one entry, a renamed box keeps its takes"
-local R=$OUT/db-roundtrip pic=$OUT/db-roundtrip.png next=$OUT/db-roundtrip-2.png before after
-starter_project "$R" > /dev/null 2>&1 || { check "roundtrip: project new"; return; }
-tiny "$pic"; ffmpeg -v error -y -f lavfi -i "color=c=navy:size=8x8" -frames:v 1 "$next"
-(cd "$R" && in_project "$R" import "$pic" art > /dev/null) || check "roundtrip: import art"
-(cd "$R" && in_project "$R" import "$next" --into art > /dev/null) || check "roundtrip: art's next version"
-in_project "$R" export -o "$OUT/db-roundtrip-1.yaml" > /dev/null || check "roundtrip: export"
-before=$(in_project "$R" --json history | jq '.entries | length')
-(cd "$R" && in_project "$R" import "$OUT/db-roundtrip-1.yaml" > /dev/null) || check "roundtrip: import of the export"
-in_project "$R" export | cmp -s - "$OUT/db-roundtrip-1.yaml" || check "roundtrip: export, import, export differ"
-[ "$(in_project "$R" --json history | jq '.entries | length')" = "$before" ] || check "roundtrip: importing what it holds made an entry"
-# A hand's edit of the export: a field, a rename, a box gone and one added.
-perl -pe 's/aspect_ratio: "16:9"/aspect_ratio: "4:3"/ if $. < 12; s/^  art:/  painting:/; s/<art>/<painting>/g' "$OUT/db-roundtrip-1.yaml" | perl -0pe 's/\n  coast:\n(    .*\n)+//' > "$OUT/db-roundtrip-2.yaml"
-printf '\n  added:\n    text: New words.\n' >> "$OUT/db-roundtrip-2.yaml"
-(cd "$R" && in_project "$R" import "$OUT/db-roundtrip-2.yaml" > "$OUT/db-roundtrip-import.txt" 2>&1) || check "roundtrip: import of the edit: $(tail -c 300 "$OUT/db-roundtrip-import.txt")"
-after=$(status "$R" || true)
-J '.assets | map(.name) | (index("painting") != null) and (index("art") == null) and (index("coast") == null) and (index("added") != null)' <<< "$after" || check "roundtrip: after the edit: $(jq -c '[.assets[].name]' <<< "$after")"
-J '.versions | length == 2' <<< "$(held "$R" painting)" || check "roundtrip: the renamed box's versions: $(held "$R" painting | jq -c '[.versions[]?.number]')"
-[ "$(in_project "$R" --json history | jq '.entries | length')" = $((before + 1)) ] || check "roundtrip: the import is not one entry: $(in_project "$R" --json history | jq -c '[.entries[].words]')"
-in_project "$R" undo > /dev/null || check "roundtrip: undo the import"
-in_project "$R" export > "$OUT/db-roundtrip-3.yaml"
-# Undone, every box is back, the renamed one under its old name; one put back goes at the end.
-[ "$(grep -c '^  [a-z_]*:' "$OUT/db-roundtrip-3.yaml")" = "$(grep -c '^  [a-z_]*:' "$OUT/db-roundtrip-1.yaml")" ] && grep -q '^  art:' "$OUT/db-roundtrip-3.yaml" && grep -q '^  coast:' "$OUT/db-roundtrip-3.yaml" && ! grep -q '^  added:' "$OUT/db-roundtrip-3.yaml" \
-  || check "roundtrip: undone isn't what it was: $(diff "$OUT/db-roundtrip-1.yaml" "$OUT/db-roundtrip-3.yaml" | head -10)"
-echo "roundtrip: export and import stable, the edit one entry, painting kept its 2 versions, undone"
 }
 
 # Latency: a project holding 500 takes, and each write's time through Calcifer's HTTP (curl's time_total). The same on the cozy before
@@ -352,16 +245,10 @@ cozy --json new --unencrypted "$P" > "$OUT/crdt-new.json" 2> "$OUT/crdt-new.err"
 J '.created == true and (.id | length > 0)' "$OUT/crdt-new.json" || check "CRDT: new did not create a project"
 [ "$(sql1 "$P" 'PRAGMA user_version')" = 2 ] || { check "CRDT: project.db is not schema 2"; return; }
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_document WHERE format = 1 AND length(snapshot) > 0')" = 1 ] || check "CRDT: no native snapshot"
-project_api "$P" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary @- <<'YAML' || { check "CRDT: seed the editable graph"; return; }
-version: 4
-assets:
-  kyogre:
-    tool: qwen-image-2/image
-    instructions: A whale.
-  groudon:
-    tool: qwen-image-2/image
-    instructions: On shore with <kyogre>.
-YAML
+boxes_in "$P" <<'JSON' || { check "CRDT: seed the editable graph"; return; }
+[{"name": "kyogre", "tool": "qwen-image-2/image", "kind": "image", "fields": {"instructions": "A whale."}},
+ {"name": "groudon", "tool": "qwen-image-2/image", "kind": "image", "fields": {"instructions": "On shore with <kyogre>."}}]
+JSON
 tiny "$OUT/crdt-a.png"; cp "$OUT/crdt-a.png" "$OUT/crdt-b.png"; printf 'second' >> "$OUT/crdt-b.png"
 project_import "$P" "$OUT/crdt-a.png" art > "$OUT/crdt-import.txt" 2>&1 || check "CRDT: import: $(tail -c 300 "$OUT/crdt-import.txt")"
 db_calcifer
@@ -375,11 +262,6 @@ with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
     open(sys.argv[2],'wb').write(db.execute('SELECT snapshot FROM crdt_document WHERE id=1').fetchone()[0])
 PY
 project_api "$P" /rename -X POST -H 'Content-Type: application/json' -d '{"from":"kyogre","to":"whale"}' > "$OUT/crdt-rename.txt" 2>&1 || check "CRDT: rename: $(tail -c 300 "$OUT/crdt-rename.txt")"
-project_api "$P" /yaml > "$OUT/crdt-export.yaml" || check "CRDT: export"
-before=$(sql1 "$P" 'SELECT heads FROM crdt_document WHERE id=1')
-project_api "$P" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/crdt-export.yaml" > "$OUT/crdt-roundtrip.txt" 2>&1 || check "CRDT: unchanged import"
-after=$(sql1 "$P" 'SELECT heads FROM crdt_document WHERE id=1')
-[ "$before" = "$after" ] || check "CRDT: unchanged YAML export/import rewrote causal history"
 python3 - "$P/project.db" "$OUT/crdt-renamed.am" "$V" <<'PY'
 import os,sqlite3,sys
 with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
@@ -402,19 +284,9 @@ grep -q project_db_version "$OUT/crdt-v1-refusal.json" "$OUT/crdt-v1-refusal.err
 # project edit when the next real HTTP edit commits.
 db_sql "$P" "UPDATE fields SET value = '\"QUERY_CACHE_ONLY\"' WHERE box = 'whale' AND field = 'instructions'; UPDATE ops SET words = 'QUERY_CACHE_ONLY';"
 project_api "$P" /assets/groudon -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"description":"A canonical-store check."}}' > "$OUT/crdt-cache-set.txt" 2>&1 || check "CRDT: write after projection damage"
-project_api "$P" /yaml > "$OUT/crdt-cache-export.yaml" || check "CRDT: read after projection damage"
+project_api "$P" '' > "$OUT/crdt-cache-state.json" || check "CRDT: read after projection damage"
 project_api "$P" /history > "$OUT/crdt-cache-history.json" || check "CRDT: history after projection damage"
-{ ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-export.yaml" && ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json"; } || check "CRDT: a relational projection overrode canonical state/history"
-# An exported edit carries a graph-body base. A subsequent API edit must not be overwritten
-# by an old file; runtime/canvas-only changes do not participate in that precondition.
-project_api "$P" /yaml > "$OUT/crdt-stale-export.yaml" || check "CRDT: export edit base"
-project_api "$P" /assets/groudon -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"description":"An intervening API edit."}}' > "$OUT/crdt-intervening-set.txt" 2>&1 || check "CRDT: intervening API edit"
-if project_api "$P" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/crdt-stale-export.yaml" > "$OUT/crdt-stale-import.json" 2> "$OUT/crdt-stale-import.err"; then
-  check "CRDT: stale same-project export overwrote a newer API edit"
-fi
-grep -q project_changed "$OUT/crdt-stale-import.json" "$OUT/crdt-stale-import.err" || check "CRDT: stale import did not explain project_changed"
-project_api "$P" /yaml > "$OUT/crdt-stale-after.yaml" || check "CRDT: export after stale refusal"
-grep -q 'An intervening API edit.' "$OUT/crdt-stale-after.yaml" || check "CRDT: stale import erased the intervening edit"
+{ ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-state.json" && ! grep -q QUERY_CACHE_ONLY "$OUT/crdt-cache-history.json"; } || check "CRDT: a relational projection overrode canonical state/history"
 # Cargo consumes the same published native library as the product. This is a format/merge proof,
 # not another daemon or a substitute project storage implementation.
 CARGO_BUILD_JOBS=1 nice -n 19 cargo run --quiet --locked --manifest-path "$here/crdt/Cargo.toml" -- "$OUT/crdt-before.am" "$OUT/crdt-renamed.am" > "$OUT/crdt-native.json" 2> "$OUT/crdt-native.err" \
@@ -563,12 +435,12 @@ with ThreadPoolExecutor(max_workers=1) as worker:
         except Refused as refused:
             error=json.loads(refused.payload)['error']
             assert refused.status==409 and error['code']=='project_changed' and 'while this edit was being committed' in error['message'],refused.payload
-            exported=project_api(peer,'/yaml')
+            held=project_api(peer)
             retained=f'retained native writer crdt-outside-{attempt}'
-            assert asked not in exported and retained in exported,exported
+            assert asked not in held and retained in held,held
             patch(peer,description=asked)
-            exported=project_api(peer,'/yaml')
-            assert asked in exported and retained in exported,exported
+            held=project_api(peer)
+            assert asked in held and retained in held,held
             observed=True
             break
 assert observed,'no observed stale native base; proof is inconclusive'
@@ -596,27 +468,13 @@ patch(mixed,e2e_replace={'branch':[1,1]})
 scans_after=output/'crdt-scans-after.am';scans_after.write_bytes(snapshot(mixed)[0])
 scans=native('--scan-check',scans_before,scans_after)
 
-# A separate valid graph exercises case-only rename and an arbitrary reorder
-# through the project API. The native identity reader checks both retained boxes.
-control=output/'crdt-case-order';clone(project,control)
+# A separate valid graph exercises a case-only rename through the project API. The native identity reader checks the box kept its identity.
+control=output/'crdt-case';clone(project,control)
 case_before=output/'crdt-case-before.am';case_before.write_bytes(snapshot(control)[0])
 rename(control,'groudon','Groudon')
 case_after=output/'crdt-case-after.am';case_after.write_bytes(snapshot(control)[0])
 native('--identity',case_before,case_after,'groudon','Groudon')
-with sqlite3.connect(control/'project.db') as db:
-    ordered=[row[0] for row in db.execute("SELECT name FROM boxes WHERE key IN ('groudon','whale') ORDER BY ord")]
-assert set(ordered)=={'Groudon','whale'},ordered
-wanted=list(reversed(ordered))
-reorder=output/'crdt-reordered.yaml'
-reorder.write_text('version: 4\nassets:\n'+''.join(f'  {name}: {{text: Reordered {name}}}\n' for name in wanted),encoding='utf-8')
-project_api(control,'/yaml','PUT',reorder.read_bytes())
-with sqlite3.connect(control/'project.db') as db:
-    projected=db.execute('SELECT name,ord FROM boxes ORDER BY ord').fetchall()
-assert projected==list(zip(wanted,range(2))),projected
-reordered=output/'crdt-reordered.am';reordered.write_bytes(snapshot(control)[0])
-for name in wanted:
-    native('--identity',case_after,reordered,name)
-scans.update(mixed_projection=chosen(mixed),case_only_id_retained=True,reordered_ids_retained=True)
+scans.update(mixed_projection=chosen(mixed),case_only_id_retained=True)
 (output/'crdt-scans-proof.json').write_text(json.dumps(scans,ensure_ascii=False)+'\n',encoding='utf-8')
 print(json.dumps({'passed':True,'append_type':kind,'prefix_bytes':len(before),'after_bytes':len(after),'project_id':original_id,'partial_and_boundary_truncation_refused':True,'missing_native_row_refused':True,'outside_writer_cas_refused_then_retry':True,'canvas':canvas}))
 STREAM_PROOF

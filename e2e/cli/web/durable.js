@@ -10,7 +10,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
 const { readFileSync } = require('fs');
-const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, rowsOf, until } = require('./page');
+const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, launch, lookAt, noStall, openBox, rowsOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -39,7 +39,7 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const { id, path: folder } = await projectFromPage(page);
   seen.project = { id, folder };
-  importYaml(folder, 'version: 4\nassets:\n  words:\n    text: What Calcifer held.\n');
+  addBoxes(folder, [{ name: 'words', fields: { text: 'What Calcifer held.' } }]);
 
   // What project.db holds of the box's words, read past Calcifer.
   const inDb = () => rowsOf(folder, "SELECT f.value FROM fields f JOIN boxes b ON f.box = b.key WHERE b.name = 'words' AND f.field = 'text'").map(([value]) => JSON.parse(value))[0];
