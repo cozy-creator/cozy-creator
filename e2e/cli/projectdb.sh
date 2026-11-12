@@ -645,8 +645,7 @@ done
 for f in $(status "$M" | jq -r '.assets[].name' | while read -r name; do held "$M" "$name" | jq -r '.versions[].files[].path // empty'; done); do
   [ -f "$M/$f" ] || check "migrate: $f is gone"
 done
-# Undo reaches what 0.24.0 did: notes' words back, then changed again. (A box 0.24.0 deleted isn't one: it says no time, so cl-919
-# lets its files go at once.)
+# Undo reaches what 0.24.0 did: notes' words back, then changed again. (A box 0.24.0 deleted is cl-919's, dated at the first open.)
 local words='.asset.fields.text'
 project_api "$M" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: undo notes' words: $(tail -c 300 "$OUT/migrate-undo.txt")"
 [ "$(held "$M" notes | jq -r "$words")" = "Notes 0.24.0 wrote." ] || check "migrate: notes undone say '$(held "$M" notes | jq -r "$words")'"
