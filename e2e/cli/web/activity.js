@@ -1,6 +1,7 @@
 // What each machine is doing, top right (Paul, 11-06): `local` among the machines, a click lists what it does, an install and a download each
 // once, under the machine doing them, with the runs that wait on them, and a box whose render waits on its install says so instead of a
-// percentage. Where this computer runs models; the download is SDXL's 335 MB VAE from Hugging Face, kept as a local model.
+// percentage. Where this computer runs models; the download is SDXL's 335 MB VAE from Hugging Face, kept as a local model. Cancel by a
+// box's progress (Paul, 11-12) stops one waiting its turn and one rendering, says Cancelling… until it ends, and Undo renders it again.
 //   node activity.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
@@ -8,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { projectFromPage, calcifer, importYaml, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, until } = require('./page');
+const { projectFromPage, projectAction, calcifer, importYaml, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -27,12 +28,13 @@ const TOOL = `# /// script
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
 # ///
-"""The activity cell's picture tool: a weightless still of one random colour."""
+"""The activity cell's picture tool: a weightless still of one random colour, after 8 steps of its pace each."""
 
 import os
+import time
 
 import msgspec
-from cozy_runtime.author import Adjustments, App, ImageFrame, Outputs, Seed
+from cozy_runtime.author import Adjustments, App, Context, ImageFrame, Outputs, Seed, Telemetry
 from cozy_runtime.fields import Image, Prompt
 from cozy_runtime.image import ImageRequest, ImageResult, Sizes
 
@@ -43,11 +45,16 @@ SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
 class Drawing(msgspec.Struct, kw_only=True):
     instructions: Prompt[Image] = Prompt()
     seed: Seed | None = None
+    pace: float = 0.0
 
 
 @app.tool(label="Activity", named="waits", accelerator=False)
-def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
+def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Telemetry) -> ImageResult:
     width, height = ImageRequest(payload.instructions.text, None, None, payload.seed).size(adj, None, SIZES, megapixels=0.25)
+    with tel.stage("denoise"):
+        for step in range(8):
+            time.sleep(payload.pace)
+            ctx.progress(step, 8)
     image = out.save_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
     return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
 `;
@@ -88,7 +95,8 @@ def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
   seen.project = { id, folder };
   const tool = join(folder, `activity_${Date.now()}.py`);
   writeFileSync(tool, TOOL);
-  importYaml(folder, `version: 4\nassets:\n  waits:\n    tool: ${tool}/draw\n`);
+  // `slow` and `after`, which reads it, are what Cancel stops: one rendering, one waiting its turn.
+  importYaml(folder, `version: 4\nassets:\n  waits:\n    tool: ${tool}/draw\n  slow:\n    tool: ${tool}/draw\n    pace: 6\n  after:\n    tool: ${tool}/draw\n    instructions: After <slow>.\n`);
 
   // Its render waits on its package's install, a second or two from uv's cache: the box says so, and the chip's list has the install once,
   // with the run that waits on it. Everything they say is kept as it shows, so a short install is seen whole.
@@ -98,6 +106,7 @@ def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
     const keep = (list, text) => text && !list.includes(text) && list.push(text);
     new MutationObserver(() => {
       keep(said.box, document.querySelector('.card[data-asset="waits"] .prog b')?.textContent);
+      for (const name of ['slow', 'after']) keep((said[name] ??= []), document.querySelector(`.card[data-asset="${name}"] .prog b`)?.textContent);
       for (const row of document.querySelectorAll('.activity [data-doing]')) keep(said.rows, `${row.dataset.doing}: ${row.innerText.replace(/\s+/g, ' ')}`);
       for (const mark of document.querySelectorAll('.mtab[data-machine="local"] .mark, .mtab[data-machine="local"] .dot')) keep(said.marks, mark.className);
     }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
@@ -178,6 +187,34 @@ def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
   await chip.click();
   await until('the download gone from the list', () => list.locator('[data-doing=download]').count(), (n) => n === 0, 30_000);
   check('done_leaves_the_list', true);
+  await page.keyboard.press('Escape');
+
+  // Cancel, by the progress of a box waiting its turn and of one rendering: no question, Cancelling… until its run ends, left as it was,
+  // and Undo renders it again (Paul, 11-12).
+  const held = async (asset) => (await api(`/v1/projects/${id}`)).assets.find((one) => one.name === asset);
+  const cancel = (asset) => page.locator(`.card[data-asset="${asset}"] .prog-cancel`).evaluate((button) => button.click());
+  const sayOf = (asset) => page.locator(`.card[data-asset="${asset}"] .prog b`).first().textContent().catch(() => '');
+  await projectAction(folder, 'render', 'slow', 'after', '--on', 'local', '--queue');
+  const waited = await until('after waits its turn', () => sayOf('after'), (text) => /^Waits for <slow>/.test(text ?? ''), 60_000).catch((why) => String(why));
+  const going = await until('slow running', async () => {
+    const making = (await held('slow'))?.making ?? [];
+    return making.length ? (await api(`/v1/runs/${making[0]}`)).status : null;
+  }, (status) => status === 'in_progress', 120_000).catch((why) => String(why));
+  seen.cancel = { waited, going };
+  const buttons = { after: await page.locator('.card[data-asset="after"] .prog-cancel').count(), slow: await page.locator('.card[data-asset="slow"] .prog-cancel').count() };
+  check('cancel_on_every_box_on_its_way', buttons.after === 1 && buttons.slow === 1, buttons);
+  await cancel('after');
+  const left = await until('after left its line', async () => ({ bars: await page.locator('.card[data-asset="after"] .prog').count(), asset: await held('after') }), (now) => now.bars === 0 && !now.asset?.making?.length, 30_000).catch((why) => ({ why: String(why) }));
+  check('cancel_while_queued', left.bars === 0 && !left.asset?.version && ((await held('slow'))?.making ?? []).length > 0, left);
+  const offered = await until('its Undo', () => page.locator('.notes .note').filter({ hasText: "Canceled after's render" }).locator('button').allInnerTexts(), (labels) => labels.includes('Undo'), 5000).catch((why) => String(why));
+  check('cancel_offers_undo', Array.isArray(offered), offered);
+  const making = (await held('slow'))?.making ?? [];
+  await cancel('slow');
+  const stopped = await until('slow stopped', async () => ({ bars: await page.locator('.card[data-asset="slow"] .prog').count(), asset: await held('slow') }), (now) => now.bars === 0 && !now.asset?.making?.length, 60_000).catch((why) => ({ why: String(why) }));
+  const runs = await Promise.all(making.map((number) => api(`/v1/runs/${number}`)));
+  const slowSaid = (await page.evaluate(() => window.said.slow)) ?? [];
+  check('cancel_says_cancelling', slowSaid.includes('Cancelling…'), slowSaid);
+  check('cancel_while_running', stopped.bars === 0 && !stopped.asset?.version && runs.length > 0 && runs.every((run) => run.status === 'canceled'), { stopped, runs: runs.map((run) => [run.number, run.status]) });
   return finish();
 
   async function finish() {
