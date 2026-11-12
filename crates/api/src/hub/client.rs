@@ -583,10 +583,12 @@ impl Client {
             .map(drop)
     }
 
-    pub async fn release_rental(&self, id: &str) -> Result<(), Error> {
-        self.send(self.at(Method::DELETE, "/v1/rentals/{id}", &[id]))
-            .await
-            .map(drop)
+    /// Releases the rental: its person's end (`owner_stop`), or with `by_pod` its machine's own idle
+    /// release, which this client heard and passes on (`released_by_pod`).
+    pub async fn release_rental(&self, id: &str, by_pod: bool) -> Result<(), Error> {
+        let request = self.at(Method::DELETE, "/v1/rentals/{id}", &[id]);
+        let cause: &[(&str, &str)] = if by_pod { &[("cause", "released_by_pod")] } else { &[] };
+        self.send(request.query(cause)).await.map(drop)
     }
 
     pub async fn get_software(&self) -> Result<Software, Error> {
