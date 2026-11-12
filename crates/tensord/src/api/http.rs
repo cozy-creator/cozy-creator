@@ -156,7 +156,10 @@ async fn private_request(State(m): State<Machine>, Path((project, rest)): Path<(
         let query: v1::ProjectExecutionLegacyLookup = match serde_json::from_slice(&bytes) { Ok(query) => query, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid legacy lookup request.")).into_response() };
         let ordinary = m.runs.clone();
         let selected = descriptor.clone();
-        let looked = tokio::task::spawn_blocking(move || crate::private_io::within(Some(selected.clone()), || ordinary.service.engine.with_journal(|journal| journal.lookup_project_legacy_bindings(&actor, &selected.project_id, &query.request_ids)))).await;
+        let looked = tokio::task::spawn_blocking(move || crate::private_io::within(Some(selected.clone()), || {
+            let target = crate::private_io::open_execution(&selected,&ordinary)?;
+            ordinary.service.engine.with_journal(|journal| target.service.engine.with_journal(|protected| journal.lookup_project_legacy_bindings(&actor, &selected, protected, &query.request_ids)))
+        })).await;
         return match looked { Ok(Ok(answer)) => Json(answer).into_response(), Ok(Err(error)) => Refusal::from(project_migration_error(error)).into_response(), Err(_) => Refusal::from(Error::conflict("project_storage_migration_stopped", "Legacy acceptance lookup stopped; no binding is available.")).into_response() };
     }
     if rest == "migrate" {

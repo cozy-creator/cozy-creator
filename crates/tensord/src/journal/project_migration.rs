@@ -738,7 +738,8 @@ impl Journal {
     pub(crate) fn lookup_project_legacy_bindings(
         &self,
         actor: &str,
-        project: &str,
+        scope: &LocalPrivateStorage,
+        target: &Journal,
         requests: &[String],
     ) -> io::Result<api::machine::ProjectExecutionLegacyLookupAnswer> {
         if requests.len() > 256 {
@@ -758,17 +759,23 @@ impl Journal {
                 )
                 .optional()
                 .map_err(db_error)?;
-            let (source_number, invocation, record) = row.ok_or_else(|| {
-                io::Error::new(
+            let Some((source_number, invocation, record)) = row else {
+                if let Some(binding) =
+                    target.retired_project_binding(actor, scope, &self.workspace_id, request)?
+                {
+                    answer.bindings.push(binding);
+                    continue;
+                }
+                return Err(io::Error::new(
                     io::ErrorKind::NotFound,
-                    "canonical legacy request has no acceptance at this registered worker",
-                )
-            })?;
+                    "canonical legacy request has no acceptance or completed custody receipt at this registered worker",
+                ));
+            };
             let invocation: Invocation = serde_json::from_str(&invocation).map_err(db_error)?;
             if invocation
                 .local_private
                 .as_ref()
-                .is_some_and(|scope| scope.project_id != project)
+                .is_some_and(|tagged| tagged.project_id != scope.project_id)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -797,6 +804,146 @@ impl Journal {
                 });
         }
         Ok(answer)
+    }
+
+    /// Read only recovery of an actual original acceptance after source retirement. No
+    /// client-supplied number, spec reconstruction, execution or fresh adoption is involved.
+    fn retired_project_binding(
+        &self,
+        actor: &str,
+        scope: &LocalPrivateStorage,
+        workspace: &str,
+        request: &str,
+    ) -> io::Result<Option<api::machine::ProjectExecutionLegacyBinding>> {
+        let present: bool=self.connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='project_custody_migrations')",[],|row|row.get(0)).map_err(db_error)?;
+        if !present {
+            return Ok(None);
+        }
+        let mut statement = self
+            .connection
+            .prepare("SELECT receipt FROM project_custody_migrations")
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .map_err(db_error)?;
+        let mut found = None;
+        for bytes in rows {
+            let receipt: Receipt =
+                serde_json::from_slice(&bytes.map_err(db_error)?).map_err(db_error)?;
+            if receipt.source_workspace != workspace
+                || receipt.phase != "complete"
+                || !receipt.pending.is_empty()
+            {
+                continue;
+            }
+            if digest(&receipt.original)? != receipt.digest {
+                return Err(db_error("retired acceptance receipt is inconsistent"));
+            }
+            let Some(table) = receipt
+                .original
+                .iter()
+                .find(|table| table.name == "executions")
+            else {
+                return Err(db_error("retired acceptance has no original records"));
+            };
+            let record_at = table.column("record")?;
+            let request_at = table.column("request_id")?;
+            let id_at = table.column("id")?;
+            for row in &table.rows {
+                if row[request_at].text() != Some(request) {
+                    continue;
+                }
+                let bytes = private_journal::inspect_for_migration(
+                    row[record_at]
+                        .text()
+                        .ok_or_else(|| db_error("retired acceptance record type is invalid"))?
+                        .as_bytes(),
+                    scope,
+                )?;
+                let original: Execution = serde_json::from_slice(&bytes).map_err(db_error)?;
+                let Some(accepted) = original.submission.as_ref() else {
+                    continue;
+                };
+                if accepted.actor != actor {
+                    continue;
+                }
+                let Cell::Integer(number) = row[id_at] else {
+                    return Err(db_error("retired acceptance number type is invalid"));
+                };
+                if number <= 0
+                    || original.id != number.to_string()
+                    || accepted.request_id != request
+                    || accepted.invocation_digest.is_empty()
+                    || original
+                        .invocation
+                        .local_private
+                        .as_ref()
+                        .is_some_and(|tagged| tagged.project_id != scope.project_id)
+                {
+                    return Err(db_error("retired acceptance binding is invalid"));
+                }
+                let binding = api::machine::ProjectExecutionMigrationBinding {
+                    request_id: request.to_owned(),
+                    source_workspace_id: workspace.to_owned(),
+                    invocation_spec_digest: accepted.invocation_digest.clone(),
+                };
+                if !receipt.bindings.iter().any(|covered| {
+                    covered.request_id == binding.request_id
+                        && covered.source_workspace_id == binding.source_workspace_id
+                        && covered.invocation_spec_digest == binding.invocation_spec_digest
+                }) {
+                    return Err(db_error(
+                        "retired acceptance is absent from completed coverage",
+                    ));
+                }
+                let owned = receipt
+                    .owned
+                    .iter()
+                    .find(|table| table.name == "executions")
+                    .ok_or_else(|| db_error("retired acceptance has no copied execution"))?;
+                let at = owned.column("id")?;
+                let copied = Table {
+                    name: owned.name.clone(),
+                    columns: owned.columns.clone(),
+                    rows: owned
+                        .rows
+                        .iter()
+                        .filter(|row| row[at] == Cell::Integer(number))
+                        .cloned()
+                        .collect(),
+                };
+                if copied.rows.len() != 1 {
+                    return Err(db_error("retired acceptance copied row is missing"));
+                }
+                copied.verify(&self.connection)?;
+                let record_at = copied.column("record")?;
+                let copied_record = copied.rows[0][record_at]
+                    .text()
+                    .ok_or_else(|| db_error("copied acceptance record is invalid"))?;
+                let bytes =
+                    private_journal::inspect_for_migration(copied_record.as_bytes(), scope)?;
+                let copied_execution: Execution =
+                    serde_json::from_slice(&bytes).map_err(db_error)?;
+                if copied_execution
+                    .invocation
+                    .local_private
+                    .as_ref()
+                    .is_none_or(|tagged| tagged.project_id != scope.project_id)
+                {
+                    return Err(db_error(
+                        "retired acceptance belongs to another protected project",
+                    ));
+                }
+                if found.is_some() {
+                    return Err(db_error("retired acceptance coverage is ambiguous"));
+                }
+                found = Some(api::machine::ProjectExecutionLegacyBinding {
+                    source_number: number as u64,
+                    binding,
+                });
+            }
+        }
+        Ok(found)
     }
 
     pub(crate) fn needs_project_migration(
