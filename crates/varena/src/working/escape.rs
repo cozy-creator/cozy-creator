@@ -241,7 +241,9 @@ pub(super) fn room_held(owner: &Device) -> usize {
 /// begins a loop (keyed by that forward's shape),
 /// any later one a pass of it, whatever its own shape (a prefix cached in step 0 is absent after). A
 /// pass that cannot fit with every evictable byte gone says why, once per loop: live working memory
-/// and pinned weights, what a pass holds beyond them, and one block's weights, over the room.
+/// and pinned weights, what a pass holds beyond them, and one block's weights, over the room. The
+/// second, of another shape than the first, isn't judged by the first's measure (a prompt's prefill
+/// before its decode, a joint pass before the cached ones: cr-286).
 /// Retained regions and unpinned weights are evictable. Nothing is marked under a capture or replay.
 pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Option<Verdict>> {
     let Some(owner) = existing(device)? else { return Ok(None) };
@@ -289,6 +291,7 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
     let rename = kept > escapes.loops[&head].named_at.saturating_add(RENAME);
     let sites = rename.then(|| escapes.sites(first, last));
     let held_loop = escapes.loops.get_mut(&head).expect("this head's loop");
+    let unlike = held_loop.passes == 1 && shape != 0 && shape != held_loop.shape;
     let escaped = kept;
     if !interleaved {
         let transient = peak.saturating_sub(held_loop.start).saturating_sub(held_loop.since_last);
@@ -312,7 +315,7 @@ pub fn pass_mark(device: i32, head: u32, shape: u64, floor: usize) -> Result<Opt
     }
     let transient = held_loop.transient.unwrap_or(0);
     let need = held.saturating_add(transient).saturating_add(held_loop.growth.unwrap_or(0)).saturating_add(floor);
-    if need <= room || held_loop.refused.is_some() {
+    if need <= room || held_loop.refused.is_some() || unlike {
         return Ok(None);
     }
     let verdict = Verdict {
