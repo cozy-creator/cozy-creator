@@ -40,7 +40,13 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   const tool = tools.get(view?.asset?.tool ?? "")
   const qwen = tool?.package.split("/").at(-1) === "qwen-image-2"
   const imageEdit = view?.operation === "edit_image" || store.mentionedPictures(name).length > 0
-  const slots = slotsOf(tool).filter((slot) => !qwen || (slot.slot !== "expander" && slot.slot !== "rewriter") || slot.slot === (imageEdit ? "rewriter" : "expander"))
+  const helper = imageEdit ? "rewriter" : "expander"
+  const slots = slotsOf(tool).filter((slot) => !qwen || (slot.slot !== "expander" && slot.slot !== "rewriter") || slot.slot === helper)
+  if (qwen) {
+    const order = [helper, "model", "text_encoder", "turbo_lora"]
+    const at = (slot: PickerSlot) => order.includes(slot.slot) ? order.indexOf(slot.slot) : order.length
+    slots.sort((a, b) => at(a) - at(b))
+  }
   const active = slots.find((slot) => slot.slot === page)
   const legacy = adaptersOf(store.valueOf(name, "lora"))
   const activeRef = active ? entryOf(entryOf(store.valueOf(name, "models"))[active.slot]).ref : undefined
