@@ -2679,6 +2679,23 @@ a.tab:hover {
 .image-version-row {
   min-height: 31px;
 }
+.image-version-label {
+  flex: none;
+  width: 5ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--mute);
+}
+.variant-number {
+  position: absolute;
+  left: 5px;
+  bottom: 5px;
+  padding: 1px 5px;
+  border-radius: var(--round);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: var(--small);
+}
 .image-tool {
   flex: 1;
   overflow: hidden;

@@ -203,6 +203,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             {version.main && !version.main.absent ? (
               <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />
             ) : null}
+            {asset.kind === "image" && <span className="variant-number">v{version.number}</span>}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
