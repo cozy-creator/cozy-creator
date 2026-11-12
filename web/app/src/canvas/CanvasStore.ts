@@ -528,6 +528,7 @@ export class CanvasStore {
     const tools = this.tools.get()
     const control = asset && makes(view) ? fieldsOf(asset, tools).find((held) => held.type === "shape") : undefined
     if (!asset || !control) return undefined
+    if (!control.auto) return heldTo(control, ratioOf(control.default) ?? 1)
     const kind = tools.get(asset.tool ?? "")?.makes ?? asset.kind
     for (const mention of this.mentionsOf(view)) {
       const read = this.mentionOf(mention, view.name)
