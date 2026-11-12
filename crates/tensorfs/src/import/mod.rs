@@ -767,10 +767,14 @@ fn run_data(path: &str) -> bool {
 }
 
 /// A source collection is not a model identity. Shards already form one group; multiple
-/// groups need a pipeline's explicit component relationship, and independent adapters need
+/// groups need a pipeline's explicit component relationship, or one model table that lays
+/// out every group as its components (RelayVSR's two files), and independent adapters need
 /// an individual selection even when their architectures and tensor keys are identical.
-fn one_model(set: &source::SourceSet) -> Result<()> {
+fn one_model(set: &source::SourceSet, recognized: &engine::Recognized, tables: &[engine::Table]) -> Result<()> {
     if set.groups.len() <= 1 { return Ok(()) }
+    if let ([table], []) = (recognized.tables.as_slice(), recognized.unclaimed.as_slice()) {
+        if tables[*table].lora.is_none() { return Ok(()) }
+    }
     let labels = || set.groups.iter().map(source::Group::label).collect::<Vec<_>>().join(", ");
     let adapters = set.groups.iter().filter(|g| g.tensors.keys().any(|key|
         lora::peft_key(key).is_some_and(|key| key.contains(".lora_A")) || key.contains(".lora_down"))).count();
@@ -917,7 +921,6 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
     stopped(req)?;
     let mut set = source::SourceSet::scan(&heads)?;
     set.access = Some(req.access.clone());
-    one_model(&set)?;
     // What folding and normalizing read of a file only its header is here holds: small integer
     // tensors (markers, stated shapes) and scalars (LoRA alphas).
     let small = |t: &source::Tensor| t.len <= 64 << 10;
@@ -930,6 +933,7 @@ pub(crate) fn convert(req: &Request, sink: &mut dyn Sink) -> Result<Imported> {
 
     let tables = tables();
     let recognized = engine::recognize(&set, tables, req.converter)?;
+    one_model(&set, &recognized, tables)?;
     // What detection alone finds, to tell a caller who named something else.
     let detected = req.converter.and_then(|asked| {
         let found = engine::recognize(&set, tables, None).ok()?;
