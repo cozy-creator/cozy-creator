@@ -33,6 +33,7 @@ pub(crate) use api::code::source_files;
 use crate::{api::Api, rentals::Hubs};
 mod private_process;
 pub(crate) use private_process::active as private_process_active;
+pub(crate) fn project_tool_output(command:&mut Command)->std::io::Result<std::process::Output> {private_process::output(command)}
 
 /// The uv index name a project's sources use for cozy packages on the Hub: its account's own, else the root's (`bindings`).
 pub(crate) const INDEX: &str = "tensorhub";

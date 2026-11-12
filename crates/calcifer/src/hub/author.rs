@@ -76,7 +76,13 @@ impl Stage {
     /// to the machine (`TORCH_LAYER`): its lock holds no Torch, and an author's cap or exact pin on
     /// Torch is said once.
     fn new(project: &Project, within: &Path, uv: PathBuf, say: Say<'_>) -> Result<Self, Error> {
-        let dir = tempfile::tempdir().map_err(|e| refuse("stage_unavailable", e))?;
+        let dir = match crate::private_io::current() {
+            Some(scope)=>{
+                let root=crate::private_io::cache(Some(&scope),PathBuf::new(),"author")?;
+                tempfile::tempdir_in(root)
+            },
+            None=>tempfile::tempdir(),
+        }.map_err(|e| refuse("stage_unavailable", e))?;
         let root = dir.path().to_path_buf();
         let at = project.root.strip_prefix(within).map_err(|_| {
             refuse("stage_unavailable", format!("{} is outside its copy {}", project.root.display(), within.display()))
@@ -726,7 +732,9 @@ fn git_wheel(stage: &Stage, python: &str, name: &str, vcs: &Vcs) -> Result<PathB
     let checkout = stage.root.join("git").join(name);
     fs::create_dir_all(&checkout).map_err(|e| refuse("git_dependency_checkout", e))?;
     let git = |args: &[&str]| -> Result<String, Error> {
-        let out = std::process::Command::new("git").arg("-C").arg(&checkout).args(args).output().map_err(|e| match e.kind() {
+        let mut command=std::process::Command::new("git");
+        command.current_dir(&checkout).arg("-C").arg(&checkout).args(args);
+        let out = crate::local_code::project_tool_output(&mut command).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => git_missing(),
             _ => refuse("git_dependency_checkout", e),
         })?;
