@@ -4,6 +4,7 @@ use ::api::error::{Error, Kind};
 use crate::api::Refusal;
 use platform::{durable, process::Birth};
 use serde::{Deserialize, Serialize};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Identity { device: u64, inode: u64 }
@@ -67,6 +68,7 @@ fn parents() -> Vec<PathBuf> {
         let Ok(stat) = rustix::fs::statfs(&parent) else { continue };
         if stat.f_type as u64 == 0x0102_1994 && !parents.contains(&parent) { parents.push(parent); }
     }
+    parents.sort_by_key(|path| path.as_os_str().as_encoded_bytes().len());
     parents
 }
 
@@ -116,7 +118,9 @@ pub(super) fn recover(home: &Path) -> Result<(), Refusal> {
             let profile = identity(&dir)?;
             if profile.device != identity(&parent)?.device || profile.device != meta.dev() || profile.inode != meta.ino() { return Err(pending()); }
             let record = read_receipt(&dir)?;
-            if record.version != 1 || record.profile != profile || record.nonce.len() != 48 || !record.nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) || record.observed.len() > 2048
+            let valid_nonce = record.nonce.len() == 48 && record.nonce.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || record.nonce.len() == 32 && record.nonce.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+            if record.version != 1 || record.profile != profile || !valid_nonce || record.observed.len() > 2048
                 || name_text.strip_prefix("cozy-private-") != Some(record.nonce.as_str()) { return Err(pending()); }
             if record.home != home { continue; } // A different Caf home is never ours to retire.
             if !record.caf.ended().map_err(|_| pending())? { return Err(pending()); }
@@ -212,7 +216,10 @@ impl VolatileProfileLease {
         for parent in parents() {
             let mut nonce = [0; 24];
             getrandom::fill(&mut nonce).map_err(|_| refused())?;
-            let path = parent.join(format!("cozy-private-{}", hex::encode(nonce)));
+            // Preserve all192 random bits while leaving room for Chromium's Unix
+            // SingletonSocket below this profile's private temporary directory.
+            let nonce = URL_SAFE_NO_PAD.encode(nonce);
+            let path = parent.join(format!("cozy-private-{nonce}"));
             if std::fs::DirBuilder::new().mode(0o700).create(&path).is_err() { continue; }
             let meta = std::fs::symlink_metadata(&path).map_err(|_| refused())?;
             let stat = rustix::fs::statfs(&path).map_err(|_| refused())?;
@@ -220,7 +227,7 @@ impl VolatileProfileLease {
                 return Err(refused());
             }
             let identity = identity(&directory(&path)?)?;
-            let receipt = Receipt { version: 1, home, profile: identity, caf: Birth::own().map_err(|_| refused())?, chrome: None, observed: Vec::new(), nonce: hex::encode(nonce) };
+            let receipt = Receipt { version: 1, home, profile: identity, caf: Birth::own().map_err(|_| refused())?, chrome: None, observed: Vec::new(), nonce };
             let lease = Self { path, identity, receipt };
             lease.save()?;
             return Ok(lease);
