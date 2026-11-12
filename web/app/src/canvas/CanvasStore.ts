@@ -32,7 +32,7 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
 import { angleOf, baseOf } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -541,10 +541,10 @@ export class CanvasStore {
       const of = read ? this.views.get(read.name) : undefined
       if (!of?.asset || of.asset.kind !== "image" || this.refusalOf(name, mention) || seen.has(mention)) return []
       seen.add(mention)
-      const file = read?.number !== undefined ? of.asset.prefixes?.find((held) => held.number === read.number)?.main : shownOf(of)
+      const file = read?.number !== undefined ? of.asset.prefixes?.find((held) => held.number === read.number)?.main : selectedOf(of)
       if (file && !file.absent && file.field === "image") return [{ mention, sha256: file.sha256 }]
       // Nothing of it yet: its frame, at the shape it will be, and whether it's being made.
-      return [{ mention, shape: sentShape(of) ?? 1, making: Boolean(of.asset.making?.length || of.queued || of.asked !== undefined) }]
+      return [{ mention, shape: sentShape(of) ?? 1, making: read?.number === undefined && !file && Boolean(of.asset.making?.length || of.queued || of.asked !== undefined) }]
     })
   }
 
@@ -553,6 +553,7 @@ export class CanvasStore {
     const asset = this.get(name)?.asset
     for (const read of asset?.reads ?? []) {
       const of = this.get(this.mentionOf(read.name, name)?.name ?? "")
+      if (of?.asset && (read.version !== undefined && read.version !== null ? versionIn(of.asset, read.version)?.main : selectedOf(of))) continue
       if (of?.asset?.tool && (of.asset.making?.length || of.queued || of.asked !== undefined || (!of.asset.prefixes?.length && !of.asset.sha256))) return read.name
     }
     return null
@@ -2022,7 +2023,7 @@ export class CanvasStore {
     const said = this.mentionOf(mention, asset)
     const view = said && this.get(said.name)
     if (!view) return null
-    if (said.number === undefined) return shownOf(view)
+    if (said.number === undefined) return selectedOf(view)
     const main = versionIn(view.asset, said.number)?.main
     return main ? { ...main, number: said.number } : null
   }
