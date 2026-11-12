@@ -95,6 +95,9 @@ pub(crate) enum Stopped {
 /// `cozy calcifer`: exits 0 unless Calcifer could not start, which `refused.json` then says.
 /// Its persistent diagnostics are the closed events in `health.log`.
 pub fn main() -> ExitCode {
+    // Inherited native proof IPC stays available here, never in browser/worker/helper children.
+    #[cfg(unix)]
+    platform::process::cloexec_from(3);
     // The panic payload and location never enter stderr or the health sink.
     std::panic::set_hook(Box::new(|_| crate::health::service_health(crate::health::HealthEvent::Panicked)));
     // Before the runtime's workers start: Linux names the calling thread.
@@ -311,6 +314,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     let _ = std::fs::remove_file(home.calcifer().join(REFUSED));
     steps.done("record");
+    crate::browser::hosted_proof(api.clone());
     crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");
     match calcifer.resume() {

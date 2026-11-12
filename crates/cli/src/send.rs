@@ -109,6 +109,7 @@ impl<'a> Sender<'a> {
 
     /// The file at `path`, held by Calcifer: its digest.
     pub(crate) async fn file(&self, path: &Path) -> Result<Digest, Error> {
+        if self.project.is_none() { independent_input_scope(self.ctx, path, false).await?; }
         let mut progress = Sending::new(self.ctx);
         progress.line.phase("Checking file");
         let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
@@ -125,6 +126,7 @@ impl<'a> Sender<'a> {
 
     /// The folder at `root`, each file and then its tree document held by Calcifer: the document's digest.
     pub(crate) async fn tree(&self, root: &Path) -> Result<Digest, Error> {
+        if self.project.is_none() { independent_input_scope(self.ctx, root, true).await?; }
         let mut progress = Sending::new(self.ctx);
         progress.line.phase("Checking folder");
         let (at, memo) = (root.to_owned(), self.project.is_none().then(|| self.memo()));
@@ -357,6 +359,36 @@ async fn source_scope(ctx: &Context, plan: &api::code::SourcePlan, scope: CodeSc
                 CodeScope::Project(expected) if owner.id == expected => {},
                 _ => return Err(code_scope_refused()),
             }
+        }
+    }
+    Ok(())
+}
+
+/// An independent file/tree must not create a global digest memo or CAS copy from a project's
+/// own path (including an alias) or any resolved source. Tree enumeration itself hashes nothing.
+async fn independent_input_scope(ctx: &Context, path: &Path, tree: bool) -> Result<(), Error> {
+    let mut paths = vec![path.to_path_buf()];
+    if tree {
+        paths.extend(api::tree::walk(path, true)
+            .map_err(|error| Error::new(Kind::Usage, "tree_unreadable", error.to_string()))?.into_values());
+    }
+    let mut directories = BTreeSet::new();
+    for path in paths {
+        for path in [std::path::absolute(&path).map_err(|error| unreadable(&path, error))?,
+            std::fs::canonicalize(&path).map_err(|error| unreadable(&path, error))?] {
+            let directory = if path.is_dir() { path } else { path.parent().ok_or_else(code_scope_refused)?.to_owned() };
+            directories.insert(directory);
+        }
+    }
+    let client = ctx.calcifer().await?;
+    for directory in directories {
+        let directory = directory.to_str().ok_or_else(|| Error::new(Kind::Usage, "project_path", "The source path is not UTF-8"))?;
+        let route = crate::calcifer_client::path(&["v1", "projects", directory, "address"]);
+        match client.get::<api::calcifer::project::Address>(&route).await {
+            Ok(_) => return Err(Error::new(Kind::Forbidden, "project_source_scope", "This input belongs to a Cozy project and cannot be staged as independent maintenance data")
+                .remedy("Use it in a project-scoped run, or explicitly export an independent copy first")),
+            Err(error) if error.code == "project_not_found" => {},
+            Err(error) => return Err(error),
         }
     }
     Ok(())

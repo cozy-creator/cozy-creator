@@ -1,6 +1,10 @@
 //! One Cozy-owned private Chrome process. No normal-browser attachment, TCP debugger, credential
 //! URL, durable session map, or disk-backed temporary profile is a fallback.
 mod profile;
+mod proof;
+
+/// Start only after the native listener/holder is ready; the inherited channel is otherwise inert.
+pub(crate) fn hosted_proof(api: Arc<Api>) { proof::start(api); }
 use std::{collections::HashMap, net::SocketAddr, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 use ::api::error::Kind;
 use axum::{Json, extract::State, http::HeaderMap};
@@ -24,7 +28,7 @@ pub(crate) async fn project_storage(State(api): State<Arc<Api>>, headers: Header
 fn unavailable() -> Refusal { api::refuse(Kind::Unavailable, "private_browser_unavailable", "Cozy could not establish its owned private browser; no default browser was opened") }
 fn busy() -> Refusal { api::refuse(Kind::Conflict, "project_busy", "The Cozy browser has not confirmed that all edits are saved; keep it open and finish saving before locking") }
 
-struct Pipe { send: tokio::fs::File, receive: BufReader<tokio::fs::File>, next: u64 }
+struct Pipe { birth: platform::process::Birth, send: tokio::fs::File, receive: BufReader<tokio::fs::File>, next: u64 }
 impl Pipe {
     async fn call(&mut self, method: &str, params: Value, session: Option<&str>) -> Result<Value, Refusal> {
         self.next += 1;
@@ -37,7 +41,17 @@ impl Pipe {
         self.send.flush().await.map_err(|_| unavailable())?;
         loop {
             let mut bytes = Vec::new();
-            if self.receive.read_until(0, &mut bytes).await.map_err(|_| unavailable())? == 0 { return Err(unavailable()); }
+            let gone = async {
+                loop {
+                    if self.birth.ended().unwrap_or(false) { return; }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            };
+            let length = tokio::select! {
+                result = self.receive.read_until(0, &mut bytes) => result.map_err(|_| unavailable())?,
+                () = gone => return Err(unavailable()),
+            };
+            if length == 0 { return Err(unavailable()); }
             if bytes.len() > 8 << 20 { return Err(unavailable()); }
             bytes.pop();
             let mut answer: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
@@ -131,8 +145,8 @@ impl OwnedBrowser {
         let tree = platform::process::spawn(command).map_err(|_| unavailable())?;
         let birth = platform::process::Birth::of(tree.pid()).map_err(|_| unavailable())?;
         let (authority, credential) = sessions.begin_owned();
-        let mut live = Live { tree, birth, profile, authority, credential, address,
-            pipe: Pipe { send: tokio::fs::File::from_std(send), receive: BufReader::new(tokio::fs::File::from_std(receive)), next: 0 },
+        let mut live = Live { tree, birth: birth.clone(), profile, authority, credential, address,
+            pipe: Pipe { birth, send: tokio::fs::File::from_std(send), receive: BufReader::new(tokio::fs::File::from_std(receive)), next: 0 },
             context: String::new(), targets: HashMap::new() };
         let context = live.pipe.call("Target.createBrowserContext", json!({ "disposeOnDetach": true }), None).await?;
         live.context = context["browserContextId"].as_str().ok_or_else(unavailable)?.into();
@@ -200,8 +214,17 @@ impl OwnedBrowser {
         });
     }
 
+    fn processes(birth: &platform::process::Birth) -> Vec<platform::process::Exact> {
+        let mut processes = if platform::process::Birth::of(birth.pid).is_ok_and(|now| &now == birth) { platform::process::tree(birth.pid) } else { Vec::new() };
+        for member in platform::process::group_members(birth) {
+            if processes.iter().any(|held| held.birth() == &member) { continue; }
+            if let Ok(Some(exact)) = platform::process::Exact::open(&member) { processes.push(exact); }
+        }
+        processes
+    }
+
     async fn retire_closed(mut live: Live) -> Result<(), Refusal> {
-        let processes = if platform::process::Birth::of(live.birth.pid).is_ok_and(|birth| birth == live.birth) { platform::process::tree(live.birth.pid) } else { Vec::new() };
+        let processes = Self::processes(&live.birth);
         tokio::task::spawn_blocking(move || {
             live.tree.kill().map_err(|_| unavailable())?;
             platform::process::end_tree(&processes).map_err(|_| unavailable())?;
@@ -251,7 +274,7 @@ impl OwnedBrowser {
         let mut held = prepared.live.take().ok_or_else(unavailable)?;
         let Some(live) = held.take() else { return Ok(()) };
         self.retirement_incomplete.store(true, Ordering::Release);
-        let processes = if platform::process::Birth::of(live.birth.pid).is_ok_and(|birth| birth == live.birth) { platform::process::tree(live.birth.pid) } else { Vec::new() };
+        let processes = Self::processes(&live.birth);
         let (live, ended) = tokio::task::spawn_blocking(move || {
             let mut live = live;
             let ended = (|| {
