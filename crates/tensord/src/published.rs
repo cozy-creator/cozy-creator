@@ -1839,11 +1839,12 @@ fn apply_adapters(
     let composed = crate::adapter::compose(store, &base, &selections)
         .map_err(|e| ("model_adapter_refused", e.to_string()))?;
     // The run's record names the base model and what each LoRA adapts (`Plan::models`).
-    let adapters = (choice.adapters.iter().zip(&selections).zip(&composed.adapted))
-        .map(|((adapter, selection), components)| crate::gpu_service::Applied {
+    let adapters = (choice.adapters.iter().zip(&selections).zip(&composed.adapted).zip(&composed.layers))
+        .map(|(((adapter, selection), components), layers)| crate::gpu_service::Applied {
             model: if adapter.source.is_empty() { adapter.model.clone() } else { adapter.source.clone() },
             strength: selection.strength,
             components: components.clone(),
+            layers: *layers,
         })
         .collect();
     let warnings = (choice.adapters.iter().zip(&composed.warnings))

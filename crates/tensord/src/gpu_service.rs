@@ -66,12 +66,15 @@ pub(crate) struct Adapted {
     pub adapters: Vec<Applied>,
 }
 
-/// One LoRA as the run named it, its strength, and the base components it adapts.
+/// One LoRA as the run named it, its strength, the base components it adapts, and how many of its
+/// layers do.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Applied {
     pub model: String,
     pub strength: f64,
     pub components: Vec<String>,
+    #[serde(default)]
+    pub layers: usize,
 }
 
 /// How the machine shares its host and GPUs.

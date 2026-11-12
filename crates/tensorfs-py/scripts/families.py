@@ -258,13 +258,14 @@ FAMILIES: list[Spec] = [
         "reference": "hf://circlestone-labs/Anima-Base-v1.0-Diffusers@073c3a9db359c31ad0e8aa268d15775473c2176c",
         "classes": ["AnimaTextConditioner"],
         "folders": ["transformer", "text_conditioner", "text_encoder", "vae"],
-        "sources": ["anima.single_file"],
+        "sources": ["anima.single_file", "anima.lora"],
     },
     {
         "name": "qwen-image",
         "reference": "hf://Qwen/Qwen-Image-2512@25468b98e3276ca6700de15c6628e51b7de54a26",
         "classes": ["QwenImagePipeline", "QwenImageEditPlusPipeline", "QwenImageTransformer2DModel"],
         "folders": ["transformer", "text_encoder", "vae"],
+        "sources": ["qwenimage.lora"],
     },
     {
         "name": "qwen-image-2",
@@ -285,6 +286,7 @@ FAMILIES: list[Spec] = [
         "reference": "hf://OpenMOSS-Team/MOSS-Image-SFT@f972bd4b4b9e3852133cc5da954d87bc32cd8fb9",
         "classes": ["MOSSImagePipeline", "MOSSImageTransformer"],
         "folders": ["transformer", "text_encoder", "vae"],
+        "sources": ["moss.lora"],
     },
     {
         "name": "ideogram-4",

@@ -759,7 +759,9 @@ def krea2_lora() -> Table[LoraRow]:
     it as that module; Diffusers' names under `transformer.` (Diffusers and PEFT: Krea's LoRAs); and
     ComfyUI's further spellings (`comfy/lora.py`, `krea2_to_diffusers`): Diffusers' names under
     `diffusion_model.` or bare, `to_out` for `to_out.0`, kohya's flattened `lora_unet_` (musubi-tuner) and
-    `lycoris_`, and the reference names bare."""
+    `lycoris_`, and the reference names bare. Control LoRAs (Patil's depth, tori29umai's) spell factors `.A`/`.B`
+    under the bare reference names and carry the widened image input they were trained with, `first` `[6144, 128]`
+    (latents and the control map's), kept whole as `img_in.modules_to_save`."""
     from diffusers import Krea2Transformer2DModel
 
     with torch.device("meta"):
@@ -797,16 +799,21 @@ def krea2_lora() -> Table[LoraRow]:
          "rows": [(d, stem, {"io": list(io)}) for d, io in census.items() for stem in spell(d)]}
         for prefix, spell in spellings.items()
     ]
-    # Krea's own (Diffusers) and AI-Toolkit's published LoRAs are spelled as rows say.
-    for vector in ("darkbrush.safetensors.header", "krea2_style_reference.safetensors.header"):
+    components[-1]["keep"] = [(f"img_in.modules_to_save.{p}", f"first.{p}", {}) for p in ("weight", "bias")]
+    # Krea's own (Diffusers), AI-Toolkit's and Patil's control LoRAs are spelled as rows say.
+    for vector in ("darkbrush.safetensors.header", "krea2_style_reference.safetensors.header",
+                   "depth-control-lora.safetensors.header", "krea2-anythng_step_007000.safetensors.header"):
         keys = header(KREA2 / vector)
         for c in components:
             stems = {r[1] for r in c["rows"]}
             mine = [k for k in keys if k.startswith(c["prefix"])] if c["prefix"] else []
             assert all(k[len(c["prefix"]):].rsplit(".", 2)[0] in stems for k in mine), (vector, c["prefix"])
-        assert any(k.startswith(c["prefix"]) for c in components[:-1] for k in keys), vector
-    lora: Lora = {"a": [".lora_A.weight", ".lora_down.weight"], "b": [".lora_B.weight", ".lora_up.weight"], "alpha": [".alpha"],
-                  "magnitude": MAGNITUDE}
+        prefixed = any(k.startswith(c["prefix"]) for c in components[:-1] for k in keys)
+        kept = {r[1] for r in components[-1]["keep"]}
+        bare = {r[1] for r in components[-1]["rows"]}
+        assert prefixed or all(k in kept or k.rsplit(".", 1)[0] in bare for k in keys), vector
+    lora: Lora = {"a": [".lora_A.weight", ".lora_down.weight", ".A"], "b": [".lora_B.weight", ".lora_up.weight", ".B"],
+                  "alpha": [".alpha"], "magnitude": MAGNITUDE}
     return {"name": "krea2.lora", "lora": lora, "components": components}
 
 
@@ -1023,14 +1030,16 @@ def native_rows(census: dict[str, tuple[int, int]], rules: list[Rule], reference
     return rows
 
 
-def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow], vectors: dict[str, bool]) -> Table[LoraRow]:
+def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow], vectors: dict[str, bool],
+             extra: list[Component[LoraRow]] | None = None) -> Table[LoraRow]:
     """LoRA factors onto every linear of a Diffusers DiT, in each spelling a published loader reads: Diffusers'
     names under `transformer.` (Diffusers' `save_lora_weights`, SimpleTuner), `diffusion_model.` or bare
     (ComfyUI, DiffSynth-Studio), `base_model.model.` (PEFT), and kohya's flattened `lora_unet_` and `lycoris_`,
     with ComfyUI's `to_out` for `to_out.0`; and the native (BFL) names under `diffusion_model.` or bare (ComfyUI,
     AI-Toolkit) and flattened under `lora_unet_` (kohya), a fused module's B rows split among its targets. Each
     banked LoRA `vectors[path]` is one this table claims, every factor at its row's shape, or (False) one it
-    leaves unclaimed: more than half its keys are no module's. A DoRA's magnitudes are read as its B's rows are."""
+    leaves unclaimed: more than half its keys are no module's. A DoRA's magnitudes are read as its B's rows are.
+    `extra` adapt another component of the family (Anima's LLM adapter), each row one of its linears."""
     census = family_linears(family)
 
     def spelled(d: str) -> list[str]:
@@ -1049,12 +1058,14 @@ def dit_lora(name: str, family: str, native: list[LoraRow], keep: list[LoraRow],
     components: list[Component[LoraRow]] = [{"name": "transformer", "prefix": prefix, "rows": rows} for prefix, rows in spellings.items()]
     if keep:
         components[-1]["keep"] = keep
+    components += extra or []
     stem: str | None
     for c in components:
+        own = census if c["name"] == "transformer" else family_linears(family, c["name"])
         targets: dict[str, set[str]] = {}
         for target, stem, ops in c["rows"]:
             targets.setdefault(stem, set()).add(target)
-            assert target in census, (name, target)
+            assert target in own, (name, target)
         split = {s for t, s, o in c["rows"] if "b" in o}
         assert all(len(t) == 1 or s in split for s, t in targets.items()), (name, c["prefix"])
     for vector, claimed in vectors.items():
@@ -1116,6 +1127,60 @@ def fibo2_lora() -> Table[LoraRow]:
         ("fibo-2-anime", True), ("fibo-2-edit-idm-1step", True), ("Natural-Exposure-Fibo-2.0-dev-4000", True),
         ("Fibo-2.0-Anime-LoRA-ComfyUI", False), ("akhaliq-pytorch_lora_weights", True))}
     return dit_lora("fibo2.lora", "fibo-2", [], [], vectors)
+
+
+
+# ------------------------------------------------------------------ MOSS-Image, Anima and Qwen-Image LoRAs
+
+def moss_lora() -> Table[LoraRow]:
+    """MOSS-Image's DiT keeps upstream's module names (Diffusers has no port), and so do its LoRAs: ComfyUI's and
+    AI-Toolkit's under `diffusion_model.`, kohya's flattened under `lora_unet_` (Fizgig). ComfyUI's model may fuse a
+    block's Q/K/V into `proj.qkv`, `[q; k; v]` (comfy/ldm/moss_image/model.py `fused_qkv`), and LoRAs trained on it
+    (AI-Toolkit's) adapt that: A as is, B in thirds."""
+    census = family_linears("moss")
+    native: list[LoraRow] = []
+    for d, (fan_in, fan_out) in census.items():
+        if not d.endswith(".proj.q"):
+            continue
+        block = d.removesuffix(".q")
+        for j, p in enumerate("qkv"):
+            assert census[f"{block}.{p}"] == (fan_in, fan_out), block
+            third: Ops = {"view": [3, -1], "take": [0, [j]], "shape": [fan_out, -1]}
+            native.append((f"{block}.{p}", f"{block}.qkv", {"io": [fan_in, 3 * fan_out], "b": third}))
+    vectors = {f"moss-lora-headers/{v}.safetensors.header": True for v in (
+        "MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI", "sagging-moss-v0.4", "lenovo_moss", "moss_pussy_lora_v3.0_8steps",
+        "moss_image_sft_4step_v2.0")}
+    return dit_lora("moss.lora", "moss", native, [], vectors)
+
+
+def anima_lora(single: Table[TableRow]) -> Table[LoraRow]:
+    """Anima's DiT is Cosmos-Predict2's (Diffusers' `CosmosTransformer3DModel` in the family) beside its LLM adapter
+    (`AnimaTextConditioner`). Its LoRAs keep the native names `anima.single_file` renames (`blocks.N.self_attn.q_proj`,
+    `llm_adapter.blocks.N.self_attn.q_proj`): ComfyUI's, AI-Toolkit's and diffusion-pipe's under `diffusion_model.`,
+    kohya's flattened under `lora_unet_` (sd-scripts' `networks.lora_anima`); Diffusers' names as `dit_lora` reads them."""
+    rows = {c["name"]: [cast(tuple[str, str], r) for r in c["rows"] if len(r) == 2] for c in single["components"]}
+    renamed = {t.removesuffix(".weight"): s.removesuffix(".weight") for t, s in rows["transformer"] if t.endswith(".weight")}
+    census = family_linears("anima")
+    native: list[LoraRow] = [(d, renamed[d], {"io": list(io)}) for d, io in census.items()]
+    adapter = {d: io for d, io in family_linears("anima", "text_conditioner").items() if d != "embed"}
+    assert all(t == s for t, s in rows["text_conditioner"]), "the LLM adapter's names are native"
+    plain: list[LoraRow] = [(d, d, {"io": list(io)}) for d, io in adapter.items()]
+    flat: list[LoraRow] = [(d, d.replace(".", "_"), {"io": list(io)}) for d, io in adapter.items()]
+    extra: list[Component[LoraRow]] = [
+        {"name": "text_conditioner", "prefix": "diffusion_model.llm_adapter.", "rows": plain},
+        {"name": "text_conditioner", "prefix": "lora_unet_llm_adapter_", "rows": flat},
+        {"name": "text_conditioner", "prefix": "llm_adapter.", "rows": plain},
+    ]
+    vectors = {f"anima-lora-headers/{v}.safetensors.header": True for v in (
+        "sagging-anima-v4.1", "anima-turbo-lora-v0.2", "anima-highres-aesthetic-boost", "gpt-image-2_anima-base1_v1-1")}
+    return dit_lora("anima.lora", "anima", native, [], vectors, extra)
+
+
+def qwenimage_lora() -> Table[LoraRow]:
+    """Qwen-Image's (2512 and Edit-2511) DiT is Diffusers' `QwenImageTransformer2DModel`, whose names ComfyUI keeps:
+    every loader reads them, as `dit_lora` spells them."""
+    vectors = {"qwen-image-lora-headers/qwen-image-edit-plus-nsfw-lora.safetensors.header": True}
+    return dit_lora("qwenimage.lora", "qwen-image", [], [], vectors)
 
 
 # ------------------------------------------------------------------ SeedVR2
@@ -1402,6 +1467,9 @@ def generate() -> dict[str, Generated]:
         "flux2.lora": flux2_lora(),
         "flux3klein.lora": flux3klein_lora(),
         "fibo2.lora": fibo2_lora(),
+        "moss.lora": moss_lora(),
+        "anima.lora": anima_lora(anima),
+        "qwenimage.lora": qwenimage_lora(),
         "seedvr2": seedvr2(),
         "h3.latent_upscaler": h3_latent_upscaler(),
         "relayvsr": relayvsr(),
