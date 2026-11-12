@@ -8,7 +8,7 @@ const { execFile } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectAction, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, importYaml, yamlOf } = require('./page');
+const { projectFromPage, projectAction, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, lastLook, lookAt, noStall, openBox, png, until, pointAt, addBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -139,15 +139,6 @@ function replaceFile(at, text) {
   renameSync(`${at}.part`, at);
 }
 
-/** One asset's lines of a project.yaml, as the file holds them. */
-function linesOf(text, name) {
-  const lines = text.split('\n');
-  const at = lines.findIndex((line) => line.startsWith(`  ${name}:`));
-  if (at < 0) return null;
-  const end = lines.findIndex((line, n) => n > at && /^ {0,2}\S/.test(line));
-  return lines.slice(at, end < 0 ? undefined : end).join('\n');
-}
-
 (async () => {
   const base = calcifer();
   const browser = await chromium.launch({ executablePath: process.env.CHROME, headless: true });
@@ -189,7 +180,6 @@ function linesOf(text, name) {
   const id = (await projectFromPage(page)).id;
   const folder = (await api(`/v1/projects/${id}`)).body.path;
   seen.project = { id, folder };
-  const yaml = () => yamlOf(folder);
   const scratch = mkdtempSync(join(tmpdir(), 'web-live-'));
 
   await page.evaluate(() => { window.notReloaded = true; });
@@ -264,7 +254,7 @@ function linesOf(text, name) {
       await page.unroute(path, route);
     };
   };
-  /** A save by hand. */
+  /** Another writer's edit, through the project API. */
   const saved = (write) => {
     write();
     return { at: Date.now() };
@@ -323,13 +313,14 @@ function linesOf(text, name) {
   check('lift_returns_its_name', lifted.value.name === 'live_lift', lifted.value);
   check('lift_keeps_its_words', (await held('live_lift'))?.fields?.description === 'Lifted out');
 
-  // By hand, in place and by a rename over it, as editors save.
-  await timed('hand_text_in_place', { name: 'live_a', has: 'Hand words one' }, () => saved(() => importYaml(folder, yaml().replace('Second words', 'Hand words one'))));
-  await timed('hand_text_renamed_over', { name: 'live_a', has: 'Hand words two' }, () => saved(() => importYaml(folder, yaml().replace('Hand words one', 'Hand words two'))));
+  // Another writer's edits, one after another.
+  await timed('hand_text_in_place', { name: 'live_a', has: 'Hand words one' }, () => saved(() => projectJson(folder, 'PATCH', '/assets/live_a', { fields: { text: 'Hand words one' } })));
+  await timed('hand_text_renamed_over', { name: 'live_a', has: 'Hand words two' }, () => saved(() => projectJson(folder, 'PATCH', '/assets/live_a', { fields: { text: 'Hand words two' } })));
 
-  // A new box by hand has no row: the page gives it a free place on screen, writes it, and it lands. Its tool needs no package, so this runs anywhere.
-  const handBox = '  live_tool:\n    tool: no-such-package-here\n    instructions: Hand instructions\n';
-  const handAdded = await timed('hand_add', { name: 'live_tool' }, () => saved(() => importYaml(folder, `${yaml().trimEnd()}\n${handBox}`)));
+  // A new box from another writer has no row: the page gives it a free place on screen, writes it, and it lands. Its tool is no package (its kind
+  // given, so nothing reads it), so this runs anywhere.
+  const handBox = { name: 'live_tool', tool: 'no-such-package-here', kind: 'image', fields: { instructions: 'Hand instructions' } };
+  const handAdded = await timed('hand_add', { name: 'live_tool' }, () => saved(() => addBoxes(folder, [handBox])));
   check('hand_add_lands', handAdded.landing);
   const toolRow = await until('its row', async () => (await rows()).live_tool, Boolean);
   check('hand_add_row_written', Number.isFinite(toolRow.x), toolRow);
@@ -371,18 +362,13 @@ function linesOf(text, name) {
   await timed('undo', { name: 'live_b', x: place.x, y: place.y, w: 320 }, () => project('undo', back));
   check('undo_in_the_status', (await held('live_b'))?.fields?.text === 'Hand words two');
 
-  // By hand: a row from the API, an asset gone in an edited export, and an export that doesn't read, which is refused and changes nothing.
+  // Another writer: a row, an asset gone, and its words.
   place = await spot();
   await timed('hand_row', { name: 'live_b', x: place.x, y: place.y }, () => saved(() => {
     projectJson(folder, 'PATCH', '/canvas', { cards: { 'live_b': { x: place.x, y: place.y } } });
   }));
-  await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => importYaml(folder, yaml().replace(`${linesOf(yaml(), 'live_auto').trimEnd()}\n`, ''))));
-  const whole = yaml();
-  let broken = '';
-  try { importYaml(folder, `${whole}\n  : [ this doesn't read\n`); } catch (error) { broken = `${error.stdout ?? ''}${error.stderr ?? ''}${error.message}`; }
-  check('broken_file_says_why', broken.includes('project_yaml'), broken);
-  check('broken_file_keeps_the_canvas', (await box('live_b').count()) === 1 && yaml() === whole);
-  await timed('hand_mended', { name: 'live_b', has: 'Mended' }, () => saved(() => importYaml(folder, whole.replace('Hand words two', 'Mended'))));
+  await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => projectJson(folder, 'DELETE', '/assets/live_auto')));
+  await timed('hand_mended', { name: 'live_b', has: 'Mended' }, () => saved(() => projectJson(folder, 'PATCH', '/assets/live_b', { fields: { text: 'Mended' } })));
   refused.length = 0;
 
   // What's typed and not saved stays. A command changing another field of that asset leaves it to go on, and what's typed is saved over it.
@@ -482,7 +468,7 @@ function linesOf(text, name) {
   check('a_field_cleared', !('style' in (await held('live_held')).fields));
   // An Edit's tracks and clips from a file, as its timeline's gestures write them: the page shows its clip.
   place = await spot();
-  const cutFile = join(scratch, 'cut.yaml');
+  const cutFile = join(scratch, 'cut.json');
   writeFileSync(cutFile, JSON.stringify({ description: 'A cut from a file', timeline: { tracks: [{ clips: [{ clip: 'live_pic', frames: 24 }] }] } }));
   await project('add', 'cozy/edit', 'live_cut', `at=${place.x},${place.y},260`);
   await timed('edit_from_a_file', { name: 'live_cut', picture: true }, () => project('set', 'live_cut', '--input', cutFile));

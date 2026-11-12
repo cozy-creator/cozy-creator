@@ -80,8 +80,7 @@ export interface ElementView {
   /** What reading the project said of it. */
   warnings?: string[]
   /** A piece of a cut was clicked: where to play from. `at` is seconds, `ask` tells one click from the next. */
-  /** Where its player is asked to go; `still`, and stay there, as a scrubber asks. */
-  seek?: { at: number; ask: number; still?: boolean }
+  seek?: { at: number; ask: number }
   /** Known from the import's answer until the project is read again. */
   landed?: { sha256: string; field: string }
   /** The project doesn't hold it, as far as reads say. Until when: a read begun after that says. Forever until Calcifer answers. */
@@ -570,7 +569,7 @@ export class CanvasStore {
       if (!of?.asset || of.asset.kind !== "image" || this.refusalOf(name, mention) || seen.has(mention)) return []
       seen.add(mention)
       const file = read?.number !== undefined ? of.asset.prefixes?.find((held) => held.number === read.number)?.main : selectedOf(of)
-      if (file && !file.absent && file.field === "image") return [{ mention, sha256: file.sha256 }]
+      if (file && !file.absent && file.field === "image") return [{ mention, sha256: file.sha256, shape: file.width && file.height ? file.width / file.height : undefined }]
       // Nothing of it yet: its frame, at the shape it will be, and whether it's being made.
       return [{ mention, shape: sentShape(of) ?? 1, making: read?.number === undefined && !file && Boolean(of.asset.making?.length || of.queued || of.asked !== undefined) }]
     })
@@ -1374,9 +1373,9 @@ export class CanvasStore {
     this.patch(name, { hereWords: (asset.kind === "video" && run === undefined) || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
   }
 
-  seek(name: string, at: number, still = false) {
+  seek(name: string, at: number) {
     const held = this.get(name)
-    if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1, still } })
+    if (held) this.patch(name, { seek: { at, ask: (held.seek?.ask ?? 0) + 1 } })
   }
 
   /**

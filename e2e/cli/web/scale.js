@@ -97,7 +97,8 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES, tak
       if (error.code !== 'EEXIST') copyFileSync(seedOf(shape), at);
     }
   };
-  const lines = ['version: 4', 'assets:'];
+  // Each box in order, its fields as stored: [[field, value], …].
+  const boxes = [];
   // Each measured as it landed, as a person's are.
   const measured = {};
   const made = file;
@@ -111,13 +112,13 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES, tak
   for (let i = 0; i < pictures; i++) {
     const hex = hash(`picture ${i}`);
     file(hex);
-    lines.push(`  pic_${i}: {approved: "${hex.slice(0, 12)}"}`);
+    boxes.push({ name: `pic_${i}`, fields: [['approved', hex.slice(0, 12)]] });
   }
   // The suite's own weightless tool, whose fields a 0.22 box draws whatever the Hub has published.
   const tool = `${TOOL}/still`;
   for (let i = 0; i < assetCount - pictures; i++) {
     const name = `shot_${i}`;
-    lines.push(`  ${name}:`, `    tool: ${tool}`, `    instructions: ${words}<pic_${i % pictures}> and <pic_${(i * 7) % pictures}>.`, '    aspect_ratio: "16:9"');
+    boxes.push({ name, fields: [['tool', tool], ['instructions', `${words}<pic_${i % pictures}> and <pic_${(i * 7) % pictures}>.`], ['aspect_ratio', '16:9']] });
     if (!takes) continue;
     const versions = [1, 2].map((number) => {
       const hex = hash(`${name} ${number}`);
@@ -137,7 +138,7 @@ function generated(folder, inputs, assetCount = ASSETS, pictures = PICTURES, tak
   };
   for (let i = 0; i < assetCount - pictures; i++) card(`shot_${i}`, i);
   for (let i = 0; i < pictures; i++) card(`pic_${i}`, assetCount - pictures + i);
-  const seeded = seedCurrentProject(folder, { authored: `${lines.join('\n')}\n`, assets, makes: { [tool]: 'image' }, measured, cards,
+  const seeded = seedCurrentProject(folder, { boxes, assets, makes: { [tool]: 'image' }, measured, cards,
     expected_assets: assetCount, expected_versions: takes ? (assetCount - pictures) * 2 : 0 });
   for (const shape of Object.keys(seeds)) rmSync(seedOf(shape));
   return seeded;
@@ -302,14 +303,12 @@ async function nativeMemory(base, folder) {
   const first = await status();
   numbers.status_import_s = seconds(first.ms);
   check('all_are_there', first.state.assets.length === ASSETS, first.state.assets.length);
-  check('its_storage_is_current_native', seen.native_seed.main.schema === 2 && seen.native_seed.main.assets === ASSETS && seen.native_seed.main.versions === (ASSETS - PICTURES) * 2 && ['project.yaml', 'project.lock', 'project.canvas.yaml', '.measured.json'].every((name) => { try { statSync(join(folder, name)); return false; } catch { return true; } }));
+  check('its_storage_is_current_native', seen.native_seed.main.schema === 2 && seen.native_seed.main.assets === ASSETS && seen.native_seed.main.versions === (ASSETS - PICTURES) * 2);
   seen.project = { id: first.state.id, folder };
   const id = first.state.id;
   const read = await status();
   numbers.status_s = seconds(read.ms);
   numbers.db_mb = dbMb();
-  const exported = () => project('export').then(({ value }) => value);
-  numbers.export_mb = mb(Buffer.byteLength(await exported()));
   numbers.status_answer_mb = mb(JSON.stringify(read.state).length);
   const standing = read.state.assets.reduce((held, asset) => ({ ...held, [asset.standing]: (held[asset.standing] ?? 0) + 1 }), {});
   numbers.standing = standing;
@@ -369,7 +368,6 @@ async function nativeMemory(base, folder) {
   const readAlone = new Map();
   /** What the page read and found gone. */
   const readGone = new Set();
-  let handReads;
   page.on('request', (request) => {
     const url = new URL(request.url());
     if (request.method() !== 'GET') return;
@@ -377,26 +375,15 @@ async function nativeMemory(base, folder) {
       : url.pathname.startsWith(`/v1/projects/${id}/assets/`) ? 'assets'
       : url.pathname === `/v1/projects/${id}/canvas` ? 'canvas' : null;
     if (kind && kind !== 'canvas') reads[kind] += 1;
-    if (handReads && kind) {
-      handReads.counts[kind] += 1;
-      if (handReads.requests.size < 64) handReads.requests.set(request, { kind, path: url.pathname, request_ms: Date.now(), response_ms: null, status: null });
-      else handReads.truncated = true;
-    }
   });
   page.on('response', (answer) => {
     const request = answer.request();
     if (request.method() !== 'GET') return;
     const { pathname } = new URL(answer.url());
-    const handRead = handReads?.requests.get(request);
-    if (handRead) { handRead.response_ms = Date.now(); handRead.status = answer.status(); }
     if (pathname === `/v1/projects/${id}`) answer.body().then((body) => { reads.whole_bytes = Math.max(reads.whole_bytes, body.length); }, () => {});
     if (pathname.startsWith(`/v1/projects/${id}/assets/`)) answer.json().then(({ asset }) => {
       if (asset) readAlone.set(asset.name, { words: asset.fields?.instructions, at: Date.now() });
       else readGone.add(decodeURIComponent(pathname.split('/').at(-1)));
-      if (handRead && handReads?.requests.get(request) === handRead && asset?.name === handReads.asset) {
-        handRead.body_seen_ms = Date.now();
-        handRead.has_hand_words = asset.fields?.instructions === 'ONE EDIT BY HAND';
-      }
     }, () => {});
   });
   const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
@@ -556,33 +543,8 @@ async function nativeMemory(base, folder) {
   numbers.set_command_s = seconds([...sets].sort((a, b) => a - b)[2]);
   check('a_command_is_quick', numbers.set_command_s <= BAR.command_s, { s: numbers.set_commands_s, bar: BAR.command_s });
 
-  // A hand's save, the same way: its export edited and imported (cl-803).
-  const byHand = onScreen[1] ?? edited;
-  await openOn(byHand);
-  const shownHand = says(byHand, 'ONE EDIT BY HAND');
-  const text = await exported();
-  const lineAt = text.indexOf(`  ${byHand}:\n`);
-  const instructionsAt = text.indexOf('    instructions: ', lineAt);
-  const edit_at = join(homedir(), '.cozy', 'projects', `web-scale-hand-${Date.now()}.yaml`);
-  writeFileSync(edit_at, `${text.slice(0, instructionsAt)}    instructions: ONE EDIT BY HAND${text.slice(text.indexOf('\n', instructionsAt))}`);
-  handReads = { asset: byHand, armed_ms: Date.now(), counts: { whole: 0, heads: 0, canvas: 0, assets: 0 }, requests: new Map(), truncated: false };
-  const handObservation = numbers.hand_observation = { asset: byHand, armed_ms: handReads.armed_ms, import_done_ms: null, shown_browser_ms: null };
-  try {
-    const saved = await project('import', edit_at);
-    rmSync(edit_at);
-    numbers.hand_import_s = seconds(saved.ms);
-    handObservation.import_done_ms = saved.at;
-    const shown = await shownHand;
-    numbers.hand_shows_ms = shown - saved.at;
-    handObservation.shown_browser_ms = shown;
-  } finally {
-    handObservation.closed_ms = Date.now();
-    handObservation.counts_since_armed = handReads.counts;
-    handObservation.truncated = handReads.truncated;
-    handObservation.gets = [...handReads.requests.values()];
-    handReads = undefined;
-  }
-  check('a_hand_shows_live', numbers.hand_shows_ms <= BAR.edit_shows_ms, { ms: numbers.hand_shows_ms, bar: BAR.edit_shows_ms });
+  // On to the next box, as a person goes on.
+  await openOn(onScreen[1] ?? edited);
   await resting();
   await until('its frames short again', shortFrames, (p95) => p95 < 100, 60_000);
 

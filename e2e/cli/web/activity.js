@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
 const { mkdirSync, writeFileSync } = require('fs');
 const { dirname, join } = require('path');
-const { projectFromPage, projectAction, calcifer, importYaml, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, until } = require('./page');
+const { projectFromPage, projectAction, addBoxes, calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -110,7 +110,12 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const tool = join(folder, `activity_${Date.now()}.py`);
   writeFileSync(tool, TOOL);
   // `slow` and `after`, which reads it, are what Cancel stops: one rendering, one waiting its turn.
-  importYaml(folder, `version: 4\nassets:\n  waits:\n    tool: ${tool}/draw\n  slow:\n    tool: ${tool}/draw\n    pace: 6\n  after:\n    tool: ${tool}/draw\n    instructions: After <slow>.\n`);
+  // Its kind given: Calcifer reads nothing of the tool before its install.
+  addBoxes(folder, [
+    { name: 'waits', tool: `${tool}/draw`, kind: 'image' },
+    { name: 'slow', tool: `${tool}/draw`, kind: 'image', fields: { pace: 6 } },
+    { name: 'after', tool: `${tool}/draw`, kind: 'image', fields: { instructions: 'After <slow>.' } },
+  ]);
 
   // Its render waits on its package's install, a second or two from uv's cache: the box says so, and the chip's list has the install once,
   // with the run that waits on it. Everything they say is kept as it shows, so a short install is seen whole.

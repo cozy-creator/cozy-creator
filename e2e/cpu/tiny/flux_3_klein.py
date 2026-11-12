@@ -59,6 +59,8 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     upsampler = root / "upsampler"
     save(module(Qwen3_5ForConditionalGeneration(_shared.qwen3_5_vl())).to(torch.bfloat16), upsampler)
     _shared.qwen_processor(upsampler)
+    # BFL's upsampler prompts are the checkpoint's own since flux.3-klein 0.9.2 (xs-183): the bytes it bundled before.
+    (upsampler / "system_prompts.json").write_bytes((Path(__file__).with_name("assets") / "flux_3_klein" / "system_prompts.json").read_bytes())
     torch.manual_seed(3)
     return {DISTILLED: root / "klein", BASE: root / "klein-base", UPSAMPLER: upsampler, DRAFTER: _drafter(store)}
 

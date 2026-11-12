@@ -1,0 +1,1 @@
+Pick up from here sits right under a video's player in Focus, at its bottom right, as a normal button. Its label is where the cut lands ("Pick up from 0:12.96"): the tool's frame at or before the player's position, never after it, following the video as it plays or is scrubbed, and Render keeps exactly that. The player's own scrubber is the only one.

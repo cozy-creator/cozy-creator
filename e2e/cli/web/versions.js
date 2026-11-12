@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { implementationRow, previewVersion, approveVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
+const { implementationRow, previewVersion, approveVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, upload, rowsOf, addBoxes, storedOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -72,8 +72,7 @@ async function died(why) {
   seen.project = { id, folder };
   /** Undo of the newest edit of `name` that stands, as the line `cozy delete` prints does. */
   const undoOf = async (name) => post(`${at}/history/undo`, { entry: (await api(`${at}/history`)).body?.entries?.find((entry) => !entry.undone && entry.names?.some((held) => held.toLowerCase() === name.toLowerCase()))?.id });
-  const yaml = () => yamlOf(folder);
-  last = yaml;
+  last = () => storedOf(folder);
   const box = (name) => boxOf(page, name);
 
   const pictures = mkdtempSync(join(tmpdir(), 'web-versions-'));
@@ -96,42 +95,21 @@ async function died(why) {
     notes: [...card.querySelectorAll('.media-note')].map((note) => note.textContent),
   }));
 
-  // Mentions, in an export a hand edited and imported: its words kept whatever comes. Its comments go: the project holds values (cl-803).
-  const comments = ['      Two lines,', '      kept as they are.'];
+  // Mentions, in boxes another writer made: its words kept whatever comes.
+  const words = 'Two lines,\nkept as they are.';
   await imported('Abr', 10);
   // Its second square, so a slide along its row crosses a take of another shape.
   await joined('Abr', 20, 200, 200);
   await joined('Abr', 30);
   await importedPhoto('other');
-  const head = yaml();
-  importYaml(folder, `# Mine, and kept.\n${head.trimEnd()}
-  # A note on words.
-  words:
-    text: |
-      Two lines,
-      kept as they are.
-  fixed:
-    tool: ${fixture}/wait
-    # Its own note.
-    instructions: <abr.2> beside <ABR.1>, and <Abr>
-  edits:
-    tool: ${fixture}/wait
-    instructions: <self.1> again
-  bare:
-    tool: ${fixture}/wait
-    instructions: <self> again
-  one:
-    tool: ${fixture}/wait
-    instructions: <two.1>
-  two:
-    tool: ${fixture}/wait
-    instructions: <one.1>
-  foo.2:
-    text: A name from before.
-  says:
-    tool: ${fixture}/wait
-    instructions: <foo.2>
-`);
+  addBoxes(folder, [
+    { name: 'words', fields: { text: words } },
+    { name: 'fixed', tool: `${fixture}/wait`, fields: { instructions: '<abr.2> beside <ABR.1>, and <Abr>' } },
+    { name: 'edits', tool: `${fixture}/wait`, fields: { instructions: '<self.1> again' } },
+    { name: 'bare', tool: `${fixture}/wait`, fields: { instructions: '<self> again' } },
+    { name: 'one', tool: `${fixture}/wait`, fields: { instructions: '<two.1>' } },
+    { name: 'two', tool: `${fixture}/wait`, fields: { instructions: '<one.1>' } },
+  ]);
   // Square, as its tool makes with nothing it mentions in view, a box can land past the edge of the view, where it isn't drawn.
   await until('fixed placed', async () => (await api(`${at}/canvas`)).body?.cards?.fixed, Boolean);
   await page.keyboard.press('f');
@@ -141,7 +119,6 @@ async function died(why) {
   check('versions_are_reads', fixed.reads.map((read) => `${read.name}.${read.version ?? ''}`).sort().join() === 'Abr.,Abr.1,Abr.2', fixed.reads);
   check('no_cycle_of_versions', !(await state()).warnings?.some((line) => /made from it/.test(line.message)), (await state()).warnings);
   check('bare_self_warns_with_the_fix', (await state()).warnings?.some((line) => line.name === 'bare' && line.message.includes('<self.1>')), (await state()).warnings);
-  check('a_name_like_a_version_stays_a_name', (await asset('says')).fields.instructions.includes('<foo.2>') && !(await asset('says')).missing?.includes('foo.2'));
   await post(`${at}/approve`, { name: 'Abr', version: '1' });
   await until('first version is current before reference comparison', () => asset('Abr'), (row) => row.version === 1);
   const was = await asset('fixed');
@@ -169,8 +146,8 @@ async function died(why) {
 
   // A rename rewrites what says it, and only that.
   await post(`${at}/rename`, { from: 'Abr', to: 'Ada' });
-  await until('the mentions', () => Promise.resolve(yaml()), (text) => text.includes('<Ada.2> beside <Ada.1>, and <Ada>'));
-  check('rename_keeps_words', comments.every((line) => yaml().includes(line)), yaml());
+  await until('the mentions', async () => (await asset('fixed')).fields.instructions, (text) => text?.includes('<Ada.2> beside <Ada.1>, and <Ada>'));
+  check('rename_keeps_words', (await asset('words')).fields.text === words, (await asset('words')).fields);
   check('rename_keeps_versions', (await asset('Ada')).versions === 3 && (await asset('Ada')).version === 3, await asset('Ada'));
 
   // Deleting a version something reads: it stays read, a render fails clearly, and Undo brings it back.
@@ -416,7 +393,7 @@ async function died(why) {
     const inputOf = async (row, number) => (await api(`/v1/runs/${row.prefixes.find((version) => version.number === number).run}?detail=full`)).body?.request?.input;
     const editedFrom = await inputOf(third, 3);
     check('edit_reads_the_selected_source_version', editedFrom?.instructions?.references?.length === 1 && editedFrom.instructions.references[0].file === originalSha, editedFrom);
-    importYaml(folder, `${yaml().trimEnd()}\n  current_reader:\n    tool: ${fixture}/wait\n    instructions: <other> now, with <other.1> kept.\n`);
+    addBoxes(folder, [{ name: 'current_reader', tool: `${fixture}/wait`, fields: { instructions: '<other> now, with <other.1> kept.' } }]);
     const followed = await until('current and explicit references read', () => asset('current_reader'), (row) => row.reads?.length === 2);
     await approveVersion(page, 'other', 2);
     const refChanged = await until('reader tracks selection', () => asset('current_reader'), (row) => row.inputs !== followed.inputs);

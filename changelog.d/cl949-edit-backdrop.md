@@ -1,0 +1,1 @@
+An edit's backdrop shows every picture it uses, whether mentioned in its words or given as an input, never just one. They fill the frame as large as they can: side by side at full height when they fit, else in the even grid that crops them least. The canvas tile's pictures of what's being made use the same layout, and both load at once, ahead of the canvas's thumbnails.

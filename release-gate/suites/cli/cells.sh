@@ -58,10 +58,10 @@ fi
 # box), pictures' cleans and the edit on this computer. Two entities that mention each other warn and both render.
 # `--approve` with -n 2 is refused before anything runs; a re-rolled character, as the newest, puts what reads it out of
 # date and nothing else (0.24: what reads it itself; `start` reads `one`, whose take hasn't changed); `--approve` approves its
-# new version; a node renamed in project.yaml keeps its versions and approval (0.24 adopts a rename itself: no orphan, no
-# rename step); a person's save during a render stands; the edit cuts by frame and writes edit.otio beside edit.mp4. Gone by
-# design with 0.24's verbs: naming a project from elsewhere (`-p`) and listing projects (`project ls`): the folder you're in
-# is the project. Edits go to the project's own export (`page.py yaml <folder>`), which holds its approvals.
+# new version; a node renamed keeps its versions and approval (no orphan); a person's save during a render stands; the edit
+# cuts by frame and writes edit.otio beside edit.mp4. Gone by design with 0.24's verbs: naming a project from elsewhere (`-p`)
+# and listing projects (`project ls`): the folder you're in is the project. Boxes are made and edited through the page's
+# project API (e2e/page.py).
 cli_page() { python3 "$RUN_PAGE" "$@"; }
 # cli_tool <package> <function>: its target as a project in another folder reads it (a checkout's ./pkg by its path).
 cli_tool() { local t; t=$(pkg "$1" "$2"); [[ $t != ./* ]] || t=$OUT/${t#./}; echo "$t"; }
@@ -69,7 +69,7 @@ cli_tool() { local t; t=$(pkg "$1" "$2"); [[ $t != ./* ]] || t=$OUT/${t#./}; ech
 cli_new() {
   local plain=''
   grep -q -- --unencrypted <<< "$("$CLI" new --help 2>&1)" && plain=--unencrypted
-  rm -rf "$1" "$1.yaml"; "$CLI" new "$1" $plain > "$2" 2>&1
+  rm -rf "$1"; "$CLI" new "$1" $plain > "$2" 2>&1
 }
 project_status() { (cd "$1" && "$CLI" --json --full status) > "$2" 2> "$2.err" || cli_fail "status of $1: $(tail -c 300 "$2.err")"; }
 project_cell() {
@@ -77,42 +77,21 @@ project_cell() {
   STILL=$(cli_tool qwen-image-2 image) H3=$(cli_tool minimax-h3 generate)
   cli_new "$P" project-new.log || { cli_fail "cozy new: $(tail -c 300 project-new.log)"; return; }
   [ -f "$P/project.db" ] || cli_fail "cozy new made no project.db"; mkdir -p "$P/notes"
-  cat > "$P.yaml" <<YAML
-version: 4
-assets:
-  lead: {tool: $STILL, instructions: "$CHAR"}
-  place: {tool: $STILL, instructions: "$SCENE, wide from one end: the nearest objects large on the left, the far end small on the right"}
-  one:
-    tool: $H3
-    summary: "<lead> in <place>. $MOTION"
-    beats: [{duration: 5}]
-  start: {tool: cozy/frame, video: <one>, at: 4}
-  two:
-    tool: $H3
-    summary: "<lead> looks back over one shoulder, after <start>, lead in the middle, facing the camera."
-    beats: [{duration: 5}]
-  edit:
-    tool: cozy/edit
-    tracks:
-      - clips:
-          - {video: <one>, out: 96}
-          - {video: <two>, in: 24}
-YAML
-  cli_page yaml "$P" "$P.yaml" > project-yaml.log 2>&1 || cli_fail "project.yaml: $(tail -c 300 project-yaml.log)"
+  jq -n --arg still "$STILL" --arg h3 "$H3" --arg char "$CHAR" --arg scene "$SCENE" --arg motion "$MOTION" '[
+    {name: "lead", tool: $still, kind: "image", fields: {instructions: $char}},
+    {name: "place", tool: $still, kind: "image", fields: {instructions: "\($scene), wide from one end: the nearest objects large on the left, the far end small on the right"}},
+    {name: "one", tool: $h3, kind: "video", fields: {summary: "<lead> in <place>. \($motion)", beats: [{duration: 5}]}},
+    {name: "start", tool: "cozy/frame", kind: "image", fields: {video: "<one>", at: 4}},
+    {name: "two", tool: $h3, kind: "video", fields: {summary: "<lead> looks back over one shoulder, after <start>, lead in the middle, facing the camera.", beats: [{duration: 5}]}},
+    {name: "edit", tool: "cozy/edit", fields: {tracks: [{clips: [{video: "<one>", out: 96}, {video: "<two>", in: 24}]}]}}
+  ]' | cli_page boxes "$P" > project-boxes.log 2>&1 || cli_fail "the project's boxes: $(tail -c 300 project-boxes.log)"
   # Two assets that mention each other: the mention that closes the cycle stays plain text, said, and both render.
   local C=$PWD/project-cycle
   cli_new "$C" project-cycle-new.log || cli_fail "cozy new for the cycle: $(tail -c 300 project-cycle-new.log)"
-  cat > "$C.yaml" <<YAML
-version: 4
-assets:
-  hut:
-    tool: $STILL
-    instructions: A red hut at the end of a wooden pier, as in <pier>.
-  pier:
-    tool: $STILL
-    instructions: A wooden pier with a red hut at its end, as in <hut>.
-YAML
-  cli_page yaml "$C" "$C.yaml" > project-cycle-yaml.log 2>&1 || cli_fail "the cycle's project.yaml: $(tail -c 300 project-cycle-yaml.log)"
+  jq -n --arg still "$STILL" '[
+    {name: "hut", tool: $still, kind: "image", fields: {instructions: "A red hut at the end of a wooden pier, as in <pier>."}},
+    {name: "pier", tool: $still, kind: "image", fields: {instructions: "A wooden pier with a red hut at its end, as in <hut>."}}
+  ]' | cli_page boxes "$C" > project-cycle-boxes.log 2>&1 || cli_fail "the cycle's boxes: $(tail -c 300 project-cycle-boxes.log)"
   (cd "$C" && "$CLI" status) > project-cycle.log 2>&1 || cli_fail "status refused a cycle of mentions: $(tail -c 300 project-cycle.log)"
   grep -q "pier mentions hut, which is made from it: that mention stays plain text" project-cycle.log \
     || cli_fail "status did not warn of the cycle: $(tail -c 300 project-cycle.log)"
@@ -139,19 +118,18 @@ YAML
   project_status "$P" project-status-2.json
   jq -e '.project.assets[] | select(.name == "place") | .approved == 2' project-status-2.json > /dev/null \
     || cli_fail "render place --approve did not approve version 2: $(jq -c '.project.assets[] | select(.name == "place")' project-status-2.json)"
-  # place renamed yard in project.yaml (and its mentions): yard keeps place's versions and its approval.
-  cli_page yaml "$P" | sed 's/^  place:/  yard:/; s/<place>/<yard>/g' > "$P.yaml"
-  cli_page yaml "$P" "$P.yaml" > project-yaml-2.log 2>&1 || cli_fail "the renamed project.yaml: $(tail -c 300 project-yaml-2.log)"
+  # place renamed yard (and its mentions): yard keeps place's versions and its approval.
+  cli_page rename "$P" place yard > project-rename.log 2>&1 || cli_fail "rename place yard: $(tail -c 300 project-rename.log)"
   project_status "$P" project-renamed.json
   jq -e '(.project.orphans // []) == [] and (.project.assets[] | select(.name == "yard") | .approved == 2 and .versions == 2)' project-renamed.json > /dev/null \
     || cli_fail "after rename, yard does not hold place's versions: $(jq -c '[.project.orphans, (.project.assets[] | select(.name == "yard"))]' project-renamed.json)"
   # A person's save while a render is under way stands.
   cli_page render "$P" --on "$M" --queue all > project-race.log 2>&1 || cli_fail "render all: $(tail -c 300 project-race.log)"
   for _ in $(seq 1 600); do cli_page board "$P" | jq -e '(.jobs // []) | length > 0' > /dev/null 2>&1 && break; sleep 1; done
-  cli_page yaml "$P" | sed 's/lead in the middle, facing the camera\./lead in the middle, facing the camera, hands in pockets./' > "$P.yaml"
-  cli_page yaml "$P" "$P.yaml" > project-save.log 2>&1 || cli_fail "a save during render all: $(tail -c 300 project-save.log)"
+  cli_page set "$P" two --fields "$(cli_page asset "$P" two | jq -c '{summary: (.asset.fields.summary | sub("facing the camera\\."; "facing the camera, hands in pockets."))}')" \
+    > project-save.log 2>&1 || cli_fail "a save during render all: $(tail -c 300 project-save.log)"
   for _ in $(seq 1 1800); do cli_page board "$P" | jq -e '[.jobs[]? | select(.state == "running" or .state == "waiting")] | length == 0' > /dev/null 2>&1 && break; sleep 2; done
-  grep -q "hands in pockets" <<< "$(cli_page yaml "$P")" || cli_fail "a save made during render all was lost"
+  cli_page asset "$P" two | jq -e '.asset.fields.summary | contains("hands in pockets")' > /dev/null || cli_fail "a save made during render all was lost"
 }
 [ -z "$ONLY" ] || [[ $ONLY == *",cli-project,"* ]] && project_cell
 
@@ -166,8 +144,9 @@ stall_cell() {
   for tool in curl jq; do command -v "$tool" > /dev/null || { cli_fail "stall: no $tool here"; return; }; done
   [ -s "$lock" ] || { cli_fail "stall: no Calcifer lock record at $lock"; return; }
   cli_new "$S" stall-new.log || { cli_fail "stall: cozy new: $(tail -c 300 stall-new.log)"; return; }
-  printf 'version: 4\nassets:\n  held:\n    tool: %s/project/tool.py/slow\n    instructions: A still that stops moving, %s.\n    seconds: 7000\n' "$e2e" "$R" > "$S.yaml"
-  cli_page yaml "$S" "$S.yaml" > stall-yaml.log 2>&1 || { cli_fail "stall: project.yaml: $(tail -c 300 stall-yaml.log)"; return; }
+  jq -n --arg tool "$e2e/project/tool.py/slow" --arg words "A still that stops moving, $R." \
+    '[{name: "held", tool: $tool, kind: "image", fields: {instructions: $words, seconds: 7000}}]' \
+    | cli_page boxes "$S" > stall-boxes.log 2>&1 || { cli_fail "stall: its box: $(tail -c 300 stall-boxes.log)"; return; }
   # What the page hears, from before the render.
   curl -sS -N --max-time 1500 -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/events" < /dev/null > "$stream" 2> stall-events.err & page=$!
   for _ in $(seq 50); do [ -s "$stream" ] && break; sleep 0.2; done
