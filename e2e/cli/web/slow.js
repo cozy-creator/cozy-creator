@@ -79,13 +79,13 @@ const HEAT = /GPU 0 ran throttled for heat 98% of its last run \(89 °C, \d+ of 
   seen.said = said;
   check('box_record_says_heat', said.some((message) => /GPU 0 ran throttled for heat 98% of this run/.test(message)), said);
   check('box_record_says_slow', said.some((message) => /took .*×.*Likely: .*throttled for heat/.test(message) || /has run .*×.*Likely: .*throttled for heat/.test(message)), said);
-  // Open, its warnings are its head's !, and pressed, its lines.
+  // Open, its warnings are its heading's !, and pressed, its lines.
   await openBox(page, 'hot_box');
-  const warned = page.locator('.card.here[data-asset="hot_box"] .iconb.warned');
+  const warned = page.locator('[data-focused-asset="hot_box"] .focus-heading .iconb.warned, .card.here[data-asset="hot_box"] .head .iconb.warned').first();
   const title = await until('the box warned', () => warned.getAttribute('title').catch(() => null), (now) => Boolean(now) && /throttled for heat/.test(now) && /×/.test(now), 30_000).catch(() => null);
   check('box_shows_it', title !== null, await warned.getAttribute('title').catch(() => null));
   await warned.click().catch(() => {});
-  const lines = await page.locator('.card.here[data-asset="hot_box"] .warned-lines').innerText().catch(() => '');
+  const lines = await page.locator('[data-focused-asset="hot_box"] .warned-lines, .card.here[data-asset="hot_box"] .warned-lines').first().innerText().catch(() => '');
   check('box_lines_say_it', /throttled for heat/.test(lines) && /×/.test(lines), lines);
   await shot('box');
 
