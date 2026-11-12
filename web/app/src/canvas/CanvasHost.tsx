@@ -297,7 +297,8 @@ function Canvas({
   shutNow.current = shut
   const focusTravel = useRef<{ owner: NonNullable<CanvasStore["inPlace"]>; body: Box; started?: boolean } | null>(null)
   const transition = useRef(0)
-  const returning = useRef<{ view: Viewport; until: number } | null>(null)
+  const returning = useRef<Viewport | null>(null)
+  const closingAddress = useRef<string | null>(null)
   // Once arrived, Focus fits and moves its own image camera.
   store.fitHere = () => {}
   store.enterFocus = (room) => {
@@ -323,12 +324,13 @@ function Canvas({
   const writeHere = useCallback(
     (name: string) => {
       name = store.resolveName(name)
+      closingAddress.current = null
       if (store.inPlace?.name === name) return
       const view = store.get(name)
       if (!view) return
       const pose = store.poseOf(name)
       const frame = pose && bodyBox(view, pose)
-      const back = store.inPlace?.back ?? (returning.current && performance.now() < returning.current.until ? returning.current.view : flow.getViewport())
+      const back = store.inPlace?.back ?? returning.current ?? flow.getViewport()
       transition.current += 1
       returning.current = null
       if (store.inPlace) {
@@ -359,8 +361,12 @@ function Canvas({
   const stopWriting = useCallback(() => {
     const held = store.inPlace
     const back = held?.back ?? focusTravel.current?.owner.back
-    if (!held && !back && toolsBeforeFocus.current === null) return
+    const palette = toolsBeforeFocus.current
+    if (!held && !back && palette === null) return
     const token = ++transition.current
+    // Store the return anchor before any subscribed state can render the old route.
+    if (back) returning.current = back
+    toolsBeforeFocus.current = null
     focusTravel.current = null
     store.inPlace = null
     store.closeSurface()
@@ -371,12 +377,8 @@ function Canvas({
     }
     store.focusEntering.set(false)
     store.focusedName.set(null)
-    if (toolsBeforeFocus.current !== null) {
-      setShut(toolsBeforeFocus.current)
-      toolsBeforeFocus.current = null
-    }
+    if (palette !== null) setShut(palette)
     if (back) {
-      returning.current = { view: back, until: performance.now() + HERE_MS }
       if (store.projectId) saveViewport(store.projectId, back)
       const returned = () => {
         if (transition.current !== token || store.inPlace) return
@@ -388,6 +390,7 @@ function Canvas({
   }, [store, flow])
   const leaveHere = useCallback(() => {
     if (!store.inPlace) return
+    closingAddress.current = store.inPlace.name
     stopWriting()
     navigate(to())
   }, [store, navigate, stopWriting, to])
@@ -396,10 +399,18 @@ function Canvas({
     if (store.focusedName.get() === null && toolsBeforeFocus.current !== null) stopWriting()
   }, [store, focusedName, stopWriting])
   store.hereRenamed = (name) => navigate(to(`assets/${encodeURIComponent(name)}`), { replace: true })
+  const enterAddressed = useCallback((name: string) => {
+    const current = openedNow.current
+    const resolved = store.resolveName(name)
+    if (!current || store.resolveName(current) !== resolved || closingAddress.current === resolved) return
+    writeHere(resolved)
+  }, [store, writeHere])
   // The address says which box is being worked on, so a reload or Back finds it, and anything else leaves it.
   useEffect(() => {
-    if (!opened) stopWriting()
-  }, [opened, stopWriting])
+    const current = openedNow.current
+    if (!current || store.resolveName(current) !== closingAddress.current) closingAddress.current = null
+    if (!current) stopWriting()
+  }, [opened, store, stopWriting])
   const picker = useRef<HTMLInputElement>(null)
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
   const pointer = useRef<{ x: number; y: number } | null>(null)
@@ -583,7 +594,7 @@ function Canvas({
 
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (store.focusedName.get() || (returning.current && performance.now() < returning.current.until)) return
+      if (store.focusedName.get() || returning.current) return
       if (store.projectId) saveViewport(store.projectId, viewport)
     },
     [store],
@@ -924,7 +935,7 @@ function Canvas({
         leaveHere()
         requestAnimationFrame(() => placer.addFile({ ...file, copy: true }, flow.screenToFlowPosition({ x, y })))
       }} />}
-      {opened && <Addressed name={opened} enter={writeHere} leave={leaveHere} />}
+      {opened && <Addressed name={opened} enter={enterAddressed} leave={leaveHere} />}
       {active && <AssetMenu />}
       {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
