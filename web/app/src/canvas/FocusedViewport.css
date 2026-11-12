@@ -284,8 +284,21 @@ body:has(.focus-viewport) .zoom {
   min-height: 0;
   overflow-y: auto;
 }
-.media:has(video.live) .video-pickup-action {
-  bottom: 52px;
+/* A video in Focus: its scrubber and Pick up from here, under it (cl-933). */
+.focus-viewport .video-scrub {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0 0;
+}
+.focus-viewport .video-scrub input[type="range"] {
+  width: 100%;
+  accent-color: var(--ember);
+}
+.focus-viewport .video-scrub .row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .image-tool-name {
   flex: 1;

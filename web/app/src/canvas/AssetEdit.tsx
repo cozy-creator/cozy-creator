@@ -731,7 +731,8 @@ function framed(view: ElementView, fields: ToolField[], tool: Tool | undefined):
 export function InFrame({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const field = view.asset && framed(view, fieldsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined)
+  // A picture or a video with no tool asks nothing: its words are a tool's to ask for (Paul, 11-12).
+  const field = view.asset && (view.asset.tool || view.asset.kind === "text") && framed(view, fieldsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined)
   if (!field) return null
   return (
     <div className="in-frame">
