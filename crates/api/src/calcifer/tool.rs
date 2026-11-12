@@ -109,6 +109,9 @@ pub struct Tool {
     /// What a checkpoint dropped on its box goes on: the one model its function runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ToolModel>,
+    /// Every declared model slot, including the full paths of slots in child calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ToolModel>,
 }
 
 /// The model a tool runs.
@@ -123,6 +126,12 @@ pub struct ToolModel {
     /// That checkpoint's family, as its header says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
+    /// The model class declared by the package; absent when an older interface did not name it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// This slot reads raw weights rather than constructing a model.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub weights: bool,
 }
 
 /// `GET /v1/tools/{id}/ui`: a tool's component, ready for the page to import.
@@ -248,6 +257,7 @@ pub fn edit() -> Tool {
         ui: None,
         pickup: None,
         model: None,
+        models: vec![],
         fields: vec![ToolField { field: "timeline".to_owned(), ty: FieldType::Timeline, label: "Video Timeline".to_owned(), ..ToolField::default() }],
     }
 }
@@ -295,6 +305,12 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
     let package = shown(package);
     let default = |field: &Field| callable.invocable.defaults.get(&format!("request/{}", field.name)).cloned().or_else(|| field.default.clone());
     let drawn = callable.request.fields.iter().filter(|field| !PLATFORM.contains(&field.name.as_str()));
+    let called = interface.call_slots(callable);
+    let mut seen = std::collections::BTreeSet::new();
+    let models = callable.models.iter().map(|slot| (&slot.param, slot))
+        .chain(called.iter().map(|slot| (&slot.path, *slot)))
+        .filter(|(key, _)| seen.insert((*key).clone()))
+        .map(|(key, slot)| model_slot(key, slot)).collect();
     Some(Tool {
         id: format!("{package}/{}", callable.name),
         name: box_name(&package, callable),
@@ -310,12 +326,19 @@ fn tool_of(package: &str, release: &str, interface: &Interface, callable: &Calla
         fields: drawn.filter_map(|field| field_of(field, default(field))).collect(),
         ui: declared.ui.clone(),
         pickup: pickup(&callable.request),
-        model: choices::main_model(&callable.models, &interface.call_slots(callable)).map(|slot| ToolModel {
-            slot: slot.param.clone(),
-            default: slot.default.clone(),
-            family: None,
-        }),
+        model: choices::main_model(&callable.models, &called).map(|slot| model_slot(&slot.param, slot)),
+        models,
     })
+}
+
+fn model_slot(key: &str, slot: &crate::interface::Slot) -> ToolModel {
+    ToolModel {
+        slot: key.to_owned(),
+        default: slot.default.clone(),
+        family: None,
+        class: (!slot.class.is_empty()).then(|| slot.class.clone()),
+        weights: slot.weights,
+    }
 }
 
 /// The frames a pickup of `request` may land on, when it takes one.
