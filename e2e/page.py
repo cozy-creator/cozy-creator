@@ -33,6 +33,8 @@ BASE, AUTH = "http://" + HOLDER["address"], {"Authorization": "Bearer " + HOLDER
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # A render whose names show no run and no new version for this long made nothing.
 IDLE_S = 600
+# What a version's main file is, and how long it may take to land here once the version stands.
+MEDIA, LAND_S = ("image", "video", "audio"), 900
 
 
 def call(method: str, route: str, body: bytes | None = None, kind: str = "application/json", timeout: float = 60) -> Json:
@@ -91,7 +93,7 @@ def render(args: argparse.Namespace) -> int:
     if args.pickup:
         ask["pickup"] = {"take": args.pickup[0], "out_frame": int(args.pickup[1])}
     print(json.dumps({"on": on, "asked": call("POST", project(args.project) + "/runs", json.dumps(ask).encode())}), flush=True)
-    left, quiet, failed = dict(before), time.monotonic(), False
+    left, quiet, failed, made = dict(before), time.monotonic(), False, dict[str, float]()
     while left:
         time.sleep(3)
         for name in list(left):
@@ -99,9 +101,19 @@ def render(args: argparse.Namespace) -> int:
             row, versions = cast(Json, state["asset"]), cast(list[Json], state["versions"])
             if row.get("making"):
                 quiet = time.monotonic()
-            if len(versions) >= left[name] + args.n or (row.get("failure") and not row.get("making")):
+            new, absent = versions[left[name]:], list[str]()
+            if len(new) >= args.n:
+                # A version stands before its picture, clip or sound has landed here: followed until it has (LAND_S at most).
+                made.setdefault(name, time.monotonic())
+                absent = [key for version in new for key, file in cast(Json, version["files"]).items() if key in MEDIA and cast(Json, file).get("absent")]
+                if absent and time.monotonic() - made[name] < LAND_S:
+                    quiet = time.monotonic()
+                    continue
+                if absent:
+                    print(f"{name}: {', '.join(absent)} not here {LAND_S} s after its version stood", file=sys.stderr)
+            if len(new) >= args.n or (row.get("failure") and not row.get("making")):
                 print(json.dumps(state), flush=True)
-                failed |= len(versions) < left[name] + args.n
+                failed |= len(new) < args.n or bool(absent)
                 del left[name]
         if left and time.monotonic() - quiet > IDLE_S:
             print(f"nothing made of {', '.join(left)} in {IDLE_S} s", file=sys.stderr)
