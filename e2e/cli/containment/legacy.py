@@ -706,7 +706,8 @@ def released_client_refused(released: Path, project: Path, run: dict, target: st
             ("released_open", ("open",)),
             ("released_vault_lock", ("vault", "lock")),
             ("released_vault_unlock", ("vault", "unlock", "--passphrase-file", "-")),
-            ("released_new", ("new", str(fresh))))
+            # Its default is an encrypted project: the passphrase comes on stdin, as a person's would.
+            ("released_new", ("new", str(fresh), "--passphrase-file", "-")))
     refused = 0
     for case, words in asks:
         result = subprocess.run([str(released), "--json", *words], cwd=project, input=os.urandom(16).hex().encode() + b"\n",
