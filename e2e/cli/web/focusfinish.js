@@ -9,7 +9,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, importYaml, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, STEP_MS } = require('./page');
+const { addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, STEP_MS } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const TOOL = `# /// script
@@ -96,7 +96,8 @@ async function died(why) {
 
   const tool = join(folder, `focusfinish_${Date.now()}.py`);
   writeFileSync(tool, TOOL);
-  importYaml(folder, `version: 4\nassets:\n  card:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n`);
+  // Its kind given, Calcifer reads nothing of the tool before its first render installs it.
+  addBoxes(folder, [{ name: 'card', tool: `${tool}/draw`, kind: 'image', fields: { instructions: 'A still of one colour.' } }]);
   const here = page.locator('.card.here[data-asset="card"]');
   const take = (number) => here.locator(`.here-side .take[data-take="${number}"]`);
   const toast = (text) => page.locator('.notes .note', { hasText: text });

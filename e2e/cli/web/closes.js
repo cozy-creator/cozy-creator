@@ -70,17 +70,18 @@ function generated(folder) {
     measured[`sha256:${hex}`] = { width, height };
   };
   const hash = (word) => sha(Buffer.from(`${folder} ${word}`));
-  const lines = ['version: 4', 'assets:'];
+  // Each box in order, its fields as stored: [[field, value], …].
+  const boxes = [];
   const assets = {};
   const words = 'The colossal blue whale rises through a storm, lit from below, the sea torn white around it, and the small boat holds. '.repeat(3);
   for (let i = 0; i < PICTURES; i++) {
     const hex = hash(`picture ${i}`);
     file(hex, 'square');
-    lines.push(`  pic_${i}: {approved: "${hex.slice(0, 12)}"}`);
+    boxes.push({ name: `pic_${i}`, fields: [['approved', hex.slice(0, 12)]] });
   }
   for (let i = 0; i < ASSETS - PICTURES; i++) {
     const name = `shot_${i}`;
-    lines.push(`  ${name}:`, `    tool: ${TOOL}/still`, `    instructions: ${words}<pic_${i % PICTURES}> and <pic_${(i * 7) % PICTURES}>.`, '    aspect_ratio: "16:9"');
+    boxes.push({ name, fields: [['tool', `${TOOL}/still`], ['instructions', `${words}<pic_${i % PICTURES}> and <pic_${(i * 7) % PICTURES}>.`], ['aspect_ratio', '16:9']] });
     const versions = [1, 2].map((number) => {
       const hex = hash(`${name} ${number}`);
       file(hex, 'wide');
@@ -92,7 +93,7 @@ function generated(folder) {
   const cards = {};
   for (let i = 0; i < ASSETS - PICTURES; i++) cards[`shot_${i}`] = { x: (i % side) * 300, y: Math.floor(i / side) * 320, w: 260 };
   for (let i = 0; i < PICTURES; i++) cards[`pic_${i}`] = { x: ((ASSETS - PICTURES + i) % side) * 300, y: Math.floor((ASSETS - PICTURES + i) / side) * 320, w: 260 };
-  const seeded = seedCurrentProject(folder, { authored: `${lines.join('\n')}\n`, assets, makes: { [`${TOOL}/still`]: 'image' }, measured, cards,
+  const seeded = seedCurrentProject(folder, { boxes, assets, makes: { [`${TOOL}/still`]: 'image' }, measured, cards,
     expected_assets: ASSETS, expected_versions: (ASSETS - PICTURES) * 2 });
   for (const shape of Object.keys(seeds)) rmSync(seedOf(shape));
   return seeded;

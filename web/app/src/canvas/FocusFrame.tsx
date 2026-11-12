@@ -13,7 +13,10 @@ export const useFocusResize = () => useContext(ResizeContext)
 const UI = "button, input, select, textarea, a, video, audio, [contenteditable], [role=slider], .tl, .orbit"
 
 /** Image-space pan/zoom never changes the Wander camera. */
-export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabled: boolean; aspect: number; fitted?: boolean; children: ReactNode }) {
+/** What sits right under the frame, at its right (a video's Pick up from here): its row's height is kept out of the fit. */
+const UNDER = 44
+
+export function FocusFrame({ enabled, aspect, fitted = true, under, children }: { enabled: boolean; aspect: number; fitted?: boolean; under?: ReactNode; children: ReactNode }) {
   const store = useCanvasStore()
   const element = useRef<HTMLDivElement>(null)
   const [room, setRoom] = useState({ width: 0, height: 0 })
@@ -24,7 +27,8 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
   cameraNow.current = camera
   const dragging = useRef<{ id: number; x: number; y: number; from: Camera } | null>(null)
   const moved = useRef(false)
-  const fitWidth = fitted && room.width && room.height ? Math.min(room.width, room.height * aspect) : room.width
+  const roomHeight = Math.max(0, room.height - (under ? UNDER : 0))
+  const fitWidth = fitted && room.width && roomHeight ? Math.min(room.width, roomHeight * aspect) : room.width
   const fitHeight = fitted && fitWidth ? fitWidth / aspect : room.height
   const width = resize?.width ?? fitWidth
   const height = resize?.height ?? fitHeight
@@ -123,7 +127,10 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
       setCamera(bound({ ...start.from, x: start.from.x + event.clientX - start.x, y: start.from.y + event.clientY - start.y }))
     }
   }} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
-    <div className="focus-image-transform" style={{ width: width || "100%", height: height || "100%", transform: fitted ? `translate(${shown.x}px, ${shown.y}px) scale(${shown.scale})` : "none" }}>{children}</div>
+    <div className="focus-stack">
+      <div className="focus-image-transform" style={{ width: width || "100%", height: height || "100%", transform: fitted ? `translate(${shown.x}px, ${shown.y}px) scale(${shown.scale})` : "none" }}>{children}</div>
+      {under && <div className="focus-under" style={{ width: width || "100%" }}>{under}</div>}
+    </div>
     {fitted && <div className="focus-image-zoom" role="toolbar" aria-label="Image zoom">
       <button type="button" className="tb" aria-label="Zoom out image" disabled={camera.scale <= 1} onClick={() => zoom(0.8, true)}>−</button>
       <button type="button" className="tb" aria-label="Zoom in image" disabled={camera.scale >= 8} onClick={() => zoom(1.25, true)}>+</button>

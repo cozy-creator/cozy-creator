@@ -54,9 +54,13 @@ lora_ab() {
 lora_ab moss-axiom moss-image generate \
   hf://axiomofmind/Moss-image-nsfw-uncensored-lora@5f24e258ebb2a7d8aa77ee4940504dd57b54d5b9/MOSS-Image-NSFW-Uncensored-LoRA-ComfyUI.safetensors - - \
   prompt="moss_xvstyle, a woman sitting by a window in soft morning light, photo" seed:=$((R + 41))
-lora_ab moss-sagging moss-image generate civitai://3437772 - - \
+# Civitai answers a pod HTTP 451 (11-12), so the rows read Hugging Face copies: Danrisi's Lenovo UltraReal (AI-Toolkit,
+# ComfyUI's fused proj.qkv) from mossloras' archive, and ACCC1380's realstyle2 (kohya's networks.lora_anima).
+lora_ab moss-lenovo moss-image generate \
+  hf://mossloras/moss-image-lora-archive@c585b695025a70c7da77e6b86e732d5854c451ea/2026-10-17/MOSS-Image/1662740_Lenovo-UltraReal/3410543/lenovo_moss.safetensors - - \
   prompt="a woman in a loose linen dress in a sunlit kitchen, photo" seed:=$((R + 42))
-lora_ab anima-sagging anima generate civitai://3052892 - - \
+lora_ab anima-realstyle anima generate \
+  hf://ACCC1380/realstyle2_anima@86c3a5b72c97daefe1d99492e3d211650436d789/realstyle2_anima.safetensors - - \
   prompt="masterpiece, best quality, 1girl, white sundress, standing in a flower field" seed:=$((R + 43))
 lora_ab qwen-edit-nsfw qwen-image generate_turbo \
   hf://ScottzillaSystems/qwen-image-edit-plus-nsfw-lora@66e89e998dd4ea1a359c4bf0dd5e17d2f0b06ef0/qwen-image-edit-plus-nsfw-lora.safetensors - edit_model \
@@ -76,7 +80,7 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",lokr-refused,"* ]]; then
 fi
 # An Anima LoRA on MOSS Image fails at its run (another family); it never runs as if it applied.
 if [ -z "$ONLY" ] || [[ $ONLY == *",wrong-family,"* ]]; then
-  lora_upload wrong-family civitai://3052892 -
+  lora_upload wrong-family hf://ACCC1380/realstyle2_anima@86c3a5b72c97daefe1d99492e3d211650436d789/realstyle2_anima.safetensors -
   if [ -n "$LORA_COMMIT" ]; then
     cell wrong-family "$(pkg moss-image generate)" --lora "$LORA_MODEL@$LORA_COMMIT,1.0" prompt="a red bicycle, photo" seed:=$((R + 47))
     why=$(run_get "$OUT" wrong-family '.reason.message')
@@ -85,3 +89,33 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",wrong-family,"* ]]; then
     lora_delete wrong-family
   fi
 fi
+
+# MOSS Image's built-in edits (xs-184 phase 2): a prompt mentioning pictures runs under Moss-Image-Edit with no --lora;
+# image_to_image remakes a picture. Judged by eye (previews); each must complete with a picture. `only=moss-edit` runs all.
+moss_cell() {  # moss_cell <name> <function> [args...]
+  local name=$1 fn=$2 SAVED=$ONLY
+  shift 2
+  [ -z "$ONLY" ] || [[ $ONLY == *",$name,"* || $ONLY == *",moss-edit,"* ]] || return 0
+  [ -z "$ONLY" ] || ONLY="$ONLY$name,"
+  cell "$name" "$(pkg moss-image "$fn")" "$@"
+  expect "$name-made" "$([ -n "$(output "$name" 'png|webp|jpg')" ] && echo PASS || echo FAIL)" \
+    "run $(cat "$name.number"): $(run_get "$OUT" "$name" .status)"
+  ONLY=$SAVED
+}
+# The gate's reference picture is a place, so MOSS makes the person the edits start from.
+moss_cell moss-person generate seed:=$((R + 49)) \
+  prompt="a full-body photo of a young woman in a plain white t-shirt and jeans standing in a city park, natural light"
+SUBJECT=$(output moss-person 'png|webp|jpg')
+SUBJECT=${SUBJECT:-$REF}
+PERSON="[{\"name\": \"Person\", \"image\": \"$SUBJECT\"}]"
+moss_cell moss-edit-red generate seed:=$((R + 50)) references:="$PERSON" \
+  prompt="Change only the clothing of <Person> to a bright red jacket. Keep the face, hair, pose and background unchanged."
+moss_cell moss-edit-beach generate seed:=$((R + 51)) references:="$PERSON" \
+  prompt="Put <Person> on a sunny beach with the sea behind, keeping the person unchanged."
+moss_cell moss-edit-watercolor generate seed:=$((R + 52)) references:="$PERSON" prompt="Turn <Person> into a soft watercolor painting."
+moss_cell moss-hat generate seed:=$((R + 53)) prompt="a straw sun hat with a blue ribbon on a white table, studio photo"
+HAT=$(output moss-hat 'png|webp|jpg')
+[ -z "$HAT" ] || moss_cell moss-edit-two generate seed:=$((R + 54)) \
+  references:="[{\"name\": \"Person\", \"image\": \"$SUBJECT\"}, {\"name\": \"Hat\", \"image\": \"$HAT\"}]" \
+  prompt="<Person> wearing the hat from <Hat>, keeping the person, pose and background unchanged."
+moss_cell moss-img2img image_to_image --file image="$SUBJECT" prompt="an oil painting, thick brush strokes" strength:=0.6 seed:=$((R + 55))

@@ -377,8 +377,6 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
   const stopRef = useRef<() => void>(() => {})
   const wanted = useRef<number | null>(from ?? null)
   const asked = useRef(seek?.ask ?? 0)
-  // Scrubbed, it holds the frame it was taken to, playing only when played.
-  const still = useRef(false)
 
   useEffect(() => () => stopRef.current(), [])
   // Asked to play at once: once it's there, so React's second mount in development doesn't stop it.
@@ -405,11 +403,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
     if (!seek || seek.ask === asked.current) return
     asked.current = seek.ask
     wanted.current = seek.at
-    still.current = Boolean(seek.still)
-    if (element.current) {
-      element.current.currentTime = seek.at
-      if (still.current) element.current.pause()
-    }
+    if (element.current) element.current.currentTime = seek.at
     setState((now) => (now === "idle" ? "waiting" : now))
   }, [seek])
 
@@ -443,7 +437,7 @@ export function Player({ field, path, machine, seek, auto, from, onTime }: { fie
         setState("playing")
         if (wanted.current !== null) el.currentTime = wanted.current
         wanted.current = null
-        if (!still.current) el.play().catch(() => {})
+        el.play().catch(() => {})
       })
       .catch((error: unknown) => {
         if (!waiting.signal.aborted) failed(error instanceof Error ? error.message : String(error))
@@ -666,6 +660,74 @@ function MadeFrom({ view, name, run, cardWidth }: { view: ElementView; name: str
   return <Ghosts name={name} view={view} mentions={mentionsIn(words)} cardWidth={cardWidth} />
 }
 
+/** A picture laid out by `Spread`: its file, else a frame at its shape for one with nothing made yet. */
+export interface SpreadPicture {
+  key: string
+  sha256?: string
+  /** Width over height, while its file isn't read yet or for a frame. */
+  shape?: number
+  making?: boolean
+}
+
+/** How many rows `aspects` fill a frame of `frame` (width over height) best: each row an even share of the height, its pictures even shares
+ *  of the width, each covering its cell, so the rows that crop them least, the fewest on a tie. */
+function rowsFor(aspects: number[], frame: number): number {
+  let best = 1
+  let most = -1
+  for (let rows = 1; rows <= aspects.length; rows++) {
+    const per = Math.ceil(aspects.length / rows)
+    let kept = 0
+    for (let row = 0; row < rows; row++) {
+      const these = aspects.slice(row * per, (row + 1) * per)
+      const cell = (frame * rows) / Math.max(1, these.length)
+      for (const aspect of these) kept += Math.min(aspect / cell, cell / aspect)
+    }
+    if (kept / aspects.length > most + 1e-6) [best, most] = [rows, kept / aspects.length]
+  }
+  return best
+}
+
+/** Every picture, filling its frame as large as they can (cl-949, Paul 11-12: "as large as possible in the background, full-bleed where
+ *  possible"): side by side at full height when they fit, else the even grid that crops them least; never one picked. What's being made
+ *  shows at rest (`Making`) and what's being written in Focus (`Backdrop`) lay out the same. */
+export function Spread({ pictures, cardWidth, className }: { pictures: SpreadPicture[]; cardWidth: number; className?: string }) {
+  const element = useRef<HTMLDivElement>(null)
+  const [frame, setFrame] = useState(16 / 9)
+  const [read, setRead] = useState<Record<string, number>>({})
+  useLayoutEffect(() => {
+    const held = element.current
+    if (!held) return
+    const measure = () => held.clientWidth > 0 && held.clientHeight > 0 && setFrame(held.clientWidth / held.clientHeight)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(held)
+    return () => observer.disconnect()
+  }, [])
+  if (!pictures.length) return null
+  const rows = rowsFor(pictures.map((picture) => read[picture.key] ?? picture.shape ?? 1), frame)
+  const per = Math.ceil(pictures.length / rows)
+  const lines = Array.from({ length: rows }, (_, row) => pictures.slice(row * per, (row + 1) * per)).filter((line) => line.length)
+  return (
+    <div ref={element} className={`spread ${className ?? ""}`} data-rows={lines.length}>
+      {lines.map((line, row) => (
+        <div key={row} className="spread-row">
+          {line.map((picture) => (
+            <span key={picture.key} className="spread-picture" data-picture={picture.key}>
+              {picture.sha256 ? (
+                <Thumb sha256={picture.sha256} cardWidth={cardWidth / per} now onSize={(aspect) => setRead((was) => (was[picture.key] === aspect ? was : { ...was, [picture.key]: aspect }))} />
+              ) : (
+                <svg className={`ghost-blank ${picture.making ? "making" : ""}`} viewBox={`0 0 ${100 * (picture.shape ?? 1)} 100`} preserveAspectRatio="xMidYMid meet">
+                  <rect x="2" y="2" width={100 * (picture.shape ?? 1) - 4} height="96" rx="3" />
+                </svg>
+              )}
+            </span>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** The pictures and videos a run was sent, by their files, from every prompt it was sent (binder.rs `prompt`: a Shot's summary and its
  *  beats alike), each once: none when no prompt says anything of them. */
 function sentPictures(input: unknown): string[] | undefined {
@@ -710,9 +772,7 @@ function Making({ view, name, run, cardWidth }: { view: ElementView; name: strin
     <div className="making" data-making={run ?? ""}>
       {pictures.length > 0 && (
         <div className="making-pictures" aria-hidden>
-          {pictures.map((sha256) => (
-            <Thumb key={sha256} sha256={sha256} cardWidth={cardWidth / pictures.length} className="making-picture" />
-          ))}
+          <Spread pictures={pictures.map((sha256) => ({ key: sha256, sha256 }))} cardWidth={cardWidth} />
         </div>
       )}
       {words?.trim() && (

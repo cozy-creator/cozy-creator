@@ -14,7 +14,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
+const { projectFromPage, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, addBoxes, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 // A still made in slow steps, so its tile is seen rendering at both zooms; it's canceled from its tile.
@@ -160,7 +160,11 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
   writeFileSync(shotTool, REEL);
 
   // A box this computer renders; a picture with Qwen's Image and a video with H3's Shot, each with a take; a picture with no tool.
-  importYaml(project, `version: 4\nassets:\n  slow:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n  again:\n    tool: ${tool}/draw\n    instructions: Another still, as warm as <plain>.\n    pace: 0.3\n  reel:\n    tool: ${shotTool}/reel\n    summary: The sea at dusk, the light of <plain>.\n`);
+  addBoxes(project, [
+    { name: 'slow', tool: `${tool}/draw`, kind: 'image', fields: { instructions: 'A still of one colour.' } },
+    { name: 'again', tool: `${tool}/draw`, kind: 'image', fields: { instructions: 'Another still, as warm as <plain>.', pace: 0.3 } },
+    { name: 'reel', tool: `${shotTool}/reel`, kind: 'video', fields: { summary: 'The sea at dusk, the light of <plain>.' } },
+  ]);
   const tools = [...((await api(`/v1/tools?project=${id}&q=qwen`)).body?.tools ?? []), ...((await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? [])];
   const image = tools.find((one) => one.package === 'qwen-image-2' && one.makes === 'image');
   const video = tools.find((one) => one.id === 'minimax-h3/generate') ?? tools.find((one) => one.package === 'minimax-h3' && one.makes === 'video');
@@ -361,7 +365,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
   check('open_still_edits', (await page.locator('.card.here[data-asset="still"] button[aria-label="Edit image"]').count()) === 1);
   await closeBox(page);
   await openBox(page, 'shot');
-  check('open_video_picks_up', (await page.locator('.card.here[data-asset="shot"] button:text-is("Pick up from here")').count()) >= 1);
+  check('open_video_picks_up', (await page.locator('.card.here[data-asset="shot"] button.pick-up').count()) >= 1);
   await shot('open-shot');
   await closeBox(page);
 

@@ -9,7 +9,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, importYaml, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, yamlOf, STEP_MS } = require('./page');
+const { addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, storedOf, until, STEP_MS } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 // A still made in steps of `pace` s, so a render lasts long enough to be seen at rest.
@@ -97,7 +97,8 @@ async function died(why) {
 
   const tool = join(folder, `newtakes_${Date.now()}.py`);
   writeFileSync(tool, TOOL);
-  importYaml(folder, `version: 4\nassets:\n  card:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n    pace: 0.6\n`);
+  // Its kind given, Calcifer reads nothing of the tool before its first render installs it.
+  addBoxes(folder, [{ name: 'card', tool: `${tool}/draw`, kind: 'image', fields: { instructions: 'A still of one colour.', pace: 0.6 } }]);
   const rest = page.locator('.react-flow__node .card[data-asset="card"]');
   const here = page.locator('.card.here[data-asset="card"]');
   const take = (number) => here.locator(`.take[data-take="${number}"]`);
@@ -201,11 +202,11 @@ async function died(why) {
   check('name_dot', (await until('a dot by its name', nameDots, (n) => n === 1, 15_000).catch(() => 0)) === 1);
   await shot('unseen');
 
-  // A reload keeps it: it's Calcifer's, not the page's. It's no project data: the export says nothing of it.
+  // A reload keeps it: it's Calcifer's, not the page's. It's no project data: project.db's boxes say nothing of it.
   await page.reload();
   await rest.waitFor();
   check('reload_keeps_name_dot', (await until('the dot after a reload', nameDots, (n) => n === 1, 15_000).catch(() => 0)) === 1);
-  check('not_in_the_project', !/unseen/.test(yamlOf(folder)), yamlOf(folder));
+  check('not_in_the_project', !/unseen/.test(JSON.stringify(storedOf(folder))), storedOf(folder));
 
   // Open: the approved take is what's shown, and only the new take has a dot in its list.
   await openBox(page, 'card');
