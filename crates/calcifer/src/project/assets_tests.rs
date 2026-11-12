@@ -225,9 +225,10 @@ async fn typed_nodes_fixture() {
     landing.record(None, &first, "image", folder::Version {
         files: folder::Files::from([("image".to_owned(), hash.clone())]), ..Default::default()
     }, "version", false, |_| {}).unwrap();
+    // A box's first take is its state, not approved (cl-908).
     let first_doc = Doc::load(&series.folder).unwrap();
     assert_eq!(first_doc.stand(&series.folder.lock().unwrap())[first_doc.find(&first).unwrap()].version(), Some(1));
-    assert!(first_doc.assets[first_doc.find(&first).unwrap()].pin.is_some());
+    assert!(first_doc.assets[first_doc.find(&first).unwrap()].pin.is_none());
 
     // A current image remains renderable, while a reader's completed selected
     // input is independent of another generation of that image.

@@ -193,7 +193,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
           {asset.kind === "image" && <span className="variant-number" aria-hidden="true">v{version.number}</span>}
           <button
             type="button"
-            className={`take ${shown?.number === version.number ? "on" : ""} ${asset.pinned && version.number === (asset.approved ?? asset.version) ? "approved" : ""} ${view.slid === version.number ? "fresh" : ""}`}
+            className={`take ${shown?.number === version.number ? "on" : ""} ${asset.pinned && version.number === asset.approved ? "approved" : ""} ${view.slid === version.number ? "fresh" : ""}`}
             aria-label={`${asset.noun} ${version.number}`}
             aria-pressed={shown?.number === version.number}
             title={[`${asset.noun} ${version.number}`, version.execution_ms ? took(version.execution_ms) : "", version.pickup ? `picked up from ${version.pickup.take.slice(1, -1)} at frame ${version.pickup.out_frame}` : "", version.number === asset.approved ? "approved" : ""].filter(Boolean).join(", ")}
@@ -699,7 +699,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   return (
     <div
       ref={self}
-      className={`card ${focused ? "focus-card" : ""} ${parameterTool ? "focus-parameter-tool focus-new-video" : ""} ${hasFocusMedia ? "has-focus-media" : ""} ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === (view.asset.approved ?? view.asset.version) ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${focused ? "focus-card" : ""} ${parameterTool ? "focus-parameter-tool focus-new-video" : ""} ${hasFocusMedia ? "has-focus-media" : ""} ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === view.asset.approved ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
       style={style}
