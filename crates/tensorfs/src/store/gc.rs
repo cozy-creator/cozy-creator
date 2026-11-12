@@ -130,8 +130,7 @@ impl Store {
             return Err(invalid(self.root(), "local removal requires a cache store"));
         }
         let mut collections = self.collections.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let fence = super::retention::fence_file(self)?;
-        fence.lock().map_err(fail("lock", self.root()))?;
+        let _fence = super::retention::exclusive(self)?;
         let _refs = self.lock("refs")?;
         self.restore_trash()?;
         let Some(model) = self.get_ref(name)? else { return Ok(RemovedModel::default()) };
