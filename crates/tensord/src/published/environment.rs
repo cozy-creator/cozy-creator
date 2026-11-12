@@ -251,8 +251,11 @@ impl Publisher {
                             let why = format!("its requirements refuse this machine's ({})", ranges.join("; "));
                             return Err(self.unspoken(env, project, &theirs, &why, true));
                         }
-                        fallback.push(format!("its lock's {} can't speak this machine's executor protocol: it runs on this machine's {}; {}",
-                            shown(&theirs), shown(&self.machine_pair()), relock(project, false)));
+                        // The open RC's Runtime runs released packages as a matter of course (cl-952): nothing to say.
+                        if !self.machine_pair().get("cozy-runtime").is_some_and(|runtime| rc_build(runtime)) {
+                            fallback.push(format!("its lock's {} can't speak this machine's executor protocol: it runs on this machine's {}; {}",
+                                shown(&theirs), shown(&self.machine_pair()), relock(project, false)));
+                        }
                         fallback.extend(checked(&found));
                     }
                     Ok(found) => fallback.extend(checked(&found)),
@@ -848,6 +851,11 @@ fn rc_admitted(line: &str) -> bool {
     let mut parts = line.split('`');
     let (Some(required), Some(installed)) = (parts.nth(3), parts.nth(1)) else { return false };
     SDK.iter().any(|name| api::release::required([required], name).is_some_and(|versions| api::release::runs(&versions, installed)))
+}
+
+/// Whether a Runtime is the open RC's build: the next minor's dev release (`0.46.0.dev312+g1a2b3c4d`, cl-952).
+fn rc_build(runtime: &str) -> bool {
+    Version::from_str(runtime).is_ok_and(|version| version.is_dev() && !version.is_pre() && !version.is_post())
 }
 
 /// What uv's check found that the pair added, as the run's warning.
