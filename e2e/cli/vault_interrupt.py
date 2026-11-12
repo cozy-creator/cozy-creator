@@ -23,7 +23,7 @@ def main() -> None:
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     url = f"http://{holder['address']}/v1/projects/{urllib.parse.quote(str(project), safe='')}/vault/operations/{uuid.uuid4().hex}"
     body = json.dumps({"action": "encrypt", "passphrase": credential.read_text().strip(), "idle_timeout_s": 0}).encode()
-    headers = {"Authorization": f"Bearer {holder['token']}", "Content-Type": "application/json", "Accept": "text/event-stream"}
+    headers = {"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3", "Content-Type": "application/json", "Accept": "text/event-stream"}
     request = urllib.request.Request(url, data=body, headers=headers, method="PUT")
     seen: dict[str, int] = {}
     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=300) as stream:

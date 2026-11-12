@@ -49,11 +49,11 @@ const NAMES = ['light', 'dark', 'middle'];
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const canvas = page.url();
   const { id } = await projectFromPage(page);
-  const session = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = async (path, method = 'GET', body) => {
     const answer = await fetch(base + path, {
       method,
-      headers: { Authorization: `Bearer ${session.token}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${session.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const value = await answer.json().catch(() => null);

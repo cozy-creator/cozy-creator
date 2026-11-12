@@ -42,7 +42,7 @@ async function sentTree(base, token, root) {
     entry.isDirectory() ? (entry.name === '__pycache__' ? [] : walk(join(dir, entry.name))) : [join(dir, entry.name)]);
   const put = async (bytes) => {
     const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-    const answer = await fetch(`${base}/v1/files/${digest}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' }, body: bytes });
+    const answer = await fetch(`${base}/v1/files/${digest}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/octet-stream' }, body: bytes });
     if (!answer.ok) throw new Error(`PUT ${digest}: ${answer.status} ${await answer.text()}`);
     return digest;
   };
@@ -153,9 +153,9 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const documentAnswer = await signIn(page);
   const pagePolicy = documentAnswer.headers()['content-security-policy'];
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;

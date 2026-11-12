@@ -52,9 +52,9 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
   const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
@@ -390,7 +390,7 @@ async function died(why) {
     await (await renderOf(page, 'other')).click();
     const third = await until('editing an older version appends v3', () => asset('other'), (row) => row.versions === 3 && !row.making?.length, 5 * STEP_MS);
     check('editing_old_version_keeps_forward_history', third.version === 3 && third.prefixes.map((row) => row.number).join() === '1,2,3' && shaOf(third, 1) === originalSha && shaOf(third, 2) === shaOf(second, 2), third.prefixes);
-    const inputOf = async (row, number) => (await api(`/v1/runs/${row.prefixes.find((version) => version.number === number).run}?detail=full`)).body?.request?.input;
+    const inputOf = async (row, number) => (await api(`${at}/runs/${row.prefixes.find((version) => version.number === number).run}?detail=full`)).body?.request?.input;
     const editedFrom = await inputOf(third, 3);
     check('edit_reads_the_selected_source_version', editedFrom?.instructions?.references?.length === 1 && editedFrom.instructions.references[0].file === originalSha, editedFrom);
     addBoxes(folder, [{ name: 'current_reader', tool: `${fixture}/wait`, fields: { instructions: '<other> now, with <other.1> kept.' } }]);
@@ -430,7 +430,7 @@ async function died(why) {
     await post(`${at}/assets`, { name: 'canceled_edit', exact: true, kind: 'image', tool: `${fixture}/wait`, fields: { instructions: 'Do not retain a canceled image.', seconds: 30 } });
     await render(['canceled_edit'], `canceled-edit-${Date.now()}`);
     const running = await until('image run is active before cancellation', () => asset('canceled_edit'), (row) => row.making?.length === 1, 2 * STEP_MS);
-    const canceled = await post(`/v1/runs/${running.making[0]}/cancel`, {});
+    const canceled = await post(`${at}/runs/${running.making[0]}/cancel`, {});
     check('image_render_can_be_canceled', canceled.status === 200, canceled);
     const canceledImage = await until('canceled image run leaves no work', () => asset('canceled_edit'), (row) => !row.making?.length, 2 * STEP_MS);
     check('canceled_render_adds_no_version', canceledImage.versions === 0 && !canceledImage.sha256, canceledImage);

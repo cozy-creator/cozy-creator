@@ -33,7 +33,7 @@ import urllib.request
 holder = json.loads((Path.home() / '.cozy/calcifer/calcifer.lock.holder').read_text())
 body = json.dumps({'path': str(Path.cwd()), 'unencrypted': True}).encode()
 request = urllib.request.Request('http://' + holder['address'] + '/v1/projects', data=body, method='POST',
-    headers={'Authorization': 'Bearer ' + holder['token'], 'Content-Type': 'application/json'})
+    headers={'Authorization': 'Bearer ' + holder['token'], 'cozy-project-storage': '3', 'Content-Type': 'application/json'})
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 with opener.open(request, timeout=30) as response:
     if not json.load(response).get('id'):

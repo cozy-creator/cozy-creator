@@ -13,7 +13,7 @@ project_api() {
   cozy --json machine ls > /dev/null || return
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
   encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
-  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
+  curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
 }
 project_import() {
   local directory=$1 file=$2 name=${3:-} source holder=$HOME/.cozy/calcifer/calcifer.lock.holder
@@ -38,7 +38,7 @@ fixture_calcifer() {
 fixture_projects() {
   cozy --json machine ls > /dev/null || return
   local holder=$HOME/.cozy/calcifer/calcifer.lock.holder
-  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" "http://$(jq -r .address "$holder")/v1/projects"
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "http://$(jq -r .address "$holder")/v1/projects"
 }
 # The starter film is fixture data, created through Calcifer's existing project API.
 starter_project() {
@@ -47,7 +47,7 @@ starter_project() {
   directory=$(cd "$directory" && pwd)
   [ "${RUNNER_OS:-}" != Windows ] || directory=$(cygpath -w "$directory")
   cozy --json machine ls > /dev/null || return
-  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'Content-Type: application/json' \
+  curl -fsS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' -H 'Content-Type: application/json' \
     -d "$(jq -n --arg path "$directory" '{path: $path, starter: true, unencrypted: true}')" "http://$(jq -r .address "$holder")/v1/projects"
 }
 
@@ -96,8 +96,8 @@ PY
 }
 # owed <project>: how many runs its walk has pending.
 owed() { sql1 "$1" "SELECT count(*) FROM walk, json_each(walk.record, '\$.pending')"; }
-# api <curl args…>: Calcifer, with the bearer of its lock record.
-api() { curl -sS -H "Authorization: Bearer $TOKEN" "$@"; }
+# api <curl args…>: Calcifer, with the bearer of its lock record, on project storage protocol 3.
+api() { curl -sS -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "$@"; }
 # status <project>: what status says. Why it can't be read goes to the log, and an answer the CLI can't read is a failure of its own.
 status() { project_api "$1" '' 2> "$OUT/status.err"; }
 # row <project> <asset> <jq>: that of its row in status.
@@ -203,10 +203,10 @@ local R=$OUT/stream log=$OUT/events.sse other=$OUT/events-unrelated.sse stream o
 starter_project "$R" > /dev/null || check "stream: project new"
 state=$(status "$R") || fail "stream: project state unavailable"
 id=$(jq -er .id <<< "$state") && code=$(jq -er .code <<< "$state") || fail "stream: project identity or link code unavailable"
-curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
+curl -sSN -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "http://$ADDR/v1/events" > "$log" 2> "$OUT/events.err" & stream=$!
 # Register with the public link code; deliveries still use the stable project ID.
 show_events "$log" "$code" || check "stream: project interest not held: $(head -c 300 "$log"; cat "$OUT/events.err")"
-curl -sSN -H "Authorization: Bearer $TOKEN" "http://$ADDR/v1/events" > "$other" 2> "$OUT/events-unrelated.err" & other_stream=$!
+curl -sSN -H "Authorization: Bearer $TOKEN" -H 'cozy-project-storage: 3' "http://$ADDR/v1/events" > "$other" 2> "$OUT/events-unrelated.err" & other_stream=$!
 soon told "$other" '.type == "hello"' || check "stream: no hello on unrelated connection"
 sse "$log" | sed -n 1p | J --arg v "$(fixture_calcifer | jq -r .calcifer.version)" '.type == "hello" and .version == $v' || check "stream: its first event: $(sse "$log" | sed -n 1p)"
 

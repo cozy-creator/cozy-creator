@@ -72,10 +72,6 @@ pub(crate) struct Api {
     stop: watch::Sender<bool>,
 }
 
-async fn legacy_session() -> Refusal {
-    refuse(Kind::Usage, "owned_browser_required", "open the project in its owned browser session")
-}
-
 async fn no_store(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
@@ -227,7 +223,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
-        .route("/v1/session", post(legacy_session))
+        .route("/v1/session", post(crate::sessions::start))
         .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
         .merge(crate::page::routes())
         .fallback(crate::page::fallback)
@@ -419,22 +415,24 @@ fn media_secret(request: &Request) -> Option<&str> {
 pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
 
 async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
+    // Any browser's session: Cozy's owned one (memory-only) or one a sign-in link started (state.db).
+    let store = api.calcifer.store();
+    let session_media = media_secret(&request).is_some_and(|media| api.sessions.admits_media(store, media));
     let admitted = match bearer(request.headers()) {
-        Some(token) => api.admits(token) || api.sessions.admits_owned_token(token),
-        None => media_secret(&request).is_some_and(|media| api.sessions.admits_owned_media(media)),
+        Some(token) => api.admits(token) || api.sessions.admits_token(store, token),
+        None => session_media,
     };
     if !admitted {
         let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
         let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
         return Refusal(error).into_response();
     }
-    let owned_media=media_secret(&request).is_some_and(|media|api.sessions.admits_owned_media(media));
     let path=request.uri().path();
     let project_protocol=path.starts_with("/v1/projects") || path.starts_with("/v1/project-")
         || path.starts_with("/v1/run-") || matches!(path,"/v1/events"|"/v1/targets"|"/v1/plans");
     // Native clients must opt into this storage contract before any project
-    // lookup/import/resume. Media elements use the owned session's RAM token.
-    if project_protocol && !owned_media
+    // lookup/import/resume. Media elements use their session's media secret.
+    if project_protocol && !session_media
         && request.headers().get(::api::calcifer::project::PROJECT_STORAGE_HEADER).and_then(|value|value.to_str().ok())!=Some(::api::calcifer::project::PROJECT_STORAGE_VERSION)
     {
         return refuse(Kind::Usage,"project_storage_protocol_required","update this client: project storage protocol 3 is required").into_response();

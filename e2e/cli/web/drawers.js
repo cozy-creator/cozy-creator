@@ -62,11 +62,11 @@ async function runs(page, base, id, folder) {
   await first;
   await until('the count goes', () => page.textContent('.top a[href*="runs"]'), (text) => !/\d/.test(text)).catch(async (error) => {
     // Whose it is: the page's, or a run Calcifer says is going.
-    seen.count_held = await page.evaluate(async () => {
-      const { token } = JSON.parse(localStorage.getItem('cozy.session'));
-      const going = async (status) => (await (await fetch(`/v1/runs?status=${status}&limit=5`, { headers: { Authorization: `Bearer ${token}` } })).json()).runs.map((run) => [run.number, run.status]);
+    seen.count_held = await page.evaluate(async (id) => {
+      const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
+      const going = async (status) => (await (await fetch(`/v1/projects/${id}/runs?status=${status}&limit=5`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).runs.map((run) => [run.number, run.status]);
       return { in_progress: await going('in_progress'), queued: await going('queued') };
-    });
+    }, id);
     throw error;
   });
   check('no_hash_on_a_run', !/sha256:|[0-9a-f]{64}/.test(await body(page)));
@@ -82,7 +82,7 @@ async function runs(page, base, id, folder) {
   // One log stream across tabs: a second tab says it waits, while this one holds it.
   await until('this tab holds the log', () => page.textContent('.log'), (text) => text !== 'Nothing yet.' && !text.includes('Another tab'), 30_000).catch(() => {});
   const other = await page.context().newPage();
-  await other.goto(page.url());
+  await signIn(other, page.url());
   await until('the second tab waits for the log', () => other.textContent('.drawer'), (text) => text.includes('Another tab is following'));
   check('one_log_stream_across_tabs', true);
   await other.close();
@@ -125,8 +125,8 @@ async function runs(page, base, id, folder) {
   const id = (await projectFromPage(page)).id;
   const read = (path) =>
     page.evaluate(async (path) => {
-      const { token } = JSON.parse(localStorage.getItem('cozy.session'));
-      return (await fetch(path, { headers: { Authorization: `Bearer ${token}` } })).json();
+      const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
+      return (await fetch(path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
     }, path);
   const folder = (await read(`/v1/projects/${id}`)).path;
   seen.project = { id, folder };

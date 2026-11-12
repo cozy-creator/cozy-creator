@@ -143,7 +143,7 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   await until('its save asked', () => Promise.resolve(held.asked.length), (n) => n >= 1);
   const theirs = 'Theirs, written meanwhile.';
   const wrote = await fetch(`http://${holder().address}/v1/projects/${id}/assets/words`, {
-    method: 'PATCH', headers: { Authorization: `Bearer ${holder().token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: theirs } }),
+    method: 'PATCH', headers: { Authorization: `Bearer ${holder().token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: theirs } }),
   });
   check('theirs_written', wrote.ok && inDb() === theirs, { status: wrote.status, held: inDb() });
   // The stream brings theirs back to the page.

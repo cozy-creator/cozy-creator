@@ -318,7 +318,7 @@ J ".document.csp // \"\" | contains(\"'unsafe-eval'\") | not" "$OUT/web.json" ||
 J '(.violations | length) == 0 and (.page_errors | length) == 0' "$OUT/web.json" || check "web-serves: the page broke under its CSP: $(jq -c '{violations, page_errors}' "$OUT/web.json")"
 J '.console_errors | length == 0' "$OUT/web.json" || check "web-serves: the page's console has errors, such as a route Calcifer lacks: $(jq -c .console_errors "$OUT/web.json")"
 J '[.document.set_cookie, .session.set_cookie] == [null, null] and (.cookies | length) == 0' "$OUT/web.json" || check "web-serves: a cookie was set: $(jq -c '{document, session, cookies}' "$OUT/web.json")"
-J '(.assets | length) > 0 and (.assets | all(.status == 200 and (.cache_control // "" | contains("immutable"))))' "$OUT/web.json" || check "web-serves: /assets/* is not 200 and immutable: $(jq -c .assets "$OUT/web.json")"
+J '(.assets | length) > 0 and (.assets | all(.status == 200 and (.cache_control // "" | contains("no-store"))))' "$OUT/web.json" || check "web-serves: /assets/* is not 200 and no-store: $(jq -c .assets "$OUT/web.json")"
 J --arg b "Bearer $session" '.page_stream.status == 200 and (.page_stream.content_type // "" | startswith("text/event-stream")) and .page_stream.authorization == $b' "$OUT/web.json" \
   || check "web-serves: the page did not open GET /v1/events on its session: status $(jq -c .page_stream.status "$OUT/web.json")"
 J --arg id "$id" '.stream_status == 200 and .streamed[0].type == "hello" and (.streamed | any(.type == "project.changed" and .id == $id))' "$OUT/web.json" \

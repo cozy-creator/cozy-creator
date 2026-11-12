@@ -28,7 +28,7 @@ def main() -> int:
     require_ci_test_hub(hub)
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
     base = "http://" + holder["address"]
-    headers = {"Authorization": "Bearer " + holder["token"]}
+    headers = {"Authorization": "Bearer " + holder["token"], "cozy-project-storage": "3"}
     staged = json.loads(subprocess.check_output([args.stage_code, str(args.target)], text=True))
     for left in staged["left"]:
         print("left out of code: " + left, file=sys.stderr)

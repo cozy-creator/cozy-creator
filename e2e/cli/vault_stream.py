@@ -89,7 +89,7 @@ def main() -> None:
     sources_before = set(project.parent.glob(".cozy-project-source-*"))
     body = json.dumps({"action": "encrypt", "passphrase": credential.read_text().strip(),
                        "idle_timeout_s": 0, "max_duration_s": 86400}).encode()
-    headers = {"Authorization": f"Bearer {holder['token']}", "Content-Type": "application/json", "Accept": "text/event-stream"}
+    headers = {"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3", "Content-Type": "application/json", "Accept": "text/event-stream"}
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def connect() -> HTTPResponse:

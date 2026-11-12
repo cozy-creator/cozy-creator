@@ -153,7 +153,7 @@ def exercise(args: argparse.Namespace, home: Path, receipt: dict[str, object]) -
 
     def api(method: str, path: str, body: dict[str, object] | bytes | None = None,
             headers: dict[str, str] | None = None, expected: int | None = None) -> object:
-        fields = {'Authorization': 'Bearer ' + holder['token'], **(headers or {})}
+        fields = {'Authorization': 'Bearer ' + holder['token'], 'cozy-project-storage': '3', **(headers or {})}
         if isinstance(body, dict):
             body = json.dumps(body).encode('utf-8')
             fields['Content-Type'] = 'application/json'

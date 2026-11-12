@@ -55,12 +55,14 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
   }
   const storage = async (signal?: AbortSignal | null) => {
     const token = session()?.token
-    if (!token || !ownedBirth) throw new Error("An owned private browser session is required before opening project data")
+    if (!token) throw new Error("A browser session is required before opening project data")
     const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { Authorization: `Bearer ${token}` } })
     const capability = response.ok ? await response.json() : null
     const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
     const principal = [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("")
-    if (session()?.token !== token || capability?.version !== 3 || capability?.daemon_birth !== ownedBirth || capability?.principal !== principal) {
+    // The owned browser's authority is one Calcifer's; a signed-in tab's outlives a restart, so it takes the birth Calcifer proves for it.
+    const birth = ownedBirth ?? capability?.daemon_birth
+    if (session()?.token !== token || capability?.version !== 3 || typeof birth !== "string" || !birth || capability?.daemon_birth !== birth || capability?.principal !== principal) {
       throw new Error("Calcifer cannot prove project storage protocol 3 for this private session")
     }
   }

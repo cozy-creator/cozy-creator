@@ -127,7 +127,7 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
 
 (async () => {
   const base = calcifer();
-  const api = (path, init = {}) => fetch(`${base}${path}`, { ...init, headers: { Authorization: `Bearer ${HOLDER.token}`, ...init.headers } }).then((answer) => answer.json());
+  const api = (path, init = {}) => fetch(`${base}${path}`, { ...init, headers: { Authorization: `Bearer ${HOLDER.token}`, 'cozy-project-storage': '3', ...init.headers } }).then((answer) => answer.json());
   const status = async (folder) => {
     const answer = await projectAction(folder, 'status');
     return { state: answer.value, ms: answer.ms };
@@ -262,7 +262,7 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
     const observe = async () => {
       // Held, read first: a render that was going then and isn't by the list's read had closed nothing yet.
       const holding = [held(first), held(second)];
-      const [going, runs] = await Promise.all([busy(), api(`/v1/runs?project=${made[1]}`)]);
+      const [going, runs] = await Promise.all([busy(), api(`/v1/projects/${made[1]}/runs`)]);
       const run = runs.runs?.[0];
       const look = { going, held: holding, second_run: run ? `${run.status}/${run.machine_state ?? ''}` : null };
       looks.push(look);
@@ -272,7 +272,7 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
     let update, finished = false;
     try {
       await projectAction(first, 'render', 'waits', '--on', 'local', '--queue');
-      const running = await until('the first run executing', async () => (await api(`/v1/runs?project=${made[0]}`)).runs?.[0],
+      const running = await until('the first run executing', async () => (await api(`/v1/projects/${made[0]}/runs`)).runs?.[0],
         (run) => run?.status === 'in_progress' && run.machine_state === 'running', 5 * STEP_MS);
       // The lifetime suite's update drain holds new roots regardless of CPU parallelism.
       const started = await api('/v1/machines/local/update', {
@@ -284,7 +284,7 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
       const waitingFor = `waiting for run ${running.number} to end`;
       const drain = await until('the update holding new runs', async () => {
         const [machine, updating, firstRun] = await Promise.all([
-          api('/v1/machines/local'), api(`/v1/runs/${update.id}`), api(`/v1/runs/${running.id}`),
+          api('/v1/machines/local'), api(`/v1/runs/${update.id}`), api(`/v1/projects/${made[0]}/runs/${running.id}`),
         ]);
         const state = { machine_update: machine.status?.update, update_waiting: updating.waiting, first_status: firstRun.status };
         seen.render.drain = state;

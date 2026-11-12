@@ -24,8 +24,8 @@ pub(crate) fn daemon_birth() -> Result<String, Refusal> {
 }
 
 pub(crate) async fn project_storage(State(api): State<Arc<Api>>, headers: HeaderMap) -> Result<Json<Value>, Refusal> {
-    let token = api::bearer(&headers).filter(|token| api.admits(token) || api.sessions.admits_owned_token(token))
-        .ok_or_else(|| api::refuse(Kind::Forbidden, "private_browser_required", "Open project data in Cozy's owned private browser or native CLI"))?;
+    let token = api::bearer(&headers).filter(|token| api.admits(token) || api.sessions.admits_token(api.calcifer.store(), token))
+        .ok_or_else(|| api::refuse(Kind::Forbidden, "private_browser_required", "Open project data in a signed-in browser or the native CLI"))?;
     Ok(Json(json!({ "version": 3, "daemon_birth": daemon_birth()?, "principal": hex::encode(Sha256::digest(token)) })))
 }
 

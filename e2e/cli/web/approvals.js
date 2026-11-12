@@ -44,11 +44,11 @@ async function died(why) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const { id, path: folder } = await projectFromPage(page);
   seen.project = { id, folder };
-  const session = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = async (path, method = 'GET', body) => {
     const answer = await fetch(base + path, {
       method,
-      headers: { Authorization: `Bearer ${session.token}`, 'Content-Type': 'application/json', ...(method === 'POST' ? { 'Idempotency-Key': `approvals-${Date.now()}-${Math.random()}` } : {}) },
+      headers: { Authorization: `Bearer ${session.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...(method === 'POST' ? { 'Idempotency-Key': `approvals-${Date.now()}-${Math.random()}` } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const value = await answer.json().catch(() => null);
@@ -106,7 +106,7 @@ async function died(why) {
   await api(`${at}/runs`, 'POST', { names: ['copied'], on: ['local'] });
   const copied = await until('copied made', () => asset('copied'), (row) => row?.versions === 1 && !row.making?.length, FIRST_RUN_MS);
   const run = copied.prefixes[0].run;
-  const sent = JSON.stringify((await api(`/v1/runs/${run}?detail=full`)).request?.input ?? null);
+  const sent = JSON.stringify((await api(`${at}/runs/${run}?detail=full`)).request?.input ?? null);
   seen.copied_input = sent;
   check('mention_reads_the_approved_take', sent.includes(take1.replace('sha256:', '')) && !sent.includes(take2.replace('sha256:', '')), sent);
   check('reader_take_not_approved', !copied.pinned && copied.approved == null, copied);
