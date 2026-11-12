@@ -77,13 +77,13 @@ const hex = (digest) => digest?.replace(/^sha256:/, '');
   const showing = row.prefixes.find((take) => take.number === row.version) ?? row.prefixes.at(-1);
   seen.showing = showing.number;
 
-  /** A right click on `target`, and Download from its menu: what the browser saved, and as what. */
-  const downloaded = async (target) => {
+  /** A right click on `target`, and `label` (Download) from its menu: what the browser saved, and as what. */
+  const downloaded = async (target, label = 'Download') => {
     await target.click({ button: 'right' });
     const menu = page.locator('.asset-menu');
     await menu.waitFor();
     const items = await menu.locator('[role=menuitem]').allTextContents();
-    const [download] = await Promise.all([page.waitForEvent('download'), menu.getByRole('menuitem', { name: 'Download', exact: true }).click()]);
+    const [download] = await Promise.all([page.waitForEvent('download'), menu.getByRole('menuitem', { name: label, exact: true }).click()]);
     const bytes = readFileSync(await download.path());
     return { items, name: download.suggestedFilename(), sha256: sha(bytes), bytes: bytes.length, closed: (await menu.count()) === 0 };
   };
@@ -131,8 +131,9 @@ const hex = (digest) => digest?.replace(/^sha256:/, '');
     const said = item.label || item.name;
     await page.goto(await projectUrl(id, `/runs/${run.number}`));
     const output = page.locator('figure.output').filter({ has: page.locator('.nm', { hasText: said }) }).first();
-    await output.locator('button:has-text("Download")').waitFor();
-    const out = await downloaded(output);
+    // A project run's output is an exported copy, said so as it's saved (project data containment).
+    await output.locator('button:has-text("Export copy")').waitFor();
+    const out = await downloaded(output, 'Export copy');
     seen.output = { ...out, item: item.sha256, said };
     check('output_saves_as_its_name', out.name === `${said}.png`, out.name);
     check('output_saves_its_bytes', out.sha256 === hex(item.sha256), { out, item });
