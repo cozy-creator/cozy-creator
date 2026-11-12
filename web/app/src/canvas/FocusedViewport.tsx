@@ -8,7 +8,11 @@ import { NameField } from "./NameField"
 import { makingRun, shownOf } from "./shown"
 import { RunFace, useArriving } from "./RunFace"
 import { useSignal } from "../ui/signal"
+import { pressBeganOutside } from "../ui/press"
 import "./FocusedViewport.css"
+
+/** What's on a focused item rather than its background. */
+const OWN = ".media, .tl, .focus-heading, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
 
 /** A workspace for one item. The Wander camera stays behind it, unchanged. */
 export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string; onClose(): void; onCopyVersion(file: CarriedFile, x: number, y: number): void }) {
@@ -54,7 +58,9 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   return (
     <section ref={element} className="focus-viewport" aria-label="Focused asset" data-focused-asset={name} data-entering={entering || undefined}
       onClick={(event) => {
-        if (!(event.target as Element).closest(".media, .tl, .focus-heading, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]")) onClose()
+        // Its background closes it: pressed and let go there, never a selection or a drag from what's on it.
+        const own = (element: Element) => Boolean(element.closest(OWN))
+        if (!own(event.target as Element) && pressBeganOutside(own)) onClose()
       }}
       onContextMenu={(event) => {
         if ((event.target as Element).closest("input, textarea, [contenteditable]")) return

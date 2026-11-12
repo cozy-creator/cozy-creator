@@ -40,6 +40,7 @@ import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
 import { aspectOf, bodyBox, HEAD, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
+import { pressBeganOutside } from "../ui/press"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
 import { keys, stepZoom, ZOOMS, ZoomControl, type ZoomItem } from "./ZoomControl"
@@ -770,8 +771,9 @@ function Canvas({
     },
     [store, flow, writeHere, navigate, to],
   )
+  // A click on open canvas leaves the box worked on, unless its press began on a box: a selection or a drag let go out here.
   const paneClicked = useCallback(() => {
-    if (!store.focusedName.get()) leaveHere()
+    if (!store.focusedName.get() && pressBeganOutside((element) => Boolean(element.closest(".react-flow__node, .react-flow__nodesselection")))) leaveHere()
   }, [store, leaveHere])
   const nodeMenu = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
