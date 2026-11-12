@@ -3,6 +3,7 @@ import { parseLink, play } from "../../../../player/cozy-webrtc.js"
 import { useConnection } from "../../app/Connection"
 import { Player } from "../../canvas/Media"
 import type { OutputItem, Run } from "../../api/calcifer"
+import { Menu, useMenuAt } from "../../ui/Menu"
 import { Failure, useAsk } from "../common"
 import { bytes, span } from "../format"
 
@@ -96,17 +97,19 @@ function FromMachine({ run, item }: { run: Run; item: OutputItem }) {
 
 function Output({ run, item }: { run: Run; item: OutputItem }) {
   const { client } = useConnection()
+  const menu = useMenuAt()
   const kind = mediaKind(item)
   const here = landed(item)
   const name = item.label || (item.index ? `${item.name} ${item.index}` : item.name)
-  const save = useSrc(client.output(run.id, item.name, item.index))
+  // Saved as it's named, `image.png`, a list's item `image.2.png`.
+  const download = () => client.download(client.output(run.id, item.name, item.index), item.label || (item.index ? `${item.name}.${item.index}` : item.name))
   const facts = [
     item.length ? bytes(item.length) : "",
     item.width && item.height ? `${item.width}×${item.height}` : "",
     item.duration_ms ? span(item.duration_ms / 1000) : "",
   ].filter(Boolean)
   return (
-    <figure className="output">
+    <figure className="output" onContextMenu={here ? menu.open : undefined}>
       {!item.checkpoint && here && kind === "image" && <Picture run={run} item={item} />}
       {!item.checkpoint && here && (kind === "video" || kind === "audio") && <Landed run={run} item={item} kind={kind} />}
       {!item.checkpoint && !here && kind === "video" && run.machine && !item.export_error && <FromMachine run={run} item={item} />}
@@ -117,12 +120,26 @@ function Output({ run, item }: { run: Run; item: OutputItem }) {
         <span className="nm">{name}</span>
         <small>{facts.join(" · ")}</small>
         <span className="sp" />
-        {here && save && (
-          <a className="more" href={save} download>
-            Save
-          </a>
+        {here && (
+          <button type="button" className="more" onClick={download}>
+            Download
+          </button>
         )}
       </figcaption>
+      {menu.at && (
+        <Menu x={menu.at.x} y={menu.at.y} label={`${name}'s menu`} close={menu.close}>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              download()
+              menu.close()
+            }}
+          >
+            Download
+          </button>
+        </Menu>
+      )}
     </figure>
   )
 }

@@ -2777,6 +2777,7 @@ async fn save(
 async fn file(
     State(api): State<Arc<Api>>,
     Path((id, file)): Path<(String, String)>,
+    Query(saved): Query<crate::files::Download>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
@@ -2788,6 +2789,9 @@ async fn file(
     }
     let mut response = send(&project.folder.path(&format!("{}/{file}", folder::FILES)), &format!("\"{hex}\""), &headers)?;
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(crate::files::IMMUTABLE));
+    if let Some(name) = saved.download {
+        crate::files::save_as(&mut response, &name, ext);
+    }
     Ok(response)
 }
 

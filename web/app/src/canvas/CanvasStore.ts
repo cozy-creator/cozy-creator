@@ -282,8 +282,8 @@ export class CanvasStore {
   readonly tools = signal<Map<string, Tool>>(new Map())
   /** Names came or went: a text shows a name as a chip or as words by it. */
   readonly names = signal(0)
-  /** The menu open, and where. */
-  readonly menu = signal<{ name: string; x: number; y: number } | null>(null)
+  /** The menu open, and where: a box's, or with `number` its take's. */
+  readonly menu = signal<{ name: string; x: number; y: number; number?: number } | null>(null)
   /** The box whose file is being looked at large, over everything. */
   readonly viewing = signal<string | null>(null)
   /** The one asset shown in the viewport-sized Focus surface; the canvas camera stays in Wander. */

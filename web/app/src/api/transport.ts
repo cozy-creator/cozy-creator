@@ -13,6 +13,8 @@ export interface Transport {
   src(path: string): Promise<string>
   /** A URL with Range, or the MSE player. */
   play(path: string, el: HTMLMediaElement): Playback
+  /** An ordinary browser download of what `path` answers, into the Downloads folder. */
+  save(path: string): void
 }
 
 /** This tab, as a project's history says who made an edit. */
@@ -41,6 +43,14 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
       return fetch(resolve(path), { ...init, headers })
     },
     src: async (path) => media(path),
+    save(path) {
+      const link = document.createElement("a")
+      link.href = media(path)
+      link.download = ""
+      document.body.append(link)
+      link.click()
+      link.remove()
+    },
     play(path, el) {
       el.src = media(path)
       return {
