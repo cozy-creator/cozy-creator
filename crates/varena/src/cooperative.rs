@@ -14,8 +14,6 @@ use varena_ledger::{Donor, Recovery, Row, Table};
 const BRING_UP_BYTES: usize = 3 << 30;
 /// How long an ask waits on peers that have stopped answering.
 const PEER_WAIT: Duration = Duration::from_secs(2);
-/// How long a request waits for TensorD to answer that it ended an idle process.
-const END_WAIT: Duration = Duration::from_secs(5);
 /// How long a donor waits on its own cache owners, which may need a GIL someone holds.
 const OWNER_WAIT: Duration = Duration::from_secs(1);
 /// A foreign process crossing this is a program starting: all idle memory goes back to it.
@@ -109,11 +107,6 @@ pub(crate) fn peers_idle(device: i32) -> bool {
 
 pub(crate) fn ask_idle_peers(device: i32, bytes: usize) -> bool {
     service(device).is_some_and(|service| service.table.ask_idle_peers(service.row, bytes as u64, Instant::now() + PEER_WAIT))
-}
-
-/// What no ask returns from a process in no request: TensorD ends one. Whether it did.
-pub(crate) fn end_idle_peer(device: i32) -> bool {
-    service(device).is_some_and(|service| service.table.end_idle(service.row, Instant::now() + END_WAIT))
 }
 
 pub(crate) fn request_boundary(device: i32, begin: bool) {
