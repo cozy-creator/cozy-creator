@@ -96,7 +96,7 @@ local no_hub=''
 [ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" http://127.0.0.1:9)
 NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
 jq -c '.seen.scale // empty' "$OUT/web-see.json" 2> /dev/null || true
-step "web-zoom: − the zoom + in the canvas's corner, its menu's fit and 100%, on a box worked on, and 300 boxes panned"
+step "web-zoom: − the zoom + in the canvas's corner, its menu's fit and 100%, on a box worked on, drawn at the canvas's scale, and 300 boxes panned"
 web_proof zoom "$chrome" "$pw" ''
 jq -c '{pan_70: .seen.pan_70, pan_11: .seen.pan_11}' "$OUT/web-zoom.json" 2> /dev/null || true
 step "web-canvas: the background zoomed with the canvas, its farther layers less, and the dots over it and under the boxes, at 0.1 to 3 on each theme; a pan's and a zoom's frames"

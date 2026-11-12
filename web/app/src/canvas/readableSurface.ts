@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react"
-import type { Viewport, XYPosition } from "@xyflow/react"
+import type { Viewport } from "@xyflow/react"
 import { CARD_WIDTH, type ElementView } from "./CanvasStore"
 import type { Box } from "./graph"
 import { aspectOf, bodyBox, HEAD, shownOf } from "./shown"
@@ -12,12 +12,12 @@ export type ReadableProjection = Readonly<{
   style: CSSProperties
   bounds: Box
   view: Viewport
-  resizeDelta(from: XYPosition, to: XYPosition): XYPosition
 }>
 
-const resizeAt = (inverse: number) => (from: XYPosition, to: XYPosition): XYPosition => ({ x: (to.x - from.x) * inverse, y: (to.y - from.y) * inverse })
-
-/** One opened card's working frame. Its canonical pose is input, never a measured node's envelope. */
+/**
+ * One opened card's working frame, in canvas units: a zoom draws all of it larger or smaller alike, never differently (cl-890).
+ * Its canonical pose is input, never a measured node's envelope.
+ */
 export function readableSurface(source: HTMLElement) {
   const initial = source.querySelector<HTMLElement>(":scope > .here-under")
   const limit = initial && Number.parseFloat(getComputedStyle(initial).maxHeight)
@@ -25,10 +25,7 @@ export function readableSurface(source: HTMLElement) {
 
   return (view: ElementView, pose: Box, viewport: Viewport, fitRoom?: Box): ReadableProjection => {
     const body = bodyBox(view, pose)
-    if (!view.here) {
-      const inverse = 1 / viewport.zoom
-      return { style: {}, bounds: body, view: viewport, resizeDelta: resizeAt(inverse) }
-    }
+    if (!view.here) return { style: {}, bounds: body, view: viewport }
     // Candidate fits must not resize the live card while React Flow is observing it.
     // Measure its actual current markup/styles in the same parent, without starting another media load.
     const card = source.cloneNode(true) as HTMLElement
@@ -66,29 +63,29 @@ export function readableSurface(source: HTMLElement) {
     const media = card.querySelector<HTMLElement>(":scope > .media")
     const shown = shownOf(view)
     const passive = Boolean(media && shown && !shown.absent && (shown.field === "image" || (!view.hereWords && shown.field === "video")))
-    const apply = (zoom: number, cap: number | undefined) => {
-      const text = Math.round((1 / Math.min(MOST_HERE, zoom)) * 20) / 20
-      const scale = Math.max(1, text)
-      const localText = text / scale
-      const contentWidth = passive ? body.w / scale : body.w
-      card.style.width = `${passive ? Math.max(CARD_WIDTH, contentWidth) : body.w}px`
-      card.style.position = "absolute"
-      card.style.left = "0px"
-      card.style.top = "0px"
-      card.style.scale = String(scale)
-      card.style.setProperty("--text", String(localText))
-      card.style.setProperty("--surface-media-width", passive ? card.style.width : "100%")
-      card.style.setProperty("--surface-content-width", passive ? `${contentWidth}px` : "100%")
-      card.style.setProperty("--surface-media-height", passive ? `${contentWidth / aspectOf(view)}px` : "auto")
-      card.style.setProperty("--surface-media-overflow", passive ? "visible" : "hidden")
-      card.style.setProperty("--here-room", cap === undefined ? "none" : `${cap}px`)
-      // Individual scale composes with the card's landing/drag transforms. Its origin stays theirs.
-      const origin = getComputedStyle(card).transformOrigin.split(" ").map(Number.parseFloat)
-      const translate = `${(scale - 1) * origin[0]}px ${(scale - 1) * origin[1]}px`
-      card.style.translate = translate
-      return { scale, localText, translate, width: card.style.width, contentWidth }
+    // A picture narrower than a card keeps its size, centred in a frame as wide as the card's head needs.
+    const width = `${passive ? Math.max(CARD_WIDTH, body.w) : body.w}px`
+    const frame = {
+      "--surface-media-width": passive ? width : "100%",
+      "--surface-content-width": passive ? `${body.w}px` : "100%",
+      "--surface-media-height": passive ? `${body.w / aspectOf(view)}px` : "auto",
+      "--surface-media-overflow": passive ? "visible" : "hidden",
     }
-    const measure = (scale: number) => {
+    card.style.width = width
+    card.style.left = "0px"
+    card.style.top = "0px"
+    for (const [name, value] of Object.entries(frame)) card.style.setProperty(name, value)
+    const apply = (cap: number | undefined) => card.style.setProperty("--here-room", cap === undefined ? "none" : `${cap}px`)
+    // The picture keeps its canonical canvas anchor while the head rises above it.
+    const anchor = () => {
+      if (!passive || !media) return { x: body.x, y: body.y }
+      const content = media.querySelector<HTMLElement>(":scope > .media-pixels") ?? media
+      // Native CSS widths retain the actual fractional layout without camera-dependent rect rounding.
+      const frameWidth = Number.parseFloat(getComputedStyle(media).width)
+      const contentWidth = Number.parseFloat(getComputedStyle(content).width)
+      return { x: body.x - media.offsetLeft - (frameWidth - contentWidth) / 2, y: body.y + HEAD - media.offsetTop }
+    }
+    const measure = () => {
       const root = card.getBoundingClientRect()
       const drawnScale = root.width / card.offsetWidth
       let left = 0, top = 0, right = card.offsetWidth, bottom = card.offsetHeight
@@ -102,103 +99,75 @@ export function readableSurface(source: HTMLElement) {
         right = Math.max(right, (rect.right - root.left) / drawnScale + outset)
         bottom = Math.max(bottom, (rect.bottom - root.top) / drawnScale + outset)
       }
-      const origin = anchor(scale)
+      const origin = anchor()
       // React Flow measures its wrapper with integer offsetWidth/offsetHeight. Cover every drawn pixel
       // with that same envelope, so measuring it cannot change the node's origin again.
-      const x = Math.floor(origin.x + left * scale)
-      const y = Math.floor(origin.y + top * scale)
-      return { x, y, w: Math.ceil(origin.x + right * scale) - x, h: Math.ceil(origin.y + bottom * scale) - y }
-    }
-    // The picture keeps its canonical canvas anchor while readable chrome rises above it.
-    const anchor = (scale: number) => {
-      if (!passive || !media) return { x: body.x, y: body.y }
-      const content = media.querySelector<HTMLElement>(":scope > .media-pixels") ?? media
-      // Native CSS widths retain the actual fractional layout without camera-dependent rect rounding.
-      const frameWidth = Number.parseFloat(getComputedStyle(media).width)
-      const contentWidth = Number.parseFloat(getComputedStyle(content).width)
-      return { x: body.x - (media.offsetLeft + (frameWidth - contentWidth) / 2) * scale, y: body.y + HEAD - media.offsetTop * scale }
+      const x = Math.floor(origin.x + left)
+      const y = Math.floor(origin.y + top)
+      return { x, y, w: Math.ceil(origin.x + right) - x, h: Math.ceil(origin.y + bottom) - y }
     }
 
     let zoom = viewport.zoom
     let fitted: Box | undefined
-    let bounds: Box
-    let style: CSSProperties
     try {
       source.after(card)
       if (fitRoom) {
-        const sample = (at: number) => {
-          const selected = apply(at, undefined)
-          let cap = underRoom
-          if (under?.offsetWidth) {
-            const root = card.getBoundingClientRect()
-            const rect = under.getBoundingClientRect()
-            const drawnScale = root.width / card.offsetWidth
-            const top = (rect.top - root.top) / drawnScale
-            const factor = (rect.width / under.offsetWidth) / drawnScale
-            const ink = Number.parseFloat(getComputedStyle(under).borderImageOutset) * factor
-            const mainTop = Math.min(0, ...[...card.querySelectorAll<HTMLElement>(":scope > .head > *")]
-              .filter((part) => part.offsetWidth && part.offsetHeight)
-              .map((part) => (part.getBoundingClientRect().top - root.top) / drawnScale))
-            const available = fitRoom.h / (at * selected.scale) + mainTop - top - ink
-            const most = fitRoom.h * (1 - LEAST_BOX) / (at * selected.scale)
-            const contents = under.firstElementChild as HTMLElement | null
-            const padding = contents ? getComputedStyle(contents) : null
-            const control = [...under.querySelectorAll<HTMLElement>("button, input, select, textarea, [contenteditable]:not([contenteditable=false])")].find((held) => held.offsetHeight > 0)
-            const line = control ? Math.max(control.offsetHeight, Number.parseFloat(getComputedStyle(control).fontSize)) : 0
-            const least = line + (padding ? Number.parseFloat(padding.paddingTop) + Number.parseFloat(padding.paddingBottom) : 0) + under.clientTop * 2
-            cap = Math.max(least, Math.floor(Math.min(available, most) / factor))
+        // What's under it is as tall against the box at any zoom. It takes at most 1 - LEAST_BOX of the height, past which it scrolls;
+        // the zoom fits all of it, at most MOST_HERE. Then what's under it has the height left: cut short, all of it; whole, what's left
+        // below it as it's centred, so it grows there as it's typed in and nothing moves, and scrolls past that.
+        apply(undefined)
+        let envelope = measure()
+        let short = false
+        let factor = 1
+        if (under?.offsetWidth) {
+          const root = card.getBoundingClientRect()
+          const rect = under.getBoundingClientRect()
+          const drawnScale = root.width / card.offsetWidth
+          factor = (rect.width / under.offsetWidth) / drawnScale
+          const ink = Number.parseFloat(getComputedStyle(under).borderImageOutset) * factor
+          const above = anchor().y + (rect.top - root.top) / drawnScale - ink - envelope.y
+          const contents = under.firstElementChild as HTMLElement | null
+          const padding = contents ? getComputedStyle(contents) : null
+          const control = [...under.querySelectorAll<HTMLElement>("button, input, select, textarea, [contenteditable]:not([contenteditable=false])")].find((held) => held.offsetHeight > 0)
+          const line = control ? Math.max(control.offsetHeight, Number.parseFloat(getComputedStyle(control).fontSize)) : 0
+          const least = line + (padding ? Number.parseFloat(padding.paddingTop) + Number.parseFloat(padding.paddingBottom) : 0) + under.clientTop * 2
+          const most = Math.max(least, Math.floor((above * (1 - LEAST_BOX)) / LEAST_BOX / factor))
+          if (under.offsetHeight > most) {
+            short = true
+            apply(most)
+            envelope = measure()
           }
-          const current = apply(at, cap)
-          const bounds = measure(current.scale)
-          return { cap, bounds, fits: bounds.w * at <= fitRoom.w && bounds.h * at <= fitRoom.h }
         }
-        // Start independently of the current camera. Quantized type scale makes fit non-monotonic:
-        // remeasure each smaller candidate instead of bisecting across those scale changes.
-        zoom = MOST_HERE
-        let chosen = sample(zoom)
-        for (let i = 0; i < 16 && !chosen.fits && zoom > ZOOMS[0]; i++) {
-          zoom = Math.max(ZOOMS[0], Math.min(fitRoom.w / chosen.bounds.w, fitRoom.h / chosen.bounds.h, zoom - Number.EPSILON))
-          chosen = sample(zoom)
+        zoom = Math.min(MOST_HERE, fitRoom.w / envelope.w, fitRoom.h / envelope.h)
+        let cap: number | undefined
+        if (under?.offsetWidth) {
+          const spare = (fitRoom.h / zoom - envelope.h) / factor
+          cap = Math.floor(under.offsetHeight + (short ? spare : spare / 2))
+          apply(cap)
+          envelope = measure()
         }
-        if (!chosen.fits && zoom !== ZOOMS[0]) {
-          zoom = ZOOMS[0]
-          chosen = sample(zoom)
-        }
-        if (chosen.fits) {
-          underRoom = chosen.cap
-          fitted = measure(apply(zoom, underRoom).scale)
+        if (zoom >= ZOOMS[0]) {
+          underRoom = cap
+          fitted = envelope
         }
       }
-      const selected = apply(viewport.zoom, underRoom)
-      bounds = measure(selected.scale)
-      style = {
-        width: selected.width,
+      apply(underRoom)
+      const bounds = measure()
+      const at = anchor()
+      const style = {
+        width,
         position: "absolute",
-        left: `${anchor(selected.scale).x - bounds.x}px`,
-        top: `${anchor(selected.scale).y - bounds.y}px`,
-        scale: String(selected.scale),
-        translate: selected.translate,
-        "--text": String(selected.localText),
-        "--surface-media-width": passive ? selected.width : "100%",
-        "--surface-content-width": passive ? `${selected.contentWidth}px` : "100%",
-        "--surface-media-height": passive ? `${selected.contentWidth / aspectOf(view)}px` : "auto",
-        "--surface-media-overflow": passive ? "visible" : "hidden",
-        "--surface-inverse": String(1 / (viewport.zoom * selected.scale)),
+        left: `${at.x - bounds.x}px`,
+        top: `${at.y - bounds.y}px`,
+        ...frame,
         "--here-room": underRoom === undefined ? "none" : `${underRoom}px`,
       } as CSSProperties
-      // Keep these numbers, not mutable controller state, for a pointer-down snapshot.
-      const inverse = 1 / (viewport.zoom * (passive ? 1 : selected.scale))
       const next = fitRoom && fitted ? {
         x: fitRoom.x + fitRoom.w / 2 - (fitted.x + fitted.w / 2) * zoom,
         y: fitRoom.y + fitRoom.h / 2 - (fitted.y + fitted.h / 2) * zoom,
         zoom,
       } : viewport
-      return {
-        style,
-        bounds,
-        view: next,
-        resizeDelta: resizeAt(inverse),
-      }
+      return { style, bounds, view: next }
     } finally {
       card.remove()
     }
