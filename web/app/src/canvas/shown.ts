@@ -18,7 +18,7 @@ export function shownOf(view: ElementView): Shown | null {
   const asset = view.asset
   if (!asset) return view.landed ? { output: view.landed.field, path: "", sha256: view.landed.sha256, field: view.landed.field } : null
   // Looking at a take still being made: nothing of it to show yet, and no other take's picture stands in.
-  const watch = watched(view)
+  const watch = asset.kind === "image" ? null : watched(view)
   if (watch && watch.number === undefined) return null
   const versions = asset.prefixes ?? []
   const version = (number?: number | null) => versions.find((held) => held.number === number)
@@ -26,7 +26,7 @@ export function shownOf(view: ElementView): Shown | null {
   if (held?.main) return { ...held.main, number: held.number, run: held.run ?? undefined }
   if (asset.sha256 && asset.path && asset.field) {
     const { path, sha256, field, width, height, duration_ms, alpha, absent, machine } = asset
-    return { output: field, path, sha256, field, width, height, duration_ms, alpha, absent, machine }
+    return { output: field, path, sha256, field, width, height, duration_ms, alpha, absent, machine, ...(asset.kind === "image" ? { number: 1 } : {}) }
   }
   const newest = versions.at(-1)
   return newest?.main ? { ...newest.main, number: newest.number, run: newest.run ?? undefined } : null
@@ -71,7 +71,7 @@ export const toolName = (tool: Tool) => (tool.package_title && tool.package_titl
 export const madeHere = (tool?: string | null) => tool === "cozy" || Boolean(tool?.startsWith("cozy/"))
 
 /** A box that makes something is what it's asked for; approved, it's that file, until its words are asked for. */
-export const faceOf = (view: ElementView): "edit" | "media" => (makes(view) && (view.hereWords || !view.asset?.pinned) ? "edit" : "media")
+export const faceOf = (view: ElementView): "edit" | "media" => view.asset?.kind === "image" ? (view.hereWords ? "edit" : "media") : (makes(view) && (view.hereWords || !view.asset?.pinned) ? "edit" : "media")
 
 /** No box is narrower: its corner stops here, and nothing shrinks one past it. */
 export const NARROWEST = 160
@@ -133,7 +133,7 @@ export function makingRun(view: ElementView): number | undefined {
 export const paints = (view: ElementView, tools: Map<string, Tool>) => makes(view) && !view.asset?.timeline && tools.get(view.asset?.tool ?? "")?.makes === "image"
 
 /** Showing no picture, or its words, a box is the shape it will make, which its corner changes; showing one, it's that picture's. */
-export const reshapes = (view: ElementView) => makes(view) && (Boolean(view.hereWords) || !shownOf(view))
+export const reshapes = (view: ElementView) => makes(view) && !(view.asset?.kind === "image" && shownOf(view)) && (Boolean(view.hereWords) || !shownOf(view))
 
 /** The shape it will make: the one set, else what its tool takes with none. */
 const madeShape = (view: ElementView) => ratioOf(valueIn(view, "aspect_ratio")) ?? view.auto
@@ -166,5 +166,5 @@ export function heightFor(view: ElementView, width: number): number {
   }
   // An Edit on its controls: a picture over a filmstrip.
   if (view.asset?.timeline && faceOf(view) === "edit") return HEAD + 332
-  return HEAD + Math.round(width / aspectOf(view))
+  return HEAD + Math.round(width / aspectOf(view)) + (view.asset?.kind === "image" ? 40 : 0)
 }

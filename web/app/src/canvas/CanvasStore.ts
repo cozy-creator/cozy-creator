@@ -36,8 +36,8 @@ import { faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
-import { comingOff, goesBeside, goingOn, holdsPictures, startsFrom, type ToolStep } from "./toolchange"
-import { isVideoEdit, toolFitsNode, type Operation } from "./palette"
+import { comingOff, goingOn, holdsPictures, type ToolStep } from "./toolchange"
+import { toolFitsNode, type Operation } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
@@ -203,7 +203,6 @@ export const UNDO_MS = 10_000
 const TYPING_PAUSE_MS = 800
 const CLEAR_OF_FRAME = 24
 /** The gap between a box and one made beside it. */
-const BESIDE = 32
 
 /** A picture its words mention, faded behind them: its file, or with none yet its frame's shape and whether it's being made. */
 export interface Ghost {
@@ -229,8 +228,9 @@ const viewOf = (element: Placed): ElementView => ({ ...element })
 
 /** Its stack's chips: its tool's, and each add-on on that. */
 const chipsOf = (view: ElementView) => {
+  if (view.asset?.kind === "image") return 0
   const tool = view.asset?.tool
-  return addOnsOf(valueIn(view, "lora"), valueIn(view, "models")).length + (tool && !madeHere(tool) ? 1 : 0)
+  return addOnsOf(valueIn(view, "lora"), valueIn(view, "models")).length + (tool && (!madeHere(tool) || tool === "cozy/edit") ? 1 : 0)
 }
 
 function linksOf(entity: Entity): string[] {
@@ -309,8 +309,6 @@ export class CanvasStore {
   leaveHere: () => void = () => {}
   /** Opens a box where it stands, as a click on it does. */
   openHere: (name: string) => void = () => {}
-  /** A new box of `tool` at a point, starting with `fields`, as a tool dropped there makes. */
-  addToolAt: (tool: Tool, point: { x: number; y: number }, fields?: Record<string, unknown>, operation?: Operation) => void = () => {}
   /** The box to open on its next take's words: an image tool was just put on its pictures. */
   writeOnOpen: string | null = null
   /** Fits the canvas to the box being worked on, and all around it. `only`: only if something no longer fits. */
@@ -869,6 +867,7 @@ export class CanvasStore {
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) Object.assign(change, { slid: newest, glimpse: undefined })
+          if (asset.kind === "image" && newest && newest !== view.asset?.prefixes?.at(-1)?.number) Object.assign(change, { hereWords: undefined, viewed: undefined, watchRun: undefined, watchFrom: undefined })
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at.
@@ -1233,6 +1232,7 @@ export class CanvasStore {
   pickTake(name: string, number: number) {
     const asset = this.get(name)?.asset
     if (!asset) return
+    if (asset.kind === "image") return this.selectVersion(name, number)
     this.view(name, number === asset.version ? undefined : number)
     if (!asset.tool || asset.timeline) return
     const field = this.promptOf(asset.tool)
@@ -1240,6 +1240,31 @@ export class CanvasStore {
     if (typeof words !== "string") return
     const next = words.replace(/<(self)\.\d+>/i, (_, self) => `<${self}.${number}>`)
     if (next !== words) this.setDraft(name, field, next)
+  }
+
+  /** Selects the node's persistent current image; ordinary references follow this version. */
+  selectVersion(name: string, number: number) {
+    const key = this.resolveName(name)
+    const asset = this.views.get(key)?.asset
+    if (!asset || !numbersOf(asset).includes(number)) return
+    void this.save(key)
+    this.pin(key, number, this.step(`Selected version ${number} of ${key}`, [key]))
+  }
+
+  beginImageEdit(name: string) {
+    const key = this.resolveName(name)
+    const view = this.views.get(key)
+    if (!view?.asset?.tool) return
+    if (view.here) this.writeNext(key, true)
+    else {
+      this.writeOnOpen = key
+      this.openHere(key)
+    }
+  }
+
+  finishImageEdit(name: string) {
+    void this.save(name)
+    this.patch(name, { hereWords: undefined })
   }
 
   /** Looks at a take still being made: the run picked, or with none the next one asked. Its tile is picked, its progress on the frame. */
@@ -1279,7 +1304,6 @@ export class CanvasStore {
     }
     // From an image tool's words, the box looks at the take being made, and its + goes back to them. Not before it goes: what it waits
     // for or asks first is said under its words.
-    if (view.here && view.hereWords && paints(view, this.tools.get())) this.watchTake(key)
     this.patch(key, { waiting: undefined, asking: undefined, scrub: undefined, pickingUp: undefined, glimpse: undefined, asked: NOT_YET })
     const id = this.ids.get(key)
     const settle = (asked?: number) => this.patchId(id, { asked })
@@ -1331,13 +1355,14 @@ export class CanvasStore {
 
   /** Render all. What's approved stays. */
   runAll(here = false) {
-    const on = here ? ["local"] : this.machines()
+    const candidates = [...this.views].filter(([, view]) => view.asset?.tool && (view.asset.kind === "image" || view.asset.tool === "cozy/edit" || (!madeHere(view.asset.tool) && !view.asset.pinned)))
+    const on = here || (candidates.length > 0 && candidates.every(([, view]) => madeHere(view.asset!.tool))) ? ["local"] : this.machines()
     const id = this.projectId
     if (!id) return
     this.allAsking.set(null)
     if (!on.length) return this.askMachine()
     const saved = [...this.views.keys()].map((name) => this.save(name))
-    const going = [...this.views].filter(([, view]) => view.asset?.tool && !madeHere(view.asset.tool) && !view.asset.pinned).map(([name]) => this.ids.get(name))
+    const going = candidates.map(([name]) => this.ids.get(name))
     for (const box of going) this.patchId(box, { asked: NOT_YET })
     const settle = (asked?: number) => going.forEach((box) => this.patchId(box, { asked }))
     if (!here && onlyHere(on)) return void this.askAllFirst(id, saved, settle)
@@ -1597,27 +1622,19 @@ export class CanvasStore {
   putTool(name: string, tool: Tool, operation?: Operation) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
-    if (!view?.asset || view.asset.tool === tool.id) return
-    if (goesBeside(tool, view.asset)) return this.toolBeside(key, view.asset, tool, view.viewed, operation)
-    if (!toolFitsNode(tool, view.asset)) return void say(`${toolName(tool)} makes ${tool.makes}; it cannot attach to this ${isVideoEdit(view.asset) ? "Video Edit" : view.asset.kind} node`)
+    if (!view?.asset) return
+    if (view.asset.tool === tool.id) {
+      if (operation) this.patch(key, { operation })
+      this.openHere(key)
+      return
+    }
+    if (!toolFitsNode(tool, view.asset)) return void say(`${toolName(tool)} makes ${tool.makes}; it cannot attach to this ${view.asset.kind} node`)
     void this.save(key)
     const step = goingOn(view.asset, { ...view.asset.fields, ...view.sent, ...view.drafts }, this.tools.get().get(view.asset.tool ?? ""), tool, view.viewed)
     this.retool(key, step, step.lost.length ? `${name} runs ${toolName(tool)} now, which can't take ${step.lost.join(" or ")}` : undefined)
     if (operation) this.patch(key, { operation })
-    // On pictures, an image tool opens on its next take's words; anything else opens as it is.
-    if (tool.makes !== "image" || !holdsPictures(view.asset)) return this.openHere(key)
-    if (this.inPlace?.name === key) return this.writeNext(key, true)
-    this.writeOnOpen = key
+    if (tool.makes === "image" && holdsPictures(view.asset)) this.patch(key, { hereWords: undefined })
     this.openHere(key)
-  }
-
-  /** A box of `tool` beside `key`, mentioning the version looked at there, else the box, where the tool reads that kind, else first in its prompt. */
-  private toolBeside(key: string, asset: Asset, tool: Tool, looked?: number, operation?: Operation) {
-    const box = this.boxOf(key, true)
-    if (!box) return
-    const mention = `<${looked ? `${key}.${looked}` : key}>`
-    this.addToolAt(tool, { x: box.x + box.w + BESIDE + CARD_WIDTH / 2, y: box.y + 16 }, startsFrom(tool, asset.kind, {}, mention), operation)
-    say(`${toolName(tool)} makes ${tool.makes === "image" ? "an image" : tool.makes}, so it's a new box that reads ${key}`)
   }
 
   /** Its tool's X leaves a typed container and its words. A note offers Undo for a while. */
@@ -1625,7 +1642,6 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view?.asset) return
-    if (isVideoEdit(view.asset)) return void say("Video Edit keeps its built-in timeline engine")
     void this.save(key)
     const known = this.tools.get().get(view.asset.tool ?? "")
     const word = known ? toolName(known) : "Its tool"

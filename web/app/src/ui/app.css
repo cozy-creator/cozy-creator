@@ -2657,6 +2657,81 @@ a.tab:hover {
   min-width: 0;
   flex: 1;
 }
+.image-controls {
+  padding: 4px;
+  background: var(--panel);
+  border-top: 1px solid var(--line2);
+  font-size: var(--small);
+}
+.image-version-row,
+.image-navigation,
+.image-tool,
+.image-output-ratio {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.image-version-row {
+  min-height: 31px;
+}
+.image-tool {
+  flex: 1;
+  overflow: hidden;
+  border: 1px solid var(--ember);
+  border-radius: var(--round);
+  background: var(--float);
+}
+.image-tool > button:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.image-tool button,
+.image-navigation button,
+.image-edit {
+  padding: 3px 4px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+}
+.image-tool .icon,
+.image-navigation .icon {
+  width: 14px;
+  height: 14px;
+}
+.image-navigation {
+  margin-left: auto;
+  flex: none;
+}
+.image-navigation output {
+  min-width: 3ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.image-navigation button:disabled {
+  opacity: 0.35;
+}
+.image-edit {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--round);
+}
+.image-output-ratio {
+  justify-content: space-between;
+  padding-top: 6px;
+}
+.image-output-ratio select {
+  width: auto;
+}
+.media.image-asset .media-pixels > img {
+  object-fit: contain;
+}
+.media.image-editing .media-pixels {
+  opacity: 0.22;
+}
 .tool:active {
   cursor: grabbing;
 }

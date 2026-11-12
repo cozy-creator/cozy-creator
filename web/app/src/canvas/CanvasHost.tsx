@@ -19,7 +19,7 @@ import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/que
 import { useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
-import type { Tool, Opened } from "../api/calcifer"
+import type { Opened } from "../api/calcifer"
 import { ProjectCreate } from "../panels/ProjectCreate"
 import { Copyable } from "../ui/Copyable"
 import { dismiss, say } from "../ui/notes"
@@ -35,7 +35,6 @@ import { copyBoxes, ownCopy } from "./copy"
 import { EntityCard } from "./EntityCard"
 import { HistoryControls } from "./HistoryControls"
 import { Placer } from "./place"
-import type { BasicNodeKind, Operation } from "./palette"
 import { Dots, Sheet } from "./Sheet"
 import { HANG, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
@@ -165,7 +164,7 @@ function RenderAll({ id }: { id: string }) {
   const { client, stream } = useConnection()
   const store = useCanvasStore()
   const { data } = useQuery(projectQuery(client, stream, id))
-  const fresh = (data?.assets ?? []).filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
+  const fresh = (data?.assets ?? []).filter((asset) => asset.tool && (asset.kind === "image" || asset.tool === "cozy/edit" || (!madeHere(asset.tool) && !asset.pinned))).length
   const asking = useSignal(store.allAsking)
   return (
     <span className="render-all">
@@ -272,7 +271,6 @@ function Canvas({
     }),
   }))
   useEffect(() => () => { creating.current?.reject(new Error("Project creation was canceled")); creating.current = null }, [])
-  store.addToolAt = (tool, point, fields, operation) => placer.addTool(tool, point, fields, operation)
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
@@ -512,21 +510,6 @@ function Canvas({
     return flow.screenToFlowPosition({ x: (left + right) / 2, y: box.top + box.height / 2 })
   }, [flow])
 
-  // A click puts a box in the middle of what's visible, and `place` keeps it clear of what's there.
-  const placeTool = useCallback(
-    (tool: Tool, operation?: Operation) => {
-      const width = tool.fields.some((field) => field.type === "timeline") ? 720 : tool.makes === "video" ? 360 : 300
-      const { x, y } = visibleCentre()
-      placer.addTool(tool, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 }, undefined, operation)
-    },
-    [placer, visibleCentre],
-  )
-  const placeNode = useCallback((kind: BasicNodeKind) => {
-    const width = kind === "video_edit" ? 720 : kind === "video" ? 360 : 300
-    const { x, y } = visibleCentre()
-    placer.addNode(kind, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 })
-  }, [placer, visibleCentre])
-
   const picked = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       const files = [...(event.target.files ?? [])]
@@ -663,12 +646,13 @@ function Canvas({
       const view = store.get(name)
       const asset = view?.asset
       if (!view || !asset || view.hereWords || event.target instanceof HTMLSelectElement || !["ArrowLeft", "ArrowRight", "Enter"].includes(event.key)) return false
-      const row = [...(asset.prefixes ?? [])].reverse()
+      const row = asset.kind === "image" ? [...(asset.prefixes ?? [])] : [...(asset.prefixes ?? [])].reverse()
       const at = row.findIndex((version) => version.number === shownOf(view)?.number)
       if (at < 0) return false
       event.preventDefault()
       if (event.key === "Enter") {
-        store.toggleApproved(name, row[at].number)
+        if (asset.kind === "image") store.beginImageEdit(name)
+        else store.toggleApproved(name, row[at].number)
         return true
       }
       const next = row[at + (event.key === "ArrowLeft" ? -1 : 1)]
@@ -789,7 +773,7 @@ function Canvas({
       const view = store.get(name)
       // A double tap on its picture approves the take showing, or unapproves it.
       const shown = view?.asset?.prefixes?.length ? shownOf(view)?.number : undefined
-      if (event.detail > 1 && shown !== undefined && (event.target as Element).closest(".media")) return store.toggleApproved(name, shown)
+      if (event.detail > 1 && shown !== undefined && (event.target as Element).closest(".media")) return view?.asset?.kind === "image" ? store.beginImageEdit(name) : store.toggleApproved(name, shown)
       if (store.inPlace?.name === name && view?.here) return
       // A click opens at once: only Shift selects.
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
@@ -885,8 +869,6 @@ function Canvas({
           setShut(next)
           saveToolsShut(next)
         }}
-        place={placeTool}
-        placeNode={placeNode}
       />
       <div
         ref={stage}
