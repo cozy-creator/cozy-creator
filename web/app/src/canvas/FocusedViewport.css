@@ -198,21 +198,10 @@
   padding: 6px 12px;
   font-size: 18px;
 }
-/* What makes it reads as its name, not a field being typed in; its trash can as big as the button beside it. */
+/* What makes it reads as its name, not a field being typed in: a plain edge, as tall as Models & LoRAs beside it. */
 .focus-card .image-tool {
   min-height: 40px;
   border-color: var(--line2);
-}
-.focus-card .image-tool button {
-  min-width: 36px;
-  min-height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.focus-card .image-tool .icon {
-  width: 18px;
-  height: 18px;
 }
 /* Its warnings, beside its name, big enough to see and hit. */
 .focus-heading .iconb.warned {
