@@ -62,7 +62,7 @@ pub(crate) fn ran(engine: &Engine, id: &str, used: &[Used], replayed: bool, done
                     temperature_max_c: gpu.temperature_max_c,
                     throttles: gpu.throttles.iter().map(|name| (*name).to_owned()).collect(),
                     run: id.to_owned(),
-                    at_unix_ms: crate::machine::lifecycle::now_ms() as i64,
+                    at_unix_ms: crate::machine::lifecycle::now_ms(),
                     replayed,
                 });
                 drop(heat);
@@ -84,7 +84,10 @@ pub(crate) fn ran(engine: &Engine, id: &str, used: &[Used], replayed: bool, done
             false => {}
         }
     }
-    if done && !replayed && let Some(most) = used.iter().filter(|gpu| gpu.loaded()).max_by(|a, b| a.heat_share.total_cmp(&b.heat_share)) {
+    if !done || replayed {
+        return;
+    }
+    if let Some(most) = used.iter().filter(|gpu| gpu.loaded()).max_by(|a, b| a.heat_share.total_cmp(&b.heat_share)) {
         crate::machine::speed::heat(most.heat_share, most.busy_ms as f64 / 1e3);
     }
 }
