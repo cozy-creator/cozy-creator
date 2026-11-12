@@ -80,7 +80,13 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
         .env("TEMP",scratch.join("tmp")).env("TMP",scratch.join("tmp"))
         .env("PYTHONPYCACHEPREFIX",scratch.join("bytecode")).env("PYTHONDONTWRITEBYTECODE","1")
         .stdin(Stdio::from(stdin.try_clone()?)).stdout(Stdio::from(stdout.as_file().try_clone()?)).stderr(Stdio::from(stderr.as_file().try_clone()?));
-    let process_scope=platform::contain::Scope::create(&platform::contain::namespace(&scratch)).map_err(error)?;
+    let namespace=platform::contain::namespace(&scratch);
+    // These are direct tools, without the worker's cgroup trampoline. Give
+    // Linux descendants their ownership token before their very first exec.
+    #[cfg(target_os="linux")]
+    let process_scope=platform::contain::Scope::inherited(&namespace).map_err(error)?;
+    #[cfg(not(target_os="linux"))]
+    let process_scope=platform::contain::Scope::create(&namespace).map_err(error)?;
     if let Some((name,value))=process_scope.environment() {owned.env(name,value);}
     // Only 0/1/2 cross exec, each backed by the verified project files above.
     // The native helper suppresses requested cores and unrelated inherited FDs;
@@ -92,6 +98,8 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     }
     let mut tree=platform::process::spawn(owned).map_err(error)?;
     running.release=false;
+    #[cfg(not(target_os="linux"))]
+    process_scope.adopt(tree.pid()).map_err(error)?;
     let birth=platform::process::Birth::of(tree.pid()).map_err(error)?;
     // Preserve exact process births while the leader is alive. Reap only after
     // its group is ended; a reused PID can never authorize another process kill.
