@@ -78,8 +78,19 @@ impl Lists {
         self.send(machines);
     }
 
-    /// `machine` started again (its Status says another boot): it holds no list, so each goes again.
-    pub(crate) fn restarted(&self, machines: &Arc<Machines>, machine: &str) {
+    /// `machine` said its Status: what its lists concern it with goes now unless this boot of it was sent it (it came up since the
+    /// lists were set, or started again and holds none).
+    pub(crate) fn seen(&self, machines: &Arc<Machines>, machine: &str) {
+        let Some(frame) = machines.frame(machine) else { return };
+        let concerned = {
+            let planned = lock(&self.planned);
+            planned.contains_key(machine)
+                || planned.values().flat_map(|lists| lists.values().flatten()).any(|listed| listed.fits.iter().any(|fits| fits == machine))
+        };
+        let sent = lock(&self.sent).get(machine).map(|sent| sent.boot.clone());
+        if sent.as_deref() == Some(frame.boot_id.as_str()) || (sent.is_none() && !concerned) {
+            return;
+        }
         lock(&self.sent).remove(machine);
         self.send(machines);
     }

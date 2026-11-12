@@ -923,7 +923,6 @@ impl Machines {
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
         self.lists.observe(name, &frame);
-        let rebooted = lock(&self.seen).get(name).and_then(|seen| seen.frame.as_ref()).is_some_and(|last| last.boot_id != frame.boot_id);
         let back = {
             let mut seen = lock(&self.seen);
             let seen = seen.entry(name.to_owned()).or_default();
@@ -949,9 +948,9 @@ impl Machines {
         if back {
             self.calcifer.touch(name);
         }
-        // Started again, it holds no list: each goes again.
-        if let Some(machines) = rebooted.then(|| self.calcifer.machines()).flatten() {
-            self.lists.restarted(&machines, name);
+        // Its lists, unless this boot of it was sent them: it came up since they were set, or started again.
+        if let Some(machines) = self.calcifer.machines() {
+            self.lists.seen(&machines, name);
         }
         self.calcifer.machine_changed();
     }
