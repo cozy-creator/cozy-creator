@@ -259,7 +259,8 @@ async function loseAnswers(page, method, path, times) {
     await restarted;
     await until('it landed after the restart', () => Promise.resolve(hasAsset(fifth)), Boolean);
     await page.waitForTimeout(800);
-    check('restart_mid_queue_lands_once', (await box(fifth).count()) === 1 && count(fifth) === 1 && !hasAsset(`${name}_6`), names());
+    const shown = await box(fifth).count();
+    check('restart_mid_queue_lands_once', shown === 1 && count(fifth) === 1 && !hasAsset(`${name}_6`), { shown, held: count(fifth), names: names() });
     await until('the top bar says nothing waits', () => page.locator('.top .pill').allInnerTexts(), (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
     check('nothing_left_saying_not_saved', true);
   }
