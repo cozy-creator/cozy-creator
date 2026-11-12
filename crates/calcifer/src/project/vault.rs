@@ -1106,7 +1106,9 @@ fn finish_conversion(root: &FsPath) -> Result<(), Error> {
         fs::remove_dir_all(&record.saved).map_err(|e| error("vault_cleanup_pending", format!("replacement verified, but old source cleanup is pending at {}: {e}", record.saved.display())))?;
     }
     if record.internal && record.staged.exists() { fs::remove_dir_all(&record.staged).map_err(io)?; }
-    fs::remove_file(receipt_path(root)).map_err(io)?;
+    let receipt = receipt_path(root);
+    fs::remove_file(&receipt).map_err(io)?;
+    platform::durable::sync_dir(receipt.parent().ok_or_else(|| error("vault_root", "the transition receipt has no parent"))?).map_err(provider)?;
     if record.internal {
         // This private, already-verified manifest is harmless if a crash leaves
         // it behind. Retire the public intent first so recovery cannot require
@@ -1140,8 +1142,9 @@ fn plain_target(record: &Conversion, path: &FsPath) -> Result<bool, Error> {
 }
 
 fn clear_conversion(record: &Conversion) -> Result<(), Error> {
-    fs::remove_file(receipt_path(&record.root)).map_err(io)?;
-    platform::durable::sync_dir(record.root.parent().ok_or_else(|| error("vault_root", "project has no parent"))?).map_err(provider)
+    let receipt = receipt_path(&record.root);
+    fs::remove_file(&receipt).map_err(io)?;
+    platform::durable::sync_dir(receipt.parent().ok_or_else(|| error("vault_root", "the transition receipt has no parent"))?).map_err(provider)
 }
 
 /// The original encrypted directory remains authoritative until both renames commit.
