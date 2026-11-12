@@ -144,8 +144,10 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
   // The newest take, once its tile's up, is made ready at the size it's looked at, before it's clicked.
   const { client } = useConnection()
   const newest = asset.prefixes?.at(-1)
-  // Its next take is offered once it has one: an empty box's words are already what's asked (Paul, 11-12). An Edit's + is its words.
-  const adds = (writes || (asset.kind === "video" && Boolean(asset.tool))) && (versions.length > 0 || Boolean(asset.sha256) || Boolean(asset.timeline))
+  // Its next take is offered once it has any, made, on its way or failed: only a box with none hides it, its words being what's asked
+  // (Paul, 11-12, cl-925 and cl-941). An Edit's + is its words.
+  const any = versions.length > 0 || Boolean(asset.sha256) || Boolean(asset.timeline) || making.length > 0 || Boolean(waiting) || Boolean(asset.failure)
+  const adds = (writes || (asset.kind === "video" && Boolean(asset.tool))) && any
   if (!adds && !versions.length && !view.joining && !making.length && !waiting) return null
   const words = () => {
     // Already on them, the caret goes back in.
