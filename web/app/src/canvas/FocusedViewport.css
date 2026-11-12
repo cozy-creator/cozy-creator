@@ -97,8 +97,8 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) min(26vw, 280px);
   /* The frame; its tool under it; Render and the fields (cl-938), the same for a picture and a video. */
-  /* The frame at least 440px, or 55% where that's less; the fields take what they need of the rest, scrolling past it. */
-  grid-template-rows: minmax(min(440px, 55%), 1fr) auto minmax(0, auto);
+  /* The frame at least 440px, or 55% where that's less; the fields take what they need, at most the footer's room, scrolling past it. */
+  grid-template-rows: minmax(min(440px, 55%), 1fr) auto fit-content(var(--focus-footer-room, 0px));
   gap: 12px 20px;
   background: none;
   border: 0;
@@ -241,12 +241,15 @@ body:has(.focus-viewport) .zoom {
   --heading: 24px;
   grid-column: 1;
   grid-row: 3;
-  align-self: start;
   position: relative;
   left: auto;
   top: auto;
   width: 100% !important;
-  max-height: min(var(--focus-footer-room, 200px), 100%);
+  /* As tall as its row, which fits its fields up to the footer's room; past that its fields scroll. */
+  align-self: stretch;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
   transform: none;
 }
 .focus-card .here-all .slide,
