@@ -13,7 +13,6 @@ no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr a
     page.py asset <project> <name>...                                each box and its versions, a JSON line each
     page.py board <project>                                          the project's render as the page shows it
     page.py cancel <project> <name>...                               their jobs canceled, as the page cancels them
-    page.py rename <project> <from> <to>                             what project.yaml no longer names kept as <to>, as the page does
     page.py tools <project>                                          the tools a box can be, as the page lists them
 <project> is its folder, which names it in a route."""
 
@@ -163,10 +162,6 @@ def main() -> int:
     one = verbs.add_parser("cancel")
     one.add_argument("project")
     one.add_argument("names", nargs="+")
-    one = verbs.add_parser("rename")
-    one.add_argument("project")
-    one.add_argument("source")
-    one.add_argument("target")
     args = parser.parse_args()
     if args.verb == "import":
         ask = {"source": held(Path(args.file).read_bytes())}
@@ -186,8 +181,6 @@ def main() -> int:
         print(json.dumps(call("POST", project(args.project) + "/approve", json.dumps({"name": args.name, "version": args.version}).encode())))
     elif args.verb == "cancel":
         print(json.dumps(call("POST", project(args.project) + "/cancel", json.dumps({"names": args.names}).encode())))
-    elif args.verb == "rename":
-        print(json.dumps(call("POST", project(args.project) + "/rename", json.dumps({"from": args.source, "to": args.target}).encode())))
     elif args.verb == "board":
         print(json.dumps(read(args.project).get("board")))
     elif args.verb == "tools":
