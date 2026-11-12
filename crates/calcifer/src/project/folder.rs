@@ -845,10 +845,13 @@ impl Lock {
         }
         let now = super::now_ms();
         let prefix = format!("{key}{TOMBSTONE}");
-        let at = self.assets.iter()
-            .filter(|(at, held)| at.starts_with(&prefix) && (id.is_empty() || held.id == id) && !held.lapsed(now) && held.files().next().is_some())
-            .max_by_key(|(at, _)| at[prefix.len()..].parse::<u32>().unwrap_or(0))
-            .map(|(at, _)| at.clone());
+        let latest = |of_box: bool| {
+            (self.assets.iter())
+                .filter(|(at, held)| at.starts_with(&prefix) && (!of_box || held.id == id) && !held.lapsed(now) && held.files().next().is_some())
+                .max_by_key(|(at, _)| at[prefix.len()..].parse::<u32>().unwrap_or(0))
+                .map(|(at, _)| at.clone())
+        };
+        let at = latest(!id.is_empty()).or_else(|| latest(false));
         let Some(mut held) = at.and_then(|at| self.assets.remove(&at)) else { return false };
         (held.deleted_ms, held.held) = (None, None);
         if held.on_record().next().is_some() {
@@ -873,10 +876,13 @@ impl Lock {
     /// The tombstone row a delete of box `id` (else of `name`) set aside, the latest.
     pub(crate) fn deleted_box(&self, name: &str, id: &str) -> Option<&Asset> {
         let prefix = format!("{}{TOMBSTONE}", name_key(name));
-        (self.assets.iter())
-            .filter(|(at, held)| at.starts_with(&prefix) && held.deleted_ms.is_some() && (id.is_empty() || held.id == id))
-            .max_by_key(|(at, _)| at[prefix.len()..].parse::<u32>().unwrap_or(0))
-            .map(|(_, held)| held)
+        let latest = |of_box: bool| {
+            (self.assets.iter())
+                .filter(|(at, held)| at.starts_with(&prefix) && held.deleted_ms.is_some() && (!of_box || held.id == id))
+                .max_by_key(|(at, _)| at[prefix.len()..].parse::<u32>().unwrap_or(0))
+                .map(|(_, held)| held)
+        };
+        latest(!id.is_empty()).or_else(|| latest(false))
     }
 
     /// Whether `name` is a box deleted from the project that Undo can still bring back.
