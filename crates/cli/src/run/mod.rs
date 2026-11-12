@@ -18,7 +18,7 @@ use crate::{
     Context, output,
     send::{Paths, Sender},
 };
-pub(crate) use follow::{done, exit_code, follow, follow_until, job, mint_key, settled};
+pub(crate) use follow::{done, exit_code, follow, follow_until, handle, in_folder, job, mint_key, note_folder, settled};
 
 pub(crate) mod fetch;
 mod follow;
