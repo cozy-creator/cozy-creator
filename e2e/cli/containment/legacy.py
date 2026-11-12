@@ -373,7 +373,9 @@ def qualify(args, receipt: Receipt) -> None:
     for fail in (False, True):
         request = project / ("failure.json" if fail else "success.json")
         request.write_text(json.dumps({"text": marker.decode() + ("-failed" if fail else "-success"), "fail": fail}))
-        raw = command(args.old, "run", provenance["target"], "--input", str(request), "--file", "source=" + str(source), "--on", "local", "--gpus", "0", cwd=project, ok=not fail)
+        # The released CLI rejects --gpus 0; the public callable's actual
+        # accelerator=False contract selects CPU without that flag.
+        raw = command(args.old, "run", provenance["target"], "--input", str(request), "--file", "source=" + str(source), "--on", "local", cwd=project, ok=not fail)
         run = terminal(raw, "failed" if fail else "completed")
         run = settled(old, run["id"], old=True, reference=reference)
         run["bodies"] = output_bytes(old, run, old=True)
@@ -438,7 +440,11 @@ def qualify(args, receipt: Receipt) -> None:
     require(identity["id"] == reference, "fixture_failure")
     assert_history(native, reference, view, baseline, results)
     command(INSTALLED, "vault", "--directory", str(project), "lock")
-    markers = [marker, source_sha.encode(), *(item[3].removeprefix("sha256:").encode() for value in baseline.values() for item in value["outputs"])]
+    markers = [marker, source_sha.encode(), *(item[3].removeprefix("sha256:").encode() for value in baseline.values() for item in value["outputs"]),
+               *(identifier.encode() for identifier in baseline),
+               *(value["row"][1].encode() for value in baseline.values()),
+               *(value["row"][2].encode() for value in baseline.values()),
+               *(value["submission"]["invocation_digest"].encode() for value in worker_baseline.values())]
     scan = outside_scan(markers, [project], receipt)
     receipt.add("legacy_encrypted_retirement", passed=True, **scan)
     stop(native, old=False)
