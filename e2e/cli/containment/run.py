@@ -199,21 +199,32 @@ def main() -> int:
         locking = None
         try:
             until(lambda: proof.exercise(b["id"], "edit", asset=b["asset"], field="text", value=b["edit"]), lambda value: value.get("typed"), "real_browser_edit")
+            require(proof.exercise(b["id"], "observe", needle=b["edit"]).get("visible"), "browser_edit_not_visible")
             locking = subprocess.Popen([str(cli), "--json", "vault", "lock"], cwd=a["folder"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             time.sleep(0.5)
-            require(locking.poll() is None, "lock_did_not_drain_b_edit")
+            if locking.poll() is not None:
+                early, _ = locking.communicate()
+                require(locking.returncode != 0 and json.loads(early).get("error", {}).get("code") == "project_busy", "lock_discarded_pending_b_edit")
             before = native.document("vault", "status", cwd=a["folder"])
             require(before.get("state") == "unlocked", "lock_closed_admission_before_browser_drain")
         finally:
             held.rollback(); held.close()
         require(locking is not None, "lock_not_started")
         stdout, stderr = locking.communicate(timeout=90)
-        require(locking.returncode == 0 and json.loads(stdout)["vault"]["state"] == "locked", "a_lock_after_b_saved")
+        busy = locking.returncode != 0
+        if busy:
+            require(json.loads(stdout).get("error", {}).get("code") == "project_busy", "a_lock_unexpected_refusal")
+            require(proof.exercise(b["id"], "observe", needle=b["edit"]).get("visible"), "busy_lock_lost_b_draft")
+            # An orderly busy refusal is valid. Finish the same real UI edit, then retry A's lock.
+            until(lambda: proof.exercise(b["id"], "edit", asset=b["asset"], field="text", value=b["edit"]), lambda value: value.get("typed"), "busy_edit_resume")
+            until(lambda: native.call("GET", project_route(b["id"], "/assets/" + quote(b["asset"], safe="")))["asset"]["fields"]["text"], lambda value: value == b["edit"], "b_edit_not_persisted")
+            stdout = native.command("vault", "lock", cwd=a["folder"])
+        require(json.loads(stdout)["vault"]["state"] == "locked", "a_lock_after_b_saved")
         saved = native.call("GET", project_route(b["id"], "/assets/" + quote(b["asset"], safe="")))
         require(saved["asset"]["fields"]["text"] == b["edit"], "b_edit_not_persisted")
         until(lambda: alive(browser_birth), lambda live: not live, "owned_browser_not_retired")
         require(not profile.exists() and foreign.preserved() and not (a["view"] / "root-data.txt").exists(), "whole_browser_retirement")
-        receipt.add("queued_b_edit_then_a_lock", saved=True, owned_retired=True, profile_removed=True, unrelated_preserved=True)
+        receipt.add("queued_b_edit_then_a_lock", saved=True, owned_retired=True, profile_removed=True, unrelated_preserved=True, busy_refusal=busy)
         scan_case(scanner, receipt, "a_locked_outside_scan", roots, [b["view"]])
         phase = "last_window_close"
         native.document("open", cwd=b["folder"])
