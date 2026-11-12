@@ -281,6 +281,9 @@ pub(crate) fn resume_private(runs: &Arc<Runs>, project: &str) -> std::io::Result
 }
 
 fn resume_scope(runs: &Arc<Runs>, project: Option<&str>) -> std::io::Result<()> {
+    // An unscoped saved spec may be a plain project's private input. Ordinary startup
+    // preserves it for canonical adoption and must not re-prepare from tag absence.
+    if project.is_none() {return Ok(());}
     for (run, actor, kept) in runs.service.engine.interrupted_for(project)? {
         let spec = serde_json::from_slice::<Kept>(&kept)
             .map_err(|e| refused("preparation_interrupted", format!("its kept spec is unreadable: {e}")));

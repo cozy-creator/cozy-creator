@@ -1720,6 +1720,14 @@ impl Journal {
             .map_err(db_error)
     }
 
+    /// Numeric startup ownership only: never decode private or unscoped authored payloads
+    /// merely to keep pre-upgrade work inert until its project claims custody.
+    pub(crate) fn nonterminal_ids(&self) -> io::Result<std::collections::HashSet<String>> {
+        let mut query=self.connection.prepare("SELECT id FROM executions WHERE state IN ('queued','starting','running')").map_err(db_error)?;
+        let rows=query.query_map([],|row|row.get::<_,i64>(0).map(|id|id.to_string())).map_err(db_error)?;
+        rows.collect::<Result<_,_>>().map_err(db_error)
+    }
+
     pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {
         self.selected("SELECT record FROM executions WHERE state IN ('queued','starting','running') ORDER BY id LIMIT ?1", limit)
     }
