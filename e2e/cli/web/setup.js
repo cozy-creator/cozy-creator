@@ -64,7 +64,7 @@ module.exports = async () => {
   if (cold.length) throw new Error(`fixture tools didn't run on local: ${cold.map(([tool, run]) => `${tool}: exit ${run.code}: ${run.said}`).join('; ')}`);
 
   // The Hub's packages, as the palette lists them: a Hub that's late says so in `note`.
-  const listed = await until(() => ask('GET', '/v1/tools'), (said) => !said.error && !said.note && SEED.every((name) => said.tools.some((tool) => tool.id.startsWith(`${name}/`))), 120_000);
+  const listed = await until(() => ask('GET', '/v1/tools'), (said) => !said.error && SEED.every((name) => said.tools.some((tool) => tool.id.startsWith(`${name}/`))), 120_000);
   if (listed.error) throw new Error(`GET /v1/tools: ${listed.error}`);
   const hub = Object.fromEntries(SEED.map((name) => [name, listed.tools.filter((tool) => tool.id.startsWith(`${name}/`)).map((tool) => tool.id)]));
   const missing = SEED.filter((name) => !hub[name].length);

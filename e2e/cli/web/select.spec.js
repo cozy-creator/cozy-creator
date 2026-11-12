@@ -56,6 +56,7 @@ async function zoomTo(page, items, out, percent) {
   for (const item of items) {
     await page.getByRole('button', { name: /more zoom options$/ }).click();
     await page.getByRole('menuitem', { name: new RegExp(`^${item}`) }).click();
+    await canvasIdle(page);
   }
   for (let i = 0; i < out; i++) await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
   await canvasIdle(page);
