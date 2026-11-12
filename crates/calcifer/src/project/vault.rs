@@ -384,6 +384,30 @@ fn retire_runtime(runtime: &FsPath) -> Result<(), Error> {
     }
 }
 
+/// A project with no session holds no key or live view: a dead Calcifer's mount supervisor
+/// unmounted and ended its provider when that exact process ended (`project_mount::supervise`).
+/// Detach any view that outlived it and retire its runtime folder.
+fn retire_orphaned_views(root: &FsPath) -> Result<(), Error> {
+    let base = root.join(RUNTIME_DIR);
+    match fs::symlink_metadata(&base) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            if fs::read(base.join("owner")).map_err(io)? != RUNTIME_MARKER {
+                return Err(error("vault_runtime", "the reserved project runtime directory belongs to another writer"));
+            }
+        }
+        Ok(_) => return Err(error("vault_runtime", "the project runtime must be an owned directory")),
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(why) => return Err(io(why)),
+    }
+    for entry in fs::read_dir(&base).map_err(io)? {
+        let entry = entry.map_err(io)?;
+        if !entry.file_type().map_err(io)?.is_dir() { continue; }
+        project_mount::detach_stale(&project_mount::view_path(&entry.path()).map_err(provider)?);
+        retire_runtime(&entry.path())?;
+    }
+    Ok(())
+}
+
 /// Retire only empty, detached runtime folders from earlier Calcifer versions.
 /// Current mounts live inside their own project, so this never touches an active owned view.
 pub(crate) fn sweep_runtime(calcifer: &FsPath) -> bool {
@@ -781,7 +805,8 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         }
         "lock" => {
             if !encrypted(root) { return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked")); }
-            close(api, root, transition, browser)?;
+            // Locking a locked project is a no-op, after retiring what a dead Calcifer's views left.
+            if held(root).is_some() { close(api, root, transition, browser)?; } else { retire_orphaned_views(root)?; }
         }
         "activity" => {
             if let Some(session) = held(root) { let mut session = session.lock().expect("vault session"); if !session.closing && !expired(&session) { if session.timer.activity() { session.active_ms = super::now_ms(); } } }
