@@ -160,6 +160,9 @@ mirrors (xs-185: converted on the pod, composed on a base, run, tagged, publishe
 the session's Calcifer in to Civitai;
 `ab` runs cells from `packages_refs` checkouts on one pod and compares their outputs (a refactor's same-bytes proof).
 `tool-functions` (cl-774) takes `qwen-image-2/image`, `birefnet/remove_background`, `minimax-h3/generate`, `upscale` and `edit` from dropping the tool to accepting its output on one 4090, as the page does (`e2e/page.py`), a shape like `lab`'s beside them, from a `packages_refs` checkout `pk`, keeping frames to judge.
+`h3-later-segments` (se-130) is a 26 s H3 shot of two segments whose summary names segment 1's event, then a redo from its seam, as the
+page does it (`e2e/page.py`), from a `packages_refs` checkout `pk`: segment 2's summary and the redo's say only that they continue,
+without the event, their prompts are the same, and their frames are kept to judge that the event isn't played again.
 `render-placement` (cl-774) is a render with the page's Run on at Automatically (`e2e/page.py render --on auto`) on a runner with no GPU and one rental: a tie and a model this computer has no GPU for go to the rental, nothing warns, and with the rental busy a weightless still goes here.
 `run-no-on` (tools.md) is `cozy run` with no `--on` on a runner with no GPU and one rental: a weightless still and a function that orchestrates a GPU model go to the rental, as a render does, and nothing warns; `e2e/cli/project.sh`'s `run_no_on` is the case with no rental.
 `disk` runs the `disk` suite's cells on one pod under the session's TensorD (its installs only with `installs: yes`);
