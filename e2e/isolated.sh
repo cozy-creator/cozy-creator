@@ -134,6 +134,7 @@ case $suite:$shard in
   cli:commands) needs='packages birefnet loras fits' ;;
   # web-localfit's heavy tool paints its edit base with BiRefNet (a take is one since cl-909); only Linux's web-core runs it.
   cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
+  cli:web-localfit) needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
   cli:idle) needs='packages downloads' ;;

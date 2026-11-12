@@ -105,6 +105,8 @@ const DESCRIBED_MS = 300_000;
   };
   await openQuick(DESCRIBED_MS);
   await closeBox(page);
+  // The open project's tab: its title is its folder, then what a click on it does (cl-958).
+  const opened = (path) => page.locator('.ptab.on[aria-current="page"]').and(page.getByTitle(new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\n`)));
   // A project as a person reaches it: by its tab, or from "N more" when the bar has no room for its tab (cl-877).
   const reach = async (path) => {
     const tab = page.locator('nav.ptabs a.ptab').and(page.getByTitle(path, { exact: true }));
@@ -113,7 +115,7 @@ const DESCRIBED_MS = 300_000;
       await page.click('nav.ptabs .ptab.more');
       await page.locator('.drawer .list a').and(page.getByTitle(path, { exact: true })).click();
     }
-    await page.locator('.ptab.on').and(page.getByTitle(path, { exact: true })).waitFor();
+    await opened(path).waitFor();
   };
   // Another project, to go to and come back from while Calcifer's away.
   const other = (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-offline-other-${Date.now()}`, unencrypted: true }), headers: { 'Idempotency-Key': `other-${Date.now()}` } })).body;
@@ -121,7 +123,7 @@ const DESCRIBED_MS = 300_000;
   // Read again, as the tabs list what's read at the start.
   await page.goto(await projectUrl(other.id));
   await page.reload();
-  await page.locator('.ptab.on').and(page.getByTitle(other.path, { exact: true })).waitFor();
+  await opened(other.path).waitFor();
   await reach(folder);
   await box('quick').waitFor();
   const was = await asset('shot');
