@@ -65,6 +65,7 @@ for lvl in off 8 6; do
   for m in h3 qwen4mp sdxl klein ideogram ph3; do
     [ "$m" != ideogram ] && [ "$m" != ph3 ] || [ "$lvl" = off ] || continue
     [ "$m" != h3 ] || [ "$lvl" != 6 ] || continue  # H3 15 s at 6 GiB fails on both arms (var-015, var-016)
+    [[ " ${AB_DONE:-} " != *" $m-$lvl "* ]] || continue  # rows a pod already ran (a pod lost mid-matrix)
     [ "$lvl" = 8 ] || ab_arm "$AB_RELEASED" "$AB_RELEASED" "$lvl" "$m" "ab-$m-$lvl" -released
     ab_arm "$RWF" "$AB_CANDIDATE" "$lvl" "$m" "ab-$m-$lvl" ''
     [ "$lvl" != 8 ] || ab_arm "$AB_RELEASED" "$AB_RELEASED" "$lvl" "$m" "ab-$m-$lvl" -released
