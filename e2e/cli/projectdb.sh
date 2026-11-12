@@ -5,7 +5,7 @@
 #   db_crdt         the native CRDT: stable identities, old-schema refusal, projection damage, replica merges, append and restart
 #   db_latency      write latency at a project with 500 takes (it runs on the cozy before project.db too: --shard projectdb-latency)
 #   db_migrate      a project 0.24.0 made opens here with nothing lost: its takes, files and words, ids and history (schema 3)
-#   db_waits        project.db held a moment by another program: a `cozy run` begun meanwhile waits it out
+#   db_waits        project.db held by another program while a `cozy run` begins: waited out within Calcifer's wait and past it
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -227,18 +227,20 @@ for file in project.yaml project.lock project.canvas.yaml project.db.new; do
 done
 }
 
-# Another program holds project.db for a moment, with the exclusive lock SQLite's last connection takes to checkpoint the WAL as it
-# closes, once Calcifer has let the project go: a `cozy run` begun meanwhile waits it out (cl-885). Schema 3's check of an opening
-# project.db waited rusqlite's own 5 s, not Calcifer's 10, so the laptop's second run in a project said "project.db is open in another
-# program" while Calcifer's own close of it checkpointed on a busy disk.
+# Another program holds project.db, with the exclusive lock SQLite's last connection takes to checkpoint the WAL as it closes, once
+# Calcifer has let the project go, and a `cozy run` begins meanwhile (cl-885). Held 7 s, within Calcifer's 10 s wait: the run waits it out
+# (schema 3's check of an opening project.db waited rusqlite's own 5 s, so the laptop's second run said "project.db is open in another
+# program" while Calcifer's own close checkpointed on a busy disk). Held 20 s, past it: Calcifer says so, and the CLI asks again and says
+# what's in the way, as the page waits out a held project.db, until it's let go.
 db_waits() {
-step "project.db held a moment by another program: a cozy run begun meanwhile waits it out (cl-885)"
-local P=$OUT/db-waits hold=7 holder began let_go
+step "project.db held by another program while a cozy run begins: waited out within Calcifer's wait and past it (cl-885)"
+local P=$OUT/db-waits hold holder began let_go
 cozy --json new --unencrypted "$P" > "$OUT/db-waits-new.json" 2>&1 || { check "db waits: new: $(tail -c 300 "$OUT/db-waits-new.json")"; return; }
 in_project "$P" --json run minimax-h3-tools/echo text=first > "$OUT/db-waits-1.ndjson" 2> "$OUT/db-waits-1.err" \
   || { check "db waits: first run: $(tail -c 300 "$OUT/db-waits-1.ndjson") $(tail -c 300 "$OUT/db-waits-1.err")"; return; }
-# $hold s: past rusqlite's 5 s, within Calcifer's 10. Taken once no connection of Calcifer's is open, and proven exclusive.
-python3 - "$P/project.db" "$hold" > "$OUT/db-waits-hold.txt" 2>&1 <<'HOLD' &
+for hold in 7 20; do
+# Taken once no connection of Calcifer's is open, and proven exclusive.
+python3 - "$P/project.db" "$hold" > "$OUT/db-waits-hold-$hold.txt" 2>&1 <<'HOLD' &
 import sqlite3, sys, time
 path, hold = sys.argv[1], float(sys.argv[2])
 deadline = time.time() + 120
@@ -263,17 +265,20 @@ db.close()
 print(f"released {time.time():.3f}", flush=True)
 HOLD
 holder=$!
-for _ in $(seq 1300); do grep -qE '^(held|never|shared)' "$OUT/db-waits-hold.txt" && break; sleep 0.1; done
-grep -qx held "$OUT/db-waits-hold.txt" || { check "db waits: no hold: $(cat "$OUT/db-waits-hold.txt")"; wait "$holder" || true; return; }
+for _ in $(seq 1300); do grep -qE '^(held|never|shared)' "$OUT/db-waits-hold-$hold.txt" && break; sleep 0.1; done
+grep -qx held "$OUT/db-waits-hold-$hold.txt" || { check "db waits $hold s: no hold: $(cat "$OUT/db-waits-hold-$hold.txt")"; wait "$holder" || true; return; }
 began=$(python3 -c 'import time; print(f"{time.time():.3f}")')
-in_project "$P" --json run minimax-h3-tools/echo text=second > "$OUT/db-waits-2.ndjson" 2> "$OUT/db-waits-2.err" \
-  || check "db waits: a run begun while project.db was held $hold s: $(tail -c 300 "$OUT/db-waits-2.ndjson") $(tail -c 300 "$OUT/db-waits-2.err")"
+in_project "$P" --json run minimax-h3-tools/echo "text=held $hold" > "$OUT/db-waits-$hold.ndjson" 2> "$OUT/db-waits-$hold.err" \
+  || check "db waits: a run begun while project.db was held $hold s: $(tail -c 300 "$OUT/db-waits-$hold.ndjson") $(tail -c 300 "$OUT/db-waits-$hold.err")"
 wait "$holder" || true
-let_go=$(sed -n 's/^released //p' "$OUT/db-waits-hold.txt")
+let_go=$(sed -n 's/^released //p' "$OUT/db-waits-hold-$hold.txt")
 [ -n "$let_go" ] && python3 -c 'import sys; sys.exit(float(sys.argv[1]) >= float(sys.argv[2]))' "$began" "$let_go" \
-  || check "db waits: the hold ended before the run began: $(cat "$OUT/db-waits-hold.txt"), run at $began"
-J -s 'any(.[]; .type == "run.completed" and .run.status == "completed")' "$OUT/db-waits-2.ndjson" \
-  || check "db waits: the run begun in the hold didn't complete: $(tail -c 300 "$OUT/db-waits-2.ndjson")"
+  || check "db waits $hold s: the hold ended before the run began: $(cat "$OUT/db-waits-hold-$hold.txt"), run at $began"
+J -s 'any(.[]; .type == "run.completed" and .run.status == "completed")' "$OUT/db-waits-$hold.ndjson" \
+  || check "db waits: the run begun in a $hold s hold didn't complete: $(tail -c 300 "$OUT/db-waits-$hold.ndjson")"
+[ "$hold" -lt 10 ] || grep -q 'project.db is open in another program' "$OUT/db-waits-$hold.err" \
+  || check "db waits: held $hold s, the CLI didn't say what it waited for: $(tail -c 300 "$OUT/db-waits-$hold.err")"
+done
 }
 
 db_crash() {

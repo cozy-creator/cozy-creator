@@ -135,10 +135,10 @@ impl Error {
         self
     }
 
-    /// Whether asking again may be answered: a machine or the Hub gave no answer, a slow one, or failed on its side. Any
-    /// other refusal is final.
+    /// Whether asking again may be answered: a machine or the Hub gave no answer, a slow one, or failed on its side, or another
+    /// program holds a project's file (`file_held`, which the page waits out too). Any other refusal is final.
     pub fn transient(&self) -> bool {
-        matches!(self.code.as_str(), "machine_unreachable" | "hub_unreachable" | "hub_slow")
+        matches!(self.code.as_str(), "machine_unreachable" | "hub_unreachable" | "hub_slow" | "file_held")
             || (self.kind == Kind::Unavailable && self.cause.as_ref() == Some(&self.code))
     }
 
