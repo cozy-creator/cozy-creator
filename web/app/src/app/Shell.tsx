@@ -318,7 +318,7 @@ export function Shell() {
       image.removeAttribute("src")
     }
     const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-      (["project", "canvas", "yaml"].includes(String(queryKey[0])) && queryKey[1] === id) || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
+      (["project", "project-view", "canvas", "yaml"].includes(String(queryKey[0])) && queryKey[1] === id) || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
     void queries.cancelQueries({ predicate: privateData })
     queries.removeQueries({ predicate: privateData })
     notes.set([])

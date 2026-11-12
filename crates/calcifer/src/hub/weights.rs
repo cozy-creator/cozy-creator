@@ -160,7 +160,7 @@ fn warm(hub: &Origin, on: On, agreed: Option<Agreed>, target: String, made: Made
         weights_destination: destination,
         ..Default::default()
     };
-    SubmitRun {
+    SubmitRun { project: None,
         agreed,
         stays: vec![],
         on,
@@ -311,7 +311,7 @@ fn from_run(api: &Api, reference: &str, destination: &str, lane: &str) -> Result
         Some((number, output)) => (number, Some(output)),
         None => (reference, None),
     };
-    let run = api.calcifer.record(&crate::api::find(api, number)?)?;
+    let run = api.calcifer.record(&crate::api::find_maintenance(api, number)?)?;
     let item = weights(&run, output)?;
     let machine = run.machine.clone().ok_or_else(|| {
         Refusal(Error::new(Kind::Conflict, "run_unplaced", format!("run {} never reached a machine", run.number)))
@@ -332,7 +332,7 @@ fn from_run(api: &Api, reference: &str, destination: &str, lane: &str) -> Result
         lane: lane.to_owned(),
         ..Default::default()
     };
-    Ok(SubmitRun {
+    Ok(SubmitRun { project: None,
         agreed: None,
         stays: vec![],
         on: On::Machine(machine),

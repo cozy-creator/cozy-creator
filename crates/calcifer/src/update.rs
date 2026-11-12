@@ -259,7 +259,7 @@ impl Machines {
             warnings.push(format!("{}'s warm models reload after it restarts", m.name));
         }
         let target = named.join(", ");
-        let submit = SubmitRun {
+        let submit = SubmitRun { project: None,
             agreed: None,
             stays: vec![],
             on: On::Machine(m.name.clone()),

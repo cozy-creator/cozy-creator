@@ -14,7 +14,7 @@ use crate::{Context, calcifer_client::path, output, run};
 /// Send the current package directory by content for locking and publication.
 async fn sent(ctx: &Context) -> Result<(std::path::PathBuf, api::code::LocalCode), Error> {
     let dir = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    let code = crate::send::Sender::new(ctx).await?.code(&dir).await?;
+    let code = crate::send::Sender::independent_code(ctx, &dir).await?;
     Ok((dir, code))
 }
 

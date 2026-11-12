@@ -999,7 +999,6 @@ pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<
     }
     let said = String::from_utf8_lossy(&out.stderr).into_owned();
     let (ended, killed) = platform::process::ended(&out.status);
-    tracing::warn!(code, "{what} {ended}; its stderr ends:\n{}", platform::process::tail(&said, 40));
     let refusal = runtime_refusal(&said);
     let words = refusal.as_ref().map(|refusal| refusal.error.message.clone())
         .or_else(|| platform::process::last_line(&said));

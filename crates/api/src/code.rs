@@ -36,6 +36,46 @@ pub struct Staged {
     pub left: Vec<String>,
 }
 
+/// Source ownership can be checked before hashing, a digest memo, or any upload.
+pub struct SourcePlan {
+    roots: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+    root: PathBuf,
+    package: PathBuf,
+    left: Vec<String>,
+}
+
+impl SourcePlan {
+    /// The canonical package/script and each local dependency, including empty folders.
+    pub fn roots(&self) -> impl Iterator<Item = &Path> {
+        self.roots.iter().map(PathBuf::as_path)
+    }
+
+    /// Every file that would be sent, without reading or hashing its content.
+    pub fn files(&self) -> impl Iterator<Item = &Path> {
+        self.files.iter().map(PathBuf::as_path)
+    }
+
+    /// Materialize a reviewed plan. `memo` must belong to the admitted source owner.
+    pub fn stage(self, memo: Option<&Path>) -> Result<Staged, Error> {
+        let named = |path: &Path| -> Result<String, Error> {
+            let parts: Option<Vec<&str>> = path.strip_prefix(&self.root).unwrap_or(path).iter().map(|p| p.to_str()).collect();
+            parts.map(|parts| parts.join("/")).ok_or_else(|| refuse("project_unreadable", format!("{} is not a name every OS can hold", path.display())))
+        };
+        let (mut files, mut members) = (vec![], BTreeMap::new());
+        for file in &self.files {
+            let length = fs::metadata(file).map_err(|e| refuse("project_unreadable", format!("{}: {e}", file.display())))?.len();
+            let digest = crate::digests::of(memo, file)?;
+            members.insert(named(file)?, Member { length, sha256: hex::encode(digest.bytes()), executable: executable(file) });
+            files.push(StagedInput { path: file.clone(), digest, length });
+        }
+        let at = if self.package == self.root { String::new() } else { named(&self.package)? };
+        let document = tree::document(&members);
+        tree::parse(&document).map_err(|e| refuse("project_unreadable", e))?;
+        Ok(Staged { document, files, at, left: self.left })
+    }
+}
+
 impl Staged {
     pub fn code(&self) -> LocalCode {
         LocalCode { tree: Digest::of(&self.document), at: self.at.clone() }
@@ -60,6 +100,11 @@ pub fn split(path: &Path) -> Option<(PathBuf, Option<String>)> {
 /// The package at `path` (a folder or a script) as one tree: it and its path dependencies under their common folder, each
 /// file's digest remembered in `memo` as an input file's is.
 pub fn stage(path: &Path, memo: Option<&Path>) -> Result<Staged, Error> {
+    plan(path)?.stage(memo)
+}
+
+/// Enumerate source paths and dependency metadata without hashing or writing a digest memo.
+pub fn plan(path: &Path) -> Result<SourcePlan, Error> {
     let unreadable = |e: std::io::Error| refuse("project_unreadable", format!("{}: {e}", path.display()));
     if !path.exists() {
         return Err(Error::new(Kind::NotFound, "target_not_found", format!("{} does not exist", path.display())));
@@ -72,6 +117,10 @@ pub fn stage(path: &Path, memo: Option<&Path>) -> Result<Staged, Error> {
         false => path_dependencies(&package)?,
     };
     let root = common(&beside, locals.iter().map(|l| if l.is_file() { l.parent().unwrap_or(l) } else { l.as_path() }));
+    let mut roots = vec![package.clone()];
+    roots.extend(locals.iter().cloned());
+    roots.sort();
+    roots.dedup();
     let mut left = vec![];
     let mut names: Vec<PathBuf> = match script {
         true => vec![package.clone()],
@@ -85,28 +134,11 @@ pub fn stage(path: &Path, memo: Option<&Path>) -> Result<Staged, Error> {
     }
     names.sort();
     names.dedup();
-    let named = |path: &Path| -> Result<String, Error> {
-        let parts: Option<Vec<&str>> = path.strip_prefix(&root).unwrap_or(path).iter().map(|p| p.to_str()).collect();
-        parts.map(|parts| parts.join("/")).ok_or_else(|| refuse("project_unreadable", format!("{} is not a name every OS can hold", path.display())))
-    };
-    let (mut files, mut members) = (vec![], BTreeMap::new());
-    for file in names {
-        let length = fs::metadata(&file).map_err(|e| refuse("project_unreadable", format!("{}: {e}", file.display())))?.len();
-        let digest = crate::digests::of(memo, &file)?;
-        members.insert(named(&file)?, Member { length, sha256: hex::encode(digest.bytes()), executable: executable(&file) });
-        files.push(StagedInput { path: file, digest, length });
-    }
-    let at = match package == root {
-        true => String::new(),
-        false => named(&package)?,
-    };
-    let document = tree::document(&members);
-    tree::parse(&document).map_err(|e| refuse("project_unreadable", e))?;
-    Ok(Staged { document, files, at, left })
+    Ok(SourcePlan { roots, files: names, root, package, left })
 }
 
 /// The files a package's source is, relative to `root`, sorted: what publication and local code send.
-/// Common credential names, keys, weights, bytecode and symlinks stay out and are said in `left`.
+/// Cozy-owned project storage, credentials, keys, weights, bytecode and symlinks stay out and are said in `left`.
 /// This is a filename filter, not secret detection; other runtime resources remain included.
 pub fn source_files(root: &Path, left: &mut Vec<String>) -> Result<Vec<PathBuf>, Error> {
     let mut files = vec![];
@@ -120,16 +152,38 @@ fn walk(root: &Path, rel: &Path, files: &mut Vec<PathBuf>, left: &mut Vec<String
     const SKIP_AT_ROOT: &str = ".venv venv node_modules .idea .vscode build dist";
     const SECRET_DIRS: &str = ".aws .ssh .direnv credentials secrets";
     const SECRET_FILES: &str = ".netrc .npmrc .pypirc .envrc credentials.json service-account.json id_ed25519";
+    const PROJECT_DIRS: &str = ".cozy .vault-machine .vault-calcifer .vault-inputs .vault-journal project.vault.data";
+    const PROJECT_FILES: &str = ".vault-local-execution.json .cozy-apfs-v1 project.vault.keys.json project.vault.journal-pending";
     const REFUSED: &str = ".pyc .pyo .pem .key .p12 .pfx .jks .pickle .pkl .pt .ckpt .safetensors .onnx .gguf";
     let listed = |list: &str, name: &str| list.split(' ').any(|item| item == name);
     let unreadable = |e: std::io::Error| refuse("project_unreadable", e);
-    for entry in fs::read_dir(root.join(rel)).map_err(unreadable)? {
+    let directory = root.join(rel);
+    let project = directory.join("project.db").is_file()
+        || directory.join("project.vault.keys.json").is_file()
+        || directory.join(crate::machine::LOCAL_PRIVATE_MARKER).is_file()
+        || (directory.join("project.yaml").is_file() && directory.join("project.lock").is_file());
+    for entry in fs::read_dir(&directory).map_err(unreadable)? {
         let entry = entry.map_err(unreadable)?;
         let name = entry.file_name().to_string_lossy().to_lowercase();
         let path = rel.join(entry.file_name());
         let kind = entry.file_type().map_err(unreadable)?;
         if kind.is_symlink() {
             left.push(format!("{} (a symlink)", path.display()));
+            continue;
+        }
+        let project_storage = if kind.is_dir() {
+            listed(PROJECT_DIRS, &name)
+                || name.starts_with(".cozy-vault-stage-")
+                || name.starts_with(".cozy-project-source-")
+        } else {
+            listed(PROJECT_FILES, &name)
+                || name == "project.db" || name.starts_with("project.db-") || name.starts_with("project.db.")
+                || (name.starts_with(".cozy-vault-") && name.ends_with(".transaction.json"))
+                || (project && (name == "project.yaml" || name == "project.lock"
+                    || name.starts_with("project.yaml.v") || name.starts_with("project.lock.v")))
+        };
+        if project_storage {
+            left.push(format!("{} (project storage)", path.display()));
             continue;
         }
         if kind.is_dir() {

@@ -17,7 +17,7 @@ use ed25519_dalek::{SigningKey, pkcs8::DecodePrivateKey as _};
 use serde::Deserialize;
 
 use crate::{
-    api::{Api, Refusal, find},
+    api::{Api, Refusal, RunPath, find_scoped},
     store::{State as RunState, now_ms},
 };
 
@@ -70,7 +70,7 @@ fn link(address: &str, fingerprint: &str, token: &str, run: &RunId, output: &str
 
 pub(crate) async fn play(
     State(api): State<Arc<Api>>,
-    Path(key): Path<String>,
+    Path(path): Path<RunPath>,
     query: Result<Query<Ask>, QueryRejection>,
 ) -> Result<Json<Play>, Refusal> {
     let Query(ask) = query?;
@@ -78,7 +78,7 @@ pub(crate) async fn play(
         return Err(Refusal(Error::new(Kind::Usage, "play_output_invalid", "name one output, or name/index")));
     }
     let expires_s = lifetime(&ask.expires)?;
-    let row = find(&api, &key)?;
+    let row = find_scoped(&api, path.project(), path.key()).await?;
     let refuse = |kind, code: &str, message: String| Refusal(Error::new(kind, code, message));
     // A run still going may yet make the output; an ended one never will.
     let (name, index) = match ask.output.rsplit_once('/') {
@@ -104,7 +104,7 @@ pub(crate) async fn play(
         .machine
         .clone()
         .ok_or_else(|| unavailable(format!("run {} has no machine yet", row.number)))?;
-    let machine = api.calcifer.store().machine(&name)?;
+    let machine = api.calcifer.maintenance_store().machine(&name)?;
     let (Some(machine), Some(frame)) = (machine, api.machines.frame(&name)) else {
         return Err(unavailable(format!("{name} has not reported its status")));
     };

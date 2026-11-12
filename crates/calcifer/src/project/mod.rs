@@ -23,7 +23,10 @@ mod retired_storage_tests;
 mod web_seed_tests;
 pub(crate) mod host;
 mod jobs;
+pub(crate) mod journal;
+pub(crate) use journal::{ProjectRef, ProjectStore, RunOwner};
 mod keyed;
+mod view;
 pub(crate) mod model;
 mod remote;
 mod thumbs;
@@ -173,8 +176,15 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}", get(state))
         .route("/v1/projects/{id}/imports", post(import))
         .route("/v1/projects/{id}/canvas", get(canvas::read).patch(canvas::patch))
+        .route("/v1/projects/{id}/view", get(view::read).patch(view::patch))
         .route("/v1/projects/{id}/thumbs/{sha256}", get(thumbs::thumb))
-        .route("/v1/projects/{id}/runs", post(runs))
+        .route("/v1/projects/{id}/runs", post(runs).get(crate::api::project_list))
+        .route("/v1/projects/{id}/runs/submit", post(crate::runs::submit_project))
+        .route("/v1/projects/{id}/runs/{run}", get(crate::api::show))
+        .route("/v1/projects/{id}/runs/{run}/cancel", post(crate::api::cancel))
+        .route("/v1/projects/{id}/runs/{run}/events", get(crate::api::events))
+        .route("/v1/projects/{id}/runs/{run}/outputs/{name}", get(crate::outputs::serve))
+        .route("/v1/projects/{id}/runs/{run}/play", get(crate::play::play))
         .route("/v1/projects/{id}/fit", post(fit::fit))
         .route("/v1/projects/{id}/fit/here", post(fit::here))
         .route("/v1/projects/{id}/cancel", post(cancel))
@@ -421,9 +431,8 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
 /// named by its content and linked; anything else is a person's file and is copied. Says what it couldn't keep.
 /// An encrypted project's transport uploads stay inside its mounted storage, never the shared plaintext CAS.
 pub(crate) fn private_upload_root(api: &Arc<Api>, named: &str) -> Result<Option<PathBuf>, Error> {
-    let root = self::named(api, named)?;
-    if !vault::encrypted(&root) { return Ok(None); }
     let project = api.projects.get(api, named).map_err(|e| e.0)?;
+    project.require_view()?;
     Ok(Some(project.folder.dir.clone()))
 }
 
@@ -497,6 +506,7 @@ impl Holding {
         let doc = Doc::load(&folder)?;
         let lock = folder.lock()?;
         let stand = doc.stand(&lock);
+        drop(_access);
         let mut fields = written;
         let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), api::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
         let pickup = match picked {
@@ -761,7 +771,7 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
     let walk = Walk::new(api, project);
     let api = api.clone();
     tokio::spawn(async move {
-        let _access = match vault::admit_work(&walk.project).await {
+        let access = match vault::admit_work(&walk.project).await {
             Ok(access) => access,
             Err(error) => {
                 let mut walking = walk.project.walking.lock().expect("walking lock");
@@ -774,6 +784,7 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
                 return;
             }
         };
+        drop(access);
         let following = following(&api, &walk.project, active);
         remember(&api);
         if let Err(error) = walk.go(&following).await {
@@ -1126,6 +1137,7 @@ pub(super) fn not_saved(why: &str) -> String {
 /// used now.
 async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     let mut open: Open = parse(&body?)?;
+    let _ownership=crate::maintenance_source::begin_project_creation().map_err(Refusal)?;
     if let Some(path) = open.path.as_ref().filter(|path| path.is_absolute())
         && !path.join(db::DB).is_file() && Folder::legacy_files(path)
     {
@@ -1284,15 +1296,30 @@ fn refuse_encrypted_parent(dir: &FsPath) -> Result<(), Error> {
 }
 
 /// The project folder holding `path`: the nearest, up from it, that is one.
+pub(crate) fn source_project(path: &FsPath) -> Result<Option<PathBuf>, Error> {
+    match holding(path) {
+        Ok(project) => Ok(Some(project)),
+        Err(error) if error.code == "project_not_found" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn holding(path: &FsPath) -> Result<PathBuf, Error> {
-    let not_found = || {
-        let said = format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB);
-        Error::new(Kind::NotFound, "project_not_found", said)
-            .remedy("run from an existing project directory, or create one with cozy new")
-            .next("cozy new")
-    };
-    let start = platform::durable::canonical(path).map_err(|_| not_found())?;
-    (start.ancestors()).find(|dir| Folder::is_project(dir)).map(FsPath::to_owned).ok_or_else(not_found)
+    let unavailable = || Error::new(Kind::Unavailable, "project_ownership_unavailable", "the source's project ownership cannot be verified");
+    let start = platform::durable::canonical(path).map_err(|_| unavailable())?;
+    for dir in start.ancestors() {
+        let logical = vault::logical(dir);
+        if logical != dir || vault::encrypted(dir) { return Ok(logical); }
+        for marker in [project_vault::KEYBAG_FILE, db::DB, "project.canvas.yaml", "project.db.new"] {
+            match std::fs::symlink_metadata(dir.join(marker)) {
+                Ok(_) if marker == project_vault::KEYBAG_FILE || marker == db::DB => return Ok(dir.to_owned()),
+                Ok(_) => return Err(Error::new(Kind::Validation, "project_format_unsupported", "the source belongs to a retired or incomplete project; do not treat it as global maintenance")),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(_) => return Err(unavailable()),
+            }
+        }
+    }
+    Err(Error::new(Kind::NotFound, "project_not_found", "the verified source is outside a project").next("cozy new"))
 }
 
 fn now_ms() -> i64 {
@@ -1809,7 +1836,7 @@ async fn reclaim(
         before: None,
         limit: 100,
     };
-    let going = (api.calcifer.store().runs(&filter).map(|(rows, ..)| rows).unwrap_or_default().iter()).any(|row| row.state != crate::store::State::Settled);
+    let going = (api.calcifer.project_store(&project.id).and_then(|store| store.runs(&filter)).map(|(rows, ..)| rows).unwrap_or_default().iter()).any(|row| row.state != crate::store::State::Settled);
     if asked.yes && (going || *project.walking.lock().expect("walking lock")) {
         let said = "the project is rendering: reclaim once its runs land";
         return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy status")));
@@ -2106,7 +2133,7 @@ async fn runs(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<Asked>), Refusal> {
     let body = body?;
-    let asked: Runs = parse(&body)?;
+    let mut asked: Runs = parse(&body)?;
     if asked.on.is_empty() || asked.on.iter().any(|on| matches!(on, On::New(_))) {
         let said = "a project's runs go to machines: rent one first, then name it with --on";
         return Err(Refusal(Error::new(Kind::Usage, "project_on_new", said).next("cozy machine rent")));
@@ -2121,6 +2148,7 @@ async fn runs(
     };
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
+    asked.on=crate::private_io::check_project_placement(&project.id,&project.root,&asked.on).map_err(Refusal)?;
     let id = project.id.clone();
     project.unsent.lock().expect("unsent lock").clear();
     // What this render uses: the project as it is now, its export kept by digest until the render ends.
@@ -2264,7 +2292,7 @@ async fn runs(
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);
     walk_under(&api, &project, &mut walking);
-    sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
+    sync_jobs(&project, numbered(&api, &project.id)).map_err(Refusal)?;
     let board = project.jobs.board();
     drop(walking);
     let ask = (!joined || added > 0).then_some(ask.id);
@@ -2273,10 +2301,10 @@ async fn runs(
 }
 
 /// A run by its number, as its record says now.
-fn numbered(api: &Api) -> impl Fn(u64) -> Option<Run> + '_ {
+fn numbered<'a>(api: &'a Api, project: &'a str) -> impl Fn(u64) -> Option<Run> + 'a {
     move |number| {
         let calcifer = &api.calcifer;
-        calcifer.record(&calcifer.store().run_by_number(number).ok()??).ok()
+        calcifer.record(&calcifer.project_store(project).ok()?.run_by_number(number).ok()??).ok()
     }
 }
 
@@ -2336,7 +2364,7 @@ fn cancelled(api: &Arc<Api>, project: &Arc<Project>, names: &[String], why: &dyn
     project.join(&lock);
     let (dropped, canceled) = stop_jobs(api, project, &lock, &wanted, all, why).map_err(Refusal)?;
     project.asked.notify_one();
-    sync_jobs(project, numbered(api)).map_err(Refusal)?;
+    sync_jobs(project, numbered(api, &project.id)).map_err(Refusal)?;
     // `all` stops what is fetched ahead too; the walker stops what fewer leave unneeded.
     if all {
         for (_, _, run) in project.jobs.ahead_going() {
@@ -2375,7 +2403,7 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str) ->
             ask.sent.extend(owed.iter().cloned());
         }
     })?;
-    let store = api.calcifer.store();
+    let store = api.calcifer.project_store(&project.id).map_err(|error|Error::new(Kind::Conflict,"project_journal",error.to_string()))?;
     let mut canceled = vec![];
     for pending in lock.pending.values().filter(|pending| pending.run > 0 && wanted(&pending.asset)) {
         let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
@@ -2903,7 +2931,7 @@ struct Followed {
 impl Walk {
     fn new(api: &Arc<Api>, project: &Arc<Project>) -> Self {
         Self {
-            host: Host::new(api),
+            host: Host::for_project(api, &project.id),
             project: project.clone(),
             began: Instant::now(),
             tally: Mutex::default(),
@@ -3104,7 +3132,9 @@ impl Walk {
 
     /// `run` sent under `key`. A machine that answers no connect has recorded nothing, so it is asked
     /// again under that key; one its Hub says stopped or ended is refused at once.
-    async fn send_run(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
+    async fn send_run(&self, key: &str, mut run: SubmitRun) -> Result<Run, Error> {
+        run.project = Some(self.project.id.clone());
+        run.out = Some(landing(&self.project.root));
         self.again(|| self.host.submit(key, run.clone())).await
     }
 
@@ -3302,7 +3332,7 @@ impl Walk {
         let spec = v1::RunSpec { kind: v1::RunKind::Warm, source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
         let target = format!("{}{called}", api::calcifer::project::AHEAD);
         let shown = package.name.clone() + "/" + &renderer.function;
-        let submit = SubmitRun { on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None, stays: vec![] };
+        let submit = SubmitRun { project: Some(self.project.id.clone()), on: placed.clone(), hub, kind: RunKind::Warm, target, spec, inputs, held: vec![], out: None, warnings: vec![], agreed: None, stays: vec![] };
         let key = format!("project-ahead-{}", new_key());
         let run = self.send_run(&key, submit).await?;
         self.project.jobs.ahead(run.id.clone(), with, shown, placed.to_string(), run.number);
@@ -4269,7 +4299,7 @@ impl Walk {
             models,
             ..Default::default()
         };
-        let submit = SubmitRun {
+        let submit = SubmitRun { project: None,
             on: placed,
             hub,
             kind: RunKind::Call,

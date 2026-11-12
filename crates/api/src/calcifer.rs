@@ -51,6 +51,9 @@ pub enum On {
 /// `POST /v1/runs`, with an `Idempotency-Key` header: one key names one submission forever.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SubmitRun {
+    /// Canonical project owner. Absent only for validated project-independent maintenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     pub on: On,
     /// The Tensorhub origin the run belongs to.
     pub hub: String,

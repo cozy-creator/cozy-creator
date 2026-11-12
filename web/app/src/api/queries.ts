@@ -4,6 +4,7 @@ import type { Project } from "../types"
 import type { Client, RunFilter } from "./client"
 import type { EventStream } from "./events"
 import { nextProjectOrder } from "./projectOrder"
+import { rememberProjectView } from "../app/view"
 
 /** Keyed by name, so an asset that didn't change keeps its identity whatever moved around it. */
 function keepAssets(old: unknown, next: unknown): unknown {
@@ -66,6 +67,19 @@ export const projectQuery = (client: Client, stream: EventStream, id: string) =>
       return { ...state, began, warnings: mergeWarnings(state.warnings ?? [], opening) }
     },
     structuralSharing: keepAssets,
+  })
+
+export const projectViewQuery = (client: Client, stream: EventStream, id: string) =>
+  queryOptions({
+    queryKey: ["project-view", id],
+    queryFn: async ({ signal }) => {
+      await stream.whenShown(id, signal)
+      signal.throwIfAborted()
+      const view = await client.projectView(id, signal)
+      signal.throwIfAborted()
+      rememberProjectView(id, view)
+      return view
+    },
   })
 
 /** A list a late Hub left short is asked for again: what it read of the Hub so far is kept there, so it gets further each time. */

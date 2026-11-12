@@ -59,7 +59,8 @@ pub(super) struct Machine {
 pub(super) fn router(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> Router {
     routes()
         .route(path::PRIVATE_CLOSE, post(private_close_request))
-        .route(path::LOCAL_PRIVATE, get(private_request).post(private_request).put(private_request))
+        .route(path::PROJECT_EXECUTION, get(project_request).post(project_request).put(project_request))
+        .route(path::LOCAL_PRIVATE, get(legacy_private_request).post(legacy_private_request).put(legacy_private_request))
         .with_state(Machine { identity, runs })
 }
 
@@ -86,7 +87,21 @@ fn routes() -> Router<Machine> {
 }
 
 async fn private_close_request(State(m): State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
-    private_request(State(m), Path((project, "close".into())), request).await
+    project_request(State(m), Path((project, "close".into())), request).await
+}
+
+async fn legacy_private_request() -> Response {
+    Refusal::from(Error::conflict("project_worker_upgrade_required",
+        "The older private execution contract is unavailable. Use project-owned execution.")).into_response()
+}
+
+async fn project_request(State(m): State<Machine>, Path((project, rest)): Path<(String, String)>, request: Request<Body>) -> Response {
+    // No private body is read while the stronger storage/security contract is being prepared.
+    // This explicit refusal is removed only when the native backend and project-owned engine qualify.
+    if let Err(error) = crate::private_io::require_project_execution() {
+        return Refusal::from(Error::conflict("project_execution_unavailable", error.to_string())).into_response();
+    }
+    private_request(State(m), Path((project, rest)), request).await
 }
 
 /// New privacy namespace: authenticate and verify a live protected-view proof BEFORE

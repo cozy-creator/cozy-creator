@@ -244,7 +244,7 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
 
 /// The run that installs `release` of `package` on a machine: a warm one naming no function.
 fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<api::calcifer::Agreed>) -> SubmitRun {
-    SubmitRun {
+    SubmitRun { project: None,
         agreed,
         stays: vec![],
         on,
@@ -306,7 +306,7 @@ impl Removal {
             retained: Vec<String>,
         }
         let runs = self.targets.iter().enumerate().map(|(i, (package, from))| {
-            let submit = SubmitRun {
+            let submit = SubmitRun { project: None,
                 agreed: None,
                 stays: vec![],
                 on: On::Machine(self.machine.clone()),

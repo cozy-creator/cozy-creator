@@ -71,12 +71,22 @@ fn code(ask: &RunRequest) -> Result<LocalCode, Refusal> {
 }
 
 async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) -> Result<Planned, Refusal> {
+    if ask.project.is_none() { if let Some(code)=&ask.code { crate::maintenance_source::require(api,code).map_err(Refusal)?; } }
     // Unnamed, where it is made present: this computer's machine, else any rental there is.
     let on = match ask.on.as_slice() {
         [] => crate::runs::default_on(api),
         [on] => on.clone(),
         _ => return Err(Refusal(Error::new(Kind::Usage, "on_one", format!("{} goes to one machine: name one with --on", ask.target)))),
     };
+    let on = if let Some(named) = ask.project.as_deref() {
+        let (project, root) = {
+            let store = api.projects.store(api, named).await.map_err(Refusal)?;
+            let (project, root) = store.execution_scope();
+            (project.to_owned(), root.to_owned())
+        };
+        crate::private_io::check_project_placement(&project, &root, &[on]).map_err(Refusal)?.into_iter().next()
+            .ok_or_else(|| Refusal(Error::new(Kind::Unavailable, "project_execution_unavailable", "no project execution target is available")))?
+    } else { on };
     let agreed = ask.agreed;
     // Calcifer's pick is refused as a named machine is, where this OS runs no models itself.
     let usable = || api::calcifer::local_usable(&on.to_string()).map_err(Refusal);
@@ -99,27 +109,41 @@ async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) -> Resu
 /// again answers the recorded run.
 pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunRequest) -> Result<Submitted, Error> {
     let calcifer = &api.calcifer;
+    if ask.project.is_none() { if let Some(code)=&ask.code { crate::maintenance_source::require(api,code)?; } }
+    let project = match ask.project.as_deref() {
+        Some(named) => Some({ let store = api.projects.store(api, named).await?; store.project_id().to_owned() }),
+        None => None,
+    };
     let store = |e: crate::store::StoreError| Error::internal("calcifer_store", e.to_string());
     // Recorded as this very ask: answered as it is. A quantization is recorded as the call it plans, which answers for itself.
-    if let Some((row, _)) = calcifer.store().recorded(key).map_err(store)?.filter(|(_, recorded)| recorded == digest) {
+    let recorded = match project.as_deref() {
+        Some(project) => calcifer.project_store(project).map_err(store)?.recorded(key),
+        None => calcifer.maintenance_store().recorded(key),
+    }.map_err(store)?;
+    if let Some((row, _)) = recorded.filter(|(_, recorded)| recorded == digest) {
         let run = calcifer.record(&row).map_err(crate::runs::refused)?;
         return Ok(Submitted { run, replay: true, notes: vec![], preparing: false, lock: None });
     }
     let hub = origin(api, Some(&ask.hub)).map_err(|Refusal(e)| e)?;
     match plan(api, key, &hub, &ask).await.map_err(|Refusal(e)| e)? {
         Planned::Preparing(run) => Ok(Submitted { run: *run, replay: false, notes: vec![], preparing: true, lock: None }),
-        Planned::Request(request) => Box::pin(crate::runs::request(api, key, *request)).await,
-        Planned::Run { submit, after, mut notes, mirror } => {
+        Planned::Request(mut request) => { request.project = project.clone(); Box::pin(crate::runs::request(api, key, *request)).await },
+        Planned::Run { mut submit, after, mut notes, mirror } => {
+            submit.project = project.clone();
+            if let Some(project) = project.as_deref() {
+                let store = calcifer.project_store(project).map_err(crate::Error::from).map_err(crate::runs::refused)?;
+                submit.out = Some(crate::project::landing(store.execution_scope().1));
+            }
             if let Some(mirror) = mirror {
                 notes.extend(mirror.record(api, &hub).await.map_err(|Refusal(e)| e)?);
             }
             // Its step is kept first, so a Calcifer that stops in between still does it.
             if let Some(after) = &after {
-                calcifer.plan(key, after)?;
+                calcifer.plan(project.as_deref(), key, after)?;
             }
             let submitted = calcifer.submit_under(key, digest, *submit).await;
             if submitted.is_err() && after.is_some() {
-                calcifer.unplan(key);
+                calcifer.unplan(project.as_deref(), key);
             }
             let notes = notes.into_iter().map(|message| Note { level: NoteLevel::Info, message }).collect();
             Ok(Submitted { notes, ..submitted.map_err(crate::runs::refused)? })
@@ -128,7 +152,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunReq
             let kept = serde_json::to_vec(&ask).map_err(|e| Error::internal("job_ask", e.to_string()))?;
             let (its_api, its_hub, its_key) = (api.clone(), hub.clone(), key.to_owned());
             let work = move |here: Here| async move { work.run(&its_api, &its_hub, &its_key, &here).await };
-            calcifer.here(key, digest, target, &hub, kept, work).await.map_err(crate::runs::refused)
+            calcifer.here(project.as_deref(), key, digest, target, &hub, kept, work).await.map_err(crate::runs::refused)
         }
     }
 }
