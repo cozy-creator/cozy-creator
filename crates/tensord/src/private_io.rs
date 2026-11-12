@@ -32,6 +32,7 @@ struct Verified {
     sealed: std::sync::atomic::AtomicBool,
     prepared: std::sync::atomic::AtomicBool,
     transport_prepared: std::sync::atomic::AtomicBool,
+    activated: std::sync::atomic::AtomicBool,
     public_trees: Mutex<Vec<PathBuf>>,
     executables: Mutex<Vec<PathBuf>>,
     process_scopes: Mutex<Vec<Arc<platform::contain::Scope>>>,
@@ -73,9 +74,32 @@ pub(crate) fn open_execution(scope: &LocalPrivateStorage, ordinary: &Arc<crate::
     let owned = Arc::new(ProjectExecution { runs: runs.clone(), leases: Arc::new(()) });
     *execution = Some(owned);
     drop(execution);
-    runs.restore_warm_sets()?;
-    crate::runs::resume_private(&runs, &scope.project_id)?;
+    // Paused until migration/inventory and strict health prove admission. No old run/warm replay here.
     Ok(runs)
+}
+
+/// Opens only a paused project Engine. Metadata migration never executes a Runtime or replays
+/// an old run/warm declaration. An ambiguous outside artifact remains a typed pending result.
+pub(crate) fn migrate_execution(scope: &LocalPrivateStorage, ordinary: &Arc<crate::runs::Runs>, logs: &std::path::Path) -> io::Result<Arc<crate::runs::Runs>> {
+    let runs = open_execution(scope, ordinary)?;
+    if runs.service.engine.needs_project_migration_from(&ordinary.service.engine, &scope.project_id)? {
+        runs.service.pause_project();
+        runs.service.engine.assert_private_idle(&scope.project_id)?;
+        runs.service.engine.migrate_project_from(&ordinary.service.engine, scope, logs)?;
+    }
+    Ok(runs)
+}
+
+pub(crate) fn activate_execution(scope: &LocalPrivateStorage, runs: &Arc<crate::runs::Runs>) -> io::Result<()> {
+    let verified = verified_scope(scope)?;
+    if !verified.activated.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if let Err(error) = crate::runs::resume_private(runs, &scope.project_id) {
+            verified.activated.store(false, std::sync::atomic::Ordering::Release);
+            return Err(error);
+        }
+    }
+    runs.service.admit_project();
+    Ok(())
 }
 
 /// Machine lifecycle consumes only aggregate busy/idle facts, never project/run identities.
@@ -236,6 +260,7 @@ pub(crate) fn register(
             sealed: std::sync::atomic::AtomicBool::new(false),
             prepared: std::sync::atomic::AtomicBool::new(false),
             transport_prepared: std::sync::atomic::AtomicBool::new(false),
+            activated: std::sync::atomic::AtomicBool::new(false),
             public_trees: Mutex::default(),
             executables: Mutex::default(),
             process_scopes: Mutex::default(),

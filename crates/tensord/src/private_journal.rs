@@ -8,7 +8,7 @@ use std::{
 };
 
 use api::machine::LocalPrivateStorage;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 
 const PREFIX: &[u8] = b"cozy-private-blob:1:";
@@ -35,7 +35,10 @@ struct Blob {
 }
 
 fn invalid() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "private journal reference or content is invalid")
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "private journal reference or content is invalid",
+    )
 }
 fn encode(value: &impl Serialize) -> io::Result<Vec<u8>> {
     serde_json::to_vec(value).map_err(io::Error::other)
@@ -67,8 +70,14 @@ pub(crate) fn read_scoped(context: &str, value: &[u8]) -> io::Result<Vec<u8>> {
     read(context, value, false)
 }
 
-pub(crate) fn write(scope: Option<&LocalPrivateStorage>, context: &str, value: &[u8]) -> io::Result<Vec<u8>> {
-    let Some(scope) = scope else { return Ok(value.to_vec()) };
+pub(crate) fn write(
+    scope: Option<&LocalPrivateStorage>,
+    context: &str,
+    value: &[u8],
+) -> io::Result<Vec<u8>> {
+    let Some(scope) = scope else {
+        return Ok(value.to_vec());
+    };
     let root = crate::private_io::root(scope)?;
     let directory = root.join(DIRECTORY);
     fs::create_dir_all(&directory)?;
@@ -112,7 +121,11 @@ pub(crate) fn write(scope: Option<&LocalPrivateStorage>, context: &str, value: &
 
 pub(crate) fn read(context: &str, value: &[u8], required: bool) -> io::Result<Vec<u8>> {
     let Some(encoded) = value.strip_prefix(PREFIX) else {
-        return if required { Err(invalid()) } else { Ok(value.to_vec()) };
+        return if required {
+            Err(invalid())
+        } else {
+            Ok(value.to_vec())
+        };
     };
     let reference: Reference = serde_json::from_slice(encoded).map_err(|_| invalid())?;
     if reference.format != 1 || reference.context != context || reference.storage.generation == 0 {
@@ -123,12 +136,15 @@ pub(crate) fn read(context: &str, value: &[u8], required: bool) -> io::Result<Ve
         return Err(invalid());
     }
     let root = crate::private_io::root(&reference.storage)?;
-    let mut source = crate::execution::open_artifact(&root, &Path::new(DIRECTORY).join(&reference.file))?;
+    let mut source =
+        crate::execution::open_artifact(&root, &Path::new(DIRECTORY).join(&reference.file))?;
     if source.metadata()?.len() != reference.length {
         return Err(invalid());
     }
     let mut bytes = Vec::new();
-    std::io::Read::by_ref(&mut source).take(reference.length.saturating_add(1)).read_to_end(&mut bytes)?;
+    std::io::Read::by_ref(&mut source)
+        .take(reference.length.saturating_add(1))
+        .read_to_end(&mut bytes)?;
     if bytes.len() as u64 != reference.length {
         return Err(invalid());
     }
@@ -141,4 +157,136 @@ pub(crate) fn read(context: &str, value: &[u8], required: bool) -> io::Result<Ve
         return Err(invalid());
     }
     STANDARD.decode(blob.payload).map_err(|_| invalid())
+}
+
+/// Re-home only framework references/descriptors, never arbitrary authored path strings.
+/// Each old immutable blob is validated through the current verified view before a new
+/// immutable reference is written there. The original bytes remain protected history.
+pub(crate) fn rebase_for_migration(
+    bytes: &[u8],
+    scope: &LocalPrivateStorage,
+    references: &mut std::collections::BTreeMap<String, String>,
+) -> io::Result<Vec<u8>> {
+    if bytes.starts_with(PREFIX) {
+        let key = std::str::from_utf8(bytes).map_err(|_| invalid())?;
+        if let Some(rebased) = references.get(key) {
+            return Ok(rebased.as_bytes().to_vec());
+        }
+        let reference: Reference =
+            serde_json::from_slice(&bytes[PREFIX.len()..]).map_err(|_| invalid())?;
+        if reference.storage.project_id != scope.project_id
+            || reference.storage.generation == 0
+            || reference.storage.generation > scope.generation
+        {
+            return Err(invalid());
+        }
+        let payload = read(&reference.context, bytes, true)?;
+        let mut payload = payload;
+        // Execution and run-spec framework scopes are top-level fields. Input/value text
+        // remains verbatim, even if it happens to spell an old physical path.
+        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+            let descriptor = if reference.context.split(':').count() == 2
+                && reference.context.starts_with("execution:")
+            {
+                value
+                    .get_mut("invocation")
+                    .and_then(|invocation| invocation.get_mut("local_private"))
+            } else if reference.context.ends_with(":spec") {
+                value.get_mut("local_private")
+            } else {
+                None
+            };
+            if let Some(descriptor) = descriptor {
+                if !descriptor.is_null() {
+                    let mut old: LocalPrivateStorage =
+                        serde_json::from_value(descriptor.clone()).map_err(|_| invalid())?;
+                    if old.project_id != scope.project_id
+                        || old.generation == 0
+                        || old.generation > scope.generation
+                    {
+                        return Err(invalid());
+                    }
+                    old.view_root = scope.view_root.clone();
+                    *descriptor = serde_json::to_value(old).map_err(|_| invalid())?;
+                    payload = encode(&value)?;
+                }
+            }
+        }
+        let mut owned = reference.storage;
+        owned.view_root = scope.view_root.clone();
+        let rebased = write(Some(&owned), &reference.context, &payload)?;
+        references.insert(
+            key.to_owned(),
+            String::from_utf8(rebased.clone()).map_err(|_| invalid())?,
+        );
+        return Ok(rebased);
+    }
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return Ok(bytes.to_vec());
+    };
+    let mut changed = false;
+    if let Some(pointer) = value.get_mut("_private_payload") {
+        let pointer = pointer.as_str().ok_or_else(invalid)?;
+        let rebased = rebase_for_migration(pointer.as_bytes(), scope, references)?;
+        value["_private_payload"] = String::from_utf8(rebased).map_err(|_| invalid())?.into();
+        changed = true;
+        if let Some(descriptor) = value
+            .get_mut("invocation")
+            .and_then(|invocation| invocation.get_mut("local_private"))
+        {
+            let mut owned: LocalPrivateStorage =
+                serde_json::from_value(descriptor.clone()).map_err(|_| invalid())?;
+            if owned.project_id != scope.project_id
+                || owned.generation == 0
+                || owned.generation > scope.generation
+            {
+                return Err(invalid());
+            }
+            owned.view_root = scope.view_root.clone();
+            *descriptor = serde_json::to_value(owned).map_err(|_| invalid())?;
+        }
+    } else if let Some(descriptor) = value.get_mut("local_private") {
+        let mut owned: LocalPrivateStorage =
+            serde_json::from_value(descriptor.clone()).map_err(|_| invalid())?;
+        if owned.project_id != scope.project_id
+            || owned.generation == 0
+            || owned.generation > scope.generation
+        {
+            return Err(invalid());
+        }
+        owned.view_root = scope.view_root.clone();
+        *descriptor = serde_json::to_value(owned).map_err(|_| invalid())?;
+        changed = true;
+    }
+    if changed {
+        encode(&value)
+    } else {
+        Ok(bytes.to_vec())
+    }
+}
+
+/// Decode only a framework journal reference/index for inside-project migration inventory.
+pub(crate) fn inspect_for_migration(
+    bytes: &[u8],
+    scope: &LocalPrivateStorage,
+) -> io::Result<Vec<u8>> {
+    if let Some(encoded) = bytes.strip_prefix(PREFIX) {
+        let reference: Reference = serde_json::from_slice(encoded).map_err(|_| invalid())?;
+        if reference.storage.project_id != scope.project_id
+            || reference.storage.generation == 0
+            || reference.storage.generation > scope.generation
+        {
+            return Err(invalid());
+        }
+        return read(&reference.context, bytes, true);
+    }
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        if let Some(pointer) = value
+            .get("_private_payload")
+            .and_then(serde_json::Value::as_str)
+        {
+            return inspect_for_migration(pointer.as_bytes(), scope);
+        }
+    }
+    Ok(bytes.to_vec())
 }
