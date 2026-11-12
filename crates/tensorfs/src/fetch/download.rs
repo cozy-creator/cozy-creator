@@ -64,6 +64,11 @@ const HEDGE_AFTER: Duration = Duration::from_secs(2);
 const SLOWER: f64 = 8.0;
 const HEDGE_FLOOR: f64 = 1e6;
 const HEDGES: u32 = 3;
+/// A request that has had no byte yet is judged only after this: R2's first byte of a cold chunk takes 1-8 s (tfs-141),
+/// and at 2 s a pod's 500 small first asks drew 78 hedges through a slow proxy (tfs-149).
+const HEDGE_SILENT: Duration = Duration::from_secs(8);
+/// The most hedges one look sends (`WINDOW`).
+const HEDGES_AT_ONCE: usize = 4;
 /// What a request moves before any range of 4 MiB or more has said (`Shared::typical`).
 const TYPICAL: f64 = 2e6;
 /// The ramp (AWS CRT's): requests in flight start at `START` and double each `WINDOW` while the bytes
@@ -315,16 +320,33 @@ struct Flight {
     taken: Option<Taken>,
     /// The requests racing over its bytes, itself among them.
     race: Arc<Race>,
-    /// Its race's front when last judged, and when (`Shared::hedge`), and its hedges so far.
-    judged: Mutex<(u64, Instant, u32)>,
+    /// How its race moves, for `Shared::hedge`.
+    judged: Mutex<Judged>,
     /// Another of its race reached the end: its request stops where it is.
     cut: AtomicBool,
     stop: Notify,
 }
 
+/// Where a range began and when, its race's front when last judged and when, and its hedges so far.
+struct Judged {
+    from: u64,
+    began: Instant,
+    seen: u64,
+    since: Instant,
+    hedges: u32,
+}
+
 impl Flight {
     fn stopped(&self) -> bool {
         self.cut.load(Ordering::Acquire)
+    }
+
+    /// Another of its race reached the end: its request stops where it is.
+    fn halt(&self) {
+        let mut span = lock(&self.span);
+        span.1 = span.0;
+        self.cut.store(true, Ordering::Release);
+        self.stop.notify_one();
     }
 }
 
@@ -333,6 +355,8 @@ impl Flight {
 struct Race {
     front: Mutex<u64>,
     members: Mutex<Vec<std::sync::Weak<Flight>>>,
+    /// One reached its end: a hedge that joins now stops at once.
+    done: AtomicBool,
 }
 
 impl Race {
@@ -348,16 +372,23 @@ impl Race {
         gained
     }
 
-    /// `winner` reached its end: every other member stops where it is.
+    /// `winner` reached its end: every other member stops where it is, and one that joins later at once.
     fn won(&self, winner: &Flight) {
-        for member in lock(&self.members).iter().filter_map(std::sync::Weak::upgrade) {
-            if std::ptr::eq(Arc::as_ptr(&member), winner) {
-                continue;
+        let members = lock(&self.members);
+        self.done.store(true, Ordering::Release);
+        for member in members.iter().filter_map(std::sync::Weak::upgrade) {
+            if !std::ptr::eq(Arc::as_ptr(&member), winner) {
+                member.halt();
             }
-            let mut span = lock(&member.span);
-            span.1 = span.0;
-            member.cut.store(true, Ordering::Release);
-            member.stop.notify_one();
+        }
+    }
+
+    /// `flight` runs in this race, stopped at once when it is over (a hedge sent as its first reached the end).
+    fn join(&self, flight: &Arc<Flight>) {
+        let mut members = lock(&self.members);
+        members.push(Arc::downgrade(flight));
+        if self.done.load(Ordering::Acquire) {
+            flight.halt();
         }
     }
 }
@@ -396,16 +427,16 @@ impl<'s> Part<'s> {
     /// `race`, a hedge in that range's race.
     fn new(shared: &'s Shared, admission: &Partial, from: u64, end: u64, taken: Option<Taken>, race: Option<Arc<Race>>) -> Result<Part<'s>> {
         let stealable = taken.is_some();
-        let race = race.unwrap_or_else(|| Arc::new(Race { front: Mutex::new(from), members: Mutex::default() }));
+        let race = race.unwrap_or_else(|| Arc::new(Race { front: Mutex::new(from), members: Mutex::default(), done: AtomicBool::new(false) }));
         let flight = Arc::new(Flight {
             span: Mutex::new((from, end)),
             taken,
             race: Arc::clone(&race),
-            judged: Mutex::new((from, Instant::now(), 0)),
+            judged: Mutex::new(Judged { from, began: Instant::now(), seen: from, since: Instant::now(), hedges: 0 }),
             cut: AtomicBool::new(false),
             stop: Notify::new(),
         });
-        lock(&race.members).push(Arc::downgrade(&flight));
+        race.join(&flight);
         if stealable {
             lock(&shared.flights).push(Arc::clone(&flight));
         }
@@ -737,34 +768,40 @@ impl Shared {
     }
 
     /// Each free place with nothing waiting races the slow tail of a range no steal can split (`HEDGE_AFTER`): another
-    /// request on another connection from the furthest its race reached, at most `HEDGES` times a range.
+    /// request on another connection from the furthest its race reached, at most `HEDGES` times a range and
+    /// `HEDGES_AT_ONCE` a look.
     fn hedge(&self) {
         let floor = (lock(&self.typical).unwrap_or(TYPICAL) / SLOWER).min(HEDGE_FLOOR);
+        let mut sent = 0;
         for flight in lock(&self.flights).clone() {
             let Some((task, taken)) = flight.taken.as_ref() else { continue };
             let (reached, end) = *lock(&flight.span);
             let front = flight.race.front();
             let mut judged = lock(&flight.judged);
-            let (seen, since, hedges) = *judged;
-            let took = since.elapsed();
-            if took < HEDGE_AFTER {
+            let took = judged.since.elapsed();
+            // No byte yet: a first byte may take seconds, so it waits longer than a tail that stopped.
+            if took < HEDGE_AFTER || (front == judged.from && judged.began.elapsed() < HEDGE_SILENT) {
                 continue;
             }
-            *judged = (front, Instant::now(), hedges);
-            let rate = front.saturating_sub(seen) as f64 / took.as_secs_f64();
-            if flight.stopped() || reached >= end || end - reached >= 2 * STEAL || rate >= floor || hedges >= HEDGES {
+            let rate = front.saturating_sub(judged.seen) as f64 / took.as_secs_f64();
+            (judged.seen, judged.since) = (front, Instant::now());
+            if flight.stopped() || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
                 continue;
+            }
+            if sent >= HEDGES_AT_ONCE {
+                return;
             }
             let Some(slot) = self.slots.idle() else { return };
             if let Err(error) = taken.send(Take::Hedge(Arc::clone(&flight.race), front, end, slot)) {
                 drop(error.0.slot());
                 continue;
             }
-            judged.2 += 1;
+            sent += 1;
+            judged.hedges += 1;
             self.stats.hedges.fetch_add(1, Ordering::Relaxed);
             task.hedged.fetch_add(1, Ordering::Relaxed);
             tracing::info!(object = %task.object.sha256, from = front, end, kb_s = rate / 1e3, floor_kb_s = floor / 1e3,
-                hedge = judged.2, "a slow tail asked again on another connection");
+                hedge = judged.hedges, "a slow tail asked again on another connection");
         }
     }
 
