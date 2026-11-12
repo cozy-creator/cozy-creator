@@ -641,7 +641,7 @@ machine_ready
 # cl-952: a machine runs only a package release its Runtime can run. Publishing refused isolated.sh's e2e-lies, whose floor
 # cozy-runtime>=0.44 lacks the `call` it imports (minimax-h3 0.12.0rc3 declared 0.45 and imported the RC's `preview`: run
 # 47791). e2e-floor 0.2.0 needs cozy-runtime>=0.45.1: local held on 0.45.0 by hand refuses it, naming `cozy machine update
-# local`, and runs 0.1.0 named; with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this shard's
+# local`, and still does after Calcifer restarts (the hold is kept in its store); it runs 0.1.0 named; with nothing named, `cozy machine update local` moves it to its Hub's pin (0.45.0, this shard's
 # isolated Hub: e2e.yaml), which holds nothing, and the unversioned run then moves local to the newest 0.45 release and runs
 # 0.2.0, saying so. e2e-capped 0.2.0 (<0.45.1) then runs as 0.1.0: a machine moves only up.
 runtime_floor() {
@@ -657,6 +657,15 @@ machine_ready
 in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=held --on local > "$OUT/floor-held.ndjson" 2> "$OUT/floor-held.err" || code=$?
 [ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-held.ndjson" "$OUT/floor-held.err" && grep -q 'cozy machine update local' "$OUT/floor-held.ndjson" "$OUT/floor-held.err" \
   || check "runtime floor: held on 0.45.0, e2e-floor (0.2.0 needs >=0.45.1) wasn't refused runtime_held naming cozy machine update local: exit $code $(tail -c 400 "$OUT/floor-held.ndjson") $(tail -c 300 "$OUT/floor-held.err")"
+# The hold outlives Calcifer: restarted, it still refuses and moves nothing (cl-922's asirpa moved after a restart).
+systemctl --user restart cozy-calcifer || check "runtime floor: systemctl --user restart cozy-calcifer failed"
+machine_ready
+code=0
+in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=held-again --on local > "$OUT/floor-held-again.ndjson" 2> "$OUT/floor-held-again.err" || code=$?
+[ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-held-again.ndjson" "$OUT/floor-held-again.err" \
+  || check "runtime floor: after a Calcifer restart, local held on 0.45.0 wasn't refused runtime_held: exit $code $(tail -c 300 "$OUT/floor-held-again.ndjson")"
+jq -e '.status.runtime == "0.45.0"' "$OUT/machine.json" > /dev/null \
+  || check "runtime floor: after a Calcifer restart, held local runs $(jq -r .status.runtime "$OUT/machine.json"), not 0.45.0"
 cell floor-held-older "$E2E_FLOOR/relay@0.1.0" "text=asked 0.1.0" || true
 cozy --json machine update local -y > "$OUT/floor-unhold.json" 2>&1 \
   || { check "runtime floor: cozy machine update local (its Hub's pin) failed: $(tail -c 300 "$OUT/floor-unhold.json")"; return; }
