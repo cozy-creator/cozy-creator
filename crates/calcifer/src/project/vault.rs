@@ -343,6 +343,9 @@ fn milliseconds(seconds: u64) -> i64 { i64::try_from(seconds).unwrap_or(i64::MAX
 
 fn expired(session: &Session) -> bool { session.timer.expired() }
 
+/// Its view can no longer be opened: a lock revoked it, its clocks ran out, or its mount is gone. The sweeper locks it.
+fn lapsed(session: &Session) -> bool { session.closing || expired(session) || !session.mount.is_mounted().unwrap_or(false) }
+
 fn timer(idle: u64, maximum: u64) -> SessionTimer {
     SessionTimer::new(SessionPolicy { idle_seconds: (idle > 0).then_some(idle), maximum_seconds: (maximum > 0).then_some(maximum) })
 }
@@ -623,7 +626,7 @@ pub(crate) fn start(api: &Arc<Api>) {
                         // ends. Only an explicit lock ends work (owner 11-11: "runs count as activity").
                         session.timer.hold(working);
                         if working && !session.closing { session.active_ms = super::now_ms(); }
-                        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
+                        lapsed(&session)
                     });
                     if !needs { return; }
                     if LOCK_RETRIES.lock().expect("lock retries").get(&root).is_some_and(|retry| std::time::Instant::now() < retry.at) { return; }
@@ -632,10 +635,7 @@ pub(crate) fn start(api: &Arc<Api>) {
                     drop(_operation);
                     let Ok(mut browser) = prepare_browser(&api) else { return; };
                     let Ok(_operation) = op.try_lock() else { return; };
-                    let still_needs = held(&root).is_some_and(|session| {
-                        let session = session.lock().expect("vault session");
-                        session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
-                    });
+                    let still_needs = held(&root).is_some_and(|session| lapsed(&session.lock().expect("vault session")));
                     if !still_needs { return; }
                     if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
                     let Ok(transition) = exclusive(&root) else { return; };
@@ -668,7 +668,10 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     let op = operation(&root); let _guard = op.lock().expect("vault operation");
     let mut ended = vec![];
     if ask.action == "lock" {
-        let busy = match held(root).map(|_| exclusive(root)) {
+        // A lock that found the project busy already revoked its view: this one finishes it, and admits no receipt into
+        // a view that can no longer be opened.
+        let revoked = held(root).is_some_and(|session| lapsed(&session.lock().expect("vault session")));
+        let busy = match held(root).filter(|_| !revoked).map(|_| exclusive(root)) {
             Some(Ok(transition)) => {
                 let id = project_id(root).ok_or_else(|| error("vault_identity", "the project has no verified identity"))?;
                 let store = api.projects.transition_store(api, &id, &transition)?;
