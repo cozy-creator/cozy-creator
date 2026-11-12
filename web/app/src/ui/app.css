@@ -2313,6 +2313,10 @@ video.preview.on {
 .stage[data-lod="2"] .react-flow__node .card > .head .nm {
   max-width: 100%;
 }
+/* Past 20% a box is 60px or so on screen: its name at the small step (14px), so a short word fits it whole. */
+.stage[data-lod="2"] .react-flow__node .card > .head :is(.nm, .state-dot) {
+  font-size: calc(var(--t-small) * var(--ui) * var(--name-zoom, 1));
+}
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
   display: none;
 }
