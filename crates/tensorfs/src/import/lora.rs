@@ -6,7 +6,8 @@
 //! channel, `V = W + (α / r) · (B · A)`. The component's config is PEFT's
 //! `adapter_config.json`: the source's own (its file, or diffusers' `lora_adapter_metadata`) with
 //! `alpha_pattern`, `rank_pattern` and `use_rslora` folded into per-module `.alpha`, or kohya's
-//! training metadata mapped. A kohya `.alpha` is the α its loaders apply: it is stored as an F32
+//! training metadata mapped. rsLoRA (`use_rslora`, or kohya's `ss_network_args` `rslora`) is stated
+//! as `.alpha` `α·√r`, its trained scale `α / √r`. A kohya `.alpha` is the α its loaders apply: it is stored as an F32
 //! scalar whatever its source dtype, a module without one in a file that has them takes α = r (as
 //! kohya does), and the config's `lora_alpha` is their commonest value, so a reader of PEFT's
 //! config alone scales as one of the factors does.
@@ -204,11 +205,21 @@ pub(crate) fn normalize(
         if let Some(m) = magnitudes.iter().find(|m| !modules.contains_key(*m)) {
             return refuse(Code::UNPLACED_KEYS, format!("{component}: {m}{MAGNITUDE} has no A and B factor pair to apply"));
         }
+        // rsLoRA scales by `α / √r`: PEFT's `use_rslora`, or kohya's `ss_network_args` `rslora` (drdrt's trainer). Each module
+        // then states `α·√r`, so a reader's `α / r` applies the scale it was trained at.
+        let rslora = kohya_rslora(&group.metadata) || source.as_ref().is_some_and(|s| s.get("use_rslora") == Some(&Json::Bool(true)));
+        let source = source.map(|mut s| {
+            if rslora {
+                s.insert("use_rslora".into(), Json::Bool(true));
+            }
+            s
+        });
+        let trained = |alpha: f64, rank: u64| if rslora && rank > 0 { alpha * (rank as f64).sqrt() } else { alpha };
         // Each `.alpha` the source holds, as the F32 scalar its loaders read.
         let mut stated: BTreeMap<String, f64> = BTreeMap::new();
         for i in &mine {
             let Some(m) = planned[*i].key.strip_suffix(ALPHA).map(str::to_owned) else { continue };
-            let value = scalar(component, &planned[*i], set)?;
+            let value = trained(scalar(component, &planned[*i], set)?, modules.get(&m).map_or(0, |module: &Module| module.rank));
             stated.insert(m, value);
             let p = &mut planned[*i];
             let read = Reading::inline((value as f32).to_le_bytes().to_vec(), Dtype::F32);
@@ -332,6 +343,18 @@ fn commonest(values: &BTreeMap<String, f64>) -> Option<f64> {
 /// A JSON number: an integer when `value` is one.
 fn number(value: f64) -> Json {
     if value.fract() == 0.0 && value.abs() < 9.0e15 { json!(value as i64) } else { json!(value) }
+}
+
+/// Whether kohya's training metadata says rsLoRA: `ss_network_args`' `rslora` (LyCORIS' `rs_lora`), true or "true".
+fn kohya_rslora(metadata: &BTreeMap<String, String>) -> bool {
+    let Some(Json::Object(args)) = metadata.get("ss_network_args").and_then(|text| serde_json::from_str::<Json>(text).ok()) else {
+        return false;
+    };
+    ["rslora", "rs_lora", "use_rslora"].iter().any(|key| match args.get(*key) {
+        Some(Json::Bool(on)) => *on,
+        Some(Json::String(on)) => on.eq_ignore_ascii_case("true"),
+        _ => false,
+    })
 }
 
 /// diffusers' `save_lora_weights` packs each component's `LoraConfig` under the component's name
