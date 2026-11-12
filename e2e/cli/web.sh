@@ -112,7 +112,7 @@ web_proof addons "$chrome" "$pw" ''
 jq -c '.seen.skipped // empty' "$OUT/web-addons.json" 2> /dev/null || true
 step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture joining one, a version deleted with Undo, reclaim, a rename during a real render, takes approved by a double tap, a merge, a box's shape, Render while it makes"
 web_proof versions "$chrome" "$pw" ''
-step "web-download: right click, Download: a box as hei.png, a take as hei.1.png, a run's output, each its own bytes, as an attachment Calcifer names"
+step "web-download: right click, Download: a box as hei.png, another take as hei.2.png, a run's output, each its own bytes, as an attachment Calcifer names"
 web_proof download "$chrome" "$pw" ''
 step "web-tools: a box drawn from its tool's fields by type, groups two deep, slots refusing what doesn't fit, a video's range, previews, Pick up from here"
 web_proof tools "$chrome" "$pw" ''

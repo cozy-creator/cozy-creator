@@ -1,5 +1,5 @@
 // Right click, Download (cl-891, Paul 11-12), in a real browser on a real Calcifer: an ordinary browser download of the file's own bytes, named after
-// its box. A box saves the version it shows as `hei.png`, a take beside the open box as `hei.1.png`, and, where this computer runs models, a run's
+// its box. A box saves the version it shows as `hei.png`, another take beside the open box as `hei.2.png`, and, where this computer runs models, a run's
 // output in its drawer as `image.png`. Calcifer answers `?download=` with `Content-Disposition: attachment` and a name no file system refuses.
 //   node download.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
@@ -29,6 +29,8 @@ async function died(why) {
   process.exit(1);
 }
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+/** A digest as Calcifer says it, `sha256:<hex>`, as hex. */
+const hex = (digest) => digest?.replace(/^sha256:/, '');
 
 (async () => {
   const base = calcifer();
@@ -93,18 +95,19 @@ const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
   seen.box = box;
   check('box_menu_has_download', box.items.join() === 'Download,Rename,Delete', box.items);
   check('box_saves_as_its_name', box.name === 'hei.png', box.name);
-  check('box_saves_the_take_it_shows', box.sha256 === sha(readFileSync(takes[showing.number])) && box.sha256 === showing.main.sha256, { box, showing: showing.main });
+  check('box_saves_the_take_it_shows', box.sha256 === sha(readFileSync(takes[showing.number])) && box.sha256 === hex(showing.main.sha256), { box, showing: showing.main });
   check('menu_shuts', box.closed);
 
-  // A take beside the open box: its own file, named with its number.
+  // A take beside the open box, not the one it shows: its own file, named with its number.
+  const other = showing.number === 1 ? 2 : 1;
   await openBox(page, 'hei');
-  const take = page.locator('.card.here[data-asset="hei"] .here-side .take[data-take="1"]');
+  const take = page.locator(`.card.here[data-asset="hei"] .here-side .take[data-take="${other}"]`);
   await take.waitFor();
-  const first = await downloaded(take);
-  seen.take = first;
-  check('take_menu_is_download', first.items.join() === 'Download', first.items);
-  check('take_saves_as_its_version', first.name === 'hei.1.png', first.name);
-  check('take_saves_its_own_bytes', first.sha256 === sha(readFileSync(takes[1])), first);
+  const saved = await downloaded(take);
+  seen.take = { ...saved, number: other };
+  check('take_menu_is_download', saved.items.join() === 'Download', saved.items);
+  check('take_saves_as_its_version', saved.name === `hei.${other}.png`, saved.name);
+  check('take_saves_its_own_bytes', saved.sha256 === sha(readFileSync(takes[other])) && saved.sha256 !== box.sha256, saved);
   await shot('take');
 
   // Calcifer's answer: the file's own type, as an attachment, named so no file system refuses it.
@@ -132,7 +135,7 @@ const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
     const out = await downloaded(output);
     seen.output = { ...out, item: item.sha256, said };
     check('output_saves_as_its_name', out.name === `${said}.png`, out.name);
-    check('output_saves_its_bytes', `sha256:${out.sha256}` === item.sha256 || out.sha256 === item.sha256, { out, item });
+    check('output_saves_its_bytes', out.sha256 === hex(item.sha256), { out, item });
     await shot('output');
   }
 
