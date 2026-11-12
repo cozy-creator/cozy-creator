@@ -657,6 +657,14 @@ impl Machines {
     /// The machine as `GET /v1/machines` answers it.
     pub(crate) fn picture(&self, row: &MachineRow) -> Result<Machine, Error> {
         let store = self.store();
+        let ending = self.pending_end(&row.name)?;
+        // `row` may have been read before its end settled (a list reads every row, then each one's asks): an end that is no
+        // longer pending ended it first (`finish_end`), so the row is read again after its asks, never an old state beside them.
+        let again = match ending.is_none() && row.state != MachineState::Ended && row.rental_id.is_some() {
+            true => store.machine(&row.name).map_err(internal)?,
+            false => None,
+        };
+        let row = again.as_ref().unwrap_or(row);
         let mut machine = Machine::from(row);
         if row.kind == MachineKind::Local {
             machine.controller_key = self.controller_key().ok();
@@ -666,7 +674,6 @@ impl Machines {
         machine.ordered = self.ordered(row);
         let load = store.machine_load().map_err(internal)?;
         (machine.running, machine.queued) = load.get(&row.name).copied().unwrap_or_default();
-        let ending = self.pending_end(&row.name)?;
         if let Some(ask) = ending.filter(|_| row.state != MachineState::Ended) {
             machine.state = MachineState::Ending;
             let owed = self.end_owes(&ask.key, &row.name);

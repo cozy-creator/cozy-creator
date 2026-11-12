@@ -2,6 +2,7 @@
 use std::{
     path::{Path, PathBuf},
     process::ExitCode,
+    time::Duration,
 };
 
 use api::{
@@ -72,17 +73,36 @@ pub(crate) async fn end(ctx: &Context, name: &str, force: bool) -> Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
-/// The machine an end was asked of, once it has ended: followed while it ends, and an error for
-/// anything else (its end failed, or it is not ending), naming why.
+/// How long an end waits for its Hub to affirm the pod gone once it releases it (not while it waits for outputs to land).
+const RELEASE_WAIT: Duration = Duration::from_secs(300);
+
+/// The machine an end was asked of, once its Hub affirms it gone: followed while it ends, and an error naming why for an end
+/// that failed, or one its Hub has not affirmed within `RELEASE_WAIT`. A change seen in passing is never the answer: what is
+/// not `ending` is read again from Calcifer before anything is said.
 pub(crate) async fn confirmed(ctx: &Context, calcifer: &Client, mut machine: Machine) -> Result<Machine, Error> {
-    if machine.state == MachineState::Ending {
-        // Followed by its rental id: the name is the Hub's and an alias may be what was typed.
-        let id = machine
-            .rental_id
-            .clone()
-            .unwrap_or_else(|| machine.name.clone());
-        let (following, now) = Following::open(calcifer, &id).await?;
-        machine = ended(ctx, calcifer, following, now, &route(&id)?).await?;
+    // Followed by its rental id: the name is the Hub's and an alias may be what was typed.
+    let id = machine
+        .rental_id
+        .clone()
+        .unwrap_or_else(|| machine.name.clone());
+    let path = route(&id)?;
+    let mut released: Option<tokio::time::Instant> = None;
+    loop {
+        if machine.state == MachineState::Ending {
+            let (following, now) = Following::open(calcifer, &id).await?;
+            machine = ended(ctx, calcifer, following, now, &path, &mut released).await?;
+        }
+        if machine.state == MachineState::Ended || machine.end_failed.is_some() {
+            break;
+        }
+        // Not ending, not ended: as Calcifer holds it now. An added machine, which has no rental id, is named no more once removed.
+        machine = match calcifer.get::<Machine>(&path).await {
+            Err(e) if e.kind == Kind::NotFound && machine.kind == MachineKind::Added => Machine { state: MachineState::Ended, ..machine },
+            now => now?,
+        };
+        if machine.state != MachineState::Ending {
+            break;
+        }
     }
     match machine.state {
         MachineState::Ended => Ok(machine),
@@ -99,37 +119,65 @@ fn not_ended(m: &Machine) -> Error {
         None => format!("it is {}, not ended", super::list::state_cell(m)),
     };
     let billing = match m.kind {
-        MachineKind::Rental => "Nothing was ended, and it may still be billing",
-        _ => "Nothing was ended",
+        MachineKind::Rental => format!("Nothing was ended: {} may still be billing", billing(m)),
+        _ => "Nothing was ended".to_owned(),
     };
     Error::new(Kind::Conflict, "end_failed", format!("{name} was not shut down: {why}"))
         .remedy(billing)
         .next(format!("cozy machine end {handle}"))
 }
 
+/// An end its Hub has not affirmed within `RELEASE_WAIT` of the release: what may still bill, and where to look.
+fn still_billing(m: &Machine) -> Error {
+    let (name, handle) = (m.called(), m.handle());
+    let minutes = RELEASE_WAIT.as_secs() / 60;
+    Error::new(Kind::Unavailable, "end_unconfirmed", format!("{name} is still shutting down: its Hub has not said it is gone after {minutes} min"))
+        .remedy(format!("{} may still be billing; Calcifer keeps asking its Hub, and `cozy machine ls` shows it until it is gone", billing(m)))
+        .next(format!("cozy machine show {handle}"))
+}
+
+/// A rental as its bill names it: its id and rate.
+fn billing(m: &Machine) -> String {
+    let id = m.rental_id.as_deref().unwrap_or(m.handle());
+    match &m.rental {
+        Some(rental) => format!("rental {id} at {}/hour", usd(rental.usd_micros_per_hour)),
+        None => format!("rental {id}"),
+    }
+}
+
 /// Follows an ending machine while it ends: while its end waits for its runs' outputs to land,
-/// what it waits for; then its release, until its Hub affirms the pod gone or the end fails.
+/// what it waits for; then its release, until it is no longer `ending` (its Hub affirmed the pod
+/// gone, or the end failed), or `RELEASE_WAIT` after the release began (`released`).
 async fn ended(
     ctx: &Context,
     calcifer: &Client,
     mut following: Following,
     mut machine: Machine,
     path: &str,
+    released: &mut Option<tokio::time::Instant>,
 ) -> Result<Machine, Error> {
-    let (mut waited, mut releasing) = (String::new(), false);
+    let mut waited = String::new();
     while machine.state == MachineState::Ending {
         match &machine.ending {
             Some(waits) if *waits != waited => {
                 output::say(ctx, &format!("Waiting to end {}: {waits}", machine.called()));
                 waited.clone_from(waits);
             }
-            None if !releasing => {
+            None if released.is_none() => {
                 output::say(ctx, &format!("Shutting down {}…", machine.called()));
-                releasing = true;
+                *released = Some(tokio::time::Instant::now());
             }
             _ => {}
         }
+        let since = *released;
+        let over = async move {
+            match since {
+                Some(at) => tokio::time::sleep_until(at + RELEASE_WAIT).await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
+            () = over => return Err(still_billing(&machine)),
             next = following.next(calcifer) => machine = match next? {
                 Some(next) => next,
                 // Left the list: as Calcifer records it now. An added machine, which has no
