@@ -554,6 +554,13 @@ impl Calcifer {
             let (id, name) = project::identity(dir);
             (run.project_id, run.project) = (Some(id), Some(name));
         }
+        // Its machine's GPU from the moment it has one, not only once it ran (cl-921).
+        if run.gpu.is_none()
+            && run.settled_at_ms.is_none()
+            && let Some(machine) = run.machine.as_deref()
+        {
+            run.gpu = Some(self.gpu_of(machine)).filter(|gpu| !gpu.is_empty());
+        }
         if let Some(live) = lock(&self.live).get(&row.id) {
             run.waiting.clone_from(&live.waiting);
             run.progress.clone_from(&live.progress);
@@ -908,6 +915,72 @@ impl Calcifer {
         live.clock = Some(clock);
     }
 
+    /// What its clock learns past this computer's runs (cl-921): with none like it on this machine or its GPU, another card's, scaled by
+    /// the Hub's per-SKU speeds; and how long its results take to come here once it ends, at its machine's export rate.
+    async fn fill_clock(&self, run: &RunRow, machine: &str) {
+        if run.kind != ::api::calcifer::Kind::Call {
+            return;
+        }
+        let needs = lock(&self.live).get(&run.id).and_then(|live| live.clock.as_ref()).is_some_and(eta::Clock::needs_prior);
+        let card = match needs {
+            true => self.card_prior(run, machine).await,
+            false => None,
+        };
+        let result_ms = self.result_ms(&run.target, machine);
+        let mut live = lock(&self.live);
+        let Some(clock) = live.get_mut(&run.id).and_then(|live| live.clock.as_mut()) else { return };
+        if let Some(prior) = card {
+            clock.prior_if_none(prior);
+        }
+        if let Some(ms) = result_ms {
+            clock.result(ms);
+        }
+    }
+
+    /// A run of `run`'s target on `machine` as runs like it took on the card they ran on most, each phase that card's Hub speed over this
+    /// one's (cl-897's speeds, cl-913's bar's third tier). None: the Hub has no speed for this card, or for any card it ran on.
+    async fn card_prior(&self, run: &RunRow, machine: &str) -> Option<eta::Prior> {
+        let card = project::fit::card(&self.gpu_of(machine));
+        let machines = self.machines()?;
+        let hub = run.hub.as_ref()?.to_string();
+        let (path, release) = run.target.split_once('@')?;
+        let (package, function) = path.rsplit_once('/')?;
+        let speeds = tokio::time::timeout(toolbox::HUB_LATE, project::fit::speeds(&machines.hubs, &hub, package, release, function)).await.ok()?;
+        let to = *speeds.get(&card).filter(|speed| **speed > 0.0)?;
+        let input: serde_json::Map<String, serde_json::Value> =
+            run.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
+        let steps = input.get("steps").and_then(serde_json::Value::as_u64);
+        let history = self.history(&run.target);
+        let mut cards: Vec<&str> = history.iter().map(|took| took.gpu.as_str()).filter(|gpu| !gpu.is_empty()).collect();
+        cards.sort_unstable();
+        cards.dedup();
+        (cards.into_iter())
+            .filter_map(|other| {
+                let speed = *speeds.get(&project::fit::card(other))?;
+                let prior = eta::Prior::of(&history, "", other, megapixels(&input))?;
+                Some((prior.runs, prior.with_steps(steps).scaled(speed / to)))
+            })
+            .max_by_key(|(runs, _)| *runs)
+            .map(|(_, prior)| prior)
+    }
+
+    /// How long a run of `target`'s results take to come here from `machine`: the newest like runs' results' bytes (their median) at
+    /// its last measured export rate. None: neither is known.
+    fn result_ms(&self, target: &str, machine: &str) -> Option<f64> {
+        let rate = self.export_rate(machine).filter(|rate| *rate > 0.0)?;
+        let base = target.split('@').next().unwrap_or(target);
+        let filter = store::RunFilter { status: Some(RunStatus::Completed), target: Some(base.to_owned()), limit: 5, ..Default::default() };
+        let (rows, ..) = self.store.runs(&filter).ok()?;
+        let mut sizes: Vec<f64> = (rows.iter())
+            .filter(|row| row.target.split('@').next() == Some(base))
+            .filter_map(|row| self.store.record(row).ok())
+            .map(|run| run.output.iter().filter(|item| !item.stays && !item.is_checkpoint()).map(|item| item.length).sum::<u64>() as f64)
+            .filter(|bytes| *bytes > 0.0)
+            .collect();
+        sizes.sort_by(f64::total_cmp);
+        Some(sizes.get(sizes.len() / 2)? / rate * 1000.0)
+    }
+
     /// What `id`'s machine quoted as it was sent (cl-816): its clock waits at least until its finish.
     pub(crate) fn quoted(&self, id: &RunId, quoted: eta::Quoted) {
         if !lock(&self.drivers).contains_key(id) {
@@ -976,7 +1049,7 @@ impl Calcifer {
 
     /// The GPU `machine` has, by name, as it last said; empty: unknown.
     fn gpu_of(&self, machine: &str) -> String {
-        self.machines().and_then(|machines| machines.frame(machine)).and_then(|frame| frame.gpus.first().map(|gpu| gpu.name.clone())).unwrap_or_default()
+        self.machines().and_then(|machines| machines.gpu(machine)).unwrap_or_default()
     }
 
     fn wake(&self, id: &RunId) {
@@ -1384,7 +1457,9 @@ impl Calcifer {
             None => link.events(id, 0).await?,
         };
         self.clock(run, machine);
-        self.follow(&run.id, stream, link, wake, canceled, state_now).await
+        // What the Hub says of other cards comes while it's followed, never ahead of its events.
+        let ((), followed) = tokio::join!(self.fill_clock(run, machine), self.follow(&run.id, stream, link, wake, canceled, state_now));
+        followed
     }
 
     /// Sends `run`, and every other run of its batch its machine hasn't accepted (`Store::batched`), under the machine's send lock

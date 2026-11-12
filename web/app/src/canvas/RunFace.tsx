@@ -34,13 +34,14 @@ const sentence = (said: string) => said.charAt(0).toUpperCase() + said.slice(1)
 /** A GPU as people say it: `NVIDIA GeForce RTX 4090` is `RTX 4090`. */
 const gpuWords = (name: string) => name.replace(/^NVIDIA\s+/i, "").replace(/^GeForce\s+/i, "").replace(/\s+Laptop GPU$/i, " Laptop")
 
-/** A machine and its GPUs: `local · RTX 4070 Laptop`, `kushina · 2× RTX 4090`. */
+/** A machine and its GPUs, and for a rental where it runs: `local · RTX 4070 Laptop`, `kushina · 2× RTX 4090 · runpod EU-RO-1`. */
 function machineWords(machine: Machine): string {
   const gpus = machine.status?.gpus ?? []
   const card = gpus[0]?.name ?? machine.rental?.accelerator ?? machine.rental?.sku
-  if (!card) return machine.name
+  const place = [machine.rental?.provider, machine.rental?.datacenter].filter(Boolean).join(" ")
+  if (!card) return [machine.name, place].filter(Boolean).join(" · ")
   const count = gpus.length || machine.rental?.gpus || 1
-  return `${machine.name} · ${count > 1 ? `${count}× ` : ""}${gpuWords(card)}`
+  return [machine.name, `${count > 1 ? `${count}× ` : ""}${gpuWords(card)}`, place].filter(Boolean).join(" · ")
 }
 
 /** A rental's card, as it's rented: `an RTX 4090`, `2× H100`. */
@@ -55,7 +56,7 @@ function rentedWords(machine: Machine): string {
 function runLeft(run: Run): string | undefined {
   const progress = run.status === "completed" ? run.arriving : run.progress
   if (progress?.eta_s != null) return `${(progress.eta_confidence ?? 1) < 0.5 ? "about " : ""}${leftWords(progress.eta_s)}`
-  if (progress?.eta_basis === "first_run") return "first run on this machine"
+  if (progress?.eta_basis === "first_run") return "not known yet: nothing like it has run"
   return undefined
 }
 
@@ -185,7 +186,9 @@ function clockOf(ms: number): string {
  *  and how many wait; its weights; its package; its time. A line nothing is known for yet isn't drawn. */
 export function factsOf({ run, on, face, now, others, boxOf }: { run?: Run; on?: Operation; face: Face; now: number; others: Run[]; boxOf: (run: number) => string | undefined }): [string, string][] {
   const facts: [string, string][] = []
-  facts.push(["Where", face.where ?? (run?.machine ? run.machine : face.phase === "renting" ? face.says : "choosing a machine")])
+  // Its machine and GPU as its record keeps them while it goes, where the machine list doesn't hold it.
+  const held = run?.machine ? [run.machine, run.gpu ? gpuWords(run.gpu) : ""].filter(Boolean).join(" · ") : undefined
+  facts.push(["Where", face.where ?? held ?? (face.phase === "renting" ? face.says : "choosing a machine")])
   if (run?.machine && run.status !== "completed") {
     const there = others.filter((other) => other.machine === run.machine && other.number !== run.number && other.kind === "call")
     const working = (other: Run) => other.status === "in_progress" && other.machine_state !== "queued" && other.queue_position == null
