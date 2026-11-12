@@ -65,7 +65,8 @@ async function died(why) {
   if (made.status !== 200) throw new Error(`the Shot box: ${JSON.stringify(made)}`);
   await fitCanvas(page);
   await openBox(page, 'scene');
-  const scene = box('scene');
+  // Open, the box is where it's worked on, on the canvas or over it (Focus).
+  const scene = page.locator('.card.here[data-asset="scene"]').first();
   const rows = scene.locator('.beats-edit[data-field="beats"] > .beat');
   await rows.nth(2).waitFor();
   check('three_beats', (await rows.count()) === 3, await rows.count());
