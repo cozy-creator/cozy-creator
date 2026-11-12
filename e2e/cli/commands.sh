@@ -615,14 +615,15 @@ cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.js
   || { check "held prerelease: local refused Runtime $released: $(tail -c 300 "$OUT/held-update.json")"; return; }
 machine_ready
 if cell held-prerelease "$E2E_HELD/relay" "text=off the RC"; then
-  grep -q '"release": *"0.1.0"' "$OUT/held-prerelease.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/held-prerelease.ndjson" \
+  grep -q 'relay@0\.1\.0"' "$OUT/held-prerelease.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/held-prerelease.ndjson" \
     || check "held prerelease: local on Runtime $released didn't run e2e-held 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease.ndjson" | head -1)"
 fi
-if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0" && cell held-newer "$E2E_NEWER/relay" "text=newer"; then
-  grep -q '"release": *"0.1.1"' "$OUT/held-newer.ndjson" \
-    || check "held prerelease: holding e2e-newer 0.1.0, local didn't take 0.1.1: $(grep -o '"target": *"[^"]*"' "$OUT/held-newer.ndjson" | head -1)"
-  grep -q 'e2e-newer 0.1.1, newer than local.s 0.1.0' "$OUT/held-newer.ndjson" "$OUT/held-newer.err" \
-    || check "held prerelease: the run didn't say 0.1.1 is newer than local's 0.1.0: $(tail -c 300 "$OUT/held-newer.err")"
+# Unversioned, in words as a person reads it: the run says what it moved to.
+if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
+  in_project "$RUN_PROJECT" run "$E2E_NEWER/relay" text=newer --on local > "$OUT/held-newer.out" 2> "$OUT/held-newer.err" \
+    || check "held prerelease: the unversioned e2e-newer run failed: $(tail -c 300 "$OUT/held-newer.err")"
+  grep -q 'e2e-newer 0.1.1, newer than local.s 0.1.0' "$OUT/held-newer.err" \
+    || check "held prerelease: holding e2e-newer 0.1.0, the run didn't say it takes 0.1.1: $(tail -c 300 "$OUT/held-newer.err")"
 fi
 cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"
