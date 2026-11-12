@@ -15,12 +15,19 @@ project_api() {
   encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
   curl --fail-with-body -sS -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' "$@" "http://$(jq -r .address "$holder")/v1/projects/$encoded$suffix"
 }
-project_import() {
-  local directory=$1 file=$2 name=${3:-} source holder=$HOME/.cozy/calcifer/calcifer.lock.holder
+# project_upload <folder> <file>: the file into that project's own content store, as the page sends it; its sha256:.
+project_upload() {
+  local directory=$1 file=$2 source holder=$HOME/.cozy/calcifer/calcifer.lock.holder encoded
   cozy --json machine ls > /dev/null || return
   source="sha256:$(sha "$file")"
-  curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $(jq -r .token "$holder")" \
-    --data-binary "@$file" "http://$(jq -r .address "$holder")/v1/files/$source" > /dev/null || return
+  encoded=$(python3 -c 'from urllib.parse import quote; import os,sys; print(quote(os.path.abspath(sys.argv[1]), safe=""))' "$directory")
+  curl --fail-with-body -sS -X PUT -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' \
+    --data-binary "@$file" "http://$(jq -r .address "$holder")/v1/project-files/$source?project=$encoded" > /dev/null || return
+  echo "$source"
+}
+project_import() {
+  local directory=$1 file=$2 name=${3:-} source
+  source=$(project_upload "$directory" "$file") || return
   project_api "$directory" /imports -X POST -H 'Content-Type: application/json' \
     -d "$(jq -n --arg source "$source" --arg name "$name" '{source: $source} + (if $name == "" then {} else {name: $name, exact: true} end)')"
 }

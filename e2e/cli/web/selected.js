@@ -69,7 +69,7 @@ const NAMES = ['light', 'dark', 'middle'];
     const path = join(pictures, `${name}.png`);
     const grey = [250, 8, 128][i];
     writeFileSync(path, png(0, 320, 200, false, () => [grey, grey, grey]));
-    await api(`${at}/imports`, 'POST', { source: await upload(session.token, path), name, exact: true, at: { x: i * 300, y: 0 } });
+    await api(`${at}/imports`, 'POST', { source: await upload(session.token, path, id), name, exact: true, at: { x: i * 300, y: 0 } });
   }
 
   const zoomOf = () => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);

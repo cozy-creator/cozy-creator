@@ -72,7 +72,7 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
     writeFileSync(path, png(shade));
     return path;
   };
-  const imported = async (name, path, x) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, path), name, exact: true, at: { x, y: 560 } }) });
+  const imported = async (name, path, x) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, path, id), name, exact: true, at: { x, y: 560 } }) });
 
   // What reads it: a picture tool's prompt, and a box of words, clear of the tools on the left. Two boxes share one file, one of which is
   // deleted later.

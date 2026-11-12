@@ -98,7 +98,7 @@ async function died(why) {
     await closeBox(page);
 
     // Its first take: New is there.
-    const added = await api(`${at}/assets/${box.name}/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, box.take()) }) });
+    const added = await api(`${at}/assets/${box.name}/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, box.take(), id) }) });
     if (added.status >= 300) throw new Error(`${box.name}'s first take: ${JSON.stringify(added)}`);
     await until(`${box.name}'s first take`, () => asset(box.name), (row) => row?.versions >= 1 || row?.prefixes?.length >= 1);
     await openBox(page, box.name);

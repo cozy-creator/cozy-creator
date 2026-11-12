@@ -69,7 +69,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   // A box of the tool, and a dropped video beside it.
   const clips = mkdtempSync(join(tmpdir(), 'web-orbit-'));
   writeFileSync(join(clips, 'plain.mp4'), MP4);
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(clips, 'plain.mp4')), name: 'plain', exact: true, at: { x: 700, y: 100 } }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(clips, 'plain.mp4'), id), name: 'plain', exact: true, at: { x: 700, y: 100 } }) });
   addBoxes(folder, [{ name: 'spin', tool: `${fixture}/turn`, kind: 'video', fields: { frames: FRAMES } }]);
   await until('spin placed', async () => (await api(`${at}/canvas`)).body?.cards?.spin, Boolean);
   await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['spin'], on: ['local'] }), headers: { 'Idempotency-Key': `orbit-${Date.now()}` } });

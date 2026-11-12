@@ -80,7 +80,7 @@ const clock = (seconds) => `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed
   seen.tool = shotTool && { id: shotTool.id, pickup: shotTool.pickup };
   if (!shotTool?.pickup) throw new Error(`the Hub lists no H3 tool that picks up: ${JSON.stringify(tools.map((tool) => [tool.id, tool.pickup]))}`);
   await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 4 }] }, at: { x: 100, y: 100 } });
-  await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, clip) });
+  await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, clip, id) });
   // An empty picture and an empty video with no tool.
   await post(`${at}/assets`, { tool: '', kind: 'image', name: 'blank_pic', exact: true, fields: { node_kind: 'image' }, at: { x: 600, y: 100 } });
   await post(`${at}/assets`, { tool: '', kind: 'video', name: 'blank_clip', exact: true, fields: { node_kind: 'video' }, at: { x: 1000, y: 100 } });

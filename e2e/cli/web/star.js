@@ -63,7 +63,7 @@ async function died(why) {
   for (const [i, name] of ['first', 'second', 'third'].entries()) {
     const path = join(pictures, `${name}.png`);
     writeFileSync(path, png(30 + i * 40));
-    await post(`${at}/imports`, { source: await upload(held?.token, path), name, exact: true, at: { x: 100 + i * 320, y: 100 } });
+    await post(`${at}/imports`, { source: await upload(held?.token, path, id), name, exact: true, at: { x: 100 + i * 320, y: 100 } });
   }
   const asset = async (name) => (await api(at)).body?.assets?.find((row) => row.name === name);
   const before = await until('three pictures', () => asset('third'), Boolean);

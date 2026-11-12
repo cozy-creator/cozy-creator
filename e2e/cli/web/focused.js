@@ -68,7 +68,7 @@ async function died(error) {
   const picture = (number, width, height) => {
     const path = join(images, `${number}.png`);
     writeFileSync(path, png(20 + number * 15, width, height));
-    return upload(session.token, path);
+    return upload(session.token, path, id);
   };
   // Only this state needs a full-resolution source larger than the widest thumbnail.
   const first = await picture(1, 4096, 1024);
@@ -618,7 +618,7 @@ async function died(error) {
 
   const clip = join(images, 'completed.mp4');
   writeFileSync(clip, MP4);
-  await api(`${at}/assets/${VIDEO}/versions`, 'POST', { source: await upload(session.token, clip) });
+  await api(`${at}/assets/${VIDEO}/versions`, 'POST', { source: await upload(session.token, clip, id) });
   const completedVideo = videoFocus.locator('.here-side .take[data-take="1"]');
   const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
   await completedVideo.waitFor();

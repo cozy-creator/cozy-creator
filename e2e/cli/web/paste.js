@@ -64,7 +64,7 @@ async function died(why) {
   writeFileSync(join(folder, 'walk.mp4'), MP4);
   writeFileSync(join(folder, 'cat.mp4'), MP4);
   for (const [name, file, x] of [['Azul_3', 'azul.png', 80], ['walk', 'walk.mp4', 480], ['cat', 'cat.mp4', 880]]) {
-    await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, file)), name, exact: true, at: { x, y: 80 } }) });
+    await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, file), id), name, exact: true, at: { x, y: 80 } }) });
     await box(name).waitFor();
   }
 

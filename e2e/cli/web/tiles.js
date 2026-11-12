@@ -170,10 +170,10 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
   const video = tools.find((one) => one.id === 'minimax-h3/generate') ?? tools.find((one) => one.package === 'minimax-h3' && one.makes === 'video');
   if (!image || !video) throw new Error(`the Hub lists no Qwen Image or H3 Shot: ${JSON.stringify(tools.map((one) => one.id))}`);
   await post(`${at}/assets`, { tool: image.id, kind: 'image', name: 'still', exact: true, fields: { instructions: 'a lighthouse at dusk' }, at: { x: 0, y: 0 } });
-  await post(`${at}/assets/still/versions`, { source: await upload(held?.token, join(folder, 'take.png')) });
+  await post(`${at}/assets/still/versions`, { source: await upload(held?.token, join(folder, 'take.png'), id) });
   await post(`${at}/assets`, { tool: video.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 5 }] }, at: { x: 380, y: 0 } });
-  await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
-  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png')), name: 'plain', exact: true, at: { x: 820, y: 0 } });
+  await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'take.mp4'), id) });
+  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png'), id), name: 'plain', exact: true, at: { x: 820, y: 0 } });
   for (const name of ['still', 'shot', 'plain', 'slow', 'again', 'reel']) await boxOf(page, name).waitFor();
   // The two this computer renders, in a row under the others.
   projectJson(project, 'PATCH', '/canvas', { cards: { slow: { x: 0, y: 560 }, again: { x: 380, y: 560 }, reel: { x: 760, y: 560 } } });

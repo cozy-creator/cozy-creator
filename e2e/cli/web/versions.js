@@ -81,13 +81,13 @@ async function died(why) {
     writeFileSync(path, png(shade, width, height));
     return path;
   };
-  const imported = async (name, shade) => post(`${at}/imports`, { source: await upload(held?.token, picture(shade)), name, exact: true, at: { x: 100 + shade * 4, y: 100 } });
-  const joined = async (name, shade, width, height) => post(`${at}/assets/${name}/versions`, { source: await upload(held?.token, picture(shade, width, height)) });
+  const imported = async (name, shade) => post(`${at}/imports`, { source: await upload(held?.token, picture(shade), id), name, exact: true, at: { x: 100 + shade * 4, y: 100 } });
+  const joined = async (name, shade, width, height) => post(`${at}/assets/${name}/versions`, { source: await upload(held?.token, picture(shade, width, height), id) });
   // A camera's JPEG (cl-888).
   const importedPhoto = async (name) => {
     const path = join(pictures, `${name}.jpg`);
     writeFileSync(path, photo());
-    return post(`${at}/imports`, { source: await upload(held?.token, path), name, exact: true, at: { x: 260, y: 100 } });
+    return post(`${at}/imports`, { source: await upload(held?.token, path, id), name, exact: true, at: { x: 260, y: 100 } });
   };
   /** A box's pictures as drawn: how many loaded, and what it says instead of one. */
   const drawn = (where) => where.evaluate((card) => ({
@@ -448,7 +448,7 @@ async function died(why) {
     // A video tool still receives the selected video file in its required slot.
     const clipAt = join(pictures, 'clip.mp4');
     writeFileSync(clipAt, MP4);
-    await post(`${at}/imports`, { source: await upload(held?.token, clipAt), name: 'clip', exact: true, at: { x: 100, y: 1100 } });
+    await post(`${at}/imports`, { source: await upload(held?.token, clipAt, id), name: 'clip', exact: true, at: { x: 100, y: 1100 } });
     await api(`${at}/assets/clip`, { method: 'PATCH', body: JSON.stringify({ tool: `${fixture}/keep` }) });
     const clip = await until('video source enters its slot', () => asset('clip'), (row) => row?.fields?.video === '<self.1>');
     check('video_tool_still_reads_the_source', clip.kind === 'video' && clip.versions === 1, clip);

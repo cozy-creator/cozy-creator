@@ -70,10 +70,10 @@ async function died(why) {
   if (!image) throw new Error(`the Hub lists no Qwen Image: ${JSON.stringify(tools.map((tool) => tool.id))}`);
   seen.tools = { image: image.id, upscale: upscale?.id ?? null };
   for (const [name, x] of [['wide', 0], ['square', 380], ['tall', 760]]) {
-    await post(`${at}/imports`, { source: await upload(held?.token, join(folder, `${name}.png`)), name, exact: true, at: { x, y: 0 } });
+    await post(`${at}/imports`, { source: await upload(held?.token, join(folder, `${name}.png`), id), name, exact: true, at: { x, y: 0 } });
   }
   await post(`${at}/assets`, { tool: image.id, kind: 'image', name: 'edit', exact: true, fields: { instructions: '<wide>, <square> and <tall> in one picture' }, at: { x: 0, y: 420 } });
-  await post(`${at}/assets/edit/versions`, { source: await upload(held?.token, join(folder, 'take.png')) });
+  await post(`${at}/assets/edit/versions`, { source: await upload(held?.token, join(folder, 'take.png'), id) });
   if (upscale) await post(`${at}/assets`, { tool: upscale.id, kind: 'image', name: 'bigger', exact: true, fields: { image: '<wide>' }, at: { x: 420, y: 420 } });
   for (const name of ['wide', 'square', 'tall', 'edit', ...(upscale ? ['bigger'] : [])]) await boxOf(page, name).waitFor();
   await fitCanvas(page);

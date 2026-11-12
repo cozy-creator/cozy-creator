@@ -62,7 +62,7 @@ async function died(why) {
   // A picture, a box of its own.
   const pictures = mkdtempSync(join(tmpdir(), 'web-kinds-'));
   writeFileSync(join(pictures, 'pic.png'), png(90));
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(pictures, 'pic.png')), name: 'pic', exact: true, at: { x: 100, y: 100 } }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(pictures, 'pic.png'), id), name: 'pic', exact: true, at: { x: 100, y: 100 } }) });
   await box('pic').waitFor();
 
   /** Nothing open. */
@@ -74,7 +74,7 @@ async function died(why) {
 
   // A clip, a video box of its own.
   writeFileSync(join(pictures, 'clip.mp4'), MP4);
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(pictures, 'clip.mp4')), name: 'clip', exact: true, at: { x: 700, y: 100 } }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(pictures, 'clip.mp4'), id), name: 'clip', exact: true, at: { x: 700, y: 100 } }) });
   await box('clip').waitFor();
 
   // The palette's Video, as Orbit is a video tool: its model is the first the palette has (H3's, a default).

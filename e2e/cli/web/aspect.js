@@ -130,7 +130,7 @@ async function died(why) {
     const folder = mkdtempSync(join(tmpdir(), 'web-aspect-'));
     for (const [name, width, height] of [['tall', 288, 512], ['face', 320, 400]]) {
       writeFileSync(join(folder, `${name}.png`), png(90, width, height));
-      const imported = await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, `${name}.png`)), name, exact: true, at: { x: 900 + width, y: 200 } }) });
+      const imported = await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, `${name}.png`), id), name, exact: true, at: { x: 900 + width, y: 200 } }) });
       if (imported.status >= 300) throw new Error(`import ${name}: ${JSON.stringify(imported)}`);
     }
     const beats = [{ duration: 5, description: '<face> dances on a rooftop.' }];

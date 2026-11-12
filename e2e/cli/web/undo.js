@@ -111,9 +111,9 @@ function check(name, ok, detail) {
     writeFileSync(path, png(shade));
     return path;
   };
-  const imported = async (name, shade, x, y) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(shade)), name, exact: true, at: { x, y } }) });
+  const imported = async (name, shade, x, y) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(shade), id), name, exact: true, at: { x, y } }) });
   await imported('shot', 10, 80, 120);
-  await api(`${at}/assets/shot/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(20)) }) });
+  await api(`${at}/assets/shot/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(20), id) }) });
   await imported('red', 30, 480, 120);
   await imported('green', 40, 880, 120);
   await imported('spare', 50, 1280, 120);

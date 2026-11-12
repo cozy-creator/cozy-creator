@@ -339,14 +339,16 @@ const boxLog = (page) => page.evaluate(() => ({
 /** This computer's Calcifer, where its lock ($HOLDER) says: what serves each cell's page, unless $PAGE_ORIGIN does. */
 const calcifer = () => process.env.PAGE_ORIGIN ?? `http://${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).address}`;
 
-/** The file at `path` held by Calcifer, sent as a client sends every file (`PUT /v1/files`, cl-817): its `sha256:`. */
-async function upload(token, path) {
+/** The file at `path` held in `project`'s own content store, sent as the page sends a file (`PUT /v1/project-files`): its `sha256:`. */
+async function upload(token, path, project) {
+  if (!project) throw new Error(`upload ${path}: no project to hold it`);
   const bytes = readFileSync(path);
   const digest = `sha256:${require('crypto').createHash('sha256').update(bytes).digest('hex')}`;
-  const answer = await fetch(`${calcifer()}/v1/files/${digest}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' }, body: bytes });
-  if (!answer.ok) throw new Error(`PUT /v1/files/${digest}: ${answer.status} ${await answer.text()}`);
+  const at = `/v1/project-files/${digest}?project=${encodeURIComponent(project)}`;
+  const answer = await fetch(`${calcifer()}${at}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' }, body: bytes });
+  if (!answer.ok) throw new Error(`PUT ${at}: ${answer.status} ${await answer.text()}`);
   const held = await answer.json();
-  if (held.digest !== digest || held.length !== bytes.length) throw new Error(`PUT /v1/files/${digest}: the reply names another file or length`);
+  if (held.digest !== digest || held.length !== bytes.length) throw new Error(`PUT ${at}: the reply names another file or length`);
   return digest;
 }
 
@@ -506,7 +508,7 @@ function projectJson(folder, method = 'GET', suffix = '', body) {
 function importFile(folder, file, name) {
   const bytes = readFileSync(file);
   const sha256 = `sha256:${require('crypto').createHash('sha256').update(bytes).digest('hex')}`;
-  apiText('PUT', `/v1/files/${sha256}`, bytes, 'application/octet-stream');
+  apiText('PUT', `/v1/project-files/${sha256}?project=${encodeURIComponent(folder)}`, bytes, 'application/octet-stream');
   const stem = require('path').parse(file).name;
   return projectJson(folder, 'POST', '/imports', { source: sha256, name: name ?? stem, exact: name !== undefined });
 }
@@ -567,7 +569,7 @@ async function projectAction(folder, action, ...args) {
       if (/^(sha256:)?[0-9a-f]{6,64}$/i.test(source)) value = await request('POST', '/imports', { source, name, description, exact: true });
       else {
         const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
-        const sourceHash = await upload(holder.token, source);
+        const sourceHash = await upload(holder.token, source, folder);
         value = await request('POST', '/imports', { source: sourceHash, name: name ?? require('path').parse(source).name, exact: name !== undefined });
       }
       break;

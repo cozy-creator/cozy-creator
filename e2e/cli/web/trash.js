@@ -71,7 +71,7 @@ async function died(why) {
   writeFileSync(join(folder, 'take1.mp4'), MP4);
   writeFileSync(join(folder, 'take2.mp4'), DARK_OPEN);
   await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 5 }] }, at: { x: 100, y: 100 } });
-  for (const file of ['take1.mp4', 'take2.mp4']) await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, file)) });
+  for (const file of ['take1.mp4', 'take2.mp4']) await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, file), id) });
   await boxOf(page, 'shot').waitFor();
   await until('two takes', takes, (numbers) => numbers.length === 2);
   await fitCanvas(page);

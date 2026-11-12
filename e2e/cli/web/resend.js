@@ -67,8 +67,8 @@ async function loseAnswers(page, method, path, times) {
     writeFileSync(path, png(shade));
     return path;
   };
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(10)), name: 'shot', exact: true, at: { x: 80, y: 120 } }) });
-  await api(`${at}/assets/shot/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(20)) }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(10), id), name: 'shot', exact: true, at: { x: 80, y: 120 } }) });
+  await api(`${at}/assets/shot/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(20), id) }) });
   await boxOf(page, 'shot').waitFor();
   await page.keyboard.press('f');
   await settled(page);

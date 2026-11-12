@@ -61,7 +61,7 @@ async function died(why) {
   const folder = mkdtempSync(join(tmpdir(), 'web-legible-'));
   const colours = [[0, 0, 0], [255, 255, 255], [255, 210, 0], [30, 90, 255], [240, 40, 40], [250, 245, 235]];
   writeFileSync(join(folder, 'busy.png'), png(0, 640, 400, false, (x, y) => colours[(((x >> 3) ^ (y >> 4)) + (x >> 5)) % colours.length]));
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, 'busy.png')), name: 'busy', exact: true, at: { x: 100, y: 100 } }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, 'busy.png'), id), name: 'busy', exact: true, at: { x: 100, y: 100 } }) });
   await box('busy').waitFor();
 
   // Qwen's Image on it starts from it, and Edit puts its prompt over the picture.
