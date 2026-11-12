@@ -974,12 +974,13 @@ impl Store {
         })
     }
 
-    /// Unsettled runs by machine: how many it accepted, and how many wait to be sent or accepted.
+    /// Unsettled function runs by machine, how busy its GPUs are (Paul 11-11, cl-889): how many it accepted, and how many wait to
+    /// be sent or accepted. An install, a download, an update or a removal is no job.
     pub(crate) fn machine_load(&self) -> Result<std::collections::HashMap<String, (u32, u32)>> {
         self.read(|conn| {
             let mut statement = conn.prepare(
                 "SELECT machine, SUM(state = 'accepted'), SUM(state <> 'accepted') FROM runs
-                 WHERE state <> 'settled' AND machine IS NOT NULL GROUP BY machine",
+                 WHERE state <> 'settled' AND machine IS NOT NULL AND kind = 'call' GROUP BY machine",
             )?;
             let rows = statement.query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)

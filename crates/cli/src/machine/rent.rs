@@ -372,8 +372,9 @@ pub(crate) async fn follow(
     outcome
 }
 
-/// The renter stopped waiting. An order the Hub has found no pod for, with no run queued on it, ends
-/// here: nothing else would ever end it, and it bills nothing. One with a pod or a queued run goes on.
+/// The renter stopped waiting. An order the Hub has found no pod for, with no function run queued on
+/// it, ends here: nothing else would ever end it, and it bills nothing. One with a pod or a queued
+/// function run goes on.
 async fn stopped_waiting(ctx: &Context, calcifer: &Client, machine: &Machine) -> Result<Followed, Error> {
     // An order sent back to replan still shows the attempt that failed, and it has no pod either.
     let placed = machine.attempt.as_ref().is_some_and(|attempt| {
