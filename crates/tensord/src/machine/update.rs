@@ -825,6 +825,7 @@ impl Updates {
                 updates.next(exit);
             })
             .map_err(server)?;
+        crate::activity::status_changed();
         Ok(status)
     }
 

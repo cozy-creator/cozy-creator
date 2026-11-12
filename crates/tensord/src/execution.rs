@@ -739,6 +739,8 @@ impl Engine {
         let mut epoch = self.activity.lock().unwrap();
         *epoch = epoch.saturating_add(1); // never wrap or reuse a wake cursor
         self.activity_changed.notify_all();
+        drop(epoch);
+        crate::activity::status_changed();
     }
 
     /// Whether a managed attempt of root `root` (the root or a call of it) still runs its thread.
