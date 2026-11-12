@@ -31,6 +31,34 @@ const SAME_SIZE: f64 = 0.15;
 /// A running root past its time has at least this share of it left.
 const OVERRUN: f64 = 0.1;
 
+/// A width proved faster than one GPU on real pods for a function, a card and the link between its
+/// GPUs (cr-268): a machine runs a root that wide before it has timed both widths itself. Each row
+/// names its proof; a width neither here nor timed faster here is never chosen.
+struct Known {
+    /// `package/function`, the package without its org.
+    function: &'static str,
+    /// Part of the card's name as NVML gives it.
+    card: &'static str,
+    nvlink: bool,
+    width: u32,
+    /// Its time on one GPU over its time at `width`.
+    speedup: f64,
+}
+
+const KNOWN: &[Known] = &[
+    // h3a-099, rc/0.24.0, 15 s Turbo over host memory: one GPU 300.4 s (45660/45667/45686), two 175.4 s (45740/45759/45779).
+    Known { function: "minimax-h3/generate", card: "RTX 4090", nvlink: false, width: 2, speedup: 1.71 },
+];
+
+/// The widths `KNOWN` proves for `function` on `card` (`nvlink`), with their speed-ups.
+fn known(function: &str, card: &str, nvlink: bool) -> Vec<(u32, f64)> {
+    KNOWN.iter()
+        .filter(|row| (function == row.function || function.ends_with(&format!("/{}", row.function)))
+            && card.contains(row.card) && nvlink == row.nvlink)
+        .map(|row| (row.width, row.speedup))
+        .collect()
+}
+
 /// A function's time here: its compute on one GPU, how it scales, its load onto the GPUs, and what
 /// they stand on.
 struct Time {
@@ -38,15 +66,19 @@ struct Time {
     scaling: Scaling,
     load_ms: f64,
     basis: Basis,
+    /// Widths above one timed faster here than one GPU at this size.
+    faster: Vec<u32>,
 }
 
 /// From its newest runs' compute here (`runs`, newest first) at `size`, else the caller's
-/// `prior_ms`; and the median load of those that loaded.
-fn time(runs: &[RunTime], size: &JobSize, prior_ms: f64) -> Time {
+/// `prior_ms`; and the median load of those that loaded. Until two widths ran here it scales as
+/// `known` says (a `KNOWN` speed-up), else as `Scaling::PRIOR`.
+fn time(runs: &[RunTime], size: &JobSize, prior_ms: f64, known: Option<Scaling>) -> Time {
+    let prior = known.unwrap_or(Scaling::PRIOR);
     if runs.is_empty() {
         return match prior_ms > 0.0 {
-            true => Time { one_ms: prior_ms, scaling: Scaling::PRIOR, load_ms: 0.0, basis: Basis::Prior },
-            false => Time { one_ms: UNKNOWN_MS, scaling: Scaling::PRIOR, load_ms: 0.0, basis: Basis::None },
+            true => Time { one_ms: prior_ms, scaling: prior, load_ms: 0.0, basis: Basis::Prior, faster: vec![] },
+            false => Time { one_ms: UNKNOWN_MS, scaling: prior, load_ms: 0.0, basis: Basis::None, faster: vec![] },
         };
     }
     let same: Vec<&RunTime> = runs.iter().filter(|run| (size.ratio(&run.size) - 1.0).abs() <= SAME_SIZE).collect();
@@ -64,21 +96,23 @@ fn time(runs: &[RunTime], size: &JobSize, prior_ms: f64) -> Time {
     let medians: Vec<(u32, f64)> = by_width.iter().map(|(width, ms)| (*width, median(ms))).collect();
     let scaling = match (medians.first(), medians.last()) {
         (Some(a), Some(b)) if a.0 != b.0 => Scaling::of(*a, *b),
-        _ => Scaling::PRIOR,
+        _ => prior,
     };
+    let one = medians.iter().find(|(width, _)| *width == 1).map(|(_, ms)| *ms);
+    let faster = medians.iter().filter(|(width, ms)| *width > 1 && one.is_some_and(|one| *ms < one)).map(|(width, _)| *width).collect();
     let (width, ms) = by_width.iter().max_by_key(|(width, ms)| (ms.len(), std::cmp::Reverse(**width))).map(|(w, ms)| (*w, median(ms))).expect("a run");
     let loads: Vec<f64> = runs.iter().map(|run| run.load_ms).filter(|ms| *ms > 0.0).take(RECENT).collect();
     let load_ms = if loads.is_empty() { 0.0 } else { median(&loads) };
-    Time { one_ms: ms / scaling.at(width), scaling, load_ms, basis: Basis::Measured }
+    Time { one_ms: ms / scaling.at(width), scaling, load_ms, basis: Basis::Measured, faster }
 }
 
 /// `package` (a generation's, as its runs name it) at `size`; empty: none of it ran here.
-fn timed(engine: &Engine, package: &str, entrypoint: &str, size: &JobSize, prior_ms: f64) -> io::Result<Time> {
+fn timed(engine: &Engine, package: &str, entrypoint: &str, size: &JobSize, prior_ms: f64, known: Option<Scaling>) -> io::Result<Time> {
     let runs = match package.is_empty() {
         true => vec![],
         false => engine.run_times(&function_key(package, entrypoint), HISTORY)?,
     };
-    Ok(time(&runs, size, prior_ms))
+    Ok(time(&runs, size, prior_ms, known))
 }
 
 /// The GPUs a started run holds.
@@ -93,7 +127,7 @@ fn held_width(record: &Execution) -> u32 {
 /// none of it ran here (Paul 11-09, 2a: the overall bar is the machine's).
 pub(crate) fn whole_ms(engine: &Engine, record: &Execution) -> io::Result<Option<f64>> {
     let invocation = &record.invocation;
-    let time = timed(engine, &invocation.package, &invocation.entrypoint, &JobSize::of(&invocation.input), 0.0)?;
+    let time = timed(engine, &invocation.package, &invocation.entrypoint, &JobSize::of(&invocation.input), 0.0, None)?;
     Ok((time.basis != Basis::None).then(|| time.one_ms * time.scaling.at(held_width(record))))
 }
 
@@ -156,6 +190,22 @@ impl<'a> Here<'a> {
         (widths, generation.package)
     }
 
+    /// `entrypoint` of `package` timed here, scaling as `KNOWN` says for this card and link until
+    /// two widths ran here; and of `widths`, those it may run at: one GPU, and a wider one only once
+    /// timed faster than one GPU here or known faster here (cr-268: never wider than proven).
+    /// A count asked for (one width) passes as it is.
+    fn timed(&self, package: &str, entrypoint: &str, size: &JobSize, prior_ms: f64, widths: Vec<u32>) -> io::Result<(Time, Vec<u32>)> {
+        let (card, nvlink) = self.service.pool().map(|pool| pool.hardware_class()).unwrap_or_default();
+        let known = known(&function_key(package, entrypoint), &card, nvlink);
+        let scaling = known.iter().max_by_key(|(width, _)| *width).map(|(width, speedup)| Scaling::of((1, *speedup), (*width, 1.0)));
+        let time = timed(&self.service.engine, package, entrypoint, size, prior_ms, scaling)?;
+        let widths = match widths.len() {
+            0 | 1 => widths,
+            _ => widths.into_iter().filter(|width| *width == 1 || time.faster.contains(width) || known.iter().any(|(w, _)| w == width)).collect(),
+        };
+        Ok((time, widths))
+    }
+
     /// Widths when the function's interface is not held: the count asked, else one GPU.
     fn unknown_widths(&self, gpus: u32) -> Vec<u32> {
         match (self.gpus, gpus) {
@@ -165,8 +215,9 @@ impl<'a> Here<'a> {
         }
     }
 
-    /// The machine's roots as `pack` sees them, by acceptance: their ids and jobs.
-    fn queue(&self) -> io::Result<Vec<(String, Job)>> {
+    /// The machine's roots as `pack` sees them, by acceptance: their ids, jobs and whether the
+    /// machine gives them their width (`chooses`).
+    fn queue(&self) -> io::Result<Vec<(String, Job, bool)>> {
         let engine = &self.service.engine;
         let mut installed: HashMap<String, Vec<Installation>> = HashMap::new();
         let mut queue = vec![];
@@ -189,7 +240,8 @@ impl<'a> Here<'a> {
                 }
                 false => (invocation.widths.clone(), invocation.package.clone()),
             };
-            let time = timed(engine, &package, &invocation.entrypoint, &JobSize::of(&invocation.input), 0.0)?;
+            let choosing = invocation.gpus == 0 && widths.len() > 1;
+            let (time, widths) = self.timed(&package, &invocation.entrypoint, &JobSize::of(&invocation.input), 0.0, widths)?;
             let mut job = Job { widths, one_ms: time.one_ms, scaling: time.scaling, ready_ms: 0.0, running: None };
             match record.state {
                 State::Starting | State::Running => {
@@ -203,7 +255,7 @@ impl<'a> Here<'a> {
                 }
                 _ => job.ready_ms = fetching(&record) as f64 / self.link,
             }
-            queue.push((record.id.clone(), job));
+            queue.push((record.id.clone(), job, choosing));
         }
         Ok(queue)
     }
@@ -219,11 +271,11 @@ fn fetching(record: &Execution) -> u64 {
 /// Each waiting root's width as it would start, of those the machine chooses for (`chooses`).
 pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::Result<HashMap<String, u32>> {
     let queue = Here::of(service, pool.width()).queue()?;
-    let jobs: Vec<Job> = queue.iter().map(|(_, job)| job.clone()).collect();
+    let jobs: Vec<Job> = queue.iter().map(|(_, job, _)| job.clone()).collect();
     let placed = pack::pack(pool.width(), &jobs);
     Ok(queue.into_iter().zip(placed)
-        .filter(|((_, job), place)| job.running.is_none() && job.widths.len() > 1 && place.width > 0)
-        .map(|((id, _), place)| (id, place.width))
+        .filter(|((_, job, choosing), place)| job.running.is_none() && *choosing && place.width > 0)
+        .map(|((id, ..), place)| (id, place.width))
         .collect())
 }
 
@@ -260,7 +312,7 @@ pub(crate) fn quote(runs: &Runs, actor: &str, request: v1::EstimateRequest) -> R
     let internal = |error: io::Error| Error::internal("estimate_unreadable", error.to_string());
     let service = &runs.service;
     let here = Here::of(service, service.pool().map_or(0, |pool| pool.width()));
-    let mut queue: Vec<Job> = here.queue().map_err(internal)?.into_iter().map(|(_, job)| job).collect();
+    let mut queue: Vec<Job> = here.queue().map_err(internal)?.into_iter().map(|(_, job, _)| job).collect();
     let installations = service.engine.installations(actor).map_err(internal)?;
     let store = runs.publisher.store();
     let free = crate::reclaim::Disk::measure(store.root()).map(|disk| disk.free()).map_err(internal)?;
@@ -275,7 +327,7 @@ pub(crate) fn quote(runs: &Runs, actor: &str, request: v1::EstimateRequest) -> R
             .map_or((None, String::new()), |i| here.installed(i, entrypoint, job.gpus));
         let widths = widths.unwrap_or_else(|| here.unknown_widths(job.gpus));
         let fetch: u64 = job.models.iter().map(|model| absent(store, model)).sum();
-        let time = timed(&service.engine, &package, entrypoint, &job.size, job.prior_ms as f64).map_err(internal)?;
+        let (time, widths) = here.timed(&package, entrypoint, &job.size, job.prior_ms as f64, widths).map_err(internal)?;
         // Weights not here: their download at this machine's link, and the load its runs measured putting them on its GPUs.
         let load_ms = match fetch {
             0 => 0.0,
