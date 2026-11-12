@@ -5,7 +5,7 @@
 // nodes.js. Prints what it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { join } = require('path');
-const { calcifer, launch, lastLook, lookAt, noStall, openBox, projectAction, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
+const { calcifer, launch, lastLook, lookAt, noStall, projectAction, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -79,8 +79,9 @@ const HEAT = /GPU 0 ran throttled for heat 98% of its last run \(89 °C, \d+ of 
   seen.said = said;
   check('box_record_says_heat', said.some((message) => /GPU 0 ran throttled for heat 98% of this run/.test(message)), said);
   check('box_record_says_slow', said.some((message) => /took .*×.*Likely: .*throttled for heat/.test(message) || /has run .*×.*Likely: .*throttled for heat/.test(message)), said);
-  // Open, its warnings are its heading's !, and pressed, its lines.
-  await openBox(page, 'hot_box');
+  // Open (by its address: a click only selects it), its warnings are its heading's !, and pressed, its lines.
+  await page.goto(`${at}/assets/hot_box`);
+  await page.locator('[data-focused-asset="hot_box"], .card.here[data-asset="hot_box"]').first().waitFor();
   const warned = page.locator('[data-focused-asset="hot_box"] .focus-heading .iconb.warned, .card.here[data-asset="hot_box"] .head .iconb.warned').first();
   const title = await until('the box warned', () => warned.getAttribute('title').catch(() => null), (now) => Boolean(now) && /throttled for heat/.test(now) && /×/.test(now), 30_000).catch(() => null);
   check('box_shows_it', title !== null, await warned.getAttribute('title').catch(() => null));
