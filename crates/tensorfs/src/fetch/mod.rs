@@ -269,7 +269,15 @@ impl Fetcher {
         let shared = Arc::new(Shared::new(store, client, volume, config.requests));
         tokio::spawn(Arc::clone(&shared).dispatch());
         tokio::spawn(Arc::clone(&shared).pace());
+        tokio::spawn(Arc::clone(&shared).watch_others());
         Fetcher { shared }
+    }
+
+    /// Objects at `order` or later wait while another process sharing the store is fetching one (an
+    /// executor's on-demand read, which its run waits on): none starts, no range of one asks, and one in
+    /// flight pauses at its next bytes, asked again from there after. What is before `order` is unaffected.
+    pub fn hold_from(&self, order: u64) {
+        self.shared.hold_from(order);
     }
 
     pub fn client(&self) -> &Client {

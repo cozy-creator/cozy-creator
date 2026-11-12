@@ -14,6 +14,9 @@
 //!   of starting a later job's: one job's download at a time at full speed, its tail never shared
 //!   with the next (cl-905); a job's own parts follow one another with the link full. A task nothing
 //!   wants stops (cl-686).
+//! - **Others first.** Another process sharing the store that is fetching (an executor's on-demand
+//!   read, which its run waits on) goes before every object at or after `hold_from`: while it does,
+//!   none of those starts, no range of one asks, and one in flight pauses at its next bytes (cl-905).
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every byte
 //!   enters the store's admission, which hashes it: wrong bytes are never admitted. A process sharing
 //!   the store that is fetching an object is waited for, not raced (tfs-142).
@@ -77,6 +80,10 @@ const TYPICAL: f64 = 2e6;
 const START: usize = 8;
 const WINDOW: Duration = Duration::from_millis(500);
 const GAIN: f64 = 1.1;
+/// How often the store is looked at for another process's fetch, and how long after the last one seen
+/// what it holds back still waits: an executor reading a model reads its next part within that.
+const OTHERS_LOOK: Duration = Duration::from_millis(200);
+const OTHERS_AFTER: Duration = Duration::from_millis(1500);
 
 /// The job a queue order names: its high 32 bits.
 fn job(priority: u64) -> u64 {
@@ -268,6 +275,10 @@ pub(crate) struct Shared {
     settle: Notify,
     volume_reads: Semaphore,
     write_backs: Semaphore,
+    /// Orders from here on wait while another process sharing the store fetches (`Fetcher::hold_from`);
+    /// `u64::MAX`: none does. When one was last seen fetching (Unix ms).
+    hold_from: AtomicU64,
+    others_seen_ms: AtomicU64,
     pub stats: Counters,
 }
 
@@ -294,6 +305,8 @@ enum Failed {
     /// Ask again (after the answer's stated wait, when it gave one).
     Again(String, Option<Duration>),
     Fatal(Refusal),
+    /// Another process fetches what a run waits on: its object waits, and asks again from the byte reached.
+    Held,
 }
 
 impl From<Refusal> for Failed {
@@ -631,8 +644,15 @@ impl Shared {
             settle: Notify::new(),
             volume_reads: Semaphore::new(VOLUME_READS),
             write_backs: Semaphore::new(WRITE_BACKS),
+            hold_from: AtomicU64::new(u64::MAX),
+            others_seen_ms: AtomicU64::new(0),
             stats: Counters::default(),
         }
+    }
+
+    /// `Fetcher::hold_from`.
+    pub(crate) fn hold_from(&self, order: u64) {
+        self.hold_from.store(order, Ordering::Release);
     }
 
     /// Stops the dispatcher and every transfer.
@@ -729,10 +749,53 @@ impl Shared {
 
     /// Each free place with nothing waiting takes the back half of the in-flight range with the most
     /// left, while that half is at least `STEAL`; the range's own request stops where the half begins.
+    /// While another process fetches, never one of what it holds back (`holding`).
     fn steal(&self) {
+        let before = self.holding_from();
         while let Some(slot) = self.slots.idle() {
-            if self.take_half(slot, None).is_some() {
+            if self.take_half(slot, before).is_some() {
                 return;
+            }
+        }
+    }
+
+    /// Orders from here on wait now: another process sharing the store is fetching (`watch_others`).
+    fn holding_from(&self) -> Option<u64> {
+        let from = self.hold_from.load(Ordering::Acquire);
+        let seen = self.others_seen_ms.load(Ordering::Acquire);
+        (from != u64::MAX && unix_ms().saturating_sub(seen) < OTHERS_AFTER.as_millis() as u64).then_some(from)
+    }
+
+    /// Looks at the store for another process's fetch every `OTHERS_LOOK` while orders are held for one
+    /// (`hold_from`), and says when one begins holding them back and when that ends.
+    pub(crate) async fn watch_others(self: Arc<Self>) {
+        let mut held: Option<Instant> = None;
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep(OTHERS_LOOK) => {}
+                () = self.closed() => return,
+            }
+            if self.hold_from.load(Ordering::Acquire) == u64::MAX {
+                continue;
+            }
+            let mine: std::collections::HashSet<String> = lock(&self.queue).tasks.values()
+                .filter(|task| task.started.load(Ordering::Acquire)).map(|task| task.object.sha256.clone()).collect();
+            let store = Arc::clone(&self.store);
+            let others = tokio::task::spawn_blocking(move || store.others_fetching(&|sha256| mine.contains(sha256))).await.unwrap_or(false);
+            if others {
+                self.others_seen_ms.store(unix_ms(), Ordering::Release);
+            }
+            match (self.holding_from(), held) {
+                (Some(from), None) => {
+                    held = Some(Instant::now());
+                    tracing::info!(from, "another process sharing the store is fetching what it reads: later downloads wait");
+                }
+                (None, Some(began)) => {
+                    held = None;
+                    tracing::info!(seconds = began.elapsed().as_secs_f64(), "the other process's fetch ended: downloads go on");
+                    self.queued.notify_one();
+                }
+                _ => {}
             }
         }
     }
@@ -785,7 +848,8 @@ impl Shared {
             }
             let rate = front.saturating_sub(judged.seen) as f64 / took.as_secs_f64();
             (judged.seen, judged.since) = (front, Instant::now());
-            if flight.stopped() || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
+            // A range the hold paused is not slow (`holding_from`).
+            if flight.stopped() || self.held(task) || reached >= end || end - reached >= 2 * STEAL || rate >= floor || judged.hedges >= HEDGES {
                 continue;
             }
             if sent >= HEDGES_AT_ONCE {
@@ -966,12 +1030,25 @@ impl Shared {
                 return;
             }
             // An earlier job's range in flight comes before a later job's object: the place takes its back half.
-            let permit = match self.next() {
-                Some(next) => match self.take_half(permit, Some(next)) {
+            // While another process fetches what a run waits on, what it holds back doesn't start: the place
+            // helps only what is before it, else goes back to the ranges waiting for one (those started finish).
+            let permit = match (self.next(), self.holding_from()) {
+                (Some(next), Some(from)) if next >= from => {
+                    if let Some(permit) = self.take_half(permit, Some(from)) {
+                        drop(permit);
+                        tokio::select! {
+                            () = tokio::time::sleep(OTHERS_LOOK) => {}
+                            () = notified.as_mut() => {}
+                            () = self.closed() => return,
+                        }
+                    }
+                    continue;
+                }
+                (Some(next), _) => match self.take_half(permit, Some(next)) {
                     Some(permit) => permit,
                     None => continue,
                 },
-                None => permit,
+                (None, _) => permit,
             };
             // Nothing to start: the place goes back to the ranges waiting for one until a want comes.
             // Held here at the tail it starved them for good (run 32321).
@@ -1145,16 +1222,32 @@ impl Shared {
 
     /// One range in a place among the requests in flight (`slot` when it has one: the task's first, or
     /// the free place that took it).
+    /// While another process fetches what a run waits on, a range of what it holds back gives its place
+    /// up and waits, one in flight at its next bytes, and asks again from the byte it reached once the
+    /// hold ends (`holding_from`).
     async fn part(&self, task: &Task, mut part: Part<'_>, here: &HttpLocation<'_>, slot: Option<Slot>) -> Result<()> {
-        let _slot = match slot {
-            Some(slot) => slot,
-            None => self.slots.take().await,
-        };
-        self.range(task, here, &mut part).await
+        let mut slot = slot;
+        loop {
+            let place = match slot.take() {
+                Some(place) => place,
+                None => self.slots.take().await,
+            };
+            if !self.held(task) && self.range(task, here, &mut part).await? {
+                return Ok(());
+            }
+            drop(place);
+            tokio::time::sleep(OTHERS_LOOK).await;
+        }
+    }
+
+    /// Whether `task` waits now for another process's fetch (`holding_from`).
+    fn held(&self, task: &Task) -> bool {
+        self.holding_from().is_some_and(|from| task.priority.load(Ordering::Acquire) >= from)
     }
 
     /// One range, asked again by the one rule (`ask`) from the byte reached, to its end.
-    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>) -> Result<()> {
+    /// Whether it reached its end: false when a hold paused it (`Failed::Held`), its bytes so far written.
+    async fn range(&self, task: &Task, here: &HttpLocation<'_>, part: &mut Part<'_>) -> Result<bool> {
         let (mut backoff, mut attempt, mut still) = (Backoff::transfer(), 0, 0);
         let (began, first) = (Instant::now(), part.reached);
         loop {
@@ -1165,7 +1258,7 @@ impl Shared {
                 Ok(()) => {
                     part.flush().await?;
                     if part.flight.stopped() {
-                        return Ok(());
+                        return Ok(true);
                     }
                     // Its race's others stop: what they lack, it has.
                     part.flight.race.won(&part.flight);
@@ -1181,7 +1274,11 @@ impl Shared {
                         let mut typical = lock(&self.typical);
                         *typical = Some(typical.map_or(rate, |was| 0.8 * was + 0.2 * rate));
                     }
-                    return Ok(());
+                    return Ok(true);
+                }
+                Err(Failed::Held) => {
+                    part.flush().await?;
+                    return Ok(false);
                 }
                 Err(Failed::Fatal(refusal)) => return Err(refusal),
                 Err(Failed::Again(why, wait)) => (why, wait, part.reached > from),
@@ -1295,6 +1392,9 @@ impl Shared {
                     // A steal moved the end back: what is past it is another request's.
                     if !part.push(task, &data).await? {
                         break;
+                    }
+                    if self.held(task) {
+                        return Err(Failed::Held);
                     }
                 }
                 Ok(None) => break,
