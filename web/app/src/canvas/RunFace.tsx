@@ -149,8 +149,8 @@ export function faceOf(seen: Seen): Face {
   if (run.status === "completed") {
     const arriving = run.arriving?.bytes_total ? run.arriving : undefined
     if (arriving) {
-      const detail = [`${bytes(arriving.bytes_done)} of ${bytes(arriving.bytes_total)}`, arriving.bytes_per_s ? `${bytes(arriving.bytes_per_s)}/s` : ""].filter(Boolean).join(" · ")
-      return face("result", "Downloading the result", { detail, fraction: arriving.bytes_done / arriving.bytes_total })
+      const numbers = [`${bytes(arriving.bytes_done)} of ${bytes(arriving.bytes_total)}`, arriving.bytes_per_s ? `${bytes(arriving.bytes_per_s)}/s` : ""].filter(Boolean).join(" · ")
+      return face("result", `Downloading the result · ${numbers}`, { stageFraction: arriving.bytes_done / arriving.bytes_total })
     }
     const left = owed(run)
     return face("result", left ? "Downloading the result" : "Saving", { detail: left ? bytes(left) : undefined })
