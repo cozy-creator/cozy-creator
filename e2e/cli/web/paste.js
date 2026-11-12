@@ -77,7 +77,9 @@ async function died(why) {
   if (made.status !== 200) throw new Error(`the Shot box: ${JSON.stringify(made)}`);
   await fitCanvas(page);
   await openBox(page, 'scene');
-  const beat = (n) => box('scene').locator(`.mention-text[data-field="beats.${n}.description"]`);
+  // Open, the box is where it's worked on, on the canvas or over it (Focus).
+  const here = () => page.locator('.card.here[data-asset="scene"]').first();
+  const beat = (n) => here().locator(`.mention-text[data-field="beats.${n}.description"]`);
   await beat(0).waitFor();
 
   const words = '<Azul_3> runs past <walk:48-120>,\nthen <cat:120deg> turns\n\nand <Azul_3.1> looks back at <nobody>.';
@@ -125,7 +127,7 @@ async function died(why) {
   // Typed by hand, the same text is marked the same.
   await closeBox(page);
   await openBox(page, 'scene');
-  const typedInto = box('scene').locator('.mention-text:not([data-field^="beats."])').first();
+  const typedInto = here().locator('.mention-text:not([data-field^="beats."])').first();
   seen.typed_field = await typedInto.getAttribute('data-field');
   await typedInto.click();
   await page.keyboard.press('End');
