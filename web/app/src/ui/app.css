@@ -1062,10 +1062,13 @@ code {
   top: calc(100% + 2px + 9px * var(--unzoom, 1));
   left: 0;
   right: 0;
+  /* Over the ring a rendering box breathes out, and haloed in the page's ground, so its words read through it. */
+  z-index: 5;
   display: flex;
   flex-direction: column;
   gap: 2px;
   pointer-events: none;
+  text-shadow: var(--halo);
 }
 .tile-line {
   display: flex;
@@ -1083,10 +1086,16 @@ code {
   flex: none;
   font-size: calc(var(--t-body) * var(--ui));
 }
+/* A render's lines at the body step, as the line over them (cl-958): read at the canvas's 100%, and its Cancel 28px. */
 .tile-under .run-face {
   position: relative;
   padding: 0;
-  text-shadow: none;
+  font-size: calc(var(--t-body) * var(--ui));
+  text-shadow: inherit;
+}
+.tile-under .run-face .face-cancel {
+  min-height: 28px;
+  padding: 0 10px;
 }
 .card .head .node-version-label {
   font: calc(var(--t-body) * var(--ui)) / 1.25 var(--mono);

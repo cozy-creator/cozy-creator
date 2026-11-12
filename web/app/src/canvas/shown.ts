@@ -54,8 +54,8 @@ const CLOSE = 30
 const RING = 9
 /** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
 const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
-/** A render's two lines (RunFace, on lines of 1.35), with the gap over them. */
-const RUN = 2 * 10.5 * 1.35 * 1.35 + 4
+/** A render's two lines (RunFace) at the body step on lines of 1.35, the second as tall as its 28px Cancel, with the gaps over them. */
+const RUN = 12.5 * 1.35 * 1.35 + 28 + 6
 
 /** The room a box keeps clear under it (cl-932): its tool and shape, and if it renders, how its render goes, then the room the name of a box
  *  below it rises into. */
