@@ -11,6 +11,7 @@ mod machine;
 pub(crate) mod live;
 mod quantize;
 mod releases;
+mod show;
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
@@ -29,6 +30,8 @@ enum LoraVerb {
     /// Browse LoRAs from the model catalog.
     #[command(alias = "list")]
     Ls(Ls),
+    /// Show what each lane's checkpoint holds: its factors, α, adapter record and files.
+    Show(Show),
     /// Install a LoRA on a machine.
     Install(Download),
     /// Uninstall downloaded copies from this machine.
@@ -50,6 +53,7 @@ enum LoraVerb {
 pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode, Error> {
     match args.verb {
         LoraVerb::Ls(args) => list(ctx, args, "lora", None).await,
+        LoraVerb::Show(args) => show::show(ctx, args, "lora").await,
         LoraVerb::Install(args) => machine::download(ctx, args).await,
         LoraVerb::Uninstall(args) => machine::remove(ctx, &args.model).await,
         LoraVerb::Edit(mut args) => {
@@ -74,6 +78,8 @@ enum Verb {
     /// Search models on the Hub, or list downloaded models with --on.
     #[command(alias = "list")]
     Ls(ModelLs),
+    /// Show what each lane's checkpoint holds: components, configs, files and its recorded base.
+    Show(Show),
     /// Update a model's family or tags.
     Edit(Edit),
     /// Install a model on a machine.
@@ -126,6 +132,16 @@ pub(crate) struct ModelLs {
     /// Only models a tool's model slot loads, judged by their headers against its default (qwen-image-2/generate:rewriter).
     #[arg(long, value_name = "TOOL:SLOT")]
     fits: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub(crate) struct Show {
+    /// org/name, org/name@release or org/name@sha256:<checkpoint>. No release: the newest.
+    #[arg(value_name = "MODEL")]
+    model: String,
+    /// Only this lane.
+    #[arg(long, value_parser = api::model_ref::lane)]
+    lane: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -314,6 +330,7 @@ async fn list(ctx: &Context, mut args: Ls, role: &str, fits: Option<String>) -> 
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
         Verb::Ls(args) => list(ctx, args.ls, "model", args.fits).await,
+        Verb::Show(args) => show::show(ctx, args, "model").await,
         Verb::Edit(args) => catalog::edit(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args, "model").await,
         Verb::Unpublish(args) => releases::unpublish(ctx, args, "model").await,
@@ -383,7 +400,7 @@ mod tests {
         let mut cli = crate::dev::hide(crate::Cli::command());
         cli.build();
         let names = |name: &str| cli.find_subcommand(name).unwrap().get_subcommands().filter(|command| !command.is_hide_set()).map(|command| command.get_name().to_owned()).collect::<Vec<_>>();
-        assert_eq!(names("model"), ["ls", "edit", "install", "uninstall", "unpublish", "delete"]);
-        assert_eq!(names("lora"), ["ls", "install", "uninstall", "edit", "unpublish", "delete"]);
+        assert_eq!(names("model"), ["ls", "show", "edit", "install", "uninstall", "unpublish", "delete"]);
+        assert_eq!(names("lora"), ["ls", "show", "install", "uninstall", "edit", "unpublish", "delete"]);
     }
 }

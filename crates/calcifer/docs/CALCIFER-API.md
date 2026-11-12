@@ -487,6 +487,11 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
 - `GET /v1/models/{org}/{name}?release=`: `ModelDetail`, its releases (the one named) and, to its
   org's members, every commit; `family`, `family_from`, `weights_family` (what its header verifies as),
   `kind` and `tags` as above.
+- `GET /v1/models/{org}/{name}/headers?release=|checkpoint=&lane=&full=`: `ModelHeaders`, what each lane of a release (none
+  named: the newest; `checkpoint=sha256:…`: that one) holds, read from its header alone, never a weight: each component's
+  class, config keys (`full`: the config), run data with sizes, tensor count and a LoRA's modules with their α; and the
+  header's records of where it came from (`inherited`, `composed`, `added`, `provenance`, `family`, `adapter`). `resolves_to`
+  is the release a run naming this one takes, its series' newest fix.
 - `PATCH /v1/models/{org}/{name}` `{hub, family, tags, add_tags, remove_tags, trigger, strength}`:
   `ModelEdited {model, warnings}`, the model as `GET` reads it. Each field given is set, an absent one
   kept: `family` empty or `none` clears the label (its weights' family shows then); `tags` replaces them
@@ -743,6 +748,7 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy org edit` | `PATCH /v1/orgs/{org}` |
 | `cozy model ls [query]` | `GET /v1/models` |
 | `cozy model ls --on` | `GET /v1/machines/{name}/models`; `--on all`: `GET /v1/machines` |
+| `cozy model show`, `cozy lora show` | `GET /v1/models/{org}/{name}/headers` |
 | `cozy model edit` | `PATCH /v1/models/{org}/{name}` |
 | `cozy model publish` | `POST /v1/models/{org}/{name}/releases` |
 | `cozy model delete` | `DELETE /v1/models/{org}/{name}[/releases/{v}\|/commits/{c}]` |

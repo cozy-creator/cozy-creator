@@ -77,6 +77,20 @@ if [ "$(jq '.total' "$OUT/models-first-page.json")" -gt 1 ]; then
 fi
 model_details zhengpeng7/birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model metadata zhengpeng7/birefnet: no lanes"
 lane=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
+# What each lane's checkpoint holds, from its header alone (xs-183): its components, one lane by --lane, and a LoRA's modules.
+cozy --json model show zhengpeng7/birefnet > "$OUT/model-show.json" \
+  && J '(.lanes | length > 0) and all(.lanes[]; (.header | startswith("sha256:")) and any(.components[]; .tensors > 0))' "$OUT/model-show.json" \
+  || check "model show zhengpeng7/birefnet: no lane with its components: $(head -c 300 "$OUT/model-show.json")"
+cozy --json model show zhengpeng7/birefnet --lane "$lane" > "$OUT/model-show-lane.json" \
+  && J --arg lane "$lane" '(.lanes | length) == 1 and .lanes[0].lane == $lane' "$OUT/model-show-lane.json" || check "model show --lane $lane: not that one lane"
+cozy model show zhengpeng7/birefnet > "$OUT/model-show.txt" 2>&1 && grep -Eq '^checkpoint +sha256:' "$OUT/model-show.txt" \
+  || check "model show: no checkpoint line: $(head -c 300 "$OUT/model-show.txt")"
+lora=$(cozy --json lora ls --limit 1 | jq -r '.models[0].model // empty') || true
+cozy --json lora show "$lora" > "$OUT/lora-show.json" && J 'any(.lanes[].components[]; .lora.modules > 0)' "$OUT/lora-show.json" \
+  || check "lora show ${lora:-<none listed>}: no component with LoRA modules: $(head -c 300 "$OUT/lora-show.json")"
+lora_lane=$(jq -r '.lanes[0].lane // empty' "$OUT/lora-show.json") || true
+cozy --json lora show "$lora" --lane "$lora_lane" > "$OUT/lora-show-lane.json" && J '(.lanes | length) == 1' "$OUT/lora-show-lane.json" \
+  || check "lora show $lora --lane $lora_lane: not one lane"
 
 step "renting, signed out"
 # The catalog's shape, never its stock: an empty market or a sold-out SKU is not a code failure.

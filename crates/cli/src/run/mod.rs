@@ -465,10 +465,15 @@ fn print_functions(ctx: &Context, target: &Target) {
     let (package, release) = (&target.package, &target.release);
     let from = (target.release_from != ReleaseFrom::Local).then(|| target.release_from.to_string());
     if ctx.json {
-        output::json(&serde_json::json!({
+        let mut document = serde_json::json!({
             "package": package, "release": release, "release_from": from, "summary": target.summary,
             "functions": target.functions,
-        }));
+        });
+        // With --full, its interface document: each function's model slots and the release each names by default.
+        if ctx.full {
+            document["interface"] = target.interface.clone();
+        }
+        output::json(&document);
         return;
     }
     let mut table = output::Table::new(ctx, ["FUNCTION", "DESCRIPTION"]);
