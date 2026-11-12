@@ -146,7 +146,7 @@ cozy --json model show e2e/parts > "$OUT/parts-pipeline.json" 2>&1 && J '[.lanes
 cozy --json model install e2e/parts-vae --on local > "$OUT/parts-install.ndjson" 2>&1 || check "model install e2e/parts-vae failed: $(tail -c 300 "$OUT/parts-install.ndjson")"
 # Its 256 KiB VAE, never the pipeline's 4 MiB transformer.
 cozy --json model ls --on local > "$OUT/parts-models.json" \
-  && J 'any(.models[]; .model == "e2e/parts-vae" and .bytes > 262144 and .bytes < 1048576)' "$OUT/parts-models.json" \
+  && J 'any(.models[]; .model == "e2e/parts-vae" and .bytes >= 262144 and .bytes < 1048576)' "$OUT/parts-models.json" \
   || check "model install e2e/parts-vae: not its VAE alone on local: $(jq -c '[.models[]? | select(.model | startswith("e2e/parts")) | {model, bytes}]' "$OUT/parts-models.json")"
 cell parts-default "$script" || return 0
 cell parts-composed "$script" --model vae=e2e/parts-vae@0.1.0 || return 0
