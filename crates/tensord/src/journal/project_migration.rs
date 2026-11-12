@@ -340,6 +340,92 @@ fn footprint(
     }
     Ok(found)
 }
+fn copy_run_directory(source: &Path, target: &Path) -> io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    let metadata = match fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(db_error(
+            "legacy run directory is not a proven regular directory",
+        ));
+    }
+    if let Ok(metadata) = fs::symlink_metadata(target) {
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(db_error("project run directory has an unsafe type"));
+        }
+    }
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let destination = target.join(entry.file_name());
+        let kind = fs::symlink_metadata(&path)?;
+        if kind.file_type().is_symlink() {
+            return Err(db_error(
+                "legacy run closure contains an unproven symbolic link",
+            ));
+        }
+        if kind.is_dir() {
+            copy_run_directory(&path, &destination)?;
+        } else if kind.is_file() {
+            let mut input =
+                platform::durable::open_nofollow(&path, fs::OpenOptions::new().read(true))?;
+            let mut bytes = Vec::new();
+            input.read_to_end(&mut bytes)?;
+            if destination.exists() {
+                let mut old = platform::durable::open_nofollow(
+                    &destination,
+                    fs::OpenOptions::new().read(true),
+                )?;
+                let mut previous = Vec::new();
+                old.read_to_end(&mut previous)?;
+                if previous != bytes {
+                    return Err(db_error(
+                        "project run file conflicts with canonical legacy bytes",
+                    ));
+                }
+            } else {
+                let mut output = platform::durable::open_nofollow(
+                    &destination,
+                    fs::OpenOptions::new().write(true).create_new(true),
+                )?;
+                output.write_all(&bytes)?;
+                output.sync_all()?;
+            }
+        } else {
+            return Err(db_error("legacy run closure contains an unknown object"));
+        }
+    }
+    platform::durable::sync_dir(target)?;
+    Ok(())
+}
+fn copy_attributed_run_files(
+    source_engine: &Path,
+    scope: &LocalPrivateStorage,
+    ids: &[u64],
+) -> io::Result<Vec<String>> {
+    let target = crate::private_io::root(scope)?;
+    let mut pending = vec![];
+    for id in ids {
+        for kind in ["results", "staging"] {
+            let source = source_engine.join(kind).join(id.to_string());
+            if source.exists() {
+                copy_run_directory(&source, &target.join(kind).join(id.to_string()))?;
+                // Canonical data is copied and durable. Deletion needs source-reader/folder
+                // retirement proof; keep the exact remaining source explicit until then.
+                pending.push(format!(
+                    "legacy_run_files_copied_source_retirement_pending:{}",
+                    source.display()
+                ));
+            }
+        }
+    }
+    Ok(pending)
+}
+
 fn copy_attributed_objects(
     tables: &[Table],
     scope: &LocalPrivateStorage,
@@ -490,6 +576,8 @@ fn inventory(
             item.starts_with("legacy_required_")
                 || item.starts_with("legacy_code_member_")
                 || item.starts_with("legacy_tree_member_")
+                || item.starts_with("legacy_run_files_")
+                || item.starts_with("legacy_unscoped_dependency_")
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -788,6 +876,7 @@ impl Journal {
                                 pending.starts_with("legacy_required_")
                                     || pending.starts_with("legacy_code_member_")
                                     || pending.starts_with("legacy_tree_member_")
+                                    || pending.starts_with("legacy_run_files_")
                             })
                             .collect::<Vec<_>>()
                             .is_empty()
@@ -1163,6 +1252,11 @@ impl Journal {
                 }
             }
         }
+        let raw_dependencies = if attributed_ids.is_empty() {
+            vec![]
+        } else {
+            vec!["legacy_unscoped_dependency_metadata_requires_reference_retirement".to_owned()]
+        };
         let mut references = BTreeMap::new();
         for table in &mut owned {
             for row in &mut table.rows {
@@ -1190,11 +1284,18 @@ impl Journal {
         }
         let execution_ids = selected.into_iter().collect::<Vec<_>>();
         let footprint = footprint(&owned, scope, requests.clone(), execution_ids.clone())?;
-        let object_pending = if attributed_ids.is_empty() {
+        let mut object_pending = if attributed_ids.is_empty() {
             vec![]
         } else {
             copy_attributed_objects(&owned, scope, store, &transaction, actor)?
         };
+        if !attributed_ids.is_empty() {
+            object_pending.extend(copy_attributed_run_files(
+                &engine.join("execution"),
+                scope,
+                &attributed_ids,
+            )?);
+        }
         let mut receipt = Receipt {
             source_workspace: self.workspace_id.clone(),
             digest: digest(&original)?,
@@ -1203,7 +1304,7 @@ impl Journal {
             owned,
             requests,
             execution_ids,
-            pending: object_pending,
+            pending: object_pending.into_iter().chain(raw_dependencies).collect(),
             footprint,
             inventory: InventoryReport::default(),
             bindings,
@@ -1237,7 +1338,13 @@ impl Journal {
         checkpoint(&target.connection)?;
         // The target and full required object closure/inventory are verified before source retirement.
         let required = verify_request_objects(&receipt.owned, scope)?;
-        if !required.is_empty() || !receipt.pending.is_empty() {
+        if !required.is_empty()
+            || receipt.pending.iter().any(|pending| {
+                pending.starts_with("legacy_required_")
+                    || pending.starts_with("legacy_code_member_")
+                    || pending.starts_with("legacy_tree_member_")
+            })
+        {
             receipt.pending.extend(required);
             save(&target.connection, &receipt)?;
             checkpoint(&target.connection)?;
