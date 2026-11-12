@@ -257,6 +257,8 @@ pub(crate) struct Shared {
     pub volume: Option<VolumeOrigin>,
     queue: Mutex<Queue>,
     queued: Notify,
+    /// A task's order moved earlier (`want`): what waits for a place at its old one asks again.
+    moved: Notify,
     closed: AtomicBool,
     closing: Notify,
     /// Requests in flight, across every object, as many as the ramp allows (`Pace`).
@@ -546,6 +548,9 @@ struct Places {
 /// A place among the requests in flight.
 struct Slot(Arc<Slots>);
 
+/// A range's ask for a place (`Shared::place`).
+type Asking<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Slot> + Send + 'a>>;
+
 impl Slots {
     fn new(free: usize) -> Arc<Slots> {
         Arc::new(Slots(Mutex::new(Places { free, ..Places::default() })))
@@ -651,6 +656,7 @@ impl Shared {
             volume,
             queue: Mutex::default(),
             queued: Notify::new(),
+            moved: Notify::new(),
             closed: AtomicBool::new(false),
             closing: Notify::new(),
             slots: Slots::new(START.min(requests.max(1))),
@@ -908,6 +914,9 @@ impl Shared {
                         let seq = queue.seq;
                         queue.heap.push(Reverse((priority, seq, object.sha256.clone())));
                     }
+                    // What waits for a place at its old order asks again: the dispatcher, and its ranges.
+                    self.queued.notify_one();
+                    self.moved.notify_waiters();
                 }
                 task
             }
@@ -1220,10 +1229,29 @@ impl Shared {
         loop {
             let _place = match slot.take() {
                 Some(place) => place,
-                None => self.slots.take(task.priority.load(Ordering::Acquire)).await,
+                None => self.place(task).await,
             };
             if self.range(task, here, &mut part).await? {
                 return Ok(());
+            }
+        }
+    }
+
+    /// A place for one of `task`'s ranges at its order, asked again when that order moves earlier (`want`).
+    async fn place(&self, task: &Task) -> Slot {
+        let mut asked: Option<(u64, Asking<'_>)> = None;
+        loop {
+            let moved = self.moved.notified();
+            tokio::pin!(moved);
+            moved.as_mut().enable();
+            let order = task.priority.load(Ordering::Acquire);
+            if asked.as_ref().is_none_or(|(at, _)| *at != order) {
+                asked = Some((order, Box::pin(self.slots.take(order))));
+            }
+            let (_, waiting) = asked.as_mut().expect("asked above");
+            tokio::select! {
+                place = waiting => return place,
+                () = moved => {}
             }
         }
     }
