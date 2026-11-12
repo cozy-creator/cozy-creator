@@ -599,10 +599,14 @@ impl Calcifer {
         if submit.kind==::api::calcifer::Kind::Update && submit.spec.kind==v1::RunKind::Update && submit.out.is_none() && private_io::current().is_none() {
             return Ok(store::RunStore::Maintenance(self.maintenance_store()));
         }
-        if submit.kind == ::api::calcifer::Kind::Call || submit.spec.kind == v1::RunKind::Call
-            || submit.out.is_some() || !submit.inputs.is_empty() || !submit.spec.inputs.is_empty()
-            || submit.spec.payload.is_some() || matches!(submit.spec.source.as_ref(), Some(v1::Source::Local(_)))
-            || private_io::current().is_some()
+        // A model upload or other preparation without a project is not project data unless it publishes project code.
+        let local_source = matches!(submit.spec.source.as_ref(), Some(v1::Source::Local(_)));
+        let hub_work = matches!(submit.kind, ::api::calcifer::Kind::Here | ::api::calcifer::Kind::Warm)
+            && submit.spec.kind != v1::RunKind::Call && submit.out.is_none() && !local_source;
+        if private_io::current().is_some()
+            || (!hub_work && (submit.kind == ::api::calcifer::Kind::Call || submit.spec.kind == v1::RunKind::Call
+                || submit.out.is_some() || !submit.inputs.is_empty() || !submit.spec.inputs.is_empty()
+                || submit.spec.payload.is_some() || local_source))
         {
             return Err(Error::Refused(::api::error::Error::new(::api::error::Kind::Validation, "project_required", "function calls and project-owned data require an explicit project")));
         }
