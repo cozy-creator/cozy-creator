@@ -6,7 +6,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox } = require('./page');
+const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -72,20 +72,32 @@ async function died(why) {
   await rows.nth(2).waitFor();
   check('three_beats', (await rows.count()) === 3, await rows.count());
 
-  // Each beat's words start six lines tall, and the long one grows to show all it says.
-  const measured = await rows.evaluateAll((all) => all.map((row) => {
-    const words = row.querySelector('.mention-text');
-    const style = getComputedStyle(words);
-    const line = Number.parseFloat(style.lineHeight);
-    const slider = row.querySelector('.beat-time input[type="range"]');
-    return {
-      lines: words.clientHeight / line,
-      fits: words.scrollHeight <= words.clientHeight + 1,
-      slider: slider?.getBoundingClientRect().width ?? null,
-      row: row.querySelector('.beat-time')?.getBoundingClientRect().width ?? null,
-      value: slider?.closest('.slide')?.querySelector('.num')?.textContent ?? null,
-    };
-  }));
+  // Each beat's words start six lines tall, and the long one grows to show all it says. Beats shown one at a time (an accordion) are each opened.
+  const measured = [];
+  for (let i = 0; i < 3; i++) {
+    const row = rows.nth(i);
+    const toggle = row.locator('.beat-toggle');
+    if ((await toggle.count()) && (await toggle.getAttribute('aria-expanded')) !== 'true') {
+      await toggle.click();
+      await until(`beat ${i + 1} open`, () => toggle.getAttribute('aria-expanded'), (open) => open === 'true');
+      await page.waitForTimeout(400);
+    }
+    measured.push(await row.evaluate((one) => {
+      const words = one.querySelector('.mention-text[data-field$=".description"]') ?? one.querySelector('.mention-text');
+      const style = getComputedStyle(words);
+      const line = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.4;
+      const slider = one.querySelector('.beat-time input[type="range"]');
+      return {
+        lines: words.clientHeight / line,
+        fits: words.scrollHeight <= words.clientHeight + 1,
+        slider: slider?.getBoundingClientRect().width ?? null,
+        row: one.querySelector('.beat-time')?.getBoundingClientRect().width ?? null,
+        value: slider?.closest('.slide')?.querySelector('.num')?.textContent ?? null,
+        accordion: one.classList.contains('beat-accordion'),
+      };
+    }));
+    await shot(`beat-${i + 1}`);
+  }
   seen.beats = measured;
   check('each_beat_starts_six_lines_tall', measured.every((one) => one.lines >= 6), measured);
   check('a_long_beat_grows_to_show_it_all', measured[2].fits && measured[2].lines >= measured[0].lines, measured[2]);

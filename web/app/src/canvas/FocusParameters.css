@@ -70,8 +70,10 @@
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beat-body {
   gap: 12px;
 }
+/* A beat's words: six lines to start, growing with them (cl-903). */
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beat .mention-text {
-  min-height: 140px;
+  min-height: calc(6 * 30px + 28px);
+  max-height: none;
   font-size: 20px;
 }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beat.can-go .mention-text {
@@ -92,7 +94,11 @@
   gap: 12px;
 }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .beat-time .slide {
-  flex: 1 1 220px;
+  flex: none;
+}
+.focus-viewport .focus-card.focus-parameter-tool .prominent .beat-time .slide input[type="range"] {
+  flex: none;
+  width: 200px;
 }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .slide {
   gap: 12px;
@@ -101,8 +107,7 @@
 .focus-viewport .focus-card.focus-parameter-tool .prominent .slide input[type="range"] {
   height: 30px;
 }
-.focus-viewport .focus-card.focus-parameter-tool .prominent .slide .num,
-.focus-viewport .focus-card.focus-parameter-tool .prominent .total {
+.focus-viewport .focus-card.focus-parameter-tool .prominent .slide .num {
   font: 16px var(--mono);
 }
 .focus-viewport .focus-card.focus-parameter-tool .prominent .slot-control,
