@@ -5,9 +5,10 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { boxOf, calcifer, carry, fitCanvas, lastLook, launch, lookAt, MP4, noStall, png, projectFromPage, settled, signIn, STEP_MS, until, upload } = require('./page');
+const { boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const NAME = 'focus_image';
+const STANDARD_ASPECTS = ['21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16'];
 const failures = [];
 const seen = {};
 let during = 'setup';
@@ -369,7 +370,7 @@ async function died(error) {
     await expectFit(0.25);
     check('old_tall_state_stays_previewable_after_generation', await history.locator('.take.on[data-take]').getAttribute('data-take') === '2' && (await asset()).versions === 11);
 
-    // The weightless tool declares a continuous AspectRatio, with no discrete ratio list.
+    // A bounded AspectRatio snaps to the standard supported ratios while its frame stays free until release.
     await newImage.click();
     const aspectBadge = card.locator('.focus-viewer .media > [data-output-aspect]');
     await aspectBadge.waitFor();
@@ -388,9 +389,9 @@ async function died(error) {
     const requestedShape = await aspectBadge.getAttribute('data-output-aspect');
     const [ratioWidth, ratioHeight] = requestedShape.split(':').map(Number);
     const requestedRatio = ratioWidth / ratioHeight;
-    check('aspect_drag_holds_free_bounds_until_release', sameRect(beforeResize.viewer, heldResize.viewer) && sameRect(heldResize.media, stableResize.media)
+    check('aspect_drag_holds_free_bounds_until_release', STANDARD_ASPECTS.includes(requestedShape) && sameRect(beforeResize.viewer, heldResize.viewer) && sameRect(heldResize.media, stableResize.media)
       && Math.abs(heldResize.media.x - beforeResize.media.x) < 2 && Math.abs(heldResize.media.y - beforeResize.media.y) < 2
-      && Math.abs(heldResize.media.width - (beforeResize.media.width - 150)) < 4 && Math.abs(heldResize.media.height - (beforeResize.media.height + 90)) < 4
+      && Math.abs(heldResize.media.width - (beforeResize.media.width - 150)) < 4 && Math.abs(heldResize.media.height - heldResize.media.width / requestedRatio) < 4
       && !frameFits(heldResize, requestedRatio), { beforeResize, heldResize, stableResize, requestedShape });
     await shot('aspect-dragging');
     await page.mouse.up();
@@ -482,15 +483,29 @@ async function died(error) {
   await api(`${at}/assets/${NAME}`, 'PATCH', { tool: reference.tool.id, fields: { [reference.prompt.field]: bulkWords } });
   await until('the image reference tool and seed words are saved', asset, (item) => item.tool === reference.tool.id && item.fields?.[reference.prompt.field] === bulkWords);
   await api(`${at}/canvas`, 'PATCH', { cards: { [NAME]: { x: 1000, y: 280, w: 640 } } });
-  const bulkNames = [];
+  const bulkNames = Array.from({ length: 4 }, (_, number) => `bulk_reference_${number + 1}`);
+  const clientImports = new Set();
+  const observeImports = (response) => {
+    const path = new URL(response.url()).pathname;
+    if (response.request().method() !== 'GET' || !response.ok() || (path !== at && !bulkNames.some((name) => path === `${at}/assets/${name}`))) return;
+    void response.json().then((body) => {
+      for (const item of [...(body.assets ?? []), ...(body.asset ? [body.asset] : [])]) if (bulkNames.includes(item.name)) clientImports.add(item.name);
+    }, () => {});
+  };
+  page.on('response', observeImports);
   for (let number = 0; number < 4; number++) {
-    const name = `bulk_reference_${number + 1}`;
-    bulkNames.push(name);
+    const name = bulkNames[number];
     await api(`${at}/imports`, 'POST', { source: await picture(11 + number, 480, 320), name, exact: true, at: { x: 160 + (number % 2) * 260, y: 180 + Math.floor(number / 2) * 220, w: 160 } });
   }
-  await fitCanvas(page);
+  await until('the browser client reads all four imported assets', () => [...clientImports], (names) => bulkNames.every((name) => names.includes(name)));
+  page.off('response', observeImports);
+  check('bulk_imports_reach_the_client_before_fitting', clientImports.size === 4);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   const sourceNodes = bulkNames.map((name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`));
-  for (const node of sourceNodes) await node.waitFor();
+  await until('all four imported nodes are visible after a synchronized refit', async () => {
+    await fitCanvas(page);
+    return { visible: await Promise.all(sourceNodes.map((node) => node.isVisible())), camera: await camera() };
+  }, (view) => view.visible.every(Boolean));
   const bounds = await Promise.all(sourceNodes.map((node) => node.boundingBox()));
   const enclosing = { left: Math.min(...bounds.map((box) => box.x)) - 12, top: Math.min(...bounds.map((box) => box.y)) - 12,
     right: Math.max(...bounds.map((box) => box.x + box.width)) + 12, bottom: Math.max(...bounds.map((box) => box.y + box.height)) + 12 };
@@ -605,6 +620,7 @@ async function died(error) {
   writeFileSync(clip, MP4);
   await api(`${at}/assets/${VIDEO}/versions`, 'POST', { source: await upload(session.token, clip) });
   const completedVideo = videoFocus.locator('.here-side .take[data-take="1"]');
+  const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
   await completedVideo.waitFor();
   await completedVideo.click();
   await videoFocus.locator('.focus-viewer').getByRole('button', { name: 'Play', exact: true }).click();
@@ -636,12 +652,28 @@ async function died(error) {
   check('new_video_tile_keeps_focus_and_does_not_render_implicitly', await videoFocus.isVisible() && (await state()).assets.find((item) => item.name === VIDEO).versions === 1);
   check('new_video_hides_the_main_player_and_keeps_the_prompt_workspace', !await videoFocus.locator('.focus-viewer').isVisible() && await summaryPrompt.isVisible() && await beatPrompt.isVisible());
   const beatRows = videoForm.locator('.beats-edit[data-field="beats"] > .beat');
-  check('video_editor_expands_the_first_beat_and_collapses_the_rest', await beatRows.count() === 2 && await beatRows.first().locator('.mention-text').first().isVisible() && !await beatRows.nth(1).locator('.mention-text').first().isVisible());
+  // Closed panels clip their still-laid-out text; descendant isVisible() does not measure that clipping.
+  const readBeatPanels = () => beatRows.evaluateAll((rows) => rows.map((row) => {
+    const panel = row.querySelector('.beat-panel');
+    return { expanded: row.querySelector('.beat-toggle').getAttribute('aria-expanded'),
+      hidden: panel.getAttribute('aria-hidden'), inert: panel.hasAttribute('inert'),
+      height: panel.getBoundingClientRect().height, contentHeight: panel.querySelector('.beat-body').scrollHeight,
+      promptHeight: row.querySelector('.mention-text').getBoundingClientRect().height,
+      animating: panel.getAnimations().some((animation) => animation.playState === 'running') };
+  }));
+  const beatPanelMatches = (panel, open) => panel.expanded === String(open) && panel.hidden === String(!open) && panel.inert === !open
+    && !panel.animating && panel.promptHeight > 100 && (open ? panel.height > 100 && panel.height >= panel.contentHeight - 2 : panel.height <= 1);
+  const firstBeatOpen = (panels) => panels.length === 2 && beatPanelMatches(panels[0], true) && beatPanelMatches(panels[1], false);
+  const firstBeatPanels = await until('the first Beat is open and the second is fully clipped', readBeatPanels, firstBeatOpen);
+  check('video_editor_expands_the_first_beat_and_collapses_the_rest', firstBeatOpen(firstBeatPanels), firstBeatPanels);
   const firstBeatToggle = beatRows.first().getByRole('button', { name: 'Beat 1', exact: true });
   const secondBeatToggle = beatRows.nth(1).getByRole('button', { name: 'Beat 2', exact: true });
   await secondBeatToggle.click();
-  check('expanding_another_beat_closes_the_previous_one', await firstBeatToggle.getAttribute('aria-expanded') === 'false' && await secondBeatToggle.getAttribute('aria-expanded') === 'true' && !await beatRows.first().locator('.mention-text').first().isVisible() && await beatRows.nth(1).locator('.mention-text').first().isVisible());
+  const secondBeatOpen = (panels) => panels.length === 2 && beatPanelMatches(panels[0], false) && beatPanelMatches(panels[1], true);
+  const secondBeatPanels = await until('the second Beat finishes opening and the first finishes clipping', readBeatPanels, secondBeatOpen);
+  check('expanding_another_beat_closes_the_previous_one', secondBeatOpen(secondBeatPanels), secondBeatPanels);
   await firstBeatToggle.click();
+  await until('the first Beat finishes reopening for its reference backdrop', readBeatPanels, firstBeatOpen);
   for (const [place, ratio] of [['summary', 4], ['beats.0.description', 0.25]]) {
     const backdrop = videoForm.locator(`[data-video-reference="${place}"] .ghosts img`);
     const painted = await until(`the ${place} field displays its own referenced image`, () => backdrop.evaluate((image) => {
@@ -656,6 +688,33 @@ async function died(error) {
   await videoFocus.waitFor({ state: 'detached' });
   await until('video exit restores its original Wander camera', camera, (position) => sameCamera(videoWander, position));
   check('no_focus_workspace_or_carry_ghost_remains', await page.locator('[data-focused-asset], .carry-ghost').count() === 0);
+
+  // Palette drops stay in Wander; only an explicit body double-click opens the new holder.
+  const canvasTool = await implementationRow(page, 'image');
+  const canvasToolId = await canvasTool.getAttribute('data-tool');
+  const beforeBasicDrop = new Set((await state()).assets.map((item) => item.name));
+  await carry(page, page.locator('.tools [data-palette="nodes"] [data-node="image"]'), await openCanvas(page));
+  const newHolder = await until('a basic image holder is created by dragging', state, (value) => value.assets.some((item) => !beforeBasicDrop.has(item.name)));
+  const holder = newHolder.assets.find((item) => !beforeBasicDrop.has(item.name));
+  check('a_basic_palette_drop_does_not_enter_focus', holder.kind === 'image' && !holder.tool && await page.locator('[data-focused-asset]').count() === 0);
+  await fitCanvas(page);
+  const holderRect = await boxOf(page, holder.name).locator('.media').boundingBox();
+  await canvasTool.scrollIntoViewIfNeeded();
+  await carry(page, canvasTool, { x: holderRect.x + holderRect.width / 2, y: holderRect.y + holderRect.height / 2 });
+  await until('the dragged implementation attaches to the holder', state, (value) => value.assets.find((item) => item.name === holder.name)?.tool === canvasToolId);
+  await settled(page);
+  check('a_tool_attachment_does_not_enter_focus', await page.locator('[data-focused-asset]').count() === 0);
+  const beforeToolDrop = new Set((await state()).assets.map((item) => item.name));
+  await carry(page, canvasTool, await openCanvas(page));
+  const toolState = await until('a dragged implementation creates another image holder', state, (value) => value.assets.some((item) => !beforeToolDrop.has(item.name) && item.tool === canvasToolId));
+  const newTool = toolState.assets.find((item) => !beforeToolDrop.has(item.name) && item.tool === canvasToolId);
+  await settled(page);
+  check('a_new_tool_drop_does_not_enter_focus', await page.locator('[data-focused-asset]').count() === 0);
+  await openBox(page, newTool.name);
+  await renderOf(page, newTool.name);
+  check('a_dropped_tool_opens_only_after_explicit_double_click', await page.locator(`[data-focused-asset="${newTool.name}"]`).isVisible());
+  await page.getByRole('button', { name: 'Back to canvas', exact: true }).click();
+  await page.locator('[data-focused-asset]').waitFor({ state: 'detached' });
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();
   console.log(JSON.stringify({ failures, seen }, null, 2));
