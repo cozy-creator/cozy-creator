@@ -360,6 +360,14 @@ async function died(why) {
   await shoot('drawer-files', { open: (page) => goto(page, `${projectPath}/files`) });
   await shoot('drawer-account', { open: (page) => goto(page, `${projectPath}/account`) });
   await shoot('drawer-projects-open', { open: (page) => goto(page, `${projectPath}/projects`) });
+  // The open project's own tab: Projects, ready for a new one's name (cl-958: the bar's one + is Add files).
+  await shoot('drawer-projects-from-tab', {
+    open: async (page) => {
+      await goto(page, projectPath);
+      await page.click('nav.ptabs a.ptab.on');
+      await page.locator('.drawer input[aria-label="New project\'s name"]').waitFor();
+    },
+  });
   await shoot('drawer-library', { open: (page) => goto(page, `${projectPath}/packages`) });
   await shoot('drawer-models', { open: (page) => goto(page, `${projectPath}/models`) });
   await both((page) => goto(page, projectPath));
