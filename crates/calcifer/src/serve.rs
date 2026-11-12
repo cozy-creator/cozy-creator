@@ -338,7 +338,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");
     match calcifer.resume() {
-        Ok(runs) => steps.done(&format!("resume ({runs} runs)")),
+        Ok(_) => steps.done("resume"),
         Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
     }
     tokio::spawn(crate::hub::jobs::resume(api.clone()));
@@ -364,8 +364,9 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
 struct Steps(Instant);
 
 impl Steps {
-    fn done(&mut self, step: &str) {
-        info!(step, ms = self.0.elapsed().as_millis() as u64, "started");
+    /// A start's step and how long it took, in the closed health log: a slow start names its slow step.
+    fn done(&mut self, step: &'static str) {
+        info!(target: "cozy.service_health", step, ms = self.0.elapsed().as_millis() as u64, "started");
         self.0 = Instant::now();
     }
 }

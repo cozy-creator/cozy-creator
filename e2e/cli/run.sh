@@ -300,7 +300,8 @@ for slow in yes no; do
   for _ in $(seq 120); do [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] && [ -s "$holder" ] && break; sleep 0.5; done
   [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] || check "watch restart: no new Calcifer's record 60 s after a restart"
 done
-slowed=$(grep -a 'started step="record"' "$HOME/.cozy/calcifer/calcifer.log" | tail -2 | head -1 | grep -oE 'ms=[0-9]+' | cut -d= -f2)
+# Calcifer's start steps are in its closed health log.
+slowed=$(grep -a 'started step="record"' "$HOME/.cozy/calcifer/health.log" 2> /dev/null | tail -2 | head -1 | grep -oE 'ms=[0-9]+' | cut -d= -f2) || slowed=
 [ "${slowed:-0}" -ge 4000 ] || check "watch restart: the first restart's record wasn't slowed (record step ${slowed:-?} ms): the cell proves nothing"
 wait "$watcher" || code=$?
 [ "$code" = 0 ] && J -s 'any(.[]; .type == "run.completed" and .run.status == "completed")' "$OUT/watch.ndjson" \
