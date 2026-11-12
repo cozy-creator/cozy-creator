@@ -1572,14 +1572,21 @@ impl Pool {
     /// Every warm set's pass, off the caller's thread: after a call ends, when room may
     /// have come back for a member a request pushed down.
     pub(crate) fn keep_all(self: &Arc<Self>, engine: &Arc<Engine>) {
-        let actors: Vec<String> = self.members.lock().unwrap().keys().cloned().collect();
+        let private_scope = crate::private_io::current();
+        let prefix = private_scope.as_ref().map(|_| crate::private_io::resource_key(""));
+        let actors: Vec<String> = self.members.lock().unwrap().keys()
+            .filter(|actor| match &prefix { Some(prefix) => actor.starts_with(prefix), None => !actor.starts_with("local-private:") }).cloned().collect();
         if actors.is_empty() {
             return;
         }
+        let lease = match crate::private_io::lease() { Ok(lease) => lease, Err(_) => return };
         let (pool, engine) = (self.clone(), engine.clone());
         let started = std::thread::Builder::new()
             .name("warm-set".into())
-            .spawn(move || actors.iter().for_each(|actor| pool.keep(&engine, actor)));
+            .spawn(move || crate::private_io::within(private_scope, || {
+                let _lease = lease;
+                actors.iter().for_each(|actor| pool.keep(&engine, actor));
+            }));
         if let Err(error) = started {
             tracing::warn!("warm set: {error}");
         }
@@ -2467,12 +2474,15 @@ impl Pool {
     /// It takes the GPU's call slot like any call, so a child call in flight finishes first, and
     /// loads only inside its root's lane: once bound, until released.
     pub(crate) fn prefetch(self: &Arc<Self>, engine: &Arc<Engine>, held: HeldGeneration, plan: Plan, (root, family): (u64, Option<String>), owner: String, fetch: Arc<crate::access::Fetch>) {
+        let private_scope = crate::private_io::current();
+        let lease = match crate::private_io::lease() { Ok(lease) => lease, Err(_) => return };
         let root = engine.scheduler_root(root);
         let family = engine.scheduler_family(family.as_deref());
         let (pool, engine) = (self.clone(), engine.clone());
         let started = std::thread::Builder::new()
             .name("executor-prefetch".into())
-            .spawn(move || {
+            .spawn(move || crate::private_io::within(private_scope, || {
+                let _lease = lease;
                 let active = || pool.allocations.registered(root) && engine.get(&owner).is_ok_and(|record| {
                     record.state == State::Running && record.cancel_actor.is_none()
                 });
@@ -2527,7 +2537,7 @@ impl Pool {
                     engine.notify_activity();
                     result
                 });
-            });
+            }));
         if let Err(error) = started {
             tracing::warn!("executor prefetch: {error}");
         }
@@ -2544,6 +2554,10 @@ impl Pool {
         fetch: Option<Arc<crate::access::Fetch>>,
         preparation: Option<&Stoppable>,
     ) -> io::Result<&'static str> {
+        let private = crate::private_io::current();
+        if crate::private_io::is_private_path(&held.record.python) && private.is_none() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "protected prewarm has no project custody"));
+        }
         let retained = self.sessions.lock().unwrap().remove(&session_key(&plan.executor, start));
         let cancellation = Mutex::new(None::<Cancellation>);
         let halt = Mutex::new(None);
@@ -2566,7 +2580,7 @@ impl Pool {
             }
             None => {
                 let born = Mutex::new(vec![]);
-                let created = self.new_session(engine, held, &plan, start, None, |birth, cancel| {
+                let created = self.new_session(engine, held, &plan, start, private.as_ref(), |birth, cancel| {
                     born.lock().unwrap().push(birth.clone());
                     serve(cancel);
                     Ok(())
