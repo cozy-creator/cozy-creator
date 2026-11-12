@@ -73,7 +73,7 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   const h3 = tools.find((tool) => tool.id === 'minimax-h3/generate');
   seen.h3_tool = h3?.id ?? null;
   await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: h3?.id ?? '', kind: 'video', name: 'h3', exact: true, fields: { node_kind: 'video', summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 4 }] } }) });
-  await api(`${at}/assets/h3/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, clip('h3', 'mandelbrot')) }) });
+  await api(`${at}/assets/h3/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, clip('h3', 'testsrc')) }) });
   await until('the h3 take', async () => (await asset('h3'))?.versions, (n) => n >= 1);
 
   const names = ['imported', 'old', 'cut', 'h3'];
