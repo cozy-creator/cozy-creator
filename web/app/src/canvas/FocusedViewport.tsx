@@ -84,7 +84,13 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
       {(onItsWay || arriving !== undefined) && view.asset?.rendering == null && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above />}
-import { noHash } from "./text"
+      {view.warned && warnings.length > 0 && (
+        <div className="warned-lines focus-warnings">
+          {warnings.map((warning) => (
+            <p key={warning}>{noHash(warning)}</p>
+          ))}
+        </div>
+      )}
       <div className="focus-body"><FocusedCard name={name} /></div>
     </section>
   )
