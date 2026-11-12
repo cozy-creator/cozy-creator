@@ -689,6 +689,16 @@ grep -q "e2e-capped 0.2.0 needs cozy-runtime.*no Runtime it can take does: this 
 cozy --json machine update local ${CAND_RT:+--runtime "$CAND_RT"} ${CAND_TFS:+--tensorfs "$CAND_TFS"} -y > "$OUT/floor-back.json" 2>&1 \
   || check "runtime floor: local refused its candidates again: $(tail -c 300 "$OUT/floor-back.json")"
 machine_ready
+# The open RC's Runtime (a dev release, as an RC candidate's 0.47.0.dev0+dev.g… is) runs only under the RC's cozy: a released cozy
+# named by hand under it is refused in one line, and nothing moves.
+case $(jq -r '.status.runtime' "$OUT/machine.json") in
+  *.dev[0-9]*)
+    code=0
+    cozy --json machine update local --tensord 0.24.0 -y > "$OUT/floor-rc-cozy.json" 2>&1 || code=$?
+    [ "$code" != 0 ] && grep -q '"rc_runtime_needs_rc_cozy"' "$OUT/floor-rc-cozy.json" \
+      || check "runtime floor: a released cozy under the RC's Runtime wasn't refused: exit $code $(tail -c 300 "$OUT/floor-rc-cozy.json")" ;;
+  *) echo "runtime floor: local's candidate Runtime $(jq -r .status.runtime "$OUT/machine.json") is no RC dev release: the RC cozy pairing isn't asked here" ;;
+esac
 }
 
 # cr-276: a package calling another package's function whose result holds a `Latents` field, as orbit calls minimax-h3's
