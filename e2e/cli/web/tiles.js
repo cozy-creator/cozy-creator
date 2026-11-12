@@ -45,10 +45,11 @@ class Drawing(msgspec.Struct, kw_only=True):
 @app.tool(label="Tiles", named="tiles", accelerator=False)
 def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Telemetry) -> ImageResult:
     width, height = ImageRequest(payload.instructions.text, None, None, payload.seed).size(adj, None, SIZES, megapixels=0.25)
-    with tel.stage("denoise"):
-        for step in range(30):
+    # As H3's last part decodes, the longest words a box says beside its count (cl-953).
+    with tel.scope("Segment 2 of 2"), tel.stage("decode_video"):
+        for frame in range(30):
             time.sleep(payload.pace)
-            ctx.progress(step, 30)
+            ctx.progress(frame, 30)
     image = out.save_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
     return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
 `;
@@ -200,6 +201,13 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
       shape: line?.querySelector('.ratio-rest')?.textContent ?? null,
       lines: face ? [...face.querySelectorAll('p')].map((p) => p.innerText.replace(/\s+/g, ' ').trim()) : null,
       cancel: face?.querySelector('.face-cancel')?.textContent ?? null,
+      // Its numbers whole at the box's width, whatever of its words gave way (cl-953).
+      numbers: face ? ['.face-count', '.face-time'].map((selector) => {
+        const held = face.querySelector(selector);
+        if (!held) return null;
+        const [r, line] = [held.getBoundingClientRect(), held.closest('p').getBoundingClientRect()];
+        return { text: held.textContent.trim(), whole: r.width > 0 && r.right <= line.right + 0.5 && held.scrollWidth <= held.clientWidth + 1 };
+      }) : null,
       // Under its picture: its tool and shape first, then its render.
       ordered: (!line || r(line).top >= m.bottom - 1) && (!face || r(face).top >= (line ? r(line).bottom : m.bottom) - 1),
       chips: node.querySelectorAll('.add-on, .add-ons').length,
@@ -223,7 +231,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
   // Rendering here: its tile says how under its picture, with Cancel.
   if (local) {
     await post(`${at}/runs`, { names: ['slow'], on: ['local'] });
-    await until('slow rendering, its lines under it', () => tile('slow'), (now) => now.lines?.length === 2 && /Step \d+ \/ 30/.test(now.lines[1]), FIRST_RUN_MS);
+    await until('slow rendering, its lines under it', () => tile('slow'), (now) => now.lines?.length === 2 && /Frame \d+ \/ 30/.test(now.lines[1]), FIRST_RUN_MS);
   } else seen.rendering = 'no local machine: no rendering tile';
 
   for (const want of [1, 0.5]) {
@@ -252,6 +260,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
     const times = (text, word) => text.split(word).length - 1;
     check(`${z}_tool_once_beneath`, times(still.text, named(image)) === 1 && times(film.text, named(video)) === 1 && times(still.text, image.package_title ?? named(image)) === 1 && times(film.text, video.package_title ?? named(video)) === 1, { still: still.text, shot: film.text });
     check(`${z}_idle_say_no_render`, [still, film, plain].every((one) => one.lines === null && !one.wave), tiles);
+    if (slow) check(`${z}_count_and_time_whole`, /^Frame \d+ \/ 30$/.test(slow.numbers?.[0]?.text ?? '') && slow.numbers[0].whole && (!slow.numbers[1] || slow.numbers[1].whole), slow);
     if (slow) check(`${z}_rendering_dot_left_of_its_name`, /^state-dot\[(Rendering|Queued)\]$/.test(slow.head[0] ?? '') && slow.head[1] === 'nm:slow', slow.head);
     if (slow) check(`${z}_rendering_lines_under_with_cancel`, slow.lines?.length === 2 && slow.cancel === 'Cancel' && slow.wave && slow.ordered && Boolean(slow.tool) && (slow.shape === null || SHAPE.test(slow.shape)), slow);
   }
