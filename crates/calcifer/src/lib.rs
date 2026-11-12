@@ -913,10 +913,10 @@ impl Calcifer {
             for prior in known { if let Some(item)=items.iter().find(|item|same_warm(prior,item)) {prior.holds.clone_from(&item.holds);prior.held_back.clear();} }
         }
     }
-    pub(super) fn maintenance_rows(&self,machine:&str)->Vec<RunRow> {
+    pub(crate) fn maintenance_rows(&self,machine:&str)->Vec<RunRow> {
         self.maintenance_store().runs(&store::RunFilter {machine:Some(machine.into()),limit:u64::MAX,..Default::default()}).map(|(rows,..)|rows).unwrap_or_default()
     }
-    pub(super) fn maintenance_warm(&self,machine:&str,items:Vec<v1::WarmItem>)->Vec<v1::WarmItem> {
+    pub(crate) fn maintenance_warm(&self,machine:&str,items:Vec<v1::WarmItem>)->Vec<v1::WarmItem> {
         let rows=self.maintenance_rows(machine);
         items.into_iter().filter(|item|rows.iter().flat_map(|row|row.spec.set.iter().flat_map(|set|&set.items)).any(|known|same_warm(known,item))).map(|mut item|{item.held_back.clear();item}).collect()
     }
