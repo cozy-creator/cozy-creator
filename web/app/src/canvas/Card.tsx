@@ -566,8 +566,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   // Far out, only what can be seen: its picture, its name and its state.
   const lite = useSignal(store.far) && !here
   const tools = useSignal(store.tools)
-  const naming = useCallback(() => store.openName(name), [store, name])
-  const pressedAt = useRef<{ x: number; y: number } | null>(null)
   const self = useRef<HTMLDivElement>(null)
   const cancel = useCallback(() => {
     if (store.get(name)?.placing) store.cancel(store.resolveName(name))
@@ -734,16 +732,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           <span
             className="nm"
             title={view.name}
-            onPointerDown={(event) => {
-              pressedAt.current = { x: event.clientX, y: event.clientY }
-            }}
-            onClick={(event) => {
-              // A tap renames. A drag by its name only moved it, and with Shift, Ctrl or Cmd it selects, as anywhere on the box.
-              if (event.shiftKey || event.metaKey || event.ctrlKey) return
-              event.stopPropagation()
-              const from = pressedAt.current
-              if (from && Math.hypot(event.clientX - from.x, event.clientY - from.y) < 5) naming()
-            }}
           >
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
