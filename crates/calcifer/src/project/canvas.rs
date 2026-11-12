@@ -78,16 +78,6 @@ pub(super) fn moved(folder: &Folder, id: &str, from: &str, to: &str) -> Result<(
     set(folder, id, BTreeMap::from([(from.to_owned(), None), (to.to_owned(), Some(card))]))
 }
 
-/// Every row as `renamed` says.
-pub(super) fn all_renamed(folder: &Folder, id: &str, renamed: impl Fn(&str) -> Option<String>) -> Result<(), Error> {
-    let rows = folder.canvas()?;
-    let changed: BTreeMap<String, Option<Card>> = rows.values().filter_map(|row| Some((row.name.clone(), renamed(&row.name)?, row.card))).flat_map(|(from, to, card)| [(from, None), (to, Some(card))]).collect();
-    if changed.is_empty() {
-        return Ok(());
-    }
-    set(folder, id, changed)
-}
-
 /// The rows `named` says nothing names, gone.
 pub(super) fn prune(folder: &Folder, id: &str, named: impl Fn(&str) -> bool) -> Result<(), Error> {
     let gone: BTreeMap<String, Option<Card>> = folder.canvas()?.into_values().filter(|row| !named(&row.name)).map(|row| (row.name, None)).collect();

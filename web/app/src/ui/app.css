@@ -216,8 +216,8 @@ code {
 .top > .brand {
   display: flex;
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: calc(30px * var(--ui));
+  height: calc(30px * var(--ui));
 }
 .top > .brand img {
   width: 100%;
@@ -959,23 +959,64 @@ code {
   margin: 0;
 }
 .run-face .face-machine {
-  overflow: hidden;
+  gap: 0;
   color: var(--mute);
   font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .run-face .face-state b {
+  display: flex;
   flex: 1;
   min-width: 0;
   overflow: hidden;
   font-weight: var(--w-heading);
   font-variant-numeric: tabular-nums;
+}
+/* The words give way, the numbers never do (cl-953): where it runs before its time, what it's doing before how far. */
+.run-face .face-where,
+.run-face .face-words {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre;
+}
+.run-face .face-time,
+.run-face .face-count {
+  flex: none;
+  white-space: pre;
 }
 .run-face.failed .face-state b {
   color: var(--bad);
+}
+/* A failed take picked (cl-954): its error is all its frame shows, whole and wrapped, on the card, its Copy under it. */
+.run-face.failed.whole {
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  border: 1px solid var(--bad);
+  background: var(--card);
+  font: var(--body) / 1.4 var(--sans);
+  text-shadow: none;
+}
+.run-face.failed.whole p {
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: 40em;
+  text-align: center;
+}
+.run-face.failed.whole b {
+  overflow: visible;
+  font-size: var(--title);
+}
+.run-face.failed.whole .face-words {
+  overflow: visible;
+  white-space: pre-wrap;
+}
+.run-face.failed.whole .copy-error {
+  min-height: 28px;
+  padding: 0 14px;
 }
 .run-face .face-cancel {
   flex: none;
@@ -1015,9 +1056,10 @@ code {
 }
 /* Under a box at rest, as Paul drew it (cl-932): its tool and its shape, then while it renders its two lines with Cancel, at
    the box's small step, in the room it keeps clear (shown.ts underOf). Only Cancel takes the pointer: a drag there pans. */
+/* Clear of a selected box's ring (3 of gap and 6 of line, kept on screen by --unzoom): it never covers the tool's words (cl-963). */
 .tile-under {
   position: absolute;
-  top: calc(100% + 2px);
+  top: calc(100% + 2px + 9px * var(--unzoom, 1));
   left: 0;
   right: 0;
   display: flex;
@@ -1031,13 +1073,15 @@ code {
   gap: var(--s4);
   min-width: 0;
 }
+/* At the page's body size, as a label is (cl-963). */
 .card .tile-line .node-tool {
   flex: 0 1 auto;
-  font-size: calc(var(--t-small) * var(--ui));
+  font-size: calc(var(--t-body) * var(--ui));
 }
 .card .tile-line .ratio-rest {
   position: static;
   flex: none;
+  font-size: calc(var(--t-body) * var(--ui));
 }
 .tile-under .run-face {
   position: relative;
@@ -1055,8 +1099,9 @@ code {
   transition: transform 400ms linear;
 }
 /* An image or video being made, at rest (cl-940, cl-947): what its run reads, full-bleed, each at full height side by side; over them the start of its words
-   on a scrim, under the meter. A preview of what it makes (.latent-preview) covers the pictures, never the words. */
-.making {
+   on a scrim, under the meter. A preview of what it makes (.latent-preview) covers the pictures, never the words. Only the box's own: a take
+   being made, on its tile (.take.making), stays a button that takes a click. */
+.media > .making {
   position: absolute;
   inset: 0;
   pointer-events: none;
@@ -1186,6 +1231,14 @@ code {
   height: 12px;
   align-self: center;
 }
+/* Each take on its way its own state, on its tile (cl-945): grey queued, blue rendering. */
+.take .state-dot {
+  position: absolute;
+  top: 9px;
+  left: 9px;
+  z-index: 2;
+  pointer-events: none;
+}
 .take .take-unseen {
   position: absolute;
   top: 5px;
@@ -1268,6 +1321,83 @@ video.preview.on {
   display: flex;
   flex-direction: column;
   z-index: 1;
+}
+/* A draft that goes on from a take says so across the top of its frame (cl-951): the kept part's last frame, what's kept and redone, and Cancel. */
+.lead-in {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+/* Its words start under it; the pictures behind them still fill the frame. */
+.media:has(.lead-in) .in-frame {
+  padding-top: 56px;
+}
+.lead-in-frame {
+  position: relative;
+  flex: none;
+  height: 44px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--well);
+}
+.lead-in-frame img.strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+}
+.lead-in-words {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lead-in-words b {
+  overflow: hidden;
+  font-size: var(--body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lead-in-line {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+}
+.lead-in-line .kept {
+  flex: var(--kept) 0 0;
+  border-radius: 3px;
+  background: var(--mute);
+}
+.lead-in-line .new {
+  flex: var(--new) 0 0;
+  border-radius: 3px;
+  background: var(--ember);
+}
+.lead-in-gone {
+  flex: none;
+  color: var(--warn, var(--ember));
+  font-size: var(--body);
+}
+/* A take that went on from another box's, on its tile: as its tool's name is. */
+.continues-rest {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mute);
+  font: calc(var(--t-body) * var(--ui)) / 1.25 var(--sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .in-frame .mention-text {
   flex: 1;
@@ -1377,8 +1507,8 @@ video.preview.on {
   border-radius: 6px;
 }
 .card .head .iconb .icon {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
 }
 .card .head .dot {
   width: 7px;
@@ -1543,6 +1673,14 @@ video.preview.on {
   border: 4px solid var(--ember);
   pointer-events: none;
 }
+/* A take that failed stays in the column (cl-954): red, saying so, until it's deleted. */
+.here-side .take.making.failed {
+  border-color: var(--bad);
+}
+.take-failed {
+  color: var(--bad);
+  font: 600 var(--title) / 1.2 var(--sans);
+}
 .here-side .take.making {
   background: var(--card);
   border: 1px solid var(--ember);
@@ -1670,19 +1808,20 @@ video.preview.on {
 .here-under .take.add.on {
   border-color: var(--ember);
 }
+/* A control on its own: 28 px, never smaller (Paul, 11-12). */
 .here-under .take-off,
 .here-side .take-off {
   display: inline-flex;
   top: 3px;
   right: 3px;
-  width: 20px;
-  height: 20px;
+  width: 28px;
+  height: 28px;
   color: #fff;
 }
 .here-under .take-off .icon,
 .here-side .take-off .icon {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
 }
 .mention-thumbs {
   display: flex;
@@ -1883,16 +2022,6 @@ video.preview.on {
 }
 .run:active {
   transform: scale(0.96);
-}
-/* Pick up from here: what's kept is marked, under the take it's picked up from. */
-.from-here {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.tc-inline {
-  font: var(--tiny) var(--mono);
-  color: var(--mute);
 }
 /* Its takes or versions, side by side. */
 .takes {
@@ -2161,6 +2290,19 @@ video.preview.on {
   border-bottom: 1px solid var(--line);
   font-size: var(--body);
 }
+/* Back and close: as big to hit and see as the frame's other buttons. */
+.drawer-head .iconb,
+.model-picker-head .iconb,
+.tools .iconb {
+  width: 32px;
+  height: 32px;
+}
+.drawer-head .iconb .icon,
+.model-picker-head .iconb .icon,
+.tools .iconb .icon {
+  width: 18px;
+  height: 18px;
+}
 .drawer-head b {
   font-size: var(--title);
   font-weight: var(--w-title);
@@ -2277,6 +2419,32 @@ video.preview.on {
   flex: 1;
   min-width: 0;
 }
+/* Its × top right, big enough to hit; an error's words take their row whole, with Copy and what to run under them. */
+.note > .iconb {
+  width: 28px;
+  height: 28px;
+}
+.note > .iconb .icon {
+  width: 16px;
+  height: 16px;
+}
+.note .copy-error {
+  min-height: 28px;
+}
+.note:has(> .copy-error, > .copyable) {
+  align-items: flex-start;
+}
+.note:has(> .copy-error, > .copyable) > .line {
+  flex-basis: calc(100% - 40px);
+  padding-top: 3px;
+}
+.note:has(> .copy-error, > .copyable) > .iconb {
+  order: 1;
+}
+.note:has(> .copy-error, > .copyable) > .copy-error,
+.note:has(> .copy-error, > .copyable) > .note-act {
+  order: 3;
+}
 /* What a finished render made (cl-937): its take, small, before its words. */
 .note-picture {
   flex: none;
@@ -2359,6 +2527,17 @@ button:disabled {
 }
 .dot.s-queued {
   background: var(--faint);
+}
+/* Every row keeps its dot's place, so the numbers line up; the dot is the state dot's size. */
+.runrow .dot {
+  width: 10px;
+  height: 10px;
+  margin: 0;
+}
+.runrow .dot.s-current,
+.runrow .dot.s-missing {
+  display: block;
+  visibility: hidden;
 }
 .rows {
   list-style: none;
@@ -2666,11 +2845,23 @@ button:disabled {
 }
 .stack label {
   display: grid;
-  grid-template-columns: 96px 1fr;
+  grid-template-columns: 10em 1fr;
   align-items: center;
   gap: 8px;
   color: var(--faint);
   font-size: var(--body);
+}
+/* A checkbox in the field's column, its words beside it. */
+.stack label:has(> input[type="checkbox"]) {
+  display: flex;
+  gap: 8px;
+  padding-left: calc(10em + 8px);
+  color: var(--ink);
+}
+.stack label > input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
 .heldrow {
   display: flex;
@@ -2790,6 +2981,9 @@ button:disabled {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.assetrow .asset-thumb + .nm {
+  margin-left: 18px;
 }
 .assetrow .nm {
   overflow: hidden;
@@ -3159,7 +3353,7 @@ a.tab:hover {
 }
 .image-history .image-version-entry {
   display: grid;
-  grid-template-columns: 24px minmax(0, auto) 24px;
+  grid-template-columns: minmax(3ch, auto) minmax(0, auto) 28px;
   gap: 6px;
   align-items: center;
 }
@@ -3169,7 +3363,7 @@ a.tab:hover {
   border-radius: 0;
   background: none;
   color: var(--mute);
-  font: 12px / 1.3 var(--mono);
+  font: calc(var(--t-body) * var(--ui)) / 1.3 var(--mono);
   text-align: right;
 }
 .image-history .image-version-entry > .take-off {
@@ -3425,6 +3619,15 @@ a.tab:hover {
   justify-content: flex-start;
 }
 .main-menu nav a:hover {
+  background: var(--tint);
+}
+/* One list, as the zoom menu is: no row drawn as a button of its own, the theme's switch too. */
+.main-menu nav .tb {
+  justify-content: flex-start;
+  border-color: transparent;
+  background: none;
+}
+.main-menu nav .tb:hover {
   background: var(--tint);
 }
 
@@ -3951,24 +4154,6 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.beats-from input {
-  width: 72px;
-}
-.pickup-frame {
-  position: relative;
-  overflow: hidden;
-  border-radius: 4px;
-  background: var(--well);
-}
-.pickup-frame img.strip {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 800%;
-  max-width: none;
-  object-fit: fill;
-}
 .desc-row {
   display: flex;
   align-items: center;
@@ -4454,34 +4639,6 @@ p.warn.slow {
   visibility: visible;
 }
 
-.from-here .keeps {
-  flex: none;
-  width: 100%;
-  height: 10px;
-  margin: 0;
-  appearance: none;
-  border-radius: 5px;
-  background: linear-gradient(to right, var(--ember) var(--kept), var(--line) var(--kept));
-}
-.from-here .keeps::-webkit-slider-thumb {
-  appearance: none;
-  width: 6px;
-  height: 18px;
-  border-radius: 3px;
-  background: var(--ink);
-}
-.from-here .keeps::-moz-range-thumb {
-  width: 6px;
-  height: 18px;
-  border: 0;
-  border-radius: 3px;
-  background: var(--ink);
-}
-.from-here .row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
 /* A file looked at large: the one thing over the canvas. */
 .viewer {
   position: fixed;
@@ -4707,6 +4864,13 @@ p.warn.slow {
   flex-wrap: wrap;
   gap: 4px 12px;
   margin-top: 4px;
+}
+/* "Prefer" with its checkbox, then Details, on one row (Paul 11-12). */
+.render-prefer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
 }
 .checks button.more {
   padding: 0;

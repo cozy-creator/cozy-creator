@@ -19,6 +19,7 @@ import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } fr
 import { makes, watched } from "./shown"
 import { mentionsIn, type Row, rowsIn, textsIn } from "./text"
 import { ToolBox } from "./ToolBox"
+import { WhenOff, whenOff } from "./When"
 import "./FocusParameters.css"
 
 /** Where a field's value is, and how it's changed: what's typed waits for a pause, what's set is written at once, and unset takes its key away. */
@@ -473,17 +474,18 @@ function Members({ name, group, bound, view, place, label }: { name: string; gro
   const members = group.members ?? []
   const row = isRow(bound.value) ? bound.value : {}
   const each = (member: ToolField) => (
-    <FieldControl
-      key={member.field}
-      name={name}
-      field={member}
-      bound={memberBound(bound, member.field)}
-      view={view}
-      place={`${place}.${member.field}`}
-      label={member.type === "prompt" || member.type === "words" ? label : `${label}'s ${member.label.toLowerCase()}`}
-      named={member.type === "group" || !(member.type === "prompt" || member.type === "words")}
-      siblings={row}
-    />
+    <WhenOff key={member.field} why={whenOff(member, members, (peer) => row[peer])}>
+      <FieldControl
+        name={name}
+        field={member}
+        bound={memberBound(bound, member.field)}
+        view={view}
+        place={`${place}.${member.field}`}
+        label={member.type === "prompt" || member.type === "words" ? label : `${label}'s ${member.label.toLowerCase()}`}
+        named={member.type === "group" || !(member.type === "prompt" || member.type === "words")}
+        siblings={row}
+      />
+    </WhenOff>
   )
   return (
     <>
@@ -682,7 +684,13 @@ export function FieldControl(props: Drawn & { siblings?: Row }) {
 /** A field of the box itself: on its face under its label, beside its name under More, or in the frame. */
 export function ControlRow({ name, field, view, focus, named, framed }: { name: string; field: ToolField; view: ElementView; focus: boolean; named: boolean; framed?: boolean }) {
   const store = useCanvasStore()
-  return <FieldControl name={name} field={field} bound={topBound(store, name, field.field)} view={view} place={field.field} label={field.label} focus={focus} named={named} block={!framed} framed={framed} />
+  const tools = useSignal(store.tools)
+  const peers = (view.asset?.tool && tools.get(view.asset.tool)?.fields) || []
+  return (
+    <WhenOff why={whenOff(field, peers, (peer) => store.valueOf(name, peer))}>
+      <FieldControl name={name} field={field} bound={topBound(store, name, field.field)} view={view} place={field.field} label={field.label} focus={focus} named={named} block={!framed} framed={framed} />
+    </WhenOff>
+  )
 }
 
 /** A text asset: only its words, which whatever mentions it reads. It has nothing to render, no takes and nothing to approve. */

@@ -3,7 +3,7 @@
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), twenty pictures dropped at once (web/dropped.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), undo and redo of the project's history from the page and the CLI (web/undo.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), the background and dots at every zoom (web/canvas.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), a box's models and LoRAs, open (web/addons.js), a box at rest as Paul drew it (web/tiles.js), versions by name and a tool on a box (web/versions.js), right click Download (web/download.js), a starred asset first in Files (web/star.js), boxes copied, pasted and duplicated (web/copy.js), a click selects and a double click opens, Delete deletes (web/select.js), a box from its tool's fields (web/tools.js), a shot's segments played as they land (web/segments.js), a tool on a box of the kind it makes (web/kinds.js), deleting by a trash can (web/trash.js), a video scrubbed in Focus (web/scrub.js), a pulled shape snapping to a ratio its tool makes (web/aspect.js), the canvas where it was after Focus (web/refocus.js), no New on an empty box (web/empty.js), the right-side panel closed by a click off it (web/drawer.js), the tool under a box (web/toolword.js), typed words that read over a picture (web/legible.js), a Shot's beats laid out (web/beats.js), pasted mentions marked as typed and loaded (web/paste.js), a press from inside never dismissing (web/dismiss.js), every tool the Hub lists in the palette (web/palette.js), an orbit video turned (web/orbit.js), an Edit rendered (web/timeline.js),
+# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), the background and dots at every zoom (web/canvas.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), a box's models and LoRAs, open (web/addons.js), a box at rest as Paul drew it (web/tiles.js), versions by name and a tool on a box (web/versions.js), right click Download (web/download.js), a starred asset first in Files (web/star.js), boxes copied, pasted and duplicated (web/copy.js), a click selects and a double click opens, Delete deletes (web/select.js), a box from its tool's fields (web/tools.js), a field that applies only while another has a value (web/when.js), a shot's segments played as they land (web/segments.js), a tool on a box of the kind it makes (web/kinds.js), deleting by a trash can (web/trash.js), a take's segments redone and another box's take continued (web/scrub.js), a pulled shape snapping to a ratio its tool makes (web/aspect.js), the canvas where it was after Focus (web/refocus.js), no New on an empty box (web/empty.js), the right-side panel closed by a click off it (web/drawer.js), the tool under a box (web/toolword.js), typed words that read over a picture (web/legible.js), a Shot's beats laid out (web/beats.js), pasted mentions marked as typed and loaded (web/paste.js), a press from inside never dismissing (web/dismiss.js), every tool the Hub lists in the palette (web/palette.js), an orbit video turned (web/orbit.js), the video editor: a full-size player over a timeline, joined into versions as the cut changes (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), projects closed once nothing reads them (web/closes.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and a save past project.db held by another program (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, and leaves
@@ -98,7 +98,7 @@ local no_hub=''
 [ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" http://127.0.0.1:9)
 NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
 jq -c '.seen.scale // empty' "$OUT/web-see.json" 2> /dev/null || true
-step "web-zoom: − the zoom + in the canvas's corner, its menu's fit and 100%, on a box worked on, drawn at the canvas's scale, and 300 boxes panned"
+step "web-zoom: − the zoom + in the canvas's corner, its menu's fit and 100%, none over Focus, drawn at the canvas's scale, and 300 boxes panned"
 web_proof zoom "$chrome" "$pw" ''
 jq -c '{pan_70: .seen.pan_70, pan_11: .seen.pan_11}' "$OUT/web-zoom.json" 2> /dev/null || true
 step "web-canvas: the background zoomed with the canvas, its farther layers less, and the dots over it and under the boxes, at 0.1 to 3 on each theme; a pan's and a zoom's frames"
@@ -136,13 +136,17 @@ step "web-tools: a box drawn from its tool's fields by type, groups two deep, sl
 web_proof tools "$chrome" "$pw" ''
 step "web-segments: a shot rendered in segments plays all it has made so far, joined, with its sound, while the next renders; its take lands in its place playing on (cl-907)"
 web_proof segments "$chrome" "$pw" ''
+step "web-videotiles: every video box at rest plays its preview: an imported file, an Edit's cut, a tool's take and one picked up, an H3 take, one with no preview yet, one played in Focus (cl-964)"
+web_proof videotiles "$chrome" "$pw" ''
+step "web-when: a field that applies only while another has a value (When): cozy run says it's ignored and its function gets the default; in Focus it's dulled at once, kept, and back"
+web_proof when "$chrome" "$pw" ''
 step "web-kinds: a tool goes on a box of the kind it makes: a video tool refused on a picture; a video tool on a picture and an image tool on a video change nothing and say why at the bottom left; BiRefNet on it starts from <self.1>"
 web_proof kinds "$chrome" "$pw" ''
-step "web-refocus: leaving Focus by Esc, its close, Back, a click off, after zooming its picture and by way of a second box: the canvas exactly where it was"
+step "web-refocus: leaving Focus by Esc, its close, Back, a click off, after zooming its picture, by way of a second box, while a scroll or pinch glides, reloaded and by Forward: the canvas exactly where it was"
 web_proof refocus "$chrome" "$pw" ''
 step "web-aspect: a corner pulled to 1237:689 lands on 16:9, on the canvas and in Focus"
 web_proof aspect "$chrome" "$pw" ''
-step "web-scrub: a video in Focus scrubs a frame at a time and picks up from there; an empty box with no tool asks nothing"
+step "web-scrub: a take's segments under its player, Redo from one, another box continuing it from its end; an empty box with no tool asks nothing"
 web_proof scrub "$chrome" "$pw" ''
 step "web-trash: a take's discard and a box's delete are trash cans, Undo brings a take back, and Focus's close is an X"
 web_proof trash "$chrome" "$pw" ''
@@ -154,7 +158,7 @@ step "web-empty: an empty box in Focus offers no New, and does once it has a tak
 web_proof empty "$chrome" "$pw" ''
 step "web-dismiss: a selection or a press from inside a surface let go outside keeps it open; pressed and let go outside, it closes"
 web_proof dismiss "$chrome" "$pw" ''
-step "web-legible: typed words over a busy picture are bold with a halo, on paper and on dark; every prompt is bold"
+step "web-legible: typed words over a busy picture are bold and plain on a panel-coloured surface, on paper and on dark; every prompt is bold"
 web_proof legible "$chrome" "$pw" ''
 step "web-beats: H3's Shot with three beats: six lines of words each, growing with them; a short length slider; no running total"
 web_proof beats "$chrome" "$pw" ''
@@ -164,7 +168,7 @@ step "web-palette: every tool the Hub lists under what it makes, one dragged out
 NO_HUB=$no_hub web_proof palette "$chrome" "$pw" "$restart"
 step "web-orbit: a function's file declared an orbit, by cozy run and a box's take, into project.db and the page: no play button, a drag turns it and wraps, off and back by Undo, on for a dropped video"
 web_orbit
-step "web-timeline: real clips and a still in an Edit, trims and a reorder, rendered free, frame-exact, read back in its .otio, its versions"
+step "web-timeline: the video editor: three clips in, reorder, trim, split, delete with Undo, the player live, each change joined free into a frame-exact version"
 # Real clips, made and counted by the ffmpeg Calcifer fetched for itself for thumbnails: one on a runner's PATH would keep it from fetching.
 local own; own=$(find "$HOME/.cozy/tools/ffmpeg" -name 'ffprobe*' 2> /dev/null | head -1)
 PATH=${own:+$(dirname "$own"):}$PATH web_proof timeline "$chrome" "$pw" ''
@@ -213,12 +217,14 @@ web_deleted() {
 }
 
 # Calcifer started again with config.toml's calcifer.undo_seconds at $2, else none: the old one gone first, so the new one reads it.
+# $3, a command, runs while it's stopped.
 web_undo_window() {
   local config=$HOME/.cozy/config.toml pid
   awk -v n="$2" '/^undo_seconds *=/ { next } { print } /^\[calcifer\]/ && n != "" { print "undo_seconds = " n; put = 1 } END { if (n != "" && !put) printf "\n[calcifer]\nundo_seconds = %s\n", n }' "$config" > "$config.next" && mv "$config.next" "$config"
   pid=$(jq -r .pid < "$1")
   kill -TERM "$pid" 2> /dev/null || true
   while kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
+  [ -z "${3:-}" ] || "$3"
   bash -c "$(web_start)" || true
 }
 

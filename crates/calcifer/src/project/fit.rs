@@ -88,8 +88,7 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
     // A machine that hasn't said what it has can't be judged: nothing is said of it.
     let Some(gpus) = gpus(api) else { return Ok(Fit::default()) };
     let (targets, dir) = {
-        let text = project.folder.text().map_err(Refusal)?;
-        let doc = Doc::read(&project.folder, &text).map_err(Refusal)?;
+        let doc = Doc::load(&project.folder).map_err(Refusal)?;
         let lock = project.folder.lock().map_err(Refusal)?;
         let stand = doc.stand(&lock);
         let mut targets: BTreeMap<String, Vec<(String, String, Map<String, Value>)>> = BTreeMap::new();

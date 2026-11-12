@@ -126,14 +126,15 @@ fn purged(api: &Api, path: &Path) -> Option<i64> {
 /// `folder`'s deleted boxes whose undo window ended by `now`, gone for good: each file of theirs that no box still there, nothing on its
 /// way, no run's output and no box Undo can still bring back holds, from `files/`, its record and the `caches` named by its hash, and a
 /// cut's film at the root. A box keeps its name, its id and when, so an Undo of it says why it can't, until the history no longer reaches
-/// it. One deleted before cl-919, which says no time, goes now. When the next is due, if any is.
+/// it. One deleted before cl-919, which says no time, is dated now (`dated`): its window starts here. When the next is due, if any is.
 pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Option<i64>, Error> {
     let window = window_ms();
     // Held throughout: a file kept meanwhile isn't deleted.
     let _collecting = folder.collecting();
+    dated(folder, now)?;
     let lock = folder.lock()?;
     let set_aside = |key: &str| key.contains(TOMBSTONE);
-    let ended = |held: &super::folder::Asset| held.files().next().is_some() && (held.deleted_ms.is_none() || held.lapsed(now));
+    let ended = |held: &super::folder::Asset| held.files().next().is_some() && held.lapsed(now);
     let gone: Vec<String> = lock.assets.iter().filter(|(key, held)| set_aside(key) && ended(held)).map(|(key, _)| key.clone()).collect();
     // Its history read only for a box already emptied: a start looks at every project.
     let emptied = |held: &super::folder::Asset| held.files().next().is_none() && held.deleted_ms.is_some();
@@ -143,17 +144,12 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
     };
     let forgotten = |held: &super::folder::Asset| emptied(held) && held.deleted_ms.is_some_and(|at| at < oldest);
     let stubs = lock.assets.iter().any(|(key, held)| set_aside(key) && forgotten(held));
-    // A box deleted before cl-919, said by a run's row of its file rather than its own.
-    let legacy = |row: &super::folder::RunFile| row.run == 0 && row.output == "deleted";
-    if gone.is_empty() && !stubs && !lock.runs.iter().any(legacy) {
+    if gone.is_empty() && !stubs {
         return Ok(next_due(&lock, window));
     }
     let doc = Doc::load(folder)?;
-    let kept = kept(&doc, &lock, &gone, now, legacy);
-    let freed: BTreeSet<String> = gone.iter().flat_map(|key| lock.assets[key].files().cloned())
-        .chain(lock.runs.iter().filter(|row| legacy(row)).map(|row| row.sha256.clone()))
-        .filter(|sha256| !kept.contains(sha256))
-        .collect();
+    let kept = kept(&doc, &lock, &gone, now);
+    let freed: BTreeSet<String> = gone.iter().flat_map(|key| lock.assets[key].files().cloned()).filter(|sha256| !kept.contains(sha256)).collect();
     let paths: Vec<PathBuf> = freed.iter().filter_map(|sha256| lock.files.get(sha256)).map(|file| folder.path(&file.path)).collect();
     let films: Vec<String> = gone.iter().map(|key| &lock.assets[key]).filter(|held| held.versions.iter().any(|version| !version.clips.is_empty())).map(|held| cut_name(&held.name)).collect();
     folder.update_lock(|lock| {
@@ -166,7 +162,6 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
             }
         }
         lock.assets.retain(|key, held| !(set_aside(key) && forgotten(held)));
-        lock.runs.retain(|row| !legacy(row));
         lock.files.retain(|sha256, _| !freed.contains(sha256));
     })?;
     // What's made of them first, so once a file is gone, all of it is.
@@ -186,9 +181,33 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
     Ok(next_due(&folder.lock()?, window))
 }
 
+/// A delete before cl-919 (0.24's) said no time: a row set aside with none, or an imported picture's file on record only as a run's
+/// `deleted` row. 0.24 kept a deleted box's files and its Undo (the last 200 edits) brought the box back with them, so each is dated `now`,
+/// the first time a 0.25 Calcifer looks: Undo brings it back for the window from then, as for a delete now, and its files go after that.
+fn dated(folder: &Folder, now: i64) -> Result<(), Error> {
+    let legacy = |row: &super::folder::RunFile| row.run == 0 && row.output == "deleted";
+    let undated = |key: &str, held: &super::folder::Asset| key.contains(TOMBSTONE) && held.deleted_ms.is_none();
+    if !folder.reading_lock(|lock| lock.assets.iter().any(|(key, held)| undated(key, held)) || lock.runs.iter().any(legacy))? {
+        return Ok(());
+    }
+    folder.update_lock(|lock| {
+        for (_, held) in lock.assets.iter_mut().filter(|(key, held)| undated(key, held)) {
+            held.deleted_ms = Some(now);
+        }
+        // Its own row set aside, under a key no name makes (a name key holds no `#`), holding the file as a deleted box's own.
+        let rows: Vec<String> = lock.runs.iter().filter(|row| legacy(row)).map(|row| row.sha256.clone()).collect();
+        lock.runs.retain(|row| !legacy(row));
+        for sha256 in rows {
+            let hex: String = sha256.trim_start_matches("sha256:").chars().take(12).collect();
+            let key = (1..).map(|n| format!("{TOMBSTONE}deleted {hex}{TOMBSTONE}{n}")).find(|key| !lock.assets.contains_key(key)).expect("a free key");
+            lock.assets.insert(key, super::folder::Asset { held: Some(sha256), deleted_ms: Some(now), ..Default::default() });
+        }
+    })
+}
+
 /// Every file something still in the project holds: its boxes' versions, discarded too, their pins and a cut's clips, what's on its way,
 /// a run's outputs, and what a box Undo can still bring back holds.
-fn kept(doc: &Doc, lock: &Lock, gone: &[String], now: i64, legacy: impl Fn(&super::folder::RunFile) -> bool) -> BTreeSet<String> {
+fn kept(doc: &Doc, lock: &Lock, gone: &[String], now: i64) -> BTreeSet<String> {
     let live = |key: &str| doc.find(key).is_some();
     let mut kept: BTreeSet<String> = lock.named(live).into_iter().map(str::to_owned).collect();
     kept.extend(doc.assets.iter().filter_map(|asset| asset.pin.clone()));
@@ -199,7 +218,7 @@ fn kept(doc: &Doc, lock: &Lock, gone: &[String], now: i64, legacy: impl Fn(&supe
             kept.extend(held.on_record().flat_map(|version| &version.clips).filter_map(|clip| clip.sha256.clone()));
         }
     }
-    kept.extend(lock.runs.iter().filter(|row| !legacy(row)).map(|row| row.sha256.clone()));
+    kept.extend(lock.runs.iter().map(|row| row.sha256.clone()));
     kept
 }
 

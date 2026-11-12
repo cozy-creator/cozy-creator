@@ -71,6 +71,16 @@
   padding: 8px 14px;
   font-size: 19px;
 }
+/* Its × as tall as Back to canvas, its cross readable (cl-963). */
+.focus-heading > .iconb {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+}
+.focus-heading > .iconb .icon {
+  width: 24px;
+  height: 24px;
+}
 .focus-body {
   flex: 1;
   min-width: 0;
@@ -162,6 +172,18 @@
 }
 .focus-card .image-tool-name {
   font-size: 20px;
+}
+/* Its trash can a control of its own: 36 square, the can readable (cl-963). */
+.focus-card .image-tool > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+}
+.focus-card .image-tool .icon {
+  width: 20px;
+  height: 20px;
 }
 .focus-card .image-models {
   min-height: 40px;
@@ -274,6 +296,49 @@ body:has(.focus-viewport) .zoom {
   flex: none;
   position: relative;
   z-index: 8;
+}
+/* A take's segments under its player (cl-951): blocks by their frames, the one it's in marked, then Redo. */
+.segments {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+.segment-blocks {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+  height: 28px;
+}
+.segment {
+  flex-basis: 0;
+  min-width: 18px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--well);
+  color: var(--mute);
+  font-size: var(--body);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.segment:hover {
+  border-color: var(--line2);
+}
+.segment.here {
+  border: 2px solid var(--ember);
+  background: color-mix(in srgb, var(--ember) 40%, var(--card));
+  color: var(--ink);
+  font-weight: 600;
+}
+.segments .continues {
+  flex: none;
+  font-size: var(--body);
+  white-space: nowrap;
+}
+.redo-segment {
+  flex: none;
 }
 .image-tool-name {
   flex: 1;

@@ -11,6 +11,7 @@ mod machine;
 pub(crate) mod live;
 mod quantize;
 mod releases;
+mod show;
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct Args {
@@ -29,6 +30,8 @@ enum LoraVerb {
     /// Browse LoRAs from the model catalog.
     #[command(alias = "list")]
     Ls(Ls),
+    /// Show what each lane's checkpoint holds: its factors, α, adapter record and files.
+    Show(Show),
     /// Install a LoRA on a machine.
     Install(Download),
     /// Uninstall downloaded copies from this machine.
@@ -49,7 +52,8 @@ enum LoraVerb {
 
 pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode, Error> {
     match args.verb {
-        LoraVerb::Ls(args) => list(ctx, args, "lora", None).await,
+        LoraVerb::Ls(args) => list(ctx, args, "lora").await,
+        LoraVerb::Show(args) => show::show(ctx, args, "lora").await,
         LoraVerb::Install(args) => machine::download(ctx, args).await,
         LoraVerb::Uninstall(args) => machine::remove(ctx, &args.model).await,
         LoraVerb::Edit(mut args) => {
@@ -73,7 +77,9 @@ pub(crate) async fn lora_exec(ctx: &Context, args: LoraArgs) -> Result<ExitCode,
 enum Verb {
     /// Search models on the Hub, or list downloaded models with --on.
     #[command(alias = "list")]
-    Ls(ModelLs),
+    Ls(Ls),
+    /// Show what each lane's checkpoint holds: components, configs, files and its recorded base.
+    Show(Show),
     /// Update a model's family or tags.
     Edit(Edit),
     /// Install a model on a machine.
@@ -120,12 +126,13 @@ pub(crate) struct Ls {
 }
 
 #[derive(clap::Args, Debug)]
-pub(crate) struct ModelLs {
-    #[command(flatten)]
-    ls: Ls,
-    /// Only models a tool's model slot loads, judged by their headers against its default (qwen-image-2/generate:rewriter).
-    #[arg(long, value_name = "TOOL:SLOT")]
-    fits: Option<String>,
+pub(crate) struct Show {
+    /// org/name, org/name@release or org/name@sha256:<checkpoint>. No release: the newest.
+    #[arg(value_name = "MODEL")]
+    model: String,
+    /// Only this lane.
+    #[arg(long, value_parser = api::model_ref::lane)]
+    lane: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -230,9 +237,12 @@ pub(crate) struct Upload {
     trigger: Option<String>,
     #[arg(skip)]
     strength: Option<f64>,
-    /// Base model or checkpoint. A Hub checkpoint takes only what it lacks from it; a converted source's parts replace the base's. Add :component,… to place them.
+    /// Base model or checkpoint. A Hub checkpoint takes only what it lacks from it (a LoRA, the adapter record its factors fit); a converted source's parts replace the base's. Add :component,… to place them.
     #[arg(long, value_name = "MODEL[:COMPONENT,…]")]
     base: Option<String>,
+    /// Add a file as a component's asset, COMPONENT/PATH=FILE. Repeat for several.
+    #[arg(long = "add", value_name = "COMPONENT/PATH=FILE")]
+    add: Vec<String>,
     #[command(flatten)]
     placement: crate::run::Placement,
 }
@@ -292,11 +302,11 @@ pub(crate) struct Delete {
     model: String,
 }
 
-async fn list(ctx: &Context, mut args: Ls, role: &str, fits: Option<String>) -> Result<ExitCode, Error> {
+async fn list(ctx: &Context, mut args: Ls, role: &str) -> Result<ExitCode, Error> {
     match args.on.clone() {
         Some(on) => {
-            if args.family.is_some() || !args.tags.is_empty() || !args.no_tags.is_empty() || fits.is_some() {
-                output::warn("--family, --fits, --tag and --no-tag search the Hub; with --on they are ignored");
+            if args.family.is_some() || !args.tags.is_empty() || !args.no_tags.is_empty() {
+                output::warn("--family, --tag and --no-tag search the Hub; with --on they are ignored");
                 args.family = None;
                 args.tags.clear();
                 args.no_tags.clear();
@@ -307,13 +317,14 @@ async fn list(ctx: &Context, mut args: Ls, role: &str, fits: Option<String>) -> 
                 machine::list(ctx, (on != "all").then_some(on), &args.query, role, args.limit, args.offset).await
             }
         }
-        None => catalog::search(ctx, args, role, fits).await,
+        None => catalog::search(ctx, args, role).await,
     }
 }
 
 pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     match args.verb {
-        Verb::Ls(args) => list(ctx, args.ls, "model", args.fits).await,
+        Verb::Ls(args) => list(ctx, args, "model").await,
+        Verb::Show(args) => show::show(ctx, args, "model").await,
         Verb::Edit(args) => catalog::edit(ctx, args).await,
         Verb::Publish(args) => releases::publish(ctx, args, "model").await,
         Verb::Unpublish(args) => releases::unpublish(ctx, args, "model").await,
@@ -338,7 +349,7 @@ mod tests {
     #[test]
     fn catalog_paging_and_filters_parse_together() {
         let parsed = ModelCommand::try_parse_from(["model", "ls", "fox", "--family", "sdxl", "--tag", "art", "--no-tag", "nsfw", "--offset", "20", "--limit", "10"]).unwrap();
-        let Verb::Ls(ModelLs { ls: args, .. }) = parsed.args.verb else { panic!("expected catalog") };
+        let Verb::Ls(args) = parsed.args.verb else { panic!("expected catalog") };
         assert_eq!((args.offset, args.limit), (20, 10));
         assert_eq!(args.query, ["fox"]);
         assert_eq!(args.family.as_deref(), Some("sdxl"));
@@ -383,7 +394,7 @@ mod tests {
         let mut cli = crate::dev::hide(crate::Cli::command());
         cli.build();
         let names = |name: &str| cli.find_subcommand(name).unwrap().get_subcommands().filter(|command| !command.is_hide_set()).map(|command| command.get_name().to_owned()).collect::<Vec<_>>();
-        assert_eq!(names("model"), ["ls", "edit", "install", "uninstall", "unpublish", "delete"]);
-        assert_eq!(names("lora"), ["ls", "install", "uninstall", "edit", "unpublish", "delete"]);
+        assert_eq!(names("model"), ["ls", "show", "edit", "install", "uninstall", "unpublish", "delete"]);
+        assert_eq!(names("lora"), ["ls", "show", "install", "uninstall", "edit", "unpublish", "delete"]);
     }
 }

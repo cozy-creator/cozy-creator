@@ -5,10 +5,9 @@
 The cell checks:
 
 - Native snapshots and original change bytes are committed in schema-2 `project.db`.
-- Export/import of an unchanged logical document preserves its heads.
-- A deliberately unsupported relational/schema-1 copy is refused with its main bytes/schema unchanged and no migration backup or stage. Legacy physical YAML/lock/staged folders are refused separately; current behavior fixtures begin with a schema-2 project.
+- A deliberately unsupported relational/schema-1 copy is refused with its main bytes/schema unchanged and no migration backup or stage. Current behavior fixtures begin with a schema-2 project.
 - Damaged relational query projections cannot override canonical state or undo history on the next CLI write.
-- The native Rust reader loads the CLI-generated snapshots, verifies the renamed entity retains its identity, and forks three real CRDT replicas. It retains three concurrent prompt alternatives and both independent versions allocated the same display number, converges despite reversed/duplicate delivery, and survives snapshot reload.
+- The native Rust reader loads the CLI-generated snapshots, verifies the renamed entity retains its identity, and forks three real CRDT replicas. It holds no files, versions or runs (project.db's rows keep them), retains three concurrent prompt alternatives, converges despite reversed/duplicate delivery, and survives snapshot reload.
 
 The shell cell is part of the existing `projectdb` shard. To run this cell alone once the candidate is installed and the shared-daemon owner approves that candidate, source `e2e/lib.sh`, parse an output directory, then source `project.sh` and `projectdb.sh`, call `db_crdt`, and finish the suite. Keep all execution in the default home; no `COZY_HOME` override.
 

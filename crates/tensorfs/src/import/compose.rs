@@ -239,3 +239,35 @@ pub fn inherit(child: &Header, checkpoint: &ObjectRef, base: &Header, from: BTre
     let pipeline = child.pipeline().or(base.pipeline()).cloned();
     Ok(Some((Header::new(chunks, pipeline, components, metadata)?, gave)))
 }
+
+/// Header metadata: the files added to a checkpoint as assets (`cozy model upload --add`), each `<component>/<path>`.
+pub const ADDED: &str = "added";
+
+/// `header` with each `(component, path, object)` as that component's asset, in place of one of that path; a component it
+/// lacks is added with these files alone (no class, config or tensors). Chunks and tensors stay as they are.
+pub fn with_assets(header: &Header, added: &[(String, String, ObjectRef)]) -> Result<Header> {
+    let mut components = header.components().to_vec();
+    for (component, path, object) in added {
+        let at = match components.iter().position(|c| &c.name == component) {
+            Some(at) => at,
+            None => {
+                components.push(Component { name: component.clone(), ..Component::default() });
+                components.len() - 1
+            }
+        };
+        components[at].assets.insert(path.clone(), object.clone());
+    }
+    let mut metadata = header.metadata.clone();
+    let mut listed = match metadata.remove(ADDED) {
+        Some(Value::List(listed)) => listed,
+        _ => vec![],
+    };
+    for (component, path, _) in added {
+        let file = Value::Str(format!("{component}/{path}"));
+        if !listed.contains(&file) {
+            listed.push(file);
+        }
+    }
+    metadata.insert(ADDED.into(), Value::List(listed));
+    Header::new(header.chunks.clone(), header.pipeline().cloned(), components, metadata)
+}

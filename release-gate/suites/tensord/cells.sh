@@ -203,6 +203,7 @@ else
 fi
 
 [ "$NGPU" -lt 2 ] || . "$HERE/suites/tensord/one-process.sh"
+[ "$NGPU" -lt 2 ] || . "$HERE/suites/tensord/teardown.sh"
 
 # The second reading, past two of reclaim's passes since the first.
 while (( $(date +%s) - LINKS_AT < 1260 )); do sleep 30; done

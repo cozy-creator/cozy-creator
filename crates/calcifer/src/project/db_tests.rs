@@ -3,7 +3,7 @@ use super::super::written::Boxed;
 use automerge::transaction::Transactable;
 
 fn current(path: &Path) -> Connection {
-    let mut written = Written::blank();
+    let mut written = Written::default();
     written.boxes.push(Boxed { name: "art".into(), fields: vec![("instructions".into(), serde_json::json!("initial"))], ..Default::default() });
     create(path, &Stored { written: Arc::new(written), ..Default::default() }, &[], &[]).unwrap();
     let mut conn = open(path).unwrap();

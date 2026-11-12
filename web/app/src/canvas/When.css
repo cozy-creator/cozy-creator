@@ -1,0 +1,15 @@
+/* A field that doesn't apply now (`When()`, cl-948): dulled, its controls disabled, and the pointer passes them to the hint. */
+fieldset.when-off {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+fieldset.when-off > * {
+  pointer-events: none;
+}
+.edit-parameters > fieldset.when-off > .slide {
+  width: auto;
+}

@@ -23,8 +23,9 @@ use super::{
 mod tests;
 
 pub(crate) const DB: &str = "project.db";
-/// This schema's `user_version`. A database of another isn't read.
-const VERSION: i64 = 3;
+/// This schema's `user_version`: a project's files, versions and runs in rows alone (cl-904), and its run journal beside them. A
+/// database of another isn't read; one of 2, or of 3 with either half, is migrated (`migrate`).
+const VERSION: i64 = 4;
 const SCHEMA: &str = "
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
     CREATE TABLE head (key TEXT PRIMARY KEY, ord INTEGER NOT NULL, value TEXT NOT NULL) STRICT;
@@ -47,6 +48,7 @@ const SCHEMA: &str = "
     ) STRICT, WITHOUT ROWID;
     CREATE TABLE lock_files (sha256 TEXT PRIMARY KEY, record TEXT NOT NULL) STRICT;
     CREATE TABLE run_files (ord INTEGER PRIMARY KEY, run INTEGER NOT NULL, function TEXT NOT NULL, output TEXT NOT NULL, sha256 TEXT NOT NULL) STRICT;
+    CREATE TABLE lock_runs (ord INTEGER PRIMARY KEY, record TEXT NOT NULL) STRICT;
     CREATE TABLE facts (kind TEXT NOT NULL, name TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (kind, name)) STRICT, WITHOUT ROWID;
     CREATE TABLE walk (id INTEGER PRIMARY KEY CHECK (id = 1), record TEXT NOT NULL) STRICT;
     CREATE TABLE asked (digest TEXT PRIMARY KEY, text TEXT NOT NULL) STRICT;
@@ -182,31 +184,109 @@ pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
     checked.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
     require_readable(&checked, path)?;
     drop(checked);
+    migrate(path)?;
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE)
         .map_err(|error| sql(path, error))?;
     conn.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
-    require_readable(&conn, path)?;
-    upgrade_journal(&conn, path)?;
     require_current(&conn, path)?;
     configure(&conn, path)?;
     Ok(conn)
 }
 
+/// A project.db as it was before its files left its document (cl-904).
+const BEFORE_SCHEMA_3: &str = "project.db.pre-schema3";
+
+/// The released schema, 2, or a 3 with either half of 4, whose CRDT format is current: what `migrate` takes.
 fn require_readable(conn: &Connection, path: &Path) -> Result<(), Error> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|error| sql(path, error))?;
-    if version != 2 && version != VERSION { return require_current(conn, path); }
+    if !matches!(version, 2 | 3) && version != VERSION { return require_current(conn, path); }
     let format: i64 = conn.query_row("SELECT format FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|error| sql(path, error))?;
     if format != crdt::FORMAT { return Err(err(path, "unsupported CRDT format")); }
     Ok(())
 }
 
-fn upgrade_journal(conn: &Connection, path: &Path) -> Result<(), Error> {
-    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|error| sql(path, error))?;
-    if version == VERSION { return Ok(()); }
-    let tx = conn.unchecked_transaction().map_err(|error| sql(path, error))?;
-    tx.execute_batch(super::journal::SCHEMA).map_err(|error| sql(path, error))?;
-    tx.pragma_update(None, "user_version", VERSION).map_err(|error| sql(path, error))?;
-    tx.commit().map_err(|error| sql(path, error))
+fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)", [name], |row| row.get(0))
+}
+
+/// Schema 2 kept a project's files, versions and runs in its Automerge document as well as in rows; 4 keeps them in rows alone
+/// (cl-904, Paul 11-12: the CRDT is for node state, never files), and the project's run journal beside them. The document's are
+/// written to the rows once, which then stand, and the document's next change leaves them out. A 3 has one half or the other.
+fn migrate(path: &Path) -> Result<(), Error> {
+    let e = |error| sql(path, error);
+    let version = |conn: &Connection| conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0));
+    let checked = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(e)?;
+    checked.busy_timeout(WAIT).map_err(e)?;
+    if !matches!(version(&checked).map_err(e)?, 2 | 3) {
+        return Ok(());
+    }
+    // The move to rows is one way: the project as it was, kept beside it once and never read.
+    let kept = path.with_file_name(BEFORE_SCHEMA_3);
+    if !has_table(&checked, "lock_runs").map_err(e)? && !kept.exists() {
+        let part = path.with_file_name(format!("{BEFORE_SCHEMA_3}.part"));
+        checked.backup(rusqlite::MAIN_DB, &part, rusqlite::backup::NO_PROGRESS).map_err(e)?;
+        std::fs::rename(&part, &kept).map_err(|error| err(path, error))?;
+    }
+    drop(checked);
+    let mut conn = Connection::open_with_flags(path, rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE).map_err(e)?;
+    conn.busy_timeout(WAIT).map_err(e)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
+    // Another process may have migrated it while this waited.
+    if !matches!(version(&tx).map_err(e)?, 2 | 3) {
+        return Ok(());
+    }
+    if !has_table(&tx, "lock_runs").map_err(e)? {
+        let lock = read_document(&tx, path)?.legacy_lock()?;
+        tx.execute_batch("CREATE TABLE lock_runs (ord INTEGER PRIMARY KEY, record TEXT NOT NULL) STRICT;
+            DELETE FROM lock_assets; DELETE FROM versions; DELETE FROM lock_files; DELETE FROM run_files; DELETE FROM facts;").map_err(e)?;
+        lock_written(&tx, &Lock::default(), &lock).map_err(e)?;
+    }
+    if !has_table(&tx, "runs").map_err(e)? {
+        tx.execute_batch(super::journal::SCHEMA).map_err(e)?;
+    } else if !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name = 'attempt')", [], |row| row.get::<_, bool>(0)).map_err(e)? {
+        tx.execute_batch("ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1").map_err(e)?;
+    }
+    tx.pragma_update(None, "user_version", VERSION).map_err(e)?;
+    tx.commit().map_err(e)
+}
+
+/// A project's files, versions, runs and what its tools make, from its rows: they're no part of its Automerge document.
+fn read_lock(conn: &Connection, at: &Path) -> Result<Lock, Error> {
+    let e = |error| sql(at, error);
+    fn decode<T: serde::de::DeserializeOwned>(at: &Path, record: String) -> Result<T, Error> {
+        serde_json::from_str(&record).map_err(|error| err(at, error))
+    }
+    let mut lock = Lock::default();
+    let mut rows = conn.prepare("SELECT key, record FROM lock_assets").map_err(e)?;
+    for row in rows.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).map_err(e)? {
+        let (key, record) = row.map_err(e)?;
+        lock.assets.insert(key, decode(at, record)?);
+    }
+    let mut rows = conn.prepare("SELECT key, discarded, record FROM versions ORDER BY key, number").map_err(e)?;
+    for row in rows.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?, row.get::<_, String>(2)?))).map_err(e)? {
+        let (key, discarded, record) = row.map_err(e)?;
+        let version: Version = decode(at, record)?;
+        let Some(held) = lock.assets.get_mut(&key) else { continue };
+        if discarded { held.discarded.push(version) } else { held.versions.push(version) }
+    }
+    let mut rows = conn.prepare("SELECT sha256, record FROM lock_files").map_err(e)?;
+    for row in rows.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).map_err(e)? {
+        let (sha256, record) = row.map_err(e)?;
+        lock.files.insert(sha256, File { row: true, ..decode(at, record)? });
+    }
+    let mut rows = conn.prepare("SELECT record FROM lock_runs ORDER BY ord").map_err(e)?;
+    for row in rows.query_map([], |row| row.get::<_, String>(0)).map_err(e)? {
+        lock.runs.push(decode(at, row.map_err(e)?)?);
+    }
+    let mut rows = conn.prepare("SELECT kind, name, value FROM facts").map_err(e)?;
+    for row in rows.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).map_err(e)? {
+        match row.map_err(e)? {
+            (kind, name, value) if kind == "reserved" => drop(lock.reserved.insert(name, decode(at, value)?)),
+            (kind, name, value) if kind == "makes" => drop(lock.makes.insert(name, value)),
+            _ => {}
+        }
+    }
+    Ok(lock)
 }
 
 fn require_current(conn: &Connection, path: &Path) -> Result<(), Error> {
@@ -292,6 +372,7 @@ pub(crate) fn read(conn: &Connection, at: &Path) -> Result<(i64, Stored), Error>
 /// new authoritative project edit on read.
 pub(crate) fn load(conn: &Connection, at: &Path) -> Result<Stored, Error> {
     let mut stored = read_document(conn, at)?.into_stored()?;
+    stored.lock = Arc::new(read_lock(conn, at)?);
     stored.seq = meta(conn, "seq").and_then(|seq| seq.parse().ok()).unwrap_or(0);
     if let Some(record) = conn.query_row("SELECT record FROM walk WHERE id = 1", [], |row| row.get::<_, String>(0)).optional().map_err(|e| sql(at, e))? {
         stored.walk = Arc::new(serde_json::from_str(&record).map_err(|e| err(at, e))?);
@@ -549,8 +630,10 @@ fn lock_written(tx: &Transaction, before: &Lock, after: &Lock) -> rusqlite::Resu
     }
     if before.runs != after.runs {
         tx.execute("DELETE FROM run_files", [])?;
+        tx.execute("DELETE FROM lock_runs", [])?;
         for (ord, row) in after.runs.iter().enumerate() {
             tx.execute("INSERT INTO run_files (ord, run, function, output, sha256) VALUES (?1, ?2, ?3, ?4, ?5)", params![ord as i64, row.run as i64, row.function, row.output, row.sha256])?;
+            tx.execute("INSERT INTO lock_runs (ord, record) VALUES (?1, ?2)", params![ord as i64, json(row)])?;
         }
     }
     if before.reserved != after.reserved || before.makes != after.makes {

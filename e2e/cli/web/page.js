@@ -221,17 +221,22 @@ async function renderOf(page, name) {
   // A cold tool list can briefly show fallback fields before an image take gains its +.
   // Wait for an editor (including non-image/custom editors) or that actual next-take control.
   const editor = here.locator('.in-frame, .prominent, .tl, .tool-ui, .tool-ui-failed, .media.blank:not(:has(.media-making, .made-from, .prog)), .media:has(.play, video, audio)');
-  await editor.or(next).first().waitFor();
-  if (!(await here.locator('.in-frame').count()) && (await next.count())) await next.click();
   const render = here.locator('button[aria-label=Render]');
+  // A box being written (a failed or unmade one's words) has its Render out already.
+  await editor.or(next).or(nextVideo).or(render).first().waitFor();
+  if (!(await render.count())) {
+    if (await nextVideo.count() && !(await here.locator('.prominent').count())) await nextVideo.click();
+    if (!(await here.locator('.in-frame').count()) && (await next.count())) await next.click();
+  }
   await render.waitFor();
   return render;
 }
 
 async function openBox(page, name) {
   // By the address too: a box left a moment ago can still say so, and reaching for it finds it gone (macOS, 41977214625).
+  // Open, it's in Focus; on a page loaded at its address its canvas card says `here` too, and Focus is the later.
   const card = page.locator(`.card.here[data-asset="${name}"]`);
-  if (await page.evaluate((asked) => location.pathname.endsWith(`/assets/${encodeURIComponent(asked)}`), name)) return card.waitFor();
+  if (await page.evaluate((asked) => location.pathname.endsWith(`/assets/${encodeURIComponent(asked)}`), name)) return card.last().waitFor();
   await closeBox(page);
   // After a drag d3-drag swallows clicks at the window until its zero timer, which a cell can beat and a hand can't. This timer runs after that one.
   await page.evaluate(() => new Promise((done) => setTimeout(done, 0)));
@@ -252,7 +257,7 @@ async function openBox(page, name) {
   const before = await page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform);
   // A click only selects it: a double click opens it (Paul, 11-12).
   await page.mouse.dblclick(x, y);
-  await card.waitFor();
+  await card.last().waitFor();
   // The canvas draws in on it: a person reaches for it once it's there. Its move starts a frame after entry, which a slow runner draws late.
   await until(`the canvas drawing in on ${name}`, () => page.evaluate(() => document.querySelector('.react-flow__viewport')?.style.transform), (now) => now !== before, 2000).catch(() => {});
   await settled(page);

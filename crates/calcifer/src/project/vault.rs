@@ -835,7 +835,7 @@ fn end_work(api: &Arc<Api>, root: &FsPath) -> Result<Vec<u64>, Error> {
     let mut ended = BTreeSet::new();
     let all = [super::format::ALL.to_owned()];
     for project in api.projects.now_open().iter().filter(|project| project.root == root) {
-        let cancelled = super::cancelled(api, project, &all, &|name| format!("{name}: the project was locked")).map_err(|refused| refused.0)?;
+        let cancelled = super::cancelled(api, project, &all, &[], &|name| format!("{name}: the project was locked")).map_err(|refused| refused.0)?;
         ended.extend(cancelled.canceled);
     }
     if let Some(id) = project_id(root).or_else(|| plain_project_id(root)) {

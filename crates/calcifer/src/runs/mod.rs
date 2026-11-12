@@ -610,7 +610,14 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
         }
     }
     if let Resolved::Release { moved: Some(moved), .. } = &resolved {
-        notes.push(Note { level: NoteLevel::Warning, message: moved.clone() });
+        notes.push(moved.clone());
+    }
+    // Its machine's Runtime moves first to one that runs the release (cl-952): the run waits behind that update.
+    if let (Resolved::Release { upgrade: Some(upgrade), .. }, For::Run) = (&resolved, purpose)
+        && matches!(&submit.on, On::Machine(name) if *name == upgrade.machine)
+        && api.machines.upgrade(upgrade).await?.is_some()
+    {
+        notes.push(upgrade.note());
     }
     Ok(Prepared::Run { submit, notes, offers })
 }
@@ -784,12 +791,10 @@ async fn call(
                 &target, code.release, code.interface, callable, &terms, level == WarmLevel::Gpu, &mut notes,
             )
             .await?;
-            crate::hub::checkpoints::check_choices(api, hub, &target, &crate::hub::checkpoints::slots_of(code.interface, callable), &models).await?;
             (call.warm(level, &models, payload)?, None, None)
         }
         None => {
             let mut bound = bind::bind(&target, code.release, code.interface, callable, &terms).await?;
-            crate::hub::checkpoints::check_choices(api, hub, &target, &crate::hub::checkpoints::slots_of(code.interface, callable), &bound.models).await?;
             notes.append(&mut bound.notes);
             notes.extend(bound.cut.iter().map(|cut| Note { level: NoteLevel::Warning, message: cut.clone() }));
             if let Some(warning) = bound.warning(&target) {

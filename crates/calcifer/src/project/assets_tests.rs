@@ -323,15 +323,14 @@ async fn typed_nodes_fixture() {
 
     // Landing a same-byte replacement must not even change the frozen version
     // number. Explicit --outdated is the opt-in that refreshes that snapshot.
-    let text = series.folder.text().unwrap();
-    let digest = hex::encode(Sha256::digest(text.as_bytes()));
-    series.folder.keep_text(&digest, &text).unwrap();
+    let (digest, json) = series.folder.written().unwrap().snapshot();
+    series.folder.keep_snapshot(&digest, &json).unwrap();
     let snapshot = folder::Ask { id: "selected-snapshot".into(), digest, ..Default::default() };
     series.folder.update_walk(|walk| walk.walk.asks.push(snapshot.clone())).unwrap();
     let frozen_version = || {
         let walk = series.folder.walk_now().unwrap();
         let ask = walk.walk.asks.iter().find(|ask| ask.id == snapshot.id).unwrap();
-        let doc = Doc::read(&series.folder, &series.folder.text_of(ask).unwrap()).unwrap();
+        let doc = Doc::asked(&series.folder, &series.folder.asked(ask).unwrap()).unwrap();
         doc.stand(&series.folder.lock().unwrap())[doc.find(&original.name).unwrap()].version()
     };
     let walk = super::super::Walk::new(&api, &series);

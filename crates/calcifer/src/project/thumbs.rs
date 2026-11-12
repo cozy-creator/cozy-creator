@@ -1,5 +1,5 @@
-//! `GET|HEAD /v1/projects/{id}/thumbs/{sha256}?w=&strip=&preview=`: a small picture of a project's file, by Calcifer's own ffmpeg: a
-//! picture with its alpha, a video's poster, a strip of its frames side by side or its preview, a sound's waveform. Named by hash, size and
+//! `GET|HEAD /v1/projects/{id}/thumbs/{sha256}?w=&strip=&preview=&wave=`: a small picture of a project's file, by Calcifer's own ffmpeg: a
+//! picture with its alpha, a video's poster, a strip of its frames side by side or its preview, a sound's waveform or a video's. Named by hash, size and
 //! strip, so it never changes, and kept under the cache while it is used. Each is made once however many ask, from a task of its own that a
 //! request going away leaves to finish, at most a few at a time, so none of it holds up another request. A video's preview is made as it
 //! lands, too.
@@ -59,6 +59,9 @@ pub(super) struct Asked {
     /// A video's preview.
     #[serde(default)]
     preview: bool,
+    /// A video's sound as a waveform: none if it has no sound.
+    #[serde(default)]
+    wave: bool,
 }
 
 /// What to draw of one file.
@@ -73,6 +76,7 @@ struct Drawing {
     width: u32,
     frames: u32,
     preview: bool,
+    wave: bool,
     /// A picture's EXIF orientation, 1 to 8, in its name: one drawn before it was turned isn't taken for it. A private one's can't be read before
     /// its turn, and is 1 here.
     turn: u8,
@@ -83,6 +87,7 @@ impl Drawing {
     fn name(&self, hex: &str) -> String {
         match (self.preview, self.field, self.frames, self.turn) {
             (true, ..) => format!("{hex}-preview"),
+            _ if self.wave => format!("{hex}-{}-wave", self.width),
             (false, "video", 0, _) => format!("{hex}-{}-poster", self.width),
             (_, _, _, 1) => format!("{hex}-{}-{}", self.width, self.frames),
             _ => format!("{hex}-{}-{}-turned{}", self.width, self.frames, self.turn),
@@ -106,12 +111,13 @@ pub(super) async fn thumb(
     };
     let field = file.field();
     let preview = asked.preview && field == "video";
-    let frames = asked.strip.filter(|_| field == "video" && !preview).map_or(0, |n| n.clamp(1, MOST_FRAMES));
+    let wave = asked.wave && field == "video" && !preview;
+    let frames = asked.strip.filter(|_| field == "video" && !preview && !wave).map_or(0, |n| n.clamp(1, MOST_FRAMES));
     let source = folder.path(&file.path);
     let private = private_project(&source);
     let turn = if field == "image" && private.is_none() { tools::orientation(&source) } else { 1 };
     let source = if private.is_some() { super::vault::logical(&source) } else { source };
-    let drawing = Drawing { source, project: private, field, seconds: file.lasts_ms() as f64 / 1000.0, width: asked.w.unwrap_or(WIDTH).clamp(16, WIDEST), frames, preview, turn };
+    let drawing = Drawing { source, project: private, field, seconds: file.lasts_ms() as f64 / 1000.0, width: asked.w.unwrap_or(WIDTH).clamp(16, WIDEST), frames, preview, wave, turn };
     let name = drawing.name(&hex);
     let private = drawing.project.is_some();
     let dir = directory(&drawing, api.machines.hubs.home().thumbs()).map_err(Refusal)?;
@@ -133,7 +139,7 @@ pub(super) async fn thumb(
 pub(super) fn landed(source: PathBuf, sha256: &str, seconds: f64) {
     let project = private_project(&source);
     let source = if project.is_some() { super::vault::logical(&source) } else { source };
-    let drawing = Drawing { source, project, field: "video", seconds, width: 0, frames: 0, preview: true, turn: 1 };
+    let drawing = Drawing { source, project, field: "video", seconds, width: 0, frames: 0, preview: true, wave: false, turn: 1 };
     LANDED.0.lock().expect("landed lock").push_back((drawing.name(&folder::hex_of(sha256).to_ascii_lowercase()), drawing));
     LANDED.1.notify_one();
 }
@@ -250,14 +256,24 @@ fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name
     let width = drawing.width;
     let scale = format!("scale='min(iw,{width})':-2");
     let part = |ext: &str| tempfile::Builder::new().prefix(".making").suffix(&format!(".{ext}")).tempfile_in(dir).map_err(|e| e.to_string());
+    // A video's sound under its clip on a timeline: quiet sound drawn on a square-root scale, so it shows.
+    let picture = format!("[0:a:0]showwavespic=s={width}x{}:colors={WAVE_COLOR}{}", (width / 4).max(16), if drawing.wave { ":scale=sqrt" } else { "" });
     let wave = || -> Result<(tempfile::NamedTempFile, &str), String> {
         let out = part("png")?;
-        let picture = format!("showwavespic=s={width}x{}:colors={WAVE_COLOR}", (width / 4).max(16));
         run(ffmpeg, &input(&source), &strs(&["-filter_complex", &picture]), out.path())?;
         Ok((out, "png"))
     };
     let (out, ext) = match drawing.field {
         "audio" => wave()?,
+        // No sound in it: a flat line, kept like any other, so it isn't asked of ffmpeg again.
+        "video" if drawing.wave => match wave() {
+            Ok(drawn) => drawn,
+            Err(_) => {
+                let out = part("png")?;
+                run(ffmpeg, &strs(&["-f", "lavfi", "-t", "0.1", "-i", "anullsrc=r=8000:cl=mono"]), &strs(&["-filter_complex", &picture]), out.path())?;
+                (out, "png")
+            }
+        },
         "video" if drawing.preview => {
             let out = part("mp4")?;
             let seconds = seconds(ffprobe, drawing);

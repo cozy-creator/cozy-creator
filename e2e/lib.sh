@@ -92,12 +92,15 @@ finish() {
 # Every call is logged for e2e/coverage.py: its words \x1f-separated, each call ended by \x1e.
 cozy() { printf '%s\x1f' "$@" >> "$OUT/argv.log"; printf '\x1e' >> "$OUT/argv.log"; "$COZY" "$@"; }
 # The coverage guard (e2e/coverage.py check) over this run's calls, for the tiers it ran.
+# A failure is coverage.py's own line, naming each command and flag at fault.
 coverage() {
-  local extra=()
+  local extra=() said why
   [ -z "${PUBLICATION_LOG:-}" ] || extra=(--log "$PUBLICATION_LOG")
-  uv run -q --no-project python -I "$E2E/coverage.py" check "$1" "$E2E/coverage.toml" --tiers "$2" --log "$OUT/argv.log" "${extra[@]}" \
-    --source "$E2E/../crates/cli/src" \
-    || check "coverage: a command or flag has no test, or its test did not run (above)"
+  said=$(uv run -q --no-project python -I "$E2E/coverage.py" check "$1" "$E2E/coverage.toml" --tiers "$2" --log "$OUT/argv.log" "${extra[@]}" \
+    --source "$E2E/../crates/cli/src" 2>&1) && { printf '%s\n' "$said"; return 0; }
+  printf '%s\n' "$said" | grep -v '^::error::' || true
+  why=$(printf '%s\n' "$said" | sed -n 's/^::error:://p' | tail -1)
+  check "${why:-coverage: e2e/coverage.py failed: $(printf '%s' "$said" | tail -c 300)}"
 }
 
 # The install line from the README, as a person pastes it. With --release, that release's own installer then installs

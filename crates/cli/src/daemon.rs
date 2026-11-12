@@ -24,6 +24,23 @@ pub(crate) async fn restart(ctx: &Context) -> Result<bool, Error> {
 }
 
 #[derive(clap::Args, Debug)]
+pub(crate) struct Restart {}
+
+/// `cozy restart`: Calcifer stopped and started on the installed cozy, whoever uses it (cl-962). Runs on machines go on,
+/// pages reconnect, and the new Calcifer resumes what the old one owed.
+pub(crate) async fn restart_calcifer(ctx: &Context, _args: Restart) -> Result<ExitCode, Error> {
+    let restarted = restart(ctx).await?;
+    let holder = Client::connect(ctx).await?.ready().await?;
+    if ctx.json {
+        output::json(&json!({"restarted": restarted, "version": holder.version, "pid": holder.pid}));
+    } else {
+        let did = if restarted { "restarted" } else { "started" };
+        output::say(ctx, &format!("Calcifer {did} on cozy {} (pid {})", holder.version, holder.pid));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[derive(clap::Args, Debug)]
 pub(crate) struct Status {}
 
 /// The current project's health and actionable warnings.

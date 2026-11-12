@@ -2,7 +2,7 @@
 // on the left, each dragged out to make a box. A box is its picture or its text at rest. Text with chips, the file still plain; a name dragged in; a fresh box as its prompt, or its prompt
 // and one beat, with all else behind More; controls from what it holds; reshaping; beats; another's edits merged; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
 // picture in, type, render, approve, delete the picture: what's approved stands, rendering it again fails naming what's gone, the rest goes on,
-// Undo brings it back. Takes side by side, one dragged out, Pick up from here, Render all.
+// Undo brings it back. Takes side by side, one dragged out, a segment redone, Render all.
 //   node nodes.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where to keep its screenshots; $ALONE: on a shared
 // computer, so it runs nothing. Prints what it saw as JSON and exits 1 if anything failed.
@@ -506,6 +506,23 @@ function replaceFile(at, text) {
   await page.keyboard.press('ArrowRight');
   const beats = await until('both beats stored', () => Promise.resolve(storedBox('knobs')?.beats ?? []), (held) => held.some((beat) => beat.description?.includes('Second.')) && held.some((beat) => beat.duration === 5));
   check('a_beat_keeps_what_it_holds', beats.some((beat) => beat.camera === 'low'), beats);
+
+  // Another's words in one beat while the page types in another, its write held until theirs is in: both stand, each merged by character
+  // (cl-904: words anywhere in a box are Automerge text).
+  let rowsIn;
+  const rowsGoing = new Promise((done) => (rowsIn = done));
+  const rowsLate = (call) => (call.request().method() === 'PATCH' ? rowsGoing.then(() => call.fallback().catch(() => {})) : call.fallback());
+  await page.route('**/v1/projects/*/assets/knobs', rowsLate);
+  await page.locator('.card.here[data-asset="knobs"] .beat .mention-text').nth(0).click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' Page.');
+  const theirBeats = (await of('knobs')).fields.beats.map((beat, i) => (i === 1 ? { ...beat, description: 'Second, theirs.' } : beat));
+  await api(`/v1/projects/${id}/assets/knobs`, { method: 'PATCH', body: JSON.stringify({ fields: { beats: theirBeats } }) });
+  await page.waitForTimeout(800);
+  rowsIn();
+  await page.unroute('**/v1/projects/*/assets/knobs', rowsLate);
+  const merged = await until('both beats merged', async () => (await of('knobs')).fields.beats, (held) => held?.[0]?.description?.includes('First. Page.') && held?.[1]?.description === 'Second, theirs.').catch(async () => (await of('knobs')).fields.beats);
+  check('two_beats_merged', merged?.[0]?.description?.includes('First. Page.') && merged?.[1]?.description === 'Second, theirs.', merged);
   await open('knobs');
   await knobs.locator('[aria-label="Remove beat 2"]').click();
   await until('one beat again', () => Promise.resolve(storedBox('knobs')?.beats ?? []), (held) => held.length === 1);
@@ -513,8 +530,8 @@ function replaceFile(at, text) {
   await api(`/v1/projects/${id}/assets/knobs`, { method: 'DELETE' });
   await until('knobs gone', () => box('knobs').count(), (n) => n === 0);
 
-  // Another's edit merges field by field (cl-904): of another asset, or another field, it applies; of the words being typed, the page's unsent
-  // words stand and are saved, with nothing asked.
+  // Another's edit merges (cl-904): of another asset, or another field, it applies; of the words being typed, the page's unsent words stand
+  // and then both merge by character, with nothing asked.
   await open('Sheet');
   await sheetText.click();
   await page.keyboard.press('End');
@@ -535,10 +552,10 @@ function replaceFile(at, text) {
   check('theirs_in_the_file', storedBox('Sheet').instructions.includes(' theirs'), storedBox('Sheet'));
   await page.waitForTimeout(1000);
   await shot('unsent-words-stand');
-  check('unsent_words_stand', (await sheetText.innerText()).includes('mine again'), await sheetText.innerText());
+  check('typed_words_kept', (await sheetText.innerText()).includes(' again'), await sheetText.innerText());
   theirsIn();
   await page.unroute('**/v1/projects/*/assets/Sheet', late);
-  await until('mine saved over theirs', () => Promise.resolve(storedBox('Sheet')?.instructions), (words) => words?.includes(' mine again'));
+  await until('theirs and mine merged', () => Promise.resolve(storedBox('Sheet')?.instructions), (words) => words?.includes(' theirs') && words.includes(' again') && !words.includes(' mine'));
   check('nothing_asked', (await box('Sheet').locator('button:has-text("Keep mine")').count()) === 0);
 
   // A caret never rests in a name, where what's typed goes nowhere: a click on one puts it just after, and what's typed there is saved there.
@@ -838,7 +855,7 @@ function replaceFile(at, text) {
     await away();
     await page.waitForTimeout(300);
     check('approved_stands', (await of('Sheet')).sha256 === heldFile && (await of('Sheet')).pinned, await of('Sheet'));
-    check('approved_shows_nothing_wrong', (await box('Sheet').locator('.dot.s-ood, .dot.s-failed').count()) === 0 && (await of('Sheet')).standing === 'current', await of('Sheet'));
+    check('approved_shows_nothing_wrong', (await box('Sheet').locator('.state-dot.failed').count()) === 0 && (await of('Sheet')).standing === 'current', await of('Sheet'));
     await open('Sheet');
     check('approved_face_has_no_warning', (await box('Sheet').locator('.status.ood, .status.bad, .warned').count()) === 0, await box('Sheet').innerText());
     check('wire_missing', (await of('Sheet')).missing?.join() === 'source-a', (await of('Sheet')).missing);
@@ -870,7 +887,7 @@ function replaceFile(at, text) {
     if (await viewSheet.count()) await viewSheet.click();
     await away();
     await page.waitForTimeout(200);
-    check('back_on_its_file_nothing_wrong', (await box('Sheet').locator('.dot.s-failed').count()) === 0);
+    check('back_on_its_file_nothing_wrong', (await box('Sheet').locator('.state-dot.failed').count()) === 0);
 
     // Undo: back with its row, and nothing is missing. Its note has gone by now (10 s, Paul 11-05), so this is what its Undo sends; the button's own below.
     const back = await api(`/v1/projects/${id}/history/undo`, { method: 'POST', body: JSON.stringify({ edit }) });
@@ -906,8 +923,8 @@ function replaceFile(at, text) {
     const appended = await of('Other');
     check('render_appends_and_selects_new_state', appended.version === appended.prefixes.at(-1).number && appended.prefixes.length === beforeAppend + 1, appended);
 
-    // Pick up from here: scrubbed to a frame, its words as they were, and the function told to keep up to there, for that render alone.
-    // The dropped clip is 11 frames: frame 6 is one it has.
+    // Redo a segment: its words as they were, and the function told to keep up to its seam, for that render alone. The dropped clip is 11
+    // frames, and shots.py says its second segment starts at frame 6.
     // One file dropped asks its name first: Enter takes the one offered.
     await away();
     await drop(page, [{ name: 'Look.mp4', type: 'video/mp4', bytes: MP4 }], 400, 900);
@@ -925,9 +942,11 @@ function replaceFile(at, text) {
     // Rendered from its words, it's still on them: its take, pressed, is what's kept from.
     await box('Clip').locator('.take[aria-label="take 1"]').click();
     const clipFile = JSON.stringify(storedBox('Clip'));
-    await more('Clip');
-    await box('Clip').locator('.from-here .keeps').fill('6');
-    await box('Clip').locator('button:text-is("Pick up from here")').click();
+    const segments = page.locator('.focus-viewport .focus-under .segments');
+    await segments.locator('.segment').nth(1).click();
+    await segments.locator('button.redo-segment:text-is("Redo segment 2")').click();
+    await page.locator('.focus-viewport .lead-in').waitFor();
+    await page.locator('.focus-viewport button[aria-label=Render]').first().click();
     await until('a new take', () => versions('Clip'), (n) => n === 2, FIRST_RUN_MS);
     const given = (await api(`/v1/projects/${id}/assets/Clip`)).body.versions.at(-1).files.given.path;
     // Listed as its run ends, it lands in files/ a moment later (Firefox, 42110239536).

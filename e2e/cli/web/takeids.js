@@ -1,0 +1,323 @@
+// A take has one id from the press of Render to its version (cl-945, Paul 11-12: "as soon as I push the button, the UI updates, and we are
+// not fighting for inconsistent state"), in a real browser on a real Calcifer with a weightless local tool. Focus's takes column is watched
+// on every change, by each tile's take id:
+// A, Render: the new take is listed in the frame after the press, stays listed under that id through every update until it lands, and
+//    lands as the version of that id, which the viewer draws.
+// B, a slow Calcifer: the render's ask held 4 s on its way and every project read 1.5 s, so the reads the page gets meanwhile don't know
+//    the take. It's never taken off.
+// C, a reload while it's being made: the same take, by its id, is listed after the reload and lands.
+// D, Cancel on a take being made: it goes in that frame and is never listed again; no version lands.
+// E, two takes on their way on one box: each its own tile, dot and progress; selecting one shows its own run; one finishing while
+//    selected is drawn; the other stays selectable, and its toast's View opens it.
+//   node takeids.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
+// $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so
+// no run. Prints what it saw as JSON and exits 1 if anything failed.
+const playwright = require(process.env.PLAYWRIGHT);
+const { writeFileSync } = require('fs');
+const { join } = require('path');
+const { addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, STEP_MS } = require('./page');
+
+const FIRST_RUN_MS = 300_000;
+const TOOL = `# /// script
+# requires-python = ">=3.12"
+# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
+# ///
+"""The takeids cell's picture tool: a weightless still of one random colour, made in steps."""
+
+import os
+import time
+
+import msgspec
+from cozy_runtime.author import Adjustments, App, Context, ImageFrame, Outputs, Seed, Telemetry
+from cozy_runtime.fields import Image, Prompt
+from cozy_runtime.image import ImageRequest, ImageResult, Sizes
+
+app = App()
+SIZES = Sizes((0.25, 4.0), (64, 8192), 16, "the still's 0.25-4 MP")
+
+
+class Drawing(msgspec.Struct, kw_only=True):
+    instructions: Prompt[Image] = Prompt()
+    seed: Seed | None = None
+    pace: float = 1.5
+
+
+@app.tool(label="Take ids", named="takeids", accelerator=False)
+def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Telemetry) -> ImageResult:
+    width, height = ImageRequest(payload.instructions.text, None, None, payload.seed).size(adj, None, SIZES, megapixels=0.25)
+    with tel.stage("denoise"):
+        for step in range(8):
+            time.sleep(payload.pace)
+            ctx.progress(step, 8)
+    image = out.save_image(ImageFrame(width, height, os.urandom(3) * (width * height)), format="png")
+    return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
+`;
+const failures = [];
+const seen = {};
+let during = 'the start';
+noStall(seen, died);
+function check(name, ok, detail) {
+  seen[name] = ok ? true : (detail ?? false);
+  during = name;
+  if (!ok) failures.push(name);
+}
+async function died(why) {
+  failures.push(`${during}: ${why instanceof Error ? why.message : why}`);
+  await lastLook();
+  console.log(JSON.stringify({ failures, seen }, null, 2));
+  process.exit(1);
+}
+
+// Focus's takes column on every change, by take id: those being made and those landed. A press of Render is noted, and what the
+// column lists in the next frame.
+const RECORD = () => {
+  const log = (window.takesLog = []);
+  const look = () => {
+    const side = document.querySelector('[data-focused-asset="card"] .here-side');
+    const ids = (selector) => [...(side?.querySelectorAll(selector) ?? [])].map((tile) => tile.getAttribute('data-take-id')).filter(Boolean);
+    const host = document.querySelector('[data-focused-asset="card"] .focus-viewer .buffered-image');
+    return { open: Boolean(side), making: ids('.take.making[data-take-id]'), landed: ids('.take[data-take][data-take-id]'), drawn: (host?.querySelector('img') && host.dataset.displayedSha?.replace(/^sha256:/, '')) || null };
+  };
+  window.takesNow = look;
+  // Every note said, as it's said: one that's gone by the time it's looked for was still said.
+  const said = (window.notesSaid = []);
+  const note = () => {
+    for (const shown of document.querySelectorAll('.notes .note')) if (!said.includes(shown.innerText)) said.push(shown.innerText);
+    const now = look();
+    const last = log.at(-1);
+    if (!last || JSON.stringify({ ...last, t: 0 }) !== JSON.stringify({ ...now, t: 0 })) log.push({ ...now, t: Math.round(performance.now()) });
+  };
+  new MutationObserver(note).observe(document.body, { subtree: true, childList: true, attributes: true });
+  // Heard first, before the page's own handler (which may stop it): the column as it was, and in the next frame what the press drew.
+  window.addEventListener('click', (event) => {
+    if (!event.target.closest?.('button[aria-label=Render], .take-off')) return;
+    const before = look();
+    requestAnimationFrame(() => { window.pressed = { before, after: look(), at: log.length } });
+  }, true);
+  note();
+};
+
+(async () => {
+  const base = calcifer();
+  const browser = await launch(playwright);
+  const page = await (await browser.newContext({ viewport: { width: 1600, height: 1000 } })).newPage();
+  lookAt(page);
+  page.setDefaultTimeout(STEP_MS);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
+
+  await signIn(page);
+  await page.waitForSelector('.top');
+  await page.goto(`${base}/projects`);
+  await page.fill('input[aria-label="New project\'s name"]', `web-takeids-${Date.now()}`);
+  await page.getByLabel('Create without encryption', { exact: true }).check();
+  await page.click('form button[type=submit]');
+  await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const { id, path: folder } = await projectFromPage(page);
+  seen.project = { id, folder };
+  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const api = async (path) => {
+    const answer = await fetch(base + path, { headers: { Authorization: `Bearer ${session.token}`, 'cozy-project-storage': '3' } });
+    const value = await answer.json().catch(() => null);
+    if (!answer.ok) throw new Error(`GET ${path}: ${answer.status} ${JSON.stringify(value)}`);
+    return value;
+  };
+  const asset = async () => (await api(`/v1/projects/${id}`)).assets.find((row) => row.name === 'card');
+  if (!(await api('/v1/status')).local_usable || process.env.ALONE) {
+    check('renders_here', false, 'no local machine to render the weightless tool on');
+    throw new Error('nothing to render on');
+  }
+
+  const tool = join(folder, `takeids_${Date.now()}.py`);
+  writeFileSync(tool, TOOL);
+  addBoxes(folder, [{ name: 'card', tool: `${tool}/draw`, kind: 'image', fields: { instructions: 'A still of one colour.' } }]);
+  const landed = (count) => until(`card's take ${count}`, asset, (row) => row?.versions === count && !row.takes?.length, FIRST_RUN_MS);
+  const record = () => page.evaluate(RECORD);
+  const now = () => page.evaluate(() => window.takesNow());
+  const mark = () => page.evaluate(() => { window.pressed = undefined; return window.takesLog.length });
+  const logFrom = (from) => page.evaluate((from) => window.takesLog.slice(from), from);
+  // The press of Render: the take the next frame lists that wasn't before.
+  const press = async () => {
+    const from = await mark();
+    await (await renderOf(page, 'card')).click();
+    const pressed = await until('the frame after Render', () => page.evaluate(() => window.pressed), Boolean, 10_000);
+    return { from, pressed, take: pressed.after.making.find((take) => !pressed.before.making.includes(take)) };
+  };
+  // From the press on, the take is listed in every look, being made and then landed, never off in between.
+  // From its first listing on (the press's own frame is a_listed…), every look lists it, made or landed: never off in between.
+  const steady = (log, take) => {
+    const first = log.findIndex((look) => look.making.includes(take) || look.landed.includes(take));
+    const off = first < 0 ? [] : log.slice(first).filter((look) => look.open && !look.making.includes(take) && !look.landed.includes(take));
+    return { first, off: off.slice(0, 4), landed: log.some((look) => look.landed.includes(take)) };
+  };
+  const versionOf = (row, take) => row.prefixes.find((version) => version.id === take);
+
+  await record();
+  await openBox(page, 'card');
+  await (await renderOf(page, 'card')).click();
+  await landed(1);
+
+  // A: listed in the frame after the press, under one id to its version.
+  const a = await press();
+  check('a_listed_in_the_next_frame', Boolean(a.take), a.pressed);
+  const two = await landed(2);
+  const logA = await logFrom(a.from);
+  const steadyA = steady(logA, a.take);
+  const versionA = versionOf(two, a.take);
+  const drawnA = await until('take 2 drawn', now, (look) => look.drawn === versionA?.main?.sha256?.replace(/^sha256:/, ''), 20_000).catch(() => null);
+  seen.a = { take: a.take, version: versionA?.number, steady: steadyA };
+  check('a_never_off_until_it_lands', steadyA.first >= 0 && steadyA.off.length === 0 && steadyA.landed, { ...steadyA, log: logA.slice(0, 12) });
+  check('a_lands_as_the_version_of_its_id', versionA?.number === 2, two.prefixes.map((version) => [version.number, version.id]));
+  check('a_viewer_draws_it', drawnA !== null, await now());
+
+  // B: a slow Calcifer. Its ask held on its way and every project read late, so what the page reads meanwhile doesn't know the take.
+  const slowAsk = (url) => /\/v1\/projects\/[^/]+\/runs$/.test(new URL(url).pathname);
+  const at = `/v1/projects/${encodeURIComponent(id)}`;
+  const slowRead = (url) => new URL(url).pathname === at || new URL(url).pathname.startsWith(`${at}/assets/`);
+  const hold = (ms) => async (route) => {
+    await new Promise((done) => setTimeout(done, ms));
+    await route.continue().catch(() => {});
+  };
+  // The ask goes on only once this has looked: Calcifer hasn't heard of the take, and the page has read its project meanwhile.
+  let release;
+  const released = new Promise((done) => { release = done; });
+  let reads = 0;
+  await page.route(slowAsk, async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await released;
+    await route.continue().catch(() => {});
+  });
+  await page.route(slowRead, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    reads += 1;
+    return hold(1500)(route);
+  });
+  const b = await press();
+  check('b_listed_in_the_next_frame', Boolean(b.take), b.pressed);
+  await until('a read while the ask is held', () => reads, (n) => n > 0, 15_000).catch(() => {});
+  await page.waitForTimeout(3000);
+  const heldB = await now();
+  const heardB = (await asset()).takes?.some((take) => take.id === b.take);
+  seen.b_held = { reads, look: heldB };
+  check('b_listed_while_calcifer_has_not_heard', heldB.making.includes(b.take) && !heardB, { heardB, heldB });
+  release();
+  await page.unroute(slowAsk);
+  await page.unroute(slowRead);
+  const three = await landed(3);
+  const logB = await logFrom(b.from);
+  const steadyB = steady(logB, b.take);
+  seen.b = { take: b.take, steady: steadyB };
+  check('b_never_off_until_it_lands', steadyB.first >= 0 && steadyB.off.length === 0 && steadyB.landed, { ...steadyB, log: logB.slice(0, 12) });
+  check('b_lands_as_the_version_of_its_id', versionOf(three, b.take)?.number === 3, three.prefixes.map((version) => [version.number, version.id]));
+
+  // C: reloaded while it's being made: the same take, by its id, listed again and landing.
+  const c = await press();
+  await until('take 4 being made', asset, (row) => row.takes?.some((take) => take.id === c.take && take.run), 30_000);
+  await page.reload();
+  await page.locator('[data-focused-asset="card"] .here-side').waitFor();
+  await record();
+  const again = await until('the take listed after the reload', now, (look) => look.making.includes(c.take) || look.landed.includes(c.take), 15_000).catch(() => null);
+  check('c_same_take_after_reload', again !== null, await now());
+  const four = await landed(4);
+  check('c_lands_as_the_version_of_its_id', versionOf(four, c.take)?.number === 4, four.prefixes.map((version) => [version.number, version.id]));
+  await shot('c-reloaded');
+
+  // D: Cancel on a take being made: gone in the frame after, never listed again, and nothing of it lands.
+  const d = await press();
+  await until('take 5 being made', asset, (row) => row.takes?.some((take) => take.id === d.take && take.run), 30_000);
+  const fromD = await mark();
+  await page.locator(`[data-focused-asset="card"] .here-side .take-at:has(.take[data-take-id="${d.take}"]) .take-off`).click();
+  const cancelled = await until('the frame after Cancel', () => page.evaluate(() => window.pressed), Boolean, 10_000);
+  await until('its run ended', asset, (row) => !row.takes?.some((take) => take.id === d.take), 60_000);
+  await page.waitForTimeout(1500);
+  const logD = await logFrom(fromD);
+  const backD = logD.filter((look) => look.making.includes(d.take) || look.landed.includes(d.take));
+  seen.d = { take: d.take, back: backD.slice(0, 4) };
+  check('d_gone_in_the_next_frame', !cancelled.after.making.includes(d.take), cancelled);
+  check('d_never_listed_again', backD.length === 0, { back: backD.slice(0, 4), log: logD.slice(0, 12) });
+  check('d_nothing_lands', (await asset()).versions === 4);
+
+  // E: two takes on their way on one box (Paul, 11-12: "a single node can have multiple pending jobs"). Each has its own tile and dot;
+  // selecting one shows its own run, never the other's; one finishing while selected is drawn; the other stays selectable, and the
+  // toast's View when it lands opens that one.
+  const tile = (take) => page.locator(`[data-focused-asset="card"] .here-side .take.making[data-take-id="${take}"]`);
+  const face = () => page.evaluate(() => document.querySelector('[data-focused-asset="card"] .run-face')?.getAttribute('data-run') ?? null);
+  const runOf = async (take) => (await asset()).takes?.find((held) => held.id === take)?.run ?? null;
+  const picked = () => page.evaluate(() => document.querySelector('[data-focused-asset="card"] .here-side .take.on')?.getAttribute('data-take-id') ?? null);
+  // A press on a tile, as a person's: what's at its middle must be the tile. Something else there is said (with every tile's place), and
+  // the tile is pressed in place so the rest is still seen.
+  const covered = [];
+  const pickTile = async (take) => {
+    const at = tile(take);
+    await at.scrollIntoViewIfNeeded();
+    const hit = await at.evaluate((element) => {
+      const r = element.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { ok: Boolean(top && (top === element || element.contains(top))), top: top ? `${top.tagName.toLowerCase()}.${String(top.className)}` : null, its: top?.closest('[data-take-id]')?.getAttribute('data-take-id') ?? top?.querySelector?.('[data-take-id]')?.getAttribute('data-take-id') ?? null, at: [r.left, r.top, r.width, r.height].map(Math.round) };
+    });
+    if (hit.ok) return at.click();
+    covered.push({ take, ...hit, tiles: await page.evaluate(() => [...document.querySelectorAll('[data-focused-asset="card"] .take-at, [data-focused-asset="card"] .take.add')].map((element) => {
+      const r = element.getBoundingClientRect();
+      return { cls: String(element.className), take: element.querySelector('[data-take-id]')?.getAttribute('data-take-id') ?? null, at: [r.left, r.top, r.width, r.height].map(Math.round) };
+    })) });
+    await shot(`e-covered-${covered.length}`);
+    return at.dispatchEvent('click');
+  };
+  const e1 = await press();
+  await until('the first take listed', asset, (row) => row.takes?.some((take) => take.id === e1.take), 30_000);
+  const e2 = await press();
+  const both = await now();
+  const dots = await page.evaluate((ids) => ids.map((id) => document.querySelectorAll(`[data-focused-asset="card"] .here-side .take.making[data-take-id="${id}"] .state-dot`).length), [e1.take, e2.take]);
+  check('e_each_its_own_tile_and_dot', both.making.includes(e1.take) && both.making.includes(e2.take) && dots.every((n) => n === 1), { both, dots });
+  // Paul, 11-12: look at it. The column with two takes on their way and the frame on the second, at 1440×900 and 1920×1080, paper and dark.
+  for (const [width, height] of [[1440, 900], [1920, 1080]]) {
+    await page.setViewportSize({ width, height });
+    for (const dark of [false, true]) {
+      await page.evaluate((dark) => { if (dark) document.documentElement.dataset.theme = 'dark'; else delete document.documentElement.dataset.theme; }, dark);
+      await page.waitForTimeout(500);
+      await shot(`e-pending-${width}x${height}-${dark ? 'dark' : 'paper'}`);
+    }
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.waitForTimeout(500);
+  const r1 = await until('the first take running', () => runOf(e1.take), Boolean, 60_000);
+  await pickTile(e1.take);
+  const f1 = await until('the frame on the first', face, (now) => now === String(r1), 10_000).catch(() => null);
+  check('e_selected_shows_its_own_run', f1 === String(r1) && (await picked()) === e1.take, { f1, r1, picked: await picked() });
+  await pickTile(e2.take);
+  await page.waitForTimeout(500);
+  const [f2, r2] = [await face(), await runOf(e2.take)];
+  check('e_other_never_shows_the_first', (await picked()) === e2.take && f2 !== String(r1) && (r2 === null || f2 === String(r2)), { f2, r1, r2 });
+  await pickTile(e1.take);
+  const firstDone = await until('the first lands', asset, (row) => row.prefixes.some((version) => version.id === e1.take), FIRST_RUN_MS);
+  const v1 = versionOf(firstDone, e1.take);
+  const drawn1 = await until('the first drawn', now, (look) => look.drawn === v1.main.sha256.replace(/^sha256:/, ''), 20_000).catch(() => null);
+  check('e_finished_while_selected_is_drawn', drawn1 !== null, await now());
+  const left = await now();
+  if (left.making.includes(e2.take)) {
+    await pickTile(e2.take);
+    check('e_other_still_selectable', (await until('the second picked', picked, (id) => id === e2.take, 5_000).catch(() => null)) === e2.take, await picked());
+    // Looked away, at v1, which stays what's shown whatever lands (the box's state would move to the second), so its landing is said.
+    await page.locator('[data-focused-asset="card"] .here-side .take[data-take="1"]').click();
+  } else check('e_other_still_selectable', left.landed.includes(e2.take), left);
+  const secondDone = await until('the second lands', asset, (row) => row.prefixes.some((version) => version.id === e2.take), FIRST_RUN_MS);
+  const v2 = versionOf(secondDone, e2.take);
+  const note = page.locator('.notes .note', { hasText: `card finished: version ${v2.number}` });
+  // Its toast's View opens it. Both takes may run at once and the second land first, while the first is looked at: its toast may have gone
+  // by now, said all the same; one that landed while it was the one looked at isn't said, and it's drawn.
+  const said = await note.waitFor({ timeout: 15_000 }).then(() => true, () => false);
+  if (said) await note.locator('button:text-is("View")').click();
+  const sha2 = v2.main.sha256.replace(/^sha256:/, '');
+  const drawn2 = said ? await until('the second drawn by View', now, (look) => look.drawn === sha2, 20_000).catch(() => null) : null;
+  const gone = !said && (await page.evaluate((text) => window.notesSaid.some((one) => one.includes(text)), `card finished: version ${v2.number}`));
+  check('e_view_opens_the_right_take', said ? drawn2 !== null : gone || (await now()).drawn === sha2, { said, gone, look: await now(), v2: v2.number });
+  check('e_tiles_pressable', covered.length === 0, covered);
+  await shot('e-two');
+
+  check('no_page_errors', errors.length === 0, errors);
+  await browser.close();
+  console.log(JSON.stringify({ failures, seen }, null, 2));
+  process.exit(failures.length ? 1 : 0);
+})().catch(died);

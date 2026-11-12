@@ -27,7 +27,12 @@ pub(super) struct Document {
     pub(super) doc: AutoCommit,
     projection: Arc<Projection>,
     conflicts: Arc<OnceLock<Vec<String>>>,
+    /// Where it stands: what a typed edit was made on (`typed`).
+    heads: Arc<Vec<ChangeHash>>,
 }
+
+/// One splice of a box's words, in Unicode code points: `delete` of them at `at`, then `insert`.
+pub(super) type Splice = api::calcifer::project::Splice;
 
 // The selected native view shares unchanged roots and records across a write.
 // Only the native document is persisted.
@@ -39,6 +44,9 @@ enum Group {
     Value(Arc<Value>),
     Records(Arc<Records>),
 }
+
+/// What a project from before kept here and project.db's rows now keep alone: its files, versions, runs and what tools make.
+const OUTSIDE: [&str; 5] = ["assets", "files", "runs", "reserved", "makes"];
 
 fn record_namespace(key: &str) -> bool {
     matches!(key, "boxes" | "assets" | "files" | "canvas" | "history" | "runs")
@@ -233,7 +241,8 @@ pub(super) fn identity_bytes(bytes: &[u8], heads: &str) -> Option<(String, Strin
 
 impl Document {
     pub(super) fn load(bytes: &[u8], heads: &str, at: &Path) -> Result<Self, Error> {
-        let doc = load_native(bytes, heads)?.with_actor(actor(at));
+        let mut doc = load_native(bytes, heads)?.with_actor(actor(at));
+        let heads = Arc::new(doc.get_heads());
         let mut found = Vec::new();
         let projection = project(&doc, &mut found)?;
         if root_value(&projection, "schema").and_then(Value::as_u64) != Some(FORMAT as u64) {
@@ -245,6 +254,7 @@ impl Document {
             doc,
             projection: Arc::new(projection),
             conflicts: Arc::new(OnceLock::from(found)),
+            heads,
         })
     }
 
@@ -253,6 +263,7 @@ impl Document {
             doc: AutoCommit::new().with_actor(actor(at)),
             projection: Arc::default(),
             conflicts: Arc::new(OnceLock::new()),
+            heads: Arc::default(),
         }
     }
 
@@ -276,6 +287,7 @@ impl Document {
         let known_empty = self.conflicts.get().is_some_and(Vec::is_empty);
         reconcile_projection(&mut self.doc, &self.projection, &projection)?;
         self.doc.commit();
+        self.heads = Arc::new(self.doc.get_heads());
         self.projection = Arc::new(projection);
         // A local observing mutation cannot introduce concurrency. Imported snapshots seed
         // this cache during materialization; existing alternatives invalidate it on mutation.
@@ -285,6 +297,62 @@ impl Document {
         }
         self.conflicts = Arc::new(conflicts);
         Ok(())
+    }
+
+    /// Its heads, as a read names them.
+    pub(super) fn heads(&self) -> Vec<String> {
+        self.heads.iter().map(ToString::to_string).collect()
+    }
+
+    /// What the words at `path` of box `id` (a field, or words in it: `beats.0.description`) say once `splices`, made on them as the
+    /// document stood at `heads`, merge with all written since: by character, as Automerge merges text, so two people typing in one
+    /// prompt keep both (cl-904). Words that weren't text then (a project from before) merge from what they said then.
+    pub(super) fn typed(&self, id: &str, path: &str, heads: &[String], splices: &[Splice]) -> Result<String, Error> {
+        let field = path;
+        let heads = heads.iter().map(|head| head.parse::<ChangeHash>().map_err(invalid)).collect::<Result<Vec<_>, _>>()?;
+        // Typed on the project as it stands, as one person typing is: nothing to merge, and nothing copied.
+        if heads.iter().collect::<BTreeSet<_>>() == self.heads.iter().collect::<BTreeSet<_>>() {
+            let mut words: Vec<char> = self.projected_words(id, field).chars().collect();
+            for splice in splices {
+                let at = (splice.at as usize).min(words.len());
+                let delete = (splice.delete as usize).min(words.len() - at);
+                words.splice(at..at + delete, splice.insert.chars()).for_each(drop);
+            }
+            return Ok(words.into_iter().collect());
+        }
+        let mut now = self.doc.clone();
+        let mut then = now.fork_at(&heads).map_err(|_| {
+            Error::new(Kind::Conflict, "project_heads_unknown", "this edit was made on a project this Calcifer doesn't hold").remedy("read the project again")
+        })?;
+        if let Some(text) = text_of(&then, id, field)? {
+            for splice in splices {
+                splice_in(&mut then, &text, splice)?;
+            }
+            now.merge(&mut then).map_err(invalid)?;
+            return words_of(&now, id, field);
+        }
+        let (base, current) = (words_of(&then, id, field)?, words_of(&now, id, field)?);
+        let mut scratch = AutoCommit::new();
+        let text = scratch.put_object(ROOT, "words", ObjType::Text).map_err(invalid)?;
+        scratch.splice_text(&text, 0, 0, &base).map_err(invalid)?;
+        let mut theirs = scratch.fork();
+        let (at, delete, insert) = splice_between(&base, &current);
+        theirs.splice_text(&text, at, delete as isize, insert).map_err(invalid)?;
+        for splice in splices {
+            splice_in(&mut scratch, &text, splice)?;
+        }
+        scratch.merge(&mut theirs).map_err(invalid)?;
+        scratch.text(&text).map_err(invalid)
+    }
+
+    /// The words at `path` of box `id`, as the projection holds them: "" for none or for what isn't words.
+    fn projected_words(&self, id: &str, path: &str) -> String {
+        let Some(Group::Records(boxes)) = self.projection.get("boxes") else { return String::new() };
+        let found = boxes.get(id).and_then(|held| path.split('.').try_fold(held.get("fields")?, |at, step| match at {
+            Value::Array(items) => items.get(step.parse::<usize>().ok()?),
+            _ => at.get(step),
+        }));
+        found.and_then(Value::as_str).unwrap_or_default().to_owned()
     }
 
     /// Explicit conflict metadata, rather than silently presenting AutoSerde's selected winner.
@@ -323,32 +391,8 @@ impl Document {
         Ok(rows)
     }
 
-    pub(super) fn into_stored(self) -> Result<Stored, Error> {
-        let head = ordered(
-            root_value(&self.projection, "head_order"),
-            root_value(&self.projection, "head").and_then(Value::as_object),
-        )
-        .into_iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-        let mut boxes = Vec::new();
-        for (id, record) in record_entries(&self.projection, "boxes").filter(|(_, record)| present(record)) {
-            let ordered = ordered(record.get("field_order"), object(record, "fields"))
-                .into_iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect();
-            boxes.push((
-                record["order"].as_u64().unwrap_or_default(),
-                Boxed {
-                    id: id.clone(),
-                    name: text(record, "name"),
-                    fields: ordered,
-                    at: None,
-                },
-            ));
-        }
-        boxes.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
-        let written = Written { head, boxes: boxes.into_iter().map(|(_, held)| held).collect() };
+    /// What a project from before kept here of its files, versions and runs: project.db's rows take it once (`db::migrate`).
+    pub(super) fn legacy_lock(&self) -> Result<Lock, Error> {
         let mut lock = Lock::default();
         for (id, record) in record_entries(&self.projection, "assets").filter(|(_, record)| present(record)) {
             let mut held: Asset = decode(&record["record"])?;
@@ -384,6 +428,35 @@ impl Document {
         }
         runs.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
         lock.runs = runs.into_iter().map(|(_, run)| run).collect();
+        Ok(lock)
+    }
+
+    pub(super) fn into_stored(self) -> Result<Stored, Error> {
+        let head = ordered(
+            root_value(&self.projection, "head_order"),
+            root_value(&self.projection, "head").and_then(Value::as_object),
+        )
+        .into_iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+        let mut boxes = Vec::new();
+        for (id, record) in record_entries(&self.projection, "boxes").filter(|(_, record)| present(record)) {
+            let ordered = ordered(record.get("field_order"), object(record, "fields"))
+                .into_iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            boxes.push((
+                record["order"].as_u64().unwrap_or_default(),
+                Boxed {
+                    id: id.clone(),
+                    name: text(record, "name"),
+                    fields: ordered,
+                    at: None,
+                },
+            ));
+        }
+        boxes.sort_by(|(a, first), (b, second)| (a, &first.id).cmp(&(b, &second.id)));
+        let written = Written { head, boxes: boxes.into_iter().map(|(_, held)| held).collect() };
         let mut canvas = BTreeMap::new();
         for (_, record) in record_entries(&self.projection, "canvas").filter(|(_, record)| present(record)) {
             let row: CardRow = decode(&record["record"])?;
@@ -391,7 +464,6 @@ impl Document {
         }
         Ok(Stored {
             written: Arc::new(written),
-            lock: Arc::new(lock),
             canvas: Arc::new(canvas),
             crdt: Some(Arc::new(self)),
             ..Default::default()
@@ -567,30 +639,6 @@ pub(super) fn value(stored: &Stored, ops: &[OpRow], previous: &Value, identity: 
     for (index, held) in stored.written.boxes.iter().enumerate() {
         boxes.insert(held.id.clone(), json!({ "present": true, "name": held.name, "order": index, "fields": map_of(&held.fields), "field_order": keys_of(&held.fields) }));
     }
-    let mut assets = tombstoned(previous, "assets");
-    for (key, held) in &stored.lock.assets {
-        let mut versions = tombstoned(assets.get(&held.id).unwrap_or(&Value::Null), "versions");
-        for (discarded, version) in held
-            .versions
-            .iter()
-            .map(|version| (false, version))
-            .chain(held.discarded.iter().map(|version| (true, version)))
-        {
-            versions.insert(
-                version.id.clone(),
-                json!({ "present": true, "discarded": discarded, "record": version }),
-            );
-        }
-        let metadata = Asset {
-            versions: vec![],
-            discarded: vec![],
-            ..held.clone()
-        };
-        assets.insert(
-            held.id.clone(),
-            json!({ "present": true, "key": key, "record": metadata, "versions": versions }),
-        );
-    }
     let identities: BTreeMap<_, _> = stored
         .written
         .boxes
@@ -621,19 +669,8 @@ pub(super) fn value(stored: &Stored, ops: &[OpRow], previous: &Value, identity: 
         record["uid"] = id.clone().into();
         history.insert(id, json!({ "present": true, "record": record }));
     }
-    let mut runs = tombstoned(previous, "runs");
-    for (index, row) in stored.lock.runs.iter().enumerate() {
-        runs.insert(row.id.clone(), json!({ "present": true, "order": index, "record": row }));
-    }
-    let files: Map<String, Value> = stored
-        .lock
-        .files
-        .iter()
-        .filter(|(_, file)| file.row)
-        .map(|(hash, file)| (hash.clone(), encoded(file)))
-        .collect();
     let (id, name) = identity.unwrap_or_else(|| (super::new_key(), String::new()));
-    json!({ "schema": FORMAT, "identity": { "id": id, "name": name }, "head": map_of(&stored.written.head), "head_order": keys_of(&stored.written.head), "boxes": boxes, "assets": assets, "files": files, "canvas": canvas, "history": history, "runs": runs, "reserved": stored.lock.reserved, "makes": stored.lock.makes })
+    json!({ "schema": FORMAT, "identity": { "id": id, "name": name }, "head": map_of(&stored.written.head), "head_order": keys_of(&stored.written.head), "boxes": boxes, "canvas": canvas, "history": history })
 }
 
 /// Share untouched roots and keep the encoded value of each unchanged record.
@@ -655,57 +692,10 @@ fn changed_projection(before: &Stored, after: &Stored, ops: &[OpRow], previous: 
             }
         }
     }
-    if !Arc::ptr_eq(&before.lock, &after.lock) {
-        let old: BTreeMap<_, _> = before.lock.assets.iter().map(|(key, held)| (held.id.as_str(), (key, held))).collect();
-        let assets = records_mut(&mut next, "assets");
-        retire_records(assets, after.lock.assets.values().map(|held| held.id.as_str()));
-        for (key, held) in &after.lock.assets {
-            if old.get(held.id.as_str()).is_some_and(|(old_key, old)| *old_key == key && *old == held)
-                && assets.get(&held.id).is_some_and(|row| present(row)) { continue; }
-            let row = Arc::make_mut(assets.entry(held.id.clone()).or_insert_with(|| Arc::new(json!({}))));
-            let old_versions: BTreeMap<_, _> = old.get(held.id.as_str()).into_iter().flat_map(|(_, held)|
-                held.versions.iter().map(|version| (version.id.as_str(), (false, version)))
-                    .chain(held.discarded.iter().map(|version| (version.id.as_str(), (true, version))))).collect();
-            let versions = records(row, "versions");
-            retire(versions, held.versions.iter().chain(&held.discarded).map(|version| version.id.as_str()));
-            for (discarded, version) in held.versions.iter().map(|v| (false, v)).chain(held.discarded.iter().map(|v| (true, v))) {
-                if old_versions.get(version.id.as_str()).is_some_and(|(was_discarded, old)| *was_discarded == discarded && *old == version)
-                    && versions.get(&version.id).is_some_and(present) { continue; }
-                versions.insert(version.id.clone(), json!({"present":true,"discarded":discarded,"record":version}));
-            }
-            let metadata = Asset { versions:vec![], discarded:vec![], ..held.clone() };
-            row["present"] = true.into();
-            row["key"] = key.clone().into();
-            row["record"] = encoded(&metadata);
-        }
-        let runs = records_mut(&mut next, "runs");
-        retire_records(runs, after.lock.runs.iter().map(|row| row.id.as_str()));
-        let old: BTreeMap<_, _> = before.lock.runs.iter().map(|row| (row.id.as_str(), row)).collect();
-        for (index, row) in after.lock.runs.iter().enumerate() {
-            let unchanged = old.get(row.id.as_str()).is_some_and(|old| *old == row)
-                && runs.get(&row.id).is_some_and(|row| present(row));
-            if !unchanged {
-                runs.insert(row.id.clone(), Arc::new(json!({"present":true,"order":index,"record":row})));
-            }
-        }
-        if before.lock.files != after.lock.files {
-            let old = root_records(&next, "files");
-            let files: Records = after.lock.files.iter().filter(|(_, file)| file.row).map(|(hash, file)| {
-                let record = encoded(file);
-                let value = old.and_then(|rows| rows.get(hash)).filter(|old| old.as_ref() == &record)
-                    .cloned().unwrap_or_else(|| Arc::new(record));
-                (hash.clone(), value)
-            }).collect();
-            if old != Some(&files) {
-                next.insert("files".into(), Group::Records(Arc::new(files)));
-            }
-        }
-        if before.lock.reserved != after.lock.reserved {
-            set_value(&mut next, "reserved", encoded(&after.lock.reserved));
-        }
-        if before.lock.makes != after.lock.makes {
-            set_value(&mut next, "makes", encoded(&after.lock.makes));
-        }
+    // Files, versions and runs are rows of project.db, never node state (cl-904, Paul 11-12): what a project from before held of
+    // them here goes.
+    for key in OUTSIDE {
+        next.remove(key);
     }
     let identities = |stored: &Stored| -> BTreeMap<String, String> {
         stored.written.boxes.iter().map(|held| (name_key(&held.name), held.id.clone()))
@@ -752,7 +742,6 @@ fn changed_projection(before: &Stored, after: &Stored, ops: &[OpRow], previous: 
     // A peer can leave equal display orders even when this edit changed another
     // branch. Check every live order and copy only records needing normalization.
     normalize_orders(&mut next, "boxes", after.written.boxes.iter().map(|held| &held.id));
-    normalize_orders(&mut next, "runs", after.lock.runs.iter().map(|row| &row.id));
     let (id, name) = identity.unwrap_or_else(|| (super::new_key(), String::new()));
     set_value(&mut next, "schema", FORMAT.into());
     set_value(&mut next, "identity", json!({"id":id,"name":name}));
@@ -773,18 +762,6 @@ fn retire_records<'a>(records: &mut Records, live: impl Iterator<Item = &'a str>
     let live: BTreeSet<_> = live.collect();
     for (_, row) in records.iter_mut().filter(|(id, row)| !live.contains(id.as_str()) && present(row)) {
         Arc::make_mut(row)["present"] = false.into();
-    }
-}
-
-fn records<'a>(value: &'a mut Value, field: &str) -> &'a mut Map<String, Value> {
-    if !value[field].is_object() { value[field] = json!({}); }
-    value[field].as_object_mut().expect("logical records")
-}
-
-fn retire<'a>(records: &mut Map<String, Value>, live: impl Iterator<Item=&'a str>) {
-    let live: BTreeSet<_> = live.collect();
-    for (_, value) in records.iter_mut().filter(|(id, _)| !live.contains(id.as_str())) {
-        value["present"] = false.into();
     }
 }
 
@@ -817,7 +794,7 @@ fn reconcile_projection(doc: &mut AutoCommit, before: &Projection, after: &Proje
                         if old.is_some_and(|old| old.as_ref() == records.as_ref()) { continue; }
                         let object = doc.put_object(ROOT, key.as_str(), ObjType::Map).map_err(invalid)?;
                         for (id, value) in records.iter() {
-                            put_changed(doc, &object, Prop::Map(id.clone()), None, value, false)?;
+                            put_record(doc, key, &object, id, None, value)?;
                         }
                         continue;
                     }
@@ -837,12 +814,163 @@ fn reconcile_projection(doc: &mut AutoCommit, before: &Projection, after: &Proje
                     if previous.is_some_and(|row| Arc::ptr_eq(row, value) || row.as_ref() == value.as_ref()) {
                         continue;
                     }
-                    put_changed(doc, &object, Prop::Map(id.clone()), previous.map(Arc::as_ref), value, false)?;
+                    put_record(doc, key, &object, id, previous.map(Arc::as_ref), value)?;
                 }
             }
         }
     }
     Ok(())
+}
+
+/// A record of `namespace`. A box's words are Automerge text, each change to them a splice, so concurrent typing merges by character;
+/// its other fields, and every other record, are values (cl-904).
+fn put_record(doc: &mut AutoCommit, namespace: &str, records: &ObjId, id: &str, before: Option<&Value>, after: &Value) -> Result<(), Error> {
+    let (true, Some(wanted)) = (namespace == "boxes", after.as_object()) else {
+        return put_changed(doc, records, Prop::Map(id.to_owned()), before, after, false);
+    };
+    let held = match doc.get(records, id).map_err(invalid)? {
+        Some((AmValue::Object(ObjType::Map), held)) => held,
+        _ => doc.put_object(records, id, ObjType::Map).map_err(invalid)?,
+    };
+    let keys: Vec<String> = doc.keys(&held).collect();
+    for key in keys.iter().filter(|key| !wanted.contains_key(*key)) {
+        doc.delete(&held, key.as_str()).map_err(invalid)?;
+    }
+    for (key, value) in wanted {
+        let old = before.and_then(|before| before.get(key));
+        match (key.as_str(), value.as_object()) {
+            ("fields", Some(fields)) => {
+                let (object, reused) = match doc.get(&held, "fields").map_err(invalid)? {
+                    Some((AmValue::Object(ObjType::Map), object)) => (object, true),
+                    _ => (doc.put_object(&held, "fields", ObjType::Map).map_err(invalid)?, false),
+                };
+                let keys: Vec<String> = doc.keys(&object).collect();
+                for field in keys.iter().filter(|field| !fields.contains_key(*field)) {
+                    doc.delete(&object, field.as_str()).map_err(invalid)?;
+                }
+                for (field, value) in fields {
+                    let old = old.filter(|_| reused).and_then(|old| old.get(field));
+                    put_node(doc, &object, Prop::Map(field.clone()), old, value, false)?;
+                }
+            }
+            _ => put(doc, &held, Prop::Map(key.clone()), old, value, false)?,
+        }
+    }
+    Ok(())
+}
+
+/// A box's field, or what's in it: its words, at any depth, are Automerge text, each change to them the one splice that makes it; the maps
+/// and lists holding them stay the same objects, so what's typed in one row merges with what's typed in another.
+fn put_node(doc: &mut AutoCommit, parent: &ObjId, prop: Prop, before: Option<&Value>, after: &Value, insert: bool) -> Result<(), Error> {
+    let found = if insert { None } else { doc.get(parent, prop.clone()).map_err(invalid)? };
+    let made = |doc: &mut AutoCommit, kind: ObjType| -> Result<ObjId, Error> {
+        match (&prop, insert) {
+            (Prop::Seq(index), true) => doc.insert_object(parent, *index, kind),
+            _ => doc.put_object(parent, prop.clone(), kind),
+        }
+        .map_err(invalid)
+    };
+    match after {
+        Value::String(words) => {
+            let Some((AmValue::Object(ObjType::Text), text)) = found else {
+                let text = made(doc, ObjType::Text)?;
+                return doc.splice_text(&text, 0, 0, words).map_err(invalid);
+            };
+            let held = doc.text(&text).map_err(invalid)?;
+            if held == *words {
+                return Ok(());
+            }
+            let (at, delete, insert) = splice_between(&held, words);
+            doc.splice_text(&text, at, delete as isize, insert).map_err(invalid)
+        }
+        Value::Object(wanted) => {
+            let (object, reused) = match found {
+                Some((AmValue::Object(ObjType::Map), object)) => (object, true),
+                _ => (made(doc, ObjType::Map)?, false),
+            };
+            let keys: Vec<String> = doc.keys(&object).collect();
+            for key in keys.iter().filter(|key| !wanted.contains_key(*key)) {
+                doc.delete(&object, key.as_str()).map_err(invalid)?;
+            }
+            for (key, value) in wanted {
+                put_node(doc, &object, Prop::Map(key.clone()), before.filter(|_| reused).and_then(|before| before.get(key)), value, false)?;
+            }
+            Ok(())
+        }
+        Value::Array(items) => {
+            let (list, reused) = match found {
+                Some((AmValue::Object(ObjType::List), list)) => (list, true),
+                _ => (made(doc, ObjType::List)?, false),
+            };
+            let length = doc.length(&list);
+            for (index, value) in items.iter().enumerate() {
+                put_node(doc, &list, Prop::Seq(index), before.filter(|_| reused).and_then(|before| before.get(index)), value, index >= length)?;
+            }
+            for index in (items.len()..length).rev() {
+                doc.delete(&list, index).map_err(invalid)?;
+            }
+            Ok(())
+        }
+        _ => put(doc, parent, prop, before.filter(|_| found.is_some()), after, insert),
+    }
+}
+
+/// What turns `from` into `to`, in code points: where they first differ, how much of `from` goes, and what comes in its place.
+fn splice_between<'a>(from: &str, to: &'a str) -> (usize, usize, &'a str) {
+    let prefix = from.chars().zip(to.chars()).take_while(|(a, b)| a == b).count();
+    let (from_rest, to_rest) = (from.chars().count() - prefix, to.chars().count() - prefix);
+    let suffix = from.chars().rev().zip(to.chars().rev()).take(from_rest.min(to_rest)).take_while(|(a, b)| a == b).count();
+    let start = to.char_indices().nth(prefix).map_or(to.len(), |(at, _)| at);
+    let end = to.char_indices().nth(prefix + to_rest - suffix).map_or(to.len(), |(at, _)| at);
+    (prefix, from_rest - suffix, &to[start..end])
+}
+
+/// What's at `path` in box `id`'s fields: a field, then `.`, and the keys and list indexes in it.
+fn node_at(doc: &AutoCommit, id: &str, path: &str) -> Option<(AmValue<'static>, ObjId)> {
+    let get = |parent: &ObjId, prop: Prop| doc.get(parent, prop).ok().flatten().map(|(value, id)| (value.to_owned(), id));
+    let mut at = ROOT;
+    for step in ["boxes", id, "fields"] {
+        let Some((AmValue::Object(ObjType::Map), next)) = get(&at, Prop::Map(step.to_owned())) else { return None };
+        at = next;
+    }
+    let mut found = None;
+    for step in path.split('.') {
+        if let Some((value, next)) = found.take() {
+            let AmValue::Object(_) = value else { return None };
+            at = next;
+        }
+        let prop = match doc.object_type(&at) {
+            Ok(ObjType::List) => Prop::Seq(step.parse().ok()?),
+            _ => Prop::Map(step.to_owned()),
+        };
+        found = Some(get(&at, prop)?);
+    }
+    found
+}
+
+/// The words at `path` of box `id`, where they're text.
+fn text_of(doc: &AutoCommit, id: &str, path: &str) -> Result<Option<ObjId>, Error> {
+    Ok(match node_at(doc, id, path) {
+        Some((AmValue::Object(ObjType::Text), text)) => Some(text),
+        _ => None,
+    })
+}
+
+/// What the words at `path` of box `id` say, text or a plain value; nothing is "".
+fn words_of(doc: &AutoCommit, id: &str, path: &str) -> Result<String, Error> {
+    Ok(match node_at(doc, id, path) {
+        Some((AmValue::Object(ObjType::Text), text)) => doc.text(&text).map_err(invalid)?,
+        Some((value, _)) => value.into_string().unwrap_or_default(),
+        None => String::new(),
+    })
+}
+
+/// `splice` on `text`, held to what's there.
+fn splice_in(doc: &mut AutoCommit, text: &ObjId, splice: &Splice) -> Result<(), Error> {
+    let length = doc.length(text);
+    let at = (splice.at as usize).min(length);
+    let delete = (splice.delete as usize).min(length - at);
+    doc.splice_text(text, at, delete as isize, &splice.insert).map_err(invalid)
 }
 
 fn reconcile_map(doc: &mut AutoCommit, object: &ObjId, before: &Value, after: &Value, reused: bool) -> Result<(), Error> {

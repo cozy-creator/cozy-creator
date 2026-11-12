@@ -83,7 +83,7 @@ fn owe(dir: &Path, settled: bool) {
     PROJECTS.wake.notify_one();
 }
 
-/// Tells every stream if project.yaml or project.lock in `dir` changed since it last did. A write is never held up working out what it changed.
+/// Tells every stream if the project in `dir` changed since it last did. A write is never held up working out what it changed.
 pub(crate) fn project_changed(dir: &Path) {
     moved(dir, || project::revision(dir));
 }

@@ -63,6 +63,24 @@ const fitOver = () => {
 const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
 /** How long a canvas camera action, including entering or leaving Focus, takes. */
 const HERE_MS = 260
+/** How long the wheel stays still before the canvas takes it again after Focus: a trackpad's glide goes on after the hand has left. */
+const WHEEL_QUIET_MS = 200
+
+/** The same view, to a pixel. */
+const sameView = (a: Viewport, b: Viewport) => Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.zoom - b.zoom) < 0.0005
+
+/** `then` once a camera move has ended: when it lands, or by when it should have, as a move stopped on the way never says it ended. */
+function landing(move: Promise<boolean>, then: () => void) {
+  let done = false
+  const land = () => {
+    if (done) return
+    done = true
+    clearTimeout(late)
+    then()
+  }
+  const late = setTimeout(land, HERE_MS + 120)
+  void move.then(land, land)
+}
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
 const pointOf = (event: Pointing) => ("clientX" in event ? event : event.changedTouches[0])
@@ -324,15 +342,30 @@ function Canvas({
   shutNow.current = shut
   const focusTravel = useRef<{ owner: NonNullable<CanvasStore["inPlace"]>; body: Box; started?: boolean } | null>(null)
   const transition = useRef(0)
-  const returning = useRef<Viewport | null>(null)
+  /** The canvas as it was before this visit to Focus: kept from its first box through every other opened from it, until the canvas is back there (cl-955). */
+  const visit = useRef<Viewport | null>(null)
+  /** On its way back from Focus: the canvas takes no hand until it's there, so a wheel still gliding can't stop it at the box's zoom. */
+  const [homing, setHoming] = useState(false)
+  const wheeled = useRef(0)
+  useEffect(() => {
+    const wheel = () => {
+      wheeled.current = performance.now()
+    }
+    window.addEventListener("wheel", wheel, { capture: true, passive: true })
+    return () => window.removeEventListener("wheel", wheel, { capture: true })
+  }, [])
   const closingAddress = useRef<string | null>(null)
   // Once arrived, Focus fits and moves its own image camera.
   store.fitHere = () => {}
   store.enterFocus = (room) => {
     const travel = focusTravel.current
-    if (!travel || travel.started || store.inPlace !== travel.owner || !store.focusEntering.get() || room.width <= 0 || room.height <= 0) return
+    if (!travel || travel.started || store.inPlace !== travel.owner || !store.focusEntering.get()) return
     const pane = stage.current?.querySelector(".react-flow")?.getBoundingClientRect()
-    if (!pane) return
+    // No room to draw in on: Focus shows where it is, never held hidden.
+    if (!room || room.width <= 0 || room.height <= 0 || !pane) {
+      store.focusEntering.set(false)
+      return
+    }
     travel.started = true
     const token = transition.current
     const { body } = travel
@@ -343,9 +376,12 @@ function Canvas({
       zoom,
     }
     const arrived = () => {
-      if (transition.current === token && focusTravel.current === travel && store.inPlace === travel.owner) store.focusEntering.set(false)
+      if (transition.current !== token || focusTravel.current !== travel || store.inPlace !== travel.owner) return
+      if (!sameView(flow.getViewport(), viewport)) void flow.setViewport(viewport)
+      store.focusEntering.set(false)
     }
-    void flow.setViewport(viewport, { duration: HERE_MS }).then(arrived, arrived)
+    // A move cut short (a wheel, a key, another move) never ends: Focus shows once its time is up all the same.
+    landing(flow.setViewport(viewport, { duration: HERE_MS }), arrived)
   }
   /** Focus one asset while preserving Wander's camera and palette state. */
   const writeHere = useCallback(
@@ -357,15 +393,16 @@ function Canvas({
       if (!view) return
       const pose = store.poseOf(name)
       const frame = pose && bodyBox(view, pose)
-      const back = store.inPlace?.back ?? returning.current ?? flow.getViewport()
+      // Once a visit, at its first box: one opened from another, or again on the way back, keeps it.
+      visit.current ??= flow.getViewport()
       transition.current += 1
-      returning.current = null
+      setHoming(false)
       if (store.inPlace) {
         void store.save(store.inPlace.name)
         store.closeSurface()
         store.patch(store.inPlace.name, { here: undefined, hereWords: undefined })
       }
-      const owner = { name, back }
+      const owner = { name }
       store.inPlace = owner
       focusTravel.current = frame ? { owner, body: { x: frame.x, y: frame.y + HEAD, w: frame.w, h: frame.w / aspectOf(view) } } : null
       store.view(name)
@@ -387,37 +424,44 @@ function Canvas({
   }
   const stopWriting = useCallback(() => {
     const held = store.inPlace
-    const back = held?.back ?? focusTravel.current?.owner.back
     const palette = toolsBeforeFocus.current
-    if (!held && !back && palette === null) return
+    // Nothing open: a return already on its way goes on as it was.
+    if (!held && !store.focusedName.get() && palette === null) return
+    const back = visit.current
     const token = ++transition.current
-    // Store the return anchor before any subscribed state can render the old route.
-    if (back) returning.current = back
     toolsBeforeFocus.current = null
     focusTravel.current = null
     store.inPlace = null
     store.closeSurface()
     if (held) {
       void store.save(held.name)
-      store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
+      store.patch(held.name, { here: undefined, hereWords: undefined })
       store.view(held.name)
     }
     store.focusEntering.set(false)
     store.focusedName.set(null)
     if (palette !== null) setShut(palette)
-    if (back) {
-      if (store.projectId) saveViewport(store.projectId, back)
-      const returned = () => {
-        if (transition.current !== token || store.inPlace) return
-        returning.current = null
-        if (store.projectId) saveViewport(store.projectId, flow.getViewport())
+    if (!back) return
+    setHoming(true)
+    if (store.projectId) saveViewport(store.projectId, back)
+    // Exactly where it was, however the way back went: stopped by a key's zoom, or the canvas a moment late.
+    const home = () => {
+      if (transition.current !== token) return
+      if (!sameView(flow.getViewport(), back)) void flow.setViewport(back)
+      const still = performance.now() - wheeled.current
+      if (still < WHEEL_QUIET_MS) {
+        setTimeout(home, WHEEL_QUIET_MS - still)
+        return
       }
-      void flow.setViewport(back, { duration: HERE_MS }).then(returned, returned)
+      visit.current = null
+      setHoming(false)
     }
+    landing(flow.setViewport(back, { duration: HERE_MS }), home)
   }, [store, flow])
   const leaveHere = useCallback(() => {
-    if (!store.inPlace) return
-    closingAddress.current = store.inPlace.name
+    const name = store.inPlace?.name ?? store.focusedName.get()
+    if (!name) return
+    closingAddress.current = name
     stopWriting()
     navigate(to())
   }, [store, navigate, stopWriting, to])
@@ -621,7 +665,7 @@ function Canvas({
 
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (store.focusedName.get() || returning.current) return
+      if (store.focusedName.get() || visit.current) return
       if (store.projectId) keepViewport(store.projectId, viewport)
     },
     [store, keepViewport],
@@ -651,6 +695,10 @@ function Canvas({
     [flow],
   )
   store.duplicate = (names) => selectOnly(placer.duplicate(names))
+  store.placeFiles = (files, then, near) => {
+    const by = near ? store.position(near) : null
+    placer.add(files, by ? { x: by.x + (by.w ?? CARD_WIDTH) + CARD_WIDTH, y: by.y } : visibleCentre(), then)
+  }
 
   const draggedEls = (nodes: ElementNode[]) => nodes.flatMap((node) => document.querySelector(`.react-flow__node[data-id="${CSS.escape(node.id)}"]`) ?? [])
 
@@ -967,10 +1015,10 @@ function Canvas({
           defaultNodes={[]}
           nodeTypes={nodeTypes}
           defaultViewport={saved ?? undefined}
-          panOnScroll={!focusedName}
-          panOnDrag={!focusedName}
-          zoomOnScroll={!focusedName}
-          zoomOnPinch={!focusedName}
+          panOnScroll={!focusedName && !homing}
+          panOnDrag={!focusedName && !homing}
+          zoomOnScroll={!focusedName && !homing}
+          zoomOnPinch={!focusedName && !homing}
           panOnScrollSpeed={1}
           selectionMode={SelectionMode.Partial}
           selectNodesOnDrag={false}

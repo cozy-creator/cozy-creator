@@ -161,9 +161,9 @@ function ProjectTabs({ id, readable, children }: { id: string | null; readable: 
       </nav>
       <span className="ptabs-said" ref={beside}>
         {saidOfFile.length > 0 && (
-          <Link className="sum ood" to={to("yaml")} title={noHash(saidOfFile.join("\n"))}>
+          <span className="sum ood" title={noHash(saidOfFile.join("\n"))}>
             !
-          </Link>
+          </span>
         )}
         {children}
       </span>
@@ -240,11 +240,6 @@ function MainMenu({ id }: { id: string | null }) {
         {id && (
           <Link className="tb" to={to("files")}>
             Files
-          </Link>
-        )}
-        {id && (
-          <Link className="tb" to={to("yaml")}>
-            project.yaml
           </Link>
         )}
         {id && <Link className="tb" to={to("vault")}>Project encryption</Link>}

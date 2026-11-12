@@ -152,14 +152,17 @@ const DESCRIBED_MS = 300_000;
   await openBox(page, 'shot');
   await page.locator(`.card.here .take[data-take="${approve}"]`).dblclick();
   check('approve_shows_at_once', (await page.locator(`.card.here .take.approved[data-take="${approve}"]`).count()) === 1);
+  // Moves are the canvas's: Focus is over it, so leave it first.
+  await away();
   const from = await place('shot');
   await drag('shot', 140, 90);
   const moved = await place('shot');
   await drag('shot', 60, 120);
   const twice = await place('shot');
   check('moves_show_at_once', from !== moved && moved !== twice, { from, moved, twice });
-  await openBox(page, 'named');
-  await box('named').locator('.nm').dblclick();
+  // A tap on its name at rest renames it (Focus has its own, by its heading).
+  await away();
+  await box('named').locator('.nm').click();
   await page.waitForSelector('.nm-field');
   await page.keyboard.press('ControlOrMeta+a');
   await page.keyboard.type('renamed');

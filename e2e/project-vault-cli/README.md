@@ -15,7 +15,7 @@ launch, successful open without a vault-result preamble, and unlock on the selec
 daemon without rollback. Console output and one-use browser codes stay in memory; receipts
 contain only command/exit metadata. Windows interactive-console coverage is not implied by those PTY cells.
 
-Media imports, field edits, history, and YAML reads use the installed
+Media imports, field edits, history, and project reads use the installed
 controller's authenticated browser API over loopback. Media uploaded after
 encryption goes to `/v1/project-files/{digest}?project={id}` before the import.
 The route uses the canonical project ID returned in JSON. The API authentication
@@ -32,7 +32,7 @@ encrypted backing for known synthetic canaries and credential strings. Only
 runtime `view` directories are excluded. A canary scan is a functional privacy
 check, not a cryptographic audit or proof against every possible encoding.
 The fixture opens the intentionally decrypted folder with `cozy status` after
-the scan. It then compares the whole graph through the YAML endpoint and
+the scan. It then compares the whole graph through the project API and
 requires a distinct project identity while the original is locked.
 
 Conversion always removes the unencrypted original and its stage, through the API

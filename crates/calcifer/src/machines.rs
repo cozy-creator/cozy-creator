@@ -657,6 +657,14 @@ impl Machines {
     /// The machine as `GET /v1/machines` answers it.
     pub(crate) fn picture(&self, row: &MachineRow) -> Result<Machine, Error> {
         let store = self.store();
+        let ending = self.pending_end(&row.name)?;
+        // `row` may have been read before its end settled (a list reads every row, then each one's asks): an end that is no
+        // longer pending ended it first (`finish_end`), so the row is read again after its asks, never an old state beside them.
+        let again = match ending.is_none() && row.state != MachineState::Ended && row.rental_id.is_some() {
+            true => store.machine(&row.name).map_err(internal)?,
+            false => None,
+        };
+        let row = again.as_ref().unwrap_or(row);
         let mut machine = Machine::from(row);
         if row.kind == MachineKind::Local {
             machine.controller_key = self.controller_key().ok();
@@ -666,7 +674,6 @@ impl Machines {
         machine.ordered = self.ordered(row);
         let load = store.machine_load().map_err(internal)?;
         (machine.running, machine.queued) = load.get(&row.name).copied().unwrap_or_default();
-        let ending = self.pending_end(&row.name)?;
         if let Some(ask) = ending.filter(|_| row.state != MachineState::Ended) {
             machine.state = MachineState::Ending;
             let owed = self.end_owes(&ask.key, &row.name);
@@ -769,13 +776,14 @@ impl Machines {
 
     /// A run the machine holds for this controller, with this controller's record of it.
     fn held(&self, run:v1::RunState)->Option<wire::LiveRun> {
-        let row=self.calcifer.maintenance_store().run(&run.id).ok()??;
+        // A run sent again (cl-935) is `<id>~<attempt>` there.
+        let row=self.calcifer.maintenance_store().run(crate::store::calcifer_id(&run.id)).ok()??;
         Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting:run.waiting})
     }
 
     fn operation(&self,operation:&v1::Operation)->Option<wire::Operation> {
         if operation.runs.is_empty() {return None;}
-        let runs=operation.runs.iter().map(|id|self.calcifer.maintenance_store().run(id).ok().flatten().map(|row|row.number)).collect::<Option<Vec<_>>>()?;
+        let runs=operation.runs.iter().map(|id|self.calcifer.maintenance_store().run(crate::store::calcifer_id(id)).ok().flatten().map(|row|row.number)).collect::<Option<Vec<_>>>()?;
         let rate=Some(operation.bytes_per_s).filter(|rate|*rate>=1.0);
         let left=operation.bytes_total.saturating_sub(operation.bytes_done);
         Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs})
@@ -1177,7 +1185,8 @@ impl Machines {
         let rows = store.machines().map_err(internal)?;
         let seen = lock(&self.seen);
         let count = |row: &MachineRow| match seen.get(&row.name).and_then(|s| s.frame.as_ref()) {
-            Some(frame) if frame.phase == "ready" => Some(frame.gpus.len() as u32),
+            // GPUs out of service (cl-935) don't count.
+            Some(frame) if frame.phase == "ready" => Some(frame.gpus.iter().filter(|g| g.out_of_service.is_empty()).count() as u32),
             _ => self.hubs.gpus(row),
         };
         Ok(rows
@@ -1775,6 +1784,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
                 memory_class: Some(gpu.memory_class.clone()).filter(|c| !c.is_empty()),
                 memory_limit_bytes: gpu.memory_limit_bytes,
                 display: gpu.display,
+                out_of_service: gpu.out_of_service.clone(),
             })
             .collect(),
         mode: frame.mode.clone(),

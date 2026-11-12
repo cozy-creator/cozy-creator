@@ -23,10 +23,13 @@ macro_rules! table {
 }
 
 /// The built-in tables.
-pub(crate) const TABLES: [&str; 17] = [
+pub(crate) const TABLES: [&str; 23] = [
     table!("sdxl.single_file"),
     table!("anima.single_file"),
+    table!("anima.diffusion_model"),
     table!("qwenimage21.comfy"),
+    table!("krea2.native"),
+    table!("krea2.comfy"),
     table!("h3.native"),
     table!("h3.comfy"),
     table!("h3.lora"),
@@ -36,6 +39,9 @@ pub(crate) const TABLES: [&str; 17] = [
     table!("flux2.lora"),
     table!("flux3klein.lora"),
     table!("fibo2.lora"),
+    table!("moss.lora"),
+    table!("anima.lora"),
+    table!("qwenimage.lora"),
     table!("seedvr2"),
     table!("h3.latent_upscaler"),
     table!("relayvsr"),

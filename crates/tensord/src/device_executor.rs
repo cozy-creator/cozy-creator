@@ -1299,7 +1299,24 @@ impl Ending {
         let mut ended = match reap_group(exact, self.child.take()) {
             Ok(ended) => ended,
             Err(error) => {
-                std::mem::forget(std::mem::take(&mut self.retained));
+                // Stuck in the kernel: what it retains goes once it exits, if ever.
+                let retained = std::mem::take(&mut self.retained);
+                match exact.try_clone() {
+                    Ok(exact) => {
+                        let pid = exact.birth().pid;
+                        let kept = std::thread::Builder::new().name(format!("retained-{pid}")).spawn(move || {
+                            if exact.wait().is_ok() {
+                                drop(retained);
+                            } else {
+                                std::mem::forget(retained);
+                            }
+                        });
+                        if let Err(spawn) = kept {
+                            tracing::warn!("pid {pid}'s retained sources went before its exit: {spawn}");
+                        }
+                    }
+                    Err(_) => std::mem::forget(retained),
+                }
                 return Err(error);
             }
         };

@@ -101,7 +101,7 @@ held_back?: string | null, };
 export type Alternative = { sku: string, gpus: number, label?: string, time: number, usd_micros_per_hour: number, };
 
 /**
- * `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to `version`: a short run of digits is its version (1 first),
+ * `POST /v1/projects/{id}/approve`: `name` approved at `version`: a short run of digits is its version (1 first),
  * anything else a hash prefix of any file in the project's `files/`.
  */
 export type Approve = { name: string, version: string, };
@@ -173,6 +173,10 @@ export type Asset = { name: string, standing: Standing,
  */
 making?: Array<number>,
 /**
+ * Its takes asked for and not landed, in the order they go, each by its id.
+ */
+takes?: Array<TakeNow>,
+/**
  * Its file's type: `image`, `video` or `audio`.
  */
 kind: string,
@@ -189,7 +193,7 @@ tool?: string | null,
  */
 versions: number,
 /**
- * Each one's hash prefix, to name it in project.yaml.
+ * Each one's hash prefix, what a box's `approved` names it by.
  */
 prefixes?: Array<VersionPrefix>,
 /**
@@ -201,7 +205,7 @@ version?: number | null,
  */
 approved?: number | null,
 /**
- * Its state is a file project.yaml names: nothing is made.
+ * Its state is a file its box approves: nothing is made.
  */
 pinned?: boolean,
 /**
@@ -301,17 +305,29 @@ kept?: { [key in string]: Card | null }, };
  * `PATCH /v1/projects/{id}/assets/{name}`: these inputs set, each by a control's `field`, and nothing else moved. A null clears one.
  * `tool` changes what makes it.
  */
-export type AssetPatch = { fields?: { [key in string]: JsonValue }, tool?: string | null, };
+export type AssetPatch = { fields?: { [key in string]: JsonValue }, tool?: string | null,
+/**
+ * Words typed, as splices made on the project at `heads`: merged by character with whatever was written since (cl-904).
+ */
+typed?: Typed | null, };
 
 /**
  * What a `PATCH` answers. `was` is the ETag it wrote over: equal to what a window read means nobody else wrote since.
  */
-export type AssetPatched = { name: string, etag: string, was: string, warnings?: Array<string>, };
+export type AssetPatched = { name: string, etag: string, was: string, warnings?: Array<string>,
+/**
+ * Each field written, whole, as it stands at `heads` once merged: what the page types on from.
+ */
+fields?: { [key in string]: JsonValue }, heads?: Array<string>, };
 
 /**
  * `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
  */
 export type AssetVersions = { asset: Asset, versions: Array<Version>,
+/**
+ * The project document's heads it was read at, as a project's.
+ */
+heads?: Array<string>,
 /**
  * The numbers discarded that `PUT` can still bring back: `reclaim` ends that.
  */
@@ -398,11 +414,11 @@ tools: Array<string>, };
 export type BrowserSession = { token: string, media: string, };
 
 /**
- * Who made a change to a project: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client of the API.
+ * Who made a change to a project: the page (`client` names its tab), the CLI, or another client of the API.
  */
 export type By = {
 /**
- * `page`, `cli`, `file` or `api`.
+ * `page`, `cli` or `api`.
  */
 via: string, client?: string | null, };
 
@@ -466,7 +482,7 @@ export type CanvasPatched = { seq: number,
 kept?: { [key in string]: Card | null }, };
 
 /**
- * Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
+ * Where a card sits on a project's canvas: one row of its canvas.
  */
 export type Card = { x: number, y: number, w?: number | null, };
 
@@ -624,8 +640,8 @@ export type DevBuild = { sha256: Digest, name: string, version?: string | null, 
 export type Digest = string;
 
 /**
- * A model's display metadata as set at the Hub: shown in the model browser, never applied (a
- * run's LoRA strength stays 1.0).
+ * A model's display metadata as set at the Hub: shown in the model browser; a LoRA given without a
+ * strength runs at its recommended one.
  */
 export type Displayed = { model: string, trigger: string | null, strength: number | null,
 /**
@@ -770,7 +786,7 @@ lanes: Array<string>, private: boolean,
  */
 author: ModelAuthor | null,
 /**
- * Its owner's recommended LoRA strength, when provided; not applied by a render automatically.
+ * Its owner's recommended LoRA strength, when provided: what it runs at when given without one.
  */
 strength?: number | null,
 /**
@@ -811,7 +827,11 @@ memory_limit_bytes?: number,
 /**
  * It draws a screen now: a render on it makes the screen lag.
  */
-display?: boolean, };
+display?: boolean,
+/**
+ * Why nothing is placed on it now (cl-935); empty: in service.
+ */
+out_of_service?: string, };
 
 /**
  * A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
@@ -928,7 +948,7 @@ export type HubProblem = { hub: string, code: string, message: string, };
 
 /**
  * `POST /v1/projects/{id}/imports`, under an `Idempotency-Key`: the file at `source` kept in the project, as one constant more of
- * project.yaml, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), a file of the project's
+ * the project, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), a file of the project's
  * by its hash or the start of it, or an `http(s)` URL.
  */
 export type Import = { source: string,
@@ -1543,7 +1563,7 @@ model_kind?: ModelKind | null, created_at: string,
  */
 source: string | null, author: ModelAuthor | null,
 /**
- * Words a LoRA's prompt uses, and its recommended strength (a run's default stays 1.0).
+ * Words a LoRA's prompt uses, and its recommended strength: what it runs at when given without one.
  */
 trigger: string | null, strength: number | null,
 /**
@@ -1727,7 +1747,12 @@ trained_on?: string | null, trigger?: string | null, strength?: number | null,
 /**
  * `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
  */
-base?: string | null, };
+base?: string | null,
+/**
+ * Files added to the checkpoint, `<component>/<path>` → a held file's `sha256:<hex>`: each becomes that component's asset
+ * (a component of none but these when the checkpoint has no such component).
+ */
+add?: { [key in string]: string }, };
 
 /**
  * Bytes moved and, when they took time, their rate and its share of the measured ceiling.
@@ -1897,9 +1922,9 @@ export type OrgClaim = { claimed: boolean, code: string | null, org: string, pro
 export type OrgProof = { checked: string, handle: string, where: string, };
 
 /**
- * An asset project.lock keeps versions of that project.yaml no longer names: the bytes `reclaim`
+ * An asset the project keeps versions of that it no longer names: the bytes `reclaim`
  * would free of it (none that anything else names, and each file once across the orphans), and,
- * when project.yaml has exactly one new asset of its kind with none, that asset: renamed, it would
+ * when the project has exactly one new asset of its kind with none, that asset: renamed, it would
  * be this (`POST /v1/projects/{id}/rename`).
  */
 export type Orphan = { name: string, kind: string, versions: number, bytes: number, renamed_to?: string | null, };
@@ -2003,7 +2028,7 @@ retained?: boolean,
 failed?: Array<string>, };
 
 /**
- * Pick up from here: a take, by mention, and the frame its new part starts at. Never written to project.yaml; the take it makes records it.
+ * Pick up from here: a take, by mention, and the frame its new part starts at. Never written to its box; the take it makes records it.
  */
 export type Pickup = {
 /**
@@ -2153,6 +2178,10 @@ export type ProjectState = { id: string,
  */
 code: string, path: string, assets: Array<Asset>,
 /**
+ * The project document's heads its boxes were read at: what words typed on them were typed on (`AssetPatch.typed`).
+ */
+heads?: Array<string>,
+/**
  * What is running and what is queued, in the order it goes.
  */
 queue?: Array<Queued>,
@@ -2165,7 +2194,7 @@ missing?: Array<string>,
  */
 stale?: Array<Stale>,
 /**
- * Assets project.lock keeps versions of that project.yaml no longer names.
+ * Assets the project keeps versions of that it no longer names.
  */
 orphans?: Array<Orphan>,
 /**
@@ -2173,7 +2202,7 @@ orphans?: Array<Orphan>,
  */
 busy: boolean,
 /**
- * How many files project.lock names are not on this computer.
+ * How many files the project names are not on this computer.
  */
 absent: number,
 /**
@@ -2217,7 +2246,7 @@ export type ProjectViewPatch = { viewport?: ProjectViewport | null, selection?: 
 export type ProjectViewport = { x: number, y: number, zoom: number, };
 
 /**
- * What reading a project said: of the asset or entity `name`, or of the file as a whole.
+ * What reading a project said: of the asset or entity `name`, or of the project as a whole.
  */
 export type ProjectWarning = { name?: string | null, message: string, };
 
@@ -2304,7 +2333,7 @@ state: string,
 detail: string, };
 
 /**
- * A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.
+ * A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the project names it.
  */
 export type Read = { name: string,
 /**
@@ -2386,8 +2415,8 @@ export type RemovedRelease = { package: string, release: string,
 hub: string, };
 
 /**
- * `POST /v1/projects/{id}/rename`: what project.lock keeps of `from` kept as `to`, an asset project.yaml names now with no
- * versions. Nothing on disk moves; people rename the asset, and its `<mentions>`, in project.yaml.
+ * `POST /v1/projects/{id}/rename`: box `from` called `to`, with its versions, its canvas row and every `<from>` in the
+ * project's words. Nothing on disk moves.
  */
 export type Rename = { from: string, to: string, };
 
@@ -2891,7 +2920,12 @@ outdated?: boolean,
 /**
  * Pick up from here: one box's new take goes on from this take's frame.
  */
-pickup?: Pickup | null, };
+pickup?: Pickup | null,
+/**
+ * The ids of the takes it asks for, one each, made by whoever asks (the page, as Render is pressed): a take is known by its id
+ * from here to its version. Only for one box named; asked again with an id it already has, it's the same take. None: Calcifer's.
+ */
+takes?: Array<string>, };
 
 /**
  * A line a render said, once however often it came: of the assets `names` (a warning's are those whose runs gave it), or of the
@@ -2919,6 +2953,11 @@ status: string, };
  * A pickup's frames: `offset + k * every`, from frame `first`.
  */
 export type Snap = { every: number, offset: number, first: number, };
+
+/**
+ * `delete` Unicode code points of the words at `at`, and `insert` in their place.
+ */
+export type Splice = { at: number, delete: number, insert: string, };
 
 /**
  * `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
@@ -2989,9 +3028,21 @@ export type StuckProcess = { pid: number, command: string,
  */
 wchan: string,
 /**
- * When the machine found it stuck.
+ * When it was killed.
  */
-since_unix_ms: number, };
+since_unix_ms: number,
+/**
+ * Its resident host memory then.
+ */
+resident_bytes: number,
+/**
+ * The GPUs (by index) out of service while it holds their memory, nothing placed on them until it exits (cl-935).
+ */
+gpus: Array<number>,
+/**
+ * What the driver showed it holding on them.
+ */
+gpu_bytes: number, };
 
 /**
  * The answer to a submit: 202 when this call recorded the run, 200 (`replay`) when the key had.
@@ -3012,6 +3063,16 @@ preparing?: boolean,
  * client writes it into the package's folder, as `cargo run` writes Cargo.lock.
  */
 lock?: string | null, };
+
+/**
+ * A take of an asset that hasn't landed, by its id, from the render that asked it to its version (`VersionPrefix::id`): queued
+ * until its turn, then sent, with its run once that has a number (cl-945); or one that failed, with why (cl-954).
+ */
+export type TakeNow = { id: string, queued?: boolean, run?: number | null,
+/**
+ * It ended with no version, and why: listed until it's dismissed (`Cancel::takes`), as it failed (cl-954).
+ */
+failure?: ErrorBody | null, };
 
 /**
  * Bytes make_room took of one class (F, O, S, N, D, W, P).
@@ -3142,6 +3203,10 @@ auto?: boolean, placeholder?: string | null,
  * `Advanced()`: drawn in a collapsed Advanced section under More.
  */
 advanced?: boolean,
+/**
+ * `When()`: it applies only while a field beside it has a value; else the box dulls it and keeps its value.
+ */
+when?: When | null,
 /**
  * A prompt that takes only these kinds of file.
  */
@@ -3312,6 +3377,17 @@ note?: string | null, };
 export type TrackNow = { clips: Array<ClipNow>, };
 
 /**
+ * Splices of a box's words, by where they are: a field, or words in one (`beats.0.description`), made on the project document as it
+ * stood at `heads` (a read's).
+ */
+export type Typed = { heads: Array<string>, fields: { [key in string]: Array<Splice> },
+/**
+ * What the typer's words say with them: words that say it already are left as they are, so the same edit sent twice (a last
+ * write as a page goes, and a save on its way) lands once.
+ */
+to?: { [key in string]: string }, };
+
+/**
  * When a history entry was undone, and by whom.
  */
 export type Undone = { at_ms: number, by: By, };
@@ -3464,9 +3540,13 @@ export type VersionPatch = { metadata: { [key in string]: JsonValue }, };
 export type VersionPatched = { name: string, number: number, metadata: { [key in string]: JsonValue }, };
 
 /**
- * A version's number and the hash prefix project.yaml can name its file by.
+ * A version's number and the hash prefix a box's `approved` names its file by.
  */
-export type VersionPrefix = { number: number, prefix: string,
+export type VersionPrefix = { number: number,
+/**
+ * Its id: the take's that made it, from the render that asked for it on.
+ */
+id?: string, prefix: string,
 /**
  * The take it picked up from.
  */
@@ -3545,3 +3625,8 @@ export type WarmLevel = "off" | "installed" | "downloaded" | "imported" | "host"
  * Something noticed about a run that did not stop it: a stable code and a message.
  */
 export type Warning = { code: string, message: string, };
+
+/**
+ * `When(field, *values)`: a field that applies only while its sibling `field` is truthy, or is one of `values`.
+ */
+export type When = { field: string, values?: Array<JsonValue>, };

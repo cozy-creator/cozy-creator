@@ -15,7 +15,7 @@ cd "$root"
 if [[ ${1:-} != --once ]]; then
     exec watchexec --debounce 500ms --on-busy-update queue --shell none \
         --watch crates --watch web --watch vendor --watch scripts/dev-local.sh \
-        --watch scripts/prepare-securefs.py \
+        --watch scripts/prepare-securefs.py --watch scripts/restart-calcifer-when-idle.py \
         --watch Cargo.toml --watch Cargo.lock --watch rust-toolchain.toml \
         --ignore '**/target/**' --ignore '**/node_modules/**' --ignore '**/dist/**' \
         --ignore '**/__pycache__/**' --ignore '**/*.pyc' \
@@ -62,8 +62,9 @@ install -m 755 "$binary" "$staged"
 flock -u 8
 exec 8>&-
 
-# Replace the CLI and restart Calcifer directly, so a model running on the local
-# worker does not delay interactive changes. Existing processes keep their inode.
+# Replace the CLI at once, and restart Calcifer once it serves nothing (cl-962): an upload, a publish, a
+# submission or a page's write in flight holds it up to 10 min, then it restarts anyway and says so. A model
+# running on the local worker does not hold it. Existing processes keep their inode.
 install_lock="${COZY_DEV_INSTALL_LOCK:-$HOME/.cozy/dev-local-install.lock}"
 exec 9>"$install_lock"
 flock 9
@@ -110,9 +111,10 @@ else:
 PYTHON
 }
 
+restart() { python3 "$root/scripts/restart-calcifer-when-idle.py" --wait "${COZY_DEV_RESTART_WAIT_S:-600}"; }
 if cmp --silent "$staged" "$installed"; then
     if ! ready; then
-        systemctl --user restart cozy-calcifer.service
+        restart
         ready
     fi
     printf '%s installed Cozy already matches this build\n' "$(date -Is)"
@@ -120,7 +122,7 @@ if cmp --silent "$staged" "$installed"; then
 fi
 cp --reflink=auto -p "$installed" "$HOME/.cozy/bin/.cozy-previous"
 mv -f "$staged" "$installed"
-systemctl --user restart cozy-calcifer.service
+restart
 ready
 printf '%s local CLI and Calcifer updated in %ss\n' "$(date -Is)" "$((SECONDS - started))"
 "$installed" --version

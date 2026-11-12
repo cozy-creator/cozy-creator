@@ -150,7 +150,10 @@ const near = (a, b, by = 0.6) => Math.abs(a - b) <= by;
   check('the_take_plays_on_from_where_it_was', typeof after === 'object' && after.at >= 4 && near(after.duration, 30, 1), after);
   check('no_glimpse_once_it_lands', (await box.locator('.glimpse').count()) === 0);
   const now = await box.locator('.media').boundingBox();
-  check('the_take_is_in_its_place', ['x', 'y', 'width', 'height'].every((key) => Math.abs(now[key] - where[key]) <= 2), { where, now });
+  // Where it was: Focus may make room under a take for Pick up from here, so the same place and shape, not to the pixel.
+  const overlap = Math.max(0, Math.min(now.x + now.width, where.x + where.width) - Math.max(now.x, where.x)) * Math.max(0, Math.min(now.y + now.height, where.y + where.height) - Math.max(now.y, where.y));
+  const share = overlap / (now.width * now.height + where.width * where.height - overlap);
+  check('the_take_is_in_its_place', share > 0.85 && Math.abs(now.width / now.height - where.width / where.height) < 0.02, { where, now, share });
   await shot('take');
   await closeBox(page);
 

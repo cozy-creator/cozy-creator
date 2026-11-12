@@ -5,7 +5,7 @@ import { Icon } from "../ui/Icon"
 import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
 import { NameField } from "./NameField"
-import { makingRun, shownOf, watched } from "./shown"
+import { failureOf, makingRun, shownOf, watched } from "./shown"
 import { RunFace, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
 import { noHash } from "./text"
@@ -14,7 +14,7 @@ import { pressBeganOutside } from "../ui/press"
 import "./FocusedViewport.css"
 
 /** What's on a focused item rather than its background. */
-const OWN = ".media, .tl, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
+const OWN = ".media, .tl, .tl-player, .tl-transport, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
 
 /** A workspace for one item. The Wander camera stays behind it, unchanged. */
 export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string; onClose(): void; onCopyVersion(file: CarriedFile, x: number, y: number): void }) {
@@ -22,17 +22,18 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   const view = useElement(name)
   const element = useRef<HTMLElement>(null)
   const entering = useSignal(store.focusEntering)
+  // Drawn once it has something to show: a box on its way in has nothing yet.
+  const shown = Boolean(view?.asset || view?.entity)
   useLayoutEffect(() => {
-    if (!entering) return
+    if (!entering || !shown) return
     const frame = requestAnimationFrame(() => {
       const viewer = element.current?.querySelector<HTMLElement>(".focus-viewer")
       const room = viewer?.clientWidth && viewer.clientHeight ? viewer : element.current?.querySelector<HTMLElement>(".focus-body")
-      if (!room) return
-      const rect = room.getBoundingClientRect()
-      store.enterFocus({ x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+      const rect = room?.getBoundingClientRect()
+      store.enterFocus(rect ? { x: rect.left, y: rect.top, width: rect.width, height: rect.height } : null)
     })
     return () => cancelAnimationFrame(frame)
-  }, [entering, name, store])
+  }, [entering, shown, name, store])
   useEffect(() => {
     if (!entering && store.get(name)?.hereWords) element.current?.querySelector<HTMLElement>(".focus-body [contenteditable=true], .focus-body textarea")?.focus({ preventScroll: true })
   }, [entering, name, store])
@@ -55,7 +56,8 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   const arriving = useArriving(view)
   if (!view?.asset && !view?.entity) return null
   const version = shownOf(view)?.number
-  const writing = Boolean(view.hereWords) && !watched(view)
+  // An Edit is never written as a take: what it shows is its cut, its versions joined from it (cl-957).
+  const writing = Boolean(view.hereWords) && !watched(view) && !view.asset?.timeline
   // A render on its way says how between its name and its picture, large, and covers none of it (Paul, 11-12).
   const onItsWay = view.asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
   // What its runs said (a slow run, a hot GPU: cl-913), as an open box's head says it: a ! that shows the lines.
@@ -87,7 +89,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
-      {(onItsWay || arriving !== undefined) && view.asset?.rendering == null && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above />}
+      {(onItsWay || arriving !== undefined) && view.asset?.rendering == null && !view.asset?.timeline && !failureOf(view) && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above />}
       {view.warned && warnings.length > 0 && (
         <div className="warned-lines focus-warnings">
           {warnings.map((warning) => (

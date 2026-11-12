@@ -18,11 +18,12 @@
 # 0.23.0) must instead be refused at every step with the typed client_too_old naming `cozy update`. Any 5xx fails.
 # --candidates takes e2e/candidates' $CANDIDATES: its --tensord file (or version) or its --release's Linux archive is the
 # client, with its --runtime and --tensorfs. --command runs a focused suite instead of the cells: `FILE OUT COZY RUNTIME
-# TENSORFS ARGS...`, signed in, as the Hub's admin with --admin.
+# TENSORFS ARGS...`, signed in, as the Hub's admin with --admin. --software RUNTIME,TENSORFS pins the Hub's software (what
+# `cozy machine update <machine>` naming nothing moves a machine to).
 set -uo pipefail
 E2E=$(cd "$(dirname "$0")/.." && pwd) HERE=$(cd "$(dirname "$0")/../../release-gate" && pwd)
 START=$PWD
-SRC= HUB_BIN= CLIENT= BIN= CHECKS= COMMAND= OUT= MIN= RT= TF= PUBLICATION_LOG= CLIENT_READY= ADMIN= RELEASE= PRIVATE_ARTIFACTS=
+SRC= HUB_BIN= CLIENT= BIN= CHECKS= COMMAND= OUT= MIN= RT= TF= PUBLICATION_LOG= CLIENT_READY= ADMIN= RELEASE= PRIVATE_ARTIFACTS= SOFTWARE=
 COMMAND_ARGS=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -42,6 +43,7 @@ while [ $# -gt 0 ]; do
         esac
       done;;
     --publication-log) PUBLICATION_LOG=$(realpath -m "$2");;
+    --software) SOFTWARE=$2;;
     --command) COMMAND=$(realpath "$2") || exit 2;;
     --admin) ADMIN=1; shift; continue;;
     --private-artifacts) PRIVATE_ARTIFACTS=1; shift; continue;;
@@ -181,7 +183,8 @@ hub=("$WORK/tensorhub$EXE" --config "$(native "$CONFIG")"
   --set storage.backend.kind=s3 --set storage.backend.endpoint_url=$S3 --set storage.backend.region=us-east-1
   --set storage.backend.access_key_id=$S3KEY --set storage.backend.secret_access_key=$S3SECRET
   --set storage.repo_cas.bucket=repo --set storage.package_source.bucket=source
-  --set package_release.scratch_root="$(native "$WORK/release")" ${MIN:+--set clients.cozy_min=$MIN})
+  --set package_release.scratch_root="$(native "$WORK/release")" ${MIN:+--set clients.cozy_min=$MIN}
+  ${SOFTWARE:+--set software.runtime=${SOFTWARE%,*} --set software.tensorfs=${SOFTWARE#*,}})
 (umask 077; printf '%s\0' "${hub[@]}" > "$WORK/hub-command.argv")
 export COZY_TEST_HUB_COMMAND_FILE=$WORK/hub-command.argv
 "${hub[@]}" migrate > hub-migrate.log 2>&1 || die hub "migrate: $(tail -c 300 hub-migrate.log)"

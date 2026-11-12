@@ -6,7 +6,7 @@ import { useConnection } from "../../app/Connection"
 import { useProjectId, useTo } from "../../app/Shell"
 import { say } from "../../ui/notes"
 import { Confirm, Failure, Section, useAsk, useSignedIn } from "../common"
-import { shown } from "../format"
+import { shown, stamp } from "../format"
 import { OnMachine } from "../machines/OnMachine"
 import { LibraryFrame } from "./Library"
 
@@ -30,7 +30,7 @@ export function Packages() {
           <li key={found.package}>
             <Link to={to(`packages/${encodeURIComponent(found.package)}`)}>
               <b>{shown(found.package)}</b>
-              <small>{[found.latest_release, found.created_at].filter(Boolean).join(" · ")}</small>
+              <small>{[found.latest_release, found.created_at && stamp(found.created_at)].filter(Boolean).join(" · ")}</small>
             </Link>
           </li>
         ))}
@@ -165,7 +165,7 @@ export function PackageDrawer() {
             {data?.releases.map((row) => (
               <tr key={row.release}>
                 <td className="nm">{row.release}</td>
-                <td>{row.published}</td>
+                <td>{row.published && stamp(row.published)}</td>
                 <td>{row.yanked && <span className="warn">yanked</span>}</td>
                 <td className="end">
                   {signedIn && !row.yanked && (

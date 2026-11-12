@@ -86,7 +86,7 @@ fn decrypt_recovery_and_plain_retention() {
 fn native_project(path: &FsPath, id: &str) {
     fs::create_dir_all(path).unwrap();
     let at = path.join(db::DB);
-    db::create(&at, &db::Stored { written: written::Written::blank().into(), ..Default::default() }, &[], &[]).unwrap();
+    db::create(&at, &db::Stored { written: written::Written::default().into(), ..Default::default() }, &[], &[]).unwrap();
     let mut conn = db::open(&at).unwrap();
     db::set_identity(&mut conn, &at, id, "Retained project", Some("Proof123")).unwrap();
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;").unwrap();

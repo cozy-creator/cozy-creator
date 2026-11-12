@@ -10,8 +10,11 @@ const LOADING = 2
 const requests: { urgent(): boolean; start(): void }[] = []
 let loading = 0
 function nextRequest() {
-  requests.sort((a, b) => Number(b.urgent()) - Number(a.urgent()))
-  while (loading < LOADING && requests.length) requests.shift()!.start()
+  // The urgent first, else the oldest: one pass a start, never a sort of every waiting request each time one comes or goes.
+  while (loading < LOADING && requests.length) {
+    const at = requests.findIndex((request) => request.urgent())
+    requests.splice(Math.max(at, 0), 1)[0].start()
+  }
 }
 function schedule(start: (done: () => void) => void, urgent: () => boolean): () => void {
   let running = false
@@ -101,12 +104,13 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
     let frame = 0
     const measure = () => {
       frame = 0
-      const actual = element.getBoundingClientRect().width
-      // Wander's signal is the upper zoom bound of its current bucket, so later zooms within that bucket stay sharp.
-      const width = displayWidth ?? (focus ? actual || cardWidth : Math.max(actual, cardWidth * store.sharpness.get()))
+      // Wander's signal is the upper zoom bound of its current bucket, so later zooms within that bucket stay sharp: a box is
+      // never drawn wider than that, so only Focus, which sizes a picture itself, reads the page's layout (each read laid out
+      // the whole page again, a box at a time, as a project opened: cl-885).
+      const width = displayWidth ?? (focus ? element.getBoundingClientRect().width || cardWidth : cardWidth * store.sharpness.get())
       const density = (window.devicePixelRatio || 1) * (window.visualViewport?.scale ?? 1)
       const pixels = Math.ceil(Math.max(1, width) * density)
-      element.dataset.requestedWidth = String(pixels)
+      if (element.dataset.requestedWidth !== String(pixels)) element.dataset.requestedWidth = String(pixels)
       const next = pixels > WIDTH ? 0 : pixels > 1024 ? WIDTH : pixels > 512 ? 1024 : pixels > 256 ? 512 : 256
       setResolution((was) => was === next ? was : next)
     }
@@ -119,7 +123,9 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
     const unwatch = store.sharpness.subscribe(scheduleMeasure)
     window.addEventListener("resize", scheduleMeasure)
     window.visualViewport?.addEventListener("resize", scheduleMeasure)
-    measure()
+    // Measured in the next frame with every other box's, never here: a layout read in each mount's effect, between other boxes'
+    // style writes, laid the page out again once a box.
+    scheduleMeasure()
     return () => {
       if (frame) cancelAnimationFrame(frame)
       resize.disconnect()

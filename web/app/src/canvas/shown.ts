@@ -1,4 +1,4 @@
-import type { ToolField, MainFile, Tool } from "../api/calcifer"
+import type { ErrorBody, ToolField, MainFile, Tool } from "../api/calcifer"
 import type { Media } from "../types"
 import type { ElementView } from "./CanvasStore"
 import type { Box } from "./graph"
@@ -41,13 +41,17 @@ export const HEAD = 32
 
 /**
  * What hangs off a box at rest, its name over it and its tool, shape and render's lines under it (cl-932), is drawn at the canvas's scale
- * like the rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
+ * like the rest of it. A box keeps that room clear, once: its name never lies on the box above, nor what hangs under one on the box below,
+ * and boxes stacked are as close as boxes side by side, clear's gap apart (Paul, 11-12: "allow for tiles to get a little closer on the top
+ * and bottoms").
  */
-const HANG = 2
-// As app.css draws them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
+const HANG = 1
+// As app.css draws them: tokens.css's title and body steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
-const SMALL_LINE = 10.5 * 1.35 * 1.25
+const BODY_LINE = 12.5 * 1.35 * 1.25
 const CLOSE = 30
+/** A selected box's ring, outside its picture, that the line under it starts past. */
+const RING = 9
 /** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
 const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
 /** A render's two lines (RunFace, on lines of 1.35), with the gap over them. */
@@ -57,7 +61,7 @@ const RUN = 2 * 10.5 * 1.35 * 1.35 + 4
  *  below it rises into. */
 export function underOf(view: ElementView): number {
   const asset = view.asset
-  const line = asset && (asset.tool || asset.kind !== "text") ? SMALL_LINE + 2 : 0
+  const line = asset && (asset.tool || asset.kind !== "text") ? RING + BODY_LINE + 2 : 0
   return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
 const ENTITY_DESC = 60
@@ -79,7 +83,7 @@ export const faceOf = (view: ElementView): "edit" | "media" => view.asset?.kind 
 /** No box is narrower: its corner stops here, and nothing shrinks one past it. */
 export const NARROWEST = 160
 
-export const widthFor = (view: ElementView | undefined): number => (view?.asset?.timeline ? 720 : view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
+export const widthFor = (view: ElementView | undefined): number => (view?.entity ? 240 : view?.asset?.kind === "video" ? 360 : makes(view) ? 300 : 240)
 
 /** `16:9` as a number, if it's one. */
 export function ratioOf(value: unknown): number | undefined {
@@ -115,17 +119,43 @@ export function refusal(tool: Tool | undefined, view: ElementView | undefined): 
   return `${toolName(tool!)} takes ${takes.map((one) => SEVERAL[one]).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
 }
 
-/** The take being made that it looks at, open: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made,
- *  and its number once it's landed. At rest a box looks at what it showed, so a render never changes its size (cl-936): an approved one
- *  goes on showing what's approved, and what's made lands beside it, unseen (cl-928); with none, the new take is its state once it lands. */
-export function watched(view: ElementView): { run?: number; number?: number } | undefined {
-  const { watchRun, watchFrom: from } = view
-  if (watchRun === undefined && from === undefined) return undefined
-  if (!view.here) return undefined
-  const versions = view.asset?.prefixes ?? []
-  const newer = (run?: number | null) => (run ?? 0) > (from ?? 0)
-  const run = watchRun ?? Math.max(0, ...(view.asset?.making ?? []).filter(newer), ...versions.filter((held) => newer(held.run)).map((held) => held.run ?? 0))
-  return { run: run || undefined, number: run ? versions.find((held) => held.run === run)?.number : undefined }
+/** The take its frame looks at while it's made, open, by its id (cl-945): its run once that has a number, and its number once it's landed.
+ *  At rest a box looks at what it showed, so a render never changes its size (cl-936): an approved one goes on showing what's approved,
+ *  and what's made lands beside it, unseen (cl-928); with none, the new take is its state once it lands. */
+export function watched(view: ElementView): { id: string; run?: number; number?: number } | undefined {
+  const id = view.watch
+  if (id === undefined || !view.here) return undefined
+  const version = view.asset?.prefixes?.find((held) => held.id === id)
+  const take = view.asset?.takes?.find((held) => held.id === id)
+  return { id, run: take?.run ?? version?.run ?? undefined, number: version?.number }
+}
+
+/** A take not landed, by its id: what Calcifer lists, then this page's own it doesn't list yet, from the click (cl-945). */
+export interface Taking {
+  id: string
+  run?: number
+  queued?: boolean
+  /** It failed, and why: listed until it's deleted (cl-954). */
+  failure?: ErrorBody
+}
+
+/** Its takes not landed, in the order they were asked: a take is listed from the click to its version, and is never another's. */
+export function takingOf(view: ElementView): Taking[] {
+  const landed = new Set([...(view.asset?.prefixes ?? []).map((held) => held.id).filter(Boolean), ...(view.gone ?? [])])
+  const listed = (view.asset?.takes ?? []).filter((take) => !landed.has(take.id)).map((take) => ({ id: take.id, run: take.run ?? undefined, queued: take.queued, failure: take.failure ?? undefined }))
+  const known = new Set(listed.map((take) => take.id))
+  return [...listed, ...(view.taking ?? []).filter((take) => !known.has(take.id) && !landed.has(take.id)).map((take) => ({ id: take.id, queued: true }))]
+}
+
+/** Why the take its frame looks at failed, when it did (cl-954): what the frame shows in its place. */
+export function failureOf(view: ElementView): ErrorBody | undefined {
+  const watch = watched(view)
+  return watch ? takingOf(view).find((take) => take.id === watch.id)?.failure : undefined
+}
+
+/** A take's id, made where it's asked for, as Calcifer makes one: `project-` and 32 hex digits. */
+export function newTakeId(): string {
+  return `project-${Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")}`
 }
 
 /** The run making the take a box's frame is on while it's made: the one it looks at, else the first going. None: not sent yet. */
@@ -204,8 +234,6 @@ export function heightFor(view: ElementView, width: number): number {
     const subs = view.entity.subs ?? []
     return HEAD + ENTITY_DESC + (hasSlots(view.entity.links) ? ENTITY_SLOTS : 0) + subs.length * SUB_ROW
   }
-  // An Edit on its controls: a picture over a filmstrip.
-  if (view.asset?.timeline && faceOf(view) === "edit") return HEAD + 332
   return HEAD + Math.round(imageViewHeight(view, width) ?? width / aspectOf(view)) + (isPicture(view) ? 40 : 0)
 }
 

@@ -37,8 +37,8 @@ pub(crate) struct Package {
     pub local: Option<PathBuf>,
     /// Local code's manifest, `sha256:<hex>`, as it was made ready.
     pub manifest: String,
-    /// A yanked release this walk moved off, said once.
-    pub moved: Option<String>,
+    /// What this walk moved to and from, said once: off a yanked release (a warning), onto a newer one than its machine's.
+    pub moved: Option<api::calcifer::Note>,
     /// The function its tool names; none: the package alone.
     pub named: Option<String>,
     document: Value,
@@ -256,9 +256,15 @@ impl Host {
         }
         // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, function, card, moved, .. } = target::published(&self.api, &hub, with, on, true).await? else {
+        let Resolved::Release { package, function, card, mut moved, upgrade, .. } = target::published(&self.api, &hub, with, on, true).await? else {
             unreachable!("a published target resolves to a release");
         };
+        // Its machine's Runtime moves first to one that runs the release (cl-952): the render waits behind that update.
+        if let Some(upgrade) = &upgrade
+            && self.api.machines.upgrade(upgrade).await?.is_some()
+        {
+            moved = Some(upgrade.note());
+        }
         let found = Package { name: package, release: card.release.clone(), local: None, manifest: String::new(), moved: None, named: function, document: card.interface_document().clone() };
         self.packages.lock().expect("packages lock").insert(at, found.clone());
         Ok(Package { moved, ..found })

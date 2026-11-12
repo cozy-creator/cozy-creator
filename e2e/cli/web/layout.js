@@ -305,6 +305,8 @@ function audit({ floor, fitted = true }) {
 /** Where nothing is drawn, the pointer finds the canvas: no box, column, panel or wrapper takes it unseen. Each point of `around` (else the
  *  window) `step` pixels apart. Self-contained: it runs in the page. */
 function emptyHits({ around, step }) {
+  // Focus covers the canvas, and a press on its background leaves it (cl-893): no point of it is the canvas's.
+  if (document.querySelector('[data-focused-asset]')) return [];
   const alpha = (color) => {
     const m = color.match(/rgba?\(([^)]+)\)/);
     const parts = m ? m[1].split(/[ ,/]+/).filter(Boolean) : [];
@@ -554,39 +556,6 @@ async function drawnEdges(page, decoder, label) {
   return said;
 }
 
-/** A real pane point, with both ends of the existing drag inside the viewport. */
-function panPoint() {
-  const side = document.querySelector('.card.here > .here-side:not(:empty)')?.getBoundingClientRect() ?? document.querySelector('.card.here > .media')?.getBoundingClientRect();
-  const bare = (x, y) => x >= 80 && y >= 60 && x <= innerWidth - 20 && y <= innerHeight - 20 && document.elementFromPoint(x, y)?.classList.contains('react-flow__pane');
-  if (side) {
-    const y = Math.max(60, Math.min(innerHeight - 20, side.top + side.height * 0.8));
-    for (let x = side.right + 30; x <= innerWidth - 20; x += 20) if (bare(x, y)) return { x, y };
-    for (let x = side.left - 30; x >= 80; x -= 20) if (bare(x, y)) return { x, y };
-  }
-  for (let y = 60; y <= innerHeight - 20; y += 20) for (let x = 80; x <= innerWidth - 20; x += 20) if (bare(x, y)) return { x, y };
-  return null;
-}
-
-async function panCanvas(page) {
-  let from = await page.evaluate(panPoint);
-  const fitted = !from;
-  if (!from) {
-    await fitCanvas(page);
-    from = await page.evaluate(panPoint);
-  }
-  if (!from) return { from, fitted, reason: 'no in-viewport pane point after actual Zoom to fit' };
-  await page.mouse.move(from.x, from.y);
-  const hit = await page.evaluate(({ x, y }) => x >= 80 && y >= 60 && x <= innerWidth - 20 && y <= innerHeight - 20 && document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), from);
-  if (!hit) return { from: null, fitted, reason: 'the chosen pane point no longer hits the canvas before its drag' };
-  const viewport = () => page.evaluate(() => document.querySelector('.react-flow__viewport').style.transform);
-  const before = await viewport();
-  await page.mouse.down();
-  try { await page.mouse.move(from.x - 60, from.y - 40, { steps: 6 }); }
-  finally { await page.mouse.up(); }
-  await settled(page);
-  return { from, fitted, before, after: await viewport() };
-}
-
 /** Compare the outline references near each edge, and the original with the bare capture outside it. Runs in the decoder's page. */
 async function edgesOf({ shown, bare, black, white, clip, frame }) {
   const read = async (base64) => {
@@ -830,13 +799,14 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
         const top = document.querySelector('.top')?.getBoundingClientRect().bottom ?? 0;
         const viewport = document.querySelector('.react-flow__viewport');
         const transform = viewport ? getComputedStyle(viewport).transform : null;
-        const progress = media?.querySelector('.prog b');
+        // Its render's lines, under the picture at rest (cl-932): the machine and its time, then what it's doing.
+        const progress = media?.closest('.card')?.querySelector(':scope > .tile-under .prog .face-state b');
         const visibility = { opacityProperty: true, visibilityProperty: true };
         const rendered = Boolean(media?.checkVisibility?.(visibility));
         const inBounds = Boolean(rect && rect.width && rect.height && rect.left >= left && rect.top >= top && rect.right <= innerWidth && rect.bottom <= innerHeight);
         const progressVisible = Boolean(progress?.checkVisibility?.(visibility));
         // Its state line (cl-898): `Segment 3 of 600: Denoising - Step 2 / 5`.
-        const text = media?.querySelector('.prog .face-stage')?.innerText || (progress?.innerText ?? null);
+        const text = progress?.innerText ?? null;
         let reason = null;
         if (!media) reason = 'missing-media';
         else if (!rendered) reason = 'hidden-media';
@@ -957,13 +927,14 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     await look('note', true);
     await page.locator('.notes .note button', { hasText: 'Undo' }).first().click();
     await closeBox(page);
-    // Zoomed with a box open, by the wheel, the zoom control and the keys: what's under it stays one block with its picture and takes. Then a
-    // drag from beside its takes, where nothing's drawn, pans the canvas.
+    // Zoomed in Focus, by the wheel, its picture's − and + and the keys: Focus zooms its own picture (cl-893; the canvas's zoom is
+    // Wander's, hidden over Focus), and what's around it stays laid out; Shift+1 fits the picture again.
     for (const asset of [many, 'wide_art', 'tall_art']) {
       await openBox(page, asset);
       await settled(page);
+      const viewer = page.locator(`[data-focused-asset="${asset}"] .focus-viewer`);
       const wheel = async (dy) => {
-        const at = await page.locator(`.card.here[data-asset="${asset}"] > .media`).boundingBox();
+        const at = await viewer.boundingBox();
         await page.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
         await page.keyboard.down('Control');
         for (let i = 0; i < 3; i++) await page.mouse.wheel(0, dy);
@@ -972,8 +943,8 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
       for (const [step, act] of [
         ['wheel-out', () => wheel(120)],
         ['wheel-in', () => wheel(-160)],
-        ['control-out', () => page.click('button[aria-label="Zoom out"]')],
-        ['control-in', () => page.click('button[aria-label="Zoom in"]')],
+        ['control-out', () => page.click('button[aria-label="Zoom out image"]')],
+        ['control-in', () => page.click('button[aria-label="Zoom in image"]')],
         ['key-out', () => page.keyboard.press('Control+Minus')],
         ['key-in', () => page.keyboard.press('Control+Equal')],
       ]) {
@@ -981,12 +952,8 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
         await settled(page);
         await look(`zoom-${asset}-${step}`, step.endsWith('out'), false);
       }
-      // Manual zoom may crop. A drag still needs a visible pane, and explicit fit gets its own unchanged chrome audit.
-      const panned = await panCanvas(page);
-      (seen.pan_targets ??= []).push({ size: size.name, asset, ...panned });
-      if (!panned.from) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'pan-target', at: `beside <${asset}>'s takes`, what: panned.reason });
-      else if (panned.after === panned.before) findings.push({ size: size.name, state: `zoom-${asset}`, rule: 'drag-no-pan', at: `beside <${asset}>'s takes`, what: `a drag from ${Math.round(panned.from.x)},${Math.round(panned.from.y)} left the canvas where it was` });
-      await fitCanvas(page);
+      await page.keyboard.press('Shift+1');
+      await settled(page);
       await look(`fit-${asset}`, true);
       await closeBox(page);
     }
@@ -1059,8 +1026,9 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
     const many = names.includes('card') ? 'card' : 'still';
     await openBox(page, many);
     await edges(`open-${many}`);
+    // Open, a box is Focus: its keys zoom its picture, as the canvas's do in Wander (cl-893).
     for (const step of ['out', 'out-again']) {
-      await page.click('button[aria-label="Zoom out"]');
+      await page.keyboard.press('Control+Minus');
       await settled(page);
       await edges(`open-${many}-zoomed-${step}`);
     }

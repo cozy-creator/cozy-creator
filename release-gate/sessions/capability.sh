@@ -21,7 +21,6 @@ TS=$(date -u +%m%d%H%M) A=$(cozy --json whoami | jq -r .account)
 [ -n "$A" ] && [ "$A" != null ] || fail "not signed in"
 MA=$A/cl675-a-$TS MB=$A/cl675-b-$TS MC=$A/cl675-c-$TS
 tiny() { python3 -I -c 'import json,struct,sys,os; h=json.dumps({"w":{"dtype":"F32","shape":[4,4],"data_offsets":[0,64]}}).encode(); h+=b" "*(-len(h)%8); open(sys.argv[1],"wb").write(struct.pack("<Q",len(h))+h+os.urandom(64))' "$1"; }
-made() { awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
 cleanup() { for m in $MA $MB $MC; do cozy model delete "$m" -y >> "$OUT/delete.txt" 2>&1; done; }
 quote $((OFF_S + 2400))
 rent

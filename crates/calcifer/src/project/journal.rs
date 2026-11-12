@@ -78,6 +78,11 @@ impl SealingStore<'_> {
         let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
         controller.maintenance_store().put_machine(machine)
     }
+    /// Machines are global: a project's journal reads whether one is a rental from Calcifer's own list.
+    pub(crate) fn rental(&self, _tx: &Transaction<'_>, name: &str) -> store::Result<bool> {
+        let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
+        Ok(controller.maintenance_store().machine(name)?.is_some_and(|machine| machine.kind == api::calcifer::MachineKind::Rental))
+    }
     pub(crate) fn append_diagnostic(&self, code: &'static str, detail: &str) -> store::Result<()> {
         self.write(|tx| { tx.execute("INSERT INTO project_diagnostics(at_ms,code,detail) VALUES(?1,?2,?3)", params![store::now_ms(),code,detail])?; Ok(()) })
     }
@@ -209,6 +214,11 @@ impl ProjectStore {
         let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
         controller.maintenance_store().put_machine(machine)
     }
+    /// Machines are global: a project's journal reads whether one is a rental from Calcifer's own list.
+    pub(crate) fn rental(&self, _tx: &Transaction<'_>, name: &str) -> store::Result<bool> {
+        let controller = self.controller.upgrade().ok_or_else(|| StoreError::Protected("controller_stopped".into()))?;
+        Ok(controller.maintenance_store().machine(name)?.is_some_and(|machine| machine.kind == api::calcifer::MachineKind::Rental))
+    }
 
 
     pub(crate) fn read<T>(&self, read: impl FnOnce(&Connection) -> store::Result<T>) -> store::Result<T> {
@@ -317,7 +327,8 @@ pub(super) const SCHEMA: &str = "    CREATE TABLE runs (
         batch TEXT NOT NULL DEFAULT '',
         job BLOB,
         owner TEXT NOT NULL DEFAULT '',
-        custody TEXT NOT NULL DEFAULT 'owned' CHECK(custody IN ('owned','legacy_pending'))
+        custody TEXT NOT NULL DEFAULT 'owned' CHECK(custody IN ('owned','legacy_pending')),
+        attempt INTEGER NOT NULL DEFAULT 1
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
     CREATE TABLE outputs (

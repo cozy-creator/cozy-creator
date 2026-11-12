@@ -1048,7 +1048,7 @@ pub enum StreamEvent {
     /// It left the list.
     #[serde(rename = "machine.removed")]
     MachineRemoved { name: String },
-    /// `rev` is opaque, and changes whenever project.yaml or project.lock does. Optional
+    /// `rev` is opaque, and changes whenever the project does. Optional
     /// `cursor` is its emission position, comparable only with the same controller generation.
     #[serde(rename = "project.changed")]
     ProjectChanged {
@@ -1504,6 +1504,9 @@ pub struct Gpu {
     /// It draws a screen now: a render on it makes the screen lag.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub display: bool,
+    /// Why nothing is placed on it now (cl-935); empty: in service.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub out_of_service: String,
 }
 
 fn unlimited(bytes: &u64) -> bool {
@@ -2214,6 +2217,26 @@ pub struct CalciferStatus {
     /// Whether the encrypted-creation protocol is supported. Native driver requirements still apply; older controllers omit this.
     #[serde(default)]
     pub encrypted_project_creation: bool,
+}
+
+/// The header each request of a `cozy` process carries: its pid, so Calcifer tells its requests from everyone else's (cl-962).
+pub const PROCESS_HEADER: &str = "cozy-process";
+
+/// `GET /v1/activity` (cl-962): who uses this Calcifer now, which a `cozy` of another version reads before it would restart it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalciferActivity {
+    pub version: String,
+    /// Pages with a stream open.
+    pub pages: u32,
+    /// Runs not yet settled, Calcifer's own among them (`here`).
+    pub runs: u32,
+    /// Calcifer's own runs not yet settled: an upload, a publish.
+    pub here: u32,
+    /// Requests it is serving now, other than this one: an upload, a submission, a page's write.
+    pub requests: u32,
+    /// The newest request of anyone but the asking process (`PROCESS_HEADER`): a page, another `cozy`, one that sends no pid.
+    pub others_request_ms: Option<i64>,
+    pub now_ms: i64,
 }
 
 /// `POST /v1/session-codes`: a code a browser trades once for a session.

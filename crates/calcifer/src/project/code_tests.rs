@@ -24,7 +24,7 @@ async fn public_code_fixture() {
     let dir = root.join("current");
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join(db::DB);
-    db::create(&path, &db::Stored { written: written::Written::blank().into(), ..Default::default() }, &[], &[]).unwrap();
+    db::create(&path, &db::Stored { written: written::Written::default().into(), ..Default::default() }, &[], &[]).unwrap();
     let mut conn = db::open(&path).unwrap();
     let id = "project-native-kept-id".to_owned();
     db::set_identity(&mut conn, &path, &id, "Current", None).unwrap();
@@ -84,7 +84,7 @@ async fn public_code_fixture() {
     let copy = root.join("copy");
     std::fs::create_dir(&copy).unwrap();
     let copy_path = copy.join(db::DB);
-    db::create(&copy_path, &db::Stored { written: written::Written::blank().into(), ..Default::default() }, &[], &[]).unwrap();
+    db::create(&copy_path, &db::Stored { written: written::Written::default().into(), ..Default::default() }, &[], &[]).unwrap();
     db::set_identity(&mut db::open(&copy_path).unwrap(), &copy_path, &id, "Current", Some(&code)).unwrap();
     let (copy_id, _, copy_code) = identify(&api, &copy).unwrap();
     assert_ne!(copy_id, id);

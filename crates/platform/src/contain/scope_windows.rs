@@ -153,6 +153,10 @@ pub fn all_stuck(_: &[crate::process::Birth]) -> bool {
     false
 }
 
+pub fn on_stuck(_: impl Fn(&super::Stuck) + Send + Sync + 'static) {}
+
+pub const STALL: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// What a contained machine may use (Linux only).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Budget {
