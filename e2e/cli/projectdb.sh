@@ -616,9 +616,8 @@ done
 project_api "$M" /approve -X POST -H 'Content-Type: application/json' -d '{"name": "take", "version": "2"}' > /dev/null || check "migrate: approve take 2"
 project_api "$M" /assets/take/versions/3 -X DELETE > /dev/null || check "migrate: discard take 3"
 project_api "$M" /assets/drawn -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"instructions": "A <take.2> in teal, as 0.24.0 had it."}}' > /dev/null || check "migrate: drawn's words"
-project_api "$M" /assets/notes -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"text": "Notes 0.24.0 wrote, then changed."}}' > /dev/null || check "migrate: notes' words"
 project_import "$M" "$M/olive.png" olive > "$OUT/migrate-import.txt" 2>&1 || check "migrate: import olive: $(tail -c 300 "$OUT/migrate-import.txt")"
-project_api "$M" /assets/olive -X DELETE > /dev/null || check "migrate: delete olive"
+project_api "$M" /assets/notes -X PATCH -H 'Content-Type: application/json' -d '{"fields": {"text": "Notes 0.24.0 wrote, then changed."}}' > /dev/null || check "migrate: notes' words"
 [ "$(sql1 "$M" 'PRAGMA user_version')" = 2 ] || check "migrate: 0.24.0 made schema $(sql1 "$M" 'PRAGMA user_version'), not 2"
 # 0.24.0's CLI has no export, history or delete: its Calcifer's routes, as its page asks, read and write alike on both.
 migrate_read "$M" 0240 || check "migrate: what 0.24.0 holds of it"
@@ -635,10 +634,13 @@ done
 for f in $(status "$M" | jq -r '.assets[].name' | while read -r name; do held "$M" "$name" | jq -r '.versions[].files[].path // empty'; done); do
   [ -f "$M/$f" ] || check "migrate: $f is gone"
 done
-# Undo reaches what 0.24.0 did: olive back with its take, and gone again.
-project_api "$M" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: undo olive's delete: $(tail -c 300 "$OUT/migrate-undo.txt")"
-[ "$(held "$M" olive | jq -r '.versions[0].files | map(.sha256) | .[0]')" = "sha256:$(sha "$M/olive.png")" ] || check "migrate: olive undeleted has not its take: $(held "$M" olive | jq -c '.versions')"
-project_api "$M" /history/redo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: redo olive's delete: $(tail -c 300 "$OUT/migrate-undo.txt")"
+# Undo reaches what 0.24.0 did: notes' words back, then changed again. (A box 0.24.0 deleted isn't one: it says no time, so cl-919
+# lets its files go at once.)
+local words='.asset.fields.text'
+project_api "$M" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: undo notes' words: $(tail -c 300 "$OUT/migrate-undo.txt")"
+[ "$(held "$M" notes | jq -r "$words")" = "Notes 0.24.0 wrote." ] || check "migrate: notes undone say '$(held "$M" notes | jq -r "$words")'"
+project_api "$M" /history/redo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/migrate-undo.txt" 2>&1 || check "migrate: redo notes' words: $(tail -c 300 "$OUT/migrate-undo.txt")"
+[ "$(held "$M" notes | jq -r "$words")" = "Notes 0.24.0 wrote, then changed." ] || check "migrate: notes redone say '$(held "$M" notes | jq -r "$words")'"
 # A take after it: number 4 (3 is discarded), its own id, all four there across Calcifer killed.
 source="sha256:$(sha "$M/olive.png")"
 project_api "$M" /assets/take/versions -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/migrate-version.txt" 2>&1 \
