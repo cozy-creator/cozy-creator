@@ -263,6 +263,26 @@ pub(super) fn location(api: &Api, named: &str) -> Result<PathBuf, Error> {
     Ok(super::known(api, named)?.path)
 }
 
+/// An idle lock that failed: retried by the standard backoff, each attempt said in the log, and
+/// its next commands shown by status until a lock succeeds.
+struct LockRetry { backoff: tensorfs::fetch::Backoff, at: std::time::Instant, next: Vec<String> }
+static LOCK_RETRIES: LazyLock<Mutex<BTreeMap<PathBuf, LockRetry>>> = LazyLock::new(Mutex::default);
+
+fn idle_lock_failed(root: &FsPath, failure: &Error) {
+    let mut retries = LOCK_RETRIES.lock().expect("lock retries");
+    let retry = retries.entry(root.to_owned()).or_insert_with(|| LockRetry { backoff: tensorfs::fetch::Backoff::background(), at: std::time::Instant::now(), next: vec![] });
+    let why = format!("{} did not lock at its deadline: {}", root.display(), failure.message);
+    let (wait, said) = retry.backoff.again(&why, false, None).unwrap_or_else(|| {
+        // Never left unlocked quietly: say the spent round and start another.
+        let spent = retry.backoff.spent(&why);
+        retry.backoff = tensorfs::fetch::Backoff::background();
+        (Duration::from_secs(16), spent)
+    });
+    tracing::warn!("{said}");
+    retry.at = std::time::Instant::now() + wait;
+    retry.next = failure.next.iter().cloned().chain(["cozy vault lock".to_owned()]).collect();
+}
+
 fn status(root: &FsPath) -> VaultStatus {
     let mut state = if encrypted(root) { "locked" } else { "plain" };
     let (mut view, mut expires, mut idle) = (None, None, DEFAULT_IDLE);
@@ -289,7 +309,8 @@ fn status(root: &FsPath) -> VaultStatus {
     }
     let next = match state {
         "locked" | "storage_update_required" => vec!["cozy vault unlock".into()],
-        "locking" => vec!["close applications using the project, then lock again".into()],
+        "locking" => LOCK_RETRIES.lock().expect("lock retries").get(root).map(|retry| retry.next.clone())
+            .unwrap_or_else(|| vec!["close applications using the project, then lock again".into()]),
         _ => vec![],
     };
     VaultStatus { encrypted: encrypted(root), state: state.into(), path: root.to_owned(), view, expires_at_ms: expires, idle_timeout_s: idle, next }
@@ -503,6 +524,7 @@ fn close(api: &Arc<Api>, root: &FsPath, transition: &ProjectTransition, browser:
         retire_runtime(&session.runtime)?;
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
+        LOCK_RETRIES.lock().expect("lock retries").remove(root);
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
         if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) {
             let state = reported_status(api, root);
@@ -558,6 +580,7 @@ pub(crate) fn start(api: &Arc<Api>) {
                         session.closing || expired(&session) || !session.mount.is_mounted().unwrap_or(false)
                     });
                     if !needs { return; }
+                    if LOCK_RETRIES.lock().expect("lock retries").get(&root).is_some_and(|retry| std::time::Instant::now() < retry.at) { return; }
                     // The browser's save acknowledgements may include activity writes
                     // under this operation mutex. Never wait for them while owning it.
                     drop(_operation);
@@ -570,7 +593,7 @@ pub(crate) fn start(api: &Arc<Api>) {
                     if !still_needs { return; }
                     if let Some(session) = held(&root) { mark_closing(&mut session.lock().expect("vault session")); }
                     let Ok(transition) = exclusive(&root) else { return; };
-                    let _ = close(&api, &root, &transition, &mut browser);
+                    if let Err(failure) = close(&api, &root, &transition, &mut browser) { idle_lock_failed(&root, &failure); }
                 });
             }
         }
