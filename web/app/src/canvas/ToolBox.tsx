@@ -127,14 +127,18 @@ function Drawn({ own, name, view, controls }: { own: Own; name: string; view: El
   )
 }
 
-/** A box's controls, those shown and those behind More: each drawn as declared, unless its tool's package ships a component for them all or for one. The approved face is never a component's. */
+/** A box's controls, those shown, those behind More and those only to set, grouped (`grouped`, drawn by `cell`): each drawn as declared, unless
+ *  its tool's package ships a component for them all or for one, which draws that one wherever it stands. The approved face is never a
+ *  component's. `children` gets each part drawn; a component for them all is the shown part, and the others are null. */
 export function ToolBox({
   tool,
   name,
   view,
   shown,
   folded,
+  grouped,
   row,
+  cell,
   children,
 }: {
   tool: Tool | undefined
@@ -142,11 +146,13 @@ export function ToolBox({
   view: ElementView
   shown: ToolField[]
   folded: ToolField[]
+  grouped: ToolField[]
   row(control: ToolField): React.ReactNode
-  children(shown: React.ReactNode, folded: React.ReactNode): React.ReactNode
+  cell(control: ToolField): React.ReactNode
+  children(shown: React.ReactNode, folded: React.ReactNode, grouped: React.ReactNode): React.ReactNode
 }) {
   const { own, trouble } = useOwn(tool)
-  const controls = [...shown, ...folded]
+  const controls = [...shown, ...folded, ...grouped]
   if (!own) {
     return children(
       shown.length || trouble ? (
@@ -156,25 +162,27 @@ export function ToolBox({
         </>
       ) : null,
       folded.map(row),
+      grouped.length ? grouped.map(cell) : null,
     )
   }
   const drawn = <Drawn own={own} name={name} view={view} controls={controls} />
   const field = own.field
   if (!field || !controls.some((control) => control.field === field)) {
     return children(
-      <Guard key={own.module} fallback={controls.map(row)}>
+      <Guard key={own.module} fallback={[...shown.map(row), ...folded.map(row), ...grouped.map(cell)]}>
         {drawn}
       </Guard>,
       null,
+      null,
     )
   }
-  const each = (control: ToolField) =>
+  const each = (draw: (control: ToolField) => React.ReactNode) => (control: ToolField) =>
     control.field === field ? (
-      <Guard key={own.module} fallback={row(control)}>
+      <Guard key={own.module} fallback={draw(control)}>
         {drawn}
       </Guard>
     ) : (
-      row(control)
+      draw(control)
     )
-  return children(shown.length ? shown.map(each) : null, folded.map(each))
+  return children(shown.length ? shown.map(each(row)) : null, folded.map(each(row)), grouped.length ? grouped.map(each(cell)) : null)
 }
