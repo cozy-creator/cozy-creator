@@ -20,8 +20,17 @@
 #              two failed cells stop the session
 #   compare    [["A", "B"], …]: the result digests, else the decoded frames of every stream, and the video's PSNR
 #   need_s     seconds the cap must buy (3600)
+#   free_gib   optional: before the first cell another program (fixtures/game.py, raw driver allocations by a root
+#              shell over ssh) takes all of GPU 0 but this many GiB and holds it to the end, a card as full as the
+#              0.25.0 gate's RTX 5090 kazune was (about 3 GiB outside cozy; cr-293)
 . "$(dirname "$0")/lib.sh"
-CELLS=$(param cells '[]') COMPARE=$(param compare '[]')
+CELLS=$(param cells '[]') COMPARE=$(param compare '[]') FREE_GIB=$(param free_gib '')
+[[ -z $FREE_GIB || $FREE_GIB =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "free_gib $FREE_GIB"
+FIX=$(cd "$(dirname "$0")/fixtures" && pwd)
+if [ -n "$FREE_GIB" ]; then
+  [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519 || fail "ssh-keygen"
+  RENT_ARGS=--ssh
+fi
 command -v ffmpeg > /dev/null || fail "no ffmpeg (pod-session.yaml installs it from the tool cache)"
 mapfile -t names < <(jq -r '.[].name' <<<"$CELLS")
 [ "${#names[@]}" -gt 0 ] || fail "no cells"
@@ -64,6 +73,26 @@ current() { awk '$1=="run" && $3=="·" && $4!="sync"{n=$2} END{print n}' "$OUT/$
 quote "$(param need_s 3600)"
 rent
 
+if [ -n "$FREE_GIB" ]; then
+  cd "$FIX" || fail "no fixtures"
+  step hold-write run ./game.py --on "$NAME" op=write \
+    cfg="{\"name\": \"hold\", \"mode\": \"free\", \"leave_gb\": $FREE_GIB, \"trigger\": \"now\", \"give_up_s\": 60, \"hold_s\": 7200}" ||
+    fail "the holder's launcher"
+  cozy run watch "$(runno hold-write)" --once --json > "$OUT/hold-write.json" 2>&1
+  value=$(jq -c '.result.value | if type == "string" then fromjson else . end' "$OUT/hold-write.json" 2> /dev/null)
+  launch=$(jq -r '.launch // empty' <<< "$value" 2> /dev/null) HOLD=$(jq -r '.state // empty' <<< "$value" 2> /dev/null)
+  [ -n "$launch" ] && [ -n "$HOLD" ] || fail "no holder launcher: $(head -c 300 "$OUT/hold-write.json")"
+  cozy machine ssh "$NAME" "setsid nohup sh $launch > /dev/null 2>&1 < /dev/null &" || fail "the holder did not start"
+  for _ in $(seq 60); do
+    cozy machine ssh "$NAME" "cat $HOLD 2>/dev/null" > "$OUT/hold.json" 2>/dev/null
+    jq -e '.t_done' "$OUT/hold.json" > /dev/null 2>&1 && break
+    sleep 2
+  done
+  jq -e '.reached == true' "$OUT/hold.json" > /dev/null 2>&1 || fail "the holder did not settle: $(head -c 300 "$OUT/hold.json")"
+  say "holder: $(jq -c '{held_mib, at_done: .nvml_at_done}' "$OUT/hold.json"): $FREE_GIB GiB left free"
+  cd "$OUT" || fail "no $OUT"
+fi
+
 echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunreachable" > "$OUT/probe.tsv"
 ( while :; do
     t=$(date +%s%3N); s=$(timeout 120 cozy machine show "$RID" --json 2>&1); src=$?; sm=$(( $(date +%s%3N) - t ))
@@ -84,7 +113,8 @@ summary() { jq -r '"exec \((.execution_ms // 0) / 1000 | floor)s" + ([.calls[]? 
   + "attention \([$m.observations[]? | select(.name == "attention.selected") | "\(.fields.component | split("/") | last)=\(.value)"] | unique | join(" ")), "
   + "gemm \([$m.observations[]? | select(.name == "gemm.selected") | .value] | unique | join(",")), "
   + "ready \([$m.observations[]? | select(.name == "kernel.ready") | .value] | unique | join(",")), "
-  + "plan \([$m.execution.plan_reports[]? | to_entries[] | "\(.key)=\(.value.applied)\(if (.value.code // "") != "" then "(\(.value.code))" else "" end)"] | join(" "))"] | join(""))' "$OUT/$1.json" 2>/dev/null; }
+  + "plan \([$m.execution.plan_reports[]? | to_entries[] | "\(.key)=\(.value.applied)\(if (.value.code // "") != "" then "(\(.value.code))" else "" end)"] | join(" ")), "
+  + "reruns \([$m.memory.stats.varena[]?.stats.reruns[]? | "\(.site): \(.error) (reserve \(.reserve / 1048576 | floor) MiB, gave \(.released / 1048576 | floor) MiB, paused \(.paused_ms) ms)"] | join("; "))"] | join(""))' "$OUT/$1.json" 2>/dev/null; }
 # weights <name>: each GPU call's text encode, the pod's disk and host-to-GPU ceilings, its LoRA bakes, where its weight fills
 # came from (GB/fills/s by origin), and its host tier's reads ahead and derived pages written (cr-277).
 weights() { jq -r '[.calls[]? | select(.measurements.memory.stats.varena? != null) | .measurements as $m
