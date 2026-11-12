@@ -148,3 +148,44 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",moss-i2i,"* ]]; then
   done
   ONLY=$SAVED_I2I
 fi
+
+# MOSS Image's control maps (xs-184): each kind runs under thedeoxen's adapter (built in), its map the control panel of
+# thedeoxen's own example sheet (control | three of their results) with that sheet's prompt, so the outputs compare with
+# theirs; `moss-control-none` is the pose prompt with no map. Judged by eye. `only=moss-control` runs them.
+moss_control() {  # moss_control <kind> <sheet, under huggingface.co/thedeoxen> <prompt>
+  local name=moss-control-$1 map
+  map=$PWD/moss-control-$1-map.png
+  if curl -sfL "https://huggingface.co/thedeoxen/$2" -o "$name-sheet.jpg" && uv run -q --no-project --with pillow python -I -c '
+import sys
+from PIL import Image
+sheet = Image.open(sys.argv[1])
+sheet.crop((0, 0, (sheet.width - 18) // 4, sheet.height)).save(sys.argv[2])' "$name-sheet.jpg" "$map"; then
+    [ -z "$SAVED_CONTROL" ] || ONLY="$ONLY$name,"
+    cell "$name" "$(pkg moss-image generate)" control:="[{\"kind\": \"$1\", \"image\": \"$map\"}]" prompt="$3" seed:=$((R + 70))
+    expect "$name-made" "$([ -n "$(output "$name" 'png|webp|jpg')" ] && echo PASS || echo FAIL)" \
+      "run $(cat "$name.number"): $(run_get "$OUT" "$name" .status)"
+  else
+    expect "$name-made" FAIL "no map from $2"
+  fi
+}
+if [ -z "$ONLY" ] || [[ $ONLY == *",moss-control,"* ]]; then
+  SAVED_CONTROL=$ONLY
+  IDOL="Full-body anime illustration of a cyber idol with short white hair and a magenta visor. Upright fighting stance, \
+one arm straight above the head, the other arm extended to the side, one knee lifted to the hip, the standing leg \
+straight. Glass coat, rainy megacity, whole body in frame."
+  RINGMASTER="Full-body photograph of a circus ringmaster in scarlet tails, gold braid and a tall black hat, standing \
+three-quarter view in front of a painted circus tent. One arm raised high, the other holding a slender black cane down \
+at the side. Confetti, saturated color, entire body in frame."
+  moss_control pose MOSS-Image-pose-controlnet/resolve/e7d16fcb8eb81b4a0ab3d3a5bb3b17119d834307/images/leap.jpg "$IDOL"
+  moss_control depth MOSS-Image-depth-controlnet/resolve/788eb37e986b81c18a1b06f14c871daee4cd5c53/images/figure.jpg \
+    "Dramatic low angle, face and torso huge. A chunky voxel person built from primary-color bricks, one brick hand \
+reaching toward the camera, the other arm thrown out. White gallery, soft studio light, sharp detail."
+  moss_control canny MOSS-Image-canny-controlnet/resolve/39f20bab9237b28b6dffd9600f7bec927c4b975f/images/figure.jpg "$RINGMASTER"
+  moss_control lineart MOSS-Image-lineart-controlnet/resolve/cd22a8c27690387f046351a0ac014229ebe7cc7b/images/figure.jpg "$RINGMASTER"
+  moss_control sketch MOSS-Image-scribble-controlnet/resolve/d1740bf9508306311fd26ac35812ff9a17b76244/images/figure.jpg "$RINGMASTER"
+  [ -z "$SAVED_CONTROL" ] || ONLY="$ONLY,moss-control-none,"
+  cell moss-control-none "$(pkg moss-image generate)" aspect_ratio=350:512 prompt="$IDOL" seed:=$((R + 70))
+  expect moss-control-none-made "$([ -n "$(output moss-control-none 'png|webp|jpg')" ] && echo PASS || echo FAIL)" \
+    "run $(cat moss-control-none.number)"
+  ONLY=$SAVED_CONTROL
+fi
