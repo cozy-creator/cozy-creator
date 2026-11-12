@@ -664,9 +664,10 @@ local O=$OUT/opens c source name
 starter_project "$O" > /dev/null 2>&1 || { check "opens: project new"; return; }
 db_calcifer
 cp "$here/project/draw.py" "$O/"
-jq -n '[{name: "notes", fields: {text: "Keep the boat small."}},
-  {name: "drawn", tool: "./draw.py/draw", kind: "image", fields: {instructions: "A lighthouse at dusk, <shore> below."}},
-  {name: "again", tool: "./draw.py/draw", kind: "image", fields: {instructions: "<self.1> brighter, the sky clearing."}}]' \
+# Each where a person put it, so where it sits is read too.
+jq -n '[{name: "notes", fields: {text: "Keep the boat small."}, at: {x: 100, y: 2000}},
+  {name: "drawn", tool: "./draw.py/draw", kind: "image", fields: {instructions: "A lighthouse at dusk, <shore> below."}, at: {x: 500, y: 2000}},
+  {name: "again", tool: "./draw.py/draw", kind: "image", fields: {instructions: "<self.1> brighter, the sky clearing."}, at: {x: 900, y: 2000}}]' \
   | boxes_in "$O" || { check "opens: boxes"; return; }
 for c in red teal navy; do ffmpeg -v error -y -f lavfi -i "color=c=$c:size=320x180" -frames:v 1 "$O/$c.png"; done
 project_import "$O" "$O/red.png" shore > "$OUT/opens-import.txt" 2>&1 || { check "opens: import: $(tail -c 300 "$OUT/opens-import.txt")"; return; }
@@ -685,6 +686,7 @@ opens_read() {
     && project_api "$O" '/history?limit=500' | jq -S '[.entries[].id]' > "$OUT/opens-$1-history.json"
 }
 opens_read before || { check "opens: read it"; return; }
+[ "$(jq 'length' "$OUT/opens-before-places.json")" -ge 3 ] || check "opens: its boxes have no places to compare: $(head -c 300 "$OUT/opens-before-places.json")"
 for c in 1 2 3; do status "$O" > /dev/null || check "opens: read $c"; done
 opens_read again || { check "opens: read it again"; return; }
 kill9
