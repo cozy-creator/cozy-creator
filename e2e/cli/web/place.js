@@ -341,7 +341,8 @@ async function placedInView(page, expected) {
     // shape line twice and the rise of a box below's name, 92 (cl-932, 4ae6c085a: shown.ts heightFor and underOf).
     const ROW = 32 + 169 + 40 + 92;
     for (const [i, j] of [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1], [0, 2], [1, 2], [2, 2]]) put(`grid_${i}_${j}`, 320 * i, ROW * j, 300);
-    // The rest under the grid, each clear of the one above as laid out (a 240 picture keeps 299, the crowded 360 one 367).
+    // The chain beside the grid and the rest under it, each clear of the one above as laid out (a 240 picture keeps 299, the crowded 360 one
+    // 367): fitted, it all shows at a zoom of 0.2 or more, where a box has its corner (CanvasHost's far band; all under the grid, 0.197).
     const BELOW = 3 * ROW + 14;
     put('crowded', 290, BELOW, 360);
     put('beside', 0, BELOW + 400, 240);
@@ -350,11 +351,11 @@ async function placedInView(page, expected) {
     put('right', 468, BELOW + 1000, 240);
     put('nudging', 234, BELOW + 1300, 240);
     const CHAIN = ['chain_a', 'chain_b', 'chain_c', 'chain_d', 'chain_e'];
-    CHAIN.forEach((name, i) => put(name, 260 * i, BELOW + 1700, 240));
+    CHAIN.forEach((name, i) => put(name, 1100 + 260 * i, 0, 240));
     // Two rows four long, 10 apart, with a gap 4 short of the box between them, and room beyond.
-    for (let i = 0; i < 4; i++) put(`row_l${i}`, 250 * i, BELOW + 2100, 240);
-    for (let i = 0; i < 4; i++) put(`row_r${i}`, 990 + 236 + 250 * i, BELOW + 2100, 240);
-    put('squeezed', 990 + 118 - 120, BELOW + 2500, 240);
+    for (let i = 0; i < 4; i++) put(`row_l${i}`, 250 * i, BELOW + 1700, 240);
+    for (let i = 0; i < 4; i++) put(`row_r${i}`, 990 + 236 + 250 * i, BELOW + 1700, 240);
+    put('squeezed', 990 + 118 - 120, BELOW + 2100, 240);
     Object.keys(lay).forEach((name, i) => {
       const file = join(pictures, `${name}.png`);
       writeFileSync(file, png(40 + i * 9, 320, 180));
