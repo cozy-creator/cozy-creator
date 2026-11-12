@@ -15,8 +15,6 @@ const UI = "button, input, select, textarea, a, video, audio, [contenteditable],
 /** Image-space pan/zoom never changes the Wander camera. */
 /** What sits right under the frame (a video's segments and Redo): its row's height is kept out of the fit. */
 const UNDER = 44
-/** The image zoom's − and + at the viewer's bottom left, with their gap: what the row under the frame keeps clear of. */
-const ZOOM_ROOM = 104
 
 /** `zooms`: a picture can be zoomed and panned in it; a player that's its own control (an Edit's cut, cl-957) is only fitted. */
 export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under, children }: { enabled: boolean; aspect: number; fitted?: boolean; zooms?: boolean; under?: ReactNode; children: ReactNode }) {
@@ -133,11 +131,12 @@ export function FocusFrame({ enabled, aspect, fitted = true, zooms = true, under
   }} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
     <div className="focus-stack">
       <div className="focus-image-transform" style={{ width: width || "100%", height: height || "100%", transform: fitted ? `translate(${shown.x}px, ${shown.y}px) scale(${shown.scale})` : "none" }}>{children}</div>
-      {under && <div className="focus-under" style={{ width: width || "100%", paddingLeft: fitted ? Math.max(0, ZOOM_ROOM - (room.width - (width || room.width)) / 2) : 0 }}>{under}</div>}
+      {/* In the frame's bottom right, a picture's own (cl-958): held to the frame, not the window, and not scaled with the picture. */}
+      {zoomable && <div className="focus-image-zoom" role="toolbar" aria-label="Image zoom">
+        <button type="button" className="tb" aria-label="Zoom out image" disabled={camera.scale <= 1} onClick={() => zoom(0.8, true)}>−</button>
+        <button type="button" className="tb" aria-label="Zoom in image" disabled={camera.scale >= 8} onClick={() => zoom(1.25, true)}>+</button>
+      </div>}
+      {under && <div className="focus-under" style={{ width: width || "100%" }}>{under}</div>}
     </div>
-    {zoomable && <div className="focus-image-zoom" role="toolbar" aria-label="Image zoom">
-      <button type="button" className="tb" aria-label="Zoom out image" disabled={camera.scale <= 1} onClick={() => zoom(0.8, true)}>−</button>
-      <button type="button" className="tb" aria-label="Zoom in image" disabled={camera.scale >= 8} onClick={() => zoom(1.25, true)}>+</button>
-    </div>}
   </div></ResizeContext.Provider>
 }

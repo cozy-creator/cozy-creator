@@ -1,7 +1,8 @@
 """Tiny Fibo 2.0: Dev and Edit Turbo as Bria's Diffusers folders (`BriaFibo2Transformer2DModel` with its five injection
 blocks and a small gist, Qwen3-VL with Qwen3-VL's processor in `processor/`, FLUX.2's VAE in F32) at a few channels, and
 Bria's prompt-to-JSON VLMs (Qwen3-VL as-is uploads, their head tied to the embedding as the 4B's is). Qwen3-VL keeps the
-35 layers the bundles read (5 ... 35), 32 wide."""
+35 layers the bundles read (5 ... 35), 32 wide. Each DiT folder carries Bria's `fonts/` at its root, as the 0.1.1 and
+0.2.0 checkpoints do (the root `model` component, xs-183): the bytes the package bundled before (assets/fibo_2)."""
 
 from __future__ import annotations
 
@@ -15,12 +16,17 @@ from transformers import Qwen3VLForConditionalGeneration
 from cell import NARROW, Cell, Json, module, save, size
 from tiny import _shared
 
-DEV, TURBO = "briaai/fibo-2-dev@0.1.0", "briaai/fibo-2-edit-turbo@0.1.0"
+DEV, TURBO = "briaai/fibo-2-dev@0.1.1", "briaai/fibo-2-edit-turbo@0.2.0"
 VLM, EDIT_VLM = "briaai/fibo-vlm@0.1.0", "briaai/fibo-edit-vlm@0.1.0"
 TEXT_WIDTH = 32
+#: Bria's caption fonts (`fonts/` of `briaai/Fibo-2.0-dev`), which the pipeline reads from the checkpoint.
+FONTS = Path(__file__).with_name("assets") / "fibo_2" / "fonts"
 
 
 def _fibo(out: Path) -> None:
+    (out / "fonts").mkdir(parents=True, exist_ok=True)
+    for name in ("Aileron-Regular.otf", "DejaVuSans.ttf"):
+        (out / "fonts" / name).write_bytes((FONTS / name).read_bytes())
     _shared.qwen_processor(out / "processor")
     save(module(Qwen3VLForConditionalGeneration(_shared.qwen3_vl(35, TEXT_WIDTH))).to(torch.bfloat16), out / "text_encoder")
     save(module(BriaFibo2Transformer2DModel(

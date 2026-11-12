@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
 import { useDeferredValue, useEffect, useRef, useState } from "react"
-import { createPortal } from "react-dom"
 import type { FoundModel, ModelDetail, Tool, ToolModel } from "../api/calcifer"
 import { useConnection } from "../app/Connection"
 import { Icon } from "../ui/Icon"
@@ -92,28 +91,29 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
     if (signedOut.get()) close.current()
     return () => { unwatch(); unsign() }
   }, [store, bridge, privateViewEpoch, signedOut])
+  // In place under the tool, over nothing (Paul 11-05: no pop-ups): Esc closes it, and so does a press that begins outside it (Paul 11-12:
+  // a press from inside let go outside dismisses nothing). Models & LoRAs itself toggles it.
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault()
-        event.stopPropagation()
-        close.current()
-      } else if (event.key === "Tab") {
-        const controls = [...(dialog.current?.querySelectorAll<HTMLElement>("button, input, select, [tabindex='0']") ?? [])].filter((element) => !element.hasAttribute("disabled") && element.getClientRects().length)
-        const first = controls[0]
-        const last = controls.at(-1)
-        if (!first) { event.preventDefault(); dialog.current?.focus() }
-        else if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { event.preventDefault(); last?.focus() }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
-      }
+      if (event.key !== "Escape") return
+      event.preventDefault()
+      event.stopPropagation()
+      close.current()
+    }
+    const away = (event: PointerEvent) => {
+      const target = event.target as Element | null
+      if (!target || dialog.current?.contains(target) || target.closest(".image-models, .name-menu")) return
+      close.current()
     }
     window.addEventListener("keydown", key, true)
+    window.addEventListener("pointerdown", away, true)
     const first = dialog.current?.querySelector<HTMLInputElement>("input[type=search]") ?? dialog.current
     first?.focus()
     return () => {
       window.removeEventListener("keydown", key, true)
-      if (previous?.isConnected) previous.focus()
+      window.removeEventListener("pointerdown", away, true)
+      if (previous?.isConnected && dialog.current?.contains(document.activeElement)) previous.focus()
     }
   }, [])
   useEffect(() => {
@@ -124,9 +124,8 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   useEffect(() => { if (page && page !== "__legacy" && !active) setPage(null) }, [page, active])
   useEffect(() => { if (!view?.asset) close.current() }, [view?.asset])
   if (!view?.asset) return null
-  return createPortal(
-    <div className="model-picker-overlay nodrag nopan nowheel" onPointerDown={(event) => { event.stopPropagation(); if (event.target === event.currentTarget) onClose() }} onClick={(event) => event.stopPropagation()}>
-      <div ref={dialog} className="model-picker" role="dialog" aria-modal="true" aria-label="Models and LoRAs" tabIndex={-1} onKeyDown={(event) => event.stopPropagation()}>
+  return (
+      <div ref={dialog} className="model-picker nodrag nopan nowheel" role="dialog" aria-label="Models and LoRAs" tabIndex={-1} onKeyDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
         <header className="model-picker-head">
           {page && <button type="button" className="iconb model-picker-back" aria-label="Back to model slots" title="Back" onClick={() => setPage(null)}><Icon name="back" /></button>}
           <div className="model-picker-title"><h2>{active ? slotName(active, qwen, slots) : page === "__legacy" ? "Existing LoRAs" : "Models & LoRAs"}</h2></div>
@@ -145,8 +144,6 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
           </section>}
         </div>
       </div>
-    </div>,
-    document.body,
   )
 }
 

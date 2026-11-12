@@ -70,7 +70,7 @@ use api::{
     calcifer::project::{
         Approve, Approved, Asked, Asset as Row, Cancel, Cancelled, Cut, File as Listing, Import, Imported, Job, JobState, Known, Machines as ProjectMachines, MainFile, Open, Opened,
         Orphan, Projects as Listed, Queued, QueuedNow, Reclaim, Reclaimed, Rename, Renamed, Rendered, Runs, Said, Stale, Standing as RowStanding, State as ProjectState, Unpin, Unpinned,
-        TakeNow, VersionPrefix, Warning as ProjectWarning,
+        TakeNow, Unused, VersionPrefix, Warning as ProjectWarning,
     },
 };
 use serde::Deserialize;
@@ -532,8 +532,8 @@ impl Holding {
 
     /// `cozy run`'s written fields bound as Render binds a box's: mentions read this project's boxes, then the run's own references
     /// (`inline`, each with its file here), ranges are cut here, and `pickup.` terms are the gesture. Answers the call, the files it
-    /// names (the project's fetched here if a machine keeps them), and what was said.
-    pub(crate) async fn bound(&self, target: &str, package: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips, inline: &[(binder::Inline, PathBuf)]) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>), Error> {
+    /// names (the project's fetched here if a machine keeps them), what was said, and what it left out.
+    pub(crate) async fn bound(&self, target: &str, package: &str, callable: &api::interface::Callable, written: Map<String, Value>, clips: &crate::runs::clip::Clips, inline: &[(binder::Inline, PathBuf)]) -> Result<(Map<String, Value>, Vec<crate::runs::bind::InputFile>, Vec<String>, Vec<Unused>), Error> {
         let _access = vault::admit_root(&self.dir).await?;
         let physical = vault::resolve_path(&self.dir)?;
         let folder = Folder::at(&physical);
@@ -586,7 +586,7 @@ impl Holding {
             let digest = sha256.parse().map_err(|why: &str| Error::new(Kind::Internal, "digest", why))?;
             files.push(crate::runs::bind::InputFile { order: order_of(&field), shown: sha256.clone(), field, path, digest, length: sniffed.length, media_type: sniffed.media_type });
         }
-        Ok((payload.as_object().cloned().unwrap_or_default(), files, bound.warnings))
+        Ok((payload.as_object().cloned().unwrap_or_default(), files, bound.warnings, bound.unused))
     }
 }
 
@@ -1446,7 +1446,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder) }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], notes: vec![], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder) }));
         }
     };
     // What a reader now holds is what any change from here is told against.
@@ -1505,7 +1505,7 @@ pub(crate) fn local_code_named(api: &Arc<Api>, id: &str) -> Result<Vec<(String, 
 fn unmade(doc: &Doc, known: &HeardOf, lock: &Lock) -> Vec<ProjectWarning> {
     let mut said = vec![];
     for i in (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()) {
-        let Some(heard) = known.get(&doc.target(i)) else { continue };
+        let Some(heard) = known.get(&doc.target(i)).filter(|heard| !heard.local) else { continue };
         if doc.tags(i).is_none() {
             said.extend(doc.said_once_read(i, &heard.tags, lock));
         }
@@ -1516,26 +1516,43 @@ fn unmade(doc: &Doc, known: &HeardOf, lock: &Lock) -> Vec<ProjectWarning> {
     said
 }
 
-/// What one read says of a published package its assets name, worked out once for all of them.
+/// What one read says of a package its assets name, worked out once for all of them.
 struct HeardPackage {
     name: String,
     tags: Vec<String>,
     makes: bool,
+    /// The function its tool names: what its boxes' text is bound by.
+    callable: Option<api::interface::Callable>,
+    /// Local code, read only for `callable`: its tags and function are said once a render reads it.
+    local: bool,
 }
 
-/// Each published package a read's assets name that's been heard of, by what they call it.
+/// Each package a read's assets name that's been heard of, by what they call it: published, or local code as it was last described.
 type HeardOf = HashMap<String, HeardPackage>;
 
-fn known_packages(api: &Arc<Api>, doc: &Doc) -> HeardOf {
+fn known_packages(api: &Arc<Api>, doc: &Doc, dir: &FsPath) -> HeardOf {
     let targets: BTreeSet<String> = (0..doc.assets.len()).filter(|&i| doc.makes(i) && doc.tool(i).is_none()).map(|i| doc.target(i)).collect();
-    let local = |with: &str| with.is_empty() || api::target::written_as_path(with) || with.ends_with(".py");
-    (targets.into_iter().filter(|with| !local(with)))
+    (targets.into_iter().filter(|with| !with.is_empty()))
         .filter_map(|with| {
-            let package = heard_of(api, &with)?;
-            let heard = HeardPackage { name: package.name.clone(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))) };
+            let package = heard_of(api, &with, dir)?;
+            let callable = package.named.as_deref().and_then(|function| package.callable(function));
+            let heard = HeardPackage { name: package.name.clone(), tags: package.reserved(), makes: matches!(package.maker(), Ok(Some(_))), callable, local: is_local(&with) };
             Some((with, heard))
         })
         .collect()
+}
+
+/// What asset `i`'s text mentions that its tool can't use, as its binder finds it: none until its package is heard of.
+fn unused_of(reading: &Reading, i: usize) -> Vec<Unused> {
+    let Reading { doc, lock, stand, known, .. } = *reading;
+    let target = doc.target(i);
+    let Some((heard, callable)) = known.get(&target).filter(|_| doc.makes(i) && doc.tool(i).is_none()).and_then(|heard| Some((heard, heard.callable.as_ref()?))) else {
+        return vec![];
+    };
+    let fields = doc.inputs_of(i);
+    let reserved = tags_now(doc, known, i).unwrap_or(heard.tags.as_slice());
+    let call = binder::Call { name: &doc.assets[i].name, tool: &target, package: &heard.name, callable, fields: &fields, reserved, doc, own: Some(i), lock, stand, gone: &BTreeSet::new(), pickup: None, inline: &[] };
+    binder::unused(&call)
 }
 
 /// The tags of what makes asset `i`, this moment: none of what Calcifer makes itself. None: they aren't known yet, and its names held back.
@@ -1546,19 +1563,35 @@ fn tags_now<'a>(doc: &'a Doc, known: &'a HeardOf, i: usize) -> Option<&'a [Strin
     if let Some(tags) = doc.tags(i) {
         return Some(tags);
     }
-    known.get(&doc.target(i)).map(|heard| heard.tags.as_slice())
+    known.get(&doc.target(i)).filter(|heard| !heard.local).map(|heard| heard.tags.as_slice())
 }
 
-/// What was last heard of the package `with`, this moment. If that isn't recent, it is asked again in the background.
-fn heard_of(api: &Arc<Api>, with: &str) -> Option<Arc<Package>> {
+/// Whether `with` names local code.
+fn is_local(with: &str) -> bool {
+    api::target::written_as_path(with) || with.ends_with(".py")
+}
+
+/// What was last heard of the package `with`, this moment: published, or local code from `dir` as described on this computer's machine.
+/// If that isn't recent, it is asked again in the background.
+fn heard_of(api: &Arc<Api>, with: &str, dir: &FsPath) -> Option<Arc<Package>> {
+    let local = is_local(with);
+    // Local code by where it is: two projects' `./tool.py` are two packages, and one absolute path is one however many projects name it.
+    let key = match local && !with.starts_with('~') && !FsPath::new(with).is_absolute() {
+        true => dir.join(with).display().to_string(),
+        false => with.to_owned(),
+    };
     let mut heard = api.projects.heard.lock().expect("heard lock");
-    let entry = heard.entry(with.to_owned()).or_default();
+    let entry = heard.entry(key.clone()).or_default();
     if entry.asked.is_none_or(|asked| asked.elapsed() > HEARD_FOR) {
         entry.asked = Some(Instant::now());
-        let (api, with) = (api.clone(), with.to_owned());
+        let (api, with, dir) = (api.clone(), with.to_owned(), dir.to_path_buf());
         tokio::spawn(async move {
-            if let Ok(package) = Host::new(&api).published("", &with, None).await {
-                api.projects.heard.lock().expect("heard lock").entry(with).or_default().package = Some(Arc::new(package));
+            let found = match local {
+                true => Host::new(&api).described(&with, &dir).await,
+                false => Host::new(&api).published("", &with, None).await,
+            };
+            if let Ok(package) = found {
+                api.projects.heard.lock().expect("heard lock").entry(key).or_default().package = Some(Arc::new(package));
                 api.projects.heard_changes.fetch_add(1, Ordering::Relaxed);
                 api.projects.now_open().iter().for_each(|project| crate::events::project_settled(&project.folder.dir));
             }
@@ -1857,6 +1890,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         made_by: made.map(|made| made.tool.clone().unwrap_or_else(|| doc.target(i))).filter(|made_by| !made_by.is_empty()),
         status,
         reads: doc.reads_of(i, &standing.reads),
+        unused: unused_of(reading, i),
         fields: doc.flat_fields(i),
         etag: None,
         failure,
@@ -4265,7 +4299,7 @@ impl Walk {
             let call = binder::Call { name: &name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &gone, pickup: pickup.as_ref(), inline: &[] };
             let mut bound = binder::bind(&call)?;
             self.cut(&mut bound, lock).await.map_err(|why| cannot(&name, why))?;
-            let (input, mut warnings) = (bound.payload, bound.warnings);
+            let (input, mut warnings, unused) = (bound.payload, bound.warnings, bound.unused);
             warnings.dedup();
             // A function with no seed has one result per inputs, as has an asset that names one.
             let fixed = input.contains_key("seed");
@@ -4280,6 +4314,8 @@ impl Walk {
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
             warnings.iter().for_each(|message| self.say(Told::Warning { message: message.clone(), name: None }));
+            // What it can't use is struck through on its box, and said once here: a note, not a warning.
+            unused.iter().for_each(|unused| self.say(Told::Said { message: unused.line(&name), name: Some(name.clone()) }));
             // Its id is its take's, from the render that asked it (cl-945).
             let mut version = Version { id: key.clone(), inputs: inputs.clone(), warnings, text: doc.text(i), fields: Some(doc.authoring_fields(i)), ..Default::default() };
             if seeded {
@@ -4329,7 +4365,7 @@ impl Walk {
                 self.not_sent(&name);
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
-            self.submit(&key, input, &package, asset, pending, &settling, member).await
+            self.submit(&key, input, &package, asset, pending, &settling, member, &unused).await
         };
         let sent = sent.await;
         if sent.is_err() {
@@ -4419,7 +4455,8 @@ impl Walk {
     /// (with `settle`: what it settles of the walk) in one write before it is sent. The seed and the asset's `models` and `lora`, as
     /// `cozy run --input` takes them, go on top.
     #[allow(clippy::too_many_arguments)]
-    async fn submit(&self, key: &str, mut payload: Map<String, Value>, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut folder::WalkFile), member: host::Member) -> Result<(), Error> {
+    #[allow(clippy::too_many_arguments)]
+    async fn submit(&self, key: &str, mut payload: Map<String, Value>, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut folder::WalkFile), member: host::Member, unused: &[Unused]) -> Result<(), Error> {
         let renderer = package.maker()?.ok_or_else(|| cannot(&asset.name, "its tool names no function".into()))?;
         let (on, hub) = (pending.target.on.clone(), pending.target.hub.clone());
         let name = asset.name.clone();
@@ -4447,6 +4484,7 @@ impl Walk {
             code: "model_slot_replaced".into(),
             message: format!("{name}'s render: {replaced}"),
         }));
+        warnings.extend(unused.iter().map(|unused| Warning { code: api::calcifer::MENTION_UNUSED.into(), message: unused.line(&name) }));
         let models = choices::wire(&choices.into_choices()).map_err(named)?;
         let payload = Value::Object(payload);
         let lock = self.folder().lock()?;

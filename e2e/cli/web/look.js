@@ -286,6 +286,16 @@ async function died(why) {
   const zoomOf = (page) => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
   await shoot('canvas-fit', { open: (page) => leave(page), prepare: (page) => fitCanvas(page) });
   await shoot('canvas-100', { prepare: async (page) => { await fitCanvas(page); await zoomMenu(page, /^Zoom to 100%/); } });
+  // Past the far band (below 20%): a box is its picture and its name.
+  await shoot('canvas-farthest', {
+    prepare: async (page) => {
+      await fitCanvas(page);
+      for (let i = 0; i < 16 && (await zoomOf(page)) > 0.16; i++) {
+        await page.click('button[aria-label="Zoom out"]');
+        await settled(page);
+      }
+    },
+  });
   await shoot('canvas-far', {
     prepare: async (page) => {
       await fitCanvas(page);
@@ -360,6 +370,14 @@ async function died(why) {
   await shoot('drawer-files', { open: (page) => goto(page, `${projectPath}/files`) });
   await shoot('drawer-account', { open: (page) => goto(page, `${projectPath}/account`) });
   await shoot('drawer-projects-open', { open: (page) => goto(page, `${projectPath}/projects`) });
+  // The open project's own tab: Projects, ready for a new one's name (cl-958: the bar's one + is Add files).
+  await shoot('drawer-projects-from-tab', {
+    open: async (page) => {
+      await goto(page, projectPath);
+      await page.click('nav.ptabs a.ptab.on');
+      await page.locator('.drawer input[aria-label="New project\'s name"]').waitFor();
+    },
+  });
   await shoot('drawer-library', { open: (page) => goto(page, `${projectPath}/packages`) });
   await shoot('drawer-models', { open: (page) => goto(page, `${projectPath}/models`) });
   await both((page) => goto(page, projectPath));

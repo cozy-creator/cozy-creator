@@ -3,7 +3,8 @@
 # an author and a person use them. Local code may install; no model function runs and nothing is rented.
 #   upload    its code, with an empty file (0.22.1 refused one: file_length_required), sent by content and described
 #             (`cozy run <package dir> --describe`): the functions and fields the executor's interface has
-#   lock      Calcifer's private lock API leaves the committed uv.lock as it is
+#   lock      Calcifer's private lock API leaves the committed uv.lock as it is (a Hub index's URLs and wheels are this
+#             suite's Hub's: lock_same.py)
 #   bind      every cell's request (drive.py's <out>/requests/<request>.json, its input files) bound by Calcifer's binder
 #             against the staged local code (the private estimate API; 0.22.1 refused `aspect_ratio=1:1`), a prompt's
 #             reference images named as the run's own `references`
@@ -46,8 +47,10 @@ else
 fi
 
 if python3 "$(dirname "$0")/../package-lock.py" --cozy "$COZY" "$cli/src/$p" > "$cli/lock.json" 2> "$cli/lock.err"; then
-  if [ "$(jq -r .changed "$cli/lock.json")" = false ] && cmp -s "$PKG/uv.lock" "$cli/src/$p/uv.lock"; then line PASS - lock
-  else line FAIL - lock "the committed uv.lock is stale: $(diff "$PKG/uv.lock" "$cli/src/$p/uv.lock" | grep -m1 '^[<>]')"; fi
+  # Locked on this suite's Hub: a Hub index's URLs and wheels are this Hub's (lock_same.py), every other byte the same.
+  if stale=$(python3 -I "$(dirname "$0")/lock_same.py" "$PKG/uv.lock" "$cli/src/$p/uv.lock" "${COZY_TEST_HUB_ORIGIN:-}"); then
+    line PASS - lock
+  else line FAIL - lock "the committed uv.lock is stale: $stale"; fi
 elif grep -qE 'not_logged_in|401|403' "$cli/lock.json" "$cli/lock.err"; then
   line SKIP - lock "its index needs a sign-in: $(said "$cli/lock.json")"
 else

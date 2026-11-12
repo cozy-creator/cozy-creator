@@ -1,0 +1,1 @@
+An update that would put a machine on the open RC's Runtime under a released cozy is refused in one line naming `cozy machine update <machine>`: only the RC's own cozy runs released packages on the RC's Runtime.

@@ -197,6 +197,7 @@ impl Machines {
                 return Ok((Updating { machine: m, run: None, target: String::new(), warnings: vec![] }, true));
             }
         }
+        rc_pairing(&m, &asked, placed.as_deref())?;
         let platform = m.status.as_ref().map(|s| s.platform.clone()).unwrap_or_default();
         // Nothing named, off the RC: each moves to its Hub's target, said `(Hub)`, which holds the machine on nothing.
         let hub_target = if flagless { " (Hub)" } else { "" };
@@ -414,6 +415,35 @@ pub(crate) async fn update(
         false => StatusCode::OK,
     };
     Ok((status, Json(updating)))
+}
+
+/// Refuses an update that would leave `m` on the open RC's Runtime (a dev release, `0.47.0.dev2259`) under a released cozy
+/// (cl-952): only the RC's own TensorD runs released packages over their caps on it, so a release of cozy there refuses them.
+/// The RC follower and a package's floor move the three together; this holds for an update by hand.
+fn rc_pairing(m: &Machine, asked: &[(&str, &str, Component)], placed: Option<&str>) -> Result<(), Error> {
+    let status = m.status.clone().unwrap_or_default();
+    let named = |member: &str| asked.iter().find(|(asked, _, _)| *asked == member).map(|(_, _, component)| component);
+    let runtime = match named("runtime") {
+        Some(Component::Version(version)) => version.clone(),
+        Some(Component::File(build)) => build.name.split('-').nth(1).unwrap_or_default().to_owned(),
+        None => status.runtime.clone(),
+    };
+    let (cozy, dev) = match (named("tensord"), placed) {
+        (Some(Component::Version(version)), _) => (version.clone(), api::prerelease::dev(version)),
+        (Some(Component::File(_)), _) => ("a dev build".to_owned(), true),
+        (None, Some(installed)) => (installed.to_owned(), api::prerelease::dev(installed)),
+        (None, None) => (status.version.clone(), status.dev || api::prerelease::dev(&status.version)),
+    };
+    let rc = runtime.parse::<pep440_rs::Version>().is_ok_and(|version| version.is_dev() && !version.is_pre() && !version.is_post());
+    if !rc || dev || cozy.is_empty() {
+        return Ok(());
+    }
+    Err(Error::new(
+        Kind::Conflict,
+        "rc_runtime_needs_rc_cozy",
+        format!("{} would run the open RC's Runtime {} under cozy {cozy}, a release: only the RC's cozy runs released packages on it", m.name, api::prerelease::shown(&runtime)),
+    )
+    .next(format!("cozy machine update {}", m.name)))
 }
 
 /// The release of this computer's installed cozy when `m` is `local` and runs another: the binary

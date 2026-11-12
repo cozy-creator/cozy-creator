@@ -822,7 +822,7 @@ pub struct Outcome {
 pub struct Adjustment {
     /// Its path in the request: `steps`, `assets.2.asset`.
     pub field: String,
-    /// `adjusted`, `clamp` or `warn`.
+    /// `adjusted`, `clamp`, `warn` or `ignored` (an input the function has no use for).
     pub kind: String,
     pub requested: String,
     pub applied: String,

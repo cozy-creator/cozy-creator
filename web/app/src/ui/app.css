@@ -667,6 +667,10 @@ code {
     0 0 0 calc(3px * var(--unzoom, 1)) var(--select-gap),
     0 0 calc(24px * var(--unzoom, 1)) calc(10px * var(--unzoom, 1)) var(--select-glow);
 }
+/* Far out the ring outgrows the 12px under its name: the name row rises clear of it, never under it. */
+.react-flow__node.selected .card:not(.entity) > .head {
+  translate: 0 min(0px, calc(9px - 9px * var(--unzoom, 1)));
+}
 .media.alpha {
   background-color: var(--check);
   background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
@@ -1037,9 +1041,34 @@ code {
 .focus-viewport > .run-face.above {
   position: relative;
   flex: none;
+  /* Its two lines, the second as tall as its Cancel: Render and New take are lifted by this (FocusedViewport.css). */
+  height: 56px;
   padding: 0 4px;
   font-size: 17px;
+  text-shadow: var(--halo);
+}
+/* In Focus its Cancel follows its words, not the far side of the window. */
+.focus-viewport > .run-face.above .face-state b {
+  flex: 0 1 auto;
+}
+.focus-viewport > .run-face.above .face-cancel,
+.focus-card .run-face .copy-error {
+  min-height: 32px;
+  padding: 0 12px;
   text-shadow: none;
+}
+/* In Focus a failure says all it said, wrapped, at the frame's size; its Copy clear of the corner that shapes the frame. */
+.focus-card .run-face.failed {
+  padding-right: 36px;
+  font-size: var(--small);
+}
+.focus-card .run-face.failed .face-state {
+  align-items: flex-end;
+}
+.focus-card .run-face.failed .face-state b,
+.focus-card .run-face.failed .face-words {
+  overflow: visible;
+  white-space: normal;
 }
 /* At rest, how far the whole job is (cl-928): a thin meter along the top of its box (Paul, 11-12), line 1's numbers, drawn only once
    there's an estimate. Nothing pulses in it. */
@@ -1158,7 +1187,9 @@ code {
   z-index: 2;
   display: -webkit-box;
   margin: 0;
-  padding: var(--s2) var(--s3);
+  /* Its room under the words is a border, not padding: what's clamped past four lines would show in padding, cut through. */
+  padding: var(--s2) var(--s3) 0;
+  border-bottom: var(--s2) solid transparent;
   overflow: hidden;
   border-radius: var(--round);
   background: var(--scrim);
@@ -1178,6 +1209,11 @@ code {
   inset: var(--head) 0 0;
   border-radius: 2px;
   pointer-events: none;
+  /* Its state dot's colour: blue running, grey queued (cl-958). */
+  --wave: var(--state-running);
+}
+.render-wave[data-state="queued"] {
+  --wave: var(--state-queued);
 }
 .render-wave::before,
 .render-wave::after {
@@ -1192,16 +1228,16 @@ code {
 }
 @keyframes render-wave {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--mak) 75%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--wave, var(--mak)) 75%, transparent);
   }
   100% {
-    box-shadow: 0 0 0 calc(24px * var(--unzoom, 1)) color-mix(in srgb, var(--mak) 0%, transparent);
+    box-shadow: 0 0 0 calc(24px * var(--unzoom, 1)) color-mix(in srgb, var(--wave, var(--mak)) 0%, transparent);
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .render-wave::before {
     animation: none;
-    box-shadow: 0 0 0 calc(4px * var(--unzoom, 1)) color-mix(in srgb, var(--mak) 60%, transparent);
+    box-shadow: 0 0 0 calc(4px * var(--unzoom, 1)) color-mix(in srgb, var(--wave, var(--mak)) 60%, transparent);
   }
   .render-wave::after {
     display: none;
@@ -2255,6 +2291,35 @@ video.preview.on {
   width: 18px;
   height: 18px;
 }
+/* Far out a box is its picture and its name (web-ui.md §2), the name and its dot at the body step on screen, held there by --name-zoom
+   (CanvasHost.tsx); its version and trash can, too small there to read or hit, go (cl-958). */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.nm, .state-dot) {
+  font-size: calc(var(--t-body) * var(--ui) * var(--name-zoom, 1));
+}
+/* A name longer than its box goes on to a second line, rising over it, rather than being cut to a few letters. */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head .nm {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: break-word;
+  line-height: 1.1;
+  /* A word a little wider than its box runs into the gap beside it rather than splitting (brok/en); not past 20%, where the gap is
+     too narrow and two names ran together. */
+  flex-shrink: 0;
+  max-width: 130%;
+}
+.stage[data-lod="2"] .react-flow__node .card > .head .nm {
+  max-width: 100%;
+}
+/* Past 20% a box is 60px or so on screen: its name at the small step (14px), so a short word fits it whole. */
+.stage[data-lod="2"] .react-flow__node .card > .head :is(.nm, .state-dot) {
+  font-size: calc(var(--t-small) * var(--ui) * var(--name-zoom, 1));
+}
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
+  display: none;
+}
 
 /* Drawers, and what floats over the canvas keeps clear of the rest by: the tools' width, the zoom's height, an open drawer's width as drawn,
    and where what sits beside the tools starts. */
@@ -2582,6 +2647,9 @@ button:disabled {
   color: var(--mute);
   white-space: normal;
   overflow-wrap: anywhere;
+}
+.runrow .under.fn {
+  font-family: var(--mono);
 }
 .runrow .under.warn {
   color: var(--ood);
@@ -3977,7 +4045,8 @@ input[type="checkbox"] {
   width: 100%;
   margin-top: 4px;
 }
-.chip.refused {
+/* A mention its tool can't use there: crossed out, its title says why, and no render sends it (cl-944). */
+.chip.unused {
   background: color-mix(in srgb, var(--ood) 13%, transparent);
   color: var(--ood);
   text-decoration: line-through;
@@ -4457,12 +4526,6 @@ input[type="checkbox"] {
 .ptab.more {
   flex: none;
 }
-.ptab.new {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  padding: calc(4px * var(--ui)) calc(8px * var(--ui));
-}
 /* What each tab takes at its full width, laid out where no one sees it: a row as wide as all of them, so a font arriving resizes it. */
 .ptabs-ghost {
   position: absolute;
@@ -4727,12 +4790,6 @@ p.warn.slow {
   border-top: 1px solid var(--line);
 }
 /* Where a project is, so a person can find it. */
-.project-path {
-  display: block;
-  color: var(--mute);
-  font: var(--small) var(--mono);
-  overflow-wrap: anywhere;
-}
 
 /* Zoom, in the canvas's bottom right corner (FigJam's): − the zoom +, sized like the top bar's buttons. The zoom opens its menu above it. */
 .zoom {

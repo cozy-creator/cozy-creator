@@ -124,6 +124,9 @@ pub struct Warning {
     pub message: String,
 }
 
+/// A run's `Warning` code for a mention its function can't use, left out (cl-944): a note, nothing to act on.
+pub const MENTION_UNUSED: &str = "mention_unused";
+
 /// A run that has not moved: since when, on which machine, and what that machine costs an hour
 /// (none: not a rental, or its Hub has not said).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

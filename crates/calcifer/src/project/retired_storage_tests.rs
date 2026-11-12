@@ -48,7 +48,7 @@ async fn bound_calls_require_readable_current_native_storage() {
         let result = Holding::new(calcifer.clone(), root.clone())
             .bound("fixture/call", "fixture", &callable, Map::new(), &clips, &[]).await;
         if kind == "current" {
-            let (fields, files, _) = result.unwrap();
+            let (fields, files, _, _) = result.unwrap();
             assert!(fields.is_empty() && files.is_empty());
         } else {
             let error = result.unwrap_err();

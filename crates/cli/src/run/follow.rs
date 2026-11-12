@@ -471,20 +471,24 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
         record = record.note(adjustment(row));
     }
     for warning in &run.warnings {
-        record = record.note(format!("warning: {}", warning.message));
+        // A mention its function can't use was left out: said once, nothing to act on.
+        let said = if warning.code == api::calcifer::MENTION_UNUSED { "note" } else { "warning" };
+        record = record.note(format!("{said}: {}", warning.message));
     }
     record
 }
 
 /// One adjustment as a line: `adjusted assets.2.asset: 21.4 -> 15 (video truncated to 15 s)
-/// [policy]`; a warning reads `warn field: reason [source]`.
+/// [policy]`; a warning reads `warn field: reason [source]`, and an input the function has no use for
+/// `ignored field: what (why) [source]`.
 fn adjustment(row: &Adjustment) -> String {
     let mut line = format!("{} {}:", row.kind, row.field);
-    if row.kind != "warn" {
+    if !matches!(row.kind.as_str(), "warn" | "ignored") {
         let _ = write!(line, " {} -> {}", row.requested, row.applied);
     }
     let _ = match (row.kind.as_str(), row.reason.as_str()) {
         (_, "") => Ok(()),
+        ("ignored", reason) => write!(line, " {} ({reason})", row.requested),
         ("warn", reason) => write!(line, " {reason}"),
         (_, reason) => write!(line, " ({reason})"),
     };
@@ -525,7 +529,7 @@ pub(super) fn status(run: &Run) -> String {
     if run.cancel_requested && !settled(run) {
         status = "canceling".into();
     }
-    if !run.warnings.is_empty() {
+    if run.warnings.iter().any(|warning| warning.code != api::calcifer::MENTION_UNUSED) {
         status.push_str(" ⚠");
     }
     status

@@ -484,8 +484,11 @@ async fn rc_reader(api: &Api, version: &str) -> Result<Option<String>, Error> {
     if !(api.machines.dev || crate::update::dev_build()) || !prerelease {
         return Ok(None);
     }
+    // Its pure wheel, which the RC's prerelease keeps for every build (cl-952): a SHA256SUMS read a moment before the RC moved
+    // still names one that's there, where the native one it names is gone (404, e2e 43206615800).
+    let sums = api.machines.rc.now().await?;
     let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
-    Ok(api.machines.rc.now().await?.build("runtime", &platform).map(|(_, url)| url))
+    Ok(sums.pure_runtime().or_else(|| sums.build("runtime", &platform)).map(|(_, url)| url))
 }
 
 /// The staged project locked for this Hub, held to the committed lock, built, its git

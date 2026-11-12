@@ -14,7 +14,7 @@ use std::{
 };
 
 use api::{
-    calcifer::{FileTerm, Note, NoteLevel, Sent, StagedInput, path_key},
+    calcifer::{FileTerm, Note, NoteLevel, Sent, StagedInput, path_key, tool::MEDIA},
     contract as describe,
     error::{Error, Kind},
     ids::Digest,
@@ -115,6 +115,8 @@ pub(crate) struct Bound {
     pub notes: Vec<Note>,
     /// The lists of files over a limit that were cut, as people read them.
     pub cut: Vec<String>,
+    /// Each mention its function can't use, left out, as one line.
+    pub unused: Vec<String>,
 }
 
 /// A file bound to a payload field, whose value is its digest: `path` holds it here, and `shown` is
@@ -257,14 +259,17 @@ pub(crate) async fn bind(
     binder.fidelities()?;
     let tree_files = binder.trees(&mut files)?;
     binder.seed();
+    let mut unused = vec![];
     if let Some(project) = &terms.project {
         let package = target.rsplit_once('/').map_or(target, |(package, _)| package);
         let inline = binder.inline_references().await?;
-        let (payload, named, said) = project.bound(target, package, callable, std::mem::take(&mut binder.document), &terms.clips, &inline).await?;
+        let (payload, named, said, left) = project.bound(target, package, callable, std::mem::take(&mut binder.document), &terms.clips, &inline).await?;
         binder.document = payload;
         files.retain(|file| !named.iter().any(|held| held.field == file.field));
         files.extend(named);
         said.into_iter().for_each(|message| binder.warn(message));
+        unused = left.iter().map(|one| one.line(target)).collect();
+        binder.notes.extend(unused.iter().map(|message| Note { level: api::calcifer::NoteLevel::Info, message: message.clone() }));
     }
     let mut ignored = validate(target, release, callable, &mut binder.document)?;
     ignored.extend(std::mem::take(&mut binder.choices.dropped));
@@ -281,6 +286,7 @@ pub(crate) async fn bind(
         cuts: binder.cuts,
         notes: binder.notes,
         cut: binder.cut,
+        unused,
     })
 }
 
@@ -606,6 +612,7 @@ impl Binder<'_> {
         let mut seen = BTreeSet::new();
         let mut files = Vec::new();
         for spec in specs {
+            let positional = spec.field.is_none();
             let parts = match spec.field {
                 Some(field) => {
                     let mut parts: Vec<String> = field.split('.').map(str::to_owned).collect();
@@ -658,16 +665,11 @@ impl Binder<'_> {
                     format!("input file field {field:?} was given more than once"),
                 ));
             }
-            let accepts = self.accepts(&parts).ok_or_else(|| {
-                invalid(
-                    "asset_field_unknown",
-                    format!(
-                        "{}.{field} is not an input file field of this function",
-                        self.callable.name
-                    ),
-                )
-                .remedy(describe::usage_line(self.target, self.callable))
-            })?;
+            // A file where the function takes none is left out, as any undeclared field is: never refused (cl-944).
+            let Some(accepts) = self.accepts(&parts) else {
+                self.notes.push(Note { level: NoteLevel::Warning, message: format!("{}.{field} is no input file field of this function: {} is left out", self.callable.name, spec.source) });
+                continue;
+            };
             let named = path_key(&spec.source).to_owned();
             let (path, digest) = match (self.terms.file(&named).await?, self.terms.sent(&named)) {
                 (Some(found), _) => found,
@@ -679,6 +681,22 @@ impl Binder<'_> {
                 (None, _) => return Err(not_sent(&field, &named)),
             };
             let sniffed = sniff(&path)?;
+            // A file of a modality the field can't use is left out, said once: never refused (cl-944).
+            let held = sniffed.media_type.split('/').next().unwrap_or_default();
+            let takes = self.modalities(&parts);
+            if MEDIA.contains(&held) && !takes.is_empty() && !takes.iter().any(|kind| kind == held || kind == "file") {
+                let collection = self.callable.assets.as_ref().map(|assets| assets.parameter.clone()).filter(|_| positional);
+                if let Some(list) = collection.and_then(|parameter| self.document.get_mut(&parameter)).and_then(Value::as_array_mut) {
+                    list.pop();
+                }
+                let kinds = match held {
+                    "image" => "images",
+                    "video" => "videos",
+                    other => other,
+                };
+                self.notes.push(Note { level: NoteLevel::Info, message: format!("{field}: {} is left out: {} can't use {kinds} there", spec.source, self.target) });
+                continue;
+            }
             let (kind_max, kinds) = accepts;
             let max = kinds
                 .iter()
@@ -1162,6 +1180,16 @@ impl Binder<'_> {
         .map(|(types, max)| (max, vec![(types, None)]))
     }
 
+    /// The kinds of file an input file field takes: `image`, `video`, `audio` or `file`.
+    fn modalities(&self, parts: &[String]) -> Vec<String> {
+        if let Some(AssetsSlot { parameter, kinds }) = &self.callable.assets
+            && parts.first() == Some(parameter)
+        {
+            return kinds.iter().map(|kind| kind.kind.clone()).collect();
+        }
+        self.callable.field(&parts[0]).and_then(|field| kind_at(&field.ty, &parts[1..])).into_iter().collect()
+    }
+
     /// An omitted integer `seed` comes from the idempotency key, so a retried key rebuilds the
     /// same payload. An `int | None` seed is the package's to choose.
     fn seed(&mut self) {
@@ -1235,6 +1263,17 @@ fn asset_at(
             };
             asset_at(&field.ty, &parts[1..], types, max)
         }
+        _ => None,
+    }
+}
+
+/// The kind of file at `parts` under `ty`.
+fn kind_at(ty: &Type, parts: &[String]) -> Option<String> {
+    match ty {
+        Type::Asset(kind) | Type::Media { kind, .. } if parts.is_empty() => Some(kind.clone()),
+        Type::Union { branches, .. } => branches.iter().find_map(|branch| kind_at(branch, parts)),
+        Type::List(item) if !parts.is_empty() && parts[0].parse::<u32>().is_ok() => kind_at(item, &parts[1..]),
+        Type::Struct(members) if !parts.is_empty() => kind_at(&members.fields.iter().find(|field| field.name == parts[0])?.ty, &parts[1..]),
         _ => None,
     }
 }
@@ -1597,6 +1636,8 @@ fn check(ty: &Type, value: &mut Value, path: &str, ignored: &mut Vec<String>) ->
         (Type::Seed, Value::Number(n)) if n.is_u64() => vec![],
         // What the project's binder made of a prompt, a described file and a pickup.
         (Type::Prompt(_) | Type::Media { .. } | Type::Pickup(_), Value::Object(_)) => vec![],
+        // A prompt where only words go: the Runtime takes its text and leaves its files out, saying so (cl-944).
+        (Type::Str, Value::Object(prompt)) if prompt.get("text").is_some_and(Value::is_string) => vec![],
         (Type::Literal(members), value)
             if members.iter().any(|m| same(m, value))
                 || numbers(members, value)

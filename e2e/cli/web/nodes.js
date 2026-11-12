@@ -942,7 +942,7 @@ function replaceFile(at, text) {
     // Rendered from its words, it's still on them: its take, pressed, is what's kept from.
     await box('Clip').locator('.take[aria-label="take 1"]').click();
     const clipFile = JSON.stringify(storedBox('Clip'));
-    const segments = page.locator('.focus-viewport .focus-under .segments');
+    const segments = page.locator('.focus-viewport .tl-take');
     await segments.locator('.segment').nth(1).click();
     await segments.locator('button.redo-segment:text-is("Redo segment 2")').click();
     await page.locator('.focus-viewport .lead-in').waitFor();

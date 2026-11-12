@@ -1,4 +1,4 @@
-import { type CSSProperties, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useConnection } from "../../app/Connection"
 import type { ClipNow } from "../../api/calcifer"
 import { Icon } from "../../ui/Icon"
@@ -10,7 +10,8 @@ import { useCanvasStore, useElement } from "../context"
 import { FocusFrame } from "../FocusFrame"
 import { Thumb } from "../Media"
 import { valuesOf } from "../shown"
-import { clipOf, frameAt, indexAt, isStill, lay, type Layout, marks, moved, named, type Placed, rulerLabel, split, timecode, trimmedIn, trimmedOut, wire, xOf } from "./model"
+import { clipOf, frameAt, indexAt, isStill, lay, type Layout, moved, named, type Placed, split, timecode, trimmedIn, trimmedOut, wire, xOf } from "./model"
+import { Playhead, Ruler, Transport } from "./Player"
 import { Preview } from "./Preview"
 import "./timeline.css"
 
@@ -137,29 +138,6 @@ const Clip = memo(function Clip({
   )
 })
 
-function Playhead({ preview, layout }: { preview: Preview; layout: Layout }) {
-  const frame = useSignal(preview.frame)
-  return <div className="tl-playhead" data-frame={frame} style={{ transform: `translateX(${xOf(layout, frame)}px)` }} />
-}
-
-/** Time along the top, labelled where the labels have room; only what's in view is drawn. */
-function Ruler({ layout, fps, from, to }: { layout: Layout; fps: number; from: number; to: number }) {
-  const { major, minor } = marks(layout.scale, fps)
-  const first = Math.max(0, Math.floor(from / layout.scale / major) * major)
-  const last = Math.min(layout.frames, Math.ceil(to / layout.scale / major) * major)
-  const labels: number[] = []
-  for (let frame = first; frame <= last; frame += major) labels.push(frame)
-  return (
-    <div className="tl-ruler" style={{ "--minor": `${minor * layout.scale}px`, "--major": `${major * layout.scale}px`, width: layout.width } as CSSProperties}>
-      {labels.map((frame) => (
-        <span key={frame} className="tl-mark" style={{ transform: `translateX(${frame * layout.scale}px)` }}>
-          {rulerLabel(frame, fps)}
-        </span>
-      ))}
-    </div>
-  )
-}
-
 /** What's at the playhead, filling the frame center-cropped as the film is, exact once it's been sought. A click plays or pauses it. */
 function Monitor({ preview, layout, empty }: { preview: Preview; layout: Layout; empty: boolean }) {
   const store = useCanvasStore()
@@ -196,24 +174,6 @@ function Monitor({ preview, layout, empty }: { preview: Preview; layout: Layout;
       <div ref={holder} className={`tl-video ${videoReady ? "" : "off"}`} />
       {empty && <p className="tl-empty">Drop videos and pictures on the timeline</p>}
       {failed && <p className="tl-empty">{failed}</p>}
-    </div>
-  )
-}
-
-/** Under the player, as under any video: play, where it is of how long, and a scrubber across the whole cut. */
-function Transport({ preview, layout, fps }: { preview: Preview; layout: Layout; fps: number }) {
-  const frame = useSignal(preview.frame)
-  const playing = useSignal(preview.playing)
-  const last = Math.max(0, layout.frames - 1)
-  return (
-    <div className="tl-transport nodrag nopan">
-      <button type="button" className="tb tl-go" aria-label={playing ? "Pause" : "Play"} title={playing ? "Pause (Space)" : "Play (Space)"} disabled={!layout.frames} onClick={() => preview.toggle()}>
-        <Icon name={playing ? "pause" : "play"} />
-      </button>
-      <span className="tl-time" aria-label="Playhead">
-        {timecode(frame, fps)} <span className="tl-of">/ {timecode(layout.frames, fps)}</span>
-      </span>
-      <input className="tl-scrub" type="range" aria-label="Scrub" min={0} max={last} step={1} value={Math.min(frame, last)} disabled={!layout.frames} onChange={(event) => preview.seek(Number(event.target.value))} />
     </div>
   )
 }
@@ -657,7 +617,7 @@ export function VideoEditor({ name }: { name: string }) {
   const pulled = trim ? layout.placed[trim.index] : undefined
   return (
     <>
-      <FocusFrame enabled aspect={aspect} zooms={false} under={<Transport preview={preview} layout={layout} fps={fps} />}>
+      <FocusFrame enabled aspect={aspect} zooms={false} under={<Transport playback={preview} frames={layout.frames} fps={fps} />}>
         <div className="tl-player" style={{ aspectRatio: aspect }} tabIndex={-1} onKeyDown={key}>
           <Monitor preview={preview} layout={layout} empty={!clips.length} />
           {asset?.rendering != null && (
@@ -689,7 +649,7 @@ export function VideoEditor({ name }: { name: string }) {
         <div ref={scroller} className="tl-scroll">
           <div ref={track} className="tl-track" style={{ width: Math.max(room, layout.width + ROOM_AFTER + (caret === null ? 0 : GAP)) }}>
             <div className="tl-rail" onPointerDown={scrub}>
-              <Ruler layout={layout} fps={fps} from={seen.from} to={seen.to} />
+              <Ruler frames={layout.frames} scale={layout.scale} width={layout.width} fps={fps} from={seen.from} to={seen.to} />
             </div>
             <div className={`tl-clips ${trim || rescaled ? "pulling" : ""}`} onPointerDown={scrub}>
               {layout.placed.map((held) => (
@@ -713,7 +673,7 @@ export function VideoEditor({ name }: { name: string }) {
                 {isStill(pulled.clip) ? `${timecode(pulled.frames, fps)}, ${pulled.frames} f` : `${trim.side === "in" ? "In" : "Out"} ${timecode(trim.side === "in" ? pulled.in : pulled.out, fps)}, ${pulled.frames} f`}
               </span>
             )}
-            {layout.frames > 0 && <Playhead preview={preview} layout={layout} />}
+            {layout.frames > 0 && <Playhead playback={preview} scale={layout.scale} />}
           </div>
         </div>
       </div>

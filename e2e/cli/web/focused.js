@@ -636,7 +636,7 @@ async function died(error) {
   const completedGeometry = await videoFocus.locator('.focus-viewer').boundingBox();
   check('completed_video_has_a_prominent_view_only_face', completedGeometry.width > videoRoom.width * 0.5 && completedGeometry.height > 120 && !await summaryPrompt.isVisible() && !await beatPrompt.isVisible() && await videoFocus.locator('.mention-text:visible').count() === 0, { completedGeometry, videoRoom });
   // An imported take has no run to say its seams, so no segment is offered to redo (cl-951): web-scrub's rendered take is.
-  check('completed_video_has_models_and_no_redo_without_its_seams', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await videoFocus.locator('.focus-under .redo-segment').count() === 0);
+  check('completed_video_has_models_and_no_redo_without_its_seams', await videoFocus.getByRole('button', { name: 'Models and LoRAs', exact: true }).isVisible() && await videoFocus.locator('.tl-take .redo-segment').count() === 0);
   await shot('completed-video');
   // With a take it has New (cl-925).
   check('video_has_a_new_state_tile', await newVideo.isVisible());

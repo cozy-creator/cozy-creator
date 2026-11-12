@@ -95,16 +95,23 @@ export function RunDrawer() {
           ["Asked", when(run.created_at_ms)],
         ]}
       />
+      {/* A mention or input its function can't use was left out: a note, nothing to act on (cl-944). */}
       {run.warnings?.map((warning) => (
-        <p className="warn" key={`${warning.code}:${warning.message}`}>
+        <p className={warning.code === "mention_unused" ? "muted" : "warn"} key={`${warning.code}:${warning.message}`}>
           {warning.message}
         </p>
       ))}
-      {run.adjustments?.map((adjustment) => (
-        <p className="warn" key={adjustment.field}>
-          {adjustment.field}: {adjustment.requested} became {adjustment.applied}. {adjustment.reason}
-        </p>
-      ))}
+      {run.adjustments?.map((adjustment) =>
+        adjustment.kind === "ignored" ? (
+          <p className="muted" key={adjustment.field}>
+            {adjustment.field}: {adjustment.requested} left out. {adjustment.reason}
+          </p>
+        ) : (
+          <p className="warn" key={adjustment.field}>
+            {adjustment.field}: {adjustment.requested} became {adjustment.applied}. {adjustment.reason}
+          </p>
+        ),
+      )}
       <Outputs run={run} project={project} />
       {asked && (
         <details className="sect">

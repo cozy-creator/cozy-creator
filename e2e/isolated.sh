@@ -18,12 +18,13 @@ here=$(cd "$(dirname "$0")" && pwd) start=$PWD
 require_ci_test_hub
 # The SDK has its own endpoint setting; COZY_HUB_URL alone covers only Cozy's clients.
 export TENSORFS_ENDPOINT="${COZY_TEST_HUB_ORIGIN:?}"
-shard='' packages='' published=''
+shard='' packages='' published='' only=''
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
   case ${args[i]} in
     --shard) shard=${args[i + 1]} ;;
     --packages) packages=$(cd "${args[i + 1]}" && pwd) ;;
+    --only) only=${args[i + 1]} ;;
     --published | --pins) published=${args[i]} ;;
   esac
 done
@@ -147,11 +148,44 @@ case $suite:$shard in
   *) echo "isolated.sh runs the cli, imports or cpu suite, not '$suite'" >&2; exit 2 ;;
 esac
 
+# hub_dependencies [package dir...]: the checkout's packages that those packages' `tensorhub` sources name (every
+# package's when none is named), by directory.
+hub_dependencies() {
+  python3 -I - "$packages" "$@" <<'PY'
+import pathlib, re, sys, tomllib
+root, chosen = pathlib.Path(sys.argv[1]), set(sys.argv[2:])
+def norm(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+projects = {path.parent.name: tomllib.loads(path.read_text()) for path in sorted(root.glob("*/pyproject.toml"))}
+folders = {norm(project["project"]["name"]): folder for folder, project in projects.items()}
+named = set()
+for folder, project in projects.items():
+    for name, source in project.get("tool", {}).get("uv", {}).get("sources", {}).items():
+        alternatives = source if isinstance(source, list) else [source]
+        if (not chosen or folder in chosen) and any(isinstance(a, dict) and a.get("index") == "tensorhub" for a in alternatives):
+            named.add(norm(name))
+print(" ".join(sorted(folders.get(name, name) for name in named)))
+PY
+}
+
 # CPU's author/binder cells use the already-installed candidate and authenticated fixture.
 # Its ordinary executor cells remain unchanged and use the package checkout and its locks.
 if [ "$suite" = cpu ]; then
   project=$seed/project
   mkdir -p "$project"
+  # A package's `tensorhub` sources (orbit's minimax-h3) lock against this Hub's root index, where each is published from
+  # the checkout as production's root holds it, read under the Hub's own CA: Calcifer's uv takes the system's bundle once
+  # restarted. One refused is the upload and lock cells' to find.
+  dependencies=''
+  [ -z "$packages" ] || dependencies=$(hub_dependencies ${only//,/ })
+  if [ -n "$dependencies" ]; then
+    for dependency in $dependencies; do
+      publish "$packages/$dependency" || log "$dependency not published: $(tail -c 300 "$seed/publish-$dependency.json" | tr '\n' ' ')"
+    done
+    sudo cp "${COZY_TEST_HUB_CA:?}" /usr/local/share/ca-certificates/cozy-test-hub.crt && sudo update-ca-certificates > "$seed/ca.log" 2>&1
+    systemctl --user set-environment SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
+  fi
   (cd "$project" && cozy --json new --unencrypted > /dev/null)
   log "the cpu suite starts against its owned Hub with the installed candidate"
   exec bash "$here/cpu/run.sh" "$@" --cozy "$cozy_bin" --project "$project"
@@ -201,6 +235,8 @@ if [ -n "$needs" ]; then
   done
   publish "$tools"
   for p in qwen-image-2 minimax-h3 sdxl birefnet; do publish "$packages/$p"; done
+  # MOSS Image, which takes words only: what web/unused.js crosses out (cl-944).
+  case $shard in web-core | web-unused | '') publish "$packages/moss-image" ;; esac
   # Every other first-party package, as production's catalog holds them: what the palette lists (cl-896). Orbit's lock takes minimax-h3
   # from the root index, under the Hub's own CA, as relay's does. One refused is the cell's to find missing.
   if [[ " $needs " == *" catalog "* ]]; then
