@@ -16,7 +16,7 @@ import subprocess
 from urllib.parse import quote, urlsplit
 
 from common import Failure, Native, Receipt, project_run_ids, require, sha, until, project_route
-from native_execution import _documents
+from native_execution import _documents, _observation
 
 TEXT = "Cozy public remote CPU fixture v1"
 SOURCE = b"Cozy public remote input v1"
@@ -262,9 +262,15 @@ def qualify(native: Native, project: dict, receipt: Receipt, ready: dict) -> Non
         script.write_text(PROGRAM); source.write_bytes(SOURCE); request.write_text(json.dumps({"text": TEXT}))
         worker.stage("run")
         # `--input` takes a FILE (cli run/mod.rs `read_input`); `-` is not stdin.
-        body = native.command("run", str(script) + "/echo", "--input", str(request), "--file", "source=" + str(source),
-                              "--on", worker.name, cwd=project["folder"])
-        runs = [document.get("run", document) for document in _documents(body)]
+        words = ("run", str(script) + "/echo", "--input", str(request), "--file", "source=" + str(source), "--on", worker.name)
+        completed = subprocess.run([str(native.cli), "--json", *words], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=project["folder"])
+        documents = _documents(completed.stdout)
+        runs = [document.get("run", document) for document in documents]
+        # A failed run ends in run documents, not an error envelope: its closed classes, as the managed run's.
+        receipt.add("remote_cpu_run_observation", **_observation(completed, documents, runs, False))
+        if completed.returncode:
+            native.failure = native.failure or Native.failure_facts(completed, words)
+            raise Failure("cli_exit")
         terminal = [run for run in runs if isinstance(run, dict) and run.get("status") == "completed" and run.get("result", {}).get("text") == TEXT]
         require(terminal, "fixture_failure")
         run = terminal[-1]
