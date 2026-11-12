@@ -32,6 +32,7 @@ parse "$@"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
 . "$(dirname "$0")/idle.sh"
+. "$(dirname "$0")/plan.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
@@ -426,6 +427,8 @@ case $SHARD in
   idle) parts="idle_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
   ondemand) parts="ondemand_ahead logs" ;;
+  # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
+  plan) parts="estimate_line logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints

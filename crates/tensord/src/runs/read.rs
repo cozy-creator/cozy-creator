@@ -627,7 +627,10 @@ impl Runs {
                 .filter_map(|e| api::interface::name(e).map(str::to_string))
                 .collect::<Vec<_>>();
             entrypoints.sort();
+            let functions = crate::estimate::functions(&self.service, &installed, &entrypoints);
             environments.push(v1::Environment {
+                functions,
+                manifest: installed.manifest,
                 level: level.name().into(),
                 installation: installed.alias,
                 package: installed.package,

@@ -210,6 +210,7 @@ async fn quotes(api: &Arc<Api>, on: &On, jobs: &[&Job], update: bool) -> Result<
                 gpus: job.gpus,
                 gpu: job.gpu,
                 prior_ms: prior(job),
+                after_ms: 0,
             })
             .collect(),
     };
