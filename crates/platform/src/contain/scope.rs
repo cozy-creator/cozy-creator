@@ -464,12 +464,14 @@ impl Scope {
 
     /// Count actual surviving members, including live and previously stuck scopes. Unlike
     /// `sweep`, this is a post-retirement observation, not a count of signals sent.
-    /// An unreadable same-user process or cgroup membership cannot establish quiescence.
+    /// Best-effort Cozy lifecycle ownership, not an OS-wide process census: unreadable
+    /// unrelated peers are omitted. Observed owned members and exact known stuck births
+    /// still prevent retirement.
     pub fn namespace_processes(namespace: &str) -> crate::Result<usize> {
         if namespace.is_empty() || namespace.contains('/') {
             return Err(io::Error::other("invalid executor namespace").into());
         }
-        let rows = census_checked(true)?;
+        let rows = census()?;
         let mut found: BTreeSet<u32> = members(&rows, |token| namespace_token(token, namespace))
             .filter(|row| row.alive)
             .map(|row| row.pid)
@@ -490,8 +492,13 @@ impl Scope {
                     }
                 }
                 Err(error) if gone(&error) => (),
-                Err(error) => return Err(error.into()),
+                Err(error) if found.contains(&row.pid) => return Err(error.into()),
+                Err(_) => (), // No observed ownership: another same-UID program may be nondumpable.
             }
+        }
+        let stuck:Vec<Birth>=STUCK.lock().unwrap().iter().map(|(birth,_)|birth.clone()).collect();
+        for birth in stuck {
+            if !birth.ended()? { found.insert(birth.pid); }
         }
         Ok(found.len())
     }
@@ -650,10 +657,6 @@ impl Row {
 /// Every process but this one and init, with its scope token where its environment is
 /// readable (a zombie has none).
 fn census() -> io::Result<Vec<Row>> {
-    census_checked(false)
-}
-
-fn census_checked(strict: bool) -> io::Result<Vec<Row>> {
     let own = std::process::id();
     let mut rows = Vec::new();
     for entry in fs::read_dir("/proc")? {
@@ -664,16 +667,13 @@ fn census_checked(strict: bool) -> io::Result<Vec<Row>> {
         else {
             continue;
         };
-        if !strict && (pid == own || pid == 1) {
+        if pid == own || pid == 1 {
             continue;
         }
-        let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(stat) => stat,
-            Err(error) if !strict || gone(&error) => continue,
-            Err(error) => return Err(error),
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
         };
         let Some((_, suffix)) = stat.rsplit_once(") ") else {
-            if strict { return Err(io::Error::other("unreadable process identity")); }
             continue;
         };
         let fields: Vec<_> = suffix.split_whitespace().collect();
@@ -682,31 +682,20 @@ fn census_checked(strict: bool) -> io::Result<Vec<Row>> {
             fields.get(1).map(|f| f.parse()),
             fields.get(19).map(|f| f.parse()),
         ) else {
-            if strict { return Err(io::Error::other("unreadable process identity")); }
             continue;
         };
         let alive = !matches!(*state, "Z" | "X");
-        let environ = if alive {
-            match fs::read(format!("/proc/{pid}/environ")) {
-                Ok(bytes) => Some(bytes),
-                Err(error) if !strict || gone(&error) => None,
-                Err(error) => match fs::metadata(format!("/proc/{pid}")) {
-                    Ok(metadata) if metadata.uid() != rustix::process::geteuid().as_raw() => None,
-                    Err(missing) if gone(&missing) => None,
-                    _ => return Err(error),
-                },
-            }
-        } else {
-            None
-        };
-        let token = environ.and_then(|environ| {
-            environ.split(|b| *b == 0).find_map(|entry| {
-                let value = entry
-                    .strip_prefix(TOKEN_ENV.as_bytes())?
-                    .strip_prefix(b"=")?;
-                String::from_utf8(value.to_vec()).ok()
-            })
-        });
+        let token = alive
+            .then(|| fs::read(format!("/proc/{pid}/environ")).ok())
+            .flatten()
+            .and_then(|environ| {
+                environ.split(|b| *b == 0).find_map(|entry| {
+                    let value = entry
+                        .strip_prefix(TOKEN_ENV.as_bytes())?
+                        .strip_prefix(b"=")?;
+                    String::from_utf8(value.to_vec()).ok()
+                })
+            });
         rows.push(Row {
             pid,
             ppid,
