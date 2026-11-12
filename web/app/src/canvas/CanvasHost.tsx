@@ -19,8 +19,7 @@ import { canvasQuery, machinesQuery, projectQuery, projectViewQuery, toolsQuery 
 import { useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
-import type { Tool, Opened, ProjectViewPatch } from "../api/calcifer"
-import type { Project } from "../types"
+import type { Opened, ProjectViewPatch } from "../api/calcifer"
 import { ProjectCreate } from "../panels/ProjectCreate"
 import { Copyable } from "../ui/Copyable"
 import { dismiss, say } from "../ui/notes"
@@ -34,9 +33,9 @@ import { carriedAt, LET_GO, type Load, type LetGo } from "./carry"
 import { boxAt, carriedOver, letGo } from "./checkpoints"
 import { copyBoxes, ownCopy } from "./copy"
 import { EntityCard } from "./EntityCard"
+import { FocusedViewport } from "./FocusedViewport"
 import { HistoryControls } from "./HistoryControls"
 import { Placer } from "./place"
-import type { BasicNodeKind, Operation } from "./palette"
 import { Dots, Sheet } from "./Sheet"
 import { HANG, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
@@ -60,9 +59,7 @@ const fitOver = () => {
 }
 
 const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
-/** A window this narrow has no room for the tools beside a box being worked on: they fold away, and come back after. */
-const NARROW = 760
-/** How long the canvas takes to draw in on a box, or go back. */
+/** How long an explicit Wander camera action takes. */
 const HERE_MS = 260
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
@@ -140,102 +137,36 @@ function ProjectSync({ id }: { id: string }) {
 }
 
 /**
- * Where model renders go: the project's machines (`cozy machine use`, cl-873), each render to whichever finishes first, one that's
- * unavailable too, so nothing falls back elsewhere. With none, every machine automatic placement considers.
+ * Where model renders go: the project's machines (`cozy machine use`, cl-873; Render here in the machines panel, cl-887), each render to
+ * whichever finishes first, one that's unavailable too, so nothing falls back elsewhere. With none, every machine automatic placement considers.
  */
 function useMachines(store: CanvasStore, pinned: string[]) {
   const { client, status } = useConnection()
-  const queries = useQueryClient()
   const { data, isPending } = useQuery(machinesQuery(client))
   const held = (data?.machines ?? []).filter((machine) => machine.ordered !== false && !machine.offline)
   // One still booting takes what's sent to it, which waits for it there.
   const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting"))
   const up = held.filter((machine) => machine.kind !== "rental" && machine.state === "ready" && !machine.unreachable && (machine.kind !== "local" || status.local_usable))
   const automatic = [...rented, ...up.filter((machine) => machine.kind !== "local"), ...up.filter((machine) => machine.kind === "local")].map((machine) => machine.name)
-  const choices = [...new Set([...(status.local_usable ? ["local"] : []), ...held.filter((machine) => machine.kind !== "local").map((machine) => machine.name)])]
-  // A choice is shown at once, in the click that made it, until what Calcifer keeps moves: its answer, or the CLI's.
-  const [choosing, setChoosing] = useState<string[] | null>(null)
-  const asked = useRef(0)
-  const kept = pinned.join()
-  // biome-ignore lint/correctness/useExhaustiveDependencies: what Calcifer keeps, as text
-  useEffect(() => setChoosing(null), [kept])
-  const chosen = choosing ?? pinned
-  const names = chosen.length ? chosen : automatic
+  const names = pinned.length ? pinned : automatic
   const key = names.join()
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
   useEffect(() => {
     store.machines = () => names
     if (names.length) store.machineUp()
   }, [store, key])
-  // Refused, it's back as Calcifer keeps it.
-  const choose = (next: string[]) => {
-    const id = store.projectId
-    if (!id) return
-    const mine = ++asked.current
-    setChoosing(next)
-    void client.setMachines(id, next).then(
-      ({ machines }) => queries.setQueryData<Project>(["project", id], (state) => state && { ...state, machines }),
-      (error) => {
-        if (asked.current === mine) setChoosing(null)
-        say("Couldn't choose where this project runs", error)
-      },
-    )
-  }
-  return { machines: isPending ? null : names, choices, chosen, choose }
-}
-
-/** The project's machines, any number of them; none is automatic. */
-function RunOn({ routing }: { routing: ReturnType<typeof useMachines> }) {
-  const held = useRef<HTMLDetailsElement>(null)
-  useEffect(() => {
-    const away = (event: Event) => {
-      if (!held.current?.contains(event.target as globalThis.Node)) held.current?.removeAttribute("open")
-    }
-    window.addEventListener("pointerdown", away)
-    return () => window.removeEventListener("pointerdown", away)
-  }, [])
-  const { chosen, choices, choose } = routing
-  const named = (name: string) => (name === "local" ? "This computer" : name)
-  const listed = [...choices, ...chosen.filter((name) => !choices.includes(name))]
-  return (
-    <details
-      className="run-on"
-      ref={held}
-      onKeyDown={(event) => {
-        // These keys work its checkboxes, not the canvas's pan or take shortcuts.
-        if (event.key === "Enter" || event.key === " ") event.stopPropagation()
-      }}
-    >
-      <summary aria-label="Render machines" title="Machines for model renders, each to whichever finishes first. Edit assembly runs locally.">
-        Run on <b>{chosen.length ? chosen.map(named).join(", ") : "Automatically"}</b>
-      </summary>
-      <div role="group" aria-label="Render machines">
-        <label>
-          <input type="checkbox" checked={!chosen.length} onChange={() => choose([])} />
-          Automatically
-        </label>
-        {listed.map((name) => (
-          <label key={name}>
-            <input type="checkbox" value={name} checked={chosen.includes(name)} onChange={(event) => choose(event.target.checked ? [...chosen, name] : chosen.filter((other) => other !== name))} />
-            {named(name)}
-            {!choices.includes(name) && " (unavailable)"}
-          </label>
-        ))}
-      </div>
-    </details>
-  )
+  return isPending ? null : names
 }
 
 /** Render all, and how many that is. Approved assets stay. */
-function RenderAll({ id, routing }: { id: string; routing: ReturnType<typeof useMachines> }) {
+function RenderAll({ id }: { id: string }) {
   const { client, stream } = useConnection()
   const store = useCanvasStore()
   const { data } = useQuery(projectQuery(client, stream, id))
-  const fresh = (data?.assets ?? []).filter((asset) => asset.tool && !madeHere(asset.tool) && !asset.pinned).length
+  const fresh = (data?.assets ?? []).filter((asset) => asset.tool && (asset.kind === "image" || asset.tool === "cozy/edit" || (!madeHere(asset.tool) && !asset.pinned))).length
   const asking = useSignal(store.allAsking)
   return (
     <span className="render-all">
-      <RunOn routing={routing} />
       {fresh > 0 && <button type="button" className="tb primary" onClick={() => store.runAll()}>
         Render all {fresh}
       </button>}
@@ -336,6 +267,7 @@ function Canvas({
   const keepViewport = useCallback((id: string, viewport: Viewport) => {
     if (saveViewport(id, viewport)) keepView({ viewport })
   }, [keepView])
+  const focusedName = useSignal(store.focusedName)
   // A canvas's first box makes its project: kept from then on.
   useEffect(() => {
     if (store.projectId) canvases.set(store.projectId, store)
@@ -358,113 +290,54 @@ function Canvas({
     }),
   }))
   useEffect(() => () => { creating.current?.reject(new Error("Project creation was canceled")); creating.current = null }, [])
-  store.addToolAt = (tool, point, fields, operation) => placer.addTool(tool, point, fields, operation)
   const [openedOn] = useState(projectId)
   const [veil, setVeil] = useState(false)
   const [shut, setShut] = useState(loadToolsShut)
   const compactAsset = useMatch("/p/:code/assets/:name")
   const legacyAsset = useMatch("/projects/:id/assets/:name")
   const opened = (compactAsset ?? legacyAsset)?.params.name
+  const openedNow = useRef(opened)
+  openedNow.current = opened
   const stage = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     if (active) {
       store.refreshSurface(flow.getViewport())
-      store.fitHere(true)
       return
     }
     // Keep draft/import owners alive under the cover, while closing any mention
     // popup portaled outside its hidden DOM subtree. Shell pauses covered media.
     if (document.activeElement instanceof HTMLElement && stage.current?.contains(document.activeElement)) document.activeElement.blur()
   }, [active, store, flow])
-  const returning = useRef<{ view: Viewport; until: number } | null>(null)
-  const folded = useRef(false)
+  const toolsBeforeFocus = useRef<boolean | null>(null)
   const shutNow = useRef(shut)
   shutNow.current = shut
-  const fitHereNow = useCallback(
-    (only = false) => {
-      const held = store.inPlace
-      const id = held && store.idOf(held.name)
-      if (!held || !id || !stage.current || held.moved || held.pulled || store.isDragging(held.name)) return
-      const { left, top, right, bottom } = clearOf()
-      const stageBox = stage.current.getBoundingClientRect()
-      const room = { x: left, y: top, w: stageBox.width - left - right, h: stageBox.height - top - bottom }
-      // What's still in reach stays as it is: nothing moves under what's being typed.
-      const at = held.fitted
-      if (only && at) {
-        const projected = store.drawSurface(undefined, at)
-        if (!projected) return
-        const { bounds } = projected
-        const x = bounds.x * at.zoom + at.x
-        const y = bounds.y * at.zoom + at.y
-        if (x >= room.x - 1 && y >= room.y - 1 && x + bounds.w * at.zoom <= room.x + room.w + 1 && y + bounds.h * at.zoom <= room.y + room.h + 1) return
-      }
-      const fit = store.drawSurface(room)
-      if (!fit) {
-        held.fitted = undefined
-        return
-      }
-      held.fitted = fit.view
-      void flow.setViewport(fit.view, { duration: HERE_MS })
-    },
-    [store, flow],
-  )
-  const fitting = useRef<{ frame: number; only: boolean; owner: NonNullable<CanvasStore["inPlace"]> } | null>(null)
-  const fitHere = useCallback((only = false) => {
-    const owner = store.inPlace
-    if (!owner) return
-    if (fitting.current && fitting.current.owner !== owner) {
-      cancelAnimationFrame(fitting.current.frame)
-      fitting.current = null
-    }
-    if (fitting.current) {
-      fitting.current.only &&= only
-      return
-    }
-    const request = { frame: 0, only, owner }
-    fitting.current = request
-    request.frame = requestAnimationFrame(() => {
-      fitting.current = null
-      if (store.inPlace !== owner) return
-      fitHereNow(request.only)
-    })
-  }, [fitHereNow, store])
-  useEffect(() => () => {
-    if (fitting.current) cancelAnimationFrame(fitting.current.frame)
-    fitting.current = null
-  }, [])
-  store.fitHere = fitHere
-  /** Working on a box where it stands: the canvas draws in on it, and all it can do comes around it. Another box takes over, and leaving goes back to just where it was. */
+  // Focus fits its own viewport surface, never the canvas camera.
+  store.fitHere = () => {}
+  /** Focus one asset while preserving Wander's camera and palette state. */
   const writeHere = useCallback(
     (name: string) => {
+      name = store.resolveName(name)
       if (store.inPlace?.name === name) return
-      if (fitting.current) cancelAnimationFrame(fitting.current.frame)
-      fitting.current = null
+      const view = store.get(name)
+      if (!view) return
       if (store.inPlace) {
+        void store.save(store.inPlace.name)
         store.closeSurface()
         store.patch(store.inPlace.name, { here: undefined, hereWords: undefined })
       }
-      // Still on its way back from the last one, that's where to come back to.
-      const going = returning.current
-      const owner = { name, back: store.inPlace?.back ?? (going && performance.now() < going.until ? going.view : flow.getViewport()) }
+      const owner = { name, back: store.inPlace?.back ?? flow.getViewport() }
       store.inPlace = owner
       store.view(name)
-      const view = store.get(name)
-      // Its approved take, else its newest; with none yet, its words, ready to type in.
-      const words = !view?.asset?.prefixes?.length && !view?.asset?.sha256
+      const words = !view.asset?.prefixes?.length && !view.asset?.sha256
       if (words) store.focusing = name
       store.patch(name, { here: true, hereWords: words || undefined })
-      store.openSurface(name)
       if (store.writeOnOpen === name) store.writeNext(name, true)
       store.writeOnOpen = null
-      if (window.innerWidth < NARROW && !shutNow.current) {
-        folded.current = true
-        setShut(true)
-      }
-      requestAnimationFrame(() => {
-        if (store.inPlace === owner) fitHere()
-      })
+      if (toolsBeforeFocus.current === null) toolsBeforeFocus.current = shutNow.current
+      setShut(true)
+      store.focusedName.set(name)
     },
-    [store, flow, fitHere],
+    [store, flow],
   )
   store.openHere = (name: string) => {
     writeHere(name)
@@ -472,29 +345,28 @@ function Canvas({
   }
   const stopWriting = useCallback(() => {
     const held = store.inPlace
-    if (!held) return
-    if (fitting.current) cancelAnimationFrame(fitting.current.frame)
-    fitting.current = null
     store.inPlace = null
     store.closeSurface()
-    void store.save(held.name)
-    store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
-    store.view(held.name)
-    returning.current = { view: held.back, until: performance.now() + HERE_MS }
-    // A reload while it goes back finds where it was, not where the box was.
-    if (store.projectId) keepViewport(store.projectId, held.back)
-    if (folded.current) {
-      folded.current = false
-      setShut(false)
+    if (held) {
+      void store.save(held.name)
+      store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
+      store.view(held.name)
     }
-    void flow.setViewport(held.back, { duration: HERE_MS })
-  }, [store, flow, keepViewport])
+    store.focusedName.set(null)
+    if (toolsBeforeFocus.current !== null) {
+      setShut(toolsBeforeFocus.current)
+      toolsBeforeFocus.current = null
+    }
+  }, [store])
   const leaveHere = useCallback(() => {
     if (!store.inPlace) return
     stopWriting()
     navigate(to())
   }, [store, navigate, stopWriting, to])
   store.leaveHere = leaveHere
+  useEffect(() => {
+    if (store.focusedName.get() === null && toolsBeforeFocus.current !== null) stopWriting()
+  }, [store, focusedName, stopWriting])
   store.hereRenamed = (name) => navigate(to(`assets/${encodeURIComponent(name)}`), { replace: true })
   // The address says which box is being worked on, so a reload or Back finds it, and anything else leaves it.
   useEffect(() => {
@@ -506,19 +378,18 @@ function Canvas({
   // What can't be read says so on the canvas, and everything around it still works. One already read stays while Calcifer's away.
   const { data: read, error } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
   // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
-  const routing = useMachines(store, read?.machines ?? [])
-  const machines = routing.machines
+  const machines = useMachines(store, read?.machines ?? [])
   const machine = machines?.at(-1) ?? null
   const unread = error && !(read && lost(error)) ? error : null
   const readable = unread ? null : projectId
-  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable, true), enabled: machines !== null })
+  const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
 
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
     // A project with no rows has nothing to fit at its first read: its first placing is what to look at.
     let fitted = Boolean(saved)
     const fitOnce = async () => {
-      if (fitted || !store.projectId) return
+      if (fitted || !store.projectId || store.focusedName.get() || openedNow.current) return
       fitted = true
       if (openedOn) await flow.fitView(fitOver())
       keepViewport(store.projectId, flow.getViewport())
@@ -563,19 +434,17 @@ function Canvas({
   /** Everything; a box worked on, it and what's under it as they were drawn in. */
   const fit = useCallback(() => {
     aim.current = null
-    if (!store.inPlace) return void flow.fitView({ ...fitOver(), duration: HERE_MS })
-    store.inPlace.moved = false
-    fitHere()
-  }, [flow, store, fitHere])
+    if (store.focusedName.get()) leaveHere()
+    void flow.fitView({ ...fitOver(), duration: HERE_MS })
+  }, [flow, store, leaveHere])
   /** What's selected, else the box worked on. */
   const fitSelected = useCallback(() => {
+    if (store.focusedName.get()) leaveHere()
     const nodes = flow.getNodes().filter((node) => node.selected)
     if (!nodes.length) return fit()
-    if (nodes.length === 1 && nodes[0].data.name === store.inPlace?.name) return fit()
     aim.current = null
-    if (store.inPlace) store.inPlace.moved = true
     void flow.fitView({ ...fitOver(), maxZoom: MOST_HERE, nodes, duration: HERE_MS })
-  }, [flow, store, fit])
+  }, [flow, store, fit, leaveHere])
   const zoomItems = useCallback(
     (): ZoomItem[] => [
       { label: "Zoom in", keys: keys("Mod", "+"), run: () => zoomBy(1) },
@@ -598,21 +467,6 @@ function Canvas({
     const right = document.querySelector(".drawer")?.getBoundingClientRect().left ?? box.right
     return flow.screenToFlowPosition({ x: (left + right) / 2, y: box.top + box.height / 2 })
   }, [flow])
-
-  // A click puts a box in the middle of what's visible, and `place` keeps it clear of what's there.
-  const placeTool = useCallback(
-    (tool: Tool, operation?: Operation) => {
-      const width = tool.fields.some((field) => field.type === "timeline") ? 720 : tool.makes === "video" ? 360 : 300
-      const { x, y } = visibleCentre()
-      placer.addTool(tool, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 }, undefined, operation)
-    },
-    [placer, visibleCentre],
-  )
-  const placeNode = useCallback((kind: BasicNodeKind) => {
-    const width = kind === "video_edit" ? 720 : kind === "video" ? 360 : 300
-    const { x, y } = visibleCentre()
-    placer.addNode(kind, { x: x - width / 2 + CARD_WIDTH / 2, y: y - (width * 0.75) / 2 + 16 })
-  }, [placer, visibleCentre])
 
   const picked = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -685,12 +539,10 @@ function Canvas({
 
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (!store.projectId || store.inPlace) return
-      // A draw-in cut short by leaving the box ends here part way: what's kept is where it's going back to.
-      const going = returning.current
-      keepViewport(store.projectId, going && performance.now() < going.until ? going.view : viewport)
+      if (store.focusedName.get()) leaveHere()
+      if (store.projectId) keepViewport(store.projectId, viewport)
     },
-    [store, keepViewport],
+    [store, leaveHere, keepViewport],
   )
 
   const selectionChanged = useCallback(
@@ -751,12 +603,13 @@ function Canvas({
       const view = store.get(name)
       const asset = view?.asset
       if (!view || !asset || view.hereWords || event.target instanceof HTMLSelectElement || !["ArrowLeft", "ArrowRight", "Enter"].includes(event.key)) return false
-      const row = [...(asset.prefixes ?? [])].reverse()
+      const row = asset.kind === "image" ? [...(asset.prefixes ?? [])] : [...(asset.prefixes ?? [])].reverse()
       const at = row.findIndex((version) => version.number === shownOf(view)?.number)
       if (at < 0) return false
       event.preventDefault()
       if (event.key === "Enter") {
-        store.toggleApproved(name, row[at].number)
+        if (asset.kind === "image") store.beginImageEdit(name)
+        else store.toggleApproved(name, row[at].number)
         return true
       }
       const next = row[at + (event.key === "ArrowLeft" ? -1 : 1)]
@@ -863,22 +716,16 @@ function Canvas({
 
   // Every box's node is handed these: made once, so drawing the canvas again draws no box again.
   const moveStarted = useCallback(
-    (event: unknown) => {
-      if (event && store.inPlace) store.inPlace.moved = true
-      // Moved by hand on its way back: it stays where it's moved to.
-      if (event) returning.current = null
+    () => {
+      if (store.focusedName.get()) leaveHere()
     },
-    [store],
+    [store, leaveHere],
   )
   const nodeClicked = useCallback(
     (event: ReactMouseEvent, node: ElementNode) => {
       if (node.type !== "element" || !store.projectId || store.get(node.data.name)?.placing || event.shiftKey || event.metaKey || event.ctrlKey) return
       const { name } = node.data
-      const view = store.get(name)
-      // A double tap on its picture approves the take showing, or unapproves it.
-      const shown = view?.asset?.prefixes?.length ? shownOf(view)?.number : undefined
-      if (event.detail > 1 && shown !== undefined && (event.target as Element).closest(".media")) return store.toggleApproved(name, shown)
-      if (store.inPlace?.name === name && view?.here) return
+      if (store.focusedName.get() === name) return
       // A click opens at once: only Shift selects.
       flow.setNodes((nodes) => nodes.map((held) => (held.selected ? { ...held, selected: false } : held)))
       writeHere(name)
@@ -970,11 +817,10 @@ function Canvas({
         waiting={machines === null}
         shut={shut}
         setShut={(next) => {
+          if (store.focusedName.get()) return
           setShut(next)
           saveToolsShut(next)
         }}
-        place={placeTool}
-        placeNode={placeNode}
       />
       <div
         ref={stage}
@@ -1021,6 +867,7 @@ function Canvas({
           colorMode="dark"
           attributionPosition="bottom-left"
           onMoveStart={moveStarted}
+          onMove={moveStarted}
           onMoveEnd={moved}
           onSelectionChange={selectionChanged}
           onNodeClick={nodeClicked}
@@ -1039,11 +886,15 @@ function Canvas({
         <Zoom zoomBy={zoomBy} items={zoomItems} />
         {veil && <div className="dropveil" />}
       </div>
+      {active && focusedName && <FocusedViewport name={focusedName} onClose={leaveHere} onCopyVersion={(file, x, y) => {
+        leaveHere()
+        requestAnimationFrame(() => placer.addFile({ ...file, copy: true }, flow.screenToFlowPosition({ x, y })))
+      }} />}
       {opened && <Addressed name={opened} enter={writeHere} leave={leaveHere} />}
       {active && <AssetMenu />}
       {active && <Viewer />}
       <input ref={picker} className="picker" type="file" multiple accept={ACCEPT} onChange={picked} aria-label="Add a file" />
-      {slot && projectId && createPortal(<RenderAll id={projectId} routing={routing} />, slot)}
+      {slot && projectId && createPortal(<RenderAll id={projectId} />, slot)}
       {history && createPortal(<HistoryControls onAddFiles={choose} />, history)}
       {projectId && <ProjectSync id={projectId} />}
     </CanvasStoreProvider>

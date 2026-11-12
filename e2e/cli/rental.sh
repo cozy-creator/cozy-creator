@@ -59,6 +59,31 @@ wait "$pid" 2> /dev/null || true
 [ -n "$rental" ] || { check "rental_end: machine rent cpu: no rental accepted: $(tail -c 400 "$OUT/rental-rent.ndjson") $(tail -c 300 "$OUT/rental-rent.err")"; cozy --json logout > /dev/null 2>&1 || true; return; }
 echo "rented $rental"
 
+step "a rental says what it rents until its Hub names its host, then the host's word (cl-888, Paul 11-12)"
+# One host, one name: the Hub names a pod by its host once it's placed there, and until then the rental is "Renting a CPU…",
+# never its `rent-…` handle, on `machine ls` (and the page, which reads the same record). Its word is the Hub's own record
+# of it (`machine ls --history`).
+said=$(jq -r 'select(.type? == "rental.accepted") | .placeholder // empty' "$OUT/rental-rent.ndjson" 2> /dev/null | tail -1 || true)
+[ "$said" = "Renting a CPU…" ] || check "rental_end: accepted, it says '${said:-nothing}', not what it rents: $(grep rental.accepted "$OUT/rental-rent.ndjson" | tail -c 300)"
+shown='' word='' handles=''
+for _ in $(seq 120); do
+  cozy machine ls > "$OUT/rental-ls.txt" 2> /dev/null || true
+  cozy --json machine ls > "$OUT/rental-ls.json" 2> /dev/null || true
+  ! grep -q 'rent-[0-9a-f]' "$OUT/rental-ls.txt" || handles=$(grep 'rent-' "$OUT/rental-ls.txt" | head -2)
+  now=$(jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r) | .placeholder // .name' "$OUT/rental-ls.json" 2> /dev/null || true)
+  # The JSON keeps its handle as its name, which its placeholder stands in for until its Hub names the host.
+  [[ $now != rent-* ]] || handles="machine ls --json: $now with no placeholder"
+  [[ " $shown " == *" ${now// /_} "* ]] || shown+=" ${now// /_}"
+  word=$(jq -r --arg r "$rental" '.machines[] | select(.rental_id == $r and .placeholder == null) | .name' "$OUT/rental-ls.json" 2> /dev/null || true)
+  [ -n "$word" ] && grep -qE "^ *$word " "$OUT/rental-ls.txt" && break
+  sleep 0.5
+done
+echo "rental_end: $rental was shown as:$shown"
+[ -z "$handles" ] || check "rental_end: machine ls showed a rent- handle: $handles"
+[ -n "$word" ] && [[ $word != rent-* ]] || check "rental_end: its Hub never named $rental's host in a minute; shown as:$shown"
+hub=$(cozy --json machine ls --history 2> /dev/null | jq -r --arg r "$rental" '.rentals[] | select(.rental_id == $r) | .name' || true)
+[ -n "$word" ] && [ "$hub" = "$word" ] || check "rental_end: machine ls calls $rental '${word:-nothing}', its Hub records '${hub:-nothing}'"
+
 step "machine ssh: rented with the default key, not ready yet"
 # Its Hub's word names the key at once; its SSH address comes once it is ready.
 for _ in $(seq 60); do

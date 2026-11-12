@@ -1,10 +1,10 @@
-//! What can be dropped on a canvas: `GET /v1/tools`, every function that makes media of your list and of what a machine has installed, and of
-//! what a search finds on the Hub; your list, which you add to from the Hub's packages; and what a tool makes, for a node of it.
+//! What can be dropped on a canvas: `GET /v1/tools`, every function that makes media of every package the Hub lists, of what a machine has
+//! installed and of what a search finds on the Hub, less the tools you took off; and what a tool makes, for a node of it.
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -17,6 +17,7 @@ use futures_util::{StreamExt as _, stream};
 use ::api::hub::cards;
 use api::{
     calcifer::On,
+    choices::{self, Choices},
     config::Origin,
     error::{Error, Kind},
     interface::Interface,
@@ -24,6 +25,7 @@ use api::{
     calcifer::tool::{self, BrowsedPackage, Browsed, Tool, ToolList, ToolListChange, Tools},
 };
 use serde::Deserialize;
+use serde_json::{Map, Value};
 use tensorfs::format::newest_by;
 
 use crate::{
@@ -33,9 +35,7 @@ use crate::{
     runs::{self, target},
 };
 
-/// Your list until you change it.
-const DEFAULTS: [&str; 3] = ["_/qwen-image-2", "_/minimax-h3", "_/sdxl"];
-/// The most `browse` reads of the Hub.
+/// The most `browse` reads of the Hub, and how many packages one page of the Hub's list holds.
 const MOST_BROWSED: u32 = 200;
 /// How many packages one list reads of the Hub.
 const LISTED: u32 = 50;
@@ -43,6 +43,10 @@ const LISTED: u32 = 50;
 const READS: usize = 8;
 /// A Hub slower than this leaves the list with what's installed, and says so.
 pub(crate) const HUB_LATE: Duration = Duration::from_secs(5);
+/// The Hub's list read this recently is the list.
+const LISTED_FOR: Duration = Duration::from_secs(60);
+/// A Hub that didn't answer is asked again this long after.
+const ASK_AGAIN: Duration = Duration::from_secs(10);
 
 #[derive(Deserialize)]
 pub(crate) struct Asked {
@@ -53,12 +57,10 @@ pub(crate) struct Asked {
     hub: Option<String>,
     /// A project: the local code its nodes name comes first, and no other local code is listed.
     project: Option<String>,
-    /// The fixed canvas palette also shows factory tools, without changing the caller's saved list.
-    #[serde(default)]
-    palette: bool,
 }
 
-/// `GET /v1/tools`: the Edit and your list, then local code and what's installed, each as it is on that machine, and with `q` the Hub's, each at its newest.
+/// `GET /v1/tools`: the Edit, local code, what's installed as it is on that machine, then every package the Hub lists and any you added, each
+/// at its newest; with `q`, what fits it and the Hub's search for it.
 pub(crate) async fn list(State(api): State<Arc<Api>>, query: Result<Query<Asked>, QueryRejection>) -> Result<Response, Refusal> {
     let Query(asked) = query?;
     let project = asked.project.clone();
@@ -69,14 +71,7 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     let hub = runs::hub(api, asked.hub.as_deref().unwrap_or_default());
     let q = asked.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
     let on = On::Machine(asked.on.unwrap_or_else(|| "local".into()));
-    let mut mine = mine(api)?;
-    if asked.palette {
-        for package in DEFAULTS {
-            if !mine.packages.iter().any(|held| held == package) {
-                mine.packages.push(package.to_owned());
-            }
-        }
-    }
+    let mine = mine(api)?;
     let local = match asked.project.as_deref() {
         Some(named) => {
             let root = project::named(api, named).map_err(Refusal)?;
@@ -89,15 +84,15 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
         None => vec![],
     };
     let held = held(api, &hub, &on).await;
-    let (cards, mut note) = on_your_list(api, &hub, &mine, &held).await;
-    let place = |tool: &Tool| mine.packages.iter().position(|package| shown(package) == tool.package);
-    let (mut first, rest): (Vec<Tool>, Vec<Tool>) = held.into_iter().partition(|tool| place(tool).is_some());
-    first.extend(cards);
-    first.sort_by_key(place);
-    // Taken off the list is off it at rest, and a search still finds it, as what a box of it asks for must.
-    let factory = |tool: &Tool| DEFAULTS.iter().any(|package| shown(package) == tool.package);
-    let shows = |tool: &Tool| q.map_or_else(|| !mine.without.contains(&tool.id) || asked.palette && factory(tool), |q| says(tool, q));
-    let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(first).chain(local).chain(rest).filter(shows).collect();
+    let (listed, mut note) = api.listing.tools(api, &hub).await;
+    let installed: BTreeSet<&str> = held.iter().map(|tool| tool.package.as_str()).collect();
+    let listed: Vec<Tool> = listed.iter().filter(|tool| !installed.contains(tool.package.as_str())).cloned().collect();
+    let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(local).chain(held).chain(listed).collect();
+    let (added, unread) = on_your_list(api, &hub, &mine, &tools).await;
+    note = note.or(unread);
+    tools.extend(added);
+    // Taken off is off at rest, and a search still finds it, as what a box of it asks for must.
+    tools.retain(|tool| q.map_or_else(|| !mine.without.contains(&tool.id), |q| says(tool, q)));
     if let Some(q) = q {
         let listed: BTreeSet<String> = tools.iter().map(|tool| tool.package.clone()).collect();
         match tokio::time::timeout(HUB_LATE, on_the_hub(api, &hub, q)).await {
@@ -115,10 +110,9 @@ fn late() -> String {
     format!("only what's installed: the Hub didn't answer in {} s", HUB_LATE.as_secs())
 }
 
-/// Your list, the defaults until it's changed: it's yours, not a project's, kept in `state.db`.
+/// Your changes to the list: yours, not a project's, kept in `state.db`.
 fn mine(api: &Api) -> Result<ToolList, Refusal> {
-    let kept = api.calcifer.store().tool_list()?;
-    Ok(kept.unwrap_or_else(|| ToolList { packages: DEFAULTS.map(str::to_owned).to_vec(), without: vec![] }))
+    Ok(api.calcifer.store().tool_list()?)
 }
 
 /// Whether a package kept on your list is a path, as an earlier cozy kept local code there: it's no Hub's, and not listed.
@@ -134,7 +128,7 @@ fn owned(package: &str) -> String {
     }
 }
 
-/// `POST /v1/tools/list`: a package on your list, all of it again if some was taken off, or tools off it. Nothing is installed or deleted, and a box
+/// `POST /v1/tools/list`: a package on your list, beside what the Hub lists, all of it again if some was taken off, or tools off it. Nothing is installed or deleted, and a box
 /// of a tool taken off goes on as it was. Local code is a project's, named by its boxes (cl-819): a path is refused.
 pub(crate) async fn change(State(api): State<Arc<Api>>, body: Result<Bytes, BytesRejection>) -> Result<Json<ToolList>, Refusal> {
     let asked: ToolListChange = parse(&body?)?;
@@ -144,7 +138,7 @@ pub(crate) async fn change(State(api): State<Arc<Api>>, body: Result<Bytes, Byte
     }
     let add = asked.add.map(|package| (owned(&package), format!("{}/", shown(&package))));
     let add = add.as_ref().map(|(full, shown_as)| (full.as_str(), shown_as.as_str()));
-    let mine = api.calcifer.store().change_tool_list(&DEFAULTS, add, &asked.remove);
+    let mine = api.calcifer.store().change_tool_list(add, &asked.remove);
     Ok(Json(mine.map_err(|why| Refusal(Error::new(Kind::Unavailable, "tool_list_io", why.to_string())))?))
 }
 
@@ -179,9 +173,9 @@ pub(crate) async fn browse(State(api): State<Arc<Api>>, query: Result<Query<Brow
     Ok(Json(Browsed { packages, older }))
 }
 
-/// The tools of each package of your list `held` lacks, by its card alone: nothing's installed by listing it. Each is the Hub's newest, else the
-/// newest card kept here, so the list stands with no Hub. One that has neither says why; one the Hub doesn't have isn't listed.
-async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, held: &[Tool]) -> (Vec<Tool>, Option<String>) {
+/// The tools of each package you added that `listed` lacks, by its card alone: nothing's installed by listing it. Each is the Hub's newest,
+/// else the newest card kept here, so the list stands with no Hub. One that has neither says why; one the Hub doesn't have isn't listed.
+async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, listed: &[Tool]) -> (Vec<Tool>, Option<String>) {
     let root = api.machines.hubs.home().root();
     let newest = async |package: &String| {
         let asked = async { cards::releases(&api.machines.hubs.reader(hub)?, package).await?.newest(package) };
@@ -196,7 +190,7 @@ async fn on_your_list(api: &Arc<Api>, hub: &str, mine: &ToolList, held: &[Tool])
             None => (None, Some(why)),
         }
     };
-    let lacking = mine.packages.iter().filter(|package| !is_local(package) && !held.iter().any(|tool| tool.package == shown(package)));
+    let lacking = mine.packages.iter().filter(|package| !is_local(package) && !listed.iter().any(|tool| tool.package == shown(package)));
     let (wanted, notes): (Vec<_>, Vec<_>) = futures_util::future::join_all(lacking.map(newest)).await.into_iter().unzip();
     (read_all(api, hub, wanted.into_iter().flatten().collect()).await, notes.into_iter().flatten().next())
 }
@@ -267,6 +261,80 @@ async fn on_the_hub(api: &Arc<Api>, hub: &str, q: &str) -> Result<Vec<Tool>, Err
     Ok(read_all(api, hub, wanted).await)
 }
 
+/// Each Hub's tools at rest, as last read: every package it lists, at its newest release, by its card. A list reads it again when it's older
+/// than [`LISTED_FOR`]; a Hub that doesn't answer leaves the last read, and is asked again after [`ASK_AGAIN`].
+#[derive(Default)]
+pub(crate) struct Listing(Mutex<HashMap<String, Listed>>);
+
+#[derive(Clone, Default)]
+struct Listed {
+    tools: Arc<Vec<Tool>>,
+    read_at: Option<Instant>,
+    /// The last read that didn't answer: when, and why.
+    failed: Option<(Instant, String)>,
+}
+
+impl Listing {
+    /// `hub`'s tools, and why they're old or none: its last read, else this one, which goes on past [`HUB_LATE`] for a later list.
+    async fn tools(&self, api: &Arc<Api>, hub: &str) -> (Arc<Vec<Tool>>, Option<String>) {
+        let key = canonical(hub);
+        let kept = self.0.lock().expect("listing lock").get(&key).cloned().unwrap_or_default();
+        if kept.read_at.is_some_and(|at| at.elapsed() < LISTED_FOR) {
+            return (kept.tools, None);
+        }
+        let why = match &kept.failed {
+            Some((at, why)) if at.elapsed() < ASK_AGAIN => why.clone(),
+            _ => {
+                let (api, origin) = (api.clone(), hub.to_owned());
+                let read = tokio::spawn(async move {
+                    let read = every_tool(&api, &origin).await;
+                    api.listing.keep(&origin, read.as_ref().map(Arc::clone).map_err(|why| format!("the Hub said {}", why.message)));
+                    read
+                });
+                match tokio::time::timeout(HUB_LATE, read).await {
+                    Ok(Ok(Ok(tools))) => return (tools, None),
+                    Ok(Ok(Err(why))) => format!("the Hub said {}", why.message),
+                    Ok(Err(why)) => format!("reading the Hub's list failed: {why}"),
+                    Err(_) => {
+                        let why = format!("the Hub didn't answer in {} s", HUB_LATE.as_secs());
+                        self.keep(hub, Err(why.clone()));
+                        why
+                    }
+                }
+            }
+        };
+        match kept.read_at {
+            Some(at) => (kept.tools, Some(format!("the Hub's tools as read {} s ago: {why}", at.elapsed().as_secs()))),
+            None => (kept.tools, Some(format!("only what's installed: {why}"))),
+        }
+    }
+
+    fn keep(&self, hub: &str, read: Result<Arc<Vec<Tool>>, String>) {
+        let mut held = self.0.lock().expect("listing lock");
+        let listed = held.entry(canonical(hub)).or_default();
+        match read {
+            Ok(tools) => *listed = Listed { tools, read_at: Some(Instant::now()), failed: None },
+            Err(why) => listed.failed = Some((Instant::now(), why)),
+        }
+    }
+}
+
+/// The tools of every package `hub` lists with a release, each at its newest.
+async fn every_tool(api: &Arc<Api>, hub: &str) -> Result<Arc<Vec<Tool>>, Error> {
+    let reader = api.machines.hubs.reader(hub)?;
+    let mut wanted = vec![];
+    loop {
+        let page = reader.search_packages_page(None, MOST_BROWSED, wanted.len() as u32).await.map_err(cards::refusal)?;
+        let read = page.packages.len();
+        wanted.extend(page.packages.into_iter().map(|row| (format!("{}/{}", row.org, row.name), row.latest_release)));
+        if read == 0 || wanted.len() as i64 >= page.search.total {
+            break;
+        }
+    }
+    let released = wanted.into_iter().filter_map(|(package, release)| Some((package, release?))).collect();
+    Ok(Arc::new(read_all(api, hub, released).await))
+}
+
 /// Each `(package, release)`'s tools, in the order asked.
 async fn read_all(api: &Arc<Api>, hub: &str, wanted: Vec<(String, String)>) -> Vec<Tool> {
     let root = api.machines.hubs.home().root();
@@ -290,6 +358,40 @@ pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<
     let interface = Interface::parse(&found.interface).ok()?;
     let function = found.function.as_deref().or(target::only_function(&interface))?.to_owned();
     tool::tools_of(&found.package, "", &interface).into_iter().find(|held| held.function == function).map(|held| held.fields)
+}
+
+/// A node's model selections use the same slot/reference/adapter binder as a run.
+/// Known catalog incompatibilities refuse the write; unclassified files still
+/// receive the native loader's validation when they are actually used.
+pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fields: &Map<String, Value>) -> Result<(), Error> {
+    let hub = api.machines.hubs.default_origin();
+    let Ok(found) = runs::target::describe(api, &hub, target, None, Some(dir), &runs::default_on(api)).await else { return Ok(()) };
+    let Ok(interface) = Interface::parse(&found.interface) else { return Ok(()) };
+    let Some(function) = found.function.as_deref().or(target::only_function(&interface)) else { return Ok(()) };
+    let Some(callable) = interface.callables.iter().find(|callable| callable.name == function) else { return Ok(()) };
+    let mut document: Map<String, Value> = ["models", "lora"].into_iter()
+        .filter_map(|field| fields.get(field).filter(|value| !value.is_null()).map(|value| (field.to_owned(), value.clone()))).collect();
+    let mut choices = Choices::new(target, function, &callable.models, interface.call_slots(callable));
+    choices.take(&mut document)?;
+    let choices = choices.into_choices();
+    choices::wire(&choices)?;
+    let Some(mut tool) = tool::tools_of(&found.package, "", &interface).into_iter().find(|tool| tool.function == function) else {
+        return Ok(());
+    };
+    crate::hub::checkpoints::families(api, &hub, std::slice::from_mut(&mut tool)).await;
+    let origin = Origin::parse(&hub)?;
+    for choice in choices {
+        let Some(slot) = tool.models.iter().find(|slot| slot.slot == choice.slot) else { continue };
+        let mut family = slot.family.clone();
+        if let Some(reference) = choice.reference.as_deref() {
+            let found = crate::hub::checkpoints::check_choice(api, &origin, &slot.slot, reference, family.as_deref(), slot.kind).await?;
+            family = family.or(found);
+        }
+        for adapter in choice.adapters {
+            crate::hub::checkpoints::check_choice(api, &origin, &slot.slot, &adapter.reference, family.as_deref(), Some(api::model_ref::ModelKind::Lora)).await?;
+        }
+    }
+    Ok(())
 }
 
 /// What `tool` makes, `image`, `video` or `audio`, as its function's output says, and what a new box of it is called, read as a run of it

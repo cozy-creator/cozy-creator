@@ -2,7 +2,7 @@ import type { CSSProperties } from "react"
 import type { Viewport, XYPosition } from "@xyflow/react"
 import { CARD_WIDTH, type ElementView } from "./CanvasStore"
 import type { Box } from "./graph"
-import { aspectOf, HEAD, shownOf } from "./shown"
+import { aspectOf, bodyBox, HEAD, shownOf } from "./shown"
 import { ZOOMS } from "./ZoomControl"
 
 export const MOST_HERE = 2.5
@@ -24,9 +24,10 @@ export function readableSurface(source: HTMLElement) {
   let underRoom = limit && Number.isFinite(limit) ? limit : undefined
 
   return (view: ElementView, pose: Box, viewport: Viewport, fitRoom?: Box): ReadableProjection => {
+    const body = bodyBox(view, pose)
     if (!view.here) {
       const inverse = 1 / viewport.zoom
-      return { style: {}, bounds: { ...pose }, view: viewport, resizeDelta: resizeAt(inverse) }
+      return { style: {}, bounds: body, view: viewport, resizeDelta: resizeAt(inverse) }
     }
     // Candidate fits must not resize the live card while React Flow is observing it.
     // Measure its actual current markup/styles in the same parent, without starting another media load.
@@ -64,13 +65,13 @@ export function readableSurface(source: HTMLElement) {
     const under = card.querySelector<HTMLElement>(":scope > .here-under")
     const media = card.querySelector<HTMLElement>(":scope > .media")
     const shown = shownOf(view)
-    const passive = Boolean(media && shown && !shown.absent && !view.hereWords && (shown.field === "image" || shown.field === "video"))
+    const passive = Boolean(media && shown && !shown.absent && (shown.field === "image" || (!view.hereWords && shown.field === "video")))
     const apply = (zoom: number, cap: number | undefined) => {
       const text = Math.round((1 / Math.min(MOST_HERE, zoom)) * 20) / 20
       const scale = Math.max(1, text)
       const localText = text / scale
-      const contentWidth = passive ? pose.w / scale : pose.w
-      card.style.width = `${passive ? Math.max(CARD_WIDTH, contentWidth) : pose.w}px`
+      const contentWidth = passive ? body.w / scale : body.w
+      card.style.width = `${passive ? Math.max(CARD_WIDTH, contentWidth) : body.w}px`
       card.style.position = "absolute"
       card.style.left = "0px"
       card.style.top = "0px"
@@ -110,12 +111,12 @@ export function readableSurface(source: HTMLElement) {
     }
     // The picture keeps its canonical canvas anchor while readable chrome rises above it.
     const anchor = (scale: number) => {
-      if (!passive || !media) return { x: pose.x, y: pose.y }
+      if (!passive || !media) return { x: body.x, y: body.y }
       const content = media.querySelector<HTMLElement>(":scope > .media-pixels") ?? media
       // Native CSS widths retain the actual fractional layout without camera-dependent rect rounding.
       const frameWidth = Number.parseFloat(getComputedStyle(media).width)
       const contentWidth = Number.parseFloat(getComputedStyle(content).width)
-      return { x: pose.x - (media.offsetLeft + (frameWidth - contentWidth) / 2) * scale, y: pose.y + HEAD - media.offsetTop * scale }
+      return { x: body.x - (media.offsetLeft + (frameWidth - contentWidth) / 2) * scale, y: body.y + HEAD - media.offsetTop * scale }
     }
 
     let zoom = viewport.zoom

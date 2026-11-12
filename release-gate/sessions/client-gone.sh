@@ -105,7 +105,7 @@ cut_run() {
     jq -e --arg when "$when" '.[$when] and .status == "in_progress"' <<<"$record" > /dev/null 2>&1 && run=$(jq -r .number <<<"$record")
     t=$((t + 3)); sleep 3
   done
-  [ -n "$run" ] || fail "$part: run never had $when: $(c 'run ls --limit 3' | cut -c1-200)"
+  [ -n "$run" ] || fail "$part: run never had $when: $(c 'run ls --limit 3' | cut -c1-200); its cozy run said: $(sh "tail -c 600 /home/client/$part.out")"
   say "$TAG $part: run $run has $when; cut: the line down, its CLI and Calcifer killed"
   line down
   sh "kill -9 \$(cat /tmp/$part.pid); kill -9 $(holder_pid)"

@@ -38,12 +38,12 @@ export function useShowNsfw(): [boolean, (shown: boolean) => void] {
   ]
 }
 
-/** The switch: off, a list leaves out models tagged `nsfw`. */
+/** The single Settings switch: off, model and LoRA lists leave out entries tagged `nsfw`. */
 export function ShowNsfw({ shown, onChange }: { shown: boolean; onChange: (shown: boolean) => void }) {
   return (
     <label className="row center">
       <input type="checkbox" checked={shown} onChange={(event) => onChange(event.target.checked)} />
-      Show NSFW
+      Show NSFW models and LoRAs
     </label>
   )
 }

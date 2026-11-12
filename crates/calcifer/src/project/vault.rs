@@ -363,6 +363,35 @@ fn retire_runtime(runtime: &FsPath) -> Result<(), Error> {
     }
 }
 
+/// Retire only empty, detached runtime folders from earlier Calcifer versions.
+/// Current mounts live inside their own project, so this never touches an active owned view.
+pub(crate) fn sweep_runtime(calcifer: &FsPath) -> bool {
+    fn retire(path: &FsPath) -> bool {
+        let Ok(view) = project_mount::view_path(path) else { return false };
+        project_mount::detach_stale(&view);
+        let _ = fs::remove_dir(&view);
+        let _ = fs::remove_dir(path);
+        !path.exists()
+    }
+    let base = calcifer.join("vaults");
+    let Ok(entries) = fs::read_dir(&base) else { return !base.exists() };
+    let mut clean = true;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) {
+            if let Ok(children) = fs::read_dir(&path) {
+                for child in children.flatten().map(|entry| entry.path()) {
+                    if child.file_name().is_some_and(|name| name == "view") { continue; }
+                    if fs::symlink_metadata(&child).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) { clean &= retire(&child); }
+                }
+            }
+            clean &= retire(&path);
+        } else { clean = false; }
+    }
+    let _ = fs::remove_dir(&base);
+    clean
+}
+
 fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk) -> Result<(), Error> {
     if let Some(known) = api.calcifer.maintenance_store().known_project(&keybag.info().project_id).map_err(|e| error("vault_journal", e))? {
         if known.path != root && Keybag::load(&known.path.join(KEYBAG_FILE)).is_ok_and(|other| other.info().project_id == keybag.info().project_id) {
@@ -548,9 +577,6 @@ pub(super) async fn write(State(api): State<Arc<Api>>, Path(named): Path<String>
 }
 
 pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Progress) -> Result<VaultChanged, Error> {
-    if ask.preserve_plaintext && (ask.action != "encrypt" || ask.remove_plaintext) {
-        return Err(Error::new(Kind::Usage, "vault_source_policy", "preserve_plaintext is only valid for encryption and conflicts with remove_plaintext"));
-    }
     if ask.action == "lock" && !encrypted(root) {
         return Err(Error::new(Kind::Usage, "project_plain", "unencrypted projects cannot be locked"));
     }
@@ -573,7 +599,7 @@ pub(super) fn operate(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progres
     progress.phase("preparing");
     let mut changed = match change(&api, &root, ask, progress, &transition, &mut browser) {
         // What it ended is still settling: the session is closing, and the sweeper locks it once it has.
-        Err(busy) if !ended.is_empty() && busy.code == "project_busy" => VaultChanged { vault: reported_status(api, &root), recovery_secret: None, preserved_source: None, ended: vec![], skipped_files: vec![] },
+        Err(busy) if !ended.is_empty() && busy.code == "project_busy" => VaultChanged { vault: reported_status(api, &root), recovery_secret: None, ended: vec![], skipped_files: vec![] },
         changed => changed?,
     };
     changed.ended = ended;
@@ -618,7 +644,7 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
         initialized?;
         platform::durable::sync_dir(root).map_err(provider)?;
         let ask = VaultAsk { action: "encrypt".into(), passphrase: None, recovery_secret: None,
-            idle_timeout_s: None, max_duration_s: None, remove_plaintext: false, preserve_plaintext: false };
+            idle_timeout_s: None, max_duration_s: None };
         mount(api, root, created.keybag, created.secret, &ask)
     })();
     outcome.map_err(|why| {
@@ -645,7 +671,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         api.calcifer.maintenance_store().migrate_project_sealing(&store, &api.calcifer.inputs)
             .map_err(|_| error("project_migration_pending", "legacy project history must be verified before changing its storage"))?;
     }
-    let (mut recovery_secret, mut preserved_source) = (None, None);
+    let mut recovery_secret = None;
     match ask.action.as_str() {
         "encrypt" => {
             if encrypted(root) { return Err(Error::new(Kind::Conflict, "project_encrypted", "the project is already encrypted")); }
@@ -657,11 +683,8 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             let generation = plain_generation_for_encrypt(root, &id)?;
             let created = Keybag::create_generation(&id, generation, new_passphrase(ask)?).map_err(key)?;
             recovery_secret = Some(created.recovery_secret.expose().to_owned());
-            preserved_source = Some(convert(api, root, created.keybag, created.secret, ask, progress, transition, browser)?);
+            convert(api, root, created.keybag, created.secret, ask, progress, transition, browser)?;
             drop(project);
-            if !ask.preserve_plaintext {
-                preserved_source = None;
-            }
         }
         "unlock" => {
             progress.phase("opening");
@@ -744,7 +767,7 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
         let store = api.projects.transition_store(api, &id, transition)?;
         progress.finish_receipt(&store, "completed")?;
     }
-    Ok(VaultChanged { vault: reported_status(api, root), recovery_secret, preserved_source, ended: vec![], skipped_files: progress.skipped() })
+    Ok(VaultChanged { vault: reported_status(api, root), recovery_secret, ended: vec![], skipped_files: progress.skipped() })
 }
 
 /// Whether the project has work in progress: a run not settled, or a render, cut or file move going.
@@ -792,7 +815,15 @@ impl Drop for Converting { fn drop(&mut self) { CONVERTING.lock().expect("vault 
 /// before either rename, so losing Calcifer between them cannot lose the registered project path.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Conversion {
-    root: PathBuf, staged: PathBuf, saved: PathBuf, key_id: String, remove_source: bool,
+    root: PathBuf, staged: PathBuf, saved: PathBuf, key_id: String,
+    #[serde(default = "remove_legacy_source")]
+    remove_source: bool,
+    #[serde(default)]
+    source_id: Option<[u64; 2]>,
+    #[serde(default)]
+    staged_id: Option<[u64; 2]>,
+    #[serde(default)]
+    ready: bool,
     #[serde(default)]
     internal: bool,
     #[serde(default)]
@@ -803,12 +834,17 @@ struct Conversion {
     plain: Option<PlainConversion>,
 }
 
+fn remove_legacy_source() -> bool { true }
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct PlainConversion {
     project_id: String,
     generation: u64,
+    #[serde(default)]
     ready: bool,
+    #[serde(default)]
     source_id: [u64; 2],
+    #[serde(default)]
     staged_id: [u64; 2],
     #[serde(default)]
     cleanup_started: bool,
@@ -972,7 +1008,13 @@ fn conversion(root: &FsPath) -> Result<Option<Conversion>, Error> {
     if !exists(&path)? { return Ok(None); }
     if fs::symlink_metadata(&path).map_err(io)?.file_type().is_symlink() { return Err(error("vault_recovery", "conversion receipt cannot be a symlink")); }
     let bytes = fs::read(path).map_err(io)?;
-    let record: Conversion = serde_json::from_slice(&bytes).map_err(|_| error("vault_recovery", "invalid conversion receipt"))?;
+    let mut record: Conversion = serde_json::from_slice(&bytes).map_err(|_| error("vault_recovery", "invalid conversion receipt"))?;
+    // RC 0.25's earlier transition receipt put these identities on the outer record.
+    if let Some(plain) = &mut record.plain {
+        plain.ready |= record.ready;
+        if plain.source_id == [0, 0] { plain.source_id = record.source_id.unwrap_or([0, 0]); }
+        if plain.staged_id == [0, 0] { plain.staged_id = record.staged_id.unwrap_or([0, 0]); }
+    }
     let parent = if record.internal { Some(root) } else { root.parent() };
     if record.root != root || record.staged.parent() != parent || record.saved.parent() != parent
         || !record.staged.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".cozy-vault-stage-"))
@@ -1179,7 +1221,7 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress, transition: &
     platform::durable::set_mode(&staged, 0o700).map_err(provider)?;
     let mut record = Conversion {
         root: root.to_owned(), staged: staged.clone(), saved: root.join(format!(".cozy-project-source-{suffix}")),
-        key_id: info.key_id, remove_source: true, internal: true, source_key: None, backing_id: None,
+        key_id: info.key_id, remove_source: true, source_id: None, staged_id: None, ready: false, internal: true, source_key: None, backing_id: None,
         plain: Some(PlainConversion { project_id: info.project_id.clone(), generation: info.generation, ready: false,
             source_id: directory_id(root)?, staged_id: directory_id(&staged)?, cleanup_started: false }),
     };
@@ -1271,7 +1313,7 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     secret.with_bytes(|bytes| engine.create(&staged.join(BACKING), bytes)).map_err(provider)?;
     keybag.save(&staged.join(KEYBAG_FILE)).map_err(key)?;
     let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(),
-        key_id: target_keybag.info().key_id, remove_source: true, internal: true,
+        key_id: target_keybag.info().key_id, remove_source: true, source_id: None, staged_id: None, ready: false, internal: true,
         source_key: Keybag::load(&root.join(KEYBAG_FILE)).ok().map(|bag| bag.info().key_id),
         backing_id: Some(directory_id(&staged.join(BACKING))?), plain: None };
     fs::create_dir(&saved).map_err(io)?;

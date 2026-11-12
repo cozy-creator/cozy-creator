@@ -12,7 +12,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
 };
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use api::{
     error::{Error, Kind},
     calcifer::project::{NewAsset, AssetDeleted, AssetMade, AssetPatch, AssetPatched, AssetVersions, NewVersion, Version as VersionRow, VersionMoved, VersionPatch, VersionPatched},
@@ -92,8 +92,11 @@ pub(super) async fn create(
     };
     let (read_kind, read_name) = read.unzip();
     let said = said.or(read_kind).or_else(|| plain.as_ref().and_then(|plain| folder.reading_lock(|lock| lock.makes.get(plain).cloned()).ok().flatten()));
-    let kind = if intrinsic_edit { Some("video_edit") } else if text_asset { Some(format::TEXT) } else { said.as_deref() };
+    let kind = if intrinsic_edit { Some("video") } else if text_asset { Some(format::TEXT) } else { said.as_deref() };
     if let Some(kind) = kind { asked.fields.insert(format::NODE_KIND.to_owned(), Value::String(kind.to_owned())); }
+    if !no_tool && ["models", "lora"].iter().any(|field| asked.fields.get(*field).is_some_and(|value| !value.is_null())) {
+        crate::toolbox::validate_models(&api, &asked.tool, &folder.dir, &asked.fields).await.map_err(Refusal)?;
+    }
     let wanted = asked.name.as_deref().and_then(format::plain_name).or_else(|| read_name.as_deref().and_then(format::plain_name)).or_else(|| tool_name(&asked.tool)).unwrap_or_else(|| if text_asset { format::TEXT } else { said.as_deref().unwrap_or("asset") }.to_owned());
     let made = folder.act(|| {
         // Chosen in the transaction that writes it: no other write comes between.
@@ -195,6 +198,23 @@ pub(super) async fn patch(
     format::node_kind(asked.fields.get(format::NODE_KIND)).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
+    let validated_tool = if ["models", "lora"].iter().any(|field| asked.fields.get(*field).is_some_and(|value| !value.is_null())) {
+        let written = folder.written().map_err(Refusal)?;
+        let held = written.get(&name).ok_or_else(|| Refusal(own_lines(&name)))?;
+        let current = held.get("tool").and_then(Value::as_str).unwrap_or_default();
+        let target = asked.tool.as_deref().unwrap_or(current);
+        if target.is_empty() {
+            None
+        } else {
+            let mut fields = held.map();
+            for (field, value) in &asked.fields {
+                if value.is_null() { fields.remove(field); }
+                else { fields.insert(field.clone(), value.clone()); }
+            }
+            crate::toolbox::validate_models(&api, target, &folder.dir, &fields).await.map_err(Refusal)?;
+            Some(target.to_owned())
+        }
+    } else { None };
     let holds = match &asked.tool {
         Some(tool) => Some(pictures(folder, &name, tool, false).map_err(Refusal)?),
         None => None,
@@ -220,12 +240,15 @@ pub(super) async fn patch(
             None => None,
         };
         let written = folder.written()?;
+        if asked.tool.is_none() && validated_tool.as_ref().is_some_and(|target| written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str) != Some(target.as_str())) {
+            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name}'s tool changed while its model choices were checked")).remedy("read the node again before choosing its models"));
+        }
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
             let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
             let intrinsic = held.get("tool").and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT);
-            let current = if intrinsic { "video_edit".to_owned() }
+            let current = if intrinsic { "video".to_owned() }
                 else if let Some(kind) = format::node_kind(held.get(format::NODE_KIND))? { kind.to_owned() }
                 else {
                     let doc = Doc::load(folder)?;
@@ -236,10 +259,6 @@ pub(super) async fn patch(
             // a model preserves the current container, including when its output is not cached yet.
             let next = format::node_kind(asked.fields.get(format::NODE_KIND))?.unwrap_or(&current);
             let plain = format::plain_tool(tool, folder);
-            if (plain == tool::EDIT) != (next == "video_edit") {
-                return Err(Error::new(Kind::Validation, "asset_tool_kind", "Video Edit uses its built-in editor")
-                    .remedy("Keep the built-in editor for a Video Edit node; choose a matching model for an Image or Video node"));
-            }
             if let Some(makes) = incoming.as_deref().filter(|kind| *kind != format::node_media(next)) {
                 let mut refused = Error::new(Kind::Validation, "asset_tool_kind", format!("this {next} node cannot use a model that produces {makes}"))
                     .remedy(format!("Choose a model that matches the node's media type, or put {tool} on a new {makes} node that mentions <{name}>"));
@@ -247,9 +266,13 @@ pub(super) async fn patch(
                 return Err(refused);
             }
             fields.insert(format::NODE_KIND.to_owned(), Value::String(next.to_owned()));
+            if plain == tool::EDIT && !intrinsic && !fields.contains_key("timeline") && !fields.contains_key("tracks") {
+                let clips: Vec<Value> = holds.filter(|number| *number > 0).map(|number| json!(format!("<self.{number}>"))).into_iter().collect();
+                fields.insert("tracks".to_owned(), json!([{"clips": clips}]));
+            }
             written.with_tool(&name, tool, *holds, start.clone(), &mut fields)?;
         } else if written.get(&name).and_then(|held| held.get("tool")).and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT) {
-            fields.insert(format::NODE_KIND.to_owned(), Value::String("video_edit".to_owned()));
+            fields.insert(format::NODE_KIND.to_owned(), Value::String("video".to_owned()));
         }
         let mut edited = written.clone();
         let warnings = edited.set(&name, &fields)?;
@@ -277,7 +300,10 @@ fn pictures(folder: &folder::Folder, name: &str, tool: &str, write: bool) -> Res
     let kinded = |number: Option<u32>| Ok(number.map(|number| (number, asset.kind.clone())));
     let newest = lock.asset(&asset.name).and_then(|held| held.versions.last()).map(|version| version.number);
     let Some(pin) = &asset.pin else { return kinded(newest) };
-    let number = |lock: &folder::Lock| lock.asset(&asset.name).and_then(|held| held.versions.iter().rev().find(|version| version.main() == Some(pin))).map(|version| version.number);
+    let number = |lock: &folder::Lock| lock.asset(&asset.name).and_then(|held|
+        asset.selected_version.and_then(|number| held.versions.iter().find(|version| version.number == number && version.main() == Some(pin)))
+            .or_else(|| held.versions.iter().rev().find(|version| version.main() == Some(pin))))
+        .map(|version| version.number);
     if let Some(number) = number(&lock) {
         return kinded(Some(number));
     }
@@ -357,7 +383,10 @@ pub(super) async fn discard(State(api): State<Arc<Api>>, Path((id, name, number)
     let noun = noun(&doc, &lock, i);
     let Some(held) = lock.asset(&name).filter(|held| held.version(number).is_some()) else { return Err(Refusal(no_version(&lock, &name, noun, number))) };
     let main = held.version(number).and_then(folder::Version::main);
-    let approved = doc.assets[i].pin.as_ref().is_some_and(|pin| main == Some(pin) && !held.versions.iter().any(|other| other.number != number && other.main() == Some(pin)));
+    let approved = doc.assets[i].selected_version.map_or_else(
+        || doc.assets[i].pin.as_ref().is_some_and(|pin| main == Some(pin) && !held.versions.iter().any(|other| other.number != number && other.main() == Some(pin))),
+        |selected| selected == number,
+    );
     let before = stale_names(&doc, &doc.stand(&lock));
     folder
         .act(|| {
@@ -395,6 +424,7 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             if !already {
                 history::take(folder, &name, number, noun(&doc, &folder.lock()?, i), Took::Absent, Took::Listed);
             }
+            folder.edit(|written| written.selected(&name, number, &kept.file.sha256))?;
             Ok((number, already))
         })
         .map_err(Refusal)?;

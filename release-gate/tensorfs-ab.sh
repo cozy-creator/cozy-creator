@@ -27,10 +27,14 @@ ab_on() {
   return 1
 }
 # ab_model <model> <cell prefix> <suffix>: its cold and warm run; each its own prompt and seed, the same in both arms.
+# SDXL runs once more after a pause, when idle work has had its time: a graph captured idle serves only that run
+# (two A/Bs had graphs on one arm's warm run and not the other's, 43093254249 and 43107357037).
 ab_model() {
   local m=$1 n=$2 sfx=$3 i v s
-  local -a when=("at dusk" "in light rain")
-  for i in 0 1; do
+  local -a when=("at dusk" "in light rain" "under clear skies")
+  for i in 0 1 2; do
+    [ "$i" != 2 ] || [ "$m" = sdxl ] || continue
+    [ "$i" != 2 ] || sleep 30
     v=${when[$i]}
     case $m in
       sdxl) s=$((R + 700 + i))

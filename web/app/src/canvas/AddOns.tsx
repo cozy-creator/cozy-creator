@@ -5,15 +5,17 @@ import "./AddOns.css"
 import { type AddOn, addOnsOf, atStrength, carried, takenOff, wordOf } from "./checkpoints"
 import { useCanvasStore, useElement } from "./context"
 import { madeHere, toolName } from "./shown"
+import { ModelPicker } from "./ModelPicker"
 
 const said = (addOn: AddOn) => `${addOn.lora ? "LoRA" : "Fine-tune"} ${addOn.ref}`
 
 /** One thing on a box: its word, and an X when it can come off. */
-export function Chip({ word, title, kind, off, mark }: { word: string; title: string; kind?: "tool" | "fine-tune"; off?: { label: string; take(): void }; mark?: boolean }) {
+export function Chip({ word, title, kind, off, mark, pick }: { word: string; title: string; kind?: "tool" | "fine-tune"; off?: { label: string; take(): void }; mark?: boolean; pick?: () => void }) {
   if (mark) return <li className={`add-on ${kind ?? ""}`} title={title} />
   return (
     <li className={`add-on ${kind ?? ""}`} title={title} onClick={(event) => event.stopPropagation()}>
       <span className="add-on-word">{word}</span>
+      {pick && <button type="button" aria-label="Models and LoRAs" onClick={pick}>Models &amp; LoRAs</button>}
       {off && (
         <button type="button" className="nodrag" aria-label={off.label} title="Take it off" onClick={off.take}>
           <Icon name="close" />
@@ -33,17 +35,19 @@ function useAddOns(name: string) {
 
 /** What's on a box, its tool first, each with its X: as many as it holds. Far out, each is only a mark. */
 export function Stack({ name }: { name: string }) {
+  const [modelsOpen, setModelsOpen] = useState(false)
   const { held, lora, models, store } = useAddOns(name)
   const view = useElement(name)
   const tools = useSignal(store.tools)
   const mark = useSignal(store.far) && !view?.here
   const tool = view?.asset?.tool
   const known = tool ? tools.get(tool) : undefined
-  const made = tool && !madeHere(tool) ? (known ? toolName(known) : (tool.split("/").at(-2) ?? tool)) : null
+  const made = tool === "cozy/edit" ? "Video Timeline" : tool && !madeHere(tool) ? (known ? toolName(known) : (tool.split("/").at(-2) ?? tool)) : null
   if (!made && !held.length) return null
   return (
+    <>
     <ul className="add-ons nodrag nopan" aria-label={`What's on ${name}`}>
-      {made && <Chip word={made} title={tool ?? made} kind="tool" mark={mark} off={{ label: `Take ${made} off ${name}`, take: () => store.takeToolOff(name) }} />}
+      {made && <Chip word={made} title={made} kind="tool" mark={mark} pick={known?.models?.length || known?.model ? () => setModelsOpen(true) : undefined} off={{ label: `Take ${made} off ${name}`, take: () => store.takeToolOff(name) }} />}
       {held.map((addOn) => (
         <Chip
           key={`${addOn.slot}:${addOn.ref}`}
@@ -55,6 +59,8 @@ export function Stack({ name }: { name: string }) {
         />
       ))}
     </ul>
+    {modelsOpen && <ModelPicker name={name} onClose={() => setModelsOpen(false)} />}
+    </>
   )
 }
 
@@ -68,7 +74,7 @@ export function AddOns({ name }: { name: string }) {
   return (
     <>
       {going && !going.whyNot(name, view, tools) && <span className="box-takes" />}
-      {!view.here && <Stack name={name} />}
+      {!view.here && view.asset.kind !== "image" && <Stack name={name} />}
     </>
   )
 }

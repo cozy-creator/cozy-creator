@@ -54,6 +54,6 @@ class Filmed(msgspec.Struct):
 @app.entrypoint()
 def film(payload: Film, out: Outputs) -> Filmed:
     frames = int(payload.seconds * 24)
-    noise = np.random.randint(0, 255, (frames, 360, 640, 3), dtype=np.uint8)
+    noise = np.random.default_rng().integers(0, 255, (frames, 360, 640, 3), dtype=np.uint8)  # its own generator: the contract refuses the global one
     silence = np.zeros((2, int(payload.seconds * 48000)), dtype=np.float32)
     return Filmed(out.save_video(noise, fps=24, audio=silence, sample_rate=48000))

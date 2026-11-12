@@ -55,6 +55,8 @@ pub(crate) struct Api {
     pub projects: crate::project::Projects,
     /// What this computer last read of each package's releases.
     pub(crate) releases: crate::runs::target::Releases,
+    /// Each Hub's tools, as last read.
+    pub(crate) listing: crate::toolbox::Listing,
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
     pub(crate) sessions: crate::sessions::Sessions,
@@ -94,6 +96,7 @@ impl Api {
             machines,
             projects: Default::default(),
             releases: Default::default(),
+            listing: Default::default(),
             codes: Default::default(),
             tool_uis: Default::default(),
             bearer: Sha256::digest(token).into(),

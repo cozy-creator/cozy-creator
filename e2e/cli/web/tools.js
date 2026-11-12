@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { projectFromPage, MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav, importYaml, yamlOf } = require('./page');
+const { implementationRow, projectFromPage, MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -113,23 +113,30 @@ function linesOf(text, name) {
   const listed = () => page.evaluate(() => [...document.querySelectorAll('.tools .tool-groups section')].map((section) => ({
     section: section.dataset.palette,
     title: section.querySelector('h4').textContent,
-    tools: [...section.querySelectorAll('li.tool')].map((row) => ({ operation: row.dataset.operation, model: row.dataset.model, kind: row.dataset.kind, label: row.querySelector('b').textContent })),
+    tools: [...section.querySelectorAll(section.dataset.palette === 'nodes' ? '[data-node]' : '[data-operation]')].map((row) => ({ operation: row.dataset.operation, model: row.dataset.model, kind: row.dataset.kind, label: row.querySelector('b')?.textContent ?? row.textContent.trim() })),
   })));
-  await until('the seven operations listed', () => listed(), (rows) => rows.find((one) => one.section === 'tools')?.tools.length === 7);
+  await until('the eight tool categories listed', () => listed(), (rows) => rows.find((one) => one.section === 'tools')?.tools.length === 8);
   const atRest = await listed();
   seen.listed = atRest.map((one) => `${one.title}: ${one.tools.map((row) => row.label).join(', ')}`);
   check('nodes_and_tools_are_separate', atRest.length === 2 && atRest[0].title === 'Nodes' && atRest[1].title === 'Tools', atRest);
-  check('exactly_five_basic_node_types', JSON.stringify(atRest.find((one) => one.section === 'nodes')?.tools.map((row) => row.label)) === JSON.stringify(['Image', 'Video', 'Video Editor', 'Audio', 'Text']), atRest);
+  check('exactly_four_basic_asset_types', JSON.stringify(atRest.find((one) => one.section === 'nodes')?.tools.map((row) => row.label)) === JSON.stringify(['Image', 'Video', 'Audio', 'Text']), atRest);
   const operations = atRest.find((one) => one.section === 'tools')?.tools ?? [];
-  check('exactly_seven_operation_categories', JSON.stringify(operations.map((row) => row.label)) === JSON.stringify(['Image', 'Edit Image', 'Upscale Image', 'Video', 'Edit Video', 'Upscale Video', 'LLM']), operations);
-  check('operation_output_types', JSON.stringify(operations.map((row) => row.kind)) === JSON.stringify(['image', 'image', 'image', 'video', 'video', 'video', 'text']), operations);
+  check('timeline_is_a_tool_category', JSON.stringify(operations.map((row) => row.label)) === JSON.stringify(['Image', 'Edit Image', 'Upscale Image', 'Video', 'Edit Video', 'Upscale Video', 'Timeline', 'LLM']), operations);
+  check('operation_output_types', JSON.stringify(operations.map((row) => row.kind)) === JSON.stringify(['image', 'image', 'image', 'video', 'video', 'video', 'video', 'text']), operations);
   check('sidebar_has_no_model_rows', operations.every((row) => !row.model), operations);
   check('sidebar_has_no_discovery_controls', await page.locator('.tools input, .tools .browse-toggle, .tools .browse, .tools .box-shelf-head, .tools .tool-off').count() === 0 && !(await page.locator('.tools button').allTextContents()).some((word) => /Browse|Checkpoints|Add file/.test(word)));
-  const metadata = (await api(`/v1/tools?project=${id}&palette=true`)).body.tools;
+  const metadata = (await api(`/v1/tools?project=${id}`)).body.tools;
   check('local_output_capabilities_remain', metadata.some((row) => row.id === `${fixture}/shot` && row.makes === 'video') && metadata.some((row) => row.id === `${fixture}/still` && row.makes === 'image'), metadata.filter((row) => row.id.startsWith(fixture)).map((row) => ({ id: row.id, makes: row.makes })));
   const namesBefore = (await state()).assets.map((asset) => asset.name);
-  await page.locator('.tools [data-palette="nodes"] [data-node="image"]').click();
-  const choosing = await until('image node for model choices', async () => (await state()).assets.find((asset) => !namesBefore.includes(asset.name)), Boolean);
+  const imageNode = page.locator('.tools [data-palette="nodes"] [data-node="image"]');
+  await imageNode.click();
+  const imageImplementation = await implementationRow(page, 'image');
+  await imageImplementation.click();
+  await page.waitForTimeout(200);
+  check('clicking_nodes_and_tools_does_not_create', JSON.stringify((await state()).assets.map((asset) => asset.name)) === JSON.stringify(namesBefore));
+  const spot = await require('./page').openCanvas(page);
+  await require('./page').carry(page, imageNode, spot);
+  const choosing = await until('dragged image node for model choices', async () => (await state()).assets.find((asset) => !namesBefore.includes(asset.name)), Boolean);
   await open(choosing.name);
   const modelOptions = () => box(choosing.name).locator('select[aria-label="Model"] option').evaluateAll((options) => options.map((option) => ({ id: option.value, label: option.textContent })));
   const hasModel = (options, ref) => options.some((option) => metadata.find((one) => one.id === option.id)?.model?.default?.startsWith(`${ref}@`));
@@ -137,7 +144,7 @@ function linesOf(text, name) {
   check('image_models_are_node_configuration_choices', hasModel(models, 'qwen/qwen-image-2.1') && hasModel(models, 'stabilityai/sdxl'), models);
   const hasTextModel = metadata.some((one) => one.makes === 'text' && one.id !== 'text');
   check('llm_availability_matches_real_text_tools', await page.locator('.tools [data-operation="llm"]').getAttribute('aria-disabled') === String(!hasTextModel));
-  const availability = await page.locator('.tools [data-palette="tools"] li.tool').evaluateAll((rows) => rows.map((row) => ({ operation: row.dataset.operation, kind: row.dataset.kind, disabled: row.getAttribute('aria-disabled') === 'true' })));
+  const availability = await page.locator('.tools [data-palette="tools"] [data-operation]').evaluateAll((rows) => rows.map((row) => ({ operation: row.dataset.operation, kind: row.dataset.kind, disabled: row.getAttribute('aria-disabled') === 'true' })));
   const toolOptions = await box(choosing.name).locator('select[aria-label="Tool"] option').evaluateAll((options) => options.map((option) => ({ operation: option.value, disabled: option.disabled })));
   check('unavailable_image_operations_are_disabled_in_node_configuration', availability.filter((row) => row.kind === 'image' && row.disabled).every((row) => toolOptions.some((option) => option.operation === row.operation && option.disabled)), { availability, toolOptions });
   check('edit_image_available_for_reference_capable_models', availability.some((row) => row.operation === 'edit_image' && !row.disabled), availability);
@@ -147,7 +154,7 @@ function linesOf(text, name) {
   await box(choosing.name).locator('select[aria-label="Model"]').selectOption(qwen.id);
   await until('edit model selected', () => of(choosing.name), (asset) => asset.tool === qwen.id);
   check('reference_capable_image_model_retains_edit_operation', await box(choosing.name).locator('select[aria-label="Tool"]').inputValue() === 'edit_image' && models.some((option) => option.id === qwen.id), { imageModels: models, editModels });
-  check('model_choice_does_not_expand_sidebar', JSON.stringify(await listed()) === JSON.stringify(atRest));
+  check('model_choice_keeps_category_structure', JSON.stringify(await listed()) === JSON.stringify(atRest));
   await closeBox(page);
   await api(`/v1/projects/${id}/assets/${encodeURIComponent(choosing.name)}`, { method: 'DELETE' });
   await until('model-choice node removed', () => box(choosing.name).count(), (count) => count === 0);

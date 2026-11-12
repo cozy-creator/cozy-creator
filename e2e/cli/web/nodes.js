@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
+const { implementationRow, selectVersion, chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -106,7 +106,11 @@ function linesOf(text, name) {
     await closeBox(page);
     await page.mouse.move(2, 500);
   };
-  const open = (name) => openBox(page, name);
+  const open = async (name) => {
+    await openBox(page, name);
+    const held = await of(name);
+    if (held?.kind === 'image' && held.tool) await renderOf(page, name);
+  };
   // The X is a shut box's, under the pointer.
   const deleteBox = async (name) => {
     await away();
@@ -142,8 +146,9 @@ function linesOf(text, name) {
   // The two lists fold away with the canvas where it was; the sidebar has no discovery or upload controls.
   const listed = await until('tools or why none', async () => ({ tools: await page.locator('.tools .tool').count(), note: await page.locator('.tools p').allTextContents() }), (now) => now.tools > 0 || now.note.length > 0);
   seen.tools_listed = listed;
-  const resting = (await api(`/v1/tools?project=${id}&palette=true`)).body;
-  check('defaults_always_listed', ['cozy', 'qwen-image-2', 'minimax-h3', 'sdxl'].every((name) => resting.tools.some((tool) => tool.package === name)), { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
+  // Every package the Hub lists, with nothing installed (cl-896): the isolated Hub's are qwen-image-2, minimax-h3, sdxl and birefnet.
+  const resting = await until('the Hub read', async () => (await api(`/v1/tools?project=${id}`)).body, (body) => ['cozy', 'qwen-image-2', 'minimax-h3', 'sdxl', 'birefnet'].every((name) => body.tools.some((tool) => tool.package === name))).catch(() => null);
+  check('every_hub_package_listed', Boolean(resting), resting && { note: resting.note, tools: resting.tools.map((tool) => tool.id) });
   const viewport = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const before = await viewport();
   await page.click('.tools [aria-label="Hide the tools"]');
@@ -160,7 +165,7 @@ function linesOf(text, name) {
     return until('a box from the tool', async () => (await state()).assets.find((held) => !namesBefore.includes(held.name)), Boolean);
   };
   await until('the list back', () => page.locator('.tools .tool').count(), (n) => n > 0);
-  const firstTool = page.locator('.tools [data-palette="tools"] .tool[data-operation="image"]');
+  const firstTool = await implementationRow(page, 'image');
   const kind = await firstTool.getAttribute('data-kind');
   // A box is called what its tool's published node says, `image_1` for Qwen Image 2, else its package's word, numbered up from there.
   const dragged = await firstTool.getAttribute('data-tool');
@@ -174,9 +179,10 @@ function linesOf(text, name) {
   // A picture tool's box opens as it lands, on its words, the caret in them and its shape Auto, with no name asked. The Edit stays shut.
   if (kind === 'image') {
     const landedOpen = page.locator(`.card.here[data-asset="${made.name}"]`);
-    const caretIn = await until('the caret in its words', () => landedOpen.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
+    await renderOf(page, made.name);
+    const caretIn = await until('the caret in its edit words', () => landedOpen.locator('.in-frame .mention-text').evaluate((el) => el.contains(document.activeElement)).catch(() => false), Boolean).catch(() => false);
     const shapeSaid = await landedOpen.locator('.ratio-rest').innerText().then((text) => text.trim(), () => null);
-    check('a_dropped_tool_opens_on_its_words', caretIn === true && shapeSaid === 'Auto' && (await page.locator('.nm-field').count()) === 0, { caretIn, shapeSaid });
+    check('a_dropped_image_tool_can_enter_edit_mode', caretIn === true && shapeSaid === 'Auto' && (await page.locator('.nm-field').count()) === 0, { caretIn, shapeSaid });
   } else seen.dropped_kind = kind;
   seen.tool_dragged = made.name;
   const word = (name) => name?.replace(/_\d+$/, '');
@@ -191,9 +197,9 @@ function linesOf(text, name) {
 
   // Basic nodes survive a fresh read without acquiring a model. The editor is an intrinsic timeline, distinct from generative video.
   const basic = page.locator('.tools [data-palette="nodes"] li.tool');
-  check('basic_palette_has_exactly_five_types', JSON.stringify(await basic.locator('b').allTextContents()) === JSON.stringify(['Image', 'Video', 'Video Editor', 'Audio', 'Text']));
+  check('basic_palette_has_exactly_four_types', JSON.stringify(await basic.locator('b').allTextContents()) === JSON.stringify(['Image', 'Video', 'Audio', 'Text']));
   const blanks = {};
-  for (const kind of ['image', 'video', 'video_edit', 'audio', 'text']) {
+  for (const kind of ['image', 'video', 'audio', 'text']) {
     await away();
     const point = await openCanvas(page);
     blanks[kind] = await dragOut(page.locator(`.tools [data-palette="nodes"] li.tool[data-node="${kind}"]`), point.x, point.y);
@@ -204,8 +210,8 @@ function linesOf(text, name) {
   const afterReload = await state();
   const blank = (kind) => afterReload.assets.find((held) => held.name === blanks[kind].name);
   check('blank_media_types_persist_without_models', ['image', 'video', 'audio'].every((kind) => blank(kind)?.kind === kind && blank(kind)?.fields?.node_kind === kind && !blank(kind)?.tool && !('text' in (blank(kind)?.fields ?? {}))), { image: blank('image'), video: blank('video'), audio: blank('audio') });
-  check('text_and_videoedit_keep_intrinsic_behavior', blank('text')?.kind === 'text' && !blank('text')?.tool && blank('video_edit')?.tool === 'cozy/edit' && blank('video_edit')?.fields?.node_kind === 'video_edit' && Boolean(blank('video_edit')?.timeline), { text: blank('text'), videoEdit: blank('video_edit') });
-  const videoTool = page.locator('.tools [data-palette="tools"] .tool[data-operation="video"]');
+  check('text_is_a_plain_asset_holder', blank('text')?.kind === 'text' && !blank('text')?.tool, blank('text'));
+  const videoTool = await implementationRow(page, 'video');
   await videoTool.waitFor();
   check('video_operation_outputs_video', await videoTool.getAttribute('data-kind') === 'video');
   const videoToolId = await videoTool.getAttribute('data-tool');
@@ -218,7 +224,7 @@ function linesOf(text, name) {
     await carry(page, row, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   };
   const allBefore = (await state()).assets.map((held) => held.name).sort();
-  for (const kind of ['image', 'audio', 'text', 'video_edit']) {
+  for (const kind of ['image', 'audio', 'text']) {
     const name = blanks[kind].name;
     await toolOnto(videoTool, name);
     await until('incompatible drop explained', () => page.locator('.notes, .note-list, [role=status]').allInnerTexts(), (notes) => notes.some((text) => text.includes(name) && (text.includes("can't go on") || text.includes('node'))));
@@ -232,11 +238,20 @@ function linesOf(text, name) {
   await box(blanks.video.name).locator('button[aria-label^="Take "]').first().click();
   await until('video model removed', () => of(blanks.video.name), (held) => !held.tool);
   check('removing_model_keeps_blank_video_type', (await of(blanks.video.name)).kind === 'video' && (await of(blanks.video.name)).fields?.node_kind === 'video');
+  const timelineTool = await implementationRow(page, 'timeline', 'cozy/edit');
+  await toolOnto(timelineTool, blanks.video.name);
+  await until('Timeline attached to Video', () => of(blanks.video.name), (held) => held.tool === 'cozy/edit');
+  check('timeline_is_a_tool_on_video', (await of(blanks.video.name)).kind === 'video' && Boolean((await of(blanks.video.name)).timeline));
+  await openBox(page, blanks.video.name);
+  await box(blanks.video.name).getByRole('button', { name: new RegExp(`^Take .* off ${blanks.video.name}$`) }).click();
+  await until('Timeline removed', () => of(blanks.video.name), (held) => !held.tool);
+  check('removing_timeline_keeps_video_holder', (await of(blanks.video.name)).kind === 'video');
+
   await away();
   for (const held of Object.values(blanks)) await api(`/v1/projects/${id}/assets/${encodeURIComponent(held.name)}`, { method: 'DELETE' });
 
   // Local implementations are chosen inside the Image operation, then named on their node.
-  const fromTheList = page.locator('.tools [data-palette="tools"] .tool[data-operation="image"]');
+  const fromTheList = await implementationRow(page, 'image');
   const dropBox = async (name, x, y) => {
     await until('nothing being rendered, so it can be named', () => state(), (now) => !now.busy, FIRST_RUN_MS);
     const fresh = await dragOut(fromTheList, x, y);
@@ -284,10 +299,10 @@ function linesOf(text, name) {
   await away();
   await page.waitForTimeout(100);
 
-  // At rest a box is its picture or its text and a name, with no state in words; the one thing to press is its ×, always shown
-  // and big enough to hit (Paul, 11-06: "the X ... should be larger and always visible").
-  const atRest = box('source-a').locator('button:visible');
-  check('at_rest_only_its_x', (await atRest.count()) === 1 && (await atRest.getAttribute('aria-label')) === 'Delete' && ((await atRest.boundingBox())?.width ?? 0) >= 24, await box('source-a').innerText());
+  // The image keeps its deletion target and its current-version controls at rest.
+  const atRest = box('source-a').locator('.head button[aria-label="Delete"]');
+  check('at_rest_delete_is_always_visible', await atRest.isVisible() && ((await atRest.boundingBox())?.width ?? 0) >= 24, await box('source-a').innerText());
+  check('at_rest_image_has_version_controls', await box('source-a').getByLabel('Current version', { exact: true }).innerText() === '1/1' && await box('source-a').getByRole('button', { name: 'Previous version', exact: true }).isDisabled() && await box('source-a').getByRole('button', { name: 'Next version', exact: true }).isDisabled());
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
   await open('Sheet');
   check('hover_shows_render', (await box('Sheet').locator('button[aria-label=Render]').count()) === 1);
@@ -389,17 +404,12 @@ function linesOf(text, name) {
   check('coming_apart_changes_no_input', JSON.stringify((await state()).assets.map(({ name, inputs, standing }) => [name, inputs, standing])) === JSON.stringify(asItStood));
   await page.evaluate(() => { window.notReloaded = true; });
 
-  // A description, on anything, as text whatever it says: always open, under its label, and nothing asks a model for it.
+  // Stored image descriptions remain data, but no image description editor is shown.
+  await api(`/v1/projects/${id}/assets/source-a`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'A sea <b>bold</b> <img src=x onerror=window.pwned=1> and more' } }) });
   await open('source-a');
-  const described = box('source-a').locator('.desc-field');
-  check('description_is_a_labelled_field', (await described.locator('.block-label').innerText()) === 'Description' && (await described.locator('.mention-text').count()) === 1 && (await box('source-a').locator('button:text-is("Caption"), .desc-line').count()) === 0, await box('source-a').innerText());
-  await described.locator('.mention-text').click();
-  await page.keyboard.type('A sea <b>bold</b> <img src=x onerror=window.pwned=1> and more');
-  await page.mouse.click(1500, 1000);
-  await until('its description in the file', () => Promise.resolve(linesOf(yaml(), 'source-a')), (lines) => lines?.includes('description: '));
-  await open('source-a');
-  check('text_is_only_text', (await page.evaluate(() => window.pwned === undefined && !document.querySelector('.card b') && !document.querySelector('.card img[src="x"]'))));
-  check('description_on_the_wire', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
+  check('image_description_editor_is_removed', await box('source-a').locator('.desc-field, [aria-label="Description"]').count() === 0, await box('source-a').innerText());
+  check('stored_description_is_not_html', await page.evaluate(() => window.pwned === undefined && !document.querySelector('.card img[src="x"]')));
+  check('description_data_is_preserved', (await of('source-a')).fields?.description?.includes('A sea'), (await of('source-a')).fields);
   check('a_description_makes_it_no_tool', !(await of('source-a')).tool && (await of('source-a')).sha256?.startsWith('sha256:'), await of('source-a'));
 
   // A click opens a picture's box at once, with no wait for a second (Paul, 11-06, as Figma does).
@@ -421,7 +431,7 @@ function linesOf(text, name) {
   const field = async (re) => (linesOf(yaml(), 'knobs') ?? '').match(re)?.[1];
   check('summary_is_its_prompt', (await knobs.locator('.in-frame .mention-text').getAttribute('data-field')) === 'summary');
   // Its description has a field of its own, always open.
-  check('words_and_beats_shown', (await knobs.locator('.mention-text:not([data-field=description])').count()) === 2 && (await knobs.locator('.desc-field .mention-text').count()) === 1 && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=Megapixels]').count()) === 0, await knobs.innerText());
+  check('words_and_beats_shown', (await knobs.locator('.mention-text:not([data-field=description])').count()) === 2 && (await knobs.locator('.desc-field .mention-text').count()) === ((await of('knobs')).kind === 'image' ? 0 : 1) && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=Megapixels]').count()) === 0, await knobs.innerText());
   check('no_line_beside_more', (await knobs.locator('.more-marks').count()) === 0 && (await knobs.locator('.more-toggle').innerText()).trim() === 'More', await knobs.locator('.more-toggle').innerText());
   await more('knobs');
   check('what_it_holds_behind_more', (await knobs.locator('input[aria-label=Megapixels]').inputValue()) === '1' && (await knobs.locator('label:has-text("turbo") input').isChecked()), await knobs.locator('.edit-more').innerText());
@@ -574,7 +584,7 @@ function linesOf(text, name) {
     const place = async (name) => {
       await away();
       const point = await openCanvas(page);
-      const fresh = await dragOut(page.locator('.tools [data-operation="image"]'), point.x, point.y);
+      const fresh = await dragOut(await implementationRow(page, 'image'), point.x, point.y);
       await chooseModel(page, fresh.name, implementationOf(name).id, 'image');
       await until('the selected implementation lands', () => of(fresh.name), (held) => held.tool === implementationOf(name).id);
       await box(fresh.name).locator('.nm').dblclick();
@@ -657,62 +667,45 @@ function linesOf(text, name) {
     check('rendered_with_no_reload', await page.evaluate(() => window.notReloaded === true));
     await render('Sheet', 2);
     await open('Sheet');
-    await until('its count', () => box('Sheet').locator('.count').textContent(), (text) => text === '2/2');
+    await until('its count', () => box('Sheet').getByLabel('Current version', { exact: true }).textContent(), (text) => text === '2/2');
 
-    // Scrolled through: looking changes only this page.
-    const fileBefore = yaml();
-    // What just landed can still move the row from under a press (Firefox, 42006624081): a person presses again.
-    await until('looking at 1', async () => {
-      const count = await box('Sheet').locator('.count').textContent();
-      if (count !== '1/2') await box('Sheet').locator('.take[aria-label="version 1"]').click();
-      return count;
-    }, (text) => text === '1/2');
-    check('looking_is_only_this_page', yaml() === fileBefore);
+    // Back/forward changes the one selected state, durably, without adding versions.
+    await selectVersion(page, 'Sheet', 1);
+    await until('first version selected in the project', () => of('Sheet'), (held) => held.version === 1);
+    check('selected_version_is_persistent', (await box('Sheet').getByLabel('Current version', { exact: true }).innerText()) === '1/2');
+    check('images_have_no_thumbnail_strip', await box('Sheet').locator('.here-side .take, .takes .take[data-take]').count() === 0);
+    check('image_view_has_no_description', await box('Sheet').locator('.desc-field').count() === 0);
+    await openBox(page, 'Sheet');
+    const viewButton = box('Sheet').getByRole('button', { name: 'View image', exact: true });
+    if (await viewButton.count()) await viewButton.click();
+    check('image_has_an_explicit_edit_action', await box('Sheet').getByRole('button', { name: 'Edit image', exact: true }).count() === 1);
+    const selectedBefore = (await of('Sheet')).version;
+    await renderOf(page, 'Sheet');
+    check('editing_keeps_current_selection', (await of('Sheet')).version === selectedBefore && await box('Sheet').locator('.in-frame').count() === 1);
+    await box('Sheet').getByRole('button', { name: 'View image', exact: true }).click();
 
-    // Approve, by a double tap on the take: it becomes that file, and again flips back. No button says so, and the words stay with Render, beside no "Its words".
-    await box('Sheet').locator('.take[aria-label="version 1"]').dblclick();
-    await until('approved in the file', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => /approved: "?[0-9a-f]{6,}/.test(lines));
-    const approved = await of('Sheet');
-    check('approved_is_that_version', approved.approved === 1 && approved.pinned, approved.approved);
-    await open('Sheet');
-    await box('Sheet').locator('.here-side .take.approved').waitFor();
-    // Looking at a take, only its description is under it: its words, tool and Render are its next take's, behind the + over its takes.
-    check('approved_shows_its_file', (await box('Sheet').locator('.in-frame').count()) === 0 && (await box('Sheet').locator('.here-under .mention-text[data-field=instructions], .here-under button[aria-label=Render]').count()) === 0 && (await box('Sheet').locator('.here-under .desc-field').count()) === 1, await box('Sheet').innerText());
-    check('its_next_take_is_a_plus', (await box('Sheet').locator('.here-side .take.add[aria-label="Its next take"]').count()) === 1 && (await box('Sheet').locator('button:text-is("Approve"), button:text-is("Unapprove")').count()) === 0, await box('Sheet').innerText());
-    check('no_word_says_pin', !/\bpin|accept/i.test(await box('Sheet').innerText()), await box('Sheet').innerText());
-    await box('Sheet').locator('.take.approved').dblclick();
-    await until('unapproved', () => of('Sheet'), (held) => !held.pinned);
-    await box('Sheet').locator('.take[aria-label="version 1"]').dblclick();
-    await until('approved again', () => of('Sheet'), (held) => held.pinned && held.approved === 1);
+    // Stored version deletion and Undo remain available independently of the removed strip.
+    const asked = await versions('Sheet');
+    const removed = await api(`/v1/projects/${id}/assets/Sheet/versions/2`, { method: 'DELETE' });
+    check('version_delete_is_accepted', removed.status === 200);
+    await until('version removed', () => versions('Sheet'), (n) => n === asked - 1);
+    const history = (await api(`/v1/projects/${id}/history`)).body;
+    const deletion = history.entries.find((entry) => !entry.undone && entry.names?.some((name) => name.toLowerCase() === 'sheet'));
+    await api(`/v1/projects/${id}/history/undo`, { method: 'POST', body: JSON.stringify({ entry: deletion.id }) });
+    await until('version restored', () => versions('Sheet'), (n) => n === asked);
+    check('version_undo_retains_both_states', (await of('Sheet')).prefixes.length === asked);
 
-    // One discarded: off the strip at once, Undo brings it back, and what's approved going says so and stands on the newest.
-    const strip = () => box('Sheet').locator('.take[aria-label^="version"]').count();
-    const asked = await strip();
-    await box('Sheet').locator('.take-at').first().hover();
-    await box('Sheet').locator('.take-at .take-off').first().click();
-    check('a_take_goes_at_once', (await strip()) === asked - 1, await strip());
-    check('and_the_box_stays_open', (await page.locator('.card.here[data-asset="Sheet"]').count()) === 1);
-    await until('and from the project', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked - 1);
-    await page.locator('.note:has-text("Discarded") button:has-text("Undo")').first().click();
-    await until('it came back', async () => (await of('Sheet')).prefixes?.length, (n) => n === asked);
-    check('a_take_comes_back', (await strip()) === asked, await strip());
-
-    // One dragged out: its own asset, the same file, what it says it is, and no new bytes. It moves out of its box (Paul, 11-06; web-versions).
+    // Selecting a state keeps every version on this asset and creates no extracted version-node.
     await api(`/v1/projects/${id}/assets/Sheet`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'The sheet of two.' } }) });
     await until('described', () => of('Sheet'), (held) => held.fields?.description?.includes('sheet of two'));
     const filesBefore = readdirSync(join(folder, 'files')).length;
     await open('Sheet');
     // The drag carries what the page holds, and that came by the stream, a moment behind the answer above.
-    await until('the page has its words', () => box('Sheet').locator('text=The sheet of two.').count(), (n) => n > 0);
-    // Picked up from its big tile, the take it shows. It moves out (571ee2123): its box keeps the rest.
-    await box('Sheet').locator('.take[aria-label="version 2"]').click();
-    const [carried, kept] = [(await of('Sheet')).prefixes[1].main.sha256, (await versions('Sheet')) - 1];
-    await box('Sheet').locator('.take-out').dragTo(page.locator('.stage'), { targetPosition: await openCanvas(page) });
-    const out = await until('taken out', () => of('Sheet_2'), Boolean);
-    check('taken_out_is_the_same_file', out.sha256 === carried && !out.tool, out);
-    await until('and gone from its box', () => versions('Sheet'), (n) => n === kept);
-    check('taken_out_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);
-    await until('it keeps what it says', () => of('Sheet_2'), (held) => held.fields?.description?.includes('sheet of two'));
+    check('image_description_stays_hidden', await box('Sheet').locator('.desc-field').count() === 0);
+    await selectVersion(page, 'Sheet', 2);
+    const selected = await of('Sheet');
+    check('selection_keeps_versions_on_one_asset', selected.version === 2 && selected.versions === asked && !(await of('Sheet_2')), selected);
+    check('selection_creates_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);
     await shot('versions');
 
     // Something else to go on while one fails.
@@ -766,7 +759,11 @@ function linesOf(text, name) {
     const textRow = page.locator('aside.tools [data-palette="nodes"] li.tool[data-node="text"]');
     check('text_is_on_the_list', (await textRow.count()) === 1, await page.locator('aside.tools').innerText());
     await away();
+    const beforeTextClick = (await state()).assets.map((asset) => asset.name).sort();
     await textRow.click();
+    await page.waitForTimeout(200);
+    check('clicking_text_does_not_create', JSON.stringify((await state()).assets.map((asset) => asset.name).sort()) === JSON.stringify(beforeTextClick));
+    await carry(page, textRow, await openCanvas(page));
     await box('text').waitFor();
     await open('text');
     const wording = box('text');
@@ -793,17 +790,14 @@ function linesOf(text, name) {
     check('a_default_isnt_written', !(linesOf(yaml(), 'asker') ?? '').includes('bright'), linesOf(yaml(), 'asker'));
     await bright.click();
     await until('off is written', () => linesOf(yaml(), 'asker') ?? '', (lines) => lines.includes('bright: false'));
-    // A box with takes opens on its take, only its description under it. Its + puts its words in the frame, and under it only its tool and Render.
-    await open('Other');
-    const otherDescribed = box('Other').locator('.desc-field');
-    await otherDescribed.waitFor();
-    const reads = () => box('Other').locator('.here-all').evaluate((all) => [...all.querySelectorAll('.tool-head, .field-block .block-label, button[aria-label=Render], hr.here-rule, .desc-field .block-label')].map((one) => one.matches('.tool-head') ? 'tool' : one.matches('hr') ? 'rule' : one.matches('button') ? 'Render' : one.textContent));
-    const onTake = await reads();
-    check('a_take_has_only_its_description', onTake.join() === 'Description' && (await box('Other').locator('button:text-is("Caption")').count()) === 0, onTake);
+    // Image view keeps its single selected picture; editing is explicit and has no description box.
+    await openBox(page, 'Other');
+    const viewOther = box('Other').getByRole('button', { name: 'View image', exact: true });
+    if (await viewOther.count()) await viewOther.click();
+    check('image_view_has_edit_without_description', await box('Other').getByRole('button', { name: 'Edit image', exact: true }).count() === 1 && await box('Other').locator('.desc-field').count() === 0);
     await renderOf(page, 'Other');
     await box('Other').locator('.in-frame .mention-text[data-field=instructions]').waitFor();
-    const order = await reads();
-    check('writing_reads_tool_and_render', order.join() === 'tool,Render', order);
+    check('image_edit_has_render_without_description', await box('Other').locator('button[aria-label=Render]').count() === 1 && await box('Other').locator('.desc-field').count() === 0);
     await api(`/v1/projects/${id}/assets/asker`, { method: 'DELETE' });
     await until('asker gone', () => box('asker').count(), (n) => n === 0);
 
@@ -852,7 +846,8 @@ function linesOf(text, name) {
     await render('Other', 2);
     check('the_rest_goes_on', true);
     await open('Sheet');
-    await box('Sheet').locator('.take.approved').click();
+    const viewSheet = box('Sheet').getByRole('button', { name: 'View image', exact: true });
+    if (await viewSheet.count()) await viewSheet.click();
     await away();
     await page.waitForTimeout(200);
     check('back_on_its_file_nothing_wrong', (await box('Sheet').locator('.dot.s-failed').count()) === 0);
@@ -881,43 +876,15 @@ function linesOf(text, name) {
     // The box is back as it's asked for, ahead of the file and its versions: then all its versions, in the project and on the page.
     const restored = await until('its versions back', () => versions('Other'), (n) => n === takes).catch(() => versions('Other'));
     await open('Other');
-    const shown = await box('Other').locator('.take[aria-label^="version"]').count();
+    const shown = Number((await box('Other').getByLabel('Current version', { exact: true }).innerText()).split('/')[1]);
     check('undo_brings_its_versions', restored === takes && shown === takes, { takes, restored, shown });
     await away();
 
-    // What hasn't been approved when its source goes is worth a plain note, with no dialog, and Undo stays.
-    await open('Other');
-    // A box with takes opens on its take: its words are its next take's, behind its +.
-    await renderOf(page, 'Other');
-    await box('Other').locator('.mention-text[data-field=instructions]').click();
-    await page.keyboard.type('From <source-b>');
-    await page.mouse.click(1500, 1000);
-    await until('it reads it', () => of('Other'), (held) => held.reads?.some((read) => read.name === 'source-b'));
-    // The note says what the page has heard, a moment behind the file.
-    await page.waitForTimeout(1000);
-    await deleteBox('source-b');
-    const warned = await until('a plain note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-b')));
-    // `mentioning` reads it too: both are named.
-    check('note_when_not_approved', warned.some((line) => line.includes('Other') && line.includes('mentioning') && line.includes("aren't approved yet")), warned);
-    await page.locator('.note:has-text("source-b") button:has-text("Undo")').click();
-    await box('source-b').waitFor();
-
-    // Render on what's approved: another to look at, and the approval stays.
-    const [nowHeld, nowTakes] = [(await of('Sheet')).sha256, await versions('Sheet')];
-    await open('Sheet');
-    await (await renderOf(page, 'Sheet')).click();
-    await until('another to look at', () => versions('Sheet'), (n) => n === nowTakes + 1, FIRST_RUN_MS);
-    check('approved_stays', (await of('Sheet')).pinned && (await of('Sheet')).sha256 === nowHeld, await of('Sheet'));
-
-    // Render all: its count, what's approved left alone.
-    await until('Render all says how many', () => page.locator('.render-all button').textContent(), (text) => /^Render all \d+$/.test(text));
-    const counted = Number((await page.locator('.render-all button').textContent()).match(/\d+/)[0]);
-    const unapproved = (await state()).assets.filter((held) => held.tool && !held.pinned).length;
-    check('render_all_counts', counted === unapproved, { counted, unapproved });
-    const [sheetTakes, otherTakes] = [await versions('Sheet'), await versions('Other')];
-    await page.click('.render-all button');
-    await until('Other made again', () => versions('Other'), (n) => n === otherTakes + 1, FIRST_RUN_MS);
-    check('render_all_leaves_approved', (await versions('Sheet')) === sheetTakes);
+    // Rendering an edit appends another version and selects it without discarding earlier states.
+    const beforeAppend = await versions('Other');
+    await render('Other', beforeAppend + 1);
+    const appended = await of('Other');
+    check('render_appends_and_selects_new_state', appended.version === appended.prefixes.at(-1).number && appended.prefixes.length === beforeAppend + 1, appended);
 
     // Pick up from here: scrubbed to a frame, its words as they were, and the function told to keep up to there, for that render alone.
     // The dropped clip is 11 frames: frame 6 is one it has.
@@ -954,7 +921,7 @@ function linesOf(text, name) {
 
     // The terminal sees the same project.
     const status = projectJson(folder);
-    check('api_sees_it', ['Sheet', 'Sheet_2', 'Other', 'source-a', 'source-b', 'Clip'].every((name) => status.assets.some((held) => held.name === name)), status.assets.map((held) => held.name));
+    check('api_sees_it', ['Sheet', 'Other', 'source-a', 'source-b', 'Clip'].every((name) => status.assets.some((held) => held.name === name)), status.assets.map((held) => held.name));
   } else {
     // No machine: Render offers one, under Machines, and waits.
     await open('Sheet');

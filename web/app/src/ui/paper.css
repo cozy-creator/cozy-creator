@@ -31,13 +31,13 @@
   }
   .tb,
   .mtabs,
-  .zoom,
-  .run-on > summary {
+  .zoom {
     background: none;
     border-color: transparent;
     border-image: var(--frame-control) 12 fill / 12px / 4px stretch;
   }
-  .tb.primary {
+  .tb.primary,
+  .tb.render-here.on {
     border-image: var(--frame-primary) 12 fill / 12px / 4px stretch;
   }
   .main-menu nav .tb {

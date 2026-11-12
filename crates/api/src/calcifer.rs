@@ -1048,7 +1048,12 @@ pub enum MachineState {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Machine {
+    /// A rental's name is its host's, as its Hub names it once it places it there (Paul 11-12: one host, one name).
     pub name: String,
+    /// What a rental is said as, in its name's place, until its Hub names the host it's placed on: `Renting an RTX 4090…`.
+    /// Its name meanwhile is a handle, never shown. Placed again on another host, it's said so again until that host's word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
     pub kind: MachineKind,
     pub state: MachineState,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1091,7 +1096,7 @@ pub struct Machine {
     /// A booting rental's acquisition attempt, as its Hub says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt: Option<Attempt>,
-    /// Calcifer's runs on it.
+    /// Calcifer's function runs on it, its GPUs' work: installs, downloads, updates and removals aren't counted (cl-889).
     #[serde(default)]
     pub running: u32,
     #[serde(default)]
@@ -1350,6 +1355,9 @@ pub struct Gpu {
     /// The most of `memory_bytes` the machine uses; 0: all of it.
     #[serde(default, skip_serializing_if = "unlimited")]
     pub memory_limit_bytes: u64,
+    /// It draws a screen now: a render on it makes the screen lag.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub display: bool,
 }
 
 fn unlimited(bytes: &u64) -> bool {
@@ -1476,6 +1484,19 @@ pub fn package_source(installed_from: &str, hub: &str) -> String {
 }
 
 impl Machine {
+    /// What people see it called: its name, or while its Hub hasn't named its host, its placeholder.
+    pub fn called(&self) -> &str {
+        self.placeholder.as_deref().unwrap_or(&self.name)
+    }
+
+    /// What a command names it by: its name, or while it has none, its rental id (an order its Hub hasn't answered: its handle).
+    pub fn handle(&self) -> &str {
+        match &self.placeholder {
+            Some(_) => self.rental_id.as_deref().unwrap_or(&self.name),
+            None => &self.name,
+        }
+    }
+
     /// The packages it holds, read by a client of `hub`.
     pub fn packages(&self, hub: &str) -> MachinePackages {
         let held = |env: &Environment| HeldPackage {

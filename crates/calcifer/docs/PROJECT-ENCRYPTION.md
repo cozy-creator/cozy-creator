@@ -40,11 +40,12 @@ backing and a wrapped keybag. Do not edit backing files directly.
 
 The first `project.db` is initialized inside the encrypted mount. New encrypted creation leaves
 no plaintext starter database or conversion source. To encrypt an existing ordinary project,
-use `cozy vault encrypt` and save its recovery secret. The native conversion removes the
-original plaintext by default, only after verifying and opening the encrypted replacement.
-To intentionally keep an unencrypted copy, use `--preserve-plaintext`; its location is reported.
-The old `--remove-plaintext` flag remains accepted but is unnecessary. Existing independent
-plaintext inputs/copies remain outside this protection.
+use `cozy vault encrypt` and save its recovery secret. The conversion removes the original
+plaintext once the encrypted replacement is verified, on disk and opened. It leaves nothing else:
+its stage (`.cozy-vault-stage-*`), the moved-aside original (`.cozy-project-source-*`), its receipt
+(`.cozy-vault-<hash>.transaction.json`) and its mounts' folders under `~/.cozy/calcifer/vaults/` all go.
+Calcifer never opens a `.cozy-*` folder as a project. Existing independent plaintext inputs/copies
+remain outside this protection.
 
 Unlock defaults to 30 minutes of UI/CLI inactivity. `--idle SECONDS` changes it (zero disables
 idle expiry); `--max-duration SECONDS` adds an absolute limit. A project's runs and renders are
@@ -58,9 +59,10 @@ shutdown also closes views and refuses while they are busy.
 
 Earlier independent plaintext copies, backups, source inputs, ordinary shared-cache copies and
 external apps' caches are not erased. Deleting the verified conversion source does not securely
-erase disk sectors, filesystem snapshots or external backups. A failed verification or incomplete
-cutover retains the good source; restart recovery follows the deletion/preservation policy already
-recorded for that conversion. Old in-flight receipts are not silently changed to deletion.
+erase disk sectors, filesystem snapshots or external backups. The receipt is written before the
+stage, so a conversion that fails or is interrupted before its cutover leaves the original as it was
+and its stage is removed (at once, or at the next start or open). Interrupted after the cutover, the
+original stays until the next unlock proves a credential opens the replacement, then goes.
 
 Hosted encrypted backup is not implemented in this local phase. Copy the backing and keybag
 while locked when you need a ciphertext backup.

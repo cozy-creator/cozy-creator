@@ -1176,6 +1176,9 @@ pub struct Gpu {
     pub memory_class: String,
     /// The most of `memory_bytes` this machine uses (`machine.gpu_memory_limit`); 0: all of it.
     pub memory_limit_bytes: u64,
+    /// It drives a display now: a run on it slows the screen (cl-796, cl-897).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub display: bool,
     /// TensorD's page accounting of its memory manager on it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory: Option<GpuMemory>,

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
 import { runFullQuery, runQuery, runsQuery } from "../api/queries"
@@ -15,10 +15,11 @@ import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { aspectOf, faceOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf } from "./shown"
+import { aspectOf, faceOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
 import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
+import { BufferedImage } from "./BufferedImage"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
 const STRIP_FRAMES = 8
@@ -592,10 +593,23 @@ export function Ghosts({ name, view, mentions, cardWidth = 960 }: { name: string
   useSignal(store.names)
   useSignal(store.tools)
   const pictures = view.asset ? store.mentionedPictures(name, mentions) : []
+  const element = useRef<HTMLDivElement>(null)
+  const [frame, setFrame] = useState<{ width: number; height: number }>()
+  useLayoutEffect(() => {
+    if (view.asset?.kind !== "image" || frame || !element.current) return
+    const held = element.current
+    const measure = () => {
+      if (held.clientWidth > 0 && held.clientHeight > 0) setFrame({ width: held.clientWidth, height: held.clientHeight })
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(held)
+    return () => observer.disconnect()
+  }, [view.asset?.kind, Boolean(pictures.length), frame])
   if (!pictures.length) return null
   const side = Math.ceil(Math.sqrt(pictures.length))
   return (
-    <div className="ghosts" style={{ "--side": side } as CSSProperties} aria-hidden>
+    <div ref={element} className={`ghosts ${frame ? "fixed-image-references" : ""}`} data-image-reference={view.asset?.kind === "image" ? "" : undefined} style={{ "--side": side, ...(frame ? { width: frame.width, height: frame.height } : {}) } as CSSProperties} aria-hidden>
       {pictures.map((ghost) =>
         ghost.sha256 ? (
           <Thumb key={ghost.mention} sha256={ghost.sha256} cardWidth={cardWidth / side} />
@@ -646,10 +660,13 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   // Being worked on, a take can be played and scrubbed, unless its words are over it.
   const open = Boolean(view.here && !view.hereWords)
   const shown = shownOf(view)
+  const watch = watched(view)
+  const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined)
+  const bufferedImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watchRun: undefined, watchFrom: undefined }) : null
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
-  const busy = making || Boolean(view.queued) || view.asked !== undefined
+  const busy = (making || Boolean(view.queued) || view.asked !== undefined) && (asset?.kind !== "image" || pendingImage || !shown)
   const run = busy ? makingRun(view) : undefined
   const here = shown && !shown.absent ? shown : null
   // A video whose file says `orbit` turns, not plays: open, a drag turns it from the file here.
@@ -663,6 +680,12 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   // An Edit with no film yet is its first clip, and with no clip, what it's for.
   const clips = asset?.timeline?.tracks[0]?.clips
   const firstClip = clips?.find((clip) => clip.sha256 && !clip.missing)?.sha256
+  const imageVersions = (asset?.prefixes ?? []).filter((version) => version.main?.field === "image")
+  const imageAt = imageVersions.findIndex((version) => version.main?.sha256 === bufferedImage?.sha256)
+  const neighbors = [1, -1, 2, -2].flatMap((offset) => {
+    const next = imageVersions[imageAt + offset]?.main
+    return next && !next.absent ? [next.sha256] : []
+  })
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
@@ -670,8 +693,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !view.glimpse
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   return (
-    <div className={`media ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
-      <div className="media-pixels">
+    <div className={`media ${asset?.kind === "image" ? "image-asset" : ""} ${pendingImage ? "pending-image" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
+      <div className="media-pixels" data-image-reference={asset?.kind === "image" && shown && !view.hereWords ? "" : undefined}>
         {preview && (
           <img
             src={preview}
@@ -684,7 +707,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           />
         )}
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-        {here && field !== "video" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {bufferedImage && field === "image" && <BufferedImage sha256={bufferedImage.sha256} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       </div>
@@ -696,7 +720,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           <Icon name={glyph} />
         </span>
       )}
-      {view.glimpse && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
+      {view.glimpse && !(asset?.kind === "image" && shown) && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
       {busy && view.viewed === undefined && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}

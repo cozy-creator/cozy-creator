@@ -137,23 +137,20 @@ impl Hubs {
         u32::try_from(rental.accelerator_count).ok()
     }
 
-    /// Adds the Hub's word to a recorded rental: its prices and times, and whether its Hub
-    /// answered the last listing.
+    /// Adds the Hub's word to a recorded rental: its prices and times, whether its Hub answered
+    /// the last listing, and what it's said as until its Hub names its host.
     pub(crate) fn describe(&self, machine: &mut Machine, asked: Option<&Ask>) {
+        let ordered = asked.and_then(|ask| RentBody::of(ask).ok()).map(|body| body.request);
         let listings = lock(&self.listings);
-        let Some(listing) = listings.get(&machine.hub) else {
+        let listing = listings.get(&machine.hub);
+        let rental = (machine.rental_id.as_ref()).and_then(|id| listing?.rentals.get(id));
+        machine.placeholder = placeholder(machine, rental, ordered.as_ref());
+        let Some(listing) = listing else {
             return;
         };
         machine.unverified = listing.problem.is_some();
-        if let Some(rental) = machine
-            .rental_id
-            .as_ref()
-            .and_then(|id| listing.rentals.get(id))
-        {
-            let sku = asked
-                .and_then(|ask| RentBody::of(ask).ok())
-                .map(|body| body.request.sku);
-            machine.rental = Some(view(rental, sku));
+        if let Some(rental) = rental {
+            machine.rental = Some(view(rental, ordered.map(|request| request.sku)));
         }
     }
 
@@ -254,14 +251,14 @@ impl Machines {
                 continue;
             }
             let ended_at_ms = r.ended_at.as_deref().map(instant).transpose()?;
-            // The name its machine went by, as `machine ls` showed it; the alias it was asked under before that.
-            let named = hub_name(&r);
+            // Its host's name, as `machine ls` showed it; one never placed on a host had none (never its handle).
+            let named = hub_name(&r).or_else(|| Some(r.name.clone()).filter(|name| !name.starts_with(HANDLE)));
             rentals.push(RentalRow {
                 ran_s: (ended_at_ms.unwrap_or(now) - started_at_ms) / 1000,
                 sku: r.sku.unwrap_or(r.requested_accelerator_model),
                 gpus: u32::try_from(r.accelerator_count).unwrap_or_default(),
                 rental_id: r.rental_id,
-                name: named.unwrap_or(r.name),
+                name: named.unwrap_or_else(|| "—".into()),
                 state: r.state,
                 started_at_ms,
                 ended_at_ms,
@@ -604,6 +601,7 @@ impl Machines {
             reason: None,
         };
         let mut machine = Machine::from(&row);
+        machine.placeholder = placeholder(&machine, None, RentBody::of(ask).ok().map(|body| body.request).as_ref());
         match RentBody::of(ask).is_ok_and(|body| body.stopped) {
             true => {
                 machine.state = MachineState::Ending;
@@ -920,9 +918,11 @@ impl Machines {
         // While a pod boots, one cheap read of our own Hub every 2 s: the address is seen within 2 s
         // of the pod serving, however long the boot's last phase took. An order with no pod yet
         // (the Hub holds an out-of-stock one until its renter ends it) changes rarely: its reads
-        // back off to a minute, as a failing read's do. Its runs wait for it all the same.
+        // back off to a minute, as a failing read's do, after its first: an order with stock is placed in seconds, and its host's
+        // name is shown as soon as its Hub has it (Paul 11-12). Its runs wait for it all the same.
         const BOOTING: Duration = Duration::from_secs(2);
         const WAITING: Duration = Duration::from_secs(60);
+        let placing = std::time::Instant::now();
         let mut pause = BOOTING;
         loop {
             match self.store().machine(&row.name) {
@@ -972,7 +972,7 @@ impl Machines {
                         self.calcifer.machine_changed();
                         return self.watch(&row);
                     }
-                    pause = match no_pod_yet(&rental) {
+                    pause = match no_pod_yet(&rental) && placing.elapsed() > WAITING {
                         true => (pause * 2).min(WAITING),
                         false => BOOTING,
                     };
@@ -1594,6 +1594,35 @@ fn cause(rental: &types::Rental) -> String {
         .unwrap_or_else(|| format!("its Hub says it {}", rental.state))
 }
 
+/// What a rental is said as while its name is a handle (Paul 11-12: the GPU's name as soon as it has one, never the
+/// rental's id): booting or ending with the name it was ordered under, or adopted under its id, and booting on a host
+/// other than the one its name is (placed again, it's another machine). `Renting an RTX 4090…`, `Renting 2× H100…`.
+fn placeholder(machine: &Machine, rental: Option<&types::Rental>, ordered: Option<&types::RentalRequest>) -> Option<String> {
+    let handle = machine.name.starts_with(HANDLE) || machine.rental_id.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(&machine.name));
+    let elsewhere = rental.is_some_and(|rental| hub_name(rental).as_deref() != Some(machine.name.as_str()));
+    let unnamed = match machine.state {
+        MachineState::Booting => handle || elsewhere,
+        MachineState::Ending => handle,
+        _ => false,
+    };
+    if machine.kind != MachineKind::Rental || !unnamed {
+        return None;
+    }
+    let sku = (rental.and_then(|rental| rental.sku.clone()))
+        .or_else(|| ordered.map(|request| request.sku.clone()))
+        .or_else(|| rental.map(|rental| rental.requested_accelerator_model.clone()))
+        .filter(|sku| !sku.is_empty())?;
+    let gpus = (rental.map(|rental| rental.accelerator_count))
+        .or_else(|| ordered.and_then(|request| request.accelerator_count))
+        .unwrap_or(1);
+    let what = sku.replace(['-', '_'], " ").to_uppercase();
+    Some(match gpus {
+        2.. => format!("Renting {gpus}× {what}…"),
+        _ if what.starts_with(['A', 'E', 'F', 'H', 'I', 'L', 'M', 'N', 'O', 'R', 'S', 'X', '8']) => format!("Renting an {what}…"),
+        _ => format!("Renting a {what}…"),
+    })
+}
+
 /// The name the Hub gave the pod, when a machine can carry it.
 fn hub_name(rental: &types::Rental) -> Option<String> {
     rental
@@ -1733,11 +1762,14 @@ pub(crate) struct Shape {
     pub ssh_key: Option<String>,
 }
 
+/// What an order's name begins with: a handle Calcifer mints, shown as its [`placeholder`] until its Hub names the host.
+const HANDLE: &str = "rent-";
+
 /// The Hub's request for renting `sku` in `shape`, under a fresh alias and signing key.
 fn request(sku: &str, shape: Shape) -> (types::RentalRequest, String, SigningKey) {
     let mut random = [0; 68];
     getrandom::fill(&mut random).expect("the OS provides randomness");
-    let alias = format!("rent-{}", hex::encode(&random[..4]));
+    let alias = format!("{HANDLE}{}", hex::encode(&random[..4]));
     let signer = SigningKey::from_bytes(random[36..].try_into().expect("32 bytes"));
     let request = types::RentalRequest {
         accelerator_count: shape.gpus.map(i64::from),

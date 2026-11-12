@@ -13,7 +13,8 @@ import { bytes, shown, span, usd } from "../format"
 import { End } from "./End"
 import { Installed } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
-import { endsWords, gpusWords, kindWords, named, spentWords, stateClass, stateWords } from "./words"
+import { RenderHere, useRenderMachines } from "./RenderHere"
+import { called, endsWords, gpusWords, kindWords, named, spentWords, stateClass, stateWords } from "./words"
 
 /** The idle clock, and renewing it, which only a person asks for. */
 function KeepUp({ machine, now }: { machine: Machine; now: number }) {
@@ -152,6 +153,7 @@ export function MachineDrawer() {
   const { data: record, error } = useQuery({ ...machineQuery(client, name), enabled: Boolean(list && !listed) })
   const machine = listed ?? record
   const now = useNow(Boolean(machine && machine.state !== "ended"))
+  const { chosen } = useRenderMachines()
 
   if (!machine) {
     return (
@@ -162,14 +164,16 @@ export function MachineDrawer() {
   }
 
   const ended = machine.state === "ended"
+  const here = chosen.includes(machine.name)
   return (
-    <DrawerFrame title={machine.name} back={to("machines")}>
-      <div className="run-head">
+    <DrawerFrame title={called(machine)} back={to("machines")}>
+      <div className={`run-head ${here ? "render-here" : ""}`}>
         <span className={`dot ${stateClass(machine)}`} />
         <b>{stateWords(machine, now)}</b>
         <span className="sp" />
         <small>{gpusWords(machine)}</small>
       </div>
+      {(!ended || here) && <RenderHere name={machine.name} />}
       {ended && <p className="muted">Ended. Nothing of it bills now, and what landed here stays.</p>}
       {machine.state === "booting" && (
         <p className="muted">

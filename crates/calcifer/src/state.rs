@@ -169,13 +169,9 @@ fn strings(conn: &Connection, sql: &str) -> Result<Vec<String>> {
     Ok(statement.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
 }
 
-/// Your tool list as it's kept; none until it's changed.
-fn tool_list_in(conn: &Connection) -> Result<Option<ToolList>> {
-    let packages = strings(conn, "SELECT package FROM tool_list ORDER BY ord")?;
-    if packages.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(ToolList { packages, without: strings(conn, "SELECT tool FROM tools_off ORDER BY ord")? }))
+/// Your tool list as it's kept: the packages you added, and the tools you took off.
+fn tool_list_in(conn: &Connection) -> Result<ToolList> {
+    Ok(ToolList { packages: strings(conn, "SELECT package FROM tool_list ORDER BY ord")?, without: strings(conn, "SELECT tool FROM tools_off ORDER BY ord")? })
 }
 
 /// An ask's step is kept by its key's digest, as its file was named.
@@ -269,20 +265,14 @@ impl Store {
         })
     }
 
-    /// Your tool list; none until it's changed.
-    pub(crate) fn tool_list(&self) -> Result<Option<ToolList>> {
+    /// Your tool list.
+    pub(crate) fn tool_list(&self) -> Result<ToolList> {
         self.read(tool_list_in)
     }
 
-    /// One change of your tool list, `defaults` until its first: `add`, a package and its tools' prefix, on it with all its tools, and
-    /// `off` taken off.
-    pub(crate) fn change_tool_list(&self, defaults: &[&str], add: Option<(&str, &str)>, off: &[String]) -> Result<ToolList> {
+    /// One change of your tool list: `add`, a package and its tools' prefix, on it with all its tools, and `off` taken off.
+    pub(crate) fn change_tool_list(&self, add: Option<(&str, &str)>, off: &[String]) -> Result<ToolList> {
         self.write(|tx| {
-            if tool_list_in(tx)?.is_none() {
-                for package in defaults {
-                    tx.execute("INSERT OR IGNORE INTO tool_list (package) VALUES (?1)", [package])?;
-                }
-            }
             if let Some((package, prefix)) = add {
                 tx.execute("DELETE FROM tools_off WHERE substr(tool, 1, length(?1)) = ?1", [prefix])?;
                 tx.execute("INSERT OR IGNORE INTO tool_list (package) VALUES (?1)", [package])?;
@@ -290,7 +280,7 @@ impl Store {
             for tool in off {
                 tx.execute("INSERT OR IGNORE INTO tools_off (tool) VALUES (?1)", [tool])?;
             }
-            Ok(tool_list_in(tx)?.unwrap_or_default())
+            tool_list_in(tx)
         })
     }
 
@@ -420,7 +410,7 @@ pub(crate) fn import(store: &Store, dir: &Path) {
             *counts.entry("sessions").or_insert(0) += tx.execute(sql, params![session.token, session.media, session.used_at_ms])?;
         }
         if let Some(Some(list)) = &tools
-            && tool_list_in(tx)?.is_none()
+            && tool_list_in(tx)? == ToolList::default()
         {
             for package in &list.packages {
                 *counts.entry("tool_list").or_insert(0) += tx.execute("INSERT OR IGNORE INTO tool_list (package) VALUES (?1)", [package])?;

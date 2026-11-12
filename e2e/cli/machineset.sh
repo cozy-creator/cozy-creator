@@ -2,7 +2,7 @@
 # another computer's would be (release-gate session multi-machine), authorized for this controller and added here. `cozy machine
 # use local,stand-a` pins the project: a burst of `cozy run`s naming no machine stays on those two, and stand-b, which automatic
 # placement prefers to this computer, gets none; `--on stand-b` overrides the project's set for one run; `--on stand-a,stand-b`
-# places among them; the page's Run on pins it the same (web/runon.js). With neither stand-in up, `--on stand-a,stand-b` is
+# places among them; the machines panel's Render here pins it the same (web/renderhere.js). With neither stand-in up, `--on stand-a,stand-b` is
 # refused naming both, and nothing runs on another machine.
 # stand_as <name> <cozy args...>: the stand-in's own cozy, in its user's default home. From /: the Calcifer it starts detached (no
 # user manager here) keeps the folder it started in, where its machine's uv would trip over this user's project .venv.
@@ -87,15 +87,15 @@ head -n $(($(wc -l < "$OUT/set-pair.txt") - before)) "$OUT/set-pair.txt" > "$OUT
 code=0; in_project "$P" --json run "$echo" text=mixed --on stand-a,new > "$OUT/set-mixed.json" 2>&1 || code=$?
 [ "$code" != 0 ] && J '.error.code == "on_set"' "$OUT/set-mixed.json" || check "run --on stand-a,new: exit $code: $(head -c 300 "$OUT/set-mixed.json")"
 
-# The page's Run on: the same pin from the top bar, Render all inside it, and the CLI's choice live on the open page.
+# The machines panel's Render here: the same pin, green where the panel lists it, Render all inside it, and the CLI's choice live.
 local pw=$OUT/playwright chrome
 chrome=$(web_chrome)
 if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1; then
-  step "web-runon: the page's Run on pins a project to local and stand-a; Render all stays inside; the CLI's choice shows live"
-  STANDS="stand-a stand-b" web_proof runon "$chrome" "$pw" ''
-  jq -c '.seen.placed // empty' "$OUT/web-runon.json" 2> /dev/null || true
+  step "web-renderhere: Render here pins a project to local and stand-a, green in the panel; Render all stays inside; the CLI's choice shows live"
+  STANDS="stand-a stand-b" web_proof renderhere "$chrome" "$pw" ''
+  jq -c '.seen.placed // empty' "$OUT/web-renderhere.json" 2> /dev/null || true
 else
-  check "web-runon: no Chrome or playwright here (${chrome:-none}): $(tail -c 300 "$OUT/web-npm.log" 2> /dev/null)"
+  check "web-renderhere: no Chrome or playwright here (${chrome:-none}): $(tail -c 300 "$OUT/web-npm.log" 2> /dev/null)"
 fi
 
 # Neither stand-in up: refused, naming both, and run nowhere else.

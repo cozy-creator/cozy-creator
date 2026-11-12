@@ -577,13 +577,12 @@ export class Client {
     return this.write("POST", `${project(id)}/history/redo`, target, undefined, write)
   }
 
-  /** What can be dropped on a canvas: the Edit, the local code `project` names, what `on` has installed, then the Hub's. */
-  tools(q: string, on: string | null, project: string | null, signal?: AbortSignal, palette = false): Promise<Tools> {
+  /** What can be dropped on a canvas: the Edit, the local code `project` names, what `on` has installed, then every package the Hub lists. */
+  tools(q: string, on: string | null, project: string | null, signal?: AbortSignal): Promise<Tools> {
     const asked = new URLSearchParams()
     if (q) asked.set("q", q)
     if (on) asked.set("on", on)
     if (project) asked.set("project", project)
-    if (palette) asked.set("palette", "true")
     return this.json(`/v1/tools?${asked}`, { signal })
   }
 

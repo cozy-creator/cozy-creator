@@ -288,6 +288,26 @@ done
 echo "queued: run ${n2:-?} said: ${said:-nothing}"
 [[ $said == "$behind"*" ahead)" ]] || check "queued: run ${n2:-?} never said it waits for run ${n1:-?}'s download: ${said:-nothing}"
 J '.stalled == null' "$OUT/queued-show.json" || check "queued: run ${n2:-?} reads stalled while it waits"
+
+# A machine's jobs are its function runs, its GPUs' work (Paul 11-11, cl-889): beside the downloads, local counts the one
+# run, in `machine show`, `machine ls` and the page's list alike (they read one count). `wait` runs no model: a function's run.
+step "a download beside a function's run counts one job (cl-889)"
+local call busy='' live jobs ls
+(cd "$RUN_PROJECT" && cozy --json run "$here/weightless/wait" seconds:=20 --on local > "$OUT/busy-call.ndjson" 2>&1) & call=$!
+for _ in $(seq 160); do
+  cozy --json run ls --all --limit 20 > "$OUT/busy-runs.json" 2> /dev/null || true
+  cozy --json machine show local > "$OUT/busy-local.json" 2> /dev/null || true
+  live=$(jq -c '[.runs[] | select(.machine == "local" and (.status == "queued" or .status == "in_progress")) | .kind] | group_by(.) | map({(.[0]): length}) | add // {}' "$OUT/busy-runs.json" 2> /dev/null || echo '{}')
+  jq -e '.call == 1 and (.warm // 0) >= 1' <<< "$live" > /dev/null && { busy=1; break; }
+  sleep 0.25
+done
+jobs=$(jq -c '{running, queued}' "$OUT/busy-local.json" 2> /dev/null || echo null)
+ls=$(cozy --json machine ls 2> /dev/null | jq -c '.machines[] | select(.name == "local") | {running, queued}' || echo null)
+echo "busy: live runs on local $live; machine show $jobs; machine ls $ls"
+[ -n "$busy" ] || check "busy: never a function's run beside a download on local: $live"
+J '.running + .queued == 1' <<< "$jobs" || check "busy: a download beside one function's run counts $jobs, not 1 (live: $live)"
+J '.running + .queued == 1' <<< "$ls" || check "busy: machine ls counts $ls beside a download, not 1"
+wait "$call" || check "busy: the function's run failed: $(tail -c 300 "$OUT/busy-call.ndjson")"
 wait "$first" || check "queued: the first download failed: $(tail -c 300 "$OUT/queued-first.ndjson")"
 wait "$second" || check "queued: the second download failed: $(tail -c 300 "$OUT/queued-second.ndjson")"
 }

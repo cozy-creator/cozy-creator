@@ -242,12 +242,10 @@ const newPage = async () => {
   check('initial_project_reads_drained', true);
   await body.locator('input[type=password]').nth(0).fill('synthetic browser passphrase');
   await body.locator('input[type=password]').nth(1).fill('synthetic browser passphrase');
-  const preserveChoice = body.getByLabel('Keep an unencrypted copy after encryption');
   await body.getByText('Lock timing', { exact: true }).click();
   check('ui_default_idle_is_thirty_minutes', await body.getByLabel('Lock after inactivity (seconds; 0 disables)').inputValue() === '1800');
-  check('ui_encryption_defaults_to_source_removal', !(await preserveChoice.isChecked()));
+  check('ui_encryption_offers_no_plaintext_copy', await body.getByLabel('Keep an unencrypted copy after encryption').count() === 0);
   const sourcesBeforeEncryption = sourceFolders();
-  await preserveChoice.check();
   const encryptionReply = page.waitForResponse((response) => isVaultWrite(response.request()) && new URL(response.url()).pathname.startsWith(`/v1/projects/${id}/vault`) && JSON.parse(response.request().postData() || '{}').action === 'encrypt');
   await body.getByRole('button', { name: 'Enable encryption', exact: true }).click();
   const encrypted = await encryptionReply;
@@ -261,8 +259,7 @@ const newPage = async () => {
   check('vault_receipt_is_streamed', (encrypted.headers()['content-type'] ?? '').startsWith('text/event-stream') && (encrypted.headers()['cache-control'] ?? '').includes('no-store'));
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   const recovery = await page.locator('[aria-label="Save recovery secret"] pre').innerText();
-  const keptSources = sourceFolders().filter((name) => !sourcesBeforeEncryption.includes(name));
-  check('ui_explicit_preservation_keeps_plaintext', keptSources.length === 1 && existsSync(join(scratch, keptSources[0], 'project.db')));
+  check('ui_encryption_removes_its_source', JSON.stringify(sourceFolders()) === JSON.stringify(sourcesBeforeEncryption));
   check('recovery_is_long_and_local', recovery.startsWith('cozy1-') && recovery.length > 70);
   check('qr_is_generated_in_page', await page.locator('[aria-label="Save recovery secret"] svg').count() === 1);
   await page.getByLabel('I saved this somewhere away from this computer').check();
@@ -611,13 +608,12 @@ const newPage = async () => {
   await plainStorageReady('ordinary project storage reads drained before re-encryption');
   await page.locator('.drawer input[type=password]').nth(0).fill('synthetic browser passphrase');
   await page.locator('.drawer input[type=password]').nth(1).fill('synthetic browser passphrase');
-  check('ui_reencryption_resets_to_source_removal', !(await page.getByLabel('Keep an unencrypted copy after encryption').isChecked()));
   const sourcesBeforeReencryption = sourceFolders();
   await page.getByRole('button', { name: 'Enable encryption', exact: true }).click();
   await page.locator('[aria-label="Save recovery secret"] pre').waitFor();
   const replacementRecovery = await page.locator('[aria-label="Save recovery secret"] pre').innerText();
-  check('ui_default_reencryption_removes_its_source', JSON.stringify(sourceFolders()) === JSON.stringify(sourcesBeforeReencryption));
-  check('ui_default_reencryption_clears_preservation_warning', await page.getByText('The verified unencrypted source was removed.', { exact: true }).isVisible() && await page.locator('p.warn').filter({ hasText: 'An unencrypted copy was preserved at' }).count() === 0);
+  check('ui_reencryption_removes_its_source', JSON.stringify(sourceFolders()) === JSON.stringify(sourcesBeforeReencryption));
+  check('ui_reencryption_says_source_removed', await page.getByText('The unencrypted project was removed.', { exact: true }).isVisible());
   check('decrypted_project_can_be_encrypted_again', projectJson(folder).id === id && JSON.parse(vault(folder, 'status')).encrypted === true);
 
   stage = 'plain recheck observes a later locked generation';
@@ -628,7 +624,7 @@ const newPage = async () => {
   await until('second in-place decryption complete', () => JSON.parse(vault(folder, 'status')), (status) => status.encrypted === false && status.state === 'plain', 45000);
   await until('second plain transition awaits status', covered, Boolean, 45000);
   check('decrypt_removes_one_time_recovery_disclosure', await page.locator('[aria-label="Save recovery secret"]').count() === 0 && !(await page.locator('body').innerText()).includes(replacementRecovery));
-  const competing = JSON.parse(execFileSync(process.env.COZY, ['--json', 'vault', '--directory', folder, 'encrypt', '--passphrase-file', '-', '--remove-plaintext', '--idle', '0'], { cwd: scratch, input: 'synthetic browser passphrase\n', encoding: 'utf8', timeout: 180000 }));
+  const competing = JSON.parse(execFileSync(process.env.COZY, ['--json', 'vault', '--directory', folder, 'encrypt', '--passphrase-file', '-', '--idle', '0'], { cwd: scratch, input: 'synthetic browser passphrase\n', encoding: 'utf8', timeout: 180000 }));
   if (!competing.vault.encrypted || competing.vault.state !== 'unlocked') throw new Error('competing encryption did not finish unlocked');
   delete competing.recovery_secret;
   requestLock(folder);

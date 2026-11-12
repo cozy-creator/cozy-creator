@@ -159,6 +159,8 @@ def draw(payload: Drawing, adj: Adjustments, out: Outputs) -> ImageResult:
   check('download_named_as_people_say_it', row.startsWith(VAE_SAID), row);
   check('its_run_waits_on_the_download', (await list.locator('[data-doing=run]').filter({ hasText: `Waits on the download of ${VAE_SAID}` }).count()) === 1, await list.innerText());
   check('chip_marks_a_download', (await chip.locator('.mark.download').count()) === 1);
+  // A download and the warm run it is are no job: the chip counts function runs, its GPUs' work (cl-889).
+  check('a_download_is_no_job', (await chip.locator('.load').count()) === 0, await chip.innerText());
   check('a_download_is_listed_once', (await fetching.count()) === 1);
   await shot('download');
 

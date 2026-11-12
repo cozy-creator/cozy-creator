@@ -29,7 +29,7 @@ MICRO = {16: 0.01, 8: 0.04}
 LOOKS = {'ssim': [(0.98, 'the same picture'), (0.93, 'the same picture, details changed'), (0.85, 'a changed picture'),
                   (0.0, 'a different picture (toward the another-seed range, 0.35-0.70)')],
          'worst_eighth': [(0.05, 'the same video'), (0.085, 'the same video, details changed'), (0.15, 'a changed video'),
-                          (math.inf, 'a different video (the another-seed range, 0.23-0.24)')]}
+                          (math.inf, 'a different video (toward the another-seed range, 0.23-0.24)')]}
 # The corpus's model names (attention-corpus cells) and the packages the arms run.
 PACKAGE = {'h3-15s': 'minimax-h3', 'qwen4mp': 'qwen-image-2', 'moss': 'moss-image', 'klein': 'flux-3-klein'}
 
@@ -213,8 +213,11 @@ def real_data(gates: list[str], outputs: list[dict[str, object]], corpus: Path |
     lines = ['# Real-data errors over the 8-bit bar', '',
              f"Worst-head relative L2 against FP32 on the captured corpus; the 8-bit bar is {MICRO[8]}. `exact`: the Runtime "
              "holds the site to 16 bits (an exact path, or #2118's outlier-key rule). Crest: an operand's worst head max/RMS.", '']
+    last: dict[str, Path] = {}  # a class's quality comes from its last gate directory given (a rerun's)
     for gate in map(Path, gates):
-        klass = str(detail(gate / 'attention-inventory.json').get('klass', ''))
+        if any(gate.glob('attention-quality-*.json')):
+            last[str(detail(gate / 'attention-inventory.json').get('klass', ''))] = gate
+    for klass, gate in sorted(last.items()):
         for path in sorted(gate.glob('attention-quality-*.json')):
             d = detail(path)
             if d.get('level') != 8:

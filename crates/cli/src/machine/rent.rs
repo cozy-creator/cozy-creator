@@ -87,6 +87,7 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
             "type": "rental.accepted",
             "rental_id": rented.machine.rental_id,
             "name": rented.machine.name,
+            "placeholder": rented.machine.placeholder,
             "sku": sku,
             "gpus": gpus,
             "replay": rented.replay,
@@ -113,9 +114,9 @@ pub(crate) async fn exec(ctx: &Context, rent: Rent) -> Result<ExitCode, Error> {
         output::json(&Rented { machine, ..rented });
         return Ok(ExitCode::SUCCESS);
     }
-    let name = &machine.name;
+    let name = machine.handle();
     let mut record = output::Record::new()
-        .field("machine", name)
+        .field("machine", machine.called())
         .field("gpus", gpus)
         .field("$/hour", usd(rented.quote.usd_micros_per_hour));
     if let Some(ssh) = machine.rental.as_ref().and_then(|r| r.ssh.as_deref()) {
@@ -334,7 +335,7 @@ pub(crate) async fn follow(
                 MachineState::Ended => return Err(ended(&machine)),
                 // Ending lives until its Hub affirms the end; Unknown is a newer Calcifer's word.
                 MachineState::Booting | MachineState::Ending | MachineState::Unknown => {
-                    let line = format!("{}: {}", machine.name, state_cell(&machine));
+                    let line = format!("{}: {}", machine.called(), state_cell(&machine));
                     // A terminal redraws one live line; pipes retain the existing sparse status log.
                     let words = |text: &str| {
                         text.chars()
@@ -372,8 +373,9 @@ pub(crate) async fn follow(
     outcome
 }
 
-/// The renter stopped waiting. An order the Hub has found no pod for, with no run queued on it, ends
-/// here: nothing else would ever end it, and it bills nothing. One with a pod or a queued run goes on.
+/// The renter stopped waiting. An order the Hub has found no pod for, with no function run queued on
+/// it, ends here: nothing else would ever end it, and it bills nothing. One with a pod or a queued
+/// function run goes on.
 async fn stopped_waiting(ctx: &Context, calcifer: &Client, machine: &Machine) -> Result<Followed, Error> {
     // An order sent back to replan still shows the attempt that failed, and it has no pod either.
     let placed = machine.attempt.as_ref().is_some_and(|attempt| {
@@ -395,7 +397,7 @@ async fn stopped_waiting(ctx: &Context, calcifer: &Client, machine: &Machine) ->
     Err(Error::new(
         Kind::Unavailable,
         "rental_ended",
-        format!("{}: ended while waiting for a machine, nothing bills", machine.name),
+        format!("{}: ended while waiting for a machine, nothing bills", machine.called()),
     ))
 }
 
@@ -418,7 +420,7 @@ async fn stopped() {
 /// Says the follower stopped (`lost`: Calcifer could not be followed) while the order goes on,
 /// and how to find and end it.
 fn unfollowed(ctx: &Context, machine: &Machine, lost: Option<Error>) -> Followed {
-    let name = &machine.name;
+    let name = machine.handle();
     let why = lost.map(|e| e.message);
     if ctx.json {
         output::ndjson(&serde_json::json!({
@@ -432,7 +434,7 @@ fn unfollowed(ctx: &Context, machine: &Machine, lost: Option<Error>) -> Followed
     let stopped = why.map_or_else(|| "stopped following".to_owned(), |why| format!("lost Calcifer: {why}"));
     output::next(ctx, &["cozy machine ls", &format!("cozy machine end {name}")]);
     // The last line is the verdict, as a ready machine's is.
-    anstream::println!("{name}: still live, bills once its machine is ready ({stopped})");
+    anstream::println!("{}: still live, bills once its machine is ready ({stopped})", machine.called());
     Followed::Unfollowed
 }
 
@@ -443,7 +445,7 @@ fn ended(m: &Machine) -> Error {
     Error::new(
         Kind::Unavailable,
         "rental_ended",
-        format!("{}: ended without a machine, nothing bills ({why})", m.name),
+        format!("{}: ended without a machine, nothing bills ({why})", m.called()),
     )
     .next(m.rental.as_ref().map_or_else(|| "cozy machine rent".to_owned(), |rental| format!("cozy machine rent {}", rental.sku)))
 }

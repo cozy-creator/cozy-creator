@@ -495,6 +495,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     }
     let (gpu, needs_gpu) = (code.interface.gpu(callable), code.interface.needs_gpu(callable));
     let named = format!("{package}/{}", callable.name);
+    let (interface, release) = (code.interface, code.release);
     let (mut submit, mut notes) = call(api, code, callable, ask, key, &hub).await?;
     // Placed by its machines' quotes, the payload bound: a published release among several, and every machine when asked for them.
     let size = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).map(|input| v1::JobSize::of(&input)).unwrap_or_default();
@@ -535,6 +536,13 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     api::calcifer::local_usable(&submit.on.to_string())?;
     if let Some(warning) = gpuless(api, &submit.on, gpu, &named).await.filter(|_| ask.warm.is_none()) {
         notes.push(Note { level: NoteLevel::Warning, message: warning });
+    }
+    // A GPU this computer would run it poorly on, said as a render's box says it, never asked (cl-897).
+    if submit.on.is_local() && gpu && ask.warm.is_none() {
+        let input: serde_json::Map<String, serde_json::Value> = submit.spec.payload.as_ref().and_then(|payload| serde_json::from_str(payload.get()).ok()).unwrap_or_default();
+        if let Some(line) = crate::project::fit::here_now(api, &hub, package, release, &callable.name, interface, &input) {
+            notes.push(Note { level: NoteLevel::Warning, message: format!("{line} `--on new` rents a GPU: cozy run {named} … --on new") });
+        }
     }
     // The machine placement chose, on this cozy's minor likewise.
     if let (On::Machine(machine), For::Run, true) = (&submit.on, purpose, set.len() > 1) {

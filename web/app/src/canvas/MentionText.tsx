@@ -83,6 +83,7 @@ export function MentionText({
   thumbs = true,
   onDraft,
   onSave,
+  onSubmit,
 }: {
   asset: string
   place: string
@@ -98,6 +99,7 @@ export function MentionText({
   thumbs?: boolean
   onDraft: (text: string) => void
   onSave: () => void
+  onSubmit?: () => void
 }) {
   const store = useCanvasStore()
   const box = useRef<HTMLDivElement>(null)
@@ -253,6 +255,34 @@ export function MentionText({
   const keys = (event: KeyboardEvent) => {
     // `selectionchange` comes late: a key right after End would still find the caret in a name.
     remember()
+    if (event.nativeEvent.isComposing) return
+    if (event.ctrlKey && event.key.toLowerCase() === "j") {
+      event.preventDefault()
+      event.stopPropagation()
+      const selection = document.getSelection()
+      if (selection?.rangeCount) {
+        const range = selection.getRangeAt(0)
+        range.deleteContents()
+        const line = document.createTextNode("\n")
+        range.insertNode(line)
+        selection.collapse(line, 1)
+        emit()
+      }
+      setMenu(null)
+      return
+    }
+    if (event.key === "Enter" && event.shiftKey) {
+      event.stopPropagation()
+      setMenu(null)
+      return
+    }
+    if (onSubmit && event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (menu) choose(menu.options[menu.chosen])
+      onSubmit()
+      return
+    }
     if (menu) {
       const move = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0
       if (move) {

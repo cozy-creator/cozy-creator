@@ -4,15 +4,18 @@ no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr a
     page.py add <project> <name> --tool T [--fields JSON]           a tool's box, as a drop on the canvas (`<name>` exactly)
     page.py yaml <project> [file]                                    project.yaml (format 4) read into the project; no file:
                                                                      the project as YAML
-    page.py render <project> --on M[,M]|auto [--n N] [--approve] [--pickup '<take>' FRAME] [--wait A,B] [--queue] <name>...
+    page.py render <project> --on M[,M]|auto [--n N] [--approve] [--pickup '<take>' FRAME] [--wait A,B] [--queue] [--missing] <name>...
                                                                      a render, followed until each name's (or --wait's) new
                                                                      versions land: one JSON line each, exit 1 on a failure.
                                                                      `auto`: what the page sends for Automatically; --queue:
-                                                                     asked, not followed
+                                                                     asked, not followed; --missing: only what has no state
     page.py approve <project> <name> <version>                       a version approved, as a double tap on its take does
     page.py asset <project> <name>...                                each box and its versions, a JSON line each
     page.py board <project>                                          the project's render as the page shows it
+    page.py cancel <project> <name>...                               their jobs canceled, as the page cancels them
     page.py tools <project>                                          the tools a box can be, as the page lists them
+    page.py fit <project> <name>...                                  how this computer would render them, as the page asks
+                                                                     before a render here alone
 <project> is its folder, which names it in a route."""
 
 import argparse
@@ -33,6 +36,8 @@ BASE, AUTH = "http://" + HOLDER["address"], {"Authorization": "Bearer " + HOLDER
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # A render whose names show no run and no new version for this long made nothing.
 IDLE_S = 600
+# What a version's main file is, and how long it may take to land here once the version stands.
+MEDIA, LAND_S = ("image", "video", "audio"), 900
 
 
 def call(method: str, route: str, body: bytes | None = None, kind: str = "application/json", timeout: float = 60) -> Json:
@@ -68,7 +73,7 @@ def read(folder: str) -> Json:
 
 
 def automatic(folder: str) -> list[str]:
-    """What the page sends when its Run on says Automatically (web/app CanvasHost.tsx `useMachines`): the project's machines, else every
+    """What the page sends with no machine green in its machines panel (web/app CanvasHost.tsx `useMachines`): the project's machines, else every
     rental this computer ordered that's up or booting, another computer's that's up, and this one last where it runs models."""
     chosen = cast(list[str], read(folder).get("machines", []))
     if chosen:
@@ -87,21 +92,36 @@ def render(args: argparse.Namespace) -> int:
     on = automatic(args.project) if args.on == "auto" else args.on.split(",")
     waited = [] if args.queue else args.wait.split(",") if args.wait else [name for name in names if name != "all"]
     before = {name: len(cast(list[object], asset(args.project, name)["versions"])) for name in waited}
-    ask: Json = {"names": names, "n": args.n, "on": on, "approve": args.approve}
+    if args.missing:  # a box with a version already makes nothing new
+        before = {name: count for name, count in before.items() if not count}
+    ask: Json = {"names": names, "n": args.n, "on": on, "approve": args.approve, "missing": args.missing}
     if args.pickup:
         ask["pickup"] = {"take": args.pickup[0], "out_frame": int(args.pickup[1])}
     print(json.dumps({"on": on, "asked": call("POST", project(args.project) + "/runs", json.dumps(ask).encode())}), flush=True)
-    left, quiet, failed = dict(before), time.monotonic(), False
+    left, quiet, failed, made = dict(before), time.monotonic(), False, dict[str, float]()
     while left:
         time.sleep(3)
+        # A box made here (an edit) has no run: its job on the board, and how far it's rendered, say it's going.
+        going = {cast(Json, job).get("asset") for job in cast(list[object], cast(Json, read(args.project).get("board") or {}).get("jobs", []))
+                 if cast(Json, job).get("state") in ("waiting", "running")}
         for name in list(left):
             state = asset(args.project, name)
             row, versions = cast(Json, state["asset"]), cast(list[Json], state["versions"])
-            if row.get("making"):
+            if row.get("making") or row.get("rendering") is not None or name in going:
                 quiet = time.monotonic()
-            if len(versions) >= left[name] + args.n or (row.get("failure") and not row.get("making")):
+            new, absent = versions[left[name]:], list[str]()
+            if len(new) >= args.n:
+                # A version stands before its picture, clip or sound has landed here: followed until it has (LAND_S at most).
+                made.setdefault(name, time.monotonic())
+                absent = [key for version in new for key, file in cast(Json, version["files"]).items() if key in MEDIA and cast(Json, file).get("absent")]
+                if absent and time.monotonic() - made[name] < LAND_S:
+                    quiet = time.monotonic()
+                    continue
+                if absent:
+                    print(f"{name}: {', '.join(absent)} not here {LAND_S} s after its version stood", file=sys.stderr)
+            if len(new) >= args.n or (row.get("failure") and not row.get("making")):
                 print(json.dumps(state), flush=True)
-                failed |= len(versions) < left[name] + args.n
+                failed |= len(new) < args.n or bool(absent)
                 del left[name]
         if left and time.monotonic() - quiet > IDLE_S:
             print(f"nothing made of {', '.join(left)} in {IDLE_S} s", file=sys.stderr)
@@ -133,6 +153,7 @@ def main() -> int:
     one.add_argument("--pickup", nargs=2, metavar=("TAKE", "FRAME"))
     one.add_argument("--wait")
     one.add_argument("--queue", action="store_true")
+    one.add_argument("--missing", action="store_true")
     one.add_argument("names", nargs="+")
     one = verbs.add_parser("approve")
     one.add_argument("project")
@@ -143,6 +164,10 @@ def main() -> int:
     one.add_argument("names", nargs="+")
     for verb in ("board", "tools"):
         verbs.add_parser(verb).add_argument("project")
+    for verb in ("cancel", "fit"):
+        one = verbs.add_parser(verb)
+        one.add_argument("project")
+        one.add_argument("names", nargs="+")
     args = parser.parse_args()
     if args.verb == "import":
         ask = {"source": held(Path(args.file).read_bytes())}
@@ -160,6 +185,10 @@ def main() -> int:
         return render(args)
     elif args.verb == "approve":
         print(json.dumps(call("POST", project(args.project) + "/approve", json.dumps({"name": args.name, "version": args.version}).encode())))
+    elif args.verb == "fit":
+        print(json.dumps(call("POST", project(args.project) + "/fit", json.dumps({"names": args.names}).encode())))
+    elif args.verb == "cancel":
+        print(json.dumps(call("POST", project(args.project) + "/cancel", json.dumps({"names": args.names}).encode())))
     elif args.verb == "board":
         print(json.dumps(read(args.project).get("board")))
     elif args.verb == "tools":

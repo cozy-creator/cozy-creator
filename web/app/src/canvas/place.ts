@@ -4,7 +4,7 @@ import { hashFile, inLine, sendFile } from "../api/upload"
 import { say } from "../ui/notes"
 import type { Asset, Imported, Card, Tool, Opened } from "../api/calcifer"
 import { CARD_WIDTH, type CanvasStore, type CarriedFile, type MediaKind, type Pushes, type Stage, UNDO_MS } from "./CanvasStore"
-import { startingFields, TEXT_TOOL, VIDEO_EDIT_TOOL } from "./controls"
+import { startingFields, TEXT_TOOL } from "./controls"
 import type { BasicNodeKind, Operation } from "./palette"
 import type { CopiedBox } from "./copy"
 import { asName, stemName } from "./names"
@@ -71,7 +71,7 @@ export class Placer {
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const text = tool === TEXT_TOOL
     const timeline = tool.fields.some((field) => field.type === "timeline") ? { fps: 24, tracks: [{ clips: [] }] } : undefined
-    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: timeline ? "video_edit" : tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
+    const name = this.box(asName(tool.name ?? tool.label), { kind: tool.makes, tool: text ? undefined : tool.id, fields: text ? { text: "", node_kind: "text" } : { ...startingFields(tool), ...fields, node_kind: tool.makes }, timeline }, at, `Couldn't place ${tool.label}`)
     this.store.focusing = name
     if (operation) this.store.patch(name, { operation })
     if (!text && !timeline) this.store.openHere(name)
@@ -80,7 +80,6 @@ export class Placer {
   /** Basic media nodes retain their type before a model or file is assigned. */
   addNode(kind: BasicNodeKind, point: { x: number; y: number }) {
     if (kind === "text") return this.addTool(TEXT_TOOL, point)
-    if (kind === "video_edit") return this.addTool(VIDEO_EDIT_TOOL, point)
     const at = { x: Math.round(point.x - CARD_WIDTH / 2), y: Math.round(point.y - 16) }
     const name = this.box(kind, { kind, fields: { node_kind: kind } }, at, `Couldn't create ${kind}`)
     this.store.focusing = name
@@ -171,7 +170,7 @@ export class Placer {
       at,
       async (clear, write, pushes) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description, moves: pushes.moves, placed: pushes.placed }, write),
       (error) => say(`Couldn't take out ${file.name}`, error),
-      (name, _, made) => from !== undefined && number !== undefined && this.store.movedOut(from, number, name, made),
+      (name, _, made) => !file.copy && from !== undefined && number !== undefined && this.store.movedOut(from, number, name, made),
       edit,
     )
   }

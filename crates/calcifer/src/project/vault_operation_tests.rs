@@ -3,7 +3,7 @@ use super::*;
 
 fn ask(secret: &str) -> VaultAsk {
     VaultAsk { action: "encrypt".into(), passphrase: Some(secret.into()), recovery_secret: None,
-        idle_timeout_s: Some(900), max_duration_s: None, remove_plaintext: false, preserve_plaintext: false }
+        idle_timeout_s: Some(900), max_duration_s: None }
 }
 
 #[test]
@@ -11,10 +11,7 @@ fn retry_binding_excludes_credentials_but_binds_project_and_options() {
     assert_eq!(binding("/project", &ask("one")), binding("/project", &ask("another")));
     assert_ne!(binding("/project", &ask("one")), binding("/different", &ask("one")));
     let mut other = ask("one");
-    other.remove_plaintext = true;
-    assert_ne!(binding("/project", &ask("one")), binding("/project", &other));
-    other = ask("one");
-    other.preserve_plaintext = true;
+    other.idle_timeout_s = Some(0);
     assert_ne!(binding("/project", &ask("one")), binding("/project", &other));
 }
 
@@ -27,7 +24,7 @@ fn revoked_result_cannot_reveal_recovery_or_old_view() {
     let mut event = VaultEvent::Completed { changed: VaultChanged {
         vault: api::calcifer::project::VaultStatus { encrypted: true, state: "unlocked".into(), path: "/project".into(),
             view: Some("/readable".into()), expires_at_ms: None, idle_timeout_s: 900, next: vec![] },
-        recovery_secret: Some("synthetic recovery".into()), preserved_source: None, ended: vec![], skipped_files: vec![],
+        recovery_secret: Some("synthetic recovery".into()), ended: vec![], skipped_files: vec![],
     }};
     token.store(false, Ordering::Release);
     let mut locked = event.clone();

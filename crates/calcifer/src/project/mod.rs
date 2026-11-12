@@ -10,7 +10,7 @@ mod canvas;
 pub(crate) mod code;
 mod db;
 mod crdt;
-mod fit;
+pub(crate) mod fit;
 mod folder;
 mod format;
 pub(crate) mod graph;
@@ -344,6 +344,7 @@ impl Projects {
             }
         };
         drop(open);
+        if let Some(said) = copy_told(&project.root) { project.said.lock().expect("said lock").push(said); }
         project.require_view()?;
         Ok(project)
     }
@@ -376,8 +377,12 @@ pub(crate) fn named(api: &Api, text: &str) -> Result<PathBuf, Error> {
             return Err(Error::new(Kind::Usage, "project_path", said).remedy(format!("name {}", api::calcifer::project::NAMED_BY)));
         }
         vault::recover_conversion(path)?;
-        if let Some(root) = path.ancestors().find(|root| vault::encrypted(root)) { return Ok(root.to_owned()); }
-        return holding(path);
+        let root = match path.ancestors().find(|root| vault::encrypted(root)) {
+            Some(root) => root.to_owned(),
+            None => holding(path)?,
+        };
+        refuse_own_folder(&root)?;
+        return Ok(root);
     }
     Ok(known(api, text)?.path)
 }
@@ -394,6 +399,8 @@ fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
     if !gone.is_empty() {
         store.projects_gone(&gone.into_iter().map(|entry| entry.id).collect::<Vec<_>>()).map_err(failed)?;
     }
+    // An earlier Calcifer may have opened one of its own folders: its row stays, unlisted and unopened.
+    here.retain(|entry| !own_folder(&entry.path));
     for entry in here.iter_mut().filter(|entry| entry.code.is_empty()) {
         // A locked project still has its canonical id. Do not mint a public
         // code until an opened view can recover the code stored in its DB.
@@ -689,16 +696,16 @@ fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<(String, 
 fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_code: Option<String>, keep: impl FnOnce(&str, &str, &str) -> Result<(), Error>) -> Result<(String, String, String), Error> {
     let store = api.calcifer.store();
     let logical = vault::logical(dir);
+    refuse_own_folder(&logical)?;
     let encrypted = vault::encrypted(&logical);
-    let copied = |id: &str| {
-        let elsewhere = store.known_project(id).ok().flatten().filter(|known| known.path != logical);
-        elsewhere.is_some_and(|known| {
-            if vault::encrypted(&known.path) {
-                project_vault::Keybag::load(&known.path.join(project_vault::KEYBAG_FILE))
-                    .is_ok_and(|keybag| keybag.info().project_id == id)
-            } else { kept_identity(&known.path).is_some_and(|(held, _)| held == id) }
-        })
-    };
+    // The project another folder in the index still holds by this id.
+    let original = |id: &str| store.known_project(id).ok().flatten().filter(|known| known.path != logical).filter(|known| {
+        if vault::encrypted(&known.path) {
+            project_vault::Keybag::load(&known.path.join(project_vault::KEYBAG_FILE))
+                .is_ok_and(|keybag| keybag.info().project_id == id)
+        } else { kept_identity(&known.path).is_some_and(|(held, _)| held == id) }
+    });
+    let copied = |id: &str| original(id).is_some();
     if encrypted {
         let keybag = project_vault::Keybag::load(&logical.join(project_vault::KEYBAG_FILE))
             .map_err(|_| Error::new(Kind::Conflict, "vault_identity", "the encrypted project keybag is unreadable"))?;
@@ -709,12 +716,19 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
             return Err(Error::new(Kind::Conflict, "vault_copy", "another folder still holds this encrypted project; open that project or move its folder instead"));
         }
     }
-    let (id, name) = match &kept {
-        Some((id, name)) if !copied(id) => (id.clone(), name.clone()),
-        Some((_, name)) => (fresh_id(), name.clone()),
+    let (id, name, copy_of) = match &kept {
+        Some((id, name)) => match original(id) {
+            None => (id.clone(), name.clone(), None),
+            Some(original) => (fresh_id(), name.clone(), Some(original)),
+        },
         None => return Err(Error::new(Kind::Validation, "project_identity", format!("{} has no native CRDT project identity", dir.join(db::DB).display()))),
     };
     let name = unique_name(api, &id, dir, if name.is_empty() { folder_name(dir) } else { name })?;
+    if let Some(original) = copy_of {
+        let said = format!("{} is a copy of {} ({}), so it is a project of its own now: {name}", logical.display(), original.name, original.path.display());
+        tracing::info!("{said}");
+        COPIES.lock().expect("copies lock").insert(logical.clone(), said);
+    }
     let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and(kept_code);
     let code = reserve_code(store, &id, &name, &logical, kept_code.as_deref())?;
     if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
@@ -722,6 +736,24 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
     }
     vault::register_plain_root(&logical, &id)?;
     Ok((id, name, code))
+}
+
+/// What the first open of a folder found to be a copy tells, once: its new identity, and the project it was a copy of.
+static COPIES: std::sync::LazyLock<Mutex<HashMap<PathBuf, String>>> = std::sync::LazyLock::new(Mutex::default);
+
+fn copy_told(dir: &FsPath) -> Option<String> {
+    COPIES.lock().expect("copies lock").remove(&vault::logical(dir))
+}
+
+/// Calcifer's own folders beside a project, a conversion's stage and the original it moves aside, are never projects.
+pub(crate) fn own_folder(dir: &FsPath) -> bool {
+    dir.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".cozy-"))
+}
+
+fn refuse_own_folder(dir: &FsPath) -> Result<(), Error> {
+    if !own_folder(dir) { return Ok(()); }
+    Err(Error::new(Kind::Conflict, "project_own_folder", format!("{} is a folder Calcifer keeps while it converts a project's storage, not a project", dir.display()))
+        .remedy("open the project beside it"))
 }
 
 /// The index reserves the code atomically. If recording it in project.db fails, the next open
@@ -1184,6 +1216,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
         Some(path) => {
             // First use from separate CLI processes can reach this path together.
             let _creation = api.projects.made.lock().expect("made lock");
+            refuse_own_folder(path).map_err(Refusal)?;
             refuse_encrypted_parent(path).map_err(Refusal)?;
             if Folder::is_project(path) || vault::encrypted(path) {
                 let said = format!("{} is a project already", path.display());
@@ -1220,7 +1253,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
         false => None,
     };
     let (id, code, said) = match unread {
-        Some((id, code)) => (id, code, vec![]),
+        Some((id, code)) => (id, code, copy_told(&dir).into_iter().collect()),
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
@@ -2205,18 +2238,26 @@ async fn runs(
     }
     let mut named = vec![];
     let mut first = None;
-    // Pinned, and not named: what `all` covers leaves it be. Naming one is what re-renders it.
+    // Selected media is its current state, not a request to exclude its generator
+    // from Render all. Timeline can likewise make the video's next version.
     let mut skipped = vec![];
-    let mut covering = |i: usize, named: &mut Vec<usize>| match doc.assets[i].pin.is_some() {
-        // What this asks of it is judged at its turn.
-        true if outdated && matches!(stand[i].state, Stand::Pinned { version: Some(_), .. }) => {}
-        true if !doc.assets[i].hollow && !missing => skipped.push(doc.assets[i].name.clone()),
-        true => {}
-        false => named.push(i),
+    let mut covering = |i: usize, named: &mut Vec<usize>| {
+        if doc.tool(i) == Some(Tool::Cut) {
+            named.push(i);
+            return;
+        }
+        match doc.assets[i].pin.is_some() {
+            // What this asks of it is judged at its turn.
+            true if outdated && matches!(stand[i].state, Stand::Pinned { version: Some(_), .. }) => {}
+            true if format::KINDS.contains(&doc.assets[i].kind.as_str()) => named.push(i),
+            true if !doc.assets[i].hollow && !missing => skipped.push(doc.assets[i].name.clone()),
+            true => {}
+            false => named.push(i),
+        }
     };
     if all {
         if !missing {
-            for &i in doc.order.iter().filter(|&&i| doc.makes(i) && doc.tool(i).is_none()) {
+            for &i in doc.order.iter().filter(|&&i| doc.makes(i) && (doc.tool(i).is_none() || format::KINDS.contains(&doc.assets[i].kind.as_str()))) {
                 covering(i, &mut named);
             }
         }
@@ -2245,7 +2286,7 @@ async fn runs(
             said(&name, format!("{name} is made here, free, when what it reads settles"));
             // Named, it is made again, as anything named is.
             if !missing {
-                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: false, new: true, pickup: None });
+                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: format::KINDS.contains(&asset.kind.as_str()), new: true, pickup: None });
             }
             if approve {
                 say(format!("approve {name} in the browser once it is made; open it with `cozy open`"));
@@ -2275,7 +2316,7 @@ async fn runs(
             continue;
         }
         let makes_new = !missing || pickup.is_some();
-        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: makes_new, pickup: pickup.clone() };
+        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: approve || format::KINDS.contains(&asset.kind.as_str()), new: makes_new, pickup: pickup.clone() };
         takes.extend((0..if makes_new { n } else { 1 }).map(take));
     }
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
@@ -2505,11 +2546,21 @@ fn element(project: &Project, id: &str, wanted: &str, at: Option<api::calcifer::
             }
             Ok(())
         })?;
-        // Its file has a row, so its whole hash is known wherever its box names only the start of it.
+        // Imported media starts at v1. Its file and numbered version are committed with the box.
+        let number = std::cell::Cell::new(0);
         folder.update_lock(|lock| {
             let row = lock.files.entry(file.file.sha256.clone()).or_default();
             (row.sha256, row.path, row.here) = (file.file.sha256.clone(), file.file.path.clone(), true);
+            number.set(lock.joined(&name, file.field, Files::from([(file.field.to_owned(), file.file.sha256.clone())])).0);
         })?;
+        folder.edit(|written| {
+            written.selected(&name, number.get(), &file.file.sha256)?;
+            if api::calcifer::tool::MEDIA.contains(&file.field) {
+                written.set(&name, &Map::from_iter([(format::NODE_KIND.to_owned(), json!(file.field))]))?;
+            }
+            Ok(())
+        })?;
+        history::take(folder, &name, number.get(), if file.field == "video" { "take" } else { "version" }, history::Took::Absent, history::Took::Listed);
         Ok((name, kept))
     });
     let (name, kept) = made.map_err(Refusal)?;
@@ -2613,10 +2664,14 @@ async fn approve(
         }
     };
     let field = lock.files.get(&chosen).map_or_else(|| asset.kind.clone(), |file| file.field().to_owned());
-    let version = versions.iter().find(|version| version.main() == Some(&chosen));
+    let version = wanted.and_then(|number| versions.iter().copied().find(|version| version.number == number))
+        .or_else(|| versions.iter().copied().rev().find(|version| version.main() == Some(&chosen)));
     let before = stale_names(&doc, &doc.stand(&lock));
     let name = asset.name.clone();
-    folder.edit(|written| written.approved(&name, &chosen)).map_err(Refusal)?;
+    folder.edit(|written| match version {
+        Some(version) => written.selected(&name, version.number, &chosen),
+        None => written.approved(&name, &chosen),
+    }).map_err(Refusal)?;
     let warnings = settle(&api, &project).await;
     let files = version.map_or_else(|| Files::from([(field.clone(), chosen.clone())]), |version| version.files.clone());
     let (number, path) = (version.map_or(0, |version| version.number), main_path(&lock, &files).unwrap_or_default());
@@ -3343,8 +3398,9 @@ impl Walk {
         let (source, inputs) = match &renderer.local {
             None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
             Some(path) => {
-                let scope = crate::private_io::of_path(&self.folder().dir)?;
-                let prepared = crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await?;
+                // A fetch-ahead run stages its files outside any project: a private project's code waits for the run that calls it.
+                if crate::private_io::of_path(&self.folder().dir)?.is_some() { return Ok(()); }
+                let prepared = self.host.ready(path, &placed, &hub).await?;
                 (v1::Source::Local(prepared.source), prepared.files)
             }
         };
@@ -4296,6 +4352,13 @@ impl Walk {
             }
             _ => soonest,
         };
+        // Sent here alone, as `cozy render --on local`, which asks nothing: said as a box asks it, unless Render here was said (cl-897).
+        if placed.is_local() && on.len() == 1 {
+            let tool = asset.tool.clone().unwrap_or_else(|| asset.target.clone());
+            if let Some(line) = fit::told_here(&self.host.api(), &hub, package, &renderer.function, &asset.made, &tool) {
+                self.say(Told::Said { message: format!("{name}: {line}"), name: Some(name.clone()) });
+            }
+        }
         // Local code is made ready on the machine the call goes to, its files and manifest sent
         // with every call: a machine that dropped them installs them in the call.
         let source = match &renderer.local {
@@ -4607,11 +4670,14 @@ impl Walk {
         let noun = if version.files.contains_key("video") { "take" } else { "version" };
         let key = key.to_owned();
         let number = version.number;
+        let selected = format::KINDS.contains(&kind.as_str()).then(|| version.main().cloned()).flatten();
         self.record(Some(&key), &name, &kind, version, noun, pending.approve, list_away)?;
         if coming {
             self.project.jobs.why(&name, number, "its file is on its way here".into());
         }
-        if pending.unpin.is_some() {
+        if let Some(sha256) = selected {
+            self.select_asked(&pending.ask, &name, number, &sha256)?;
+        } else if pending.unpin.is_some() {
             self.unpin_landed(&pending.ask, &name);
         }
         Ok(coming.then_some(Coming { name, number, take: noun == "take" }))
@@ -4633,6 +4699,25 @@ impl Walk {
         let Some(mine) = walk.walk.asks.iter().find(|mine| mine.id == ask) else { return Ok(()) };
         let mut written = written::Written::from_yaml(&self.folder().text_of(mine)?)?;
         written.unapproved(name)?;
+        let text = written.to_yaml();
+        let digest = hex::encode(Sha256::digest(text.as_bytes()));
+        self.folder().keep_text(&digest, &text)?;
+        let doc = Doc::read(self.folder(), &text)?;
+        self.project.walker.lock().expect("walker lock").readings.entry(digest.clone()).or_insert_with(|| AskedText::new(doc));
+        self.folder().update_walk(|walk| {
+            for mine in walk.walk.asks.iter_mut().filter(|mine| mine.id == ask) {
+                mine.digest.clone_from(&digest);
+            }
+        })
+    }
+
+    /// Readers in this render follow the media version it just made, while explicit
+    /// numbered references in the frozen text keep their original meaning.
+    fn select_asked(&self, ask: &str, name: &str, number: u32, sha256: &str) -> Result<(), Error> {
+        let walk = self.folder().walk_now()?;
+        let Some(mine) = walk.walk.asks.iter().find(|mine| mine.id == ask) else { return Ok(()) };
+        let mut written = written::Written::from_yaml(&self.folder().text_of(mine)?)?;
+        written.selected(name, number, sha256)?;
         let text = written.to_yaml();
         let digest = hex::encode(Sha256::digest(text.as_bytes()));
         self.folder().keep_text(&digest, &text)?;
@@ -4716,7 +4801,12 @@ impl Walk {
         let number = std::cell::Cell::new(0);
         self.folder().update_lock(|lock| number.set(lock.number(&name, &asset.kind)))?;
         version.number = number.get();
-        self.record_free(doc, &name, &asset.kind, version, noun(doc, lock, i))
+        let selected = version.main().cloned();
+        self.record_free(&name, &asset.kind, version, noun(doc, lock, i))?;
+        if let Some(sha256) = selected {
+            self.select_asked(&ask.id, &name, number.get(), &sha256)?;
+        }
+        Ok(())
     }
 
     /// `name` is tried this walk: it is not tried again until the next.
@@ -4917,25 +5007,21 @@ impl Walk {
         Ok(without)
     }
 
-    /// Lists a tool's version: a cut's join its others, and a frame's older ones go unless pinned, with whatever files only they named.
-    fn record_free(&self, doc: &Doc, name: &str, kind: &str, version: Version, noun: &str) -> Result<(), Error> {
+    /// Lists the built-in tool's next version, retaining its earlier media states.
+    fn record_free(&self, name: &str, kind: &str, version: Version, noun: &str) -> Result<(), Error> {
         let number = version.number;
-        let old = std::cell::RefCell::new(vec![]);
-        // What is pinned now, as a save may have moved it, else as this render read it.
-        let now = Doc::load(self.folder());
-        let doc = now.as_ref().unwrap_or(doc);
-        let pin = doc.find(name).and_then(|i| doc.assets[i].pin.clone());
-        let cut = doc.find(name).is_some_and(|i| doc.tool(i) == Some(Tool::Cut));
-        self.folder().update_lock(|lock| {
-            let held = lock.asset_mut(name, kind);
-            let (keep, going): (Vec<Version>, Vec<Version>) = held.versions.drain(..).partition(|version| cut || version.main() == pin.as_ref());
-            held.versions = keep;
-            held.versions.push(version.clone());
-            held.versions.sort_by_key(|version| version.number);
-            held.failed = None;
-            *old.borrow_mut() = going.iter().flat_map(|version| version.files.values().cloned()).collect();
+        self.folder().act(|| {
+            self.folder().update_lock(|lock| {
+                let held = lock.asset_mut(name, kind);
+                held.versions.push(version.clone());
+                held.versions.sort_by_key(|version| version.number);
+                held.failed = None;
+            })?;
+            if let Some(sha256) = version.main() {
+                self.folder().edit(|written| written.selected(name, number, sha256))?;
+            }
+            Ok(())
         })?;
-        self.folder().drop_unused(&old.into_inner())?;
         self.say_landed(name, &version, noun, number)
     }
 
@@ -4944,28 +5030,28 @@ impl Walk {
     #[allow(clippy::too_many_arguments)]
     fn record(&self, key: Option<&str>, name: &str, kind: &str, mut version: Version, noun: &str, approve: bool, settle: impl Fn(&mut Lock)) -> Result<(), Error> {
         let number = std::cell::Cell::new(version.number);
-        self.folder().update_lock(|lock| {
-            if let Some(key) = key {
-                lock.pending.remove(key);
+        self.folder().act(|| {
+            self.folder().update_lock(|lock| {
+                if let Some(key) = key {
+                    lock.pending.remove(key);
+                }
+                settle(lock);
+                let given = if version.number == 0 { lock.number(name, kind) } else { version.number };
+                number.set(given);
+                let held = lock.asset_mut(name, kind);
+                held.numbered = held.numbered.max(given);
+                let mut listed = version.clone();
+                listed.number = given;
+                held.list(listed);
+                held.tried = None;
+                held.failed = None;
+            })?;
+            if (approve || format::KINDS.contains(&kind)) && let Some(sha256) = version.main() {
+                self.folder().edit(|written| written.selected(name, number.get(), sha256))?;
             }
-            settle(lock);
-            let given = if version.number == 0 { lock.number(name, kind) } else { version.number };
-            number.set(given);
-            let held = lock.asset_mut(name, kind);
-            held.numbered = held.numbered.max(given);
-            let mut listed = version.clone();
-            listed.number = given;
-            held.list(listed);
-            held.tried = None;
-            held.failed = None;
+            Ok(())
         })?;
         version.number = number.get();
-        if approve
-            && let Some(sha256) = version.main()
-            && let Err(error) = self.folder().edit(|written| written.approved(name, sha256))
-        {
-            self.say(Told::Warning { message: error.message, name: None });
-        }
         {
             let mut tally = self.tally.lock().expect("tally lock");
             match noun {
@@ -5074,15 +5160,15 @@ fn find(doc: &Doc, name: &str) -> Result<usize, Error> {
 
 /// Of `on`, where a job goes (cl-816): the soonest finish its machines quoted (`offers`), a rental before this computer on a tie, and not
 /// this computer when it would run `function` poorly (`fit`) and no quote of its own runs says it ends it first (Paul, 11-05: a rented
-/// GPU is for using). With no quote that fits, the first of `on` that can take it (`placement::takes`).
+/// GPU is for using), nor when its GPU draws the screen, which a render makes lag (cl-897). With no quote that fits, the first of `on`
+/// that can take it (`placement::takes`).
 async fn pick(api: &Arc<Api>, on: &[On], offers: &[Offer], hub: &str, package: Option<&Package>, function: &str, made: &Map<String, Value>) -> Result<(On, Option<Offer>), Error> {
     let now = now_ms();
     let Some(soonest) = placement::soonest(offers, now) else {
         return Ok((placement::takes(api, on, offers).await?, None));
     };
     let poorly = soonest.machine.is_local()
-        && soonest.basis != v1::Basis::Measured
-        && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made));
+        && (fit::draws_screen(api) || (soonest.basis != v1::Basis::Measured && package.is_some_and(|package| fit::poorly_now(api, hub, package, function, made))));
     let others: Vec<Offer> = offers.iter().filter(|offer| !offer.machine.is_local()).cloned().collect();
     let chosen = match poorly {
         true => placement::soonest(&others, now).unwrap_or(soonest),
