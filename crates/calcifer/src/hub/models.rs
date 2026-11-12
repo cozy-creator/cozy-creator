@@ -179,6 +179,16 @@ fn page(models: Vec<FoundModel>, total: i64, offset: u32, limit: u32, already_pa
 mod pagination_tests {
     use super::*;
 
+    #[test]
+    fn catalog_preserves_recommended_strength_including_zero() {
+        for strength in [None, Some(0.0), Some(0.75)] {
+            let card: types::ModelCard = serde_json::from_value(serde_json::json!({
+                "model": {"org": "author", "name": "adapter", "strength": strength}
+            })).unwrap();
+            assert_eq!(found(&card).strength, strength);
+        }
+    }
+
     fn rows(names: &[&str]) -> Vec<FoundModel> {
         names.iter().map(|name| FoundModel { model: (*name).into(), ..Default::default() }).collect()
     }
@@ -272,6 +282,7 @@ fn found(card: &types::ModelCard) -> FoundModel {
         lanes,
         private: release.is_none(),
         author: card.model.author.clone().map(author),
+        strength: card.model.strength,
         content_kind: None,
         model_kind: card.model.kind.or_else(|| card.model.role.as_deref().and_then(api::model_ref::ModelKind::from_role)),
         tags: card.model.tags.clone(),
