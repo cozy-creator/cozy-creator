@@ -282,6 +282,6 @@ function Adapter({ value, families, slot, onRemove, onStrength }: { value: unkno
   return <li className={`model-picker-adapter ${valid ? "" : "invalid"}`}>
     <span className="model-picker-adapter-name">{word}{!valid && <small>{ref && isPending ? "Checking compatibility…" : !data ? "Compatibility unavailable" : "Incompatible with this model slot"}</small>}{strength === null && <small>Enter a valid strength.</small>}</span>
     <label className="model-picker-strength"><span>Strength</span><input className="field" type="number" step="0.05" aria-label={`Strength of ${word}`} disabled={!valid} value={draft ?? (strength === null ? "" : String(strength))} onChange={(event) => setDraft(event.target.value)} onBlur={commit} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commit() } }} /></label>
-    <button type="button" className="iconb" aria-label={`Remove ${word}`} title="Remove LoRA" onClick={onRemove}><Icon name="close" /></button>
+    <button type="button" className="iconb" aria-label={`Remove ${word}`} title={`Remove ${word}`} onClick={onRemove}><Icon name="trash" /></button>
   </li>
 }

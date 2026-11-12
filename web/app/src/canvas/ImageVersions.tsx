@@ -7,7 +7,7 @@ import { ModelPicker, slotsOf } from "./ModelPicker"
 import { ModelConfig } from "./ModelConfig"
 import { toolName } from "./shown"
 
-/** What makes a box, named once as the canvas names it, "<Package> · <Tool>", with its × (cl-934, Paul 11-12). */
+/** What makes a box, named once as the canvas names it, "<Package> · <Tool>", with its trash can (cl-934, cl-939). */
 function ToolName({ name }: { name: string }) {
   const store = useCanvasStore()
   const view = useElement(name)
@@ -18,7 +18,7 @@ function ToolName({ name }: { name: string }) {
   return (
     <span className="image-tool" title={asset.tool}>
       <span className="image-tool-name">{tool ? toolName(tool) : asset.tool}</span>
-      <button type="button" title="Remove tool" aria-label={`Remove ${asset.kind} tool`} onClick={() => store.takeToolOff(name)}><Icon name="close" /></button>
+      <button type="button" title={`Take ${tool ? toolName(tool) : asset.tool} off`} aria-label={`Remove ${asset.kind} tool`} onClick={() => store.takeToolOff(name)}><Icon name="trash" /></button>
     </span>
   )
 }

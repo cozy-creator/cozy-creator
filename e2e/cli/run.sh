@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-trash|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -302,6 +302,8 @@ case $SHARD in
   web-models) export DB_WEB=models; parts="tools_read db_existing_web logs" ;;
   # One editing view for a picture and a video: the frame holds the prompt sections, Render and the fields under it (cl-938).
   web-frame) export DB_WEB=frame; parts="tools_read db_existing_web logs" ;;
+  # Deleting by a trash can (cl-939).
+  web-trash) export DB_WEB=trash; parts="tools_read db_existing_web logs" ;;
   # The tool beside a box's name (cl-927).
   web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
   # A box's models and LoRAs, open (web/addons.js; at rest it has no chips, cl-932).
