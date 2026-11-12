@@ -58,8 +58,9 @@ interface Buffer {
 }
 
 export interface BufferedImageProps {
-  sha256: string
-  /** Nearby versions, nearest first. The current image and at most four neighbors are held. */
+  /** The picture shown, or none. While it loads, the picture shown before it stays; no other ever stands in for it (cl-942). */
+  sha256: string | null
+  /** Nearby versions, nearest first, kept decoded. The current image and at most four neighbors are held. */
   neighbors: string[]
   cardWidth: number
   /** Original project-relative image path, used beyond the widest thumbnail. */
@@ -83,13 +84,13 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
   const [failed, setFailed] = useState(false)
   // Unknown until it's measured, before it's first drawn: only the size it's drawn at is asked for, not a smaller one first.
   const [resolution, setResolution] = useState<number | null>(null)
-  const sources = resolution === null ? [] : [...new Set([sha256, ...neighbors])].slice(0, HELD).map((sha): Source => {
+  const sources = resolution === null ? [] : [...new Set([...(sha256 ? [sha256] : []), ...neighbors])].slice(0, HELD).map((sha): Source => {
     const path = sha === sha256 ? originalPath ?? neighborPaths?.[sha] : neighborPaths?.[sha]
     const width = resolution === 0 && path ? 0 : resolution || WIDTH
     const original = width === 0 ? path : undefined
     return { key: JSON.stringify([sha, width, original]), sha, width, path: original }
   })
-  const selected = sources[0]?.key ?? ""
+  const selected = sha256 ? sources[0]?.key ?? "" : ""
   const wanted = sources.map((source) => source.key)
   const windowKey = JSON.stringify(wanted)
 
@@ -138,6 +139,15 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
     buffer.pictures.delete(picture.key)
   }
 
+  /** Nothing drawn: what it shows now can't be drawn, and no other picture is drawn in its place. */
+  const hide = (buffer: Buffer) => {
+    buffer.displayed = null
+    host.current?.replaceChildren()
+    host.current?.removeAttribute("data-displayed-sha")
+    host.current?.removeAttribute("data-displayed-resolution")
+    host.current?.removeAttribute("data-displayed-width")
+  }
+
   const reveal = (buffer: Buffer, picture: Picture) => {
     const element = host.current
     if (!element || buffer.stopped || picture.dead || !picture.ready || picture.key !== buffer.selected) return
@@ -173,7 +183,9 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
           reveal(buffer, picture)
           refresh(buffer)
         })().catch(() => {
-          if (!buffer.stopped && !picture.dead && buffer.selected === picture.key) setFailed(true)
+          if (buffer.stopped || picture.dead || buffer.selected !== picture.key) return
+          if (buffer.displayed?.sha !== picture.sha) hide(buffer)
+          setFailed(true)
         }).finally(() => {
           picture.running = false
           done()
@@ -227,11 +239,7 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
       buffer.sources.clear()
       buffer.selected = ""
       buffer.wanted = []
-      buffer.displayed = null
-      host.current?.replaceChildren()
-      host.current?.removeAttribute("data-displayed-sha")
-      host.current?.removeAttribute("data-displayed-resolution")
-      host.current?.removeAttribute("data-displayed-width")
+      hide(buffer)
     }
     const epoch = project ? bridge.projectEpoch(project) : 0
     const unwatch = privateViewEpoch.subscribe(() => {
@@ -248,11 +256,13 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
 
   useLayoutEffect(() => {
     const buffer = held.current
-    if (!buffer || buffer.stopped || !selected) return
+    if (!buffer || buffer.stopped) return
     buffer.selected = selected
     buffer.wanted = wanted
     buffer.sources = new Map(sources.map((source) => [source.key, source]))
     setFailed(false)
+    // Showing none, as while a take is made or its file is on its way here: the picture before it goes, so it can't be taken for it.
+    if (!selected) hide(buffer)
     refresh(buffer)
   }, [client, store, project, selected, windowKey])
 
