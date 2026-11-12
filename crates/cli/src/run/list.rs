@@ -129,7 +129,6 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
         };
         let last = list.runs.last().map(|r| r.number);
         let more = list.older > 0;
-        if !more { out.older += list.older; }
         out.machine = list.machine;
         out.unreadable.extend(list.unreadable);
         out.runs.extend(list.runs);
@@ -144,7 +143,10 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
       }
     }
     out.runs.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms).then_with(|| a.project_id.cmp(&b.project_id)).then_with(|| b.number.cmp(&a.number)));
-    if let Some(limit) = query.limit { out.runs.truncate(limit as usize); }
+    if let Some(limit) = query.limit {
+        out.older += out.runs.len().saturating_sub(limit as usize) as u64;
+        out.runs.truncate(limit as usize);
+    }
     Ok(out)
 }
 

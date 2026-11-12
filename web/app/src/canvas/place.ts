@@ -278,9 +278,11 @@ export class Placer {
 
   /** One setup for all pending imports. Credentials stay in the local setup form, outside the outbox. */
   private project(): Promise<string> {
+    if (!this.store.active) return Promise.reject(new DOMException("Project view retired", "AbortError"))
     if (this.store.projectId) return Promise.resolve(this.store.projectId)
     this.made ??= this.hooks.create().then(
       ({ id, code, said }) => {
+        if (!this.store.active) throw new DOMException("Project view retired", "AbortError")
         this.store.projectId = id
         for (const line of said ?? []) say(line)
         this.hooks.adopt(id, code ?? "")

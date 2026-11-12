@@ -2,7 +2,7 @@
 //! URL, durable session map, or disk-backed temporary profile is a fallback.
 mod profile;
 use std::{collections::HashMap, net::SocketAddr, sync::{Arc, atomic::{AtomicBool, Ordering}}};
-use ::api::error::{Error, Kind};
+use ::api::error::Kind;
 use axum::{Json, extract::State, http::HeaderMap};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -62,7 +62,31 @@ struct Live {
 
 pub(crate) struct OwnedBrowser { live: Arc<Mutex<Option<Live>>>, retirement_incomplete: Arc<AtomicBool> }
 /// A one-use frozen-session receipt. Holding it prevents opens/replacements until exact retirement.
-pub(crate) struct PreparedBrowserClose { owner: Arc<Mutex<Option<Live>>>, live: OwnedMutexGuard<Option<Live>> }
+pub(crate) struct PreparedBrowserClose {
+    owner: Arc<Mutex<Option<Live>>>,
+    live: Option<OwnedMutexGuard<Option<Live>>>,
+    pages: Vec<String>,
+}
+
+impl Drop for PreparedBrowserClose {
+    fn drop(&mut self) {
+        let Some(held) = self.live.take() else { return };
+        let exact = held.as_ref().map(|live| (live.birth.clone(), live.authority.id().to_owned(), live.profile.identity()));
+        drop(held);
+        let Some((birth, session, profile)) = exact else { return };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let (owner, pages) = (self.owner.clone(), std::mem::take(&mut self.pages));
+        runtime.spawn(async move {
+            let mut held = owner.lock().await;
+            let Some(live) = held.as_mut().filter(|live| live.birth == birth && live.authority.id() == session && live.profile.identity() == profile) else { return };
+            // A later vault/run drain may refuse after browser preparation. Abandoning that
+            // one-use receipt restores only this exact saved session, never a replacement.
+            for page in pages {
+                let _ = live.pipe.call("Runtime.evaluate", json!({ "expression": "globalThis.__cozyResume?.()", "returnByValue": true }), Some(&page)).await;
+            }
+        });
+    }
+}
 
 impl OwnedBrowser {
     pub(crate) fn new() -> Self { Self { live: Arc::default(), retirement_incomplete: Arc::new(AtomicBool::new(false)) } }
@@ -74,12 +98,21 @@ impl OwnedBrowser {
         let program = ["google-chrome", "chromium", "chromium-browser"].into_iter().find_map(|name| platform::tools::on_path(name, &path)).ok_or_else(unavailable)?;
         let profile = VolatileProfileLease::create()?;
         let mut command = Command::new(program.path);
+        let original_home = std::env::home_dir().ok_or_else(unavailable)?;
         let original_runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
         let original_authority = std::env::var_os("XAUTHORITY").map(std::path::PathBuf::from)
             .or_else(|| std::env::home_dir().map(|home| home.join(".Xauthority")));
         for directory in ["tmp", "cache", "config", "data", "state", "runtime"] {
             std::fs::create_dir(profile.path().join(directory)).map_err(|_| unavailable())?;
         }
+        // A deliberate Save must choose an external destination, rather than silently landing
+        // in the volatile profile that a later project lock removes.
+        let defaults = profile.path().join("Default");
+        std::fs::create_dir(&defaults).map_err(|_| unavailable())?;
+        let preferences = serde_json::to_vec(&json!({ "download": {
+            "prompt_for_download": true, "default_directory": original_home.join("Downloads"), "directory_upgrade": true
+        }, "session": { "restore_on_startup": 5 } })).map_err(|_| unavailable())?;
+        platform::durable::replace(&defaults.join("Preferences"), &preferences, 0o600).map_err(|_| unavailable())?;
         if let Some(authority) = original_authority.filter(|path| path.is_absolute() && path.is_file()) { command.env("XAUTHORITY", authority); }
         if let (Some(runtime), Some(display)) = (original_runtime, std::env::var_os("WAYLAND_DISPLAY")) {
             let display = std::path::PathBuf::from(display);
@@ -183,9 +216,9 @@ impl OwnedBrowser {
     pub(crate) async fn prepare_close(&self) -> Result<PreparedBrowserClose, Refusal> {
         let mut held = self.live.clone().lock_owned().await;
         if self.retirement_incomplete.load(Ordering::Acquire) { return Err(unavailable()); }
+        let mut pages = Vec::new();
         if let Some(live) = held.as_mut() {
             let targets = live.pipe.call("Target.getTargets", json!({}), None).await.map_err(|_| busy())?;
-            let mut pages = Vec::new();
             for target in targets["targetInfos"].as_array().ok_or_else(busy)? {
                 if target["type"] != "page" || target["url"] == "about:blank" { continue; }
                 let url = target["url"].as_str().and_then(|url| url::Url::parse(url).ok()).ok_or_else(busy)?;
@@ -204,7 +237,7 @@ impl OwnedBrowser {
                 return Err(busy());
             }
         }
-        Ok(PreparedBrowserClose { owner: self.live.clone(), live: held })
+        Ok(PreparedBrowserClose { owner: self.live.clone(), live: Some(held), pages })
     }
 
     async fn evaluate(live: &mut Live, page: &str, expression: &str) -> Result<(), Refusal> {
@@ -215,7 +248,8 @@ impl OwnedBrowser {
 
     pub(crate) async fn close(&self, mut prepared: PreparedBrowserClose) -> Result<(), Refusal> {
         if !Arc::ptr_eq(&self.live, &prepared.owner) { return Err(unavailable()); }
-        let Some(live) = prepared.live.take() else { return Ok(()) };
+        let mut held = prepared.live.take().ok_or_else(unavailable)?;
+        let Some(live) = held.take() else { return Ok(()) };
         self.retirement_incomplete.store(true, Ordering::Release);
         let processes = if platform::process::Birth::of(live.birth.pid).is_ok_and(|birth| birth == live.birth) { platform::process::tree(live.birth.pid) } else { Vec::new() };
         let (live, ended) = tokio::task::spawn_blocking(move || {
@@ -232,7 +266,7 @@ impl OwnedBrowser {
         if let Err(error) = ended {
             // Ownership is retained on any uncertain retirement; neither a new session nor a
             // later lock can accidentally turn it into a successful close.
-            *prepared.live = Some(live);
+            *held = Some(live);
             return Err(error);
         }
         let proof = BrowserRetired { profile: live.profile.identity(), birth: live.birth.clone(), session: live.authority.id().to_owned() };

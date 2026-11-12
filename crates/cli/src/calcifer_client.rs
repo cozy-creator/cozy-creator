@@ -7,7 +7,6 @@
 //! minute, each attempt said. A request or stream Calcifer leaves unanswered says so, naming its
 //! process and what it is doing.
 use std::{
-    fs::OpenOptions,
     io::{self, Write as _},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -790,7 +789,6 @@ impl Client {
             }));
         }
         let services = Services::new(home, &self.0.user_home);
-        let mut steps = Steps::new(home.calcifer_health());
         // Another cozy (a build, a copy) never writes the service: it starts it only as already
         // defined for the installed cozy, else runs the installed one detached.
         let exe = std::env::current_exe().and_then(|exe| exe.canonicalize());
@@ -808,13 +806,9 @@ impl Client {
             output::warn(&warning);
         }
         if managed && ours {
-            let wrote = services.ensure(&spec).map_err(failed)?;
-            steps.done(match wrote {
-                true => "wrote Calcifer's service and reloaded its manager",
-                false => "found Calcifer's service current",
-            });
+            services.ensure(&spec).map_err(failed)?;
         }
-        let (mut child, mut asked, mut cleared) = (None, false, false);
+        let (mut child, mut cleared) = (None, false);
         let began = Instant::now();
         let mut reported = began;
         loop {
@@ -834,16 +828,12 @@ impl Client {
                         .map_err(failed)?,
                     false => child = Some(spawn(&spec).map_err(failed)?),
                 }
-                if !std::mem::replace(&mut asked, true) {
-                    steps.done("started Calcifer");
-                }
             }
             tokio::time::sleep(SAMPLE).await;
             if let Some(error) = refusal(&refused) {
                 return Err(error);
             }
             if let Some(holder) = self.live().await {
-                steps.done("Calcifer answered");
                 return Ok(holder);
             }
             if let Some(tree) = child.as_mut()
@@ -1452,32 +1442,6 @@ async fn envelope(answer: Response) -> Error {
             };
             Error::new(Kind::Internal, UNTYPED, message)
         }
-    }
-}
-
-/// The steps of a start, each with its time, appended to Calcifer's log (`cozy machine logs local calcifer`)
-/// beside Calcifer's own: a slow start names its slow step.
-struct Steps {
-    log: PathBuf,
-    since: Instant,
-}
-
-impl Steps {
-    fn new(log: PathBuf) -> Self {
-        Self {
-            log,
-            since: Instant::now(),
-        }
-    }
-
-    fn done(&mut self, step: &str) {
-        let ms = self.since.elapsed().as_millis();
-        let line = format!("{}  INFO cozy: {step} in {ms} ms\n", jiff::Timestamp::now());
-        let log = OpenOptions::new().create(true).append(true).open(&self.log);
-        if let Ok(mut log) = log {
-            let _ = log.write_all(line.as_bytes());
-        }
-        self.since = Instant::now();
     }
 }
 
