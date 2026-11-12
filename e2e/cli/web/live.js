@@ -63,16 +63,18 @@ const WATCH = () => {
   for (const type of ['pointerdown', 'pointerup', 'click', 'dblclick']) {
     window.addEventListener(type, ({ target }) => window.clicks.push(`${type} ${target.tagName}.${target.className} ${location.pathname}`.slice(0, 160)), true);
   }
-  /** All it says, at rest or worked on where it stands. */
-  const wordsOf = (name) => box(name)?.textContent ?? '';
+  // An open box is Focus over the canvas (cl-893): what it says is there, and its node on the canvas only keeps its place.
+  const focusedBox = (name) => document.querySelector(`[data-focused-asset="${CSS.escape(name)}"]`);
+  /** All it says, at rest or open. */
+  const wordsOf = (name) => (focusedBox(name) ?? box(name))?.textContent ?? '';
   const placeOf = (node) => {
     const m = new DOMMatrix(getComputedStyle(node).transform);
     return { x: m.e, y: m.f };
   };
   const holds = (spec) => {
     if (spec.all) return spec.all.every(holds);
-    if (spec.gone) return !box(spec.gone);
-    const node = box(spec.name);
+    if (spec.gone) return !box(spec.gone) && !focusedBox(spec.gone);
+    const node = box(spec.name) ?? (spec.x === undefined && spec.w === undefined ? focusedBox(spec.name) : null);
     if (!node) return false;
     if (spec.has !== undefined && !wordsOf(spec.name).includes(spec.has)) return false;
     if (spec.lacks !== undefined && wordsOf(spec.name).includes(spec.lacks)) return false;
