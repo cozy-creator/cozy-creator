@@ -1037,9 +1037,34 @@ code {
 .focus-viewport > .run-face.above {
   position: relative;
   flex: none;
+  /* Its two lines, the second as tall as its Cancel: Render and New take are lifted by this (FocusedViewport.css). */
+  height: 56px;
   padding: 0 4px;
   font-size: 17px;
+  text-shadow: var(--halo);
+}
+/* In Focus its Cancel follows its words, not the far side of the window. */
+.focus-viewport > .run-face.above .face-state b {
+  flex: 0 1 auto;
+}
+.focus-viewport > .run-face.above .face-cancel,
+.focus-card .run-face .copy-error {
+  min-height: 32px;
+  padding: 0 12px;
   text-shadow: none;
+}
+/* In Focus a failure says all it said, wrapped, at the frame's size; its Copy clear of the corner that shapes the frame. */
+.focus-card .run-face.failed {
+  padding-right: 36px;
+  font-size: var(--small);
+}
+.focus-card .run-face.failed .face-state {
+  align-items: flex-end;
+}
+.focus-card .run-face.failed .face-state b,
+.focus-card .run-face.failed .face-words {
+  overflow: visible;
+  white-space: normal;
 }
 /* At rest, how far the whole job is (cl-928): a thin meter along the top of its box (Paul, 11-12), line 1's numbers, drawn only once
    there's an estimate. Nothing pulses in it. */
