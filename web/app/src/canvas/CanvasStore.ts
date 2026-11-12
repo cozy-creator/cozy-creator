@@ -923,7 +923,9 @@ export class CanvasStore {
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: open, it's the one looked at. At rest a box goes on
           // showing what it showed (cl-936), what's approved staying and what lands beside it unseen (cl-928): its watch goes once nothing is on its way.
-          const seen = watched({ ...view, asset })
+          // What Calcifer makes itself (a frame, a cut) has no run to watch: its take landing is the one it was rendered to look at.
+          const watching = watched({ ...view, asset })
+          const seen = watching && madeHere(asset.tool) && (newest ?? 0) > (view.asset?.prefixes?.at(-1)?.number ?? 0) ? { ...watching, number: newest } : watching
           if (!view.here && (view.watchFrom !== undefined || view.watchRun !== undefined) && !asset.making?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined })
           else if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Bind a queued preview to its run and retain it through the gap between execution and the version landing.
