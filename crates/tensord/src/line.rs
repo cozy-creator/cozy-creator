@@ -29,8 +29,8 @@ struct State {
     arrivals: u64,
 }
 
-/// A turn in the line, given up when it drops.
-pub(crate) struct Turn(&'static Line);
+/// A turn in the line, given up when it drops: its line, and whose it is.
+pub(crate) struct Turn(&'static Line, String);
 
 impl Line {
     fn state(&self) -> MutexGuard<'_, State> {
@@ -44,7 +44,7 @@ impl Line {
         let mut state = self.state();
         if let Some((_, _, held)) = state.holder.as_mut().filter(|(holder, ..)| holder == caller) {
             *held += 1;
-            return Some(Turn(self));
+            return Some(Turn(self, caller.to_owned()));
         }
         state.arrivals += 1;
         let key = (order, state.arrivals);
@@ -58,7 +58,8 @@ impl Line {
                 if shown.is_some() {
                     said(None);
                 }
-                return Some(Turn(self));
+                tracing::info!(run = caller, what, order, "install line: its turn");
+                return Some(Turn(self, caller.to_owned()));
             }
             if stop.is_some_and(Stop::is_cancelled) {
                 state.waiting.remove(&key);
@@ -76,6 +77,7 @@ impl Line {
             };
             if shown.as_ref() != Some(&text) {
                 drop(state);
+                tracing::info!(run = caller, "install line: {text}");
                 said(Some(text.clone()));
                 shown = Some(text);
                 state = self.state();
@@ -93,6 +95,7 @@ impl Drop for Turn {
             *held -= 1;
             if *held == 0 {
                 state.holder = None;
+                tracing::info!(run = self.1, "install line: done");
             }
         }
         self.0.moved.notify_all();

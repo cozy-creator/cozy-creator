@@ -1,7 +1,8 @@
 """cl-905: jobs queued together on one machine, as its three lines served them: each job's install, download and run, from
-its record, its events and TensorD's log (TensorFS's `fetching` and `landed`, each with its order). Prints the timeline as
-JSON, end to end against the ideal for those spans (the jobs in order through install, download and run, each line one
-job at a time); each check that failed on stderr, and exit 1 when one did.
+its record and TensorD's log (each turn of its install line; TensorFS's `fetching` and `landed`, each with its order). An
+install of local code is a warm run of its own, before its call: `lines-runs.json` (`cozy run ls --all`) names whose it is.
+Prints the timeline as JSON, end to end against the ideal for those spans (the jobs in order through install, download and
+run, each line one job at a time); each check that failed on stderr, and exit 1 when one did.
 
     lines.py <out> <began unix ms> <tensord log> <name>...   (<out>/lines-<name>.*: each run's record and events, in the
                                                              order the machine took them)
@@ -19,6 +20,11 @@ MiB = 1 << 20
 # its turn in the install line.
 INSTALL = re.compile(r"(installing|updating) .* \d+/\d+$|installing this machine's PyTorch")
 LOGGED = re.compile(r"^(\S+)\s+INFO\s+\S+: (fetching|landed) (.*)$")
+TURNS = re.compile(r"^(\S+)\s+INFO\s+\S+: install line: (.*?)\s+run=\"?([^\s\"]+)\"?")
+
+
+def ms(stamp):
+    return int(datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)
 
 
 def events(name):
@@ -38,15 +44,37 @@ def record(name):
         return {}
 
 
-def install(name):
-    """Its install: from its first install step to the first stage after its last; and what it said while it waited."""
-    stages = sorted((p["at_ms"], p.get("stage") or "") for e in events(name) if isinstance(p := e.get("progress"), dict) and p.get("at_ms"))
-    marks = [i for i, (_, stage) in enumerate(stages) if INSTALL.search(stage)]
-    said = sorted({w for e in events(name) for w in [(e.get("run") or {}).get("waiting"), e.get("reason")] if isinstance(w, str) and "line to install" in w})
-    if not marks:
-        return {"start_ms": None, "end_ms": None, "said": said}
-    after = next((at for at, stage in stages[marks[-1] + 1 :] if not INSTALL.search(stage)), stages[marks[-1]][0])
-    return {"start_ms": stages[marks[0]][0], "end_ms": after, "said": said}
+def turns():
+    """Each run's turns in the install line since `began`, from TensorD's log: when its turn came and ended, and what it
+    said while it waited."""
+    held = {}
+    for line in log.read_text(errors="replace").splitlines() if log.exists() else []:
+        found = TURNS.match(line)
+        if not found or ms(found[1]) < began:
+            continue
+        at, said, run = ms(found[1]), found[2], found[3]
+        turn = held.setdefault(run, {"start_ms": None, "end_ms": None, "said": []})
+        if said == "its turn":
+            turn["start_ms"] = turn["start_ms"] or at
+        elif said == "done":
+            turn["end_ms"] = at
+        else:
+            turn["said"].append(said)
+    return held
+
+
+def installs():
+    """Each job's install: its call's own turn in the install line, else its warm install run's (local code), by package."""
+    runs = {}
+    try:
+        runs = {run["id"]: run for run in json.loads((out / "lines-runs.json").read_text()).get("runs", [])}
+    except (OSError, ValueError):
+        pass
+    found = {}
+    for run_id, turn in turns().items():
+        run = runs.get(run_id, {})
+        found[run_id] = {**turn, "run_number": run.get("number"), "target": run.get("target")}
+    return found
 
 
 def downloads():
@@ -57,7 +85,7 @@ def downloads():
         found = LOGGED.match(line)
         if not found:
             continue
-        at = int(datetime.fromisoformat(found[1].replace("Z", "+00:00")).timestamp() * 1000)
+        at = ms(found[1])
         fields = dict(re.findall(r"(\w+)=(\S+)", found[3]))
         order = int(fields.get("priority", "0"))
         if at < began or order == 0 or order >= 1 << 62:
@@ -76,15 +104,19 @@ failed = []
 check = lambda ok, why: ok or failed.append(why)
 jobs = downloads()
 fetched = sorted(job for job, seen in jobs.items() if seen["landed"])
+built = installs()
 spans = {}
 for name in names:
     run = record(name)
+    package = (run.get("target") or "").rsplit("/", 1)[0]
+    own = [turn for run_id, turn in built.items() if run_id == run.get("id") or (package and (turn["target"] or "").startswith(package))]
     # A warm run (a download alone) runs nothing on the device: its time is its download's.
     started, settled = None if run.get("kind") == "warm" else run.get("started_at_ms"), run.get("settled_at_ms")
     end = started + run["execution_ms"] if started and isinstance(run.get("execution_ms"), int) else (settled if started else None)
     spans[name] = {
         "run_number": run.get("number"), "kind": run.get("kind"), "target": run.get("target"), "status": run.get("status"),
-        "sent_ms": run.get("created_at_ms"), "accepted_ms": run.get("accepted_at_ms"), "install": install(name),
+        "sent_ms": run.get("created_at_ms"), "accepted_ms": run.get("accepted_at_ms"),
+        "install": own[0] if own else {"start_ms": None, "end_ms": None, "said": []},
         "download": {"start_ms": None, "end_ms": None, "bytes": 0, "objects": 0}, "run": {"start_ms": started, "end_ms": end},
         "settled_ms": settled,
     }
@@ -104,11 +136,12 @@ done = [0.0, 0.0, 0.0]
 for name in names:
     for k in range(3):
         done[k] = max(done[k], done[k - 1] if k else 0.0) + stages[name][k]
-sent = [spans[n]["sent_ms"] for n in names if spans[n]["sent_ms"]]
+sent = [t for n in names for t in (spans[n]["sent_ms"], spans[n]["install"]["start_ms"]) if t]
 settled = [spans[n]["settled_ms"] for n in names if spans[n]["settled_ms"]]
 timeline = {
     "began_unix_ms": began,
     "jobs": spans,
+    "install_line": built,
     "seconds": {
         "stages": {name: dict(zip(("install", "download", "run"), stages[name])) for name in names},
         "end_to_end": (max(settled) - min(sent)) / 1000 if sent and len(settled) == len(names) else None,
@@ -134,11 +167,14 @@ if a and b:
     check(early <= 2 * MiB, f"{early} bytes of B's landed before A's last object did: they split the link")
     if a["run"]["end_ms"] and b["download"]["end_ms"]:
         check(b["download"]["end_ms"] <= a["run"]["end_ms"], "B's weights were not all here before A's run ended: they didn't overlap it")
-# The install line: C built after A, and while A downloaded or ran.
-if a and c and c["install"]["start_ms"] and a["install"]["end_ms"]:
-    check(c["install"]["start_ms"] >= a["install"]["end_ms"] - 1000, "C's environment was built while A's was: the install line is one at a time")
-    if a["run"]["end_ms"] and c["install"]["end_ms"]:
-        check(c["install"]["end_ms"] <= a["run"]["end_ms"], "C's install didn't end before A's run did: it didn't overlap it")
+# The install line: one build at a time, and one asked while another built waited, saying its place.
+held = sorted((t["start_ms"], t["end_ms"] or t["start_ms"], run_id) for run_id, t in built.items() if t["start_ms"])
+check(len(held) >= 2, f"two builds expected in the install line, found {len(held)}: {built}")
+for (_, end, first), (start, _, then) in zip(held, held[1:]):
+    check(start >= end, f"{then}'s build began before {first}'s ended: the install line is one at a time")
+check(any(t["said"] for t in built.values()), "no build waited its turn in the install line: A's and C's installs never met")
+if a and c and c["install"]["end_ms"] and a["run"]["end_ms"]:
+    check(c["install"]["end_ms"] <= a["run"]["end_ms"], "C's install didn't end before A's run did: it didn't overlap A")
 print(json.dumps(timeline, indent=1))
 for why in failed:
     print(why, file=sys.stderr)
