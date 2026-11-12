@@ -81,10 +81,55 @@
   outline-offset: 2px;
 }
 
-/* The sheet, and in dark no clouds on it. */
+/* The sheet, and in dark no clouds on it. It's laid out at its rung (Sheet.tsx), its tiles that much larger: paper's sizes, times `--rung`. */
 .paper-world {
+  --rung: 1;
+  width: calc(134vw + 2048px * var(--rung));
+  height: calc(134vh + 2048px * var(--rung));
   background: var(--paper);
+  background-size: calc(1024px * var(--rung)), calc(2048px * var(--rung)), calc(2048px * var(--rung)), calc(512px * var(--rung));
 }
-:root[data-theme="dark"] .paper-world::after {
+/* Paper with its sky faded out (Sheet.tsx), and ink: neither has the sky's wash or clouds. */
+.paper-world.paper-world-plain {
+  background: var(--paper-cream);
+}
+:root[data-theme="dark"] .paper-world,
+.paper-world.paper-world-plain {
+  background-size: calc(1024px * var(--rung)), calc(2048px * var(--rung)), calc(512px * var(--rung));
+}
+.paper-world::after {
+  right: calc(-2048px * var(--rung));
+  background-size: calc(2048px * var(--rung));
+  animation-name: paper-world-drift;
+}
+@keyframes paper-world-drift {
+  to {
+    transform: translate3d(calc(-2048px * var(--rung)), 0, 0);
+  }
+}
+:root[data-theme="dark"] .paper-world::after,
+.paper-world.paper-world-plain::after {
   content: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .paper-world::after {
+    animation: none;
+  }
+}
+
+/* A zoom scales the landscape (Sheet.tsx) about the bottom of the window, so the land stays on it. Each layer of land is laid out at its rung
+   by `--landscape-scale`, and wide enough to cover the window drawn at 0.75 of it. The sky zooms out to 0.91 (0.05 to its 0.03): it goes on
+   above the window, its wash stretched over it all and its clouds where they were, and the window and a tile wider. */
+.paper-landscape-mountains,
+.paper-landscape-hills,
+.paper-landscape-meadow {
+  width: calc(134% + var(--period));
+  transform-origin: 0 calc(100% + var(--bottom) * var(--landscape-scale));
+}
+.paper-landscape-sky {
+  --above: 10vh;
+  top: calc(-32px - var(--above));
+  width: calc(110% + 2048px);
+  transform-origin: 0 calc(100% - 32px);
+  background-position: 0 var(--above), 0 0, 0 0, 0 0, 0 0;
 }

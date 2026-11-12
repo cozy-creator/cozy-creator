@@ -409,7 +409,7 @@ code {
 .stage[data-zooming] .canvas-dots {
   will-change: auto;
 }
-/* Over the paper and under the boxes (Sheet.tsx). */
+/* Over the paper or the landscape and under the boxes, at every zoom (Sheet.tsx). */
 .canvas-dots {
   position: absolute;
   top: 0;
@@ -419,9 +419,6 @@ code {
   z-index: -1;
   fill: var(--dot);
   pointer-events: none;
-}
-.stage[data-lod="2"] .canvas-dots {
-  display: none;
 }
 
 /* The canvas never scrolls. What a browser would scroll to reveal something (a focus, say), React Flow scrolls back a moment later, with the pointer left over another box, which opens as this one closes. */
