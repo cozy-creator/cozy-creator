@@ -1115,12 +1115,15 @@ export class CanvasStore {
     const width = this.poseOf(key)?.w ?? widthFor(view)
     const height = heightFor(view, width)
     const shape = this.shapeOf(key, width, height)
-    if (this.shapes.get(key) === shape) return
+    const before = this.shapes.get(key)
+    if (before === shape) return
     this.shapes.set(key, shape)
     this.paintPose(key)
     // Merely selecting another aspect must never rewrite the canvas row or move
     // nearby nodes. Explicit moves and corner resizes still settle their geometry.
-    if (!(view.asset?.kind === "image" && !view.hereWords && shownOf(view))) this.unsettle(key, true)
+    // A picture's height is its first take's: changed, it was measured at last (drawn 16:9 till then), and what it now lies on goes aside.
+    const measured = before !== undefined && before.split(":")[1] !== String(height)
+    if (!(view.asset?.kind === "image" && !view.hereWords && shownOf(view)) || measured) this.unsettle(key, true)
   }
 
   // Keeping clear: no box lies on another
