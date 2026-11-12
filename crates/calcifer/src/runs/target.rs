@@ -249,6 +249,10 @@ impl Held {
     /// nothing for a machine still to come.
     async fn read(api: &Arc<Api>, hub: &str, on: &On, wake: bool) -> Self {
         let (machine, environments) = api.machines.holds(on, wake).await.unwrap_or_default();
+        let environments = match crate::private_io::current().filter(|_| machine == "local") {
+            Some(scope) => api.machines.project_holds(scope).await,
+            None => environments,
+        };
         let rc = api.machines.takes_rc(&machine, on);
         let (runtime, runtimes, moves) = match api.machines.frame(&machine).filter(|frame| !frame.runtime.is_empty()) {
             Some(frame) => {
