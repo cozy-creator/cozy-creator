@@ -4,12 +4,6 @@
   overflow: hidden;
   container-type: size;
 }
-/* A frame too short for six lines and the heads under them opens a section at three, growing with its words. */
-@container (max-height: 520px) {
-  .in-frame.sections .beat .mention-text {
-    min-height: calc(3 * 1.55em + 24px);
-  }
-}
 .frame-sections {
   position: relative;
   z-index: 1;
@@ -53,6 +47,12 @@
   max-height: none;
   padding: 12px;
   line-height: 1.55;
+}
+/* A frame too short for six lines and the heads under them opens a section at three, growing with its words. */
+@container (max-height: 520px) {
+  .in-frame.sections .beat .mention-text {
+    min-height: calc(3 * 1.55em + 24px);
+  }
 }
 .frame-sections .beat-time {
   display: flex;
