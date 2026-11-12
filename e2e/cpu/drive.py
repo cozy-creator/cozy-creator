@@ -245,6 +245,10 @@ class Reply(TypedDict, total=False):
     outcome: Outcome
     outputs: list[dict[str, Json]]
     result: Json
+    #: A hello's: the executor makes previews; a progress frame's preview, and a log's message
+    previews: int
+    preview: dict[str, Json]
+    name: str
 
 
 class Executor:
@@ -285,6 +289,10 @@ class Executor:
         self.items: list[Item] = []
         #: TensorD's call broker for the attempt being invoked, when its function calls others
         self.broker: Broker | None = None
+        #: The attempt's previews (cr-282) and what it said of its `preview` lines, when its hello says it makes them
+        self.previewing = False
+        self.previews: list[dict[str, Json]] = []
+        self.preview_said: list[str] = []
 
     def send(self, frame: Frame) -> None:
         data = json.dumps(frame, separators=(",", ":"), sort_keys=True).encode()
@@ -322,8 +330,14 @@ class Executor:
             if got is None:
                 raise Failed(f"the executor left during {frame['cmd']}: {self.last_error()}")
             if got.get("reply") == frame["cmd"]:
+                if frame["cmd"] == "hello":
+                    self.previewing = bool(got.get("previews"))
                 return got
-            if got.get("event") == "request" and got.get("kind") == "checkpoint_item":
+            if got.get("event") == "progress" and got.get("kind") == "preview":
+                self.previews.append(got.get("preview") or {})
+            elif got.get("event") == "progress" and str(got.get("name", "")).startswith("preview: "):
+                self.preview_said.append(str(got.get("name")))
+            elif got.get("event") == "request" and got.get("kind") == "checkpoint_item":
                 # A weights output committed in the local store: TensorD records it (and uploads it only for a remote
                 # destination, which no cell names).
                 self.items.append({"output": got.get("output", ""), "repo_id": got.get("repo_id", ""),
@@ -970,6 +984,12 @@ def main() -> int:
                     invoke |= {"sources": {k: manifests[ref] for k, ref in cell["sources"].items()},
                                "weights": cell.get("weights", {}), "operation": f"{package}/{entry}"}
                 executor.items.clear()
+                # A client watches every attempt's previews: each `preview` line runs on the loop's real layout. A tiny
+                # fixture's latents have a few channels, not its VAE's: that alone is what such a line may say.
+                executor.previews.clear()
+                executor.preview_said.clear()
+                if executor.previewing:
+                    executor.send({"cmd": "preview", "request_id": request, "for_ms": 3_600_000})
                 # TensorD answers every attempt's durable requests: a call, a GPU release, a stage memo.
                 executor.broker = Broker(request, spool, run_child)
                 executor.broker.held |= {g["digest"]: Path(g["local"]) for g in granted.values()}  # it may pass them on
@@ -977,6 +997,13 @@ def main() -> int:
                 reply = executor.ask(invoke, timeout=invoke["deadline_s"] + 60)
                 executor.broker = None
                 (out / f"{request}.reply.json").write_text(json.dumps(reply, indent=1))
+                (out / f"{request}.previews.json").write_text(json.dumps({
+                    "previews": [{k: v for k, v in one.items() if k != "data"} for one in executor.previews],
+                    "said": executor.preview_said,
+                }, indent=1))
+                wrong = [said for said in executor.preview_said if "where this VAE's latents have" not in said]
+                if wrong:
+                    raise Failed(wrong[0])
                 key = f"{entry}/{name}"
                 same_as = cell.get("same_as")
                 against = ran.get(same_as) or references.get(same_as) if same_as else None if record else references.get(key)
