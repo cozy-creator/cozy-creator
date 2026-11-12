@@ -35,6 +35,8 @@ class Answer(msgspec.Struct):
     text: str
 @app.entrypoint(accelerator=False)
 def echo(payload: Request, out: Outputs, tel: Telemetry) -> Answer:
+    # Runtime2ba9 author/_services.py1974 and _signature.py516/539 inject Telemetry.
+    # Its log at _services.py1652 is an instance method, not a static service call.
     content = payload.source.read_bytes() + b"\\n" + payload.text.encode()
     tel.log(payload.text, level="info")
     target = out.temporary_file(".txt")
@@ -59,8 +61,15 @@ for path in (Path.home()/".cozy/machine").rglob("executions.sqlite3"):
     db.close()
 print(json.dumps(found))
 '''
-CLOSE = '''import json,os,signal,time
+CLOSE = '''import json,os,signal,time,tomllib
 from pathlib import Path
+home=Path.home()/".cozy"
+config=tomllib.loads((home/"config.toml").read_text())
+# Match MachineConfig.root + Home.machine, rather than guessing from a primary user's
+# explicit machine.root override. The fixture user has its own default home/config.
+root=Path(config.get("machine",{}).get("root",str(home/"machine")))
+if not root.is_absolute() or not root.is_relative_to(home): raise ValueError()
+boot=Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 def birth(pid):
     path=Path(f"/proc/{pid}")
     if path.stat().st_uid != os.getuid(): raise ValueError()
@@ -72,13 +81,18 @@ def live(item):
         return fields[0] not in {"Z","X"} and birth(item[0]) == item
     except (FileNotFoundError,ProcessLookupError): return False
 owned={}
-for relative in ("calcifer/calcifer.lock.holder","machine/var/lib/cozy/machine/agent.lock.holder"):
-    path=Path.home()/".cozy"/relative
+seen={"caf":False,"worker":False}
+for role,path in (("caf",home/"calcifer/calcifer.lock.holder"),("worker",root/"var/lib/cozy/machine/agent.lock.holder")):
     if path.exists():
         try:
-            item=birth(json.loads(path.read_bytes())["pid"])
+            record=json.loads(path.read_bytes())
+            item=birth(record["pid"])
+            if role == "worker" and (record.get("boot_id") != boot or record.get("start_ticks") != item[1]): raise ValueError()
+            if not live(item): continue
             owned[item[0]]=item
+            seen[role]=True
         except (FileNotFoundError,ProcessLookupError): pass
+if not owned or not seen["worker"]: raise ValueError()
 changed=True
 while changed:
     changed=False
@@ -97,7 +111,7 @@ for item in reversed(list(owned.values())):
     finally: os.close(fd)
 deadline=time.monotonic()+60
 while any(map(live,owned.values())) and time.monotonic()<deadline: time.sleep(.1)
-print(json.dumps({"gone":not any(map(live,owned.values())),"processes":len(owned)}))
+print(json.dumps({"gone":not any(map(live,owned.values())),"processes":len(owned),"worker_observed":seen["worker"],"caf_observed":seen["caf"]}))
 '''
 
 
@@ -113,7 +127,10 @@ class Worker:
         self.receipt.add("remote_cpu_stage", **{"stage_" + stage: True})
         command = ["sudo", "-n"]
         if user:
-            command += ["-u", self.user, "-H", "env", "COZY_HUB_URL=" + os.environ["COZY_HUB_URL"]]
+            # The primary runner may have explicit layout overrides. They must not move
+            # this fresh Unix user's worker/store into another user's Cozy root.
+            command += ["-u", self.user, "-H", "env", "-u", "COZY_MACHINE_ROOT", "-u", "COZY_TENSORFS_ROOT",
+                        "-u", "COZY_TENSORFS_CACHE", "-u", "TENSORFS_HOME", "COZY_HUB_URL=" + os.environ["COZY_HUB_URL"]]
             if os.environ.get("SSL_CERT_FILE"):
                 command += ["SSL_CERT_FILE=" + os.environ["SSL_CERT_FILE"]]
         completed = subprocess.run(command + words, input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd="/")
@@ -152,8 +169,10 @@ class Worker:
         if not self.created: return
         try:
             observed = json.loads(self.call("retire", ["python3", "-c", CLOSE], user=True))
-            self.receipt.add("remote_cpu_retirement", gone=observed.get("gone") is True, processes=observed.get("processes", 0))
-            require(observed.get("gone") is True, "fixture_failure")
+            count = observed.get("processes", 0)
+            self.receipt.add("remote_cpu_retirement", gone=observed.get("gone") is True, processes=count,
+                             worker_observed=observed.get("worker_observed") is True, caf_observed=observed.get("caf_observed") is True)
+            require(observed.get("gone") is True and isinstance(count, int) and count > 0 and observed.get("worker_observed") is True, "fixture_failure")
         except BaseException:
             self.receipt.add("remote_cpu_retirement", gone=False)
             raise
