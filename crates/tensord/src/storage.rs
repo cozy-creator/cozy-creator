@@ -111,6 +111,7 @@ const TRANSPORT_ROTATE: u64 = 4 << 20;
 /// import did, or why it failed: `<unix seconds> <kind> <subject> <detail>`, one per completed
 /// fetch, never per object. Never fatal.
 pub(crate) fn transport(store: &Store, kind: &str, subject: &str, detail: &str) {
+    let Ok(_writing) = crate::config::legacy_diagnostics_read() else { return };
     let dir = store.root().join("logs");
     let path = dir.join("transport.log");
     let _ = std::fs::create_dir_all(&dir);
