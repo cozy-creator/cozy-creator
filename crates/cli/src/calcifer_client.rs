@@ -335,6 +335,12 @@ impl Client {
         self.exchange(Ask::Write, |c, base| c.delete(format!("{base}{path}")).header(KEY, &key)).await
     }
 
+    /// A DELETE that is part of `edit`, as a project's history names it (`Cozy-Edit`): deletes sharing one are one entry, one Undo.
+    pub(crate) async fn delete_edit<T: DeserializeOwned>(&self, path: &str, edit: &str) -> Result<T, Error> {
+        let key = write_key();
+        self.exchange(Ask::Write, |c, base| c.delete(format!("{base}{path}")).header(KEY, &key).header("cozy-edit", edit)).await
+    }
+
     pub(crate) async fn delete_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
     where
         Q: Serialize + ?Sized,

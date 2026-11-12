@@ -1859,6 +1859,13 @@ impl Folder {
         (file.stays() || self.path(&file.path).is_file()).then(|| Kept { field: file.field(), file, already: true })
     }
 
+    /// What the file at `at` is, by its bytes: the field that names one of its kind.
+    pub(crate) fn field_of(at: &Path) -> Result<&'static str, String> {
+        let mut head = Vec::new();
+        std::fs::File::open(at).and_then(|file| file.take(8192).read_to_end(&mut head)).map_err(|e| e.to_string())?;
+        media(infer::get(&head)).map(|(_, field)| field)
+    }
+
     /// The held file at `at`, of `sha256`, in `files/` and recorded in the lock: a hard link to the store's object, which stays
     /// the store's, else a copy. Err: why not.
     pub(crate) fn take_held(&self, at: &Path, sha256: &str) -> Result<Kept, String> {

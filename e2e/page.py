@@ -19,6 +19,8 @@ no `cozy project` verbs). Each prints JSON on stdout; a refusal goes to stderr a
     page.py tools <project>                                          the tools a box can be, as the page lists them
     page.py fit <project> <name>...                                  how this computer would render them, as the page asks
                                                                      before a render here alone
+    page.py undo <project>                                           the newest edit that stands undone, as Undo does
+    page.py history <project>                                        the project's history, newest first
 <project> is its folder, which names it in a route."""
 
 import argparse
@@ -44,7 +46,8 @@ MEDIA, LAND_S = ("image", "video", "audio"), 900
 
 
 def call(method: str, route: str, body: bytes | None = None, kind: str = "application/json", timeout: float = 60) -> Json:
-    headers = {**AUTH, "Content-Type": kind}
+    # The page says who it is, as the history shows each edit's editor.
+    headers = {**AUTH, "Content-Type": kind, "Cozy-Client": "page e2e"}
     if method == "POST":
         headers["Idempotency-Key"] = str(uuid.uuid4())
     with OPENER.open(urllib.request.Request(BASE + route, data=body, method=method, headers=headers), timeout=timeout) as response:
@@ -160,7 +163,7 @@ def main() -> int:
     one = verbs.add_parser("asset")
     one.add_argument("project")
     one.add_argument("names", nargs="+")
-    for verb in ("board", "tools"):
+    for verb in ("board", "tools", "undo", "history"):
         verbs.add_parser(verb).add_argument("project")
     for verb in ("cancel", "fit"):
         one = verbs.add_parser(verb)
@@ -190,6 +193,10 @@ def main() -> int:
         print(json.dumps(call("POST", project(args.project) + "/fit", json.dumps({"names": args.names}).encode())))
     elif args.verb == "cancel":
         print(json.dumps(call("POST", project(args.project) + "/cancel", json.dumps({"names": args.names}).encode())))
+    elif args.verb == "undo":
+        print(json.dumps(call("POST", project(args.project) + "/history/undo", b"{}")))
+    elif args.verb == "history":
+        print(json.dumps(call("GET", project(args.project) + "/history")))
     elif args.verb == "board":
         print(json.dumps(read(args.project).get("board")))
     elif args.verb == "tools":
