@@ -23,6 +23,8 @@ mod retired_storage_tests;
 mod web_seed_tests;
 pub(crate) mod host;
 mod jobs;
+mod journal;
+pub(crate) use journal::{ProjectRef, ProjectStore};
 mod keyed;
 pub(crate) mod model;
 mod remote;

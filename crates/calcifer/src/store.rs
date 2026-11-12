@@ -29,7 +29,7 @@ mod journal_tests;
 
 /// The store's version (`PRAGMA user_version`), and the schema a new store is made with. A store
 /// at another version is not read.
-pub(crate) const VERSION: i64 = 7;
+pub(crate) const VERSION: i64 = 8;
 const SCHEMA: &str = "
     CREATE TABLE machines (
         name TEXT PRIMARY KEY,
@@ -128,6 +128,37 @@ const SCHEMA: &str = "
         kind TEXT NOT NULL DEFAULT 'rent' CHECK (kind IN ('rent', 'end')),
         run TEXT REFERENCES runs (id)
     ) STRICT;";
+
+/// Fence the old writer before project.db can accept a new journal write. Existing
+/// history stays in this same file until an admitted project verifies its import.
+fn fence_legacy_projects(writer: &mut Connection) -> Result<()> {
+    let tx = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    for table in ["runs", "outputs", "run_logs", "asks", "answers", "projects", "rendered_here", "headers", "after_steps", "vault_operations"] {
+        let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)", [table], |row| row.get(0))?;
+        if !exists { continue; }
+        let indexes: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = ?1 AND sql IS NOT NULL")?;
+            stmt.query_map([table], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
+        };
+        for index in indexes { tx.execute_batch(&format!("DROP INDEX \"{}\"", index.replace('"', "\"\"")))?; }
+        tx.execute_batch(&format!("ALTER TABLE {table} RENAME TO legacy_project_{table}"))?;
+    }
+    // Machine/account state is unrelated to project admission and remains available.
+    let (_, rest) = SCHEMA.split_once("    CREATE TABLE runs (").expect("run schema");
+    tx.execute_batch(&format!("CREATE TABLE runs ({rest}"))?;
+    tx.execute_batch(ANSWERS)?;
+    tx.execute_batch(crate::state::TABLES)?;
+    tx.execute_batch(crate::project::vault_operation::TABLES)?;
+    let has_code: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('legacy_project_projects') WHERE name = 'code')", [], |row| row.get(0))?;
+    let has_projects: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'legacy_project_projects')", [], |row| row.get(0))?;
+    if has_projects {
+        let code = if has_code { "code" } else { "''" };
+        tx.execute_batch(&format!("INSERT INTO projects(id, path, code) SELECT id, path, {code} FROM legacy_project_projects"))?;
+    }
+    tx.pragma_update(None, "user_version", VERSION)?;
+    tx.commit()?;
+    Ok(())
+}
 
 /// A store made before a run said what of it stays gains that column, empty: what it made comes here.
 fn stays_column(writer: &mut Connection) -> Result<()> {
@@ -556,6 +587,13 @@ impl Store {
                 tx.pragma_update(None, "user_version", VERSION)?;
                 tx.commit()?;
             }
+            7 => {
+                measured_columns(&mut writer)?;
+                stays_column(&mut writer)?;
+                batch_column(&mut writer)?;
+                job_column(&mut writer)?;
+                fence_legacy_projects(&mut writer)?;
+            }
             VERSION => {
                 measured_columns(&mut writer)?;
                 stays_column(&mut writer)?;
@@ -579,6 +617,20 @@ impl Store {
             writer: Mutex::new(writer),
             reader: Mutex::new(reader),
             durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
+        })
+    }
+
+    pub(crate) fn migration_required(&self) -> Result<bool> {
+        self.read(|conn| {
+            let tables: Vec<String> = {
+                let mut stmt = conn.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'legacy_project_%'")?;
+                stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?
+            };
+            for table in tables {
+                let exists: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM \"{}\")", table.replace('"', "\"\"")), [], |row| row.get(0))?;
+                if exists { return Ok(true); }
+            }
+            Ok(false)
         })
     }
 

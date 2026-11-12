@@ -21,9 +21,6 @@ pub(crate) const TABLES: &str = "
     CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
         path TEXT NOT NULL,
-        used_at_ms INTEGER NOT NULL,
-        walking INTEGER NOT NULL DEFAULT 0,
-        name TEXT NOT NULL DEFAULT '',
         code TEXT NOT NULL DEFAULT ''
     ) STRICT;
     CREATE TABLE IF NOT EXISTS sessions (
@@ -90,13 +87,7 @@ fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
 }
 
 /// A store from before cl-819 names no project: its column, added.
-pub(crate) fn project_names(conn: &Connection) -> rusqlite::Result<()> {
-    let named = conn.prepare("SELECT name FROM projects LIMIT 0").is_ok();
-    match named {
-        true => Ok(()),
-        false => conn.execute_batch("ALTER TABLE projects ADD COLUMN name TEXT NOT NULL DEFAULT ''"),
-    }
-}
+pub(crate) fn project_names(_conn: &Connection) -> rusqlite::Result<()> { Ok(()) }
 
 /// Older indexes gain public codes without replacing their project identities or rows.
 pub(crate) fn project_codes(conn: &Connection) -> rusqlite::Result<()> {
@@ -194,13 +185,13 @@ fn digest(key: &str) -> String {
 
 impl Store {
     pub(crate) fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
-        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name, code FROM projects WHERE id = ?1", [id], known).optional()?))
+        self.read(|conn| Ok(conn.query_row("SELECT id, path, 0, 0, '', code FROM projects WHERE id = ?1", [id], known).optional()?))
     }
 
     /// Every project opened here, last used first.
     pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name, code FROM projects ORDER BY used_at_ms DESC, id")?;
+            let mut statement = conn.prepare("SELECT id, path, 0, 0, '', code FROM projects ORDER BY id")?;
             Ok(statement.query_map([], known)?.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -217,30 +208,17 @@ impl Store {
     }
 
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
-    pub(crate) fn project_opened(&self, id: &str, name: &str, path: &Path, used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
+    pub(crate) fn project_opened(&self, id: &str, _name: &str, path: &Path, _used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
         self.write(|tx| {
-            // A folder holds one project: another the index had there is gone.
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
             let code = project_code(tx, id, preferred, crate::project::code::generate)?;
-            tx.execute(
-                "INSERT INTO projects (id, path, used_at_ms, name, code) VALUES (?1, ?2, COALESCE(?4, CAST(strftime('%s', 'now') AS INTEGER) * 1000), ?3, ?5)
-                 ON CONFLICT (id) DO UPDATE SET path = excluded.path, name = excluded.name, code = excluded.code, used_at_ms = COALESCE(?4, projects.used_at_ms)",
-                params![id, path.to_string_lossy(), name, used_at_ms, code],
-            )?;
+            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code", params![id, path.to_string_lossy(), code])?;
             Ok(code)
         })
     }
 
     /// Whether each project is being walked, which the next start walks again.
-    pub(crate) fn projects_walking(&self, walking: &[(String, bool)]) -> Result<()> {
-        self.write(|tx| {
-            let mut statement = tx.prepare("UPDATE projects SET walking = ?2 WHERE id = ?1 AND walking <> ?2")?;
-            for (id, walking) in walking {
-                statement.execute(params![id, walking])?;
-            }
-            Ok(())
-        })
-    }
+    pub(crate) fn projects_walking(&self, _walking: &[(String, bool)]) -> Result<()> { Ok(()) }
 
     /// The sessions used after `since_ms`; the rest have ended, and go.
     pub(crate) fn sessions(&self, since_ms: i64) -> Result<Vec<SessionRow>> {
@@ -457,7 +435,6 @@ pub(crate) fn import(store: &Store, dir: &Path) {
             steps.push((key.to_string_lossy().into_owned(), step.map(|step| step.to_string()), path));
         }
     }
-    let families = tensorfs::family::families_digest();
     let none = index.is_none() && sessions.is_none() && tools.is_none() && here.is_none() && headers.is_none() && steps.is_empty();
     if none {
         let _ = std::fs::remove_dir(&after_dir);
@@ -466,8 +443,8 @@ pub(crate) fn import(store: &Store, dir: &Path) {
     let mut counts = BTreeMap::new();
     let imported = store.write(|tx| {
         for (id, project) in index.iter().flatten().flat_map(|index| &index.projects) {
-            let sql = "INSERT OR IGNORE INTO projects (id, path, used_at_ms, walking) VALUES (?1, ?2, ?3, ?4)";
-            *counts.entry("projects").or_insert(0) += tx.execute(sql, params![id, project.path.to_string_lossy(), project.used_at_ms, project.walking])?;
+            let sql = "INSERT OR IGNORE INTO projects (id, path, code) VALUES (?1, ?2, '')";
+            *counts.entry("projects").or_insert(0) += tx.execute(sql, params![id, project.path.to_string_lossy()])?;
         }
         for session in sessions.iter().flatten().flatten() {
             let sql = "INSERT OR IGNORE INTO sessions (token_sha256, media_sha256, used_at_ms) VALUES (?1, ?2, ?3)";
@@ -483,21 +460,6 @@ pub(crate) fn import(store: &Store, dir: &Path) {
                 *counts.entry("tools_off").or_insert(0) += tx.execute("INSERT OR IGNORE INTO tools_off (tool) VALUES (?1)", [tool])?;
             }
         }
-        for held in here.iter().flatten().flat_map(|here| &here.here) {
-            let sql = "INSERT OR IGNORE INTO rendered_here (tool, machine, bytes) VALUES (?1, ?2, ?3)";
-            *counts.entry("rendered_here").or_insert(0) += tx.execute(sql, params![held.tool, held.machine, held.bytes as i64])?;
-        }
-        // What other families said is read again.
-        for (key, facts) in headers.iter().flatten().filter(|held| held.families == families).flat_map(|held| &held.facts) {
-            let Some((hub, sha256)) = key.rsplit_once(' ') else { continue };
-            let sql = "INSERT OR IGNORE INTO headers (hub, sha256, families, lora, family) VALUES (?1, ?2, ?3, ?4, ?5)";
-            *counts.entry("headers").or_insert(0) += tx.execute(sql, params![hub, sha256, families, facts.lora, facts.family])?;
-        }
-        for (key, step, _) in &steps {
-            let Some(step) = step else { continue };
-            let sql = "INSERT OR IGNORE INTO after_steps (key_sha256, step) VALUES (?1, ?2)";
-            *counts.entry("after_steps").or_insert(0) += tx.execute(sql, params![key, step])?;
-        }
         Ok(())
     });
     if let Err(e) = imported {
@@ -505,8 +467,8 @@ pub(crate) fn import(store: &Store, dir: &Path) {
         return;
     }
     info!("imported into state.db: {counts:?}");
-    let read = [("projects.json", index.is_some()), ("sessions.json", sessions.is_some()), ("tools.json", tools.is_some()), ("here.json", here.is_some()), ("checkpoints.json", headers.is_some())];
-    let gone = read.into_iter().filter(|(_, read)| *read).map(|(name, _)| file(name)).chain(steps.into_iter().map(|(_, _, path)| path));
+    let read = [("projects.json", false), ("sessions.json", sessions.is_some()), ("tools.json", tools.is_some()), ("here.json", false), ("checkpoints.json", false)];
+    let gone = read.into_iter().filter(|(_, read)| *read).map(|(name, _)| file(name));
     for path in gone {
         if let Err(e) = std::fs::remove_file(&path) {
             warn!("{}: {e}", path.display());

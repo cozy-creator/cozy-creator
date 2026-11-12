@@ -24,7 +24,7 @@ mod tests;
 
 pub(crate) const DB: &str = "project.db";
 /// This schema's `user_version`. A database of another isn't read.
-const VERSION: i64 = 2;
+const VERSION: i64 = 3;
 const SCHEMA: &str = "
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
     CREATE TABLE head (key TEXT PRIMARY KEY, ord INTEGER NOT NULL, value TEXT NOT NULL) STRICT;
@@ -180,14 +180,33 @@ pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
     let checked = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
         .map_err(|error| sql(path, error))?;
     checked.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
-    require_current(&checked, path)?;
+    require_readable(&checked, path)?;
     drop(checked);
     let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::default() & !rusqlite::OpenFlags::SQLITE_OPEN_CREATE)
         .map_err(|error| sql(path, error))?;
     conn.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
+    require_readable(&conn, path)?;
+    upgrade_journal(&conn, path)?;
     require_current(&conn, path)?;
     configure(&conn, path)?;
     Ok(conn)
+}
+
+fn require_readable(conn: &Connection, path: &Path) -> Result<(), Error> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|error| sql(path, error))?;
+    if version != 2 && version != VERSION { return require_current(conn, path); }
+    let format: i64 = conn.query_row("SELECT format FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|error| sql(path, error))?;
+    if format != crdt::FORMAT { return Err(err(path, "unsupported CRDT format")); }
+    Ok(())
+}
+
+fn upgrade_journal(conn: &Connection, path: &Path) -> Result<(), Error> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|error| sql(path, error))?;
+    if version == VERSION { return Ok(()); }
+    let tx = conn.unchecked_transaction().map_err(|error| sql(path, error))?;
+    tx.execute_batch(super::journal::SCHEMA).map_err(|error| sql(path, error))?;
+    tx.pragma_update(None, "user_version", VERSION).map_err(|error| sql(path, error))?;
+    tx.commit().map_err(|error| sql(path, error))
 }
 
 fn require_current(conn: &Connection, path: &Path) -> Result<(), Error> {
@@ -213,7 +232,7 @@ fn configure(conn: &Connection, path: &Path) -> Result<(), Error> {
 
 /// Canonical identity only; relational projections never supply a missing native identity.
 pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
-    require_current(conn, Path::new(DB)).ok()?;
+    require_readable(conn, Path::new(DB)).ok()?;
     let (bytes, heads): (Vec<u8>, String) = conn.query_row("SELECT snapshot, heads FROM crdt_document WHERE id = 1", [], |row| Ok((row.get(0)?, row.get(1)?))).ok()?;
     crdt::identity_bytes(&bytes, &heads)
 }
@@ -320,6 +339,7 @@ fn initialize_current(conn: &mut Connection, at: &Path) -> Result<(), Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| sql(at, error))?;
     tx.execute_batch(SCHEMA).map_err(|error| sql(at, error))?;
     tx.execute_batch(CRDT_SCHEMA).map_err(|error| sql(at, error))?;
+    tx.execute_batch(super::journal::SCHEMA).map_err(|error| sql(at, error))?;
     tx.execute("INSERT INTO meta VALUES ('seq', '0')", []).map_err(|error| sql(at, error))?;
     let mut doc = crdt::Document::new(at);
     doc.initialize(crdt::value(&Stored::default(), &[], &serde_json::Value::Null, None))?;
