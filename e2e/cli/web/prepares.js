@@ -1,8 +1,8 @@
 // A render's progress on its own box only, and a box waiting for another's take preparing at once (cl-905). A project pinned to local
 // and a stand-in, so where the waiting box will run is a guess: `pic` (a slow still) and `clip` (a video tool in an environment of its
-// own) whose words mention <pic>. Render all: while pic is made, only pic's box shows its run; clip's says it waits for <pic>, with
-// none of pic's bar or numbers, and shows its own preparation, its tool's environment on the machine it will run on, asked within
-// seconds of Render, ready before its turn.
+// own) whose words mention <pic>. Render all: while pic is made, only pic's box shows its run; clip's says it's waiting for <pic>,
+// with none of pic's stage or numbers, and shows its own preparation, its tool's environment on the machine it will run on (its face's
+// machine line), asked within seconds of Render, ready before its turn.
 //   node prepares.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER; $STANDS: a stand-in machine added
 // there (machineset.sh). $PLAYWRIGHT, $CHROME, $COZY, $SHOT as nodes.js. Prints what it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
@@ -66,12 +66,11 @@ const PICS_WORK = /drawing|\d+ \/ \d+|step/i;
   await boxOf(page, 'pic').waitFor();
   await boxOf(page, 'clip').waitFor();
 
-  // Each box's face as drawn: its state, its detail and its bar.
+  // Each box's face as drawn, its two lines: what it's doing, and the machine.
   const face = (name) => boxOf(page, name).locator('.run-face').first().evaluate((el) => ({
     phase: el.dataset.phase,
     says: el.querySelector('.face-state b')?.textContent ?? '',
-    detail: el.querySelector('.face-detail')?.textContent ?? '',
-    bar: el.querySelector('.face-track')?.getAttribute('aria-valuenow') ?? null,
+    machine: el.querySelector('.face-machine')?.textContent ?? '',
   }), null, { timeout: 500 }).catch(() => null);
   const making = (now, name) => now.assets?.find((held) => held.name === name)?.making ?? [];
 
@@ -99,10 +98,10 @@ const PICS_WORK = /drawing|\d+ \/ \d+|step/i;
   // While pic is made: its box shows its run, and clip's shows none of it.
   const whilePic = samples.filter((sample) => sample.pic_making.length && !sample.clip_making.length);
   check('pic_rendered_first', whilePic.length > 0, samples.slice(0, 3));
-  check('pic_shows_its_own', whilePic.some((sample) => PICS_WORK.test(`${sample.pic?.says} ${sample.pic?.detail}`)), whilePic.map((sample) => sample.pic));
-  const borrowed = whilePic.filter((sample) => sample.clip && (PICS_WORK.test(`${sample.clip.says} ${sample.clip.detail}`) || !/^(Waits for|Queued)/.test(sample.clip.says)));
+  check('pic_shows_its_own', whilePic.some((sample) => PICS_WORK.test(sample.pic?.says ?? '')), whilePic.map((sample) => sample.pic));
+  const borrowed = whilePic.filter((sample) => sample.clip && (PICS_WORK.test(`${sample.clip.says} ${sample.clip.machine}`) || !/^(Waiting for|Queued)/.test(sample.clip.says)));
   check('clip_shows_none_of_pics', borrowed.length === 0, borrowed.slice(0, 3));
-  check('clip_says_it_waits', whilePic.some((sample) => /^Waits for <pic>/.test(sample.clip?.says ?? '')), whilePic.slice(0, 3).map((sample) => sample.clip));
+  check('clip_says_it_waits', whilePic.some((sample) => /^Waiting for <pic>/.test(sample.clip?.says ?? '')), whilePic.slice(0, 3).map((sample) => sample.clip));
 
   // Its own preparation, asked at once, on a machine of its set, said on its box, ready before its turn.
   const asked = samples.find((sample) => sample.ahead);
@@ -115,7 +114,7 @@ const PICS_WORK = /drawing|\d+ \/ \d+|step/i;
   seen.timeline.pic_drawing_s = drawing?.s ?? null;
   check('prepares_at_once', asked !== undefined && asked.pic_making.length > 0 && (drawing === undefined || asked.s <= drawing.s + 10), seen.timeline);
   check('prepares_in_its_set', ['local', STAND].includes(asked?.ahead.machine), asked?.ahead);
-  check('shows_its_preparation', whilePic.some((sample) => /^(Preparing|Ready) on (local|\S+)/.test(sample.clip?.detail ?? '')), whilePic.map((sample) => sample.clip?.detail));
+  check('shows_its_preparation', whilePic.some((sample) => / - (Preparing: |Ready$)/.test(sample.clip?.says ?? '') && ['local', STAND].includes(sample.clip?.machine)), whilePic.map((sample) => sample.clip));
   check('ready_before_its_turn', ready !== undefined && (picDone === undefined || ready.s <= picDone.s + 1), seen.timeline);
   check('nothing_held_back', !samples.some((sample) => sample.ahead?.held_back), samples.find((sample) => sample.ahead?.held_back)?.ahead);
   await shot('clip-going');
