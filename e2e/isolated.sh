@@ -101,6 +101,7 @@ case $suite:$shard in
   cli:runs | cli:local-code) needs='packages birefnet' ;;
   cli:commands) needs='packages birefnet slots' ;;
   cli:follow) needs='packages downloads' ;;
+  cli:lines) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras' ;;
   cli:) needs='packages birefnet downloads slots' ;;

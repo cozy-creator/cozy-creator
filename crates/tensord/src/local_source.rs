@@ -479,7 +479,8 @@ impl LocalSources {
 
     /// This signer's installation of the manifest `digest` (`sha256:<hex>`).
     /// `stage` hears what is built: nothing for an environment this machine holds. While
-    /// another run's install holds the installer, run `run` is told it waits for that run.
+    /// another run's install holds the installer, run `run` is told it waits for that run. Its
+    /// build takes its turn in the machine's install line at `order` (`line`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn install(
         &self,
@@ -488,6 +489,7 @@ impl LocalSources {
         digest: &str,
         stop: Option<&Stop>,
         run: &str,
+        order: u64,
         observer: published::Observer,
     ) -> Result<Installation, Refused> {
         let package = open_manifest(&self.objects, actor, digest).map(|(m, _)| m.package).unwrap_or_default();
@@ -524,6 +526,7 @@ impl LocalSources {
         let job = Job {
             observer: Some(observer),
             stop: stop.cloned(),
+            order,
             caller: service.engine.caller_id(run),
             waiting: (!run.is_empty()).then(|| {
                 Box::new(move |reason| {
