@@ -138,6 +138,12 @@ impl Machine {
         self.returned.clone()
     }
 
+    /// Until they drop, what comes after `order` waits in every fetcher (`Fetcher::give_way`): one
+    /// started meanwhile isn't held, and there is one, made by the first pull.
+    pub(crate) fn give_way(&self, order: u64) -> Vec<tensorfs::fetch::GiveWay> {
+        self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.give_way(order)).collect()
+    }
+
     /// The bytes every fetcher received from its origin, and the time any of them was arriving.
     pub(crate) fn received(&self) -> (u64, Duration) {
         self.fetchers.lock().unwrap().iter().map(|(_, fetcher)| fetcher.stats()).fold(
