@@ -65,7 +65,8 @@ async function died(error) {
     writeFileSync(path, png(20 + number * 15, width, height));
     return upload(session.token, path);
   };
-  const first = await picture(1, 960, 240);
+  // Only this state needs a full-resolution source larger than the widest thumbnail.
+  const first = await picture(1, 4096, 1024);
   await api(`${at}/imports`, 'POST', { source: first, name: NAME, exact: true, at: { x: 750, y: 350, w: 300 } });
   await api(`${at}/assets/${NAME}/versions`, 'POST', { source: await picture(2, 240, 960) });
   for (let number = 3; number <= 10; number++) await api(`${at}/assets/${NAME}/versions`, 'POST', { source: await picture(number, 480, 320) });
@@ -146,6 +147,25 @@ async function died(error) {
     const matrix = new DOMMatrix(getComputedStyle(element).transform);
     return { x: matrix.e, y: matrix.f, zoom: matrix.a };
   });
+  const decodedImage = () => card.locator('.focus-viewer .buffered-image').evaluate((element) => {
+    const image = element.querySelector('img');
+    return {
+      sha: element.dataset.displayedSha?.replace(/^sha256:/, ''),
+      requested: Number(element.dataset.requestedWidth),
+      resolution: element.dataset.displayedResolution,
+      displayed: Number(element.dataset.displayedWidth),
+      width: image?.naturalWidth ?? 0,
+      loaded: Boolean(image?.complete && image.naturalWidth > 0),
+    };
+  });
+  const zoomOutToFit = async () => {
+    const button = focus.getByRole('button', { name: 'Zoom out image', exact: true });
+    for (let step = 0; step < 20 && (await imageCamera()).zoom > 1.0001; step++) {
+      const before = (await imageCamera()).zoom;
+      await button.click();
+      await until('zoom out approaches the fitted minimum', imageCamera, (position) => position.zoom < before);
+    }
+  };
 
   const wander = await camera();
   const expanded = await palette();
@@ -169,6 +189,41 @@ async function died(error) {
   check('title_is_editable_without_leaving_focus', await focus.isVisible() && (await asset()).name === NAME);
   check('seed_and_advanced_fold_controls_are_absent', await focus.locator('[data-field="seed"], .seed, .advanced-toggle').count() === 0);
   await shot('wide');
+
+  const wideSha = (await asset()).prefixes.find((version) => version.number === 1).main.sha256.replace(/^sha256:/, '');
+  const fittedPicture = await until('the fitted large image displays a decoded thumbnail at the requested density', decodedImage,
+    (picture) => picture.loaded && picture.sha === wideSha && picture.requested > 0 && picture.requested <= 2048
+      && picture.resolution !== 'original' && picture.width >= picture.requested && picture.width <= 2048);
+  await page.evaluate(() => {
+    const frames = { total: 0, blank: 0, frame: 0 };
+    window.__focusedResolutionFrames = frames;
+    const sample = () => {
+      const image = document.querySelector('.focus-viewer .buffered-image img');
+      frames.total++;
+      if (!image?.complete || !image.naturalWidth) frames.blank++;
+      frames.frame = requestAnimationFrame(sample);
+    };
+    frames.frame = requestAnimationFrame(sample);
+  });
+  for (let step = 0; step < 12 && (await imageCamera()).zoom < 4.5; step++) {
+    const before = (await imageCamera()).zoom;
+    await focus.getByRole('button', { name: 'Zoom in image', exact: true }).click();
+    await until('the image camera zooms toward full resolution', imageCamera, (position) => position.zoom > before);
+  }
+  const originalPicture = await until('zooming past 450 percent displays the actual 4k original', decodedImage,
+    (picture) => picture.loaded && picture.sha === wideSha && picture.requested > 2048
+      && picture.resolution === 'original' && picture.width === 4096 && picture.displayed === picture.width);
+  const resolutionFrames = await page.evaluate(() => {
+    const frames = window.__focusedResolutionFrames;
+    cancelAnimationFrame(frames.frame);
+    delete window.__focusedResolutionFrames;
+    return { total: frames.total, blank: frames.blank };
+  });
+  check('image_resolution_grows_from_fitted_thumbnail_to_decoded_original', originalPicture.width > fittedPicture.width && (await imageCamera()).zoom >= 4.5, { fittedPicture, originalPicture });
+  check('resolution_upgrade_keeps_a_decoded_image_on_every_frame', resolutionFrames.total > 0 && resolutionFrames.blank === 0, resolutionFrames);
+  check('resolution_upgrade_preserves_focus_and_the_focused_canvas_camera', await focus.isVisible() && sameCamera(focusedCanvas, await camera()));
+  await zoomOutToFit();
+  await expectFit(4);
   await choose(2);
   const tall = await expectFit(0.25);
   check('wide_and_tall_states_fit_the_same_viewport_room', sameRect(wide.viewer, tall.viewer) && fits(wide, 4) && fits(tall, 0.25), { wide, tall });
@@ -283,12 +338,7 @@ async function died(error) {
   check('panning_keeps_focus_and_does_not_move_its_canvas_camera', await focus.isVisible() && sameCamera(gestureCanvas, await camera()), { wheeled, panned });
   check('panning_an_image_does_not_drag_out_a_new_asset', await page.locator('.carry-ghost').count() === 0 && JSON.stringify((await state()).assets.map((item) => item.name).sort()) === JSON.stringify(namesBeforePan));
   check('Fit_button_is_removed', await focus.getByRole('button', { name: 'Fit image', exact: true }).count() === 0);
-  const zoomOut = focus.getByRole('button', { name: 'Zoom out image', exact: true });
-  for (let step = 0; step < 20 && (await imageCamera()).zoom > 1.0001; step++) {
-    const before = (await imageCamera()).zoom;
-    await zoomOut.click();
-    await until('zoom out approaches the fitted minimum', imageCamera, (position) => position.zoom < before);
-  }
+  await zoomOutToFit();
   await page.mouse.move(panRoom.x + panRoom.width / 2, panRoom.y + panRoom.height / 2);
   await page.mouse.wheel(0, 600);
   await until('zoom cannot go below the fitted full image', imageCamera, (position) => Math.abs(position.zoom - 1) < 0.0001 && Math.abs(position.x) < 0.5 && Math.abs(position.y) < 0.5);
