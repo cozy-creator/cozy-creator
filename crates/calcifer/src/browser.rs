@@ -5,6 +5,8 @@ mod proof;
 
 /// Start only after the native listener/holder is ready; the inherited channel is otherwise inert.
 pub(crate) fn hosted_proof(api: Arc<Api>) { proof::start(api); }
+/// The exclusive Caf-home holder recovers only its own nonsecret tmpfs ownership receipts.
+pub(crate) fn recover_profiles(home: &std::path::Path) -> Result<(), Refusal> { profile::recover(home) }
 use std::{collections::HashMap, net::SocketAddr, sync::{Arc, atomic::{AtomicBool, Ordering}}};
 use ::api::error::Kind;
 use axum::{Json, extract::State, http::HeaderMap};
@@ -148,6 +150,7 @@ impl OwnedBrowser {
         let mut live = Live { tree, birth: birth.clone(), profile, authority, credential, address,
             pipe: Pipe { birth, send: tokio::fs::File::from_std(send), receive: BufReader::new(tokio::fs::File::from_std(receive)), next: 0 },
             context: String::new(), targets: HashMap::new() };
+        live.profile.observe(&live.birth)?;
         let context = live.pipe.call("Target.createBrowserContext", json!({ "disposeOnDetach": true }), None).await?;
         live.context = context["browserContextId"].as_str().ok_or_else(unavailable)?.into();
         Ok(live)
@@ -179,6 +182,7 @@ impl OwnedBrowser {
         let target = created["targetId"].as_str().ok_or_else(unavailable)?.to_owned();
         let attached = live.pipe.call("Target.attachToTarget", json!({ "targetId": target, "flatten": true }), None).await?;
         let session = attached["sessionId"].as_str().ok_or_else(unavailable)?;
+        live.profile.observe(&live.birth)?;
         let owned = json!({ "session": live.credential, "birth": daemon_birth()? });
         let origin = serde_json::to_string(&format!("http://{address}")).map_err(|_| unavailable())?;
         let source = format!("if(location.origin==={origin})Object.defineProperty(globalThis,'__cozyOwned',{{value:{owned},writable:false,configurable:false}});");
@@ -186,6 +190,7 @@ impl OwnedBrowser {
         let mut url = url::Url::parse(&format!("http://{address}/")).map_err(|_| unavailable())?;
         url.path_segments_mut().map_err(|_| unavailable())?.extend(["projects", project_ref]);
         live.pipe.call("Page.navigate", json!({ "url": url.as_str() }), Some(session)).await?;
+        live.profile.observe(&live.birth)?;
         live.targets.insert(project_ref.to_owned(), target);
         Ok(())
     }
@@ -198,6 +203,10 @@ impl OwnedBrowser {
                 let mut state = state.lock().await;
                 let Some(live) = state.as_mut() else { return };
                 let ended = live.birth.ended().unwrap_or(false);
+                if !ended && live.profile.observe(&live.birth).is_err() {
+                    incomplete.store(true, Ordering::Release);
+                    return;
+                }
                 let pages_gone = if ended { true } else {
                     match live.pipe.call("Target.getTargets", json!({}), None).await {
                         Ok(targets) => targets["targetInfos"].as_array().is_some_and(|targets| !targets.iter().any(|target| target["type"] == "page" && target["browserContextId"] == live.context)),
@@ -232,7 +241,7 @@ impl OwnedBrowser {
             platform::process::end_tree(&processes).map_err(|_| unavailable())?;
             live.tree.wait().map_err(|_| unavailable())?;
             if platform::process::group_members(&live.birth).iter().any(|birth| !birth.ended().unwrap_or(false)) { return Err(unavailable()); }
-            let proof = BrowserRetired { profile: live.profile.identity(), birth: live.birth.clone(), session: live.authority.id().to_owned() };
+            let proof = BrowserRetired { profile: live.profile.identity(), birth: live.birth.clone(), session: live.profile.nonce().to_owned() };
             drop(live.authority);
             live.profile.retire(proof)
         }).await.map_err(|_| unavailable())?
@@ -296,7 +305,7 @@ impl OwnedBrowser {
             *held = Some(live);
             return Err(error);
         }
-        let proof = BrowserRetired { profile: live.profile.identity(), birth: live.birth.clone(), session: live.authority.id().to_owned() };
+        let proof = BrowserRetired { profile: live.profile.identity(), birth: live.birth.clone(), session: live.profile.nonce().to_owned() };
         drop(live.authority);
         live.profile.retire(proof)?;
         self.retirement_incomplete.store(false, Ordering::Release);

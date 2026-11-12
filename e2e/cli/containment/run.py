@@ -272,6 +272,23 @@ def main() -> int:
         until(lambda: Path(crashed["profile"]).exists(), lambda exists: not exists, "crashed_profile_not_retired")
         require(foreign.preserved(), "foreign_browser_changed")
         receipt.add("browser_crash", process_gone=not alive(crashed["birth"]), profile_removed=True, unrelated_preserved=True)
+        phase = "caf_crash"
+        native.document("open", cwd=b["folder"])
+        until(lambda: proof.exercise(b["id"], "ready"), lambda value: value.get("page_ready"), "caf_crash_page_ready")
+        orphaned = proof.ask("snapshot")
+        previous = native.holder()
+        # SIGKILL cannot run Caf's Drop, vault close, or the live browser watcher.
+        # Only the next real Caf holder may recover its nonsecret tmpfs ownership receipt.
+        kill_exact(proof.birth)
+        proof.process.wait(timeout=90); proof.close_channel(); proof = None
+        proof = Proof(cli)
+        until(lambda: native.holder(), lambda value: value.get("pid") == proof.process.pid, "restart_holder_ready")
+        rejected = native.raw("GET", "/v1/project-storage", extra={"Authorization": "Bearer " + previous["token"]}, preflight=False)
+        require(rejected.status == 401, "old_holder_authority_survived")
+        until(lambda: [alive(process) for process in orphaned["processes"]], lambda live: not any(live), "caf_crash_browser_tree_not_retired")
+        until(lambda: Path(orphaned["profile"]).exists(), lambda exists: not exists, "caf_crash_profile_not_retired")
+        require(foreign.preserved(), "foreign_browser_changed")
+        receipt.add("caf_crash_recovery", process_gone=True, profile_removed=True, old_authority_refused=True, unrelated_preserved=True)
         phase = "cold_restart"
         native.document("vault", "lock", cwd=b["folder"])
         previous = native.holder()

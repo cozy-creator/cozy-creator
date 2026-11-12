@@ -24,6 +24,7 @@ _FAILURE_CODES = frozenset({
     'actual_private_browser_redirects', 'b_edit_not_persisted', 'born_encrypted',
     'browser_birth_reused', 'browser_durable_storage', 'browser_edit_not_visible',
     'browser_ownership_distinct', 'busy_edit_resume', 'busy_lock_lost_b_draft',
+    'caf_crash_page_ready', 'caf_crash_browser_tree_not_retired', 'caf_crash_profile_not_retired',
     'chrome_missing', 'cli_exit', 'closed_health_sink',
     'cold_page_ready', 'composed_candidate_not_ready', 'core_control_not_authorized',
     'core_pattern_invalid', 'crash_page_ready', 'crashed_browser_tree_not_retired',

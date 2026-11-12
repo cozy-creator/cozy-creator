@@ -235,6 +235,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         info!("another Calcifer holds this home");
         return Ok(Stopped::AnotherHolds);
     };
+    crate::browser::recover_profiles(&home.calcifer()).map_err(|error| failed(error.0))?;
     // Old raw captures are disposable, unlike the authoritative run journal. A
     // retained/unknown artifact remains visible through migration_required.
     let _ = crate::legacy_cleanup::retire(&home.calcifer());
