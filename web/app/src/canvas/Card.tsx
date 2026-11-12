@@ -855,7 +855,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           </button>
         ) : null}
         {here ? (
-          // Open or not, its × deletes it, with Undo: Esc or a click off it leaves.
+          // Open or not, its trash can deletes it, with Undo (cl-939): Esc or a click off it leaves.
           <button
             type="button"
             className="iconb nodrag"

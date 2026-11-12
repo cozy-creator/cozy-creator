@@ -88,9 +88,10 @@ async function died(why) {
   seen.focus_close = close;
   check('focus_close_is_x', close === 'close', close);
   // Playing, its player stops by a stop square, not ✕.
-  await focus.locator('video').first().evaluate((video) => video.play().catch(() => {})).catch(() => {});
-  await page.waitForTimeout(500);
+  const play = focus.locator('button[aria-label="Play"]').first();
+  if (await play.count()) await play.click();
   const stop = focus.locator('button[aria-label="Stop"]').first();
+  await stop.waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {});
   const stopIcon = await stop.locator('svg').getAttribute('data-icon').catch(() => null);
   const stopTitle = await stop.getAttribute('title').catch(() => null);
   seen.stop = { icon: stopIcon, title: stopTitle };
@@ -120,6 +121,20 @@ async function died(why) {
   seen.after_undo = back;
   check('undo_brings_the_take_back', back.length === 2 && back.includes(second), back);
   await closeBox(page);
+
+  // On the canvas, the box's trash can deletes it, saying so, and Undo brings it back.
+  const exists = async () => Boolean((await api(at)).body?.assets?.some((row) => row.name === 'shot'));
+  const tileDelete = boxOf(page, 'shot').locator('button[aria-label="Delete"]').first();
+  const tileTitle = await tileDelete.getAttribute('title');
+  seen.tile_delete = { icon: await tileDelete.locator('svg').getAttribute('data-icon'), title: tileTitle };
+  check('the_tiles_delete_is_a_trash_can_saying_delete', seen.tile_delete.icon === 'trash' && /^Delete/.test(tileTitle ?? ''), seen.tile_delete);
+  await tileDelete.click();
+  const gone = await until('the box deleted', exists, (there) => !there).then(() => true, () => false);
+  check('the_tiles_trash_can_deletes_the_box', gone);
+  await page.locator('button[aria-label="Undo"]').first().click();
+  const again = await until('the box back', exists, Boolean).then(() => true, () => false);
+  check('undo_brings_the_box_back', again);
+  await shot('canvas-undone');
 
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();
