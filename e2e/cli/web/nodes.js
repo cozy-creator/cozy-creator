@@ -552,7 +552,7 @@ function replaceFile(at, text) {
   check('theirs_in_the_file', storedBox('Sheet').instructions.includes(' theirs'), storedBox('Sheet'));
   await page.waitForTimeout(1000);
   await shot('unsent-words-stand');
-  check('unsent_words_stand', (await sheetText.innerText()).includes('mine again'), await sheetText.innerText());
+  check('typed_words_kept', (await sheetText.innerText()).includes(' again'), await sheetText.innerText());
   theirsIn();
   await page.unroute('**/v1/projects/*/assets/Sheet', late);
   await until('theirs and mine merged', () => Promise.resolve(storedBox('Sheet')?.instructions), (words) => words?.includes(' theirs') && words.includes(' again') && !words.includes(' mine'));

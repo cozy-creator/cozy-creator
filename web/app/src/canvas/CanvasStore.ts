@@ -1989,8 +1989,9 @@ export class CanvasStore {
     this.typedFrom.set(id, from)
   }
 
-  /** A write of `fields` of box `id`: what of its words changed as splices on what they began from, wherever they are in it; the rest as it is. */
-  private body(id: string, fields: Record<string, unknown>, view?: ElementView): AssetPatch {
+  /** A write of `fields` of box `id`: what of its words changed as splices on what they began from, wherever they are in it; the rest as it is.
+   *  `leaving`: a field with a write on its way goes whole, as splices of what that write began from would land twice. */
+  private body(id: string, fields: Record<string, unknown>, view?: ElementView, leaving = false): AssetPatch {
     const from = this.typedFrom.get(id)
     const plain: Record<string, unknown> = {}
     const typed: Record<string, Splice[]> = {}
@@ -1998,7 +1999,7 @@ export class CanvasStore {
     for (const [field, value] of Object.entries(fields)) {
       const base = from?.get(field)
       const local = view?.sent && field in view.sent ? view.sent[field] : value
-      const changed = base && (!heads || heads.join() === base.heads.join()) ? wordsChanged(base.value, local) : null
+      const changed = base && !(leaving && base.sent !== undefined) && (!heads || heads.join() === base.heads.join()) ? wordsChanged(base.value, local) : null
       if (!base || !changed) {
         plain[field] = value
         continue
@@ -2071,7 +2072,7 @@ export class CanvasStore {
     for (const [name, view] of this.views) {
       const id = this.ids.get(name)
       if (!view.asset || !id || !(view.drafts || view.writing)) continue
-      void this.client.patchAsset(project, this.served.get(id) ?? name, this.body(id, { ...view.sent, ...view.drafts }), { keepalive: true }).catch(() => {})
+      void this.client.patchAsset(project, this.served.get(id) ?? name, this.body(id, { ...view.sent, ...view.drafts }, undefined, true), { keepalive: true }).catch(() => {})
     }
   }
 
@@ -2106,9 +2107,11 @@ export class CanvasStore {
     const drafts = Object.fromEntries(Object.entries(view.drafts ?? {}).filter(([field]) => !(field in fields)))
     this.patch(key, { drafts: Object.keys(drafts).length ? drafts : undefined, sent: { ...view.sent, ...fields }, writing: (view.writing ?? 0) + 1 })
     const now = () => this.views.get(this.namesById.get(id) ?? "")
+    let asked: AssetPatch | undefined
     return new Promise((settled) => {
       this.act(key, {
-        send: (served, write) => this.client.patchAsset(this.projectId!, served, this.body(id, fields, now()), write),
+        // Made once: a try again after a lost answer (a restart) is the same ask, which Calcifer answers once.
+        send: (served, write) => this.client.patchAsset(this.projectId!, served, (asked ??= this.body(id, fields, now())), write),
         edit,
         done: (answer) => {
           this.typedAnswered(id, answer)
