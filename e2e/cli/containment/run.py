@@ -15,10 +15,12 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -91,6 +93,35 @@ PAGE_FACTS = frozenset({
     "gate_broke", "vite_overlay", "visible", "resources", "resources_failed", "resources_unanswered", "resources_403",
     "resources_404", "resources_503", "resources_504",
 })
+
+
+REDIRECTS = (b"HOME", b"TMPDIR", b"TEMP", b"TMP", b"XDG_CACHE_HOME", b"XDG_CONFIG_HOME", b"XDG_STATE_HOME", b"XDG_DATA_HOME", b"XDG_RUNTIME_DIR")
+
+
+def launch_environments(processes: list[dict]) -> list[dict[bytes, bytes]]:
+    # Chrome's setproctitle zeroes its own environ block; its launcher's stdio relays in the
+    # owned tree keep the exact launch environment. PATH marks an intact block, never a title tail.
+    found = []
+    for exact in processes:
+        try:
+            raw = Path(f"/proc/{exact['pid']}/environ").read_bytes() if alive(exact) else b""
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if not alive(exact):
+            continue
+        environment = dict(item.split(b"=", 1) for item in raw.split(b"\0") if re.fullmatch(rb"[A-Za-z_][A-Za-z0-9_]*=.*", item, re.S))
+        if b"PATH" in environment:
+            found.append(environment)
+    return found
+
+
+def tmpdir_singleton(profile: Path) -> bool:
+    # Chrome binds its singleton socket in a unique directory under TMPDIR and links it from the profile.
+    try:
+        target = Path(os.readlink(profile / "SingletonSocket"))
+        return target.is_absolute() and target.name == "SingletonSocket" and target.parent.parent == profile / "tmp" and stat.S_ISSOCK(target.lstat().st_mode)
+    except OSError:
+        return False
 
 
 def observe_ready(proof: Proof, project: str, seen: dict) -> dict:
@@ -199,13 +230,16 @@ def main() -> int:
         require(snapshot["present"] and snapshot["pages"] == 2 and len(snapshot.get("processes", [])) >= 2 and snapshot["birth"] in snapshot["processes"], "shared_owned_browser")
         browser_birth, profile = snapshot["birth"], Path(snapshot["profile"])
         require(profile.name.startswith("cozy-private-") and tmpfs(profile) and profile.stat().st_mode & 0o777 == 0o700 and profile.stat().st_uid == os.geteuid(), "owned_profile_volatile")
-        argv = Path(f"/proc/{browser_birth['pid']}/cmdline").read_bytes().split(b"\0")
+        # Chrome's setproctitle rewrites its argv as one space-joined title.
+        title = Path(f"/proc/{browser_birth['pid']}/cmdline").read_bytes()
+        argv = set(re.split(rb"[\0 ]", title))
         require(b"--incognito" in argv and b"--remote-debugging-pipe" in argv and ("--user-data-dir=" + str(profile)).encode() in argv and not any(word.startswith(b"--remote-debugging-port") for word in argv), "actual_private_browser_flags")
-        environment = dict(item.split(b"=", 1) for item in Path(f"/proc/{browser_birth['pid']}/environ").read_bytes().split(b"\0") if b"=" in item)
-        require(all(key.encode() in environment and Path(os.fsdecode(environment[key.encode()])).is_relative_to(profile) for key in ("HOME", "TMPDIR", "TEMP", "TMP", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR")), "actual_private_browser_redirects")
-        require(not any(marker in b"\0".join(argv) for marker in scanner.markers), "private_browser_argv_canary")
+        launched = launch_environments(snapshot["processes"])
+        require(launched and tmpdir_singleton(profile) and all(key in environment and Path(os.fsdecode(environment[key])).is_relative_to(profile) for environment in launched for key in REDIRECTS), "actual_private_browser_redirects")
+        require(not any(marker in title for marker in scanner.markers), "private_browser_argv_canary")
         require(all(browser_birth != held[1] for held in foreign.held), "browser_ownership_distinct")
-        receipt.add("shared_owned_browser", pages=2, volatile=True, unrelated=foreign.preserved(), birth_sha256=sha(json.dumps(browser_birth, sort_keys=True).encode()))
+        receipt.add("shared_owned_browser", pages=2, volatile=True, unrelated=foreign.preserved(), birth_sha256=sha(json.dumps(browser_birth, sort_keys=True).encode()),
+                    title_flags=True, tmpdir_singleton=True, launch_environment_redirected=True, launch_environments=len(launched))
         if ready.get("remote_cpu") is True:
             phase = "remote_cpu"
             qualify_remote(native, a, receipt, ready)
