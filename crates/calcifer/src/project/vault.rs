@@ -13,6 +13,8 @@ use super::vault_operation::{self, Progress};
 mod decrypt_tests;
 
 pub(super) const BACKING: &str = "project.vault.data";
+const RUNTIME_DIR: &str = ".vault-runtime";
+const RUNTIME_MARKER: &[u8] = b"cozy-project-mount-runtime/1\n";
 const DEFAULT_IDLE: u64 = api::calcifer::project::DEFAULT_VAULT_IDLE_SECONDS;
 type Held = Arc<Mutex<Session>>;
 
@@ -43,6 +45,7 @@ struct Session {
     began_ms: i64,
     closing: bool,
     readable: Arc<AtomicBool>,
+    runtime: PathBuf,
 }
 
 fn error(code: &'static str, why: impl std::fmt::Display) -> Error { Error::new(Kind::Unavailable, code, why.to_string()) }
@@ -294,6 +297,44 @@ fn new_passphrase(ask: &mut VaultAsk) -> Result<SecretString, Error> {
         .ok_or_else(|| Error::new(Kind::Usage, "vault_credential", "a new passphrase is required"))
 }
 
+/// Mount bookkeeping is part of this project, not a second project index under
+/// Calcifer's home. The marker prevents adopting an unrelated user directory.
+fn project_runtime(root: &FsPath) -> Result<PathBuf, Error> {
+    let base = root.join(RUNTIME_DIR);
+    match fs::symlink_metadata(&base) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            if fs::read(base.join("owner")).map_err(io)? != RUNTIME_MARKER {
+                return Err(error("vault_runtime", "the reserved project runtime directory belongs to another writer"));
+            }
+        }
+        Ok(_) => return Err(error("vault_runtime", "the project runtime must be an owned directory")),
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&base).map_err(io)?;
+            platform::durable::set_mode(&base, 0o700).map_err(provider)?;
+            platform::durable::replace(&base.join("owner"), RUNTIME_MARKER, 0o600).map_err(provider)?;
+        }
+        Err(why) => return Err(io(why)),
+    }
+    let runtime = base.join(fresh());
+    fs::create_dir(&runtime).map_err(io)?;
+    platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
+    Ok(runtime)
+}
+
+fn retire_runtime(runtime: &FsPath) -> Result<(), Error> {
+    #[cfg(not(windows))]
+    match fs::remove_dir(runtime.join("view")) {
+        Ok(()) => {},
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => {},
+        Err(why) => return Err(io(why)),
+    }
+    match fs::remove_dir(runtime) {
+        Ok(()) => Ok(()),
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(why) => Err(io(why)),
+    }
+}
+
 fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &VaultAsk) -> Result<(), Error> {
     if let Some(known) = api.calcifer.store().known_project(&keybag.info().project_id).map_err(|e| error("vault_journal", e))? {
         if known.path != root && Keybag::load(&known.path.join(KEYBAG_FILE)).is_ok_and(|other| other.info().project_id == keybag.info().project_id) {
@@ -303,11 +344,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     if KEY_ROOTS.lock().expect("vault project roots").get(&keybag.info().project_id).is_some_and(|known| known != root && held(known).is_some()) {
         return Err(Error::new(Kind::Conflict, "vault_project_copy", "another location of this encrypted project is unlocked"));
     }
-    // IDs are document data, not filesystem path components (legacy/imported IDs may be arbitrary).
-    let runtime_id = hex::encode(Sha256::digest(keybag.info().project_id.as_bytes()));
-    let runtime = api.machines.hubs.home().calcifer().join("vaults").join(runtime_id).join(fresh());
-    fs::create_dir_all(&runtime).map_err(io)?;
-    platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
+    let runtime = project_runtime(root)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     let engine = Provider::discover(&api.machines.hubs.home().tools()).map_err(provider)?;
     let mounted = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
@@ -320,7 +357,7 @@ fn mount(api: &Api, root: &FsPath, keybag: Keybag, secret: ProjectSecret, ask: &
     let project_id = keybag.info().project_id;
     let idle = ask.idle_timeout_s.unwrap_or(DEFAULT_IDLE);
     let maximum = ask.max_duration_s.unwrap_or(0);
-    let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)) };
+    let session = Session { identity: MountIdentity(Arc::new(())), mount: mounted, secret, keybag, idle, maximum, timer: timer(idle, maximum), active_ms: super::now_ms(), began_ms: super::now_ms(), closing: false, readable: Arc::new(AtomicBool::new(true)), runtime };
     SESSIONS.lock().expect("vault sessions").insert(root.to_owned(), Arc::new(Mutex::new(session)));
     crate::events::project_vault(&project_id, "unlocked");
     Ok(())
@@ -381,6 +418,7 @@ fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
             project_mount::Error::Busy(_) => Error::new(Kind::Conflict, "project_busy", "close programs using the project, then retry the storage change"),
             other => provider(other),
         })?;
+        retire_runtime(&session.runtime)?;
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
@@ -499,14 +537,13 @@ pub(super) fn create_new(api: &Api, root: &FsPath, id: &str, name: &str, written
         // Persist the wrapping slots before writing any project state: the user's known passphrase
         // can reopen this backing even if setup or delivery of the recovery response is interrupted.
         created.keybag.save(&root.join(KEYBAG_FILE)).map_err(key)?;
-        let runtime = api.machines.hubs.home().calcifer().join("vaults").join(format!("new-{}", fresh()));
-        fs::create_dir_all(&runtime).map_err(io)?;
-        platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
+        let runtime = project_runtime(root)?;
         let view = project_mount::view_path(&runtime).map_err(provider)?;
         let mut target = created.secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes,
             MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
         let initialized = super::new_database(target.view(), id, name, written);
         target.try_unmount().map_err(provider)?;
+        retire_runtime(&runtime)?;
         initialized?;
         platform::durable::sync_dir(root).map_err(provider)?;
         let ask = VaultAsk { action: "encrypt".into(), passphrase: None, recovery_secret: None,
@@ -901,9 +938,7 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress) -> Result<(),
         };
     }
     let outcome = (|| {
-        let runtime = api.machines.hubs.home().calcifer().join("vaults").join(format!("decrypt-{suffix}"));
-        fs::create_dir_all(&runtime).map_err(io)?;
-        platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
+        let runtime = project_runtime(root)?;
         let source_view = project_mount::view_path(&runtime).map_err(provider)?;
         progress.phase("mounting");
         let mut source = secret.with_bytes(|bytes| engine.mount(&root.join(BACKING), &source_view, bytes,
@@ -918,6 +953,7 @@ fn decrypt(api: &Arc<Api>, root: &FsPath, progress: &mut Progress) -> Result<(),
         sync_tree(&staged)?;
         if !plain_target(&record, &staged)? { return Err(error("vault_identity", "the plaintext snapshot did not retain the project identity")); }
         source.try_unmount().map_err(provider)?;
+        retire_runtime(&runtime)?;
         record.plain.as_mut().expect("plaintext conversion").ready = true;
         save_conversion(&record)?;
         if !original_plain_source(&record, root)? || exists(&record.saved)? { return Err(error("vault_recovery", "the encrypted source changed before cutover")); }
@@ -989,20 +1025,18 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     // published to apps. Windows lacks a qualified read-only provider: do not browse conversion
     // drives while this runs; Linux/macOS enforce a read-only source volume.
     let mut source_mount = None;
+    let mut source_runtime = None;
     let source = if let Some(old) = &old_secret {
         close(api, root)?;
-        let runtime = api.machines.hubs.home().calcifer().join("vaults").join(format!("source-{suffix}"));
-        fs::create_dir_all(&runtime).map_err(io)?;
-        platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
+        let runtime = project_runtime(root)?;
         let view = project_mount::view_path(&runtime).map_err(provider)?;
         let mounted = old.with_bytes(|bytes| engine.mount(&root.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: !cfg!(windows) })).map_err(provider)?;
         let path = mounted.view().to_owned();
         source_mount = Some(mounted);
+        source_runtime = Some(runtime);
         path
     } else { source };
-    let runtime = api.machines.hubs.home().calcifer().join("vaults").join(format!("stage-{suffix}"));
-    fs::create_dir_all(&runtime).map_err(io)?;
-    platform::durable::set_mode(&runtime, 0o700).map_err(provider)?;
+    let runtime = project_runtime(&staged)?;
     let view = project_mount::view_path(&runtime).map_err(provider)?;
     progress.phase("mounting");
     let mut target = secret.with_bytes(|bytes| engine.mount(&staged.join(BACKING), &view, bytes, MountOptions { idle_timeout: None, read_only: false })).map_err(provider)?;
@@ -1010,7 +1044,9 @@ fn convert(api: &Arc<Api>, root: &FsPath, keybag: Keybag, secret: ProjectSecret,
     walk_tree(&source, Some(target.view()), FsPath::new(""), managed, source_mount.is_some() && !cfg!(windows), progress)?;
     progress.phase("verifying");
     target.try_unmount().map_err(provider)?;
+    retire_runtime(&runtime)?;
     if let Some(mut source) = source_mount.take() { source.try_unmount().map_err(provider)?; }
+    if let Some(runtime) = source_runtime { retire_runtime(&runtime)?; }
     let receipt = Conversion { root: root.to_owned(), staged: staged.clone(), saved: saved.clone(), key_id: target_keybag.info().key_id, remove_source: old_secret.is_some() || !ask.preserve_plaintext, plain: None };
     progress.phase("committing");
     save_conversion(&receipt)?;
@@ -1079,6 +1115,11 @@ fn walk_tree(source: &FsPath, target: Option<&FsPath>, relative: &FsPath, manage
         let from = entry.path();
         let relative = relative.join(entry.file_name());
         let top = relative.components().next().and_then(|part| part.as_os_str().to_str());
+        if relative.components().count() == 1 && top == Some(RUNTIME_DIR)
+            && kind.is_dir() && fs::read(from.join("owner")).is_ok_and(|bytes| bytes == RUNTIME_MARKER)
+        {
+            continue;
+        }
         let apple_volume = managed && cfg!(target_os = "macos");
         // These are regenerated volume indexes, not project history. Fresh APFS volumes
         // already contain them. Other user data, including readable Trash/revision data,
