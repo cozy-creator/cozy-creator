@@ -264,8 +264,9 @@ function check(name, ok, detail) {
   await says('approve_undone', approvedLine, (held) => held === first);
   await redo();
   await says('approve_redone', approvedLine, (held) => held === approved);
-  await openBox(page, 'shot');
-  await page.locator(`.card.here .take[data-take="${other}"]`).dblclick();
+  // Unapproved as the CLI does it: on a picture a double tap only approves (06718eb3a; whether it should toggle is Paul's,
+  // cl-908), and what's checked here is the undo of it.
+  await edit('unapprove', 'shot');
   await says('unapprove_written', approvedLine, (held) => held === null);
   await undo();
   await says('unapprove_undone', approvedLine, (held) => held === approved);
