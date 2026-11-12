@@ -235,6 +235,9 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         info!("another Calcifer holds this home");
         return Ok(Stopped::AnotherHolds);
     };
+    // Old raw captures are disposable, unlike the authoritative run journal. A
+    // retained/unknown artifact remains visible through migration_required.
+    let _ = crate::legacy_cleanup::retire(&home.calcifer());
     crate::project::bind_calcifer(&home.calcifer()).map_err(failed)?;
     // Only the holder announces: its birth is what `Services::stop` must end.
     Services::new(home, &loaded.user_home)

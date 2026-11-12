@@ -20,6 +20,7 @@ mod files;
 mod hub;
 mod health;
 mod kept;
+mod legacy_cleanup;
 mod lanes;
 mod link;
 mod local;
