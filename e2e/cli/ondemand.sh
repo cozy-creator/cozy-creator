@@ -58,8 +58,8 @@ while read -r why; do check "ondemand-ahead: $why"; done < "$OUT/ondemand-ahead.
 # A call holds (resolved, its on-demand BiRefNet guessed behind every run's needs, so part of it may land first), then `cozy model
 # install` downloads Qwen3.5 0.8B's 1.6 GB, and while it does the call reads its on-demand BiRefNet (446 MB): its executor asks
 # TensorD for it (`model_need`), which fetches what of it is absent before every other download (order 0) and answers once it's
-# here, and the install goes on after. The isolated Hub's store is slowed to 30 MB/s (tc on the loopback, from its MinIO's port),
-# so the link is the bottleneck, as on a pod.
+# here: every other request gives way at its next bytes, so the emergency takes the link, and resumes after. The isolated Hub's
+# store is slowed to 30 MB/s (tc on the loopback, from its MinIO's port), so the link is the bottleneck, as on a pod.
 ondemand_need() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a started call's read of a model not here comes before every other download (cl-966)"

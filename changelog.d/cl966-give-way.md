@@ -1,0 +1,1 @@
+Every place among a machine's download requests goes to the most urgent range waiting first, and when every place is taken, a later job's request in flight gives its place up at its next bytes to an earlier job's (or to what a running call reads now) and asks again from the byte it reached: an emergency download takes the whole link and the others resume after.
