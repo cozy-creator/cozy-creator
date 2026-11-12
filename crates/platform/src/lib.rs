@@ -31,6 +31,8 @@ pub mod net;
 pub mod paths;
 #[cfg(feature = "seams")]
 pub mod process;
+#[cfg(feature = "seams")]
+pub mod private_exec;
 #[cfg(feature = "fetch")]
 pub mod release;
 #[cfg(feature = "seams")]
@@ -134,6 +136,7 @@ pub enum Seam {
     Service,
     Paths,
     FileWatch,
+    PrivateExecution,
 }
 
 impl fmt::Display for Seam {
@@ -151,6 +154,7 @@ impl fmt::Display for Seam {
             Self::Service => "user services",
             Self::Paths => "paths",
             Self::FileWatch => "file watching",
+            Self::PrivateExecution => "protected project execution",
         })
     }
 }
