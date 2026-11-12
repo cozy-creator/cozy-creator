@@ -524,7 +524,6 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
   useEffect(() => setExpanded(keptCount < rows.length ? keptCount : null), [view.continuing])
   const called = field.label.replace(/s$/, "")
   const least = field.min_items ?? 0
-  const total = totalOf(field, rows)
   const list = useRef<HTMLDivElement>(null)
   const [moving, setMoving] = useState<{ from: number; to: number } | null>(null)
   const movingNow = useRef<{ from: number; to: number } | null>(null)
@@ -617,14 +616,7 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
           </> : <>{handle}{body}{remove}</>}
         </div>
       })}
-      <div className="beats-last">
-        {total && (
-          <span className="total">
-            {total.sum} {total.member.unit ?? ""}
-          </span>
-        )}
-        {add}
-      </div>
+      <div className="beats-last">{add}</div>
     </div>
   )
 }
