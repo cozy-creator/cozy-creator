@@ -64,6 +64,14 @@ rendered poor heavy
 on=$(machine_of heavy); say "heavy ran on $on"
 [ "$on" = "$NAME" ] || fail "a model this computer has no GPU for went to ${on:-nothing}, not the rental $NAME"
 
+# What a render here alone asks first: its time here against the rental's card, by both their runs of heavy (cl-897). Before the busy
+# steps, so their placement can't hide it.
+run_page fit heavy > "$OUT/fit.json" 2> "$OUT/fit.err" || fail "fit: $(cat "$OUT/fit.err")"
+line=$(jq -r '.tools[0].line // empty' "$OUT/fit.json"); say "fit: $line"
+card=$(cozy --json machine ls | jq -r --arg n "$NAME" '.machines[] | select(.name == $n) | .status.gpus[0].name // empty' | sed -e 's/^NVIDIA //' -e 's/^GeForce //')
+grep -qE "^This computer has no GPU.* It takes about [0-9.]+ (s|min) here vs about [0-9.]+ (s|min) on a rented ${card}\.$" <<< "$line" \
+  || fail "fit for heavy didn't compare its time here with the rental's ${card:-card}: ${line:-$(cat "$OUT/fit.json")}"
+
 # The rental busy: a long still there, then a weightless one at Automatically.
 run_page render --on "$NAME" --queue long > "$OUT/long-queued.txt" 2>&1 || fail "long: $(tail -3 "$OUT/long-queued.txt")"
 # slow_runs <jq status test>: how many of long's runs stand so.
@@ -80,10 +88,4 @@ on=$(machine_of draw); say "the rental busy: second ran on $on"
 rendered busy-poor heavy_again
 on=$(machine_of heavy); say "the rental busy: heavy_again ran on $on"
 [ "$on" = "$NAME" ] || fail "with the rental busy, a model this computer has no GPU for went to ${on:-nothing}, not the rental $NAME"
-# What a render here alone asks first: its time here against the rental's card, by both their runs of heavy (cl-897).
-run_page fit heavy > "$OUT/fit.json" 2> "$OUT/fit.err" || fail "fit: $(cat "$OUT/fit.err")"
-line=$(jq -r '.tools[0].line // empty' "$OUT/fit.json"); say "fit: $line"
-card=$(cozy --json machine ls | jq -r --arg n "$NAME" '.machines[] | select(.name == $n) | .status.gpus[0].name // empty' | sed -e 's/^NVIDIA //' -e 's/^GeForce //')
-grep -qE "^This computer has no GPU.* It takes about [0-9.]+ (s|min) here vs about [0-9.]+ (s|min) on a rented ${card}\.$" <<< "$line" \
-  || fail "fit for heavy didn't compare its time here with the rental's ${card:-card}: ${line:-$(cat "$OUT/fit.json")}"
 say "PASS: a tie and what this computer would do poorly went to the rental; with it busy, a still went here; its fit compares here with the rental"
