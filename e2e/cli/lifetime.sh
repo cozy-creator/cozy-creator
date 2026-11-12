@@ -174,9 +174,6 @@ kept_restore() {
   if [ -f "$3" ]; then cp "$3" "$2"; else rm -f "$2"; fi
   systemctl --user restart cozy-calcifer || check "kept: systemctl --user restart cozy-calcifer failed"
 }
-# said <log> <run id> <words>: whether a line of the log names the run and says the words.
-said() { [ -n "$2" ] && awk -v id="$2" -v words="$3" 'index($0, id) && index($0, words) { found = 1 } END { exit !found }' "$1"; }
-
 # kept_preparing: a run accepted with access survives its machine's restart during its preparation (T4). Access stays
 # off the machine's disk (a provider token here; a Hub capability alike): the machine keeps the run as needs_access,
 # its sender's reattach sends that access again, and the same run prepares on and completes. Before, the machine
@@ -250,10 +247,10 @@ else
   run_wait "$OUT" kept || true
   J '.status == "completed"' "$OUT/kept.json" || check "kept: run ${n:-none} is $(jq -c '[.status, .reason]' "$OUT/kept.json" 2> /dev/null), not completed"
   grep -q '"words": *7\b' "$OUT/kept.ndjson" || check "kept: run ${n:-none}'s reply is not its own code's"
-  cozy machine logs local --lines 5000 > "$OUT/kept.tensord.log" || check "kept: machine logs local failed"
-  said "$OUT/kept.tensord.log" "$install" needs_access || check "kept: the restarted machine did not keep install $install as needs_access"
-  cozy machine logs local calcifer --lines 5000 > "$OUT/kept.calcifer.log" || check "kept: machine logs local calcifer failed"
-  said "$OUT/kept.calcifer.log" "$install" "its access sent again" || check "kept: Calcifer did not send install $install's access again"
+  # The install's own log, in its project: machine and Calcifer logs hold no project run ids.
+  (cd "$RUN_PROJECT" && cozy --full run watch "$install" --once) > "$OUT/kept.install.txt" 2>&1 || check "kept: run watch $install failed: $(tail -n 2 "$OUT/kept.install.txt")"
+  grep -q "kept it as needs_access" "$OUT/kept.install.txt" || check "kept: the restarted machine did not keep install $install as needs_access"
+  grep -q "its access sent again" "$OUT/kept.install.txt" || check "kept: Calcifer did not send install $install's access again"
   echo "kept: install $install was kept across the restart as needs_access, took its access again and completed; run ${n:-none} completed"
 fi
 trap - EXIT

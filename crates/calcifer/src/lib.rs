@@ -599,8 +599,12 @@ impl Calcifer {
         if submit.kind==::api::calcifer::Kind::Update && submit.spec.kind==v1::RunKind::Update && submit.out.is_none() && private_io::current().is_none() {
             return Ok(store::RunStore::Maintenance(self.maintenance_store()));
         }
-        // A model upload or other preparation without a project is not project data unless it publishes project code.
-        let local_source = matches!(submit.spec.source.as_ref(), Some(v1::Source::Local(_)));
+        // A model upload or other preparation without a project is not project data unless it publishes project code;
+        // code natively admitted as independent of every project is not.
+        let local_source = match submit.spec.source.as_ref() {
+            Some(v1::Source::Local(local)) => !crate::maintenance_source::admitted_object(self.maintenance_store(), &local.manifest),
+            _ => false,
+        };
         let hub_work = matches!(submit.kind, ::api::calcifer::Kind::Here | ::api::calcifer::Kind::Warm)
             && submit.spec.kind != v1::RunKind::Call && submit.out.is_none() && !local_source;
         if private_io::current().is_some()
@@ -1683,7 +1687,11 @@ impl Calcifer {
                     // A restart while it prepared kept it without its access, which stays off the
                     // machine's disk: the same spec sent again brings it, and it prepares on.
                     Ok((state, events)) if state.state == "needs_access" => {
-                        tracing::info!(run = %run.id, machine, "its machine restarted while it prepared: its access sent again");
+                        // Said in the run's own log: Calcifer's diagnostics hold no run ids.
+                        let said = format!("{machine} restarted while it prepared and kept it as needs_access: its access sent again");
+                        if let Ok(noted) = self.with_run_store(run.id.as_str(), |store| store.note(run.id.as_str(), "info", &said)) {
+                            self.publish(&run.id, noted);
+                        }
                         let _turn = sending.lock().await;
                         let Some(state) = self.deliver(run, machine, link).await? else { return Ok(()) };
                         (state, Some(events))

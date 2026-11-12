@@ -84,7 +84,7 @@ run_submit1() {
 
 run_start() {
   local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
-  rm -f "$dir/$name".{ndjson,err,json,number,pid}
+  rm -f "$dir/$name".{ndjson,err,json,number,pid,at}
   (cd "${RUN_PROJECT:-$PWD}" && "$@") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
   local pid=$!
   echo "$pid" > "$dir/$name.pid"
@@ -108,10 +108,13 @@ run_start() {
 
 # API warming stays available to fixtures after the public CLI option is removed.
 run_warm_submit() {
-  local dir=$1 name=$2 target=$3 stage=(); shift 3
+  local dir=$1 name=$2 target=$3 stage=() n; shift 3
   [[ $target != .* ]] || target="$PWD/$target"
   [ -z "${RUN_CODE_STAGE:-}" ] || stage=(--stage-code "$RUN_CODE_STAGE")
-  run_start "$dir" "$name" python3 "$RUN_WARM_API" --cozy "${COZY:-$RUN_CLI}" "${stage[@]}" "$target" "$@"
+  n=$(run_start "$dir" "$name" python3 "$RUN_WARM_API" --cozy "${COZY:-$RUN_CLI}" "${stage[@]}" "$target" "$@")
+  # A warm names no project: its run is read outside any (run_show).
+  echo "$HOME" > "$dir/$name.at"
+  [ -z "$n" ] || echo "$n"
 }
 
 run_warm_cell() {
@@ -149,10 +152,11 @@ run_wait() {
 
 # run_show <dir> <name> <number>: the run's record now, into <name>.json (kept as it was when the read fails). `run
 # show` exits non-zero for a run that failed or was canceled: the record is what it printed. A number names a run of
-# the project it was asked in: read where run_start asked it.
-
+# the project it was asked in: read where run_start asked it, or where <name>.at says.
 run_show() {
-  (cd "${RUN_PROJECT:-$PWD}" && "$RUN_CLI" --json --full run watch "$3" --once) > "$1/$2.json.new" 2> /dev/null || true
+  local at
+  at=$(cat "$1/$2.at" 2> /dev/null || echo "${RUN_PROJECT:-$PWD}")
+  (cd "$at" && "$RUN_CLI" --json --full run watch "$3" --once) > "$1/$2.json.new" 2> /dev/null || true
   if jq -e .status "$1/$2.json.new" > /dev/null 2>&1; then
     mv "$1/$2.json.new" "$1/$2.json"
   else

@@ -967,29 +967,19 @@ cozy --json run ls --limit 1 > "$OUT/limit.json" && J '(.runs | length) == 1' "$
 
 run_playback() {
 step "run playback API"
-# The link opens the browser player (GitHub Pages) with this machine, the output and a token in its fragment; the
-# token's expiry comes from the API query. The output is a weightless still.
-local holder=$HOME/.cozy/calcifer/calcifer.lock.holder base id
+# The player link hands a browser the output straight from its machine. A project's output goes only by an owned private
+# media transport, which that link is not: its playback is refused, naming its project route. The output is a weightless still.
+local holder=$HOME/.cozy/calcifer/calcifer.lock.holder base id project
 base="http://$(jq -r .address "$holder")"
 (cd "$here" && cell play-still ./project/draw.py/draw "instructions=play $RANDOM") || true
 first=$(cat "$OUT/play-still.number")
 name=$(jq -r '.output[0].name // empty' "$OUT/play-still.json") || true
-expiry() {  # the token's expiry (unix s), from the link's fragment (unpadded base64url JSON before its `.`)
-  local t; t=$(sed -n 's/.*[#&]c=\([^.&]*\).*/\1/p' <<< "$1" | tr '_-' '/+')
-  while (( ${#t} % 4 )); do t+==; done
-  base64 -d <<< "$t" 2> /dev/null | jq -r '.e // empty' 2> /dev/null || true
-}
 if [ "$first" = none ] || [ -z "$name" ]; then check "run playback API: no still to play"; else
-  id=$(cozy --json run watch "$first" --once | jq -r .id)
-  for expires in 30s 2h; do
-    url=$(curl --fail-with-body -sS -G -H "Authorization: Bearer $(jq -r .token "$holder")" \
-      --data-urlencode "output=$name" --data-urlencode "expires=$expires" "$base/v1/runs/$id/play" \
-      | tee "$OUT/play-$expires.json" | jq -r '.url // empty') || true
-    curl -fsS -o /dev/null "${url%%#*}" || check "run playback API: its player page ${url%%#*} does not answer"
-    [[ $url == *"o=$name"* && $url == *"a="* ]] || check "run playback API: the link names no machine or not output $name: $url"
-    want=$(( $(date +%s) + ${expires%[sh]} * $([ "${expires: -1}" = h ] && echo 3600 || echo 1) )) e=$(expiry "$url")
-    [ -n "$e" ] && [ $(( e - want )) -le 10 ] && [ $(( want - e )) -le 10 ] || check "run playback API expires $expires: the token expires at ${e:-?}, not about $want"
-  done
+  read -r id project < <(cozy --json run watch "$first" --once | jq -r '"\(.id) \(.project_id)"')
+  curl -sS -G -H "Authorization: Bearer $(jq -r .token "$holder")" -H 'cozy-project-storage: 3' \
+    --data-urlencode "output=$name" --data-urlencode "expires=30s" "$base/v1/projects/$project/runs/$id/play" > "$OUT/play.json" || true
+  J '.error.code == "project_play_unavailable"' "$OUT/play.json" \
+    || check "run playback API: project run $first's output was not refused project_play_unavailable: $(head -c 300 "$OUT/play.json")"
 fi
 }
 
@@ -1068,19 +1058,45 @@ bash -c ". '$OUT/completion.bash'; complete -p cozy" > /dev/null || check "compl
 echo "completion: ${shells[*]}"
 }
 
-# run.sh's last step before removal (after the steps that stop Calcifer): this computer's cozy (the candidate) updates itself to the newest release, as a person's `cozy update`
-# does: the binary is that release's and Calcifer restarted on it. (An older release's own update is its code,
-# frozen: run 40084450876 found 0.11.14's update waiting on Calcifer for good while an authorized machine served.)
+# The newest release's version (GitHub's newest non-prerelease vX.Y.Z), as `cozy update` with no version finds it.
+newest_release() {
+  curl -fsSL ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} "https://api.github.com/repos/cozy-creator/cozy-creator/releases?per_page=30" \
+    | jq -er '[.[] | select(.prerelease | not) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty | ltrimstr("v")'
+}
+
+# run.sh's last step before removal (after the steps that stop Calcifer): this computer's cozy (the candidate), having run, goes
+# back to the newest release as a person's `cozy update <version>` does. Calcifer's store is one way (version 8): the binary is
+# the release's, and its Calcifer refuses to start on the newer store, saying so. Putting the candidate back (a dev build's file
+# swapped in, `cozy doctor` restarting Calcifer on it, as `candidate_cozy` does) recovers: the project's runs and outputs are as
+# they were. (An older release's own update is its code, frozen: run 40084450876 found 0.11.14's update waiting on Calcifer for
+# good while an authorized machine served.)
 update_to_newest() {
-cp "$COZY" "$OUT/cozy-under-test"
+local newest back=$OUT/cozy-under-test candidate said before after
+cp "$COZY" "$back"
+candidate=$("$back" --version)
 unset COZY_DOWNLOAD_URL  # GitHub's newest release, not --release's files
-newest=$(curl -fsSL ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} "https://api.github.com/repos/cozy-creator/cozy-creator/releases?per_page=30" \
-  | jq -r '[.[] | select(.prerelease | not) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0] // empty') || true
+newest=$(newest_release) || true
 [ -n "$newest" ] || { check "update: no release to update to"; return; }
+run_history() { (cd "$RUN_PROJECT" && cozy --json run ls --limit 0) | jq -cS '[.runs[] | {id, number, status, target, output: [.output[]? | {name, index, sha256}]}] | sort_by(.number)'; }
+before=$(run_history) || { check "update: the candidate lists no run history"; return; }
 t0=$SECONDS
-cozy --json update "${newest#v}" > "$OUT/update.json" || check "update ${newest#v} failed: $(head -c 300 "$OUT/update.json")"
-echo "update ${newest#v}: $((SECONDS - t0)) s"
-[ "$(cozy --version)" = "cozy ${newest#v}" ] || check "update: cozy is $(cozy --version), not ${newest#v}"
-J '.calcifer == "restarted"' "$OUT/update.json" || check "update: Calcifer was not restarted ($(jq -c .calcifer "$OUT/update.json"))"
-fixture_calcifer | J --arg v "${newest#v}" '.calcifer.version == $v' || check "update: Calcifer does not run ${newest#v}"
+if cozy --json update "$newest" > "$OUT/update.json"; then
+  # A release that reads this store takes it as before.
+  J '.calcifer == "restarted"' "$OUT/update.json" || check "update: Calcifer was not restarted ($(jq -c .calcifer "$OUT/update.json"))"
+  fixture_calcifer | J --arg v "$newest" '.calcifer.version == $v' || check "update: Calcifer does not run $newest"
+  echo "update $newest: $((SECONDS - t0)) s; it reads this store"
+else
+  said=$(grep '^{' "$OUT/update.json" | jq -r 'select(.error) | [.error.message, .error.remedy // "", (.error.next // [] | join(" "))] | join(" ")' 2> /dev/null) || said=
+  [[ $said == *"Calcifer's store is at version 8: this cozy reads version 7"* || ( $said == *"version 8"* && $said == *"cozy update"* ) ]] \
+    || check "update $newest: not refused for Calcifer's version 8 store: $(tail -c 300 "$OUT/update.json")"
+  echo "update $newest: $((SECONDS - t0)) s; its Calcifer refused the version 8 store: $said"
+fi
+[ "$(cozy --version)" = "cozy $newest" ] || check "update: cozy is $(cozy --version), not $newest"
+CAND_COZY=$back install_candidate_binary
+cozy --json doctor > "$OUT/update-forward.json" || check "update: cozy doctor on the candidate again: $(tail -c 300 "$OUT/update-forward.json")"
+[ "$(cozy --version)" = "$candidate" ] || check "update: cozy is $(cozy --version), not the candidate $candidate"
+grep -q "cozy ${candidate#cozy }," "$OUT/update-forward.json" || check "update: Calcifer is not the candidate ${candidate#cozy } again"
+after=$(run_history) || { check "update: the candidate lists no run history again"; return; }
+[ "$after" = "$before" ] || check "update: the project's runs are not as they were: $(diff <(jq . <<< "$before") <(jq . <<< "$after") | head -20)"
+echo "update: back on ${candidate#cozy }, the project's $(jq length <<< "$after") runs and their outputs as they were"
 }
