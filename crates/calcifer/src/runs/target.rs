@@ -4,7 +4,6 @@
 use std::{
     collections::HashMap,
     path::Path,
-    str::FromStr,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -18,8 +17,6 @@ use api::{
     interface::Interface,
     target::Published,
 };
-
-use tensorfs::format::newest_by;
 
 use crate::api::Api;
 
@@ -239,17 +236,6 @@ struct Held {
     rc: bool,
 }
 
-/// Of `releases`, the newest a machine runs: on the RC's Runtime (`rc`), by PEP 440 alone, so a prerelease built for it
-/// (`0.10.0rc1`) is newer than the last final; elsewhere finals only, since a prerelease is built for the RC's Runtime: a
-/// machine held off the RC or on a released one never runs one, even one it installed while on the RC (cl-952). The tool
-/// list reads a machine's packages by the same rule, so a box offers the fields its run will take (se-128).
-pub(crate) fn newest_on<'a>(rc: bool, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-    match rc {
-        true => releases.into_iter().filter_map(|r| Some((pep440_rs::Version::from_str(r).ok()?, r))).max_by(|a, b| a.0.cmp(&b.0)).map(|(_, r)| r),
-        false => newest_by(releases.into_iter().filter(|release| !prerelease(release)), |release| release),
-    }
-}
-
 impl Held {
     /// The machine `on` names, or the rental `any` would take now, as it answers now (`wake`: `local` starts for it);
     /// nothing for a machine still to come.
@@ -259,9 +245,9 @@ impl Held {
         Self { machine, environments, hub: canonical(hub), rc }
     }
 
-    /// Of `releases`, the newest this machine runs (`newest_on`).
+    /// Of `releases`, the newest this machine runs (`api::release::newest`: prereleases only on the RC).
     fn newest<'a>(&self, releases: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-        newest_on(self.rc, releases)
+        api::release::newest(releases, self.rc)
     }
 
     /// The Hub's newest release of `read` for this machine, never a yanked one: a prerelease included on the RC's Runtime;
@@ -272,7 +258,7 @@ impl Held {
             return self.newest(open).map_or_else(|| read.newest(package), |release| Ok(release.to_owned()));
         }
         let latest = read.newest(package)?;
-        if !prerelease(&latest) {
+        if !api::release::prerelease(&latest) {
             return Ok(latest);
         }
         let machine = if self.machine.is_empty() { "<machine>" } else { self.machine.as_str() };
@@ -347,11 +333,6 @@ async fn unversioned(api: &Arc<Api>, hub: &str, package: &str, held: &Held) -> R
         false => Note { level: NoteLevel::Info, message: format!("{shown} {newest}, newer than {machine}'s {had}") },
     });
     Ok((newest, ReleaseFrom::Latest, said))
-}
-
-/// A PEP 440 pre- or dev release (`0.10.0rc1`): built for the open RC's Runtime (cl-922). An unparsable one is no prerelease.
-fn prerelease(release: &str) -> bool {
-    pep440_rs::Version::from_str(release).is_ok_and(|version| version.any_prerelease())
 }
 
 /// A Hub's one spelling.

@@ -196,17 +196,11 @@ fn reference_header<'a>(card: &'a types::ModelCard, reference: &ModelRef) -> Opt
     }
 }
 
-/// The release a named one resolves to: the newest of its series after it, as TensorD resolves it (xs-183, `published::newest_fix`).
+/// The release a named one resolves to: the newest public one of its series after it, as TensorD resolves it
+/// (`api::release::newest_fix`; a model's prerelease is no RC build, so `rc` is false).
 fn newest_fix<'a>(release: &'a str, card: &'a types::ModelCard) -> &'a str {
-    let version = |text: &str| text.parse::<pep440_rs::Version>().ok();
-    let Some(named) = version(release) else { return release };
-    let series = &named.release()[..named.release().len().saturating_sub(1).max(1)];
-    (card.releases.iter())
-        .filter(|held| held.visibility == api::model_ref::ReleaseVisibility::Public)
-        .filter_map(|held| Some((version(&held.version)?, held.version.as_str())))
-        .filter(|(v, _)| v.release().starts_with(series) && *v > named && (named.is_pre() || !v.any_prerelease()))
-        .max_by(|(a, _), (b, _)| a.cmp(b))
-        .map_or(release, |(_, text)| text)
+    let public = card.releases.iter().filter(|held| held.visibility == api::model_ref::ReleaseVisibility::Public).map(|held| held.version.as_str());
+    api::release::newest_fix(release, public, false).unwrap_or(release)
 }
 
 /// What `reference` is, as the run that names it loads it: a named release as the newest fix it resolves to, an unnamed one as the
