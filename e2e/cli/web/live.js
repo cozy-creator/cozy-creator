@@ -449,7 +449,8 @@ function replaceFile(at, text) {
   await page.mouse.click(1700, 1100);
   await readsBack('text', async () => (await held('live_held')).fields?.instructions, (text) => text?.includes('FROM-THE-PAGE'));
   await open('live_b');
-  await box('live_b').locator('.nm').dblclick();
+  // Open, its name is Focus's heading, a click on it renames it (cl-893, 0a5a13047).
+  await box('live_b').getByRole('button', { name: 'Rename node', exact: true }).click();
   await page.waitForSelector('.nm-field');
   await page.keyboard.type('live_c');
   await page.keyboard.press('Enter');
