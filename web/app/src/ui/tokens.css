@@ -41,6 +41,11 @@
   --ood: #744f00;
   --mak: #225a79;
   --bad: #9e321b;
+  /* A node's state dot, left of its name (Paul, 11-12): grey queued, blue running, green new and not looked at, red failed. */
+  --state-queued: #8a8277;
+  --state-running: #2f7fd8;
+  --state-unseen: #1f9d4c;
+  --state-failed: #c4361d;
   /* What's selected on the canvas: its own blue, apart from a check's green and hover's line (cl-926). */
   --select: #1f63e0;
   --select-gap: #fffaf0;
@@ -105,6 +110,10 @@
   --ood: #e6c14b;
   --mak: #5aa9ff;
   --bad: #f0625d;
+  --state-queued: #9a9ca3;
+  --state-running: #5aa9ff;
+  --state-unseen: #4ade80;
+  --state-failed: #f0625d;
   --select: #3d8bff;
   --select-gap: #0b0b0c;
   --select-glow: #3d8bff66;

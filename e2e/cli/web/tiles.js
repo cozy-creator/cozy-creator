@@ -207,6 +207,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
     const times = (text, word) => text.split(word).length - 1;
     check(`${z}_tool_once_beneath`, times(still.text, named(image)) === 1 && times(film.text, named(video)) === 1 && times(still.text, image.package_title ?? named(image)) === 1 && times(film.text, video.package_title ?? named(video)) === 1, { still: still.text, shot: film.text });
     check(`${z}_idle_say_no_render`, [still, film, plain].every((one) => one.lines === null && !one.wave), tiles);
+    if (slow) check(`${z}_rendering_dot_left_of_its_name`, /^state-dot\[(Rendering|Queued)\]$/.test(slow.head[0] ?? '') && slow.head[1] === 'nm:slow', slow.head);
     if (slow) check(`${z}_rendering_lines_under_with_cancel`, slow.lines?.length === 2 && slow.cancel === 'Cancel' && slow.wave && slow.ordered && Boolean(slow.tool) && SHAPE.test(slow.shape ?? ''), slow);
   }
   check('no_edit_or_pick_up_at_rest', (await page.locator('.react-flow__node button:text-is("Edit"), .react-flow__node button:text-is("Pick up from here")').count()) === 0);

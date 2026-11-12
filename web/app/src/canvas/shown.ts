@@ -50,8 +50,8 @@ const SMALL_LINE = 10.5 * 1.35 * 1.25
 const CLOSE = 30
 /** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
 const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
-/** A render's two lines (RunFace, on lines of 1.35) and its meter, 3 px at the frame's --ui, with the gaps over them. */
-const RUN = 2 * 10.5 * 1.35 * 1.35 + 3 * 1.35 + 7
+/** A render's two lines (RunFace, on lines of 1.35), with the gap over them. */
+const RUN = 2 * 10.5 * 1.35 * 1.35 + 4
 
 /** The room a box keeps clear under it (cl-932): its tool and shape, and if it renders, how its render goes, then the room the name of a box
  *  below it rises into. */

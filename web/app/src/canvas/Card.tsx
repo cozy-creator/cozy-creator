@@ -29,10 +29,10 @@ import { ImageVersions } from "./ImageVersions"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
 import { readableSurface } from "./readableSurface"
-import { RunFace, useArriving } from "./RunFace"
+import { RunFace, RunMeter, useArriving } from "./RunFace"
+import { StateDot, viewState } from "./StateDot"
 import type { Box } from "./graph"
 
-const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-current", making: "s-making", missing: "s-current", failed: "s-failed" }
 const WIDEST = 1600
 const LOWEST = 90
 /** How wide a picture is asked for while the canvas is drawn in on it. */
@@ -54,23 +54,6 @@ function TakeProgress({ view, run }: { view: ElementView; run: number }) {
   if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
   const fraction = mine?.progress?.done_fraction
   return <>{fraction == null ? "…" : `${Math.round(fraction * 100)}%`}</>
-}
-
-/** An approved box shows nothing wrong unless what it reads changed: a failure of something tried since is on its other face. */
-function dotOf(view: ElementView): string {
-  // A file on its way to Calcifer says nothing: it's there already, as far as anyone looking can tell (cl-918).
-  if (view.queued || view.asked !== undefined) return "s-making"
-  const asset = view.asset
-  if (asset?.standing === "making") return "s-making"
-  if (asset?.failure && !(asset.pinned && faceOf(view) === "media")) return "s-failed"
-  if (asset && shownOf(view)?.absent) return "s-missing"
-  return DOTS[asset?.standing ?? "current"] ?? "s-missing"
-}
-
-/** Takes that landed beside an approved one and haven't been looked at (cl-928): a green dot left of its name. */
-function UnseenDot({ count, noun }: { count: number; noun: string }) {
-  const said = `${count} new ${noun}${count === 1 ? "" : "s"} you haven't looked at`
-  return <span className="unseen-dot" role="img" aria-label={said} title={said} />
 }
 
 /** A button on a card does its one thing, and a field takes the click: neither selects it. */
@@ -222,7 +205,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             {version.main && !version.main.absent ? (
               <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />
             ) : null}
-            {asset.unseen?.includes(version.number) && <span className="unseen-dot take-unseen" role="img" aria-label="Not looked at yet" />}
+            {asset.unseen?.includes(version.number) && <span className="take-unseen" role="img" aria-label="Not looked at yet" />}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
@@ -619,18 +602,24 @@ function useShapeSaid(view: ElementView, name: string): string | null {
 
 /** Under a box at rest, as Paul drew it (cl-932, 11-12): its tool and its shape; then, while it renders, cl-898's two lines with Cancel and
  *  the whole job's meter. Nothing else: what it can do is in Focus. It hangs under it, in the room it keeps clear (`underOf`). */
+/** The run a box at rest says how goes, while it's on its way or its result is: `going`, and the run's number once there is one. */
+function useGoing(view: ElementView): { going: boolean; number?: number } {
+  const arriving = useArriving(view)
+  const asset = view.asset
+  const onItsWay = asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
+  return { going: Boolean(asset && !view.placing && (onItsWay || arriving !== undefined) && asset.rendering == null), number: onItsWay ? makingRun(view) : arriving }
+}
+
 function Under({ view, name, lite }: { view: ElementView; name: string; lite: boolean }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const arriving = useArriving(view)
+  const { going, number } = useGoing(view)
   const shape = useShapeSaid(view, name)
   const asset = view.asset
   if (!asset || view.placing) return null
   const tool = asset.tool ? tools.get(asset.tool) : undefined
-  // What makes it (Paul, 11-12: "I want to see what tools are attached").
+  // What makes it (Paul, 11-12: "I want to see what tools are attached"): once, here, as "MiniMax H3 · Shot".
   const named = asset.tool ? (tool ? toolName(tool) : asset.tool) : null
-  const onItsWay = asset.standing === "making" || Boolean(view.queued) || view.asked !== undefined
-  const going = (onItsWay || arriving !== undefined) && asset.rendering == null
   const line = !lite && (named || shape)
   if (!line && !going) return null
   return (
@@ -642,9 +631,15 @@ function Under({ view, name, lite }: { view: ElementView; name: string; lite: bo
           {shape && <span className="ratio-rest">{shape}</span>}
         </div>
       )}
-      {going && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} />}
+      {going && <RunFace view={view} name={name} number={number} />}
     </div>
   )
+}
+
+/** Along the top of a box at rest, how far its whole job is (Paul, 11-12). */
+function TileMeter({ view }: { view: ElementView }) {
+  const { going, number } = useGoing(view)
+  return going ? <RunMeter view={view} number={number} /> : null
 }
 
 const CardBody = memo(function CardBody({ name, width, focused = false, snapshot }: { name: string; width: number; focused?: boolean; snapshot?: ElementView }) {
@@ -826,7 +821,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
     >
       {!focused && (
       <div className="head">
-        {view.draft === undefined && unseen?.length ? <UnseenDot count={unseen.length} noun={asset?.noun ?? "take"} /> : null}
+        {/* What it's doing, left of its name (Paul, 11-12): grey queued, blue running, green new and not looked at, red failed. */}
+        {view.draft === undefined && <StateDot state={viewState(view)} unseen={unseen?.length ?? 0} noun={asset?.noun ?? "take"} />}
         {view.draft !== undefined ? (
           <NameField name={name} draft={view.draft} onCancel={cancel} />
         ) : (
@@ -884,8 +880,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
             </button>
           )
         )}
-        {/* At rest its render breathes around it and says how it goes under it: the dot says only a failure. */}
-        {(here || dotOf(view) === "s-failed") && <span className={`dot ${dotOf(view)}`} />}
       </div>
       )}
       <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text" && !(asset?.timeline && editing)}>{asset?.timeline && editing ? (
@@ -910,6 +904,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {here && !lite && asset && (asset.kind === "image" || (asset.kind === "video" && !asset.timeline && !editing)) && !view.placing && <ImageVersions name={name} view={view} width={width} />}
       {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {!here && !focused && <Under view={view} name={name} lite={lite} />}
+      {!here && !focused && <TileMeter view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
         <div className="rest-asking nodrag nopan nowheel">

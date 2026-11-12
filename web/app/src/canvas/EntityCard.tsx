@@ -6,8 +6,8 @@ import type { ElementNode } from "./CanvasStore"
 import { useElement } from "./context"
 import { Thumb } from "./Media"
 import { shownOf } from "./shown"
+import { StateDot } from "./StateDot"
 
-const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-ood", making: "s-making", missing: "s-missing", failed: "s-failed" }
 
 /** One link: that asset's picture and how it stands, live, whatever else the entity does. */
 function Slot({ field, target }: { field: string; target: string }) {
@@ -53,6 +53,7 @@ const EntityBody = memo(function EntityBody({ name }: { name: string }) {
   return (
     <div className="card entity" data-kind={entity.kind} onClick={buttonsOnly}>
         <div className="head">
+          <StateDot state={view.linked === "failed" ? "failed" : view.linked === "making" ? "running" : null} />
           <span className="nm" title={name}>
             {name}
           </span>
@@ -63,7 +64,6 @@ const EntityBody = memo(function EntityBody({ name }: { name: string }) {
               !
             </span>
           ) : null}
-          <span className={`dot ${DOTS[view.linked ?? "current"] ?? "s-missing"}`} />
         </div>
         <p className="desc">{entity.description}</p>
         <Slots links={entity.links} />

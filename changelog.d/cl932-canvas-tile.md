@@ -1,1 +1,3 @@
 A box on the canvas is what Paul drew: its name, its version (v1) and its ×; its picture; its tool and aspect ratio under it; and while it renders, its two lines with Cancel and the whole job's meter. Edit, Pick up from here and the add-on chips are gone from the canvas. Open, the box keeps them, and its models and LoRAs are listed there. A box keeps room clear under it for its tool, its shape and how its render goes.
+
+A node's state is one dot left of its name, on its tile, its Focus header, an entity and the Files list: grey queued, blue running, green made and not looked at, red failed, and none otherwise. The thin meter of the whole job runs along the top of a rendering box.

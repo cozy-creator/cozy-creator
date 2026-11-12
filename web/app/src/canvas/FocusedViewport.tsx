@@ -7,6 +7,7 @@ import type { CarriedFile } from "./CanvasStore"
 import { NameField } from "./NameField"
 import { makingRun, shownOf } from "./shown"
 import { RunFace, useArriving } from "./RunFace"
+import { StateDot, viewState } from "./StateDot"
 import { noHash } from "./text"
 import { useSignal } from "../ui/signal"
 import { pressBeganOutside } from "../ui/press"
@@ -73,6 +74,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
       <header className="focus-heading">
         <button type="button" className="tb" aria-label="Back to canvas" onClick={onClose}><Icon name="back" />Back to canvas</button>
         <div className="focus-title">
+          {view.draft === undefined && <StateDot state={viewState(view)} unseen={view.asset?.unseen?.length ?? 0} noun={view.asset?.noun ?? "take"} />}
           {view.draft !== undefined ? <NameField name={name} draft={view.draft} onCancel={() => store.patch(name, { draft: undefined })} /> : <button type="button" className="focus-name" aria-label="Rename node" title="Rename" onClick={() => store.openName(name)}>{view.name}</button>}
           {view.asset?.kind === "image" && (version !== undefined || Boolean(view.asset.prefixes?.length) || Boolean(view.asset.sha256)) && <span className="focus-version-label" aria-label="Image version">{version === undefined ? "New" : `v${version}`}</span>}
           {warnings.length > 0 && (
