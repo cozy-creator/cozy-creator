@@ -10,6 +10,7 @@ use api::{
 };
 
 mod account;
+mod boxes;
 mod calcifer_client;
 mod completion;
 mod context;
@@ -66,6 +67,8 @@ enum Command {
     Open(open::Args),
     /// Run a function in the current project.
     Run(run::Args),
+    /// Make and render the current project's boxes, as the page does.
+    Box(boxes::Args),
     /// Show the current project's health and warnings.
     Status(daemon::Status),
     /// Encrypt, lock or recover the current project.
@@ -172,6 +175,7 @@ fn usage_error(error: &clap::Error, arguments: &[std::ffi::OsString]) -> Error {
 async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
     match command {
         Command::Run(args) => run::exec(ctx, args).await,
+        Command::Box(args) => boxes::exec(ctx, args).await,
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,

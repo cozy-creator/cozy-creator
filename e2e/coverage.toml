@@ -216,6 +216,21 @@ test = "pr: run ls filters"
 "--limit" = "pr: run ls filters"
 ["run cancel"]
 test = "pr: a run followed, a snapshot, a cancel"
+["box add"]
+test = "pr: web-clibox, a clip and a picture as dropped files, then shots.py and shaped.py boxes; a taken name refused"
+"--tool" = "pr: web-clibox, shots.py's Shot, shaped.py's shot and up"
+"--input" = "pr: web-clibox, shaped.py's beats from a YAML file"
+["box set"]
+test = "pr: web-clibox, a box's words and seed, as its controls set them"
+"--input" = "pr: web-clibox, its words from a JSON file"
+["box render"]
+test = "pr: web-clibox, each box rendered here and followed until its takes landed, two at once by -n 2"
+"--on" = "pr: web-clibox, on local"
+"--redo" = "pr: web-clibox, segment 2 redone from the seam its run said; segment 1 and one past the take refused"
+"--take" = "pr: web-clibox, take 1's segment 2"
+"--continue" = "pr: web-clibox, another box going on from the end of shot.1"
+["box ls"]
+test = "pr: web-clibox, every box, then one box's takes with their pickups and seams"
 
 # Hidden (`hide = true`, in no --help): probed in the binary; `coverage.py --source` finds any not listed here.
 [hidden]
