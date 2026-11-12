@@ -11,12 +11,6 @@ struct Encrypt {
     /// Save the new recovery secret to a new, owner-only file. Otherwise it is shown once.
     #[arg(long, value_name = "FILE")]
     recovery_out: Option<PathBuf>,
-    /// Deprecated compatibility flag: verified source removal is already the default.
-    #[arg(long, hide = true, conflicts_with = "preserve_plaintext")]
-    remove_plaintext: bool,
-    /// Explicitly keep an unencrypted copy after verification. Its location is reported after encryption.
-    #[arg(long)]
-    preserve_plaintext: bool,
     /// Lock after this many seconds without activity; the project's runs and renders are activity. 0 disables idle expiry.
     #[arg(long, default_value_t = api::calcifer::project::DEFAULT_VAULT_IDLE_SECONDS)]
     idle: u64,
@@ -80,7 +74,7 @@ enum Command {
 }
 
 fn ask(action: &str) -> VaultAsk {
-    VaultAsk { action: action.into(), passphrase: None, recovery_secret: None, idle_timeout_s: None, max_duration_s: None, remove_plaintext: false, preserve_plaintext: false }
+    VaultAsk { action: action.into(), passphrase: None, recovery_secret: None, idle_timeout_s: None, max_duration_s: None }
 }
 
 pub(super) fn credential(path: Option<&PathBuf>, prompt: &str, confirm: bool) -> Result<String, Error> {
@@ -173,13 +167,7 @@ async fn change(ctx: &Context, path: &str, request: VaultAsk, recovery_out: Opti
         output::say(ctx, &format!("ended the project's runs {} before locking", runs.join(", ")));
     }
     show(ctx, &changed.vault);
-    if request.action == "encrypt" && changed.preserved_source.is_none() {
-        output::say(ctx, "The verified unencrypted source was removed.");
-    }
-    if let Some(source) = changed.preserved_source {
-        let protection = if request.action == "encrypt" { "this source is still plaintext" } else { "its original protection is unchanged" };
-        output::warn(&format!("source preserved at {}; {protection}", source.display()));
-    }
+    if request.action == "encrypt" { output::say(ctx, "The unencrypted project was removed."); }
     if let Some(secret) = changed.recovery_secret {
         show_recovery(ctx, &secret);
     }
@@ -259,15 +247,11 @@ fn show(ctx: &Context, status: &VaultStatus) {
 
 async fn encrypt(ctx: &Context, path: &str, args: Encrypt) -> Result<ExitCode, Error> {
     output::warn("Earlier independent plaintext copies, backups and shared cache copies are not erased. Protect or remove them separately.");
-    if args.preserve_plaintext { output::warn("An unencrypted copy of this project will be kept after encryption."); }
-    else { output::say(ctx, "The verified unencrypted source will be removed after encryption succeeds."); }
+    output::say(ctx, "The unencrypted project is removed once its encrypted copy is verified.");
     let mut request = ask("encrypt");
     request.passphrase = Some(credential(args.passphrase_file.as_ref(), "New project passphrase: ", true)?);
     request.idle_timeout_s = Some(args.idle);
     request.max_duration_s = Some(args.max_duration);
-    request.preserve_plaintext = args.preserve_plaintext;
-    // Older controllers only know the removal flag and otherwise preserve the source.
-    request.remove_plaintext = args.remove_plaintext || !args.preserve_plaintext;
     change(ctx, path, request, args.recovery_out).await
 }
 

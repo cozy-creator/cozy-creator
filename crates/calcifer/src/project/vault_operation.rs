@@ -52,14 +52,7 @@ fn valid_id(id: &str) -> bool {
 
 fn binding(named: &str, ask: &VaultAsk) -> String {
     // Do not hash a low-entropy passphrase into a durable offline guessing target.
-    // Default/legacy requests retain the existing binding. Explicit preservation
-    // extends it with a versioned policy marker, never silently reusing an old ask.
-    let input = if ask.preserve_plaintext {
-        serde_json::to_vec(&(named, &ask.action, ask.idle_timeout_s, ask.max_duration_s, ask.remove_plaintext, "preserve_plaintext_v1"))
-    } else {
-        serde_json::to_vec(&(named, &ask.action, ask.idle_timeout_s, ask.max_duration_s, ask.remove_plaintext))
-    }
-        .expect("vault operation metadata serializes");
+    let input = serde_json::to_vec(&(named, &ask.action, ask.idle_timeout_s, ask.max_duration_s)).expect("vault operation metadata serializes");
     hex::encode(Sha256::digest(input))
 }
 
@@ -202,7 +195,6 @@ fn sanitize(event: &mut VaultEvent, operation: &Operation) {
             changed.recovery_secret = None;
             changed.vault.view = None;
             changed.skipped_files.clear();
-            changed.preserved_source = None;
         } else {
             *event = VaultEvent::Failed { error: Error::new(Kind::Conflict, "project_locked", "the project was locked before its private result was read").next("cozy vault unlock") };
         }

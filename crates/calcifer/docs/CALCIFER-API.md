@@ -660,13 +660,9 @@ Omitting `idle_timeout_s` uses 1800 seconds (30 minutes) for creation/unlock.
 An explicit zero disables idle expiry; explicit durations and the separate absolute
 maximum remain unchanged. Existing unlocked sessions retain their current policy.
 
-For `encrypt`, verified source removal is the default even when the request omits
-`remove_plaintext` or sends it as false. Only `preserve_plaintext: true` keeps the
-original plaintext and returns `preserved_source`; it conflicts with `remove_plaintext: true`.
-The legacy removal field remains accepted. New clients also send it as true for default
-encryption so older controllers remove the source. Preservation is not valid for rekey/decrypt;
-rekey continues retiring the obsolete encrypted source after verification. A durable in-flight
-conversion retains its recorded cleanup policy across restart.
+`encrypt` and `rotate` always remove the source once the replacement is verified; no field keeps
+a plaintext copy. A conversion leaves no stage, moved-aside source, receipt or runtime folder
+behind; one interrupted is recovered at the next start or open.
 
 Conversion validates its source before copying media. A dangling legacy link
 under `files/` is omitted and returned in `skipped_files`; its project-state

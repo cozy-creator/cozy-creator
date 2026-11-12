@@ -45,7 +45,7 @@ projectvault() (
   before=$(sha "$P/files/movie.mp4")
 
   step "recovery output inside the project refuses before encryption"
-  if cozy --json vault --directory "$P" encrypt --passphrase-file "$secrets/initial" --recovery-out "$P/unsafe-recovery.txt" --remove-plaintext --idle 0 > "$work/backing-recovery-refused.json" 2> "$work/backing-recovery-refused.err"; then fail "encryption accepted a recovery secret beside its encrypted backing"; fi
+  if cozy --json vault --directory "$P" encrypt --passphrase-file "$secrets/initial" --recovery-out "$P/unsafe-recovery.txt" --idle 0 > "$work/backing-recovery-refused.json" 2> "$work/backing-recovery-refused.err"; then fail "encryption accepted a recovery secret beside its encrypted backing"; fi
   jq -e '.error.code == "vault_recovery_location"' "$work/backing-recovery-refused.json" > /dev/null || fail "backing recovery output did not return its location refusal"
   [ ! -e "$P/unsafe-recovery.txt" ] || fail "refused recovery output created a project file"
   in_project "$P" --json vault status > "$work/backing-refusal-status.json"
@@ -66,7 +66,7 @@ assert isinstance(deadline,int) and before+86400000 <= deadline <= after+8640000
 print(json.dumps({'requested_seconds':86400,'before_ms':before,'after_ms':after,'expires_at_ms':deadline,'passed':True}))
 PY_ENCRYPT_DEADLINE
   view=$(jq -r '.vault.view // empty' "$work/encrypted.json")
-  jq -e '.preserved_source == null and .stream_proof.default_source_removed' "$work/encrypted.json" > /dev/null || fail "default API encryption left a plaintext source"
+  jq -e '.stream_proof.default_source_removed' "$work/encrypted.json" > /dev/null || fail "API encryption left a plaintext source"
   [ -n "$view" ] && [ -d "$view" ] || fail "encrypted project has no mounted readable view"
   grep -q SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400 "$view/files/private-sentinel.txt" || fail "mounted file changed"
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "mounted video changed"
@@ -177,7 +177,6 @@ PY_BACKING_SCAN
 
   step "encrypt the decrypted project again"
   in_project "$P" --json vault encrypt --passphrase-file "$secrets/rekey" --recovery-out "$secrets/recovery4" --idle 0 > "$work/reencrypted.json"
-  jq -e '.preserved_source == null' "$work/reencrypted.json" > /dev/null || fail "default CLI encryption preserved plaintext"
   [ -z "$(find "$work" -maxdepth 1 -name '.cozy-project-source-*' -print -quit)" ] || fail "default CLI encryption left a source folder"
   view=$(jq -r '.vault.view // empty' "$work/reencrypted.json")
   [ "$(sha "$view/files/movie.mp4")" = "$before" ] || fail "re-encryption changed the video"
@@ -188,6 +187,110 @@ PY_BACKING_SCAN
   trap - EXIT
   rm -rf -- "$secrets"
   printf '{"ordinary":true,"mounted_media":true,"lock":true,"recovery":true,"recovery_output_backing_refused":true,"recovery_output_view_refused":true,"rekey":true,"expiry":true,"decrypt":true,"reencrypt":true,"synthetic_only":true}\n' > "$work/receipt.json"
+)
+
+# cl-886: encryption leaves nothing outside its vault. A conversion killed midway is recovered by the next start; Calcifer
+# never opens its own `.cozy-*` folders as projects; and no file outside the vault holds the project's plaintext.
+vault_leftovers() (
+  step "encryption leaves nothing behind: an interrupted conversion recovers; no leftover is listed; no plaintext outside the vault"
+  [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault leftovers: Linux runners only"; return 0; }
+  local work secrets L fake copy id marker before since view runtime
+  work=$(mktemp -d "$OUT/vault-leftovers.XXXXXX")
+  secrets=$(mktemp -d "$OUT/vault-leftovers-credentials.XXXXXX")
+  L=$work/leftovers fake=$work/.cozy-project-source-planted copy=$work/leftovers-copy
+  trap 'in_project "$L" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  printf '%s\n' 'synthetic leftovers passphrase' > "$secrets/pass"
+  chmod 600 "$secrets/pass"
+  # What a conversion may leave: its stage, the original it moves aside, its receipt and its mounts' folders.
+  left() {
+    find "$work" -maxdepth 1 \( -name '.cozy-vault-stage-*' -o -name '.cozy-project-source-*' -o -name '.cozy-vault-*.transaction.json' \) -print
+    find "$HOME/.cozy/calcifer/vaults" -mindepth 1 -maxdepth 1 \( -name 'stage-*' -o -name 'source-*' -o -name 'decrypt-*' -o -name 'new-*' \) -print 2> /dev/null || true
+  }
+  listed_clean() {
+    fixture_projects > "$work/ls-$1.json" || { check "leftovers: project list ($1) failed"; return; }
+    J '.projects | all(.path | test("/\\.cozy-") | not)' "$work/ls-$1.json" || check "leftovers: the project list ($1) shows a leftover: $(jq -c '[.projects[].path]' "$work/ls-$1.json")"
+  }
+  cozy --json new --unencrypted "$L" > "$work/created.json" || fail "leftovers: project new failed"
+  id=$(jq -r .id "$work/created.json")
+
+  # Calcifer's own folder is never a project, even one holding a whole project.
+  cp -a "$L" "$fake"
+  if in_project "$fake" --json status > "$work/own-folder.json" 2> "$work/own-folder.err"; then check "leftovers: a .cozy-* folder opened as a project"; fi
+  J '.error.code == "project_own_folder"' "$work/own-folder.json" || check "leftovers: a .cozy-* folder was not refused as Calcifer's own: $(head -c 300 "$work/own-folder.json")"
+  listed_clean planted
+  rm -rf -- "$fake"
+  # A copy of a project takes its own identity, and says so.
+  cp -a "$L" "$copy"
+  project_api "$copy" '' > "$work/copy.json" || check "leftovers: a copy did not open"
+  J --arg i "$id" '.id != $i and ((.warnings // []) | any(.message | contains("is a copy of")))' "$work/copy.json" \
+    || check "leftovers: a copy took a new identity without saying so: $(jq -c '{id, warnings}' "$work/copy.json")"
+  rm -rf -- "$copy"
+
+  since=$(python3 -c 'import time; print(time.time_ns())')
+  marker=$(python3 -c 'import secrets; print("CL886" + secrets.token_hex(16))')
+  mkdir -p "$L/files"
+  printf 'private %s\n' "$marker" > "$L/files/notes.txt"
+  # Large enough to be caught while it copies.
+  head -c 1073741824 /dev/urandom > "$L/files/large.bin"
+  before=$(sha "$L/files/notes.txt")
+
+  python3 "$E2E/cli/vault_interrupt.py" "$L" "$secrets/pass" > "$work/interrupted.json" || fail "leftovers: the conversion could not be interrupted midway"
+  for _ in $(seq 1 120); do
+    in_project "$L" --json vault status > "$work/recovered.json" 2> "$work/recovered.err" && [ -z "$(left)" ] && break
+    sleep 0.5
+  done
+  [ -z "$(left)" ] || check "leftovers: an interrupted conversion left: $(left | tr '\n' ' ')"
+  J '.encrypted == false and .state == "plain"' "$work/recovered.json" || check "leftovers: an interrupted conversion changed the project's storage: $(head -c 300 "$work/recovered.json")"
+  [ "$(sha "$L/files/notes.txt")" = "$before" ] || check "leftovers: an interrupted conversion changed the original"
+  listed_clean interrupted
+
+  cozy --json vault --directory "$L" encrypt --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" --idle 0 > "$work/encrypted.json" \
+    || fail "leftovers: encryption after recovery failed: $(head -c 300 "$work/encrypted.json")"
+  view=$(jq -r '.vault.view // empty' "$work/encrypted.json")
+  [ -n "$view" ] && grep -q "$marker" "$view/files/notes.txt" || check "leftovers: the encrypted project lost its file"
+  [ ! -e "$L/files" ] && [ ! -e "$L/project.db" ] || check "leftovers: plaintext stayed in the encrypted project's folder"
+  listed_clean encrypted
+  in_project "$L" --json vault lock > "$work/locked.json" || check "leftovers: lock failed: $(head -c 300 "$work/locked.json")"
+  J '.vault.state == "locked"' "$work/locked.json" || check "leftovers: lock did not finish"
+  [ -z "$(left)" ] || check "leftovers: encryption left: $(left | tr '\n' ' ')"
+  runtime=$HOME/.cozy/calcifer/vaults/$(printf '%s' "$id" | sha256sum | cut -c1-64)
+  [ ! -e "$runtime" ] || check "leftovers: lock left its mount folders: $(find "$runtime" -maxdepth 2 | tr '\n' ' ')"
+  listed_clean locked
+
+  # No file outside the vault, written since the marker was planted, holds it: the home (Calcifer's state, logs,
+  # inputs, caches and TensorFS stores) and the temp folders.
+  MARKER=$marker python3 - "$E2E/cli" "$since" > "$work/plaintext-scan.json" <<'PY_LEFTOVER_SCAN' || check "leftovers: the project's plaintext is outside its vault: $(head -c 600 "$work/plaintext-scan.json")"
+import json, os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from private_execution import contains
+since, marker = int(sys.argv[2]), os.environ["MARKER"].encode()
+roots = [Path.home(), Path("/tmp"), Path(os.environ.get("TMPDIR", "/tmp")), Path(os.environ.get("RUNNER_TEMP", "/tmp"))]
+if os.environ.get("TENSORFS_HOME"):
+    roots.append(Path(os.environ["TENSORFS_HOME"]))
+roots = sorted({root.resolve() for root in roots})
+leaked, seen, checked = [], set(), 0
+for root in roots:
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        for name in files:
+            path = Path(directory) / name
+            if path in seen or path.is_symlink():
+                continue
+            seen.add(path)
+            try:
+                if path.stat().st_mtime_ns < since or not path.is_file():
+                    continue
+                checked += 1
+                if contains(path, [marker]):
+                    leaked.append(str(path))
+            except OSError:
+                continue  # gone meanwhile, or another user's: nothing this run wrote
+print(json.dumps({"roots": [str(root) for root in roots], "checked_new_or_modified_files": checked, "leaked_paths": leaked}))
+assert checked > 0 and not leaked
+PY_LEFTOVER_SCAN
+  trap - EXIT
+  rm -rf -- "$secrets"
+  jq -c '{interrupted: .interrupted, stages_at_kill: .stages}' "$work/interrupted.json" > "$work/receipt.json"
 )
 
 # Same installed candidate, normal browser, no mock HTTP or account service.

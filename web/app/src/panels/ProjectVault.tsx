@@ -101,10 +101,8 @@ function VaultBody({ id }: { id: string }) {
   const [recovery, setRecovery] = useState("")
   const [credential, setCredential] = useState<"passphrase" | "recovery">("passphrase")
   const [newRecovery, setNewRecovery] = useState<string | null>(null)
-  const [preserved, setPreserved] = useState<string | null>(null)
   const [sourceRemoved, setSourceRemoved] = useState(false)
   const [ended, setEnded] = useState<number[]>([])
-  const [preservePlaintext, setPreservePlaintext] = useState(false)
   const [idle, setIdle] = useState("1800")
   const [maximum, setMaximum] = useState("0")
   const mounted = useRef(false)
@@ -120,7 +118,6 @@ function VaultBody({ id }: { id: string }) {
     }
   }, [status?.encrypted, status?.state])
   useEffect(() => {
-    if (status?.encrypted) setPreservePlaintext(false)
     if (!status || status.state === "plain") setSourceRemoved(false)
   }, [status?.encrypted, status?.state])
   useEffect(() => {
@@ -128,7 +125,7 @@ function VaultBody({ id }: { id: string }) {
   }, [status?.encrypted, status?.state, error])
 
   const change = (action: string, fields: Partial<VaultAsk> = {}) => ask.run(async () => {
-    if (action === "encrypt") { setSourceRemoved(false); setPreserved(null) }
+    if (action === "encrypt") setSourceRemoved(false)
     setPassphrase(""); setConfirmation(""); setRecovery("")
     setSkipped([])
     setOperation({ action, event: null })
@@ -169,8 +166,7 @@ function VaultBody({ id }: { id: string }) {
       }
       queries.setQueryData(vaultKey(id), answer.vault)
       if (answer.recovery_secret) setNewRecovery(answer.recovery_secret)
-      if (answer.preserved_source) setPreserved(answer.preserved_source)
-      if (action === "encrypt") { setSourceRemoved(!answer.preserved_source); if (!answer.preserved_source) setPreserved(null) }
+      if (action === "encrypt") setSourceRemoved(true)
       if (answer.skipped_files?.length) setSkipped(answer.skipped_files)
       delete answer.recovery_secret
       await queries.invalidateQueries({ queryKey: ["projects"] })
@@ -186,7 +182,7 @@ function VaultBody({ id }: { id: string }) {
     event.preventDefault()
     const fields = action === "unlock"
       ? credential === "recovery" ? { recovery_secret: recovery, ...timeout() } : { passphrase, ...timeout() }
-      : { passphrase, ...(action === "encrypt" ? { ...(preservePlaintext ? { preserve_plaintext: true } : {}), remove_plaintext: !preservePlaintext } : {}), ...timeout() }
+      : { passphrase, ...timeout() }
     void change(action, fields)
   }
   const timeoutControls = (
@@ -210,8 +206,7 @@ function VaultBody({ id }: { id: string }) {
     <div className="stack" data-vault-state={status.state}>
       <p>{!status.encrypted ? "Encryption is off. This project uses ordinary local storage." : unlocked ? "This project is unlocked." : status.state === "locking" ? "Locking: another application is still using a file. Close it and try again." : "This project is locked."}</p>
       <Failure error={ask.error} plain />
-      {sourceRemoved && !error && status.encrypted && unlocked && <p>The verified unencrypted source was removed.</p>}
-      {preserved && <p className="warn">An unencrypted copy was preserved at {preserved}. That copy is not protected.</p>}
+      {sourceRemoved && !error && status.encrypted && unlocked && <p>The unencrypted project was removed.</p>}
       {ended.length > 0 && <p className="muted">Locking ended the project's runs {ended.join(", ")}.</p>}
       {skipped.length > 0 && !error && (!status.encrypted || unlocked) && <div className="warn">
         <p>The operation finished, but these missing files were skipped:</p>
@@ -220,11 +215,9 @@ function VaultBody({ id }: { id: string }) {
       {newRecovery && status.encrypted && unlocked && <Recovery secret={newRecovery} onDone={() => setNewRecovery(null)} />}
       {!status.encrypted ? (
         <form className="stack" onSubmit={(event) => submit(event, "encrypt")}>
-          <p className="warn">Encryption removes this project's verified unencrypted source after conversion succeeds. Earlier independent plaintext copies, backups, and shared cache copies aren't erased; protect or remove them separately.</p>
+          <p className="warn">Encryption removes the unencrypted project once its encrypted copy is verified. Earlier independent plaintext copies, backups, and shared cache copies aren't erased; protect or remove them separately.</p>
           {passwordControls}
           {timeoutControls}
-          <label><input type="checkbox" checked={preservePlaintext} onChange={(event) => setPreservePlaintext(event.target.checked)} /> Keep an unencrypted copy after encryption</label>
-          <p className="muted">By default, the verified original is deleted after encryption succeeds. Select this only if you need an additional unencrypted copy. Project state and history are preserved.</p>
           <button className="tb primary" type="submit" disabled={ask.busy || !passphrase || passphrase !== confirmation || pending.count > 0}>Enable encryption</button>
         </form>
       ) : status.state === "locking" ? (

@@ -38,6 +38,7 @@ jq -n --arg binary "$(cozy --version)" --arg sha256 "$(sha256sum "$COZY" | cut -
   '{cozy:$binary,sha256:$sha256,requested_runtime:$runtime,requested_tensorfs:$tensorfs,hub:$hub,expected_test_origin:$expected}' > "$OUT/cohort.json"
 step "encrypted project backend"
 projectvault
+vault_leftovers
 step "encrypted project browser"
 vault_web
 finish "isolated projectvault"
