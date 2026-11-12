@@ -107,7 +107,8 @@ const PICS_WORK = /drawing|\d+ \/ \d+|step/i;
   // Its own preparation, asked at once, on a machine of its set, said on its box, ready before its turn.
   const asked = samples.find((sample) => sample.ahead);
   const ready = samples.find((sample) => sample.ahead?.ready);
-  const picDone = samples.find((sample) => !sample.pic_making.length && sample.s > 1);
+  const picFirst = samples.findIndex((sample) => sample.pic_making.length);
+  const picDone = picFirst < 0 ? undefined : samples.slice(picFirst).find((sample) => !sample.pic_making.length);
   seen.timeline = { ahead_asked_s: asked?.s ?? null, ahead_ready_s: ready?.s ?? null, pic_done_s: picDone?.s ?? null, clip_run_s: samples.at(-1).clip_making.length ? samples.at(-1).s : null, on: asked?.ahead.machine ?? null };
   // At once: while pic is made, not after; its first quote waits for nothing but its own package's description.
   const drawing = samples.find((sample) => PICS_WORK.test(sample.pic?.says ?? ''));
@@ -122,6 +123,10 @@ const PICS_WORK = /drawing|\d+ \/ \d+|step/i;
   const settled = (held) => held && (held.versions >= 1 || held.failure);
   const made = await until('both made or failed', state, (now) => !now.busy && ['pic', 'clip'].every((name) => settled(now.assets.find((held) => held.name === name))), RENDER_MS).catch(() => null);
   seen.failed = (made?.assets ?? []).filter((held) => ['pic', 'clip'].includes(held.name) && held.failure).map((held) => `${held.name}: ${held.failure.message}`);
+  // The video's own run, prepared ahead: from sent to started, it waits for nothing of its own.
+  const clipRun = samples.at(-1).clip_making[0];
+  const run = clipRun === undefined ? null : await api(`/v1/runs/${clipRun}`);
+  if (run?.started_at_ms) seen.timeline.clip_sent_to_started_s = Math.round((run.started_at_ms - run.created_at_ms) / 100) / 10;
   check('rendered', made !== null && seen.failed.length === 0, seen.failed);
 
   check('no_page_errors', errors.length === 0, errors);
