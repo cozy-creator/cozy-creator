@@ -14,6 +14,13 @@ fn absent(path: &Path) -> io::Result<bool> {
 }
 fn owned_directory(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if metadata.uid() != rustix::process::geteuid().as_raw() {
+            return Err(db_error("legacy managed cache has another native owner"));
+        }
+    }
     if !metadata.is_dir()
         || metadata.file_type().is_symlink()
         || platform::durable::canonical(path)? != path
@@ -90,6 +97,78 @@ fn source_copied(scope: &LocalPrivateStorage, manifest: &str) -> io::Result<()> 
         verify_object(&private, &object)?;
     }
     Ok(())
+}
+
+fn retire_runtime_caches(engine: &Path) -> io::Result<Vec<String>> {
+    let gpu = engine.join("gpu");
+    let uid = crate::launch_identity::euid();
+    let namespace = format!("u{uid}");
+    let home = gpu.join("home").join(&namespace);
+    let kernels = gpu.join("kernels").join(&namespace);
+    let jit = gpu.join("jit");
+    if absent(&home)? && absent(&kernels)? && absent(&jit)? {
+        return Ok(vec![]);
+    }
+    // Existing managed lifecycle proof, not an all-UID OS census or sandbox claim.
+    if platform::contain::Scope::namespace_processes(&platform::contain::namespace(engine))
+        .map_err(io::Error::from)?
+        != 0
+    {
+        return Ok(vec!["legacy_runtime_cache_writer_active".into()]);
+    }
+    let mut pending = vec![];
+    let _hold = if !absent(&gpu.join("kernels"))? {
+        owned_directory(&gpu.join("kernels"))?;
+        let hold = platform::durable::open_nofollow(
+            &gpu.join("kernels").join(format!(".{namespace}.hold")),
+            fs::OpenOptions::new().write(true),
+        );
+        match hold {
+            Ok(hold) if hold.try_lock().is_ok() => Some(hold),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && absent(&kernels)? => None,
+            _ => return Ok(vec!["legacy_runtime_cache_holder_active".into()]),
+        }
+    } else {
+        None
+    };
+    for path in [home, kernels] {
+        if absent(&path)? {
+            continue;
+        }
+        owned_directory(&path)?;
+        fs::remove_dir_all(&path)?;
+        platform::durable::sync_dir(path.parent().unwrap())?;
+    }
+    if !absent(&jit)? {
+        owned_directory(&jit)?;
+        let entries = fs::read_dir(&jit)?.collect::<io::Result<Vec<_>>>()?;
+        if entries.len() > 4096 {
+            return Err(db_error("legacy jit inventory limit"));
+        }
+        for entry in entries {
+            if !entry.file_type()?.is_dir()
+                || !entry.file_name().to_str().is_some_and(|name| hex(name, 32))
+            {
+                pending.push("legacy_jit_unknown_namespace".into());
+                continue;
+            }
+            owned_directory(&entry.path())?;
+            let leaves = fs::read_dir(entry.path())?.collect::<io::Result<Vec<_>>>()?;
+            if leaves.len() > 4096 {
+                return Err(db_error("legacy jit generation inventory limit"));
+            }
+            if leaves.iter().any(|leaf| {
+                !leaf.file_type().is_ok_and(|kind| kind.is_dir())
+                    || !leaf.file_name().to_str().is_some_and(|name| hex(name, 32))
+            }) {
+                pending.push("legacy_jit_unknown_generation".into());
+                continue;
+            }
+            fs::remove_dir_all(entry.path())?;
+            platform::durable::sync_dir(&jit)?;
+        }
+    }
+    Ok(pending)
 }
 
 pub(super) fn retire(
@@ -259,6 +338,9 @@ pub(super) fn retire(
             fs::remove_dir_all(&candidate)?;
             platform::durable::sync_dir(candidate.parent().unwrap())?;
         }
+    }
+    if pending.is_empty() {
+        pending.extend(retire_runtime_caches(engine)?);
     }
     if pending.is_empty() {
         // Only the machine's own cache: never a user cache or the image dependency seed.
