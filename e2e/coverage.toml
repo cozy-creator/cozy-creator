@@ -231,7 +231,7 @@ test = "pr: projectvault: conversion preserves mounted media and logical state; 
 "--passphrase-file" = "pr: projectvault: conversion reads its credential file"
 "--recovery-out" = "pr: projectvault: recovery is saved outside storage; unsafe destination refuses"
 "--idle" = "pr: projectvault: conversion disables idle expiry"
-"--max-duration" = "pr: projectvault: returned absolute expiry is within the submitted clock interval"
+"--max-duration" = "pr: projectvault: an ordinary project encrypted by the CLI keeps the absolute expiry it asked for"
 
 ["vault lock"]
 test = "pr: projectvault: reads and the old mounted view become inaccessible"
