@@ -20,6 +20,7 @@ import ssl
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import time
 from urllib.parse import quote
 
@@ -39,7 +40,7 @@ PHASES = frozenset({
     "old_subject_verify_outputs", "old_subject_verify_logs", "old_subject_verify_numbers",
     "old_subject_snapshot", "old_subject_stop", "candidate_install",
     "candidate_update", "candidate_doctor", "wrong_binding", "native_adoption",
-    "calcifer_crash", "calcifer_restart", "rehistory", "encrypt", "lock_scan",
+    "interrupted_import", "calcifer_crash", "calcifer_restart", "rehistory", "released_client", "encrypt", "lock_scan",
     "move_cold_retry", "complete",
 })
 ERROR_KINDS = frozenset({"usage", "validation", "not_found", "credential", "forbidden",
@@ -66,7 +67,14 @@ ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_f
     "old_retry_prepared", "input_retained", "retry_replayed", "retry_journal_exact",
     "retry_worker_exact", "old_client_refused", "old_client_journal_exact", "encrypted_identity",
     "moved_identity", "moved_retry_replayed", "moved_worker_exact", "scan_process",
-    "outside_project_canary", "scan_decoder_unavailable"})
+    "outside_project_canary", "scan_decoder_unavailable", "startup_schema_migrated",
+    "import_blocked_in_source_transaction", "import_crash_birth_ended", "import_crash_nothing_committed",
+    "import_crash_source_retained", "import_receipts_unique", "released_version", "released_status",
+    "released_run_submit", "released_file_upload", "released_run_ls", "released_run_show", "released_open",
+    "released_vault_lock", "released_vault_unlock", "released_new", "released_new_nothing_created",
+    "released_project_exact"})
+# A released client without project storage protocol 3 gets this typed refusal for project work.
+PROTOCOL_REFUSAL = "project_storage_protocol_required"
 
 
 class Failed(Failure):
@@ -185,9 +193,13 @@ def read_db(path: Path):
         connection.close()
 
 
-def schema() -> int:
-    with read_db(CALCIFER / "state.db") as connection:
+def read_schema(path: Path) -> int:
+    with read_db(path) as connection:
         return connection.execute("PRAGMA user_version").fetchone()[0]
+
+
+def schema() -> int:
+    return read_schema(CALCIFER / "state.db")
 
 
 def command(cli: Path, *words: str, cwd: Path | None = None, stdin: bytes | None = None, ok: bool = True) -> bytes:
@@ -623,6 +635,119 @@ def complete_migration(native: Native, reference: str, project: Path) -> None:
             check(connection.execute("SELECT count(*) FROM " + table).fetchone()[0] == 0, "migration_source_retired")
 
 
+def logical(path: Path) -> str:
+    """Every table's rows, order-free. A checkpoint can move WAL pages into the file with no write."""
+    with read_db(path) as connection:
+        digest = hashlib.sha256()
+        for (table,) in connection.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").fetchall():
+            rows = sorted(repr(row) for row in connection.execute('SELECT * FROM "' + table.replace('"', '""') + '"'))
+            digest.update(table.encode() + b"\0" + "\n".join(rows).encode() + b"\0")
+        return digest.hexdigest()
+
+
+def project_state(project: Path) -> dict[str, str]:
+    """Each SQLite database's logical content and every other file's bytes, by relative path (RAM only)."""
+    state = {}
+    for path in sorted(project.rglob("*")):
+        if path.is_symlink() or not path.is_file() or path.name.endswith(("-wal", "-shm", "-journal")):
+            continue
+        with path.open("rb") as source:
+            header = source.read(16)
+        state[str(path.relative_to(project))] = logical(path) if header == b"SQLite format 3\0" else digest(path)
+    return state
+
+
+def interrupted_import(native: Native, project: Path, reference: str, identifiers: list[str]) -> dict:
+    """SIGKILL the exact Calcifer inside a legacy import pass: its source transaction is open and its
+    first project write waits on the project database, which this fixture holds. Real contention only."""
+    state = CALCIFER / "state.db"
+    # Calcifer's startup scan moves project.db to the current schema without any project request.
+    wait(lambda: read_schema(project / "project.db"), lambda version: version == 4, "startup_schema_migrated", 120)
+    exact = birth(native.holder()["pid"])
+    blocker = sqlite3.connect(project / "project.db", timeout=0)
+    try:
+        blocker.execute("BEGIN IMMEDIATE")
+        marks = ",".join("?" * len(identifiers))
+        counts = lambda: (blocker.execute("SELECT count(*) FROM runs WHERE id IN (" + marks + ")", identifiers).fetchone()[0],
+                          blocker.execute("SELECT count(*) FROM journal_migrations WHERE source LIKE 'controller-v7:run:%'").fetchone()[0])
+        before = counts()
+        def read() -> None:
+            try:
+                native.raw("GET", project_route(reference, "/runs?limit=1"))
+            except BaseException:
+                pass  # Its Calcifer is killed mid-request; nothing of it may reach a log.
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        def source_held() -> bool:
+            probe = sqlite3.connect("file:" + quote(str(state), safe="/") + "?mode=rw", uri=True, timeout=0)
+            try:
+                probe.execute("BEGIN IMMEDIATE")
+                probe.rollback()
+                return False
+            except sqlite3.OperationalError:
+                return True
+            finally:
+                probe.close()
+        # Held continuously for a second: the import's source transaction, not a brief index write.
+        held = lambda: reader.is_alive() and all(source_held() and not time.sleep(0.25) for _ in range(4))
+        wait(held, lambda value: value, "import_blocked_in_source_transaction", 60)
+        kill_exact(exact)
+        wait(lambda: alive(exact), lambda value: not value, "import_crash_birth_ended", 90)
+        after = counts()
+        check(after == before, "import_crash_nothing_committed", runs=after[0], receipts=after[1], runs_before=before[0], receipts_before=before[1])
+    finally:
+        blocker.rollback()
+        blocker.close()
+    with read_db(state) as connection:
+        retained = connection.execute("SELECT count(*) FROM legacy_project_runs").fetchone()[0]
+    check(retained == len(identifiers), "import_crash_source_retained", runs=retained)
+    command(INSTALLED, "doctor")
+    return {"runs_before": before[0], "receipts_before": before[1]}
+
+
+def released_client_refused(released: Path, project: Path, run: dict, target: str, receipt: Receipt) -> None:
+    """A released 0.25.0 cozy talking to this Calcifer: a typed refusal naming `cozy update` for every
+    project command, never an internal error, and nothing in the project changes."""
+    check(subprocess.check_output([str(released), "--version"]).strip() == b"cozy 0.25.0", "released_version")
+    before = project_state(project)
+    fresh = Path(tempfile.mkdtemp(prefix="cozy-released-new-", dir=os.environ["RUNNER_TEMP"])) / "project"
+    request, source = project / "success.json", project / "source.txt"
+    asks = (("released_status", ("status",)),
+            ("released_run_submit", ("run", target, "--input", str(request), "--on", "local")),
+            ("released_file_upload", ("run", target, "--input", str(request), "--file", "source=" + str(source), "--on", "local")),
+            ("released_run_ls", ("run", "ls")),
+            ("released_run_show", ("run", "show", run["id"])),
+            ("released_open", ("open",)),
+            ("released_vault_lock", ("vault", "lock")),
+            ("released_vault_unlock", ("vault", "unlock", "--passphrase-file", "-")),
+            ("released_new", ("new", str(fresh))))
+    refused = 0
+    for case, words in asks:
+        result = subprocess.run([str(released), "--json", *words], cwd=project, input=os.urandom(16).hex().encode() + b"\n",
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        error = None
+        for line in [result.stdout, *result.stdout.splitlines()]:
+            try:
+                document = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(document, dict) and isinstance(document.get("error"), dict):
+                error = document["error"]
+        typed = error is not None and error.get("code") == PROTOCOL_REFUSAL and "cozy update" in (error.get("next") or [])
+        internal = error is not None and error.get("kind") == "internal"
+        if case == "released_status":
+            check(not internal and (result.returncode == 0 or typed), case, returncode=result.returncode, typed=typed, internal=internal)
+            continue
+        check(result.returncode != 0 and typed and not internal, case, returncode=result.returncode, typed=typed,
+              internal=internal, envelope=error is not None)
+        refused += 1
+    check(not (fresh / "project.db").exists(), "released_new_nothing_created")
+    after = project_state(project)
+    check(after == before, "released_project_exact", changed=sum(after.get(key) != value for key, value in before.items()),
+          added=len(set(after) - set(before)), removed=len(set(before) - set(after)))
+    receipt.add("released_025_client_refused", passed=True, commands=len(asks), refused=refused, internal_errors=0, project_unchanged=True)
+
+
 def outside_scan(markers: list[bytes], allowed: list[Path], receipt: Receipt, project: Path) -> dict:
     scanner = Scanner()
     for marker in markers:
@@ -735,6 +860,8 @@ def qualify(args, receipt: Receipt) -> None:
     checkpoint(receipt, "candidate_doctor")
     command(INSTALLED, "doctor")
     check(schema() == 8, "schema_v8")
+    checkpoint(receipt, "interrupted_import")
+    interrupted = interrupted_import(native, project, reference, list(results))
     checkpoint(receipt, "wrong_binding")
     bindings = wrong_binding_stays_pending(native, reference, project, original_worker, list(results), receipt)
     crash_before_controller_receipt(native, project, bindings, receipt)
@@ -756,6 +883,14 @@ def qualify(args, receipt: Receipt) -> None:
     check(rejected.returncode != 0, "old_client_refused")
     check(journal(project / "project.db", list(results)) == baseline, "old_client_journal_exact")
     receipt.add("canonical_legacy_migration", passed=True, runs=len(results), same_keys_and_numbers=True, exact_log_and_output_rows=True, old_retry_replayed=True, old_client_refused=True)
+    # The interrupted pass resumed: one import receipt and one worker custody receipt per run.
+    with read_db(project / "project.db") as connection:
+        imported = connection.execute("SELECT count(*) FROM journal_migrations WHERE source LIKE 'controller-v7:run:%'").fetchone()[0]
+        custody = connection.execute("SELECT count(*) FROM journal_migrations WHERE source LIKE 'worker-custody:%'").fetchone()[0]
+    check(imported == len(results) and custody == len(results), "import_receipts_unique", imported=imported, custody=custody)
+    receipt.add("legacy_import_crash_resume", passed=True, runs=len(results), exact_history=True, receipts=imported, **interrupted)
+    checkpoint(receipt, "released_client")
+    released_client_refused(args.released, project, run, provenance["target"], receipt)
 
     checkpoint(receipt, "encrypt")
     secret = os.urandom(32).hex().encode() + b"\n"
@@ -801,12 +936,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--old", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
+    parser.add_argument("--released", type=Path, required=True)
     parser.add_argument("--ready-file", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--runtime", default="")
     parser.add_argument("--tensorfs", default="")
     args = parser.parse_args()
-    args.old, args.candidate = args.old.resolve(), args.candidate.resolve()
+    args.old, args.candidate, args.released = args.old.resolve(), args.candidate.resolve(), args.released.resolve()
     receipt = Receipt(args.out / "legacy-receipt.json", digest(args.candidate))
     receipt.value["context"] = CONTEXT
     try:

@@ -62,6 +62,25 @@ privacy_stage=100
 privacy_old=$(find "$privacy_release/extracted" -type f -name cozy -print -quit)
 [[ -n $privacy_old ]] || privacy_fail
 chmod +x "$privacy_old"
+privacy_stage=105
+# The released 0.25.0 client, verified the same way: a later cell asks it to work on the migrated project.
+privacy_current_dir=$RUNNER_TEMP/containment-released-025
+mkdir -p "$privacy_current_dir/extracted"
+curl -fsSL --retry 3 "${privacy_url%/v0.24.0}/v0.25.0/$privacy_archive" -o "$privacy_current_dir/$privacy_archive"
+curl -fsSL --retry 3 "${privacy_url%/v0.24.0}/v0.25.0/$privacy_archive.sha256" -o "$privacy_current_dir/$privacy_archive.sha256"
+python3 - "$privacy_current_dir/$privacy_archive" "$privacy_current_dir/$privacy_archive.sha256" <<'VERIFY'
+import hashlib,re,sys
+from pathlib import Path
+archive, check = map(Path,sys.argv[1:])
+expected=check.read_text().split()[0]
+assert re.fullmatch(r'[0-9a-fA-F]{64}',expected)
+with archive.open('rb') as source:
+ assert hashlib.file_digest(source,'sha256').hexdigest()==expected.lower()
+VERIFY
+tar -xzf "$privacy_current_dir/$privacy_archive" -C "$privacy_current_dir/extracted" --no-same-owner
+privacy_current=$(find "$privacy_current_dir/extracted" -type f -name cozy -print -quit)
+[[ -n $privacy_current ]] || privacy_fail
+chmod +x "$privacy_current"
 privacy_stage=110
 privacy_ready=$(realpath "$privacy_out")/legacy-ready.json
 python3 - "$privacy_candidate" "$privacy_ready" <<'PY'
@@ -77,4 +96,4 @@ printf 'legacy_bootstrap_ready\n'
 exec bash "$here/../../skew/run.sh" --hub-bin "$privacy_hub" --cozy-bin "$privacy_old" \
   --runtime "$privacy_runtime" --tensorfs "$privacy_tensorfs" --admin --private-artifacts \
   --out "$privacy_out/hub" --command "$here/legacy.sh" -- \
-  --candidate "$privacy_candidate" --ready-file "$privacy_ready"
+  --candidate "$privacy_candidate" --ready-file "$privacy_ready" --released "$privacy_current"
