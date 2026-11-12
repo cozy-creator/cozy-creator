@@ -509,7 +509,7 @@ impl<'a> Follow<'a> {
     fn stopped(&mut self, job: Job) {
         let label = label(&job);
         let state = json!(job.state).as_str().unwrap_or_default().replace('_', " ");
-        let why = job.error.as_ref().map(|error| error.message.clone()).or_else(|| job.why.clone());
+        let why = job.error.as_ref().map(|error| error.message.clone()).or_else(|| job.why.clone()).map(|why| own(&job.asset, &why));
         let what = match &why {
             Some(why) => format!("{state}: {why}"),
             None => state,
@@ -557,9 +557,7 @@ impl<'a> Follow<'a> {
         if let Some(job) = self.failed.first() {
             let names: Vec<&str> = self.failed.iter().map(|job| job.asset.as_str()).collect();
             let mut error = job.error.clone().unwrap_or_else(|| Error::new(Kind::Unavailable, "render_stopped", format!("{} {}", job.asset, job.why.clone().unwrap_or_else(|| "stopped".into()))));
-            if self.failed.len() > 1 {
-                error.message = format!("{} did not render; {}: {}", and(&names), job.asset, error.message);
-            }
+            error.message = format!("{} did not render: {}", and(&names), own(&job.asset, &error.message));
             if error.next.is_empty() && let Some(run) = job.run {
                 error = error.next(format!("cozy run show {run}"));
             }
@@ -577,6 +575,12 @@ impl<'a> Follow<'a> {
         }
         Ok(ExitCode::SUCCESS)
     }
+}
+
+/// What's said of `name`, without its name and a `failed:` the line says already.
+fn own(name: &str, why: &str) -> String {
+    let why = why.strip_prefix(name).map_or(why, |rest| rest.trim_start_matches(':').trim_start());
+    why.strip_prefix("failed: ").unwrap_or(why).to_owned()
 }
 
 /// `shot_2 take 2`; a job with no number yet, its node.
