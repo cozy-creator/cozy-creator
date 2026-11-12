@@ -11,7 +11,8 @@ from typing import Annotated, Literal
 
 import msgspec
 from cozy_runtime.author import App, ImageFrame, Outputs
-from cozy_runtime.fields import Advanced, Image, Prompt, Range, When
+from cozy_runtime.fields import Advanced, Image, Prompt, Range
+from cozy_runtime.fields import When  # type: ignore[attr-defined]  # the RC Runtime's; the type check pins 0.45.0
 from cozy_runtime.media import ImageFile
 
 app = App()
