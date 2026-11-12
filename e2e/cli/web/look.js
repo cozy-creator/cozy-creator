@@ -117,7 +117,9 @@ async function died(why) {
         if (open) await open(page, theme);
         await settled(page);
         const box = await locate(page).evaluate((el, pad) => {
-          const r = el.getBoundingClientRect();
+          // A box's lines under it hang outside its node.
+          const rects = [el, ...el.querySelectorAll('.tile-under')].map((one) => one.getBoundingClientRect());
+          const r = { left: Math.min(...rects.map((one) => one.left)), top: Math.min(...rects.map((one) => one.top)), right: Math.max(...rects.map((one) => one.right)), bottom: Math.max(...rects.map((one) => one.bottom)) };
           return { x: Math.max(0, r.left - pad), y: Math.max(0, r.top - pad), right: Math.min(innerWidth, r.right + pad), bottom: Math.min(innerHeight, r.bottom + pad) };
         }, pad);
         const clip = { x: box.x, y: box.y, width: box.right - box.x, height: box.bottom - box.y };
@@ -254,10 +256,11 @@ async function died(why) {
     await tryStep('fresh v1', async () => {
       await post(`${at}/runs`, { names: ['fresh'], on: ['local'] });
       await until('fresh v1', () => versions('fresh'), (n) => n === 1, FIRST_RUN_MS);
-      await post(`${at}/approve`, { name: 'fresh', version: '1' });
-      await until('fresh approved', () => assetOf('fresh'), (row) => row.pinned && row.approved === 1);
+      const first = (await assetOf('fresh')).version;
+      await post(`${at}/approve`, { name: 'fresh', version: String(first) });
+      await until('fresh approved', () => assetOf('fresh'), (row) => row.pinned && row.approved === first);
       await post(`${at}/runs`, { names: ['fresh'], on: ['local'] });
-      await until('fresh v2 unseen', () => assetOf('fresh'), (row) => row.versions === 2 && row.unseen?.includes(2), FIRST_RUN_MS);
+      await until('fresh\'s next take unseen', () => assetOf('fresh'), (row) => row.versions === 2 && row.unseen?.length > 0, FIRST_RUN_MS);
     });
     await toastShot('toast-finished', 'fresh finished');
     await tryStep('broken fails', async () => {
@@ -277,12 +280,12 @@ async function died(why) {
   // The canvas: fitted (as it opens), at 100%, far out.
   const zoomMenu = async (page, item) => {
     if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
-    await page.getByRole('menuitem', { name: item, exact: true }).click();
+    await page.getByRole('menuitem', { name: item }).click();
     await settled(page);
   };
   const zoomOf = (page) => page.evaluate(() => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a);
   await shoot('canvas-fit', { open: (page) => leave(page), prepare: (page) => fitCanvas(page) });
-  await shoot('canvas-100', { prepare: async (page) => { await fitCanvas(page); await zoomMenu(page, 'Zoom to 100%'); } });
+  await shoot('canvas-100', { prepare: async (page) => { await fitCanvas(page); await zoomMenu(page, /^Zoom to 100%/); } });
   await shoot('canvas-far', {
     prepare: async (page) => {
       await fitCanvas(page);
@@ -362,7 +365,16 @@ async function died(why) {
   await both((page) => goto(page, projectPath));
 
   // Focus: a box rendering, watched as its take.
-  if (local) await shoot('focus-rendering', { open: (page) => openBox(page, 'slow') });
+  // Rendered again just before, so it's being made while looked at.
+  if (local) {
+    await tryStep('slow again', async () => {
+      await post(`${at}/cancel`, { names: ['waits'] }).catch(() => {});
+      await post(`${at}/runs`, { names: ['slow'], on: ['local'] });
+      await until('slow making again', () => assetOf('slow'), (row) => row?.making?.length > 0, FIRST_RUN_MS);
+      await paper.waitForTimeout(8000);
+    });
+    await shoot('focus-rendering', { open: (page) => openBox(page, 'slow') });
+  }
   await both(leave);
   // Done with what's being made.
   await tryStep('cancel', () => post(`${at}/cancel`, { names: ['slow', 'waits'] }));
