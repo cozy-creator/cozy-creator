@@ -513,7 +513,7 @@ function replaceFile(at, text) {
   const rowsGoing = new Promise((done) => (rowsIn = done));
   const rowsLate = (call) => (call.request().method() === 'PATCH' ? rowsGoing.then(() => call.fallback().catch(() => {})) : call.fallback());
   await page.route('**/v1/projects/*/assets/knobs', rowsLate);
-  await knobs.locator('.beat .mention-text').nth(0).click();
+  await page.locator('.card.here[data-asset="knobs"] .beat .mention-text').nth(0).click();
   await page.keyboard.press('End');
   await page.keyboard.type(' Page.');
   const theirBeats = (await of('knobs')).fields.beats.map((beat, i) => (i === 1 ? { ...beat, description: 'Second, theirs.' } : beat));
