@@ -82,7 +82,8 @@ const SCHEMA: &str = "
         started_at INTEGER,
         stays TEXT NOT NULL DEFAULT '[]',
         batch TEXT NOT NULL DEFAULT '',
-        job BLOB
+        job BLOB,
+        owner TEXT NOT NULL DEFAULT ''
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
     CREATE TABLE outputs (
@@ -316,11 +317,13 @@ fn sql_optional_text(row: &Row<'_>, column: usize, context: &str) -> rusqlite::R
     let text: Option<String> = row.get(column)?;
     optional_text(context, text).map_err(|error| sql_private(column, error))
 }
-fn sql_optional_path(row: &Row<'_>, column: usize, context: &str) -> rusqlite::Result<Option<PathBuf>> {
+fn sql_optional_path(row: &Row<'_>, column: usize, context: &str, owner:Option<&Path>) -> rusqlite::Result<Option<PathBuf>> {
     let encoded: Option<String> = row.get(column)?;
     encoded.map(|value| {
         let decoded = open_text(context, &value).map_err(|error| sql_private(column, error))?;
-        vault::payload_path(value.as_bytes(), Path::new(&decoded)).map_err(|error| sql_private(column, private_error(error)))
+        let path=vault::payload_path(value.as_bytes(), Path::new(&decoded)).map_err(|error| sql_private(column, private_error(error)))?;
+        if let Some(root)=owner { if path.is_relative() { if path.components().any(|part|!matches!(part,std::path::Component::Normal(_))) { return Err(sql_private(column,corrupt("owned output path"))); } return Ok(root.join(path)); } }
+        Ok(path)
     }).transpose()
 }
 
@@ -330,11 +333,22 @@ fn seal_at(path: &Path, context: &str, bytes: &[u8]) -> Result<Vec<u8>> {
 fn as_text(bytes: Vec<u8>) -> Result<String> {
     String::from_utf8(bytes).map_err(|_| corrupt("a protected text encoding"))
 }
+pub(crate) fn register_owner(conn:&Connection, root:Option<PathBuf>)->rusqlite::Result<()> {
+    conn.create_scalar_function("cozy_project_root",0,rusqlite::functions::FunctionFlags::SQLITE_UTF8,move |_| Ok(root.as_ref().map(|root|vault::logical(root).to_string_lossy().into_owned())))
+}
+fn stored_output_path(conn:&Connection,path:&Path)->Result<String> {
+    let root=conn.query_row("SELECT cozy_project_root()",[],|row|row.get::<_,Option<String>>(0))?;
+    let path=vault::logical(path);
+    match root {
+        None=>Ok(path.to_string_lossy().into_owned()),
+        Some(root)=>path.strip_prefix(Path::new(&root)).map(|relative|relative.to_string_lossy().into_owned()).map_err(|_|StoreError::Protected("project_output_scope".into())),
+    }
+}
+
 fn run_scope(conn: &Connection, id: &str) -> Result<(PathBuf, bool)> {
-    let (path, spec): (String, Vec<u8>) = conn.query_row("SELECT out_dir, spec FROM runs WHERE id = ?1", [id], |row| {
-        Ok((row.get(0)?, row.get(1)?))
-    })?;
-    Ok((PathBuf::from(path), vault::is_payload(&spec)))
+    let (path,spec,root):(String,Vec<u8>,Option<String>)=conn.query_row("SELECT out_dir,spec,cozy_project_root() FROM runs WHERE id=?1",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+    let path=root.map(|root|crate::project::landing(Path::new(&root))).unwrap_or_else(||PathBuf::from(path));
+    Ok((path,vault::is_payload(&spec)))
 }
 fn seal_run(conn: &Connection, id: &str, context: &str, bytes: &[u8]) -> Result<Vec<u8>> {
     let (path, protected) = run_scope(conn, id)?;
@@ -370,6 +384,8 @@ pub(crate) enum State {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RunRow {
+    pub project_root: Option<PathBuf>,
+    pub owner: String,
     pub id: RunId,
     pub number: u64,
     pub kind: Kind,
@@ -583,6 +599,19 @@ fn key_digest(key: &str) -> String {
 
 macro_rules! journal_methods {
     () => {
+    /// How many runs `machine` has been sent and hasn't settled, an update's aside: its work going.
+    pub(crate) fn working(&self, machine: &str) -> Result<u32> {
+        self.read(|conn| {
+            let going = conn.query_row(
+                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND kind <> 'update' AND state IN ('sent', 'accepted') AND (?2 IS NULL OR owner=?2)",
+                params![machine,self.owner_id()],
+                |r| r.get(0),
+            )?;
+            Ok(going)
+        })
+    }
+
+
     pub(crate) fn plan_after(&self, key: &str, step: &str) -> Result<()> {
         self.write(|tx| { tx.execute("INSERT OR REPLACE INTO after_steps(key_sha256,step) VALUES(?1,?2)", params![key_digest(key),step])?; Ok(()) })
     }
@@ -596,9 +625,9 @@ macro_rules! journal_methods {
     pub(crate) fn unplaced(&self) -> Result<Vec<RunRow>> {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM runs WHERE state = 'queued' AND machine IS NULL ORDER BY number"
+                "SELECT {RUN_COLUMNS} FROM runs WHERE state = 'queued' AND machine IS NULL AND (?1 IS NULL OR owner=?1) ORDER BY number"
             ))?;
-            let rows = statement.query_map([], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = statement.query_map([self.owner_id()], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             unlocked_rows(rows)
         })
     }
@@ -801,9 +830,9 @@ macro_rules! journal_methods {
             };
             tx.execute(
                 "INSERT INTO runs (id, number, idempotency_key, digest, hub, kind, target, machine, pinned, spec,
-                     out_dir, state, created_at, warnings, inputs, wants, agreed, stays, batch, accepted_at, started_at, job)
+                     out_dir, state, created_at, warnings, inputs, wants, agreed, stays, batch, accepted_at, started_at, job, owner)
                  VALUES (?1, (SELECT COALESCE(MAX(number), 0) + 1 FROM runs), ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                     ?10, ?18, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?19, ?19, ?20)",
+                     ?10, ?18, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?19, ?19, ?20, ?21)",
                 params![
                     new.id.as_str(),
                     key,
@@ -837,6 +866,7 @@ macro_rules! journal_methods {
                     state,
                     began,
                     new.job.as_deref().map(|job| seal_at(&new.out_dir, &run_context(new.id.as_str(), "job"), job)).transpose()?,
+                    new.project.as_deref().unwrap_or_default(),
                 ],
             )?;
             Ok((new.id.to_string(), true))
@@ -928,9 +958,9 @@ macro_rules! journal_methods {
     /// The machines' runs not yet settled, oldest first: what a starting Calcifer drives.
     pub(crate) fn unsettled(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' ORDER BY number")?;
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND (?1 IS NULL OR owner=?1) ORDER BY number")?;
             let ids = statement
-                .query_map([], |r| r.get::<_, String>(0))?
+                .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             ids.into_iter()
                 .map(|id| RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into())))
@@ -941,9 +971,9 @@ macro_rules! journal_methods {
     /// Calcifer's own runs not yet settled: those an earlier Calcifer stopped under, or that are going now.
     pub(crate) fn unsettled_here(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' ORDER BY number")?;
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' AND (?1 IS NULL OR owner=?1) ORDER BY number")?;
             let ids = statement
-                .query_map([], |r| r.get::<_, String>(0))?
+                .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             ids.into_iter()
                 .map(|id| RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into())))
@@ -1318,9 +1348,9 @@ macro_rules! journal_methods {
     pub(crate) fn runs_on_ended_machine(&self, machine: &str, served: bool, reason: &str) -> Result<Vec<(RunId, Event)>> {
         self.write(|tx| {
             let mut statement = tx.prepare(&format!(
-                "SELECT {RUN_COLUMNS} FROM runs WHERE machine = ?1 AND state <> 'settled' ORDER BY number"
+                "SELECT {RUN_COLUMNS} FROM runs WHERE machine = ?1 AND state <> 'settled' AND (?2 IS NULL OR owner=?2) ORDER BY number"
             ))?;
-            let rows = statement.query_map([machine], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = statement.query_map(params![machine,self.owner_id()], run_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             let mut events = vec![];
             for row in rows {
                 let row = row?;
@@ -1427,10 +1457,10 @@ macro_rules! journal_methods {
         self.read(|conn| {
             let mut statement = conn.prepare(&format!(
                 "SELECT DISTINCT runs.id, runs.number FROM outputs JOIN runs ON runs.id = outputs.run
-                 WHERE {OWED} ORDER BY runs.number"
+                 WHERE {OWED} AND (?1 IS NULL OR runs.owner=?1) ORDER BY runs.number"
             ))?;
             let rows = statement
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
+                .query_map([self.owner_id()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             rows.into_iter()
                 .map(|(id, number)| Ok((RunId::try_from(id).map_err(|e| StoreError::Corrupt(e.into()))?, number)))
@@ -1445,11 +1475,11 @@ macro_rules! journal_methods {
             let mut statement = conn.prepare(&format!(
                 "SELECT runs.id, runs.number, outputs.name, outputs.idx, outputs.length
                  FROM outputs JOIN runs ON runs.id = outputs.run
-                 WHERE runs.machine = ?1 AND {OWED}
+                 WHERE runs.machine = ?1 AND {OWED} AND (?2 IS NULL OR runs.owner=?2)
                  ORDER BY runs.number, outputs.created_seq"
             ))?;
             let rows = statement
-                .query_map([machine], |r| {
+                .query_map(params![machine,self.owner_id()], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, i64>(1)? as u64,
@@ -1518,7 +1548,7 @@ macro_rules! journal_methods {
         self.write(|tx| {
             tx.execute(
                 "UPDATE outputs SET exported_rev = ?4, path = ?5, width = ?6, height = ?7, measured_ms = ?8 WHERE run = ?1 AND name = ?2 AND idx = ?3",
-                params![run, name, index, rev as i64, seal_run_text(tx, run, &output_context(run, name, index, rev, "path"), &vault::logical(path).to_string_lossy())?, measured.width, measured.height, measured.duration_ms as i64],
+                params![run, name, index, rev as i64, seal_run_text(tx, run, &output_context(run, name, index, rev, "path"), &stored_output_path(tx,path)?)?, measured.width, measured.height, measured.duration_ms as i64],
             )?;
             export_settled(tx, run, name, index, rev, true)
         })
@@ -1547,6 +1577,7 @@ macro_rules! journal_methods {
 impl Store {
     journal_methods!();
 
+    fn owner_id(&self)->Option<&str> { None }
     fn admit_submission(&self, new: &NewRun) -> Result<()> {
         if new.project.is_some() { return Err(StoreError::Protected("project_store_required".into())); }
         Ok(())
@@ -1567,6 +1598,7 @@ impl Store {
             std::fs::create_dir_all(parent).map_err(|e| StoreError::Corrupt(e.to_string()))?;
         }
         let mut writer = Connection::open(path)?;
+        register_owner(&writer,None)?;
         let mode: String = writer.pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))?;
         let wal = mode.eq_ignore_ascii_case("wal");
         // In WAL mode a commit doesn't sync: `write` flushes for it (`Durable`).
@@ -1605,6 +1637,7 @@ impl Store {
         crate::state::project_codes(&writer)?;
         private(path);
         let reader = Connection::open(path)?;
+        register_owner(&reader,None)?;
         reader.pragma_update(None, "query_only", "ON")?;
         reader.pragma_update(None, "temp_store", "MEMORY")?;
         let mut journal = path.as_os_str().to_owned();
@@ -1620,7 +1653,7 @@ impl Store {
     pub(crate) fn migration_required(&self) -> Result<bool> {
         // These are old authoritative sources, not an invitation to sweep a
         // home directory. Unreadable and unattributed files stay pending.
-        for name in ["projects.json", "files"] {
+        for name in ["projects.json", "files", "here.json", "checkpoints.json"] {
             match std::fs::symlink_metadata(self.legacy_home.join(name)) {
                 Ok(_) => return Ok(true),
                 Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
@@ -1628,8 +1661,7 @@ impl Store {
             }
         }
         match std::fs::read_dir(self.legacy_home.join("after")) {
-            Ok(mut entries) if entries.next().is_some()=>return Ok(true),
-            Ok(_)=>{},
+            Ok(mut entries)=>{ if entries.next().is_some() {return Ok(true);} },
             Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
             Err(_)=>return Ok(true),
         }
@@ -1645,13 +1677,24 @@ impl Store {
             // Older source caches have no explicit owner. Do not silently call
             // them independent maintenance merely because the SQL rows moved.
             if conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_runs')",[],|row|row.get::<_,bool>(0))? {
-                for directory in [self.legacy_home.join("local"),self.legacy_home.parent().unwrap_or(&self.legacy_home).join("cache").join("digests")] {
-                    match std::fs::read_dir(directory) {
-                        Ok(mut entries) if entries.next().is_some()=>return Ok(true),
-                        Ok(_)=>{},
-                        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
-                        Err(_)=>return Ok(true),
-                    }
+                match std::fs::read_dir(self.legacy_home.parent().unwrap_or(&self.legacy_home).join("cache").join("digests")) {
+                    Ok(mut entries)=>if entries.next().is_some() {return Ok(true);},
+                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                    Err(_)=>return Ok(true),
+                }
+                match std::fs::read_dir(self.legacy_home.join("local")) {
+                    Ok(entries)=>for entry in entries {
+                        let Ok(entry)=entry else {return Ok(true);};
+                        let Some(name)=entry.file_name().to_str().map(str::to_owned) else {return Ok(true);};
+                        let Some(hex)=name.strip_suffix(".json").filter(|hex|hex.len()==64&&hex.bytes().all(|byte|byte.is_ascii_hexdigit())) else {return Ok(true);};
+                        let digest=format!("sha256:{hex}");
+                        let admitted=conn.query_row("SELECT EXISTS(SELECT 1 FROM maintenance_source_objects WHERE digest=?1)",[&digest],|row|row.get::<_,bool>(0))?;
+                        if !admitted {return Ok(true);}
+                        let Ok(bytes)=std::fs::read(entry.path()) else {return Ok(true);};
+                        if Digest::of(&bytes).to_string()!=digest {return Ok(true);}
+                    },
+                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                    Err(_)=>return Ok(true),
                 }
                 match std::fs::read_dir(self.legacy_home.join("code")) {
                     Ok(entries)=>for entry in entries {
@@ -2073,18 +2116,6 @@ impl Store {
         })
     }
 
-    /// How many runs `machine` has been sent and hasn't settled, an update's aside: its work going.
-    pub(crate) fn working(&self, machine: &str) -> Result<u32> {
-        self.read(|conn| {
-            let going = conn.query_row(
-                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND kind <> 'update' AND state IN ('sent', 'accepted')",
-                [machine],
-                |r| r.get(0),
-            )?;
-            Ok(going)
-        })
-    }
-
     /// Whether an update of `machine` is yet to end: what's sent to it waits for that.
     pub(crate) fn updating(&self, machine: &str) -> Result<bool> {
         self.read(|conn| {
@@ -2236,11 +2267,11 @@ const STAYS: &str =
     "EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
 
 /// An output owed to this computer: its newest revision neither landed nor given up, no checkpoint, and none that stays.
-const OWED: &str = "outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
+pub(super) const OWED: &str = "outputs.exported_rev IS NOT outputs.rev AND outputs.failed_rev IS NOT outputs.rev AND outputs.checkpoint IS NULL
     AND NOT EXISTS (SELECT 1 FROM runs held, json_each(held.stays) WHERE held.id = outputs.run AND json_each.value = outputs.name)";
 
 const OUTPUT_COLUMNS: &str = "name, idx, rev, length, digest, media_type, done, path, exported_rev,
-    CASE WHEN failed_rev = rev THEN export_error END, checkpoint, run";
+    CASE WHEN failed_rev = rev THEN export_error END, checkpoint, run, cozy_project_root()";
 
 fn checkpoint_ref(row: &Row, column: usize, context: &str) -> rusqlite::Result<Option<v1::CheckpointRef>> {
     sql_optional_text(row, column, context)?
@@ -2255,7 +2286,8 @@ fn output_row(r: &Row) -> rusqlite::Result<OutputRow> {
     let (run, name, index, rev): (String, String, u32, u64) =
         (r.get(11)?, r.get(0)?, r.get::<_, i64>(1)? as u32, r.get::<_, i64>(2)? as u64);
     let exported = r.get::<_, Option<i64>>(8)?.map(|rev| rev as u64);
-    let path = sql_optional_path(r, 7, &output_context(&run, &name, index, exported.unwrap_or(rev), "path"))?;
+    let root=r.get::<_,Option<String>>(12)?.map(PathBuf::from);
+    let path = sql_optional_path(r, 7, &output_context(&run, &name, index, exported.unwrap_or(rev), "path"),root.as_deref())?;
     let export_error = sql_optional_text(r, 9, &output_context(&run, &name, index, rev, "export_error"))?;
     let checkpoint = checkpoint_ref(r, 10, &output_context(&run, &name, index, rev, "checkpoint"))?;
     Ok(OutputRow {
@@ -2304,7 +2336,7 @@ fn put_machine_in(tx: &Transaction, machine: &MachineRow) -> Result<()> {
 
 const RUN_COLUMNS: &str = "id, number, kind, target, hub, machine, pinned, spec, out_dir, state, cancel_requested,
     cursor, machine_state, status, reason_code, reason, state_seq, created_at, accepted_at, settled_at, warnings,
-    inputs, outcome, wants, agreed, started_at";
+    inputs, outcome, wants, agreed, started_at, cozy_project_root(), owner";
 
 const RUN_LIST_SCOPE: &str = "FROM runs WHERE number < ?1
     AND (?2 IS NULL OR CASE state WHEN 'accepted' THEN 'in_progress' WHEN 'settled' THEN status ELSE 'queued' END = ?2)
@@ -2405,6 +2437,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
     let reason_code: Option<String> = r.get(14)?;
     let reason: Option<String> = r.get(15)?;
     let out_dir: String = r.get(8)?;
+    let project_root=r.get::<_,Option<String>>(26)?.map(PathBuf::from);
     let warnings: String = r.get(20)?;
     let inputs: String = r.get(21)?;
     let spec: Vec<u8> = r.get(7)?;
@@ -2412,7 +2445,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
     let wants: Option<String> = r.get(23)?;
     let agreed: Option<String> = r.get(24)?;
     Ok((|| {
-        let out_dir = match vault::payload_root(&spec).map_err(private_error)? { Some(root) => crate::project::landing(&root), None => PathBuf::from(out_dir) };
+        let out_dir = match project_root.as_ref() {Some(root)=>crate::project::landing(root),None=>match vault::payload_root(&spec).map_err(private_error)? { Some(root)=>crate::project::landing(&root),None=>PathBuf::from(out_dir) }};
         let spec = open_bytes(&run_context(&id, "spec"), &spec)?;
         let target = open_text(&run_context(&id, "target"), &target)?;
         let warnings = open_text(&run_context(&id, "warnings"), &warnings)?;
@@ -2421,6 +2454,8 @@ fn run_row(r: &Row) -> rusqlite::Result<Result<RunRow>> {
         let reason = optional_text(&run_context(&id, "reason"), reason)?;
         let outcome = outcome.map(|bytes| open_bytes(&run_context(&id, "outcome"), &bytes)).transpose()?;
         Ok(RunRow {
+            project_root,
+            owner:r.get(27)?,
             id: RunId::try_from(id).map_err(|_| corrupt("a run id"))?,
             number: r.get::<_, i64>(1)? as u64,
             kind: Kind::parse(&kind).ok_or_else(|| corrupt("a run kind"))?,
@@ -2850,11 +2885,13 @@ fn put_output(tx: &Transaction, row: &RunRow, product: &v1::Product) -> Result<V
 }
 
 /// The API path that serves an output.
-fn output_url(number: u64, name: &str, index: u32) -> String {
+fn output_url(row:&RunRow, name: &str, index: u32) -> String {
     let mut url = url::Url::parse("http://calcifer/").expect("a base URL");
-    url.path_segments_mut()
-        .expect("a base URL")
-        .extend(["v1", "runs", &number.to_string(), "outputs", name]);
+    if let Some(root)=&row.project_root {
+        url.path_segments_mut().expect("a base URL").extend(["v1","projects",&crate::project::project_id(root),"runs",row.id.as_str(),"outputs",name]);
+    } else {
+        url.path_segments_mut().expect("a base URL").extend(["v1","runs",&row.number.to_string(),"outputs",name]);
+    }
     match index {
         0 => url.path().to_owned(),
         index => format!("{}?index={index}", url.path()),
@@ -2876,10 +2913,10 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         let digest: String = r.get(4)?;
         let done: bool = r.get(7)?;
         let rev = r.get::<_, i64>(2)? as u64;
-        let path = sql_optional_path(r, 8, &output_context(row.id.as_str(), &name, index, rev, "path"))?;
+        let path = sql_optional_path(r, 8, &output_context(row.id.as_str(), &name, index, rev, "path"),row.project_root.as_deref())?;
         let checkpoint = checkpoint_ref(r, 10, &output_context(row.id.as_str(), &name, index, rev, "checkpoint"))?;
         let media_type: String = r.get(5)?;
-        let url = (path.is_some() && checkpoint.is_none()).then(|| output_url(row.number, &name, index));
+        let url = (path.is_some() && checkpoint.is_none()).then(|| output_url(row, &name, index));
         let measured = |column| -> rusqlite::Result<Option<u32>> { Ok(Some(r.get::<_, i64>(column)? as u32).filter(|n| *n > 0)) };
         let (measured_ms, grown_us) = (r.get::<_, i64>(14)? as u64, r.get::<_, i64>(15)? as u64);
         let id = match index {
@@ -3009,6 +3046,7 @@ pub(crate) enum RunStore<'a> {
 }
 impl RunStore<'_> {
     journal_methods!();
+    fn owner_id(&self)->Option<&str> { match self {Self::Maintenance(_)=>None,Self::Project(store)=>Some(store.project_id())} }
     fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         match self { Self::Maintenance(store) => store.read(f), Self::Project(store) => store.read(f) }
     }

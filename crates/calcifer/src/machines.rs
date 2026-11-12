@@ -1074,6 +1074,15 @@ impl Machines {
             Err(e) => return warn!("reading unplaced runs: {e}"),
         };
         for run in unplaced {
+            let owner=lock(&self.calcifer.run_owners).get(run.id.as_str()).cloned().flatten();
+            if let Some(owner)=owner {
+                let requested=On::from(run.wants.clone());
+                match crate::private_io::check_project_placement(owner.project_id(),owner.root(),&[requested]) {
+                    Ok(on)=>if let Some(On::Machine(name))=on.into_iter().next() { let _=self.calcifer.place(&run.id,&name); },
+                    Err(error)=>{ let _=self.calcifer.fail(&run.id,::api::calcifer::Reason {code:error.code,message:error.message,..Default::default()}); },
+                }
+                continue;
+            }
             let gpus = run.spec.gpus;
             let placed = match run.wants.as_str() {
                 // It waits for a rental that fits while none does.

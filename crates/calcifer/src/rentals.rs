@@ -336,6 +336,9 @@ impl Machines {
         shape: Shape,
         run: Option<RunId>,
     ) -> Result<(Ask, bool), Error> {
+        if run.as_ref().is_some_and(|id| matches!(self.calcifer.run_store(id.as_str()),Ok(crate::store::RunStore::Project(_)))) {
+            return Err(Error::new(Kind::Conflict,"project_remote_execution_unavailable","project work cannot create a global rental intent"));
+        }
         let origin = config::Origin::parse(hub)?;
         let mut intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
             "disk_gb": shape.disk_gb});

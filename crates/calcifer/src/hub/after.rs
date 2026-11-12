@@ -159,7 +159,7 @@ async fn retire(
     });
     let mut retired = vec![];
     for env in older {
-        let submit = SubmitRun { project: None,
+        let submit = SubmitRun { project: crate::private_io::current().map(|scope|scope.storage.project_id),
             agreed: None,
             stays: vec![],
             on: On::Machine(machine.to_owned()),
@@ -173,7 +173,7 @@ async fn retire(
             },
             inputs: vec![],
             held: vec![],
-            out: None,
+            out: crate::private_io::current().map(|scope|crate::project::landing(&crate::project::vault::logical(&scope.storage.view_root))),
             warnings: vec![],
         };
         let key = format!("retire-{id}-{}", env.installation);
@@ -197,7 +197,7 @@ pub(crate) async fn settled(calcifer: &std::sync::Arc<Calcifer>, key: &str, subm
     let mut events = calcifer.subscribe();
     let run = calcifer.submit(key, submit).await?.run;
     loop {
-        if let Some(row) = calcifer.store.run(run.id.as_str())?
+        if let Some(row) = calcifer.run_store(run.id.as_str())?.run(run.id.as_str())?
             && row.state == crate::store::State::Settled
         {
             return calcifer.record(&row);

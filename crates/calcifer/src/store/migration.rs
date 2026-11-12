@@ -114,6 +114,9 @@ impl Store {
             let mut logs=Rows::load(&source,"run_logs","run=?1",&id)?;
             let mut asks=Rows::load(&source,"asks","run=?1",&id)?;
             let key=text(&runs.values[0][runs.column("idempotency_key")?])?.to_owned();
+            if matches!(&runs.values[0][runs.column("machine")?],Value::Text(machine) if machine!="local") && text(&runs.values[0][runs.column("state")?])?!="settled" {
+                return Err(StoreError::Protected("project_remote_history_migration_pending".into()));
+            }
             let after=if table_exists(&source,"legacy_project_after_steps")? { Some(Rows::load(&source,"after_steps","key_sha256=?1",&key_digest(&key))?) } else { None };
             let after_name=format!("{}.json",key_digest(&key));
             let after_file=match std::fs::read(self.legacy_home.join("after").join(&after_name)) {
@@ -128,6 +131,8 @@ impl Store {
             for field in ["spec","outcome","target","warnings","inputs","reason_code","reason","job"] {
                 runs.open(0,field,|_| Ok(run_context(&id,field)))?;
             }
+            runs.columns.push("owner".into());
+            runs.values[0].push(Value::Text(project.project_id().into()));
             let out_column=runs.column("out_dir")?;
             runs.values[0][out_column]=Value::Text(landing.to_string_lossy().into_owned());
             for index in 0..outputs.values.len() {
@@ -141,8 +146,10 @@ impl Store {
                 // Retained output bytes must already be within this project's custody.
                 // Unknown external trees/exports remain pending instead of being discarded.
                 let path=outputs.column("path")?;
-                if let Value::Text(path)=&outputs.values[index][path] {
-                    if !vault::logical(Path::new(path)).starts_with(root) { return Err(StoreError::Protected("project_output_migration_pending".into())); }
+                if let Value::Text(value)=&outputs.values[index][path] {
+                    let owned=vault::logical(Path::new(value));
+                    let relative=owned.strip_prefix(root).map_err(|_|StoreError::Protected("project_output_migration_pending".into()))?;
+                    outputs.values[index][path]=Value::Text(relative.to_string_lossy().into_owned());
                 }
             }
             let seq=logs.column("seq")?;
@@ -240,6 +247,22 @@ impl Store {
     }
 
     fn migrate_legacy_files(&self, project:&Destination<'_,'_>)->Result<()> {
+        let _source_files=self.writer.lock().unwrap_or_else(|error|error.into_inner());
+        for name in ["here.json","checkpoints.json"] {
+            let path=self.legacy_home.join(name);
+            match std::fs::read(&path) {
+                Ok(bytes)=>{
+                    let valid=if name=="here.json" {serde_json::from_slice::<crate::state::OldHere>(&bytes).is_ok()} else {serde_json::from_slice::<crate::state::OldHeaders>(&bytes).is_ok()};
+                    if !valid || std::fs::read(&path).ok().as_deref()!=Some(bytes.as_slice()) {return Err(StoreError::Protected("legacy_cache_migration_pending".into()));}
+                    // These two documented caches are wholly recomputable. No
+                    // request key, after step or source/input bytes are swept.
+                    std::fs::remove_file(&path).map_err(|_|StoreError::Protected("legacy_cache_migration_pending".into()))?;
+                    platform::durable::sync_dir(&self.legacy_home).map_err(|_|StoreError::Protected("legacy_cache_migration_pending".into()))?;
+                },
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                Err(_)=>return Err(StoreError::Protected("legacy_cache_migration_pending".into())),
+            }
+        }
         // Keep each original JSON project record in its own durable project receipt.
         // Other projects and malformed/unknown source files remain untouched.
         let index_path=self.legacy_home.join("projects.json");
@@ -273,7 +296,7 @@ impl Store {
             let Ok(record)=serde_json::from_str::<serde_json::Value>(&receipt) else { continue; };
             if let Some(after)=record.get("after").filter(|value|!value.is_null()) {
                 let name=after.get("name").and_then(serde_json::Value::as_str).ok_or_else(||corrupt("after migration receipt"))?;
-                if name.len()!=69 || !name.ends_with(".json") || !name[..64].bytes().all(|byte|byte.is_ascii_hexdigit()) { return Err(corrupt("after migration receipt")); }
+                if name.len()!=69 || !name.ends_with(".json") || !name.as_bytes()[..64].iter().all(|byte|byte.is_ascii_hexdigit()) { return Err(corrupt("after migration receipt")); }
                 let digest=after.get("digest").and_then(serde_json::Value::as_str).ok_or_else(||corrupt("after migration receipt"))?;
                 let path=self.legacy_home.join("after").join(name);
                 match std::fs::read(&path) {

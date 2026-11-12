@@ -227,7 +227,7 @@ impl Calcifer {
     pub(crate) async fn still_holds(&self, digest: &str, machine: &str) -> bool {
         let Ok(Some((run, item))) = self.making_scoped(digest, machine) else { return false };
         // Its export going: `bring` waits for it, so a reader bound now has it (cl-815).
-        let owed = self.with_run_store(run.id.as_str(), |store| store.outputs_to_export(run.id.as_str())).unwrap_or_default();
+        let owed = self.row_store(&run).and_then(|store|store.outputs_to_export(run.id.as_str())).unwrap_or_default();
         if owed.iter().any(|owed| owed.name == item.name && owed.index == item.index) {
             return true;
         }
@@ -257,7 +257,7 @@ impl Calcifer {
         // On its way here already: that export's landing, and no second read of it.
         let mut events = self.subscribe();
         let mut exporting = false;
-        while (self.with_run_store(run.id.as_str(), |store| store.outputs_to_export(run.id.as_str())).map_err(|e| e.to_string())?.iter()).any(|owed| owed.name == item.name && owed.index == item.index) {
+        while (self.row_store(&run).and_then(|store|store.outputs_to_export(run.id.as_str())).map_err(|e| e.to_string())?.iter()).any(|owed| owed.name == item.name && owed.index == item.index) {
             exporting = true;
             tokio::select! {
                 _ = events.recv() => {}
@@ -265,7 +265,7 @@ impl Calcifer {
             }
         }
         if exporting {
-            let now = self.with_run_store(run.id.as_str(), |store| store.output(run.id.as_str(), &item.name, item.index)).map_err(|e| e.to_string())?;
+            let now = self.row_store(&run).and_then(|store|store.output(run.id.as_str(), &item.name, item.index)).map_err(|e| e.to_string())?;
             return match now.and_then(|now| now.export_error) {
                 Some(why) => Err(why),
                 None => Ok(()),
@@ -420,8 +420,9 @@ impl Calcifer {
             return Err(Failure::Lost(format!("its machine {name} ended: {reason}")));
         }
         let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start")))?;
-        let owner=lock(&self.run_owners).get(run.id.as_str()).cloned().ok_or_else(||Failure::Again("project storage owner is unavailable".into()))?;
+        let owner=self.row_owner(run).map_err(|_|Failure::Again("project storage owner is unavailable".into()))?;
         if let Some(owner)=owner {
+            if run.owner!=owner.project_id() { return Err(Failure::Refused("copied execution history is inert".into())); }
             return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Refused(error.code));
         }
         Ok(link)
@@ -438,7 +439,7 @@ impl Calcifer {
     ) -> Result<(), Failure> {
         let mut events = self.subscribe();
         let superseded = || -> Result<bool, Failure> {
-            let now = self.with_run_store(run.id.as_str(), |store| store.output(run.id.as_str(), &item.name, item.index))?;
+            let now = self.row_store(&run).and_then(|store|store.output(run.id.as_str(), &item.name, item.index))?;
             Ok(now.is_none_or(|now| now.rev != item.rev))
         };
         if superseded()? {
@@ -669,7 +670,7 @@ pub(crate) async fn serve(
     let number = row.number;
     let (item, file, landed_folder) = {
         let _placing = lock(&api.calcifer.exports.placing);
-        let item = api.calcifer.run_store(row.id.as_str())?.output(row.id.as_str(), name, index)?;
+        let item = api.calcifer.row_store(&row)?.output(row.id.as_str(), name, index)?;
         let item = item.ok_or_else(|| {
             let message = format!("run {number} has no output {name} at index {index}");
             Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run watch {number}")))

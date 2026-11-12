@@ -510,6 +510,13 @@ pub(crate) fn find_maintenance(api: &Api, key: &str) -> Result<RunRow, Refusal> 
     Ok(row)
 }
 
+pub(crate) fn find_current(api:&Api,key:&str)->Result<RunRow,Refusal> {
+    let Some(scope)=crate::private_io::current() else { return find_maintenance(api,key); };
+    let store=api.calcifer.project_store(&scope.storage.project_id)?;
+    let row=store.run(key)?.or(match key.parse() { Ok(number)=>store.run_by_number(number)?,Err(_)=>None });
+    row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","this project knows no such run"))
+}
+
 pub(crate) async fn find_scoped(api: &Arc<Api>, project: Option<&str>, key: &str) -> Result<RunRow, Refusal> {
     let journal = match project {
         Some(project) => crate::store::RunStore::Project(api.projects.store(api, project).await.map_err(Refusal)?),
@@ -594,7 +601,7 @@ pub(crate) async fn show(
     if query?.0.detail.as_deref() != Some("full") {
         return Ok(Json(api.calcifer.record(&row)?));
     }
-    let mut run = api.calcifer.run_store(row.id.as_str())?.detail(&row)?;
+    let mut run = api.calcifer.row_store(&row)?.detail(&row)?;
     let record = api.calcifer.record(&row)?;
     (run.waiting, run.progress, run.queue_position) = (record.waiting, record.progress, record.queue_position);
     (run.project, run.project_id, run.stalled) = (record.project, record.project_id, record.stalled);
@@ -613,6 +620,7 @@ pub(crate) async fn cancel(
     if row.state == RunState::Settled {
         return Ok((StatusCode::OK, Json(api.calcifer.record(&row)?)));
     }
+    if api.calcifer.row_owner(&row)?.as_ref().is_some_and(|owner|owner.project_id()!=row.owner) { return Err(refuse(Kind::Conflict,"copied_run_inert","copied execution history cannot cancel the original execution")); }
     let run = api.calcifer.cancel(&row.id)?;
     let run =
         run.ok_or_else(|| refuse(Kind::NotFound, "run_not_found", format!("no run {key}")))?;
@@ -673,10 +681,14 @@ pub(crate) async fn events(
     let tail = api.calcifer.subscribe();
     let row = find_scoped(&api, path.project(), key).await?;
     let mut pending = VecDeque::from(
-        api.calcifer.run_store(row.id.as_str())?.events_after(row.id.as_str(), starting_after)?,
+        api.calcifer.row_store(&row)?.events_after(row.id.as_str(), starting_after)?,
     );
-    pending.extend(api.calcifer.live(&row.id));
+    let owner=api.calcifer.row_owner(&row)?;
+    let inert=owner.as_ref().is_some_and(|owner|owner.project_id()!=row.owner);
+    if !inert { pending.extend(api.calcifer.live(&row.id)); }
     let follow = Follow {
+        owner,
+        inert,
         vault_token: crate::project::vault::readable_token(&row.out_dir),
         id: row.id,
         pending,
@@ -692,6 +704,8 @@ pub(crate) async fn events(
 
 /// One SSE subscriber's place in its run's stream.
 struct Follow {
+    owner:Option<crate::project::RunOwner>,
+    inert:bool,
     vault_token: Option<Arc<std::sync::atomic::AtomicBool>>,
     id: RunId,
     pending: VecDeque<Event>,
@@ -705,6 +719,7 @@ struct Follow {
 }
 
 impl Follow {
+    fn store(&self)->crate::store::Result<crate::store::RunStore<'_>> {match &self.owner {Some(owner)=>owner.store().map(crate::store::RunStore::Project),None=>Ok(crate::store::RunStore::Maintenance(self.calcifer.maintenance_store()))}}
     async fn next(mut self) -> Option<(Result<sse::Event, Infallible>, Self)> {
         loop {
             if self.vault_token.as_ref().is_some_and(|token| !token.load(std::sync::atomic::Ordering::Acquire)) { return None; }
@@ -721,8 +736,9 @@ impl Follow {
                 let data = serde_json::to_string(&event).expect("an event serializes");
                 return Some((Ok(sent.data(data)), self));
             }
+            if self.inert { return None; }
             // An ended run's stream waits only for its outputs to land (or a store it cannot read).
-            let owed = self.calcifer.run_store(self.id.as_str()).and_then(|store| store.outputs_to_export(self.id.as_str()));
+            let owed = self.store().and_then(|store| store.outputs_to_export(self.id.as_str()));
             if self.ended && !owed.is_ok_and(|outputs| !outputs.is_empty()) {
                 return None;
             }
@@ -731,7 +747,8 @@ impl Follow {
                     Ok((id, event)) if id == self.id => self.pending.push_back(event),
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        match self.calcifer.run_store(self.id.as_str()).and_then(|store| store.events_after(self.id.as_str(), self.last)) {
+                        let journal=match &self.owner {Some(owner)=>owner.store().map(crate::store::RunStore::Project),None=>Ok(crate::store::RunStore::Maintenance(self.calcifer.maintenance_store()))};
+                        match journal.and_then(|store| store.events_after(self.id.as_str(), self.last)) {
                             Ok(events) => self.pending.extend(events),
                             Err(e) => {
                                 warn!(run = %self.id, "the event stream cannot catch up: {e}");

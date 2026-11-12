@@ -40,12 +40,13 @@ pub(super) fn output(command:&mut Command)->io::Result<Output> {
     };
     let Some(scope)=scope else { return command.output(); };
     let root=scope.storage.view_root;
-    crate::project::vault::require_path(&root).map_err(error)?;
+    let admission=crate::project::vault::try_admit_root(&crate::project::vault::logical(&root)).map_err(error)?;
     let cwd=fs::canonicalize(command.get_current_dir().ok_or_else(||error("a project tool needs an owned working directory"))?)?;
     if !cwd.starts_with(&root) { return Err(error("the tool working directory is outside the project")); }
     // This guard covers processes, captured output, and every policy/native handle.
     // A failed cleanup retains the guard below so storage cannot report closed.
     let mut running=Running::new(&root);
+    drop(admission);
     let scratch=root.join(".vault-calcifer");
     for dir in ["processes","tmp","uv-cache","uv-tools","python","cache","data","config","state","bytecode"] {
         platform::durable::private_dir(&scratch.join(dir)).map_err(error)?;

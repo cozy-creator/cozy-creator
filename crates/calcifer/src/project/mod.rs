@@ -102,6 +102,25 @@ pub(crate) struct Projects {
     heard_changes: AtomicU64,
     /// Each project made by name since Calcifer started, by the `Idempotency-Key` that asked: a retry makes no `_2`.
     made: Mutex<HashMap<String, PathBuf>>,
+    requests:Mutex<HashMap<PathBuf,usize>>,
+}
+
+pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf}
+impl Drop for RequestActivity {
+    fn drop(&mut self) {
+        let mut requests=self.api.projects.requests.lock().expect("project requests");
+        if let Some(count)=requests.get_mut(&self.root) { *count-=1; if *count==0 {requests.remove(&self.root);} }
+    }
+}
+impl Projects {
+    pub(crate) fn active_requests(&self,root:&FsPath)->bool {
+        self.requests.lock().expect("project requests").get(&vault::logical(root)).is_some_and(|count|*count>0)
+    }
+    fn track_request(&self,api:&Arc<Api>,root:&FsPath)->RequestActivity {
+        let root=vault::logical(root);
+        *self.requests.lock().expect("project requests").entry(root.clone()).or_default()+=1;
+        RequestActivity {api:api.clone(),root}
+    }
 }
 
 /// A package as a project's read knows it: when it was last asked of, and what that found.
@@ -1132,7 +1151,7 @@ pub(super) fn not_saved(why: &str) -> String {
 
 /// Makes a new project called `name`: in this person's home folder, or at `path`, a folder of this computer's, recorded in the index as
 /// used now.
-async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
+async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum::Extension<keyed::CreationRetry>>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     let mut open: Open = parse(&body?)?;
     let _ownership=crate::maintenance_source::begin_project_creation().map_err(Refusal)?;
     if let Some(path) = open.path.as_ref().filter(|path| path.is_absolute())
@@ -1157,7 +1176,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     let engine = if open.unencrypted { None } else { Some(tokio::task::block_in_place(|| vault::preflight_creation(&api)).map_err(Refusal)?) };
     let io = |at: &FsPath, e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
     let mut moved_on = None;
-    let (dir, recovery_secret) = match &open.path {
+    let (dir, recovery_secret) = if let Some(axum::Extension(retry))=retry {(retry.0,None)} else { match &open.path {
         Some(path) if !path.is_absolute() => {
             let said = format!("{} is relative: a project is made at a folder of Calcifer's computer by its absolute path", path.display());
             return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
@@ -1190,7 +1209,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
                 }
             }
         }
-    };
+    }};
     // Named, a project nothing reads is only identified: the call that reads it opens it. One open, maybe where it was before it moved,
     // and a folder of files from before project.db, which is imported now, are opened here.
     let unread = match dir.join(db::DB).is_file() {
@@ -1262,7 +1281,8 @@ fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBu
 
 fn new_database(dir: &FsPath, id: &str, name: &str, written: written::Written) -> Result<(), Error> {
     let part = dir.join(format!("{}.new", db::DB));
-    db::create(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[])?;
+    let creation=keyed::claimed();
+    db::create_with_key(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[],creation.as_ref())?;
     db::set_identity(&mut db::open(&part)?, &part, id, name, None)?;
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
     platform::durable::sync_dir(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))
@@ -1304,6 +1324,8 @@ pub(crate) fn source_project(path: &FsPath) -> Result<Option<PathBuf>, Error> {
 fn holding(path: &FsPath) -> Result<PathBuf, Error> {
     let unavailable = || Error::new(Kind::Unavailable, "project_ownership_unavailable", "the source's project ownership cannot be verified");
     let start = platform::durable::canonical(path).map_err(|_| unavailable())?;
+    let metadata=std::fs::metadata(&start).map_err(|_|unavailable())?;
+    let start=if metadata.is_file() {start.parent().ok_or_else(unavailable)?.to_owned()} else if metadata.is_dir() {start} else {return Err(unavailable());};
     for dir in start.ancestors() {
         let logical = vault::logical(dir);
         if logical != dir || vault::encrypted(dir) { return Ok(logical); }

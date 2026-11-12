@@ -18,6 +18,7 @@ use axum::{
 use api::error::{Error, Kind};
 use sha2::{Digest as _, Sha256};
 use tracing::warn;
+use rusqlite::OptionalExtension as _;
 
 use crate::{
     api::{Api, Refusal},
@@ -31,6 +32,9 @@ const REPLAYED: &str = "idempotent-replayed";
 
 /// The writes under each key now going: a repeat waits for the first.
 static GOING: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = LazyLock::new(Mutex::default);
+#[derive(Clone)]
+pub(super) struct CreationRetry(pub(super) std::path::PathBuf);
+enum Creation { Fresh, Replay(Response), Resume(CreationRetry) }
 
 tokio::task_local! {
     /// The key of the project write going, and its ask's digest, until its first act takes it.
@@ -52,6 +56,7 @@ async fn project_of(api: &Arc<Api>, parts: &mut axum::http::request::Parts) -> R
 
 /// Around every project route: a write with an `Idempotency-Key` is answered once, and again as it was.
 pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
+    let mut _activity=None;
     if !matches!(*request.method(),Method::GET|Method::HEAD|Method::OPTIONS)
         && request.headers().get(api::calcifer::project::PROJECT_STORAGE_HEADER).and_then(|value|value.to_str().ok())!=Some(api::calcifer::project::PROJECT_STORAGE_VERSION)
     {
@@ -62,7 +67,10 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
     if request.uri().path()!="/v1/projects" {
         let (mut parts,body)=request.into_parts();
         let project=match project_of(&api,&mut parts).await { Ok(project)=>project,Err(refusal)=>return refusal.into_response() };
-        if let Some(project)=project { if let Err(error)=api.projects.store(&api,&project.id).await { return Refusal(error).into_response(); } }
+        if let Some(project)=project {
+            let store=match api.projects.store(&api,&project.id).await {Ok(store)=>store,Err(error)=>return Refusal(error).into_response()};
+            _activity=Some(api.projects.track_request(&api,store.execution_scope().1));
+        }
         request=Request::from_parts(parts,body);
     }
     if matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
@@ -100,6 +108,12 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
         None => {
             // Creation has no project yet. Its effect/response belongs only to the
             // created project; recovery-secret responses are never cached.
+            match creation(&api,&bytes,&key,&digest).await {
+                Ok(Creation::Replay(response))=>return response,
+                Ok(Creation::Resume(retry))=>{parts.extensions.insert(retry);},
+                Ok(Creation::Fresh)=>{},
+                Err(refusal)=>return refusal.into_response(),
+            }
             let request = Request::from_parts(parts, Body::from(bytes));
             let response = CLAIM.scope(RefCell::new(Some((key.clone(), digest.clone()))), next.run(request)).await;
             keep_created(&api, &key, digest, response).await
@@ -111,6 +125,42 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
         going.remove(&key);
     }
     response
+}
+
+/// Resolve creation retry identity only inside the requested candidate folders.
+/// A locked/unavailable candidate or incomplete stage is not permission to make _2.
+async fn creation(api:&Arc<Api>,bytes:&[u8],key:&str,digest:&str)->Result<Creation,Refusal> {
+    let ask:api::calcifer::project::Open=crate::api::parse(bytes)?;
+    if !ask.unencrypted {return Ok(Creation::Fresh);}
+    let wanted=ask.name.as_ref().map(|name|super::format::plain_name(name).unwrap_or_else(||"untitled".into()));
+    let pending=||Refusal(Error::new(Kind::Conflict,"project_creation_pending","the original project or creation stage must be available before this retry can be resolved"));
+    let mut index=1u64;
+    loop {
+        let path=match &ask.path {
+            Some(path) if path.is_absolute()=>path.clone(),
+            Some(_)=>return Ok(Creation::Fresh),
+            None=>{let Some(wanted)=&wanted else {return Ok(Creation::Fresh);}; api.machines.user_home.join(if index==1 {wanted.clone()} else {format!("{wanted}_{index}")})},
+        };
+        if !path.try_exists().map_err(|_|pending())? {break;}
+        if path.join(format!("{}.new",super::db::DB)).try_exists().map_err(|_|pending())? {return Err(pending());}
+        if path.join(super::db::DB).try_exists().map_err(|_|pending())? || path.join(project_vault::KEYBAG_FILE).try_exists().map_err(|_|pending())? {
+            let store=api.projects.store(api,&path.to_string_lossy()).await.map_err(Refusal)?;
+            let found=store.read(|conn|Ok(conn.query_row("SELECT digest FROM request_keys WHERE key=?1",[key],|row|row.get::<_,String>(0)).optional()?))?;
+            if let Some(found)=found {
+                if found!=digest {return Err(Refusal(Error::new(Kind::Conflict,"idempotency_conflict","this key already names another project creation")));}
+                if let Some(answer)=store.answer(key)? {return Ok(Creation::Replay(replay(Some((answer.status,answer.content_type,answer.body)))));}
+                return Ok(Creation::Resume(CreationRetry(path)));
+            }
+        }
+        if ask.path.is_some() {break;}
+        index=index.checked_add(1).ok_or_else(pending)?;
+    }
+    let legacy=api.calcifer.maintenance_store().read(|conn| {
+        let exists=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_answers')",[],|row|row.get::<_,bool>(0))?;
+        if !exists {return Ok(false);}
+        Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_answers WHERE key=?1)",[key],|row|row.get::<_,bool>(0))?)
+    })?;
+    if legacy {Err(pending())} else {Ok(Creation::Fresh)}
 }
 
 fn conflict(key: &str) -> Response {

@@ -19,7 +19,9 @@ pub(crate) struct ProjectStore {
     project: Arc<Project>,
     controller: Weak<crate::Calcifer>,
     _view: OwnedRwLockReadGuard<()>,
+    access: Access,
 }
+enum Access { Viewing, Work }
 
 #[derive(Clone)]
 pub(crate) struct RunOwner {
@@ -27,11 +29,12 @@ pub(crate) struct RunOwner {
     controller: Weak<crate::Calcifer>,
 }
 impl RunOwner {
+    pub(crate) fn same_view(&self, other:&Self)->bool { Arc::ptr_eq(&self.project,&other.project) }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn root(&self) -> &std::path::Path { &self.project.root }
     pub(crate) fn store(&self) -> store::Result<ProjectStore> {
         let view = vault::try_admit_work(&self.project).map_err(project_error)?;
-        Ok(ProjectStore { project: self.project.clone(), controller: self.controller.clone(), _view: view })
+        Ok(ProjectStore { project: self.project.clone(), controller: self.controller.clone(), _view: view, access:Access::Work })
     }
 }
 
@@ -41,6 +44,7 @@ pub(crate) struct SealingStore<'a> {
     transition: &'a vault::ProjectTransition,
 }
 impl SealingStore<'_> {
+    pub(crate) fn owner_id(&self)->Option<&str> {Some(&self.project.id)}
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn execution_scope(&self) -> (&str,&std::path::Path) { (&self.project.id,&self.project.root) }
     pub(crate) fn input_root(&self) -> store::Result<PathBuf> {
@@ -108,12 +112,12 @@ impl Projects {
         let view = vault::admit_project(api, named).await?;
         let project = self.get(api, named).map_err(|error| error.0)?;
         project.require_view()?;
-        let store = ProjectStore { project, controller: Arc::downgrade(&api.calcifer), _view: view };
+        let store = ProjectStore { project, controller: Arc::downgrade(&api.calcifer), _view: view, access:Access::Viewing };
         api.calcifer.maintenance_store().migrate_project(&store, &api.calcifer.inputs).map_err(|_| Error::new(api::error::Kind::Conflict,"project_migration_pending","legacy project history could not be verified; its source is preserved"))?;
         let fresh=api.calcifer.attach_project(&store).map_err(|_| Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"))?;
         if fresh {
             tokio::spawn(crate::hub::jobs::resume_project(api.clone(),store.project_id().into()));
-            if store.project.folder.lock()?.owes() { super::walk(api,&store.project); }
+            if store.resume_allowed().map_err(|_|Error::new(api::error::Kind::Conflict,"project_journal","the project journal is unavailable"))? && store.project.folder.lock()?.owes() { super::walk(api,&store.project); }
         }
         Ok(store)
     }
@@ -131,10 +135,19 @@ impl Projects {
 }
 
 impl ProjectStore {
+    fn validate(&self)->store::Result<()> {
+        match self.access {
+            Access::Viewing=>self.project.require_view().map_err(project_error),
+            Access::Work=>vault::try_admit_work(&self.project).map(drop).map_err(project_error),
+        }
+    }
+    pub(crate) fn admit_new_work(&self)->store::Result<()> { self.project.require_view().map_err(project_error) }
+    pub(crate) fn owner_id(&self)->Option<&str> {Some(&self.project.id)}
+    pub(crate) fn resume_allowed(&self)->store::Result<bool> { self.read(|conn|Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner<>?1)",[self.project_id()],|row|row.get::<_,bool>(0))?)) }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn owner(&self) -> RunOwner { RunOwner { project: self.project.clone(), controller: self.controller.clone() } }
     pub(crate) fn input_root(&self) -> store::Result<PathBuf> {
-        self.project.require_view().map_err(project_error)?;
+        self.validate()?;
         let path=self.project.folder.dir.join(".vault-inputs");
         std::fs::create_dir_all(&path).map_err(|_| StoreError::Protected("project_input_storage".into()))?;
         platform::durable::set_mode(&path,0o700).map_err(|_| StoreError::Protected("project_input_storage".into()))?;
@@ -144,6 +157,7 @@ impl ProjectStore {
 
 
     pub(crate) fn admit_submission(&self, new: &store::NewRun) -> store::Result<()> {
+        self.admit_new_work()?;
         if new.project.as_deref() != Some(self.project.id.as_str()) || new.out_dir != super::landing(&self.project.root) {
             return Err(StoreError::Protected("project_submission_scope".into()));
         }
@@ -160,12 +174,12 @@ impl ProjectStore {
 
 
     pub(crate) fn read<T>(&self, read: impl FnOnce(&Connection) -> store::Result<T>) -> store::Result<T> {
-        self.project.require_view().map_err(project_error)?;
+        self.validate()?;
         self.project.folder.journal_read(read)
     }
 
     pub(crate) fn write<T>(&self, write: impl FnOnce(&Transaction<'_>) -> store::Result<T>) -> store::Result<T> {
-        self.project.require_view().map_err(project_error)?;
+        self.validate()?;
         self.project.folder.journal_write(write)
     }
 
@@ -237,7 +251,8 @@ pub(super) const SCHEMA: &str = "    CREATE TABLE runs (
         started_at INTEGER,
         stays TEXT NOT NULL DEFAULT '[]',
         batch TEXT NOT NULL DEFAULT '',
-        job BLOB
+        job BLOB,
+        owner TEXT NOT NULL DEFAULT ''
     ) STRICT;
     CREATE INDEX runs_owed ON runs (machine) WHERE state <> 'settled';
     CREATE TABLE outputs (

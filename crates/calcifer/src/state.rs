@@ -343,12 +343,14 @@ struct OldSession {
 }
 
 #[derive(Deserialize)]
-struct OldHere {
+#[serde(deny_unknown_fields)]
+pub(super) struct OldHere {
     #[serde(default)]
     here: Vec<OldRenderedHere>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OldRenderedHere {
     tool: String,
     machine: String,
@@ -357,7 +359,8 @@ struct OldRenderedHere {
 }
 
 #[derive(Deserialize)]
-struct OldHeaders {
+#[serde(deny_unknown_fields)]
+pub(super) struct OldHeaders {
     families: String,
     facts: HashMap<String, Facts>,
 }

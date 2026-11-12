@@ -6,7 +6,8 @@ use axum::{Json, extract::State, http::HeaderMap};
 use rusqlite::{OptionalExtension as _,params};
 use crate::api::{Api,Refusal};
 
-pub(super) const TABLES: &str="CREATE TABLE IF NOT EXISTS maintenance_source_admissions(tree TEXT PRIMARY KEY) STRICT;";
+pub(super) const TABLES: &str="CREATE TABLE IF NOT EXISTS maintenance_source_admissions(tree TEXT PRIMARY KEY) STRICT;
+CREATE TABLE IF NOT EXISTS maintenance_source_objects(digest TEXT PRIMARY KEY) STRICT;";
 static OWNERSHIP: std::sync::LazyLock<tokio::sync::RwLock<()>> = std::sync::LazyLock::new(||tokio::sync::RwLock::new(()));
 
 /// Creation changes an unknown folder into a project. Serialize that boundary
@@ -39,6 +40,29 @@ pub(crate) fn require(api: &Api, code: &LocalCode) -> Result<(),Error> {
         .map_err(|_|refused("source_admission_unavailable").0)?;
     if !admitted { return Err(refused("source_scope_required").0); }
     Ok(())
+}
+
+/// Cache entrypoints without an Api still verify the controller's durable
+/// independent-source admission before reading or materializing global code.
+pub(crate) fn require_home(home:&platform::paths::Home, code:&LocalCode)->Result<(),Error> {
+    if Path::new(&code.at).is_absolute() || (!code.at.is_empty() && Path::new(&code.at).components().any(|part|!matches!(part,std::path::Component::Normal(_)))) { return Err(refused("source_scope_required").0); }
+    let conn=rusqlite::Connection::open_with_flags(home.calcifer().join("state.db"),rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY|rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|_|refused("source_admission_unavailable").0)?;
+    let admitted=conn.query_row("SELECT EXISTS(SELECT 1 FROM maintenance_source_admissions WHERE tree=?1)",[code.tree.to_string()],|row|row.get::<_,bool>(0)).map_err(|_|refused("source_admission_unavailable").0)?;
+    if admitted { Ok(()) } else { Err(refused("source_scope_required").0) }
+}
+
+/// A derived manifest belongs globally only when its original exact tree was
+/// admitted as independent, and every materialized byte still verifies.
+pub(crate) fn keep_derived(api:&Api,code:&LocalCode,source:&crate::local_code::Source)->Result<(),Error> {
+    if crate::private_io::current().is_some() { return Ok(()); }
+    require(api,code)?;
+    let paths=source.inputs.iter().map(|input|input.path.parent().unwrap_or(&input.path).to_owned()).collect::<Vec<_>>();
+    independent(&paths).map_err(|error|error.0)?;
+    for input in &source.inputs {
+        let bytes=std::fs::read(&input.path).map_err(|_|refused("source_snapshot_changed").0)?;
+        if bytes.len() as u64!=input.length || Digest::of(&bytes)!=input.digest { return Err(refused("source_snapshot_changed").0); }
+    }
+    api.calcifer.maintenance_store().write(|tx| {for input in &source.inputs {tx.execute("INSERT OR IGNORE INTO maintenance_source_objects(digest) VALUES(?1)",[input.digest.to_string()])?;} Ok(())}).map_err(|_|refused("source_admission_unavailable").0)
 }
 
 pub(crate) async fn capture(State(api): State<Arc<Api>>, headers: HeaderMap, Json(ask): Json<Capture>) -> Result<Json<LocalCode>,Refusal> {

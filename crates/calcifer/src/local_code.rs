@@ -129,6 +129,7 @@ const UNUSED: Duration = Duration::from_secs(24 * 60 * 60);
 /// The package `code` names, in Calcifer's copy of its tree: made once from the files it holds (`PUT /v1/files`), and only read
 /// after. A script's copy holds the package it is beside its tree. Its project's folder.
 pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
+    if crate::private_io::current().is_none() { crate::maintenance_source::require_home(home,code)?; }
     let dir = copies(home)?.join(hex(&code.tree));
     if !dir.join("tree").is_dir() {
         let scope = crate::private_io::current();
@@ -156,6 +157,7 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
 /// A folder of Calcifer's own (a project's `with: ./dir`) as local code: read as a client reads its own, and copied as a
 /// client's is, so the one path from here on is the copy's.
 pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
+    if crate::private_io::current().is_none() { return Err(refuse("source_scope_required","use native independent source capture before staging project-independent code")); }
     let staged = shared::stage(path, Some(&crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?))?;
     if !staged.left.is_empty() && crate::private_io::current().is_none() {
         tracing::info!("left out of {}: {}", path.display(), staged.left.join(", "));
@@ -874,6 +876,7 @@ pub(crate) async fn prepare(
     let home = hubs.home().clone();
     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
     let code = source(&home, local, hubs, &origin).await?;
+    crate::maintenance_source::keep_derived(api,local,&code)?;
     let runtime = runtime(api, on).await;
     let prepared = |interface, installation, machine, install| Prepared {
         package: code.package.clone(),
@@ -1229,6 +1232,7 @@ fn last_runtime(api: &Api, on: &On) -> Option<String> {
 /// very source, else Runtime's static describer, using its lock, plain version bounds or PyPI's newest. That can
 /// be older than the machine's, and refuse what the machine runs. No package code runs and no machine is asked.
 pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
+    if crate::private_io::current().is_none() { crate::maintenance_source::require_home(api.machines.hubs.home(),code)?; }
     let runtime = last_runtime(api, on);
     let held = if crate::private_io::current().is_some() {
         copied(api.machines.hubs.home(), code)?;
@@ -1264,6 +1268,7 @@ async fn own_reading(api: &Arc<Api>, local: &LocalCode, hub: &str, runtime: Opti
     let home = hubs.home();
     let origin = Origin::parse(hub).ok()?;
     let code = source(home, local, hubs, &origin).await.ok()?;
+    crate::maintenance_source::keep_derived(api,local,&code).ok()?;
     Some((code.package.clone(), kept(home, &code.filed(), runtime?)?))
 }
 

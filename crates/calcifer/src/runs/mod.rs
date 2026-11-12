@@ -119,6 +119,7 @@ async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuot
             let home = api.machines.hubs.home();
             let origin = api::config::Origin::parse(&hub)?;
             let source = crate::local_code::source(home, code, &api.machines.hubs, &origin).await?;
+            crate::maintenance_source::keep_derived(api,code,&source)?;
             crate::local_code::install_run(home, &hub, on, &source)
         }
         None => match prepare(api, "quote", &ask, For::Quote).await? {

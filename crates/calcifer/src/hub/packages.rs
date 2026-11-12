@@ -212,6 +212,7 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
     let home = api.machines.hubs.home();
     if let Some(code) = &code {
         let source = crate::local_code::source(home, code, &api.machines.hubs, hub).await.map_err(Refusal)?;
+        crate::maintenance_source::keep_derived(api,code,&source).map_err(Refusal)?;
         let mut submit = crate::local_code::install_run(home, hub.as_str(), on, &source);
         submit.agreed = agreed;
         return Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Keep(source.filed())), notes: vec![], mirror: None });
@@ -306,7 +307,7 @@ impl Removal {
             retained: Vec<String>,
         }
         let runs = self.targets.iter().enumerate().map(|(i, (package, from))| {
-            let submit = SubmitRun { project: None,
+            let submit = SubmitRun { project: crate::private_io::current().map(|scope|scope.storage.project_id),
                 agreed: None,
                 stays: vec![],
                 on: On::Machine(self.machine.clone()),
@@ -320,7 +321,7 @@ impl Removal {
                 },
                 inputs: vec![],
                 held: vec![],
-                out: None,
+                out: crate::private_io::current().map(|scope|crate::project::landing(&crate::project::vault::logical(&scope.storage.view_root))),
                 warnings: vec![],
             };
             let key = format!("{key}-{i}");

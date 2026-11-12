@@ -228,6 +228,7 @@ fn configure(conn: &Connection, path: &Path) -> Result<(), Error> {
     conn.pragma_update(None, "synchronous", "FULL").map_err(e)?;
     conn.pragma_update(None, "foreign_keys", "ON").map_err(e)?;
     conn.pragma_update(None, "temp_store", "MEMORY").map_err(e)?;
+    crate::store::register_owner(conn,path.parent().map(Path::to_owned)).map_err(e)?;
     // Checkpoints run beside writes, never in a commit.
     conn.pragma_update(None, "wal_autocheckpoint", 0).map_err(e)
 }
@@ -337,11 +338,12 @@ fn save_document(tx: &Transaction<'_>, at: &Path, doc: &mut crdt::Document, seq:
 }
 
 /// The initial current-format schema and native baseline commit atomically for a newly reserved file.
-fn initialize_current(conn: &mut Connection, at: &Path) -> Result<(), Error> {
+fn initialize_current(conn: &mut Connection, at: &Path, key:Option<&(String,String)>) -> Result<(), Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| sql(at, error))?;
     tx.execute_batch(SCHEMA).map_err(|error| sql(at, error))?;
     tx.execute_batch(CRDT_SCHEMA).map_err(|error| sql(at, error))?;
     tx.execute_batch(super::journal::SCHEMA).map_err(|error| sql(at, error))?;
+    if let Some((key,digest))=key { tx.execute("INSERT INTO request_keys(key,digest,at_ms) VALUES(?1,?2,?3)",params![key,digest,super::now_ms()]).map_err(|error|sql(at,error))?; }
     tx.execute("INSERT INTO meta VALUES ('seq', '0')", []).map_err(|error| sql(at, error))?;
     let mut doc = crdt::Document::new(at);
     doc.initialize(crdt::value(&Stored::default(), &[], &serde_json::Value::Null, None))?;
@@ -593,6 +595,10 @@ pub(crate) fn keep_answer(conn: &Connection, key: &str, digest: &str, status: u1
 
 /// Exclusively create a fresh current database. Existing paths, including incomplete stages, are preserved.
 pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(String, String)]) -> Result<(), Error> {
+    create_with_key(path,stored,ops,asked,None)
+}
+
+pub(super) fn create_with_key(path:&Path,stored:&Stored,ops:&[OpRow],asked:&[(String,String)],key:Option<&(String,String)>)->Result<(),Error> {
     OpenOptions::new().write(true).create_new(true).open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
             Error::new(Kind::Conflict, "project_db_exists", format!("{} already exists; preserve it and choose a fresh database path", path.display()))
@@ -602,7 +608,7 @@ pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(Stri
         .map_err(|error| sql(path, error))?;
     conn.busy_timeout(WAIT).map_err(|error| sql(path, error))?;
     configure(&conn, path)?;
-    initialize_current(&mut conn, path)?;
+    initialize_current(&mut conn, path,key)?;
     let mut fresh = stored.clone();
     crdt::identify(&Stored::default(), &mut fresh);
     let mut ops = ops.to_vec();
