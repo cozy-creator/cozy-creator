@@ -24,6 +24,37 @@ async fn edit(api: &Arc<Api>, id: &str, name: &str, value: Value) {
     let _ = patch(State(api.clone()), Path((id.to_owned(), name.to_owned())), Ok(Bytes::from(value.to_string()))).await.unwrap();
 }
 
+#[test]
+fn rename_updates_saved_and_pending_authoring_references() {
+    let fields: Map<String, Value> = serde_json::from_value(json!({
+        "summary":"Use <image.5> and <image>",
+        "beats":[{"description":"Keep <image.5:2-8> beside <self.2>","duration":12}],
+        "models":{"model":{"ref":"author/image-model@1"}}
+    })).unwrap();
+    let version = folder::Version { number: 7, fields: Some(fields.clone()), ..Default::default() };
+    let mut lock = folder::Lock::default();
+    lock.asset_mut("video", "video").versions.push(version.clone());
+    lock.asset_mut("video", "video").discarded.push(folder::Version { number: 8, ..version.clone() });
+    lock.pending.insert("pending".into(), folder::Pending {
+        kind: "video".into(), job: "pending".into(), ask: "ask".into(), asset: "video".into(),
+        version, run: 0, approve: false, unpin: None, target: folder::Target::default(),
+    });
+    super::super::renamed(&mut lock, "image", "renamed_image");
+    let held = lock.asset("video").unwrap();
+    for version in held.on_record().chain(lock.pending.values().map(|pending| &pending.version)) {
+        let updated = version.fields.as_ref().unwrap();
+        assert_eq!(updated["summary"], json!("Use <renamed_image.5> and <renamed_image>"));
+        assert_eq!(updated["beats"][0]["description"], json!("Keep <renamed_image.5:2-8> beside <self.2>"));
+        assert_eq!(updated["models"], fields["models"]);
+    }
+    assert_eq!(held.versions[0].number, 7);
+    assert_eq!(held.discarded[0].number, 8);
+    super::super::renamed(&mut lock, "renamed_image", "image");
+    for version in lock.asset("video").unwrap().on_record().chain(lock.pending.values().map(|pending| &pending.version)) {
+        assert_eq!(version.fields.as_ref(), Some(&fields), "undoing the rename restores snapshot references");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn typed_nodes_fixture() {
     let Some(root) = std::env::var_os("COZY_TYPED_NODE_ROOT").map(std::path::PathBuf::from) else { return };

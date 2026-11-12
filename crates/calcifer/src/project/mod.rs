@@ -2103,7 +2103,13 @@ pub(super) fn adopt_renames(folder: &Folder, doc: &Doc) -> Result<bool, Error> {
 pub(super) fn renamed(lock: &mut Lock, from: &str, to: &str) {
     lock.untombstone(from);
     let key = name_key(from);
+    let move_snapshot = |version: &mut Version| {
+        if let Some(fields) = &mut version.fields {
+            fields.values_mut().for_each(|value| written::mentions_renamed(value, &|name| graph::mention_moved(name, from, to)));
+        }
+    };
     for version in lock.assets.values_mut().flat_map(|held| held.versions.iter_mut().chain(&mut held.discarded)) {
+        move_snapshot(version);
         for clip in &mut version.clips {
             if let Some(moved) = graph::mentions(&clip.clip).first().and_then(|name| graph::mention_moved(name, from, to)) {
                 clip.clip = format!("<{moved}>");
@@ -2115,8 +2121,11 @@ pub(super) fn renamed(lock: &mut Lock, from: &str, to: &str) {
         held.name = to.to_owned();
         lock.assets.insert(name_key(to), held);
     }
-    for pending in lock.pending.values_mut().filter(|pending| name_key(&pending.asset) == key) {
-        pending.asset = to.into();
+    for pending in lock.pending.values_mut() {
+        move_snapshot(&mut pending.version);
+        if name_key(&pending.asset) == key {
+            pending.asset = to.into();
+        }
     }
     for ask in &mut lock.walk.asks {
         for take in ask.takes.iter_mut().filter(|take| name_key(&take.asset) == key) {
