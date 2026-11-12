@@ -103,9 +103,10 @@ class Proof:
         pid = holder["pid"]
         if not isinstance(pid, int):
             raise ValueError("the fixture Calcifer has no process ID")
-        self.controller = Path(f"/proc/{pid}/exe")
         self.candidate_sha = hashlib.sha256(cli.read_bytes()).hexdigest()
-        if hashlib.sha256(self.controller.read_bytes()).hexdigest() != self.candidate_sha:
+        version = subprocess.run([str(cli), "--version"], capture_output=True, text=True, check=False).stdout.strip()
+        self.candidate_version = version.removeprefix("cozy ")
+        if not self.controller_is_candidate():
             raise ValueError("the fixture Calcifer is not the current candidate")
         config = row(cast(Json, tomllib.loads((self.home / "config.toml").read_text())))
         machine = row(config.get("machine", {}))
@@ -115,7 +116,10 @@ class Proof:
         self.root = Path(text(configured)).resolve() if configured else self.home / "machine"
         if not self.root.is_relative_to(self.home.resolve()):
             raise ValueError("the fixture machine root must belong to this fresh runner's Cozy home")
-        self.log = self.home / "calcifer/calcifer.log"
+        # Calcifer's closed health log names each start of this computer's machine (`starting … pid=`).
+        self.log = self.home / "calcifer/health.log"
+        if not self.log.is_file():
+            raise ValueError("Calcifer keeps no health log to read its machine starts from")
         self.start_log = self.root / "var/lib/cozy/machine/start.log"
         self.ready = self.root / "var/lib/cozy/tensord/api-ready.json"
         self.failures: list[Json] = []
@@ -124,6 +128,13 @@ class Proof:
         self.owned_root_refused = False
         self.expected_commit = ""
         self.expected_version = ""
+
+    def controller_is_candidate(self) -> bool:
+        """A Calcifer holding project storage isn't dumpable, so its /proc exe is closed to this user: it is the
+        candidate when the cozy its service runs is the candidate's bytes and it answers the candidate's version."""
+        status = self.call("GET", "/v1/status")
+        return (hashlib.sha256(self.installed.read_bytes()).hexdigest() == self.candidate_sha
+                and status.status == 200 and row(status.body).get("version") == self.candidate_version)
 
     def call(self, method: str, path: str, body: Json = None, raw: bytes | None = None) -> Reply:
         session = Session(self.context)
@@ -180,7 +191,7 @@ class Proof:
         if removed.status != 200:
             raise ValueError("the control authorization removal failed")
         before = self.wait_ready(False)
-        if hashlib.sha256(self.controller.read_bytes()).hexdigest() != self.candidate_sha:
+        if not self.controller_is_candidate():
             raise ValueError("the fixture no longer runs the candidate Calcifer")
         offset, start_offset = self.log.stat().st_size, self.start_log.stat().st_size
         sent = threading.Event()

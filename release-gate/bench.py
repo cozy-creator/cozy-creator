@@ -405,7 +405,8 @@ def read_gate(d: str, judged: bool = True) -> Gate:
     # The machine lists each call as `<run id>/<call>` with no record attached, this gate's own included: a run is
     # another controller's only when its id is none of the gate's records'.
     own = {i for f in glob.glob(os.path.join(d, '*.json')) if (i := record_id(f))}
-    own |= set(re.findall(r'run-[0-9a-f]{24}', text(d, 'calcifer.log') or ''))  # every run this gate's Calcifer made (its updates too)
+    # Every run this gate's Calcifer made (its updates too): its run list, else (a cozy before the health log) its log.
+    own |= set(re.findall(r'run-[0-9a-f]{24}', (text(d, 'runs.json') or '') + (text(d, 'calcifer.log') or '')))
     foreign = [(int(f[0]), f[1]) for line in (text(d, 'foreign.tsv') or '').splitlines()
                if len(f := line.split('\t')) >= 2 and f[0].isdigit() and f[1].split('/')[0] not in own]
 

@@ -122,7 +122,8 @@ impl Local {
             log: Some(log.clone()),
         };
         let mut child = self.services.detach(&spec).map_err(|e| failed(e.to_string()))?;
-        info!(pid = child.pid(), "starting this computer's machine");
+        // A health event: Calcifer's own machine start, by its process alone.
+        info!(target: "cozy.service_health", pid = child.pid(), "starting this computer's machine");
         let (began, mut reported) = (Instant::now(), Instant::now());
         loop {
             if served_at(&self.ready()) > before && self.running() {
