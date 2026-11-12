@@ -35,11 +35,11 @@ MACHINE = COZY / "machine"
 INSTALLED = COZY / "bin/cozy"
 
 PHASES = frozenset({
-    "startup", "public_bootstrap", "public_reset", "old_subject_create",
+    "startup", "public_bootstrap", "old_subject_create",
     "old_subject_success", "old_subject_failure", "old_subject_retry",
     "old_subject_verify_outputs", "old_subject_verify_logs", "old_subject_verify_numbers",
     "old_subject_snapshot", "old_subject_stop", "old_subject_pin", "candidate_install",
-    "candidate_update", "candidate_doctor", "wrong_binding", "native_adoption",
+    "candidate_update", "candidate_doctor", "maintenance_migration", "wrong_binding", "native_adoption",
     "interrupted_import", "calcifer_crash", "calcifer_restart", "rehistory", "released_client", "encrypt", "lock_scan",
     "move_cold_retry", "complete",
 })
@@ -72,7 +72,8 @@ ASSERTIONS = frozenset({"terminal_json_lines", "terminal_completed", "terminal_f
     "import_crash_source_retained", "import_receipts_unique", "released_version", "released_status",
     "released_run_submit", "released_file_upload", "released_run_ls", "released_run_show", "released_open",
     "released_vault_lock", "released_vault_unlock", "released_new", "released_new_nothing_created",
-    "released_project_exact"})
+    "released_project_exact", "maintenance_runs_present", "maintenance_runs_migrated", "maintenance_runs_readable",
+    "locked_status_clean", "moved_locked_status_clean"})
 # A released client without project storage protocol 3 gets this typed refusal for project work.
 PROTOCOL_REFUSAL = "project_storage_protocol_required"
 
@@ -273,35 +274,20 @@ def stop(native: Native, *, old: bool) -> None:
     exclusive_free(MACHINE / "var/lib/cozy/machine/agent.lock")
 
 
-def remove_public(path: Path) -> None:
-    """Only used before any private subject exists, on explicitly owned public paths."""
-    if not path.exists():
-        return
-    check(not path.is_symlink(), "public_reset_path")
-    if path.is_dir():
-        check(not any(child.is_symlink() for child in path.rglob("*")), "public_reset_path")
-        shutil.rmtree(path)
-    else:
-        path.unlink()
+def maintenance_rows(ids: list[str]) -> tuple[dict, dict]:
+    """The released subject's maintenance runs (publish, lock, machine update), row for row with their outputs and logs."""
+    with read_db(CALCIFER / "state.db") as connection:
+        columns = {table: [row[1] for row in connection.execute("PRAGMA table_info(" + table + ")")] for table in ("runs", "outputs", "run_logs")}
+    return columns, maintenance_read(columns, ids)
 
 
-def reset_public_bootstrap(native: Native, provenance: dict, pinned: list[str]) -> None:
-    # Explicit coordinator approval is limited to this fresh, zero-project public
-    # bootstrap. Never call this after generating a canary or creating a project.
-    projects = call(native, "GET", "/v1/projects?limit=0", preflight=False)
-    check(projects.get("projects") == [], "public_reset_empty")
-    with read_db(CALCIFER / "state.db") as source:
-        rows = source.execute("SELECT id,target,kind,state,out_dir FROM runs").fetchall()
-        check({row[0] for row in rows} == set(provenance["public_maintenance_run_ids"]) | set(pinned), "public_reset_runs", runs=len(rows), pinned=len(pinned))
-        check(all(row[3] == "settled" and (row[0] in pinned or row[1] in {"cozy/package_publish", "cozy/package_lock"} and row[2] == "here") for row in rows), "public_reset_maintenance")
-        check(source.execute("SELECT count(*) FROM projects").fetchone()[0] == 0, "public_reset_projects")
-    stop(native, old=True)
-    check(schema() == 7, "schema_v7")
-    # These exact source/cache paths were created only by the verified public
-    # publisher in this fresh runner. Account keys and installed tools survive.
-    for relative in ("state.db", "state.db-wal", "state.db-shm", "code", "local", "inputs", "after"):
-        remove_public(CALCIFER / relative)
-    remove_public(COZY / "cache/digests")
+def maintenance_read(columns: dict, ids: list[str]) -> dict:
+    rows = {}
+    with read_db(CALCIFER / "state.db") as connection:
+        for identifier in ids:
+            rows[identifier] = {table: sorted(connection.execute("SELECT " + ",".join(names) + " FROM " + table + " WHERE " + ("id" if table == "runs" else "run") + "=?", (identifier,)).fetchall())
+                                for table, names in columns.items()}
+    return rows
 
 
 def terminal(stdout: bytes, status: str) -> dict:
@@ -784,21 +770,13 @@ def qualify(args, receipt: Receipt) -> None:
     checkpoint(receipt, "public_bootstrap")
     provenance = publish_old(args.old, work)
     # A released 0.24 machine takes the newest Runtime PyPI resolves; Runtime 0.46 needs TensorFS 0.25,
-    # another release line. Hold the old cohort to its own line (last pair this subject passed with),
-    # within the public bootstrap whose maintenance runs the reset removes.
+    # another release line. Hold the old cohort to its own line (last pair this subject passed with).
+    # Its update run stays, like the publication's: the real 0.24 home has maintenance runs.
     checkpoint(receipt, "old_subject_pin")
-    def state_runs() -> set[str]:
-        with read_db(CALCIFER / "state.db") as connection:
-            return {row[0] for row in connection.execute("SELECT id FROM runs")}
-    unpinned = state_runs()
     command(args.old, "machine", "update", "local", "--runtime", "0.45.1", "--tensorfs", "0.24.2", "-y")
-    pinned = sorted(state_runs() - unpinned)
-    checkpoint(receipt, "public_reset")
-    reset_public_bootstrap(old, provenance, pinned)
     receipt.add("old_public_bootstrap", passed=True, old_binary_sha256=digest(args.old), source_sha256=provenance["source_sha256"])
 
-    # No reset is legal after this point. Every following byte is real old
-    # application data and must be migrated or explicitly remain pending.
+    # Every following byte is real old application data and must be migrated or explicitly remain pending.
     checkpoint(receipt, "old_subject_create")
     project = Path(tempfile.mkdtemp(prefix="cozy-legacy-project-", dir=os.environ["RUNNER_TEMP"]))
     origin = project.resolve(strict=True)
@@ -847,6 +825,10 @@ def qualify(args, receipt: Receipt) -> None:
     checkpoint(receipt, "old_subject_snapshot")
     baseline = journal(CALCIFER / "state.db", list(results))
     original_worker, worker_baseline = worker_journal(MACHINE, list(results))
+    with read_db(CALCIFER / "state.db") as connection:
+        maintenance_ids = sorted({row[0] for row in connection.execute("SELECT id FROM runs")} - set(results))
+    check(len(maintenance_ids) >= 3, "maintenance_runs_present", runs=len(maintenance_ids))
+    maintenance_columns, maintenance = maintenance_rows(maintenance_ids)
     check(schema() == 7, "schema_v7")
     receipt.add("released_v7_subject", passed=True, runs=len(results), logs=sum(len(value["logs"]) for value in baseline.values()), outputs=sum(len(value["outputs"]) for value in baseline.values()))
     checkpoint(receipt, "old_subject_stop")
@@ -870,6 +852,19 @@ def qualify(args, receipt: Receipt) -> None:
     checkpoint(receipt, "candidate_doctor")
     command(INSTALLED, "doctor")
     check(schema() == 8, "schema_v8")
+    checkpoint(receipt, "maintenance_migration")
+    # Project-less runs are the controller's own again, row for row, and readable through its global routes.
+    with read_db(CALCIFER / "state.db") as connection:
+        fenced = connection.execute("SELECT count(*) FROM legacy_project_runs WHERE id IN (" + ",".join("?" * len(maintenance_ids)) + ")", maintenance_ids).fetchone()[0]
+    # The v7 columns, read from the v8 tables that hold them now.
+    current = maintenance_read(maintenance_columns, maintenance_ids)
+    check(fenced == 0 and current == maintenance, "maintenance_runs_migrated", runs=len(maintenance), fenced=fenced,
+          rows=sum(current[key]["runs"] == value["runs"] for key, value in maintenance.items()),
+          outputs=sum(current[key]["outputs"] == value["outputs"] for key, value in maintenance.items()),
+          logs=sum(current[key]["run_logs"] == value["run_logs"] for key, value in maintenance.items()))
+    readable = sum(native.raw("GET", "/v1/runs/" + quote(key, safe="")).status == 200 for key in maintenance)
+    check(readable == len(maintenance), "maintenance_runs_readable", runs=len(maintenance), readable=readable)
+    receipt.add("legacy_maintenance_runs", passed=True, runs=len(maintenance), exact_rows=True, readable=readable)
     checkpoint(receipt, "interrupted_import")
     interrupted = interrupted_import(native, project, reference, list(results))
     checkpoint(receipt, "wrong_binding")
@@ -910,7 +905,8 @@ def qualify(args, receipt: Receipt) -> None:
     check(identity["id"] == reference, "encrypted_identity")
     assert_history(native, reference, view, baseline, results)
     checkpoint(receipt, "lock_scan")
-    command(INSTALLED, "vault", "--directory", str(project), "lock")
+    locked = json.loads(command(INSTALLED, "vault", "--directory", str(project), "lock"))
+    check(locked.get("vault", {}).get("state") == "locked", "locked_status_clean")
     markers = [marker, source_sha.encode(), *(item[3].removeprefix("sha256:").encode() for value in baseline.values() for item in value["outputs"]),
                *(identifier.encode() for identifier in baseline),
                *(value["row"][1].encode() for value in baseline.values()),
@@ -934,7 +930,8 @@ def qualify(args, receipt: Receipt) -> None:
     replay = call(native, "POST", project_route(reference, "/runs/submit"), retry_ask, extra={"Idempotency-Key": retry_key})
     check(replay.get("replay") is True and replay["run"]["id"] == run["id"], "moved_retry_replayed")
     check(worker_journal(view / ".vault-machine", list(results), origin=origin)[1] == worker_baseline, "moved_worker_exact")
-    command(INSTALLED, "vault", "--directory", str(moved), "lock")
+    locked = json.loads(command(INSTALLED, "vault", "--directory", str(moved), "lock"))
+    check(locked.get("vault", {}).get("state") == "locked", "moved_locked_status_clean")
     stop(native, old=False)
     receipt.add("legacy_move_cold_retry", passed=True, runs=len(results), **outside_scan(markers, [], receipt, moved))
     checkpoint(receipt, "complete")

@@ -316,9 +316,16 @@ fn status(root: &FsPath) -> VaultStatus {
     VaultStatus { encrypted: encrypted(root), state: state.into(), path: root.to_owned(), view, expires_at_ms: expires, idle_timeout_s: idle, next }
 }
 
+/// Whether the legacy source still holds this project's own history; another project's never holds it.
+fn own_migration_pending(api: &Api, root: &FsPath) -> Result<bool, Error> {
+    let Some(id) = project_id(root).or_else(|| plain_project_id(root)) else { return Ok(false) };
+    api.calcifer.maintenance_store().project_migration_required(root, &id)
+        .map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))
+}
+
 fn reported_status(api: &Api, root: &FsPath) -> VaultStatus {
     let mut state = status(root);
-    if state.state == "locked" && api.calcifer.maintenance_store().migration_required().unwrap_or(true) {
+    if state.state == "locked" && own_migration_pending(api, root).unwrap_or(true) {
         state.state = "storage_update_required".into();
         state.next = vec!["cozy vault unlock".into()];
     }
@@ -791,13 +798,16 @@ fn change(api: &Arc<Api>, root: &FsPath, ask: &mut VaultAsk, progress: &mut Prog
             }
             let completing = receipt_path(root).is_file();
             if completing || journal_cleanup_pending(root)? {
-                if api.calcifer.maintenance_store().migration_required().map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))? {
+                if own_migration_pending(api, root)? {
                     return Err(error("project_migration_pending", "the project is open; verified legacy ownership is still required before storage cleanup"));
                 }
-                progress.phase("compacting_history");
-                api.calcifer.maintenance_store().cleanup_private_journal().map_err(|_| error("project_migration_pending", "the project is open, but legacy journal cleanup is still pending"))?;
-                progress.phase("cleaning_up");
-                journal_cleanup_done(root)?;
+                // Compaction copies the whole store: it waits while any project's history is still pending there.
+                if !api.calcifer.maintenance_store().migration_required().map_err(|_| error("project_migration_pending", "legacy project storage could not be checked"))? {
+                    progress.phase("compacting_history");
+                    api.calcifer.maintenance_store().cleanup_private_journal().map_err(|_| error("project_migration_pending", "the project is open, but legacy journal cleanup is still pending"))?;
+                    progress.phase("cleaning_up");
+                    journal_cleanup_done(root)?;
+                }
                 if completing { finish_conversion(root)?; }
             }
             if let Some(session) = held(root) { crate::events::project_vault(session.lock().expect("vault session").secret.project_id(), "unlocked"); }
