@@ -288,6 +288,10 @@ export class CanvasStore {
   readonly viewing = signal<string | null>(null)
   /** The one asset shown in the viewport-sized Focus surface; the canvas camera stays in Wander. */
   readonly focusedName = signal<string | null>(null)
+  /** The focused viewer owns its image camera separately from the canvas. */
+  focusZoomBy?: (direction: number) => void
+  focusZoomTo?: (scale: number) => void
+  focusFit?: () => void
   /** Zoomed this far out a box is its picture, its name and marks for its stack, which is all that can be seen: thousands are drawn at once. */
   readonly far = signal(false)
   /** The canvas's zoom as pictures are asked for it: a power of two, so a zoom asks for a sharper picture only as it doubles. */
