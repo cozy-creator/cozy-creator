@@ -158,11 +158,16 @@ def qualify(native: Native, scanner: Scanner, project: dict, receipt: Receipt, c
     require(regular.returncode == 0, "regular_core_native_execution_failed")
     records = [document["run"] for document in _documents(regular.stdout) if isinstance(document.get("run"), dict) and isinstance(document["run"].get("result"), dict)]
     require(records, "native_terminal_result_missing")
-    result = records[-1]["result"]
+    record = records[-1]
+    result = record["result"]
+    require(isinstance(record.get("id"), str) and len(record["id"]) >= 16, "native_private_run_identity_missing")
+    scanner.add(record["id"])
+    project["native_run_id"] = record["id"]
     expected = (payload_marker + "\n" + source_marker).encode()
     require(allowed.read_bytes() == expected and result["allowed_sha256"] == sha(expected), "native_project_write_failed")
     require(result["home_errno"] in {errno.EPERM, errno.EACCES, errno.EROFS} and result["tmp_errno"] in {errno.EPERM, errno.EACCES, errno.EROFS}, "native_absolute_write_not_denied")
     require(not outside_home.exists() and not outside_tmp.exists(), "native_outside_file_created")
     require(result["core_zero"] and result["core_raise_denied"] and result["dump_raise_denied"] and result["abort_signal"] == 6, "native_core_protection_failed")
     require(not list(view.rglob("core")), "native_core_file_created")
+    project["native_allowed_sha256"] = result["allowed_sha256"]
     receipt.add("native_regular_core_execution", actual_cli=True, project_write=True, absolute_home_denied=True, absolute_tmp_denied=True, core_zero=True, core_raise_denied=True, dump_raise_denied=True, abort_signal=6, output_sha256=result["allowed_sha256"])
