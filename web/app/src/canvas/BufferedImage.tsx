@@ -104,12 +104,13 @@ export function BufferedImage({ sha256, neighbors, cardWidth, originalPath, neig
     let frame = 0
     const measure = () => {
       frame = 0
-      const actual = element.getBoundingClientRect().width
-      // Wander's signal is the upper zoom bound of its current bucket, so later zooms within that bucket stay sharp.
-      const width = displayWidth ?? (focus ? actual || cardWidth : Math.max(actual, cardWidth * store.sharpness.get()))
+      // Wander's signal is the upper zoom bound of its current bucket, so later zooms within that bucket stay sharp: a box is
+      // never drawn wider than that, so only Focus, which sizes a picture itself, reads the page's layout (each read laid out
+      // the whole page again, a box at a time, as a project opened: cl-885).
+      const width = displayWidth ?? (focus ? element.getBoundingClientRect().width || cardWidth : cardWidth * store.sharpness.get())
       const density = (window.devicePixelRatio || 1) * (window.visualViewport?.scale ?? 1)
       const pixels = Math.ceil(Math.max(1, width) * density)
-      element.dataset.requestedWidth = String(pixels)
+      if (element.dataset.requestedWidth !== String(pixels)) element.dataset.requestedWidth = String(pixels)
       const next = pixels > WIDTH ? 0 : pixels > 1024 ? WIDTH : pixels > 512 ? 1024 : pixels > 256 ? 512 : 256
       setResolution((was) => was === next ? was : next)
     }
