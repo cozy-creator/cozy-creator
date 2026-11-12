@@ -199,6 +199,25 @@ fi
 web_proof orbit "$chrome" "$pw" ''
 }
 
+# cl-919: a deleted box resolves nowhere, Undo brings it back for the undo window, and then its files leave the project whether Calcifer
+# ran across the window or not (web/deleted.js). The window is cut to 75 seconds by config.toml for the cell, and put back after.
+web_deleted() {
+  local chrome=$1 pw=$2 lock=$3 undo=75
+  web_undo_window "$lock" "$undo"
+  UNDO_S=$undo STOP=$(web_halt "$lock") START=$(web_start) web_proof deleted "$chrome" "$pw" ''
+  web_undo_window "$lock" ''
+}
+
+# Calcifer started again with config.toml's calcifer.undo_seconds at $2, else none: the old one gone first, so the new one reads it.
+web_undo_window() {
+  local config=$HOME/.cozy/config.toml pid
+  awk -v n="$2" '/^undo_seconds *=/ { next } { print } /^\[calcifer\]/ && n != "" { print "undo_seconds = " n; put = 1 } END { if (n != "" && !put) printf "\n[calcifer]\nundo_seconds = %s\n", n }' "$config" > "$config.next" && mv "$config.next" "$config"
+  pid=$(jq -r .pid < "$1")
+  kill -TERM "$pid" 2> /dev/null || true
+  while kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
+  bash -c "$(web_start)" || true
+}
+
 # web-scale's runner speed (web/speed.js), its factor and the bar each timed cell was held to, in the job's log.
 web_scale_said() {
   jq -r '.seen | "web-scale: runner \(.runner.cpu) x\(.runner.cores): \(.runner.median_ms) ms (\(.runner_after.median_ms // "?") ms at the end) against \(.runner.reference_ms) ms on a fast runner, factor \(.runner.factor); bars \(.bars | tostring)"' "$OUT/web-scale.json" 2> /dev/null || true

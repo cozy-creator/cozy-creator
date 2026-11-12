@@ -24,7 +24,8 @@ pub(crate) const TABLES: &str = "
         used_at_ms INTEGER NOT NULL,
         walking INTEGER NOT NULL DEFAULT 0,
         name TEXT NOT NULL DEFAULT '',
-        code TEXT NOT NULL DEFAULT ''
+        code TEXT NOT NULL DEFAULT '',
+        purge_ms INTEGER NOT NULL DEFAULT 0
     ) STRICT;
     CREATE TABLE IF NOT EXISTS sessions (
         token_sha256 TEXT PRIMARY KEY,
@@ -78,6 +79,8 @@ pub(crate) struct KnownProject {
     pub used_at_ms: i64,
     /// Its walk was going: the next start walks it again.
     pub walking: bool,
+    /// When a deleted box's undo window next ends in it, in ms (cl-919): its files go then, or as the next start catches up. 0: none.
+    pub purge_ms: i64,
 }
 
 /// A browser session, by its secrets' digests.
@@ -92,7 +95,15 @@ fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
     let path = PathBuf::from(row.get::<_, String>(1)?);
     let name = Some(row.get::<_, String>(4)?).filter(|name| !name.is_empty());
     let name = name.unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
-    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)? })
+    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)?, purge_ms: row.get(6)? })
+}
+
+/// An index from before cl-919 knows of no deleted boxes' files to purge: its column, added, none due.
+pub(crate) fn project_purges(conn: &Connection) -> rusqlite::Result<()> {
+    match conn.prepare("SELECT purge_ms FROM projects LIMIT 0").is_ok() {
+        true => Ok(()),
+        false => conn.execute_batch("ALTER TABLE projects ADD COLUMN purge_ms INTEGER NOT NULL DEFAULT 0"),
+    }
 }
 
 /// A store from before cl-819 names no project: its column, added.
@@ -196,13 +207,13 @@ fn digest(key: &str) -> String {
 
 impl Store {
     pub(crate) fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
-        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name, code FROM projects WHERE id = ?1", [id], known).optional()?))
+        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name, code, purge_ms FROM projects WHERE id = ?1", [id], known).optional()?))
     }
 
     /// Every project opened here, last used first.
     pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name, code FROM projects ORDER BY used_at_ms DESC, id")?;
+            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name, code, purge_ms FROM projects ORDER BY used_at_ms DESC, id")?;
             Ok(statement.query_map([], known)?.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -230,6 +241,25 @@ impl Store {
                 params![id, path.to_string_lossy(), name, used_at_ms, code],
             )?;
             Ok(code)
+        })
+    }
+
+    /// `id`'s deleted boxes' files are due to go at `at_ms`, if that's sooner than what was due.
+    pub(crate) fn purge_due(&self, id: &str, at_ms: i64) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("UPDATE projects SET purge_ms = ?2 WHERE id = ?1 AND (purge_ms = 0 OR purge_ms > ?2)", params![id, at_ms])?;
+            Ok(())
+        })
+    }
+
+    /// `id` purged, its next due at `next_ms` (0: none), as read when it was due at `was_ms`: a delete since, due later, stands too.
+    pub(crate) fn purged(&self, id: &str, was_ms: i64, next_ms: i64) -> Result<()> {
+        self.write(|tx| {
+            tx.execute(
+                "UPDATE projects SET purge_ms = CASE WHEN purge_ms = ?2 THEN ?3 WHEN ?3 = 0 THEN purge_ms ELSE MIN(purge_ms, ?3) END WHERE id = ?1",
+                params![id, was_ms, next_ms],
+            )?;
+            Ok(())
         })
     }
 

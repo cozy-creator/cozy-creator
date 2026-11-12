@@ -1582,6 +1582,14 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const asset = this.views.get(key)?.asset
     if (!asset?.prefixes?.some((held) => held.number === number)) return
+    // A picture box's only picture, with no tool to make another: its × deletes the box, as a person means, and nothing of it stays (cl-919).
+    if (!asset.tool && asset.kind !== "text" && asset.prefixes.length === 1 && !asset.making?.length) {
+      const open = this.inPlace?.name === key
+      this.remove([key])
+      // Gone first, so nothing draws its picture on the way back to the canvas.
+      if (open) this.leaveHere()
+      return
+    }
     const edit = this.step(`Discarded ${asset.noun} ${number} of ${key}`, [key])
     let note = 0
     this.dropTake(key, number, edit, () => dismiss(note))
@@ -2812,10 +2820,15 @@ export class CanvasStore {
     return inTurn
   }
 
-  /** The name a new box takes now, as Calcifer would give it: what's on the canvas, what's being placed, and what waits to be brought back is taken. */
+  /** The name a new box takes now, as Calcifer would give it: what's on the canvas and what's being placed is taken. A deleted box's name is free (cl-919). */
   private nameFor(wanted: string): string {
-    const taken = [...this.views].map(([key, view]) => (view.placing ? view.name : key))
-    return freeName(wanted, [...taken, ...(this.state?.orphans ?? []).map((orphan) => orphan.name)])
+    return freeName(wanted, [...this.views].map(([key, view]) => (view.placing ? view.name : key)))
+  }
+
+  /** Whether `mention` names a box deleted from the project that Undo can still bring back: it resolves to nothing, and says so (cl-919). */
+  deletedName(mention: string): boolean {
+    const key = nameKey(baseOf(mention))
+    return (this.state?.orphans ?? []).some((orphan) => nameKey(orphan.name) === key)
   }
 
   /**

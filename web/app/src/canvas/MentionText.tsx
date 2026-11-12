@@ -32,14 +32,15 @@ function unsent(store: CanvasStore, name: string, asset: string, takes: Media[] 
   return `${baseOf(name)} isn't sent: this takes ${takes.map((held) => WANTED[held]).join(" or ")} only`
 }
 
-/** A name as a chip: one gone is struck through, and one this text doesn't send, `refused`, is dimmed and says why. */
-function chip(name: string, words: string, missing: boolean, refused: string | null): HTMLElement {
+/** A name as a chip: one gone is struck through, saying whether it was deleted, and one this text doesn't send, `refused`, is dimmed and says why. */
+function chip(name: string, words: string, missing: boolean, refused: string | null, deleted = false): HTMLElement {
   const el = document.createElement("span")
   el.className = missing ? "chip missing" : refused ? "chip refused" : "chip"
   el.contentEditable = "false"
   el.dataset.mention = name
   el.textContent = words
-  el.title = missing ? (isSelf(name) ? NO_BARE_SELF : `${baseOf(name)} is no longer here`) : (refused ?? name)
+  const gone = isSelf(name) ? NO_BARE_SELF : deleted ? `${baseOf(name)} was deleted` : `${baseOf(name)} is no longer here`
+  el.title = missing ? gone : (refused ?? name)
   return el
 }
 
@@ -47,7 +48,9 @@ function chip(name: string, words: string, missing: boolean, refused: string | n
  *  project doesn't know, which stays words. */
 function chipFor(store: CanvasStore, name: string, asset: string, missing: string[], takes: Media[] | undefined): HTMLElement | null {
   const said = store.mentionOf(name, asset)
-  if (missing.includes(name) || said?.gone || (isSelf(name) && !said)) return chip(name, chipSaid(store, name, asset), true, null)
+  // A deleted box's name is struck at once, as Calcifer will say it (cl-919).
+  const deleted = !said && store.deletedName(name)
+  if (missing.includes(name) || said?.gone || deleted || (isSelf(name) && !said)) return chip(name, chipSaid(store, name, asset), true, null, deleted)
   return said ? chip(name, chipSaid(store, name, asset), false, unsent(store, name, asset, takes)) : null
 }
 
