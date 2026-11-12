@@ -47,6 +47,8 @@ import type {
   ProjectAddress,
   ProjectMachines,
   ProjectState,
+  ProjectView,
+  ProjectViewPatch,
   ProjectShowReply,
   Projects,
   Proven,
@@ -308,6 +310,14 @@ export class Client {
 
   projects(limit = 200): Promise<Projects> {
     return this.json(`/v1/projects?limit=${limit}`)
+  }
+
+  projectView(id: string, signal?: AbortSignal): Promise<ProjectView> {
+    return this.json(`${project(id)}/view`, { signal, cache: "no-store" })
+  }
+
+  patchProjectView(id: string, patch: ProjectViewPatch, write: Write = {}): Promise<ProjectView> {
+    return this.write("PATCH", `${project(id)}/view`, patch, undefined, write)
   }
 
   async newProject(body: Open): Promise<Opened> {

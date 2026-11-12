@@ -299,7 +299,7 @@ export async function connect(): Promise<Boot> {
       forgetProjectView(id)
     }
     const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-      (Boolean(id) && ["project", "canvas", "yaml", "history"].includes(String(queryKey[0])) && queryKey[1] === id)
+      (Boolean(id) && ["project", "project-view", "canvas", "yaml", "history"].includes(String(queryKey[0])) && queryKey[1] === id)
       || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
     void queries.cancelQueries({ predicate: privateData })
     // Reset active observers too: merely removing the cache can leave a mounted drawer's old data.
