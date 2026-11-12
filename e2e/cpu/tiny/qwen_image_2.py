@@ -3,11 +3,14 @@ Qwen3-VL's processor, the 16x RGBA VAE in F32) at a few channels, and Qwen's two
 uploads, each with its `system_prompt.txt`) at 32 wide. The DiT has 2 blocks; Alibaba PAI's Fun Acc overlay builds at the
 release geometry (`model.py` SITES: 4096 wide, 32 blocks), so the executor takes the tiny DiT's (PATCH), and carries its
 `pdd_config.json`. The abliterated text encoder and both enhancers are bound to these same tiny weights. A second VAE,
-other weights of the same shape, stands in for madebyollin's in the `vae` slot (se-131)."""
+other weights of the same shape, stands in for madebyollin's in the `vae` slot (se-131). Parts of the same pipeline, each a
+model of its own (xs-192): its transformer with its scheduler, as a community fine-tune is published, and its text encoder
+with its processor."""
 
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import tensorfs
@@ -21,6 +24,8 @@ from tiny import _shared
 MODEL, ENCODER = "qwen/qwen-image-2.1@0.1.0", "atomicchat/qwen-image-2.1-text-encoder-abliterated@0.1.0"
 ENHANCERS = ("pottokao/qwen-image-2.1-pe-t2i-abliterated@0.1.0", "darrellbest/qwen-image-2.1-pe-i2i-abliterated@0.1.0")
 VAE = "madebyollin/texture-fix-vae@0.3.0"
+#: The pipeline's transformer and its text encoder, each a model of that part alone (xs-192).
+DIT, ENCODER_PART = "aimeasop/redcraft@0.2.0", "atomicchat/qwen-image-2.1-text-encoder-abliterated@0.2.0"
 #: 0.1.1 carries `pdd_config.json` (xs-183); qwen-image-2 before 0.10.0rc2 names 0.1.0.
 FUN_ACC = ("alibaba-pai/qwen-image-2.1-fun-acc@0.1.0", "alibaba-pai/qwen-image-2.1-fun-acc@0.1.1")
 #: Fun Acc's `pdd_config.json`: the 4-step grid, already shifted, and its terminal 0.
@@ -86,6 +91,14 @@ def _other_vae(out: Path) -> None:
         "_class_name": "QwenImage21Pipeline", "_diffusers_version": "0.41.0", "vae": ["diffusers", "AutoencoderKLQwenImage21"]}))
 
 
+def _part(pipeline: Path, out: Path, names: tuple[str, ...]) -> None:
+    """Some of `pipeline`'s components, as a pipeline of only those: the same files, so the same weights."""
+    index = json.loads((pipeline / "model_index.json").read_text())
+    for name in names:
+        shutil.copytree(pipeline / name, out / name)
+    (out / "model_index.json").write_text(json.dumps({key: index[key] for key in ("_class_name", "_diffusers_version", *names)}))
+
+
 def _enhancer(out: Path) -> None:
     """A Qwen3.5 VLM as its as-is upload: the Transformers folder with its processor files at the root."""
     save(module(Qwen3_5ForConditionalGeneration(_shared.qwen3_5_vl())).to(torch.bfloat16), out)
@@ -117,8 +130,11 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
     fun_acc = _fun_acc(store)
     torch.manual_seed(3)
     _other_vae(root / "texture-fix")
+    _part(root / "qwen-image-2.1", root / "dit", ("transformer", "scheduler"))
+    _part(root / "qwen-image-2.1", root / "text-encoder", ("text_encoder", "processor"))
     return {MODEL: root / "qwen-image-2.1", ENCODER: root / "qwen-image-2.1", ENHANCERS[0]: root / "enhancer",
-            ENHANCERS[1]: root / "enhancer", **dict.fromkeys(FUN_ACC, fun_acc), VAE: root / "texture-fix"}
+            ENHANCERS[1]: root / "enhancer", **dict.fromkeys(FUN_ACC, fun_acc), VAE: root / "texture-fix",
+            DIT: root / "dit", ENCODER_PART: root / "text-encoder"}
 
 
 def _prompt(text: str, *keys: str) -> dict[str, Json]:
@@ -150,5 +166,9 @@ CELLS: list[Cell] = [
     # The `vae` slot bound to another VAE: the same latents as `image/turbo`, another decoder's picture (se-131).
     {"entry": "image", "name": "vae", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
      "models": {"image.models.vae": VAE}},
+    # The `model` and `text_encoder` slots bound to models of those parts alone, the VAE the default's: the same weights as
+    # `image/turbo`'s, composed at run time, so the same picture (xs-192).
+    {"entry": "image", "name": "parts", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
+     "models": {"image.models.model": DIT, "image.models.text_encoder": ENCODER_PART}},
     {"entry": "quantize", "name": "lanes", "payload": {}, "skip": NARROW},
 ]
