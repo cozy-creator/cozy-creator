@@ -235,7 +235,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
         }
         false => (None, vec![]),
     };
-    Ok(Json(AssetVersions { asset, versions, discarded, call, call_warnings }))
+    Ok(Json(AssetVersions { asset, versions, heads: model.heads(), discarded, call, call_warnings }))
 }
 
 #[derive(Deserialize)]
@@ -303,6 +303,14 @@ pub(super) async fn patch(
         }
         let was = written.get(&name).ok_or_else(|| own_lines(&name))?.etag();
         let mut fields = asked.fields.clone();
+        // Words typed on an older project merge with what's been written since, by character (cl-904).
+        if let Some(typed) = &asked.typed {
+            let document = folder.document()?.ok_or_else(|| Error::new(Kind::Validation, "project_crdt", "the canonical project document is missing"))?;
+            let id = &written.get(&name).ok_or_else(|| own_lines(&name))?.id;
+            for (field, splices) in &typed.fields {
+                fields.insert(field.clone(), Value::String(document.typed(id, field, &typed.heads, splices)?));
+            }
+        }
         if let (Some(tool), Some(holds)) = (&asked.tool, &holds) {
             let held = written.get(&name).ok_or_else(|| own_lines(&name))?;
             let intrinsic = held.get("tool").and_then(Value::as_str).is_some_and(|target| format::plain_tool(target, folder) == tool::EDIT);
@@ -339,9 +347,21 @@ pub(super) async fn patch(
             Ok(())
         })?;
         let etag = folder.reading_boxes(|written| written.get(&name).map(Boxed::etag))?.ok_or_else(|| own_lines(&name))?;
-        Ok(AssetPatched { name: name.clone(), etag, was, warnings })
+        Ok(AssetPatched { name: name.clone(), etag, was, warnings, typed: Default::default(), heads: vec![] })
     });
-    patched.map(Json).map_err(Refusal)
+    let mut patched = patched.map_err(Refusal)?;
+    // What the typed words came to, and the heads they're at: what the page types on next.
+    if let Some(typed) = &asked.typed {
+        (patched.typed, patched.heads) = folder.reading_document(|written, heads| {
+            let held = written.get(&name);
+            let words = typed.fields.keys().map(|field| {
+                let said = held.and_then(|held| held.get(field)).and_then(Value::as_str).unwrap_or_default();
+                (field.clone(), said.to_owned())
+            });
+            (words.collect(), heads)
+        }).map_err(Refusal)?;
+    }
+    Ok(Json(patched))
 }
 
 /// Old rows are recoverable only from authored documents with the same complete

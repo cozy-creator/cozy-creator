@@ -3,7 +3,8 @@
 // leaving the box, as the tab hides and as the page goes; Calcifer's changes come back on the stream and merge field by field, what's typed and
 // unsent winning, with no prompt. A save read back before its answer, typing going on: kept. Calcifer killed while a box is typed in: no reload,
 // every character saved. Typed and the box left at once: there when it's opened again, and saved. Typed and the page reloaded at once: saved.
-// Another writer's words while the page's are on their way: the page's stand.
+// Another writer's words while the page's are on their way: both stand, merged by character (Automerge text). Two pages typing in one box at
+// once: both keep theirs.
 //   node durable.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $RESTART: kills this Calcifer with -9 and brings it back. Prints what it saw as
 // JSON and exits 1 if anything failed.
@@ -25,7 +26,8 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
 (async () => {
   const base = calcifer();
   const browser = await launch(playwright);
-  const page = await (await browser.newContext({ viewport: { width: 1600, height: 1000 } })).newPage();
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
   lookAt(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
@@ -136,25 +138,58 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   await saving(quick);
   check('reload_at_once_saved', inDb() === quick, inDb());
 
-  // Another writer's words while the page's are on their way: the page's unsent words stand, shown and saved, with nothing asked.
+  // Another writer's words while the page's are on their way: the page's unsent words stand until its write is answered, and then both stand,
+  // merged by character, with nothing asked (cl-904: Automerge text).
   held = await holdWrites();
-  const mine = 'Mine, on its way.';
-  await typeOver(mine);
+  await typeOver('Mine.');
   await until('its save asked', () => Promise.resolve(held.asked.length), (n) => n >= 1);
-  const theirs = 'Theirs, written meanwhile.';
+  const theirs = 'Theirs.';
   const wrote = await fetch(`http://${holder().address}/v1/projects/${id}/assets/words`, {
-    method: 'PATCH', headers: { Authorization: `Bearer ${holder().token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: theirs } }),
+    method: 'PATCH', headers: { Authorization: `Bearer ${holder().token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: `${quick} ${theirs}` } }),
   });
-  check('theirs_written', wrote.ok && inDb() === theirs, { status: wrote.status, held: inDb() });
+  check('theirs_written', wrote.ok && inDb() === `${quick} ${theirs}`, { status: wrote.status, held: inDb() });
   // The stream brings theirs back to the page.
   await page.waitForTimeout(1500);
-  check('unsent_words_stand_over_theirs', (await shown()) === mine, await shown());
+  check('unsent_words_stand', (await shown()) === 'Mine.', await shown());
   held.land();
   held.answer();
   await held.done();
-  await saving(mine);
-  check('unsent_words_saved_over_theirs', inDb() === mine, inDb());
+  await until('both in project.db', () => Promise.resolve(inDb()), (value) => value?.includes('Mine.') && value.includes(theirs)).catch(() => {});
+  check('both_writers_words_merged', inDb()?.includes('Mine.') && inDb().includes(theirs), inDb());
+  await until('the page shows what was merged', shown, (text) => text === inDb()).catch(() => {});
+  check('merged_words_shown', (await shown()) === inDb(), { shown: await shown(), held: inDb() });
   check('nothing_asked', (await page.locator('.card.here button:has-text("Keep mine"), .card.here button:has-text("Take the file")').count()) === 0);
+
+  // Two pages type in the box at once, each in its own place in the words: both stand, merged by character, on both pages.
+  await typeOver('Middle.');
+  await saving('Middle.');
+  await saved();
+  const other = await context.newPage();
+  other.on('pageerror', (error) => errors.push(error.message));
+  await other.goto(page.url());
+  await openBox(other, 'words');
+  const otherText = () => boxOf(other, 'words').locator('.mention-text').first();
+  await until('the other page reads it', async () => (await otherText().innerText()).trim(), (text) => text === 'Middle.');
+  held = await holdWrites();
+  await text().click();
+  await page.keyboard.press('ControlOrMeta+End');
+  await page.keyboard.type(' A-end.');
+  await until('its save asked', () => Promise.resolve(held.asked.length), (n) => n >= 1);
+  await otherText().click();
+  await other.keyboard.press('ControlOrMeta+Home');
+  await other.keyboard.type('B-start. ');
+  await saving('B-start. Middle.');
+  held.land();
+  held.answer();
+  await held.done();
+  const both = 'B-start. Middle. A-end.';
+  await saving(both);
+  check('two_pages_merged', inDb() === both, inDb());
+  await until('the first page shows both', shown, (said) => said === both).catch(() => {});
+  await until('the second page shows both', async () => (await otherText().innerText()).trim(), (said) => said === both).catch(() => {});
+  seen.two_pages = { first: await shown(), second: (await otherText().innerText()).trim(), held: inDb() };
+  check('two_pages_show_both', seen.two_pages.first === both && seen.two_pages.second === both, seen.two_pages);
+  await other.close();
 
   check('nothing_refused', !(await notes()).some((line) => /Couldn't/.test(line)), await notes());
   check('no_page_errors', errors.length === 0, errors);

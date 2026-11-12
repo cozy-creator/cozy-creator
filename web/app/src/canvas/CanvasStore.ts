@@ -9,6 +9,7 @@ import type {
   Fit,
   Imported,
   AssetDeleted,
+  AssetPatch,
   AssetPatched,
   Asset,
   HistoryStepped,
@@ -17,6 +18,7 @@ import type {
   RentFor,
   Card,
   Run,
+  Splice,
   Standing,
   Tool,
   VersionMoved,
@@ -39,6 +41,7 @@ import { PageHistory, type Target } from "./history"
 import { comingOff, goingOn, holdsPictures, type ToolStep, wontGoOn } from "./toolchange"
 import type { Operation } from "./palette"
 import { isSelf, mentionFrom, numbersOf, SELF, versionIn, versionOf } from "./versions"
+import { merge, spliceOf } from "./words"
 
 /** The body width in this geometry publication; the node width may be an opened envelope. */
 export type ElementData = { name: string; width: number }
@@ -334,6 +337,11 @@ export class CanvasStore {
   private namesById = new Map<string, string>()
   /** What Calcifer calls each, by id: a rename on its way shows here first. */
   private served = new Map<string, string>()
+  /**
+   * For each box, by node id, each field typed in: the words it was last known to hold and the project document's heads they were at, what's typed
+   * goes as splices of; and the words on their way. What's typed merges by character with anyone else's (cl-904).
+   */
+  private typedFrom = new Map<string, Map<string, { words: string; heads: string[]; sent?: string }>>()
   private nextId = 0
   private state: Project | null = null
   private began = 0
@@ -936,7 +944,7 @@ export class CanvasStore {
           // What's typed and what's still on its way show over it, field by field: the page's unsent words win, and every other field is what's read.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
           if (asset.etag !== view.asset?.etag && !between) {
-            Object.assign(change, { sent: view.writing ? view.sent : undefined, known: undefined })
+            Object.assign(change, { sent: view.writing ? view.sent : undefined, known: undefined, ...this.typedOver(view, asset) })
             this.own.delete(asset.name)
           }
           // Pinned where it was being looked: there's nothing left to look at.
@@ -1966,10 +1974,82 @@ export class CanvasStore {
     return valueIn(this.get(name), field)
   }
 
+  /** The project document's heads `name` was read at. */
+  private headsOf(name: string): string[] {
+    return this.state?.headsOf?.[name] ?? this.state?.heads ?? []
+  }
+
+  /** Typing begins in `field` of `key`: what it goes as splices of, the words read and their heads, unless it's kept them already. */
+  private begin(key: string, field: string) {
+    const id = this.ids.get(key)
+    const said = this.views.get(key)?.asset?.fields?.[field]
+    const heads = this.headsOf(this.served.get(id ?? "") ?? key)
+    if (!id || !heads.length || (said !== undefined && said !== null && typeof said !== "string")) return
+    const from = this.typedFrom.get(id) ?? new Map()
+    if (!from.has(field)) from.set(field, { words: typeof said === "string" ? said : "", heads })
+    this.typedFrom.set(id, from)
+  }
+
+  /** A write of `fields` of box `id`: its words typed as splices on what they began from, the rest as they are. */
+  private body(id: string, fields: Record<string, unknown>, view?: ElementView): AssetPatch {
+    const from = this.typedFrom.get(id)
+    const plain: Record<string, unknown> = {}
+    const typed: Record<string, Splice[]> = {}
+    let heads: string[] | undefined
+    for (const [field, value] of Object.entries(fields)) {
+      const base = from?.get(field)
+      const local = view?.sent?.[field] ?? value
+      if (base && typeof local === "string" && (!heads || heads.join() === base.heads.join())) {
+        heads = base.heads
+        base.sent = local
+        typed[field] = [spliceOf(base.words, local)]
+      } else plain[field] = value
+    }
+    return { fields: plain, ...(heads ? { typed: { heads, fields: typed } } : {}) } as AssetPatch
+  }
+
+  /** Calcifer answered a write of box `id`: what its typed words came to is what typing goes on from, and what was typed meanwhile is moved onto it. */
+  private typedAnswered(id: string, answer: AssetPatched) {
+    const from = this.typedFrom.get(id)
+    const name = this.namesById.get(id)
+    for (const [field, merged] of Object.entries(answer.typed ?? {})) {
+      const base = from?.get(field)
+      if (!base || base.sent === undefined || !answer.heads?.length) continue
+      const view = name ? this.views.get(name) : undefined
+      if (name && view && merged !== base.sent) {
+        const onto = (local: unknown) => (typeof local === "string" ? merge(base.sent!, local, merged) : local)
+        const sent = view.sent && field in view.sent ? { sent: { ...view.sent, [field]: onto(view.sent[field]) } } : {}
+        const drafts = view.drafts && field in view.drafts ? { drafts: { ...view.drafts, [field]: onto(view.drafts[field]) } } : {}
+        this.patch(name, { ...sent, ...drafts })
+      }
+      Object.assign(base, { words: merged, heads: answer.heads, sent: undefined })
+    }
+  }
+
+  /** Someone's words, read: what each typed field goes on from, and what's typed and not yet on its way moved onto them. With a write on its way,
+   *  its answer does that. */
+  private typedOver(view: ElementView, asset: Asset): Partial<ElementView> {
+    const id = this.ids.get(view.name)
+    const from = id ? this.typedFrom.get(id) : undefined
+    if (!from || view.writing) return {}
+    const heads = this.headsOf(asset.name)
+    let drafts = view.drafts
+    for (const [field, base] of from) {
+      const said = asset.fields?.[field]
+      const words = typeof said === "string" ? said : ""
+      if (words === base.words || !heads.length) continue
+      const local = drafts?.[field]
+      if (typeof local === "string") drafts = { ...drafts, [field]: merge(base.words, local, words) }
+      Object.assign(base, { words, heads })
+    }
+    return drafts === view.drafts ? {} : { drafts }
+  }
+
   /** What's typed shows at once and writes itself at the first pause, on leaving the text, or as its box shuts. */
   setDraft(name: string, field: string, value: unknown) {
     const view = this.get(name)
     if (!view) return
+    if (typeof value === "string") this.begin(this.resolveName(name), field)
     this.patch(name, { drafts: { ...view.drafts, [field]: value } })
     clearTimeout(this.pauses.get(name))
     this.pauses.set(name, setTimeout(() => void this.save(name), TYPING_PAUSE_MS))
@@ -1990,7 +2070,7 @@ export class CanvasStore {
     for (const [name, view] of this.views) {
       const id = this.ids.get(name)
       if (!view.asset || !id || !(view.drafts || view.writing)) continue
-      void this.client.patchAsset(project, this.served.get(id) ?? name, { fields: { ...view.sent, ...view.drafts } }, { keepalive: true }).catch(() => {})
+      void this.client.patchAsset(project, this.served.get(id) ?? name, this.body(id, { ...view.sent, ...view.drafts }), { keepalive: true }).catch(() => {})
     }
   }
 
@@ -2027,9 +2107,10 @@ export class CanvasStore {
     const now = () => this.views.get(this.namesById.get(id) ?? "")
     return new Promise((settled) => {
       this.act(key, {
-        send: (served, write) => this.client.patchAsset(this.projectId!, served, { fields }, write),
+        send: (served, write) => this.client.patchAsset(this.projectId!, served, this.body(id, fields, now()), write),
         edit,
         done: (answer) => {
+          this.typedAnswered(id, answer)
           const held = now()
           if (held) {
             this.wrote(held.name, answer)
@@ -2038,6 +2119,7 @@ export class CanvasStore {
           settled(true)
         },
         refused: (error) => {
+          for (const field of Object.keys(fields)) delete this.typedFrom.get(id)?.get(field)?.sent
           const held = now()
           if (held) {
             const sent = Object.fromEntries(Object.entries(held.sent ?? {}).filter(([field]) => !(field in fields)))

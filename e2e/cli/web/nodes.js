@@ -513,8 +513,8 @@ function replaceFile(at, text) {
   await api(`/v1/projects/${id}/assets/knobs`, { method: 'DELETE' });
   await until('knobs gone', () => box('knobs').count(), (n) => n === 0);
 
-  // Another's edit merges field by field (cl-904): of another asset, or another field, it applies; of the words being typed, the page's unsent
-  // words stand and are saved, with nothing asked.
+  // Another's edit merges (cl-904): of another asset, or another field, it applies; of the words being typed, the page's unsent words stand
+  // and then both merge by character, with nothing asked.
   await open('Sheet');
   await sheetText.click();
   await page.keyboard.press('End');
@@ -538,7 +538,7 @@ function replaceFile(at, text) {
   check('unsent_words_stand', (await sheetText.innerText()).includes('mine again'), await sheetText.innerText());
   theirsIn();
   await page.unroute('**/v1/projects/*/assets/Sheet', late);
-  await until('mine saved over theirs', () => Promise.resolve(storedBox('Sheet')?.instructions), (words) => words?.includes(' mine again'));
+  await until('theirs and mine merged', () => Promise.resolve(storedBox('Sheet')?.instructions), (words) => words?.includes(' theirs') && words.includes(' again') && !words.includes(' mine'));
   check('nothing_asked', (await box('Sheet').locator('button:has-text("Keep mine")').count()) === 0);
 
   // A caret never rests in a name, where what's typed goes nowhere: a click on one puts it just after, and what's typed there is saved there.
