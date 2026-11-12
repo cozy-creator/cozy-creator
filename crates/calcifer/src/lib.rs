@@ -412,7 +412,6 @@ impl Calcifer {
 
     pub(crate) fn attach_project(self: &Arc<Self>, store: &project::ProjectStore) -> store::Result<bool> {
         let owner = store.owner();
-        if lock(&self.project_owners).get(owner.project_id()).is_some_and(|prior|prior.same_view(&owner)) { return Ok(false); }
         let ids:Vec<String>=store.read(|conn| {
             let mut stmt=conn.prepare(&format!("SELECT id FROM runs WHERE owner=?1 AND custody='owned' AND (state<>'settled' OR EXISTS(SELECT 1 FROM outputs WHERE run=runs.id AND {}))",store::OWED))?;
             Ok(stmt.query_map([store.project_id()],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)
@@ -422,10 +421,10 @@ impl Calcifer {
         let fresh=lock(&self.project_owners).insert(owner.project_id().into(),owner.clone()).is_none();
         routes.extend(ids.into_iter().map(|id|(id,Some(owner.clone()))));
         drop(routes);
-        if fresh {
-            for id in store.unsettled()? { self.drive(id); }
-            for (id, _) in store.exports_owed()? { self.export(&id); }
-        }
+        // Driver/export admission is idempotent, and a verified legacy receipt
+        // can make an already-open owner's old rows ready on a later read.
+        for id in store.unsettled()? { self.drive(id); }
+        for (id, _) in store.exports_owed()? { self.export(&id); }
         Ok(fresh)
     }
 
