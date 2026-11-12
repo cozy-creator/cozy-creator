@@ -55,8 +55,8 @@ def main() -> int:
             log.write("".join(f"{word}\x1f" for word in words) + "\x1e")
         return [os.environ["COZY"], *words]
 
-    def cozy(*words: str) -> Said:
-        done = subprocess.run(logged(list(words)), cwd=project, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=RUN_S)
+    def cozy(*words: str, at: Path = project) -> Said:
+        done = subprocess.run(logged(list(words)), cwd=at, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=RUN_S)
         return Said(done.returncode, done.stdout, done.stderr)
 
     def started(*words: str) -> subprocess.Popen[str]:
@@ -89,7 +89,12 @@ def main() -> int:
         return False
 
     def running(name: str) -> bool:
-        return any(job.get("asset") == name and job.get("state") == "running" for job in jobs())
+        """Its job went to its machine and hasn't ended."""
+        return any(job.get("asset") == name and job.get("state") in ("running", "waiting") and job.get("run") for job in jobs())
+
+    def idle() -> bool:
+        """Nothing of the project's renders is left to do: what's counted next is this step's alone."""
+        return until("the project idle", lambda: not api("?assets=false").get("busy"))
 
     def took(said: Said, name: str) -> list[int]:
         """The take numbers its lines say landed of `name`."""
@@ -105,7 +110,7 @@ def main() -> int:
     # A 4 s clip each shot shoots from, and a chain: film cuts shot_1 and shot_2, shot_1 reads a picture, mara.
     clip = out / "render-look.mp4"
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip)], check=True)
-    made = cozy("new", str(project), "--unencrypted")
+    made = cozy("new", str(project), "--unencrypted", at=out)
     if made.code != 0:
         print(json.dumps({"failures": ["new"], "seen": repr(made)}))
         return 1
@@ -135,6 +140,7 @@ def main() -> int:
     check("n_forces_nothing", forced.code == 0 and forced.out.strip() == "nothing to render: shot_1 take 1 is current (--new renders it again)", forced)
 
     # --new renders a current node, -n of it; --json says each take.
+    idle()
     had = len(versions("shot_2"))
     new = cozy("--json", "render", "shot_2", "--new", "-n", "2", "--on", "local")
     events = [cast(Json, json.loads(line)) for line in new.lines() if line.startswith("{")]
@@ -145,6 +151,7 @@ def main() -> int:
 
     # Out of date: shot_2's words changed, film renders it first, then itself.
     api("/assets/shot_2", "PATCH", {"fields": {"summary": "Then <look>, at dusk."}})
+    idle()
     shots, films = len(versions("shot_2")), len(versions("film"))
     stale = cozy("render", "film", "--on", "local")
     seen["stale"] = repr(stale)
@@ -193,6 +200,7 @@ def main() -> int:
           and re.search(r"^reads_bad\b.*failed", failed.out, re.M) is not None and took(failed, "beside") == [1] and not versions("reads_bad"), failed)
 
     # Pick up from here: take 1 of shot_2 kept to its seam, the rest rendered again.
+    idle()
     shots = len(versions("shot_2"))
     pickup = cozy("render", "shot_2", "--pickup", f"<shot_2.1>@{SEAM}", "--on", "local")
     seen["pickup"] = repr(pickup)

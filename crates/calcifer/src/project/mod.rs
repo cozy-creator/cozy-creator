@@ -2301,17 +2301,18 @@ async fn runs(
         }
         !seen.is_disjoint(&asked_of)
     };
-    // Already on its way: a run of it with these inputs, a take of it this snapshot asks, or a job of the walk making it as it says now.
-    let open: Vec<(String, String)> = {
+    // Already on its way: a run of it with these inputs, or a job of a render of the project as its text says now, which reads what
+    // stands when its turn comes.
+    let now: HashSet<&str> = lock.walk.asks.iter().filter(|ask| ask.digest == digest).map(|ask| ask.id.as_str()).collect();
+    let open: Vec<String> = {
         let walker = project.walker.lock().expect("walker lock");
-        walker.graph.open_jobs().into_iter().map(|id| &walker.graph.jobs[id]).map(|job| (name_key(&job.asset), job.spec.clone())).collect()
+        walker.graph.open_jobs().into_iter().map(|id| &walker.graph.jobs[id]).filter(|job| now.contains(job.ask.as_str())).map(|job| name_key(&job.asset)).collect()
     };
     let being_made = |i: usize| {
         let key = name_key(&doc.assets[i].name);
-        let spec = node_of(&doc, i).spec;
         lock.pending.values().any(|pending| name_key(&pending.asset) == key && Some(&pending.version.inputs) == stand[i].inputs.as_ref())
             || lock.walk.asks.iter().any(|ask| ask.digest == digest && ask.takes.iter().any(|take| name_key(&take.asset) == key))
-            || open.iter().any(|(name, held)| *name == key && *held == spec)
+            || open.contains(&key)
     };
     // Everything `i` reads, all the way up.
     let above = |i: usize| {

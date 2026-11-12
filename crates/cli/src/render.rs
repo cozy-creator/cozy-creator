@@ -265,6 +265,8 @@ struct Follow<'a> {
     /// What a person on a terminal was last told of each.
     told: HashMap<String, String>,
     lines: usize,
+    /// When the walk its board is of began: another's says its lines from the first.
+    began: i64,
     ended: Option<api::calcifer::project::Ended>,
     takes: Vec<Value>,
     failed: Vec<Job>,
@@ -285,6 +287,7 @@ impl<'a> Follow<'a> {
             said: HashSet::new(),
             told: HashMap::new(),
             lines: board.said.len(),
+            began: board.began_at_ms,
             ended: board.ended.clone(),
             takes: vec![],
             failed: vec![],
@@ -302,6 +305,9 @@ impl<'a> Follow<'a> {
             return;
         }
         self.seq = board.seq;
+        if board.began_at_ms != self.began {
+            (self.began, self.lines) = (board.began_at_ms, 0);
+        }
         self.jobs = board.jobs;
         self.ended = board.ended;
         for said in board.said.iter().skip(self.lines) {
