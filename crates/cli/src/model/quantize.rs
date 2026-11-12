@@ -20,7 +20,7 @@ pub(crate) async fn quantize(ctx: &Context, args: Quantize) -> Result<ExitCode, 
         .map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
     // Local code goes by content.
     let (package, code) = match crate::run::local(ctx, &args.package, &cwd)? {
-        Some((path, _)) => (String::new(), Some(crate::send::Sender::new(ctx).await?.code(&path).await?)),
+        Some((path, _)) => (String::new(), Some(crate::send::Sender::independent_code(ctx, &path).await?)),
         None => (args.package, None),
     };
     let ask = ModelQuantize { model: args.model, lane: args.lane.clone(), package };
