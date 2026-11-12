@@ -417,8 +417,8 @@ fn constant_numbered(folder: &folder::Folder, asset: &format::Asset, pin: &str) 
     Ok(number)
 }
 
-/// `DELETE /v1/projects/{id}/assets/{name}`: it and its row gone, at once, and what it made stands. Its versions wait as an orphan's, its name free,
-/// for undo, for `rename`, or for `reclaim`. A render going still makes what it was asked.
+/// `DELETE /v1/projects/{id}/assets/{name}`: it and its row gone, at once, and what it made stands. Its name is free, and nothing resolves it.
+/// Its files wait, set aside, for Undo until the window ends, then leave the project (`purge`). A render going still makes what it was asked.
 pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(String, String)>) -> Result<Json<AssetDeleted>, Refusal> {
     let project = api.projects.get(&api, &id)?;
     let id = project.id.clone();
@@ -431,22 +431,16 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
     let unknown = || Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy status");
     let gone = folder.act(|| {
         // Its name and what it holds approved, from its box alone: a Doc of the whole project took a delete of one of 5,000 boxes 287 ms.
-        let held = folder.reading_boxes(|written| written.get(name).map(|held| (held.name.clone(), held.get("approved").cloned())))?;
-        let (name, approved) = held.ok_or_else(unknown)?;
+        let held = folder.reading_boxes(|written| written.get(name).map(|held| (held.name.clone(), held.id.clone(), held.get("approved").cloned())))?;
+        let (name, box_id, approved) = held.ok_or_else(unknown)?;
         let pin = folder.reading_lock(|lock| format::approved_file(approved.as_ref(), lock))?;
         let at = canvas::row(folder, &name)?;
         folder.edit(|written| written.removed(&name).map(drop))?;
         // Gone from the project, what lands of it lands nothing.
         cancelled(api, project, std::slice::from_ref(&name), &deleted_why).map_err(|Refusal(why)| why)?;
-        // A box that never made anything has no row: nothing to rewrite.
+        // What it holds, set aside for Undo: a box that never made anything holds nothing.
         if pin.is_some() || folder.reading_lock(|lock| lock.asset(&name).is_some())? {
-            folder.update_lock(|lock| {
-                lock.bury(&name_key(&name));
-                // What it held goes on record, so `reclaim` can take it.
-                if let Some(sha256) = pin.clone().filter(|sha256| !lock.recorded().contains(sha256)) {
-                    lock.runs.push(folder::RunFile { run: 0, function: String::new(), output: "deleted".to_owned(), sha256, ..Default::default() });
-                }
-            })?;
+            folder.update_lock(|lock| lock.set_aside(&name, &box_id, pin.clone()))?;
         }
         canvas::set(folder, id, BTreeMap::from([(name.clone(), None)]))?;
         Ok(AssetDeleted { name, at })
@@ -454,6 +448,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
     let gone = gone.map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&gone.name));
     project.asked.notify_one();
+    super::purge::due(&project.id, super::now_ms() + super::purge::window_ms());
     Ok(gone)
 }
 
@@ -622,7 +617,7 @@ pub(super) fn put_back_box(project: &Project, id: &str, back: Boxed, at: Option<
             canvas::set(folder, id, BTreeMap::from([(name.clone(), Some(card))]))?;
         }
         folder.update_lock(|lock| {
-            lock.untombstone(&name);
+            lock.restore(&name, &back.id);
         })?;
         folder.edit(|written| written.restored(back))?;
         folder.reading_boxes(|written| written.get(&name).map(Boxed::etag))?.ok_or_else(|| own_lines(&name))

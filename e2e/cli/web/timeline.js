@@ -95,6 +95,7 @@ function plate(path, color, seconds, hz) {
   const beforeTimeline = new Set((await read()).assets.map((asset) => asset.name));
   await carry(page, await implementationRow(page, 'timeline', 'cozy/edit'), { x: 1208, y: 144 });
   timelineName = (await until('new Video Timeline asset is named', async () => (await read()).assets.find((asset) => asset.tool === 'cozy/edit' && !beforeTimeline.has(asset.name)), Boolean)).name;
+  check('dropping_Video_Timeline_stays_in_Wander', await page.locator('[data-focused-asset]').count() === 0);
   const card = (name) => boxOf(page, name);
   await card(timelineName).waitFor();
   // A box shows as it's dropped, ahead of Calcifer's answer: it's the project that's asked.

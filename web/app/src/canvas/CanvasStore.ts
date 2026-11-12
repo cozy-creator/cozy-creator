@@ -26,7 +26,6 @@ import type { Entity, Project } from "../types"
 import { dismiss, say } from "../ui/notes"
 import { signal } from "../ui/signal"
 import { carriedFile } from "./carry"
-import { addOnsOf } from "./checkpoints"
 import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import type { ReadableProjection } from "./readableSurface"
@@ -125,6 +124,8 @@ export interface ElementView {
   shape?: string
   /** The shape it makes with none set: `autoOf`. */
   auto?: number
+  /** What sets that shape, in words (`first frame`, `<amy>`); none: its tool's own. */
+  autoFrom?: string
   /** Its warnings are open under it. */
   warned?: boolean
   /** Something is being dragged over it. */
@@ -139,8 +140,8 @@ export interface ElementView {
   joining?: number
   /** It just arrived, and lands. */
   landing?: boolean
-  /** What its render has shown so far, the newest: kept, dimmed, if the render fails. */
-  glimpse?: { run: string; output: string; index: number; media: string; label?: string; sha256?: string }
+  /** What its render has shown so far, the newest revision that landed here, by its run's id and number: kept, dimmed, if the render fails. */
+  glimpse?: { run: string; number: number; output: string; index: number; rev: number; media: string; label?: string; sha256?: string }
   /** Another box's take let go on it, to pick up from: that take, as a mention of it, and where it's from. */
   pickingUp?: { take: string; from: string; number: number }
   /** The take that just landed, sliding in beside the last. */
@@ -229,13 +230,6 @@ type Placed = Pick<ElementView, "name" | "asset" | "entity" | "linked" | "queued
 
 const viewOf = (element: Placed): ElementView => ({ ...element })
 
-/** Its stack's chips: its tool's, and each add-on on that. */
-const chipsOf = (view: ElementView) => {
-  if (view.asset?.kind === "image") return 0
-  const tool = view.asset?.tool
-  return addOnsOf(valueIn(view, "lora"), valueIn(view, "models")).length + (tool && (!madeHere(tool) || tool === "cozy/edit") ? 1 : 0)
-}
-
 function linksOf(entity: Entity): string[] {
   return [...Object.values(entity.links ?? {}), ...(entity.subs ?? []).flatMap(linksOf)]
 }
@@ -259,7 +253,6 @@ export class CanvasStore {
   private subscribers = new Map<string, Set<() => void>>()
   private shapes = new Map<string, string>()
   /** Each view's stack, by the view: a change is a new view. */
-  private stacks = new WeakMap<ElementView, number>()
   private pauses = new Map<string, ReturnType<typeof setTimeout>>()
   private asked = new Set<number>()
   /** What's been said of a render that never reached a machine. */
@@ -554,9 +547,9 @@ export class CanvasStore {
 
   /** Its auto shape, kept on its view: the view it has now. Only a box showing no picture is drawn by it; one showing a picture keeps it for what reads it. */
   private reauto(key: string, view: ElementView): ElementView {
-    const auto = this.autoOf(view)
-    if (auto === view.auto) return view
-    const now = { ...view, auto }
+    const { ratio: auto, from: autoFrom } = this.autoOf(view)
+    if (auto === view.auto && autoFrom === view.autoFrom) return view
+    const now = { ...view, auto, autoFrom }
     this.views.set(key, now)
     if (reshapes(now)) {
       this.notify(key)
@@ -565,22 +558,37 @@ export class CanvasStore {
     return now
   }
 
-  /** The shape a box makes with none set, as Cozy's image packages take it: the first picture it mentions, held to what its tool makes, else its tool's own. */
-  private autoOf(view: ElementView): number | undefined {
+  /** The shape a box makes with none set, and what sets it. A picture tool's, as Cozy's image packages take it: the first picture it mentions, held
+   *  to what its tool makes, else its tool's own. A video tool's: the first picture or video in its slots (H3's first or last frame), never a
+   *  mention, as a portrait of who's in it makes no vertical shot; else 16:9 (se-128). */
+  private autoOf(view: ElementView): { ratio?: number; from?: string } {
     const asset = view.asset
     const tools = this.tools.get()
-    const control = asset && makes(view) ? fieldsOf(asset, tools).find((held) => held.type === "shape") : undefined
-    if (!asset || !control) return undefined
-    if (!control.auto) return heldTo(control, ratioOf(control.default) ?? 1)
+    const fields = asset && makes(view) ? fieldsOf(asset, tools) : []
+    const control = fields.find((held) => held.type === "shape")
+    if (!asset || !control) return {}
+    if (!control.auto) return { ratio: heldTo(control, ratioOf(control.default) ?? 1) }
     const kind = tools.get(asset.tool ?? "")?.makes ?? asset.kind
-    for (const mention of this.mentionsOf(view)) {
+    const shapeOf = (mention: string, media: string[]) => {
       const read = this.mentionOf(mention, view.name)
       const of = read ? this.views.get(read.name) : undefined
-      const ratio = read && of?.asset?.kind === kind ? sentShape(of, read.number) : undefined
-      if (ratio) return heldTo(control, ratio)
+      return read && of?.asset && media.includes(of.asset.kind) ? sentShape(of, read.number) : undefined
+    }
+    if (kind === "video") {
+      for (const slot of fields.filter((held) => held.type === "slot")) {
+        for (const mention of textsIn(valueIn(view, slot.field)).flatMap(mentionsIn)) {
+          const ratio = shapeOf(mention, ["image", "video"])
+          if (ratio) return { ratio: heldTo(control, ratio), from: slot.label.toLowerCase() }
+        }
+      }
+      return { ratio: heldTo(control, ratioOf(control.default) ?? 16 / 9) }
+    }
+    for (const mention of this.mentionsOf(view)) {
+      const ratio = shapeOf(mention, [kind])
+      if (ratio) return { ratio: heldTo(control, ratio), from: `<${mention}>` }
     }
     // The SDK's own default with none: 1:1.
-    return heldTo(control, ratioOf(control.default) ?? 1)
+    return { ratio: heldTo(control, ratioOf(control.default) ?? 1) }
   }
 
   /** The pictures a box's words mention, or `mentions` of it, in order: the version named, else what each shows. */
@@ -886,7 +894,7 @@ export class CanvasStore {
     // Only what's here: an output of a run on another machine, or a revision that hasn't landed, has nothing yet to show. A preview published
     // as it goes is a revision that landed while its output is still in progress.
     const shown = [...(run.output ?? [])].reverse().find((item) => Boolean(item.url) && /^(image|video)\//.test(item.media_type))
-    const glimpse = shown && { run: run.id, output: shown.name, index: shown.index, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 ?? undefined }
+    const glimpse = shown && { run: run.id, number: run.number, output: shown.name, index: shown.index, rev: shown.rev, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 ?? undefined }
     const held = this.get(owner)?.glimpse
     this.patch(owner, glimpse && JSON.stringify(glimpse) !== JSON.stringify(held) ? { run, glimpse } : { run })
   }
@@ -913,7 +921,7 @@ export class CanvasStore {
     for (const failure of state.unsent ?? []) {
       if (this.unsentSaid.has(failure.message)) continue
       this.unsentSaid.add(failure.message)
-      say(failure.message, new ApiError(0, failure))
+      say(failure.message, new ApiError(0, failure), { stays: true })
     }
     const queued = new Set((state.queue ?? []).filter((item) => !item.running).map((item) => item.name))
     const warnings = warningsOf(state).byElement
@@ -931,11 +939,12 @@ export class CanvasStore {
       const view = this.views.get(asset.name)
       if (view) {
         const change: Partial<ElementView> = { ...said(view, asset.name) }
-        // What a new take's run warned of is said as it lands: a box's own mark is only seen opened.
-        if (this.hasRead && view.asset && asset.version !== view.asset.version) for (const line of warnings.get(asset.name) ?? []) if (!view.warnings?.includes(line)) say(line)
-        // A render that fails says so as it fails, wherever the person is looking, the same failure again too once this page asked for it. One that failed before this page opened is the box's to show.
+        // What a take's run warned of, once it made the take, is the box's to show (its Warnings), never a note: a handled fallback
+        // is no error (Paul, 11-12: a burst of "CUDA graph" notes over a picture that came out fine).
+        // A render that fails says so as it fails, wherever the person is looking, the same failure again too once this page asked for it,
+        // in one note that stays until it's dismissed. One that failed before this page opened is the box's to show.
         const answered = view.asked !== undefined && view.asked < this.began
-        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }))
+        if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }), { stays: true })
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
         if (view.canceling && !asset.making?.length && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
@@ -952,10 +961,10 @@ export class CanvasStore {
           if (this.hasRead && made && newest !== view.asset?.prefixes?.at(-1)?.number && made.run != null && view.asset?.making?.includes(made.run)) this.sayLater(asset.name, made.number, made.main?.sha256)
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
-          // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at. At rest, an approved box
-          // goes on showing what's approved, and what lands beside it is unseen (cl-928).
+          // The take it was rendered to look at landed, with nothing newer being made: open, it's the one looked at. At rest a box goes on
+          // showing what it showed (cl-936), what's approved staying and what lands beside it unseen (cl-928): its watch goes once nothing is on its way.
           const seen = watched({ ...view, asset })
-          if (!view.here && asset.pinned && (view.watchFrom !== undefined || view.watchRun !== undefined) && !asset.making?.length) Object.assign(change, { watchFrom: undefined, watchRun: undefined })
+          if (!view.here && (view.watchFrom !== undefined || view.watchRun !== undefined) && !asset.making?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined })
           else if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Bind a queued preview to its run and retain it through the gap between execution and the version landing.
           else if (seen?.run !== undefined) {
@@ -1069,7 +1078,7 @@ export class CanvasStore {
     const sizes = new Map(left.map((element) => {
       const view = views.get(element.name)!
       const w = widthFor(view)
-      return [element.name, { w: bodyWidth(view, w), h: heightFor(view, w) + underOf(view, chipsOf(view)) }]
+      return [element.name, { w: bodyWidth(view, w), h: heightFor(view, w) + underOf(view) }]
     }))
     const names = left.map((element) => element.name)
     const placed = homesFor(names, readsOf(this.state!), boxes, (name) => sizes.get(name)!, boxes.size ? this.onScreen() : undefined)
@@ -1157,19 +1166,7 @@ export class CanvasStore {
   /** What a box takes on the canvas, as one key: the same from its first node on, so only a real change moves anything. */
   private shapeOf(name: string, width: number, height: number) {
     const view = this.get(name)
-    return `${view ? bodyWidth(view, width) : width}:${height}:${this.stacked(name)}`
-  }
-
-  /** How many are in the stack under it: its tool and what's on that. Read once per view, as every box's is read wherever one moves. */
-  stacked(name: string): number {
-    const view = this.get(name)
-    if (!view) return 0
-    let held = this.stacks.get(view)
-    if (held === undefined) {
-      held = chipsOf(view)
-      this.stacks.set(view, held)
-    }
-    return held
+    return `${view ? bodyWidth(view, width) : width}:${height}:${view ? underOf(view) : 0}`
   }
 
   /** A box and the room it keeps under it, which nothing else lies on: what hangs from it, and what the name of a box below rises into. */
@@ -1177,7 +1174,7 @@ export class CanvasStore {
     const view = this.get(name)
     if (!view) return box
     const drawn = bodyBox(view, box)
-    return { ...drawn, h: drawn.h + underOf(view, this.stacked(name)) }
+    return { ...drawn, h: drawn.h + underOf(view) }
   }
 
   /** Where a block of boxes goes to lie on nothing: there, with what it lies on pushed aside under `edit`, unless something that can't be is in the way. */
@@ -1411,7 +1408,9 @@ export class CanvasStore {
     const asset = this.get(name)?.asset
     if (!asset) return
     const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
-    this.patch(name, { hereWords: asset.kind === "video" || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
+    // A render asked of a video's words stays on them; a take being made, picked, is looked at: what of it has landed plays (cl-907). On its
+    // words while one renders, the title row says so, and New is a draft: "New take", its last take behind (cl-934).
+    this.patch(name, { hereWords: (asset.kind === "video" && run === undefined) || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
   }
 
   seek(name: string, at: number, still = false) {
@@ -1621,6 +1620,14 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const asset = this.views.get(key)?.asset
     if (!asset?.prefixes?.some((held) => held.number === number)) return
+    // A picture box's only picture, with no tool to make another: its × deletes the box, as a person means, and nothing of it stays (cl-919).
+    if (!asset.tool && asset.kind !== "text" && asset.prefixes.length === 1 && !asset.making?.length) {
+      const open = this.inPlace?.name === key
+      this.remove([key])
+      // Gone first, so nothing draws its picture on the way back to the canvas.
+      if (open) this.leaveHere()
+      return
+    }
     const edit = this.step(`Discarded ${asset.noun} ${number} of ${key}`, [key])
     let note = 0
     this.dropTake(key, number, edit, () => dismiss(note))
@@ -2854,10 +2861,15 @@ export class CanvasStore {
     return inTurn
   }
 
-  /** The name a new box takes now, as Calcifer would give it: what's on the canvas, what's being placed, and what waits to be brought back is taken. */
+  /** The name a new box takes now, as Calcifer would give it: what's on the canvas and what's being placed is taken. A deleted box's name is free (cl-919). */
   private nameFor(wanted: string): string {
-    const taken = [...this.views].map(([key, view]) => (view.placing ? view.name : key))
-    return freeName(wanted, [...taken, ...(this.state?.orphans ?? []).map((orphan) => orphan.name)])
+    return freeName(wanted, [...this.views].map(([key, view]) => (view.placing ? view.name : key)))
+  }
+
+  /** Whether `mention` names a box deleted from the project that Undo can still bring back: it resolves to nothing, and says so (cl-919). */
+  deletedName(mention: string): boolean {
+    const key = nameKey(baseOf(mention))
+    return (this.state?.orphans ?? []).some((orphan) => nameKey(orphan.name) === key)
   }
 
   /**

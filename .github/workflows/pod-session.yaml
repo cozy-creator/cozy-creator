@@ -154,14 +154,20 @@ jobs:
       - name: Prepare local service session
         env:
           KEY: ${{ inputs.hub == 'prod' && secrets.COZY_CI_DEVICE_KEY || '' }}
+          CIVITAI_TOKEN: ${{ secrets.CIVITAI_TOKEN }}
         run: |
           sudo loginctl enable-linger "$(id -un)"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus" >> "$GITHUB_ENV"
-          [ "$HUB" = prod ] || exit 0
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          # Calcifer, a user service, reads its model-source tokens when it starts and sends them with each run to the
+          # machine that downloads (a Civitai model that needs an account): its user manager carries the secret, if set.
+          if [ -n "$CIVITAI_TOKEN" ]; then
+            systemctl --user set-environment CIVITAI_TOKEN="$CIVITAI_TOKEN"; echo "### Civitai: signed in" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          [ "$HUB" = prod ] || exit 0
           [ -n "$KEY" ] || { echo "::error::the release-gate environment has no COZY_CI_DEVICE_KEY"; exit 1; }
           umask 077; printf '%s' "$KEY" > "$RUNNER_TEMP/key.json"
           cozy login --key "$RUNNER_TEMP/key.json"; code=$?

@@ -5,11 +5,11 @@ name: e2e
 # machine and every local verb refused (they run no models themselves yet). `imports`:
 # every published first-party package release installs and imports on the candidate set. The GPU suites run in the
 # release gate, not here. `e2e` always reports.
-#   Required for merges into master and rc/*: it runs on the merge queue's group (merge_group), on the final
-#   PR + branch state; on a pull request `affected` and every suite are skipped and `e2e` passes at once, which
-#   lets the PR be queued. Nothing runs on a push. A queue entry's base (merge_group.base_sha) is the entry ahead
-#   of it, so it selects only its own PR's suites: the rulesets' ALLGREEN (here, cozy-runtime, packages) makes
-#   every entry pass its own. HEADGREEN let a later entry's green carry red ones ahead of it in (cl-677).
+#   Required for merges into master: it runs on the merge queue's group (merge_group), on the final PR + branch
+#   state; on a pull request, and in an rc/* queue, `affected` and every suite are skipped and `e2e` passes at once:
+#   an RC merges on `build`, and its head runs every suite after (rc-e2e.yaml; Paul, 11-12). A queue entry's base
+#   (merge_group.base_sha) is the entry ahead of it, so it selects only its own PR's suites: the rulesets' ALLGREEN
+#   (here, cozy-runtime, packages) makes every entry pass its own. HEADGREEN let a later entry's green carry red ones ahead of it in (cl-677).
 #   Other repos (their own merge_group) and dispatches call it:
 #     uses: cozy-creator/cozy-creator/.github/workflows/e2e.yaml@master
 #     with: {repo: cozy-runtime, ref: <head sha>, base: <base sha>}     # or select: "<tokens>" instead of base
@@ -196,8 +196,9 @@ concurrency:
 
 jobs:
   affected:
-    # On a pull request (here or a caller's) nothing runs: the merge queue's group is where e2e runs.
-    if: github.event_name != 'pull_request'
+    # On a pull request (here or a caller's) nothing runs: the merge queue's group is where e2e runs. Nor in an RC's
+    # queue: its head runs it once merged (rc-e2e.yaml).
+    if: github.event_name != 'pull_request' && !(github.event_name == 'merge_group' && startsWith(github.event.merge_group.base_ref, 'refs/heads/rc/'))
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs sends no signal.
     timeout-minutes: 10
@@ -229,7 +230,7 @@ jobs:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref }}
-          DISPATCHED: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || '' }}
+          DISPATCHED: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref_name || '' }}
         run: |
           # No inputs: this repo's own merge group.
           [ -n "$REPO" ] || { REPO=cozy-creator REF=$HEAD_SHA BASE=$BASE_SHA CREATOR=$HEAD_SHA; }
@@ -714,7 +715,7 @@ jobs:
       matrix:
         # projectdb covers project.db and state.db; the older projectdb-* aliases repeat its calls.
         # Web behavior and the layout viewport partitions run separately. Manual shard selections remain available.
-        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","web-core","web-layout-1280","web-layout-1600","web-layout-2560","projectdb","projectvault","local-code"]') }}
+        shard: ${{ fromJSON(inputs.shards || '["runs","executors","commands","follow","slow","web-core","web-deleted","web-layout-1280","web-layout-1600","web-layout-2560","projectdb","projectvault","local-code"]') }}
     runs-on: ubuntu-24.04
     # Last resort (tracker design/stalls.md): a runner that hangs or dies sends no signal. The suites fail on the
     # CLI's typed errors and exits, never on time.

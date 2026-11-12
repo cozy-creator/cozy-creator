@@ -100,6 +100,9 @@ pub struct Slot {
     /// Built, and its weights fetched, when the function first reads it.
     #[serde(default, deserialize_with = "or_default")]
     pub on_demand: bool,
+    /// The components of its checkpoint the function fetches; none: every one its class uses.
+    #[serde(default, deserialize_with = "or_default")]
+    pub components: Vec<String>,
 }
 
 impl Slot {

@@ -127,6 +127,13 @@ export function snapped(ratio: number, shapes: string[]): string {
   return shapes.reduce((best, shape) => (off(shape) < off(best) ? shape : best))
 }
 
+/** A picture's shape as people say it: one of the usual shapes when it's that, else `1.85:1`. */
+export function shapeWords(ratio: number): string {
+  const near = snapped(ratio, SHAPES)
+  const [w, h] = parts(near)
+  return Math.abs(Math.log(ratio / (w / h))) < 0.01 ? near : `${Number(ratio.toFixed(2))}:1`
+}
+
 /** `ratio` as its tool can make it: the nearest of its ratios, else held to its bounds. */
 export function heldTo(field: ToolField, ratio: number): number {
   const ratios = ratiosOf(field)

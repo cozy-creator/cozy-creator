@@ -115,6 +115,7 @@ class Component[R](TypedDict, total=False):
     name: Required[str]
     prefix: str
     cast: str
+    config_from: str
     drop: list[str]
     optional: list[str]
     expect: dict[str, list[int]]
@@ -1261,13 +1262,14 @@ def relayvsr_census() -> dict[str, list[str]]:
 def relayvsr() -> Table[TableRow]:
     """RelayVSR's two files as they are, named for the relayvsr package's components: `wan`
     (bf16, with its prompt embeddings) and `flash` (F32). Rows follow upstream's construction
-    order; the banked headers hold exactly their keys."""
+    order; the banked headers hold exactly their keys. Each component's config is its file's own
+    `config` (`config_from`)."""
     census = relayvsr_census()
     components: list[Component[TableRow]] = []
     for name in ("wan", "flash"):
         keys = header(RELAYVSR_HEADERS / f"{name}.safetensors.header")
         assert sorted(keys) == sorted(census[name]), name
-        components.append({"name": name, "rows": [(k,) for k in census[name]]})
+        components.append({"name": name, "config_from": "config", "rows": [(k,) for k in census[name]]})
     return {"name": "relayvsr", "files": {"config.json": {"architecture": "RelayVSR"}}, "components": components}
 
 
@@ -1292,7 +1294,8 @@ IDEOGRAM_CONFIG = (
 def ideogram4() -> Table[TableRow]:
     """Ideogram 4's official checkpoint: both DiTs in its original layout. Every linear's weight-only
     fp8 carrier (`.weight` + `.weight_scale`) is folded into one fp8.rowwise tensor before a table
-    row reads it, so the scales are not rows here; `qkv`'s thirds are whole rows of it."""
+    row reads it, so the scales are not rows here; `qkv`'s thirds are whole rows of it. The source's
+    config is Diffusers' `Ideogram4Transformer2DModel` config of that layout, so it stays (`keep_config`)."""
     import ast
 
     tree = ast.parse(fetch(*IDEOGRAM_CONVERTER))
@@ -1329,7 +1332,7 @@ def ideogram4() -> Table[TableRow]:
     component: Component[TableRow] = {"name": "transformer", "folders": {"transformer": "transformer",
                                                                       "unconditional_transformer": "unconditional_transformer"},
                                       "expect": dict(sorted(expect.items())), "rows": [mapped[k] for k in census]}
-    return {"name": "ideogram4.fp8", "components": [component]}
+    return {"name": "ideogram4.fp8", "keep_config": True, "components": [component]}
 
 
 #: Qwen3.5-architecture MoE checkpoints whose experts are stored fused, one table per key set.

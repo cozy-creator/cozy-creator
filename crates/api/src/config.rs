@@ -72,6 +72,9 @@ pub struct CalciferConfig {
     /// Explicit local Vite backend. Its assets/HMR are served through Calcifer's owned origin.
     #[serde(deserialize_with = "development_web")]
     pub development_web: Option<std::net::SocketAddr>,
+    /// Tests only: a shorter window than the fixed 3 hours in which Undo can bring a deleted box back, after which its files leave
+    /// its project (cl-919).
+    pub undo_seconds: Option<u32>,
 }
 
 /// `[machine]`: this computer's machine (TensorD, `cozy machine serve`), which judges these. A

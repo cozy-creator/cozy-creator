@@ -15,6 +15,7 @@ mod folder;
 mod format;
 pub(crate) mod graph;
 mod history;
+pub(crate) mod purge;
 
 #[cfg(test)]
 #[path = "retired_storage_tests.rs"]
@@ -353,6 +354,8 @@ impl Projects {
             }
         };
         drop(open);
+        // Its deleted boxes looked at as it opens: one set aside before cl-919 counts from now.
+        purge::due(&project.id, now_ms());
         if let Some(said) = copy_told(&project.root) { project.said.lock().expect("said lock").push(said); }
         project.require_view()?;
         Ok(project)
@@ -1846,8 +1849,9 @@ fn row(reading: &Reading, i: usize) -> Row {
     }
 }
 
-/// The assets project.lock keeps versions of that project.yaml no longer names, each with the one new asset of its kind with no
-/// versions, if there is exactly one: what a rename in project.yaml left. Each file's bytes count once, and only if nothing else names it.
+/// The assets project.lock keeps files of that project.yaml no longer names, deleted boxes whose undo window hasn't ended among them, each
+/// with the one new asset of its kind with no versions, if there is exactly one: what a rename in project.yaml left. Each file's bytes count
+/// once, and only if nothing else names it.
 fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
     let kept = kept_files(doc, lock);
     let empty = |kind: &str| -> Vec<&str> {
@@ -1857,11 +1861,11 @@ fn orphans(doc: &Doc, folder: &Folder, lock: &Lock) -> Vec<Orphan> {
             .collect()
     };
     let mut counted = BTreeSet::new();
+    let now = now_ms();
     (lock.assets.iter())
-        .filter(|(key, held)| doc.find(key).is_none() && held.on_record().next().is_some())
+        .filter(|(key, held)| doc.find(key).is_none() && held.files().next().is_some() && !held.lapsed(now))
         .map(|(key, held)| {
-            let files = held.on_record().flat_map(|version| version.files.values());
-            let freed: Vec<&String> = files.filter(|sha256| !kept.contains(*sha256) && counted.insert((*sha256).clone())).collect();
+            let freed: Vec<&String> = held.files().filter(|sha256| !kept.contains(*sha256) && counted.insert((*sha256).clone())).collect();
             Orphan {
                 name: if held.name.is_empty() { key.clone() } else { held.name.clone() },
                 kind: held.kind.clone(),
@@ -2368,6 +2372,7 @@ async fn runs(
     let ask = Ask { id: new_key(), text: String::new(), digest: digest.clone(), target: target.clone(), all: all && missing, outdated, whole: all, sent: BTreeSet::new(), takes };
     // One transaction: its text, the ask, and its key, so a retry however late runs nothing twice. What the project has lost is set aside,
     // and what's asked again fails no more.
+    let lost = std::cell::Cell::new(false);
     (project.folder.act(|| {
         project.folder.keep_text(&digest, &text)?;
         project.folder.update_walk(|walk| {
@@ -2376,7 +2381,7 @@ async fn runs(
             }
         })?;
         project.folder.update_lock(|lock| {
-            lock.tombstone(|key| doc.find(key).is_some());
+            lost.set(lock.tombstone(|key| doc.find(key).is_some()));
             for take in &ask.takes {
                 if let Some(held) = lock.assets.get_mut(&name_key(&take.asset)) {
                     held.failed = None;
@@ -2385,6 +2390,9 @@ async fn runs(
         })
     }))
     .map_err(Refusal)?;
+    if lost.get() {
+        purge::due(&project.id, now_ms() + purge::window_ms());
+    }
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);
     walk_under(&api, &project, &mut walking);

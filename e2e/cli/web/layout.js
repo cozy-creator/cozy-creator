@@ -222,7 +222,7 @@ function audit({ floor, fitted = true }) {
   // 3. Each box: its name and × clear of its picture, its takes level with it, and what hangs under it on nothing else's.
   const boxes = [...document.querySelectorAll('.react-flow__node')].filter((node) => visible(node) && onScreen(R(node)));
   // A box and all that hangs off it: its name rises above it as it's drawn larger, and what's under it hangs below.
-  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .add-on, .refused-line')].filter(visible).map(R);
+  const hung = (node) => [node, ...node.querySelectorAll('.head > *, .ratio-rest, .tile-under, .refused-line')].filter(visible).map(R);
   for (const node of boxes) {
     const card = node.querySelector('.card');
     const media = node.querySelector(':scope .card > .media, :scope .card > .tl');
@@ -953,7 +953,7 @@ ${local ? `  card:
         await settled(page);
         await look(`open-${asset}-warnings`, true);
       }
-      const next = here.locator('.here-side .take.add');
+      const next = here.locator('.take.add');
       if (await next.count()) {
         await (await renderOf(page, asset)).waitFor();
         await settled(page);
@@ -1090,7 +1090,7 @@ ${local ? `  card:
       await settled(page);
       await edges(`open-${many}-zoomed-${step}`);
     }
-    const next = page.locator(`.card.here[data-asset="${many}"] .here-side .take.add`);
+    const next = page.locator(`.card.here[data-asset="${many}"] .take.add`);
     if (await next.count()) {
       await (await renderOf(page, many)).waitFor();
       await settled(page);

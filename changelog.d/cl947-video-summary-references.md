@@ -1,0 +1,1 @@
+A video being made on the canvas shows what it's made from, as an image does: the pictures its render reads, full-bleed, and the start of its summary over a scrim, with mentions marked. These are the render's own, not words typed since. The take replaces them, and the box never changes size.

@@ -153,6 +153,7 @@ function linesOf(text, name) {
   const spot = await require('./page').openCanvas(page);
   await require('./page').carry(page, imageNode, spot);
   const choosing = await until('dragged image node for model choices', async () => (await state()).assets.find((asset) => !namesBefore.includes(asset.name)), Boolean);
+  check('dropping_a_basic_node_does_not_enter_focus', await page.locator('[data-focused-asset]').count() === 0);
   await open(choosing.name);
   await implementationRow(page, 'image');
   const implementations = () => page.locator('.tools [data-implementation][data-tool-operation="image"]').evaluateAll((rows) => rows.map((row) => row.dataset.tool));
@@ -169,6 +170,9 @@ function linesOf(text, name) {
   const target = await box(choosing.name).locator('.media').boundingBox();
   await require('./page').carry(page, editQwen, { x: target.x + target.width / 2, y: target.y + target.height / 2 });
   await until('dragged tool attaches to image holder', () => of(choosing.name), (asset) => asset.tool === qwen.id);
+  await require('./page').settled(page);
+  check('attaching_a_tool_does_not_enter_focus', await page.locator('[data-focused-asset]').count() === 0);
+  await open(choosing.name);
   check('old_tool_settings_box_is_removed', await box(choosing.name).locator('.tool-settings').count() === 0);
   const versionsBeforePicker = (await of(choosing.name)).versions;
   await box(choosing.name).getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
@@ -255,8 +259,10 @@ function linesOf(text, name) {
   check('one_beat_to_start', (await beatRows().count()) === 1 && (await shotBox.locator('[aria-label="Remove beat 1"]').count()) === 0);
   await shotBox.locator('.beats-edit[data-field=beats] > .beats-last .add-beat').click();
   await until('two beats', () => beatRows().count(), (n) => n === 2);
+  await beatRows().first().getByRole('button', { name: 'Beat 1', exact: true }).click();
   await shotBox.locator('.mention-text[data-field="beats.0.description"]').click();
   await page.keyboard.type('The first.');
+  await beatRows().nth(1).getByRole('button', { name: 'Beat 2', exact: true }).click();
   await shotBox.locator('.mention-text[data-field="beats.1.description"]').click();
   await page.keyboard.type('The second.');
   await until('both beats in the file', () => fieldsOf('shot'), (fields) => fields.beats?.length === 2 && fields.beats[1].description?.includes('The second.'));

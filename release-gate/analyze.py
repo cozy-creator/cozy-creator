@@ -24,12 +24,13 @@ from kernels import check as kernels  # noqa: E402
 from attention import check as attention  # noqa: E402
 from gemm import check as gemm_check  # noqa: E402
 from escaped import check as escaped  # noqa: E402
+from progress import check as progress  # noqa: E402
 import bench  # noqa: E402  (release-gate/bench.py: suite bench's judging)
 from contract import check as contract  # noqa: E402  (every gate: the records the other suites made)
 # A suite's check runs when gate.sh ran the suite (--suite: the names in <gate dir>/suites).
 SUITES = open(os.path.join(out, 'suites')).read().split() if os.path.exists(os.path.join(out, 'suites')) else []
 Check: TypeAlias = Callable[[Gate], tuple[list[str], list[str]]]
-SUITE_CHECKS: dict[str, Check] = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check, 'kernels': kernels.check, 'attention': attention.check, 'gemm': gemm_check.check, 'escaped': escaped.check, 'bench': bench.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
+SUITE_CHECKS: dict[str, Check] = {'tensorfs': tensorfs.check, 'varena': varena.check, 'cli': cli.check, 'kernels': kernels.check, 'attention': attention.check, 'gemm': gemm_check.check, 'escaped': escaped.check, 'progress': progress.check, 'bench': bench.check}  # runtime, packages: quality, lm and swap; hub, tensord: their expect rows
 CHECKS: list[Check] = [quality.check, lm.check, swap.check, served.check, contract.check] + [SUITE_CHECKS[s] for s in SUITES if s in SUITE_CHECKS]
 # Allowed rise over the worst known-good number, unless the good numbers' own spread is wider.
 # Step 1 is judged as load + step 1 (the run's or call's start to step 1's end; agreed by the lead, 2026-11-06): v2 readies
@@ -290,7 +291,8 @@ for name, c in summary.items():
 failing: KnownFailing
 for failing in (json.load(open(KNOWN_FAILING)) if os.path.exists(KNOWN_FAILING) else []):
     if failing['sku'] in (sku, '*'):
-        notes.append(f"known failing, not run: {failing['cell']} ({failing['issue']}: {failing['what']})")
+        parked, parked_why = ', '.join(failing.get('cells') or [failing.get('cell', '?')]), failing.get('what', '')
+        notes.append(f"known failing, not run: {parked} ({failing['issue']}{': ' + parked_why if parked_why else ''})")
 # The host: a slow driver makes every first pass slow and must read as the host, not the code (lead 10-23).
 for leg in ('cuda_init', 'measure_device'):
     vals = [l[leg] for l in host_legs.values() if leg in l]

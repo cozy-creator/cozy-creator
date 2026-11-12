@@ -15,7 +15,7 @@ use crate::{
     storage::{self, Store},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     fs::File,
     io::{self, Read},
     sync::{
@@ -129,6 +129,69 @@ struct Wanted {
     label: String,
 }
 
+/// What a function's run reads, by how sure (cl-905): `sure`, what its calls read up front (an
+/// orchestrator's: what all its internal functions do); then `guesses`, each internal function's
+/// own by name, in its package's order: which of them it calls only it knows.
+#[derive(Default)]
+pub(crate) struct Reads {
+    pub sure: Selected,
+    pub guesses: Vec<(String, Selected)>,
+}
+
+/// Checkpoints by header, each with the components read (all, when none).
+pub(crate) type Selected = Vec<(String, Vec<String>)>;
+
+/// `Reads` in the machine's download line (`Fetch::lined`): each sure and each guessed component's
+/// order and chunks, the guesses' checkpoints, the bytes of the sure ones absent here, and each
+/// guess held back, in words.
+#[derive(Default)]
+pub(crate) struct Lined {
+    wants: Vec<(u64, Lining)>,
+    guessed: Vec<(u64, Lining)>,
+    guesses: Vec<Checkpoint>,
+    pub sure: u64,
+    pub held_back: Vec<String>,
+}
+
+/// Every fetch guessing now (`Fetch::guess`), for a need that has to make room to drop them all.
+static GUESSING: Mutex<Vec<std::sync::Weak<Fetch>>> = Mutex::new(Vec::new());
+
+/// Every guess on this machine ends: its downloads stop and its checkpoints may go. A run's need
+/// that has to make room comes before any guess (cl-905).
+pub(crate) fn drop_guesses() {
+    let guessing = std::mem::take(&mut *GUESSING.lock().unwrap());
+    for fetch in guessing.iter().filter_map(std::sync::Weak::upgrade) {
+        fetch.drop_guessed();
+    }
+}
+
+/// A guess's downloads, which end without failing what waits on them, its checkpoints, and what of
+/// it the machine lists (`activity`).
+#[derive(Default)]
+struct Guessed {
+    stops: Vec<tokio::task::AbortHandle>,
+    tasks: Vec<tokio::task::JoinHandle<tensorfs::err::Result<tensorfs::fetch::Landed>>>,
+    held: Vec<Checkpoint>,
+    listed: Mutex<Vec<Arriving>>,
+}
+
+/// One component in line: its bytes, origin, repository, chunks, and those absent.
+struct Lining {
+    bytes: u64,
+    remote: Remote,
+    model: String,
+    objects: Vec<ObjectRef>,
+    absent: Vec<ObjectRef>,
+}
+
+impl Lining {
+    /// It arriving, for the machine's list.
+    fn arriving(self) -> Arriving {
+        let fetch = self.absent.iter().map(|o| o.length).sum::<u64>();
+        Arriving { model: self.model, remote: self.remote, fetch, here: self.bytes - fetch, absent: self.absent }
+    }
+}
+
 /// One call's fetches: its checkpoints, where each comes from, and what it wants held.
 pub(crate) struct Fetch {
     machine: Arc<Machine>,
@@ -145,6 +208,11 @@ pub(crate) struct Fetch {
     replaced: Mutex<Option<Arc<Fetch>>>,
     /// Each wanted checkpoint not all here when it was wanted.
     arriving: Mutex<Vec<Arriving>>,
+    /// What it wants that its run doesn't wait on (`hint`), not all here when it was wanted.
+    hinted: Mutex<Vec<Arriving>>,
+    guessed: Mutex<Guessed>,
+    /// A thread lists what it hinted while any is absent.
+    watching: std::sync::atomic::AtomicBool,
     required: Mutex<Required>,
 }
 
@@ -180,6 +248,9 @@ impl Fetch {
             held: Mutex::default(),
             replaced: Mutex::default(),
             arriving: Mutex::default(),
+            hinted: Mutex::default(),
+            guessed: Mutex::default(),
+            watching: Default::default(),
             required: Mutex::default(),
         })
     }
@@ -441,6 +512,165 @@ impl Fetch {
         Ok(())
     }
 
+    /// `reads` in the machine's download line, each checkpoint held until the fetch ends: its sure
+    /// components at `sure(rank)`, smallest first as a Start pass reads them; then each guess's at
+    /// `guess(rank)`, in turn, unless its bytes absent don't fit in `free` beside all before it (a
+    /// guess never makes room; a wrong one costs bytes only). A component twice comes once.
+    pub(crate) fn lined(&self, reads: &Reads, sure: &dyn Fn(u32) -> u64, guess: &dyn Fn(u32) -> u64, free: u64) -> io::Result<Lined> {
+        let (mut lined, mut seen, mut counted, mut taken, mut rank) = (Lined::default(), HashSet::new(), HashSet::new(), 0u64, 0u32);
+        // A guess's checkpoints stay held only while it does (`guess`): they may go when a need makes room.
+        let sets = std::iter::once((None, &reads.sure)).chain(reads.guesses.iter().map(|(name, set)| (Some(name.as_str()), set)));
+        for (guessed, set) in sets {
+            let (mut parts, mut held) = (vec![], vec![]);
+            for (header, components) in set {
+                let checkpoint = checkpoint(self.store(), header)?;
+                if let Some(remote) = self.source(checkpoint.id())? {
+                    let model = Pulled::of(self.store(), checkpoint.id())?.map_or_else(|| header.clone(), |p| p.model);
+                    let each: Vec<Vec<String>> = match components.is_empty() {
+                        true => vec![vec![]],
+                        false => components.iter().map(|component| vec![component.clone()]).collect(),
+                    };
+                    for component in each.into_iter().filter(|component| seen.insert((header.clone(), component.clone()))) {
+                        let objects = storage::chunks(&checkpoint, &component);
+                        let absent = objects.iter().filter(|o| !self.store().holds(o)).cloned().collect();
+                        let bytes = objects.iter().map(|o| o.length).sum();
+                        parts.push(Lining { bytes, remote: remote.clone(), model: model.clone(), objects, absent });
+                    }
+                }
+                held.push(checkpoint);
+            }
+            parts.sort_by_key(|part| part.bytes);
+            let mut new = HashSet::new();
+            let absent: u64 = (parts.iter().flat_map(|part| &part.absent))
+                .filter(|o| !counted.contains(&o.sha256) && new.insert(o.sha256.clone()))
+                .map(|o| o.length)
+                .sum();
+            if let Some(name) = guessed.filter(|_| taken + absent > free) {
+                lined.held_back.push(format!("{name}'s weights ({}) aren't fetched ahead: {} free beside what comes first", gib(absent), gib(free.saturating_sub(taken))));
+                continue;
+            }
+            taken += absent;
+            counted.extend(new);
+            let (wants, order): (&mut Vec<_>, &dyn Fn(u32) -> u64) = match guessed {
+                None => {
+                    lined.sure = absent;
+                    self.held.lock().unwrap().extend(held);
+                    (&mut lined.wants, sure)
+                }
+                Some(_) => {
+                    lined.guesses.extend(held);
+                    (&mut lined.guessed, guess)
+                }
+            };
+            for part in parts {
+                wants.push((order(rank), part));
+                rank += 1;
+            }
+        }
+        Ok(lined)
+    }
+
+    /// Every sure component `lined` holds here, each at its order, reporting its bytes (a warm run of
+    /// a function): those that came from the Hub and from the datacenter volume, and those held. Its
+    /// guesses are wanted beside them and waited for until they land or are dropped (`guess`); the
+    /// machine lists them for run `caller`.
+    pub(crate) fn download(self: &Arc<Self>, mut lined: Lined, caller: &str, stop: &Stop, progress: &(dyn Fn(u64, u64) + Sync)) -> io::Result<tensorfs::fetch::Landed> {
+        self.guess(std::mem::take(&mut lined.guessed), std::mem::take(&mut lined.guesses), caller)?;
+        let counted = Arc::new(tensorfs::fetch::Progress::default());
+        let wants = lined.wants.into_iter().map(|(order, part)| (part.remote, part.objects, order)).collect();
+        let landed = origin::watched(&counted, progress, || self.machine.all(wants, counted.clone(), stop).map_err(failed))?;
+        let tasks = std::mem::take(&mut self.guessed.lock().unwrap().tasks);
+        // A dropped guess ends its task: that ends no wait here.
+        self.machine.block(stop, async move {
+            for task in tasks {
+                let _ = task.await;
+            }
+            Ok(())
+        }).map_err(failed)?;
+        Ok(landed)
+    }
+
+    /// Wants what `lined` holds absent here, each at its order, none of which its run waits on: an
+    /// orchestrator's internal functions' weights, while its root starts. The sure ones are held until
+    /// the fetch ends, its guesses until they are dropped (`guess`). While any is absent the machine
+    /// lists their download for run `caller` (`activity`).
+    pub(crate) fn hint(self: &Arc<Self>, mut lined: Lined, caller: &str) -> io::Result<()> {
+        self.guess(std::mem::take(&mut lined.guessed), std::mem::take(&mut lined.guesses), caller)?;
+        let mut kept = self.kept.lock().unwrap();
+        if self.ended() {
+            return Ok(());
+        }
+        for (order, part) in lined.wants.into_iter().filter(|(_, part)| !part.absent.is_empty()) {
+            kept.push(self.machine.want(&part.remote, part.absent.clone(), order).map_err(failed)?);
+            self.hinted.lock().unwrap().push(part.arriving());
+        }
+        drop(kept);
+        self.watch(caller)
+    }
+
+    /// Wants `parts` (guesses, at their orders) and holds their `checkpoints` until the fetch ends or
+    /// the guesses are dropped: by its run's first call, which says which function it is, or for any
+    /// need that has to make room (`drop_guesses`). A guess never makes room itself.
+    fn guess(self: &Arc<Self>, parts: Vec<(u64, Lining)>, checkpoints: Vec<Checkpoint>, caller: &str) -> io::Result<()> {
+        let mut guessed = self.guessed.lock().unwrap();
+        if self.ended() || parts.iter().all(|(_, part)| part.absent.is_empty()) {
+            return Ok(());
+        }
+        guessed.held.extend(checkpoints);
+        for (order, part) in parts.into_iter().filter(|(_, part)| !part.absent.is_empty()) {
+            let task = self.machine.want(&part.remote, part.absent.clone(), order).map_err(failed)?;
+            guessed.stops.push(task.abort_handle());
+            guessed.tasks.push(task);
+            guessed.listed.lock().unwrap().push(part.arriving());
+        }
+        drop(guessed);
+        let mut guessing = GUESSING.lock().unwrap();
+        guessing.retain(|fetch| fetch.strong_count() > 0);
+        guessing.push(Arc::downgrade(self));
+        drop(guessing);
+        self.watch(caller)
+    }
+
+    /// Its guesses end: their downloads stop and their checkpoints may go.
+    pub(crate) fn drop_guessed(&self) {
+        let mut guessed = self.guessed.lock().unwrap();
+        guessed.stops.drain(..).for_each(|stop| stop.abort());
+        guessed.tasks.clear();
+        guessed.held.clear();
+        guessed.listed.lock().unwrap().clear();
+    }
+
+    /// What it hinted and guesses, listed as the machine's download for run `caller` (`activity`)
+    /// while any is absent, by a thread of its own.
+    fn watch(self: &Arc<Self>, caller: &str) -> io::Result<()> {
+        if self.watching.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let (fetch, caller, private) = (Arc::downgrade(self), caller.to_owned(), crate::private_io::current());
+        std::thread::Builder::new().name("weights-ahead".into()).spawn(move || crate::private_io::within(private, || {
+            let mut waits: HashMap<String, crate::activity::Waiting> = HashMap::new();
+            loop {
+                let Some(live) = fetch.upgrade().filter(|f| !f.ended()) else { return };
+                let mut each = live.each(&live.hinted);
+                each.extend(live.each(&live.guessed.lock().unwrap().listed));
+                each.retain(|each| each.absent);
+                if each.is_empty() {
+                    live.watching.store(false, Ordering::Release);
+                    return;
+                }
+                drop(live);
+                waits.retain(|model, _| each.iter().any(|e| e.model == *model));
+                for e in &each {
+                    let wait = waits.entry(e.model.clone()).or_insert_with(|| crate::activity::wait(crate::activity::Kind::Download, &e.model, &caller));
+                    wait.here(e.here);
+                    wait.moved("", e.done, e.total);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }))?;
+        Ok(())
+    }
+
     /// The bytes of `selected` (header, components) not here.
     pub(crate) fn absent(&self, selected: &[(String, Vec<String>)]) -> io::Result<u64> {
         let mut absent = 0;
@@ -450,26 +680,6 @@ impl Fetch {
             absent += objects.iter().filter(|object| !self.store().holds(object)).map(|object| object.length).sum::<u64>();
         }
         Ok(absent)
-    }
-
-    /// Every chunk of `selected` (header, components) here, reporting its bytes (a warm run
-    /// of a function): those that came from the Hub and from the datacenter volume, and those held.
-    pub(crate) fn download(&self, selected: &[(String, Vec<String>)], stop: &Stop, progress: &(dyn Fn(u64, u64) + Sync)) -> io::Result<tensorfs::fetch::Landed> {
-        let counted = Arc::new(tensorfs::fetch::Progress::default());
-        origin::watched(&counted, progress, || {
-            let mut landed = tensorfs::fetch::Landed::default();
-            for (header, components) in selected {
-                let held = storage::held(self.store(), header)?;
-                let Some(remote) = self.source(&held)? else {
-                    continue;
-                };
-                let components = (!components.is_empty()).then_some(components.as_slice());
-                let pulled = self.machine.pull(&remote, &held, components, priority::BEHIND, Some(counted.clone()), stop).map_err(failed)?;
-                (landed.origin, landed.volume, landed.local) =
-                    (landed.origin + pulled.landed.origin, landed.volume + pulled.landed.volume, landed.local + pulled.landed.local);
-            }
-            Ok(landed)
-        })
     }
 
     /// The weights its run waits on that are not all here yet, while any are not; and each
@@ -518,6 +728,7 @@ impl Fetch {
     /// Everything it wanted drops and its checkpoints close.
     pub(crate) fn end(&self) {
         self.stop.cancel();
+        self.drop_guessed();
         for want in self.kept.lock().unwrap().drain(..) {
             want.abort();
         }

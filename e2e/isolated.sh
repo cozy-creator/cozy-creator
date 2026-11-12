@@ -98,10 +98,13 @@ PY
 
 case $suite:$shard in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web) needs='' ;;
-  cli:runs | cli:commands | cli:local-code) needs='packages birefnet' ;;
+  cli:runs | cli:local-code) needs='packages birefnet' ;;
+  cli:commands) needs='packages birefnet slots' ;;
   cli:follow) needs='packages downloads' ;;
+  cli:lines) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
-  cli:) needs='packages birefnet downloads' ;;
+  cli:web-models) needs='packages loras' ;;
+  cli:) needs='packages birefnet downloads slots' ;;
   cli:*) needs='packages' ;;
   imports:*)
     # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).
@@ -190,7 +193,7 @@ if [ -n "$needs" ]; then
       systemctl --user restart cozy-calcifer > "$seed/calcifer-restart.log" 2>&1 || true
       relay ;;
   esac
-  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* ]]; then
+  if [[ " $needs " == *" birefnet "* || " $needs " == *" downloads "* || " $needs " == *" loras "* ]]; then
     update=()
     [ -z "$runtime" ] || update+=(--runtime "$runtime")
     [ -z "$tensorfs" ] || update+=(--tensorfs "$tensorfs")
@@ -206,6 +209,63 @@ if [ -n "$needs" ]; then
     random_weights "$seed/fontbox.safetensors" 115
     mirror "$seed/fontbox.safetensors" lilylilith/fontbox bf16 0.1.0 https://huggingface.co/lilylilith/fontbox --source-format as-is
     rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" loras "* ]]; then
+    # What H3's Models & LoRAs lists (web-models, cl-934): its default model, a stand-in its family names, and LoRAs of that family.
+    h3=$(sed -n 's/^_MODEL = "\(.*\)"$/\1/p' "$packages/minimax-h3/h3.py")
+    [ -n "$h3" ] || { echo "minimax-h3/h3.py names no _MODEL" >&2; exit 1; }
+    random_weights "$seed/minimax-h3.safetensors" 1
+    mirror "$seed/minimax-h3.safetensors" "${h3%@*}" bf16 "${h3#*@}" https://huggingface.co/MiniMaxAI/MiniMax-H3 --source-format as-is
+    cozy --json model edit "${h3%@*}" --family minimax-h3 > "$seed/edit-minimax-h3.json" 2>&1 \
+      || { echo "naming ${h3%@*}'s family failed: $(tail -c 600 "$seed/edit-minimax-h3.json")" >&2; exit 1; }
+    # An H3 LoRA as musubi-tuner writes it (e2e/release/synthetic.sh's), one rank of one block.
+    python3 -I - "$seed/vfx-edit.safetensors" <<'PYH3'
+import json, struct, sys
+stem, rank = "lora_unet_blocks_0_attn_qkv_proj", 1
+shapes = {f"{stem}.lora_down.weight": [rank, 5376], f"{stem}.lora_up.weight": [3 * 7168, rank]}
+header, data, at = {}, b"", 0
+for key, shape in shapes.items():
+    size = 2 * shape[0] * shape[1]
+    header[key] = {"dtype": "F16", "shape": shape, "data_offsets": [at, at + size]}
+    data, at = data + b"\x00\x3c" * (size // 2), at + size
+header[f"{stem}.alpha"] = {"dtype": "F32", "shape": [], "data_offsets": [at, at + 4]}
+data += struct.pack("<f", 1.0)
+header["__metadata__"] = {"ss_network_module": "networks.lora_minimax_h3", "ss_minimax_h3_task": "ref2va", "ss_minimax_h3_base_family": "ref2va"}
+raw = json.dumps(header).encode()
+raw += b" " * (-len(raw) % 8)
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + data)
+PYH3
+    # Two of its family: an edit LoRA, and one whose card note is long (loraNotes.ts), which the picker wraps.
+    for lora in alissonerdx/minimax-h3-vfx-edit nrdx/bfs-body-swap-selective-lora; do
+      cozy --json lora upload "$seed/vfx-edit.safetensors" "$lora" --lane f16 --mirror https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI --on local -y \
+        > "$seed/upload-${lora##*/}.json" 2>&1 || { echo "uploading $lora failed: $(tail -c 600 "$seed/upload-${lora##*/}.json")" >&2; exit 1; }
+      commit=$(python3 "$here/model-details.py" "$lora" | jq -r '.checkpoints[0].checkpoint // empty')
+      [ -n "$commit" ] || { echo "$lora has no commit after its upload" >&2; exit 1; }
+      cozy --json lora publish "$lora" 0.1.0 "$commit" -y > "$seed/publish-${lora##*/}.json" 2>&1 \
+        || { echo "publishing $lora failed: $(tail -c 600 "$seed/publish-${lora##*/}.json")" >&2; exit 1; }
+      cozy --json lora edit "$lora" --family minimax-h3 > "$seed/edit-${lora##*/}.json" 2>&1 \
+        || { echo "naming $lora's family failed: $(tail -c 600 "$seed/edit-${lora##*/}.json")" >&2; exit 1; }
+    done
+    log "published ${h3%@*}@${h3#*@} (a stand-in) and two LoRAs of family minimax-h3"
+    rm -f "$seed"/*.safetensors
+  fi
+  if [[ " $needs " == *" slots "* ]]; then
+    # What slot_choices (cl-943) asks about: Klein's package, and stand-ins of the models its slots and Qwen Image's and H3's judge.
+    publish "$packages/flux.3-klein"
+    # Written by TensorFS's own writer: the candidate's when there is one.
+    case $tensorfs in '') with=tensorfs ;; [0-9]*) with=tensorfs==$tensorfs ;; *) with=$tensorfs ;; esac
+    uv run -q --no-project --python 3.12 --with "$with" python "$here/cli/slot_models.py" "$seed/slots" > "$seed/slots.txt"
+    while read -r -u 3 file model release page; do
+      name=${model//\//-}-$release
+      cozy --json model upload "$file" "$model" --lane bf16 --mirror "$page" --on local -y > "$seed/upload-$name.json" 2>&1 \
+        || { echo "uploading $model $release failed: $(tail -c 600 "$seed/upload-$name.json")" >&2; exit 1; }
+      commit=$(python3 "$here/model-details.py" "$model" | jq -r '[.checkpoints[] | select((.releases // []) | length == 0)][0].checkpoint // empty')
+      [ -n "$commit" ] || { echo "$model has no unreleased checkpoint after its upload" >&2; exit 1; }
+      cozy --json model publish "$model" "$release" "$commit" -y > "$seed/publish-$name.json" 2>&1 \
+        || { echo "publishing $model $release failed: $(tail -c 600 "$seed/publish-$name.json")" >&2; exit 1; }
+    done 3< "$seed/slots.txt"
+    log "published $(wc -l < "$seed/slots.txt") stand-ins for slot_choices"
+    rm -rf "$seed/slots"
   fi
   cd "$start"
 fi

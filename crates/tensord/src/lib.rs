@@ -27,6 +27,7 @@ mod calls;
 mod journal;
 mod private_journal;
 mod launch_identity;
+mod line;
 mod local_source;
 mod machine;
 mod memo;

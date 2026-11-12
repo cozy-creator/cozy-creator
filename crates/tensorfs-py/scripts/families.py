@@ -92,6 +92,8 @@ class Spec(TypedDict, total=False):
     trained_on: list[TrainedOn]
     optional: dict[str, list[str]]
     converted: dict[str, str]
+    #: Carrier parts the import folds into their weight's encoding (an fp8 weight's `.weight_scale`): no canonical key.
+    folds: list[str]
     variants: dict[str, tuple[str, str]]
     banked: dict[str, str]
 
@@ -294,6 +296,8 @@ FAMILIES: list[Spec] = [
         "sources": ["ideogram4.fp8"],
         # The fp8 reference's fused Q/K/V is split by its table: that output is canonical.
         "converted": {"transformer": "ideogram4.fp8", "unconditional_transformer": "ideogram4.fp8"},
+        # The text encoder's fp8 weights fold their per-row scales into fp8.rowwise.
+        "folds": [".weight_scale"],
         "probe": {
             "component": "transformer",
             "keys": [f"layers.0.attention.to_{p}.weight" for p in "qkv"],
@@ -719,6 +723,9 @@ def build(spec: Spec) -> Family:
         source, at = component(spec["reference"], files, folder)
         name = spec.get("converted", {}).get(folder)
         keys = converted(table(name), folder, source) if name else source
+        weights = {k for k, _ in keys}
+        keys = [(k, s) for k, s in keys if not any(k.endswith(f) and k.removesuffix(f) + ".weight" in weights
+                                                     for f in spec.get("folds", []))]
         where[folder] = readers(spec, folder, at, source)
         shapes[folder] = dict(keys)
         mine = sorted((k, tuple(s)) for k, s in keys)

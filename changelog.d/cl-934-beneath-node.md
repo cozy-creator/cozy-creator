@@ -1,0 +1,1 @@
+Every node with a tool has one component beneath it, the same for every tool and kind: its tool, Models & LoRAs beside it, and the models and LoRAs set listed under them. Nothing of models or LoRAs is inside the card.
