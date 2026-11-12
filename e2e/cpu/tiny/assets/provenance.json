@@ -66,6 +66,38 @@
       "source_blob": "93081c77e82b989fb5ef3d5968943f06952af274",
       "bytes": 12602,
       "sha256": "b5da3ed8bc04ab59dbdb747930f7dbff847e868903fed8028f85ee1a4ac82fb4"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/fibo_2/fonts/Aileron-Regular.otf",
+      "source_path": "fibo-2/fibo_2/fonts/Aileron-Regular.otf",
+      "source_commit": "81d9273fc1ea0b34d6a7a5a73e07b3fbb7d73e1d",
+      "source_blob": "4248f6ff3efb5ec0be0e5ef9055c6d16134604aa",
+      "bytes": 27644,
+      "sha256": "2762f4fc2ebad8323264aea52ffa2260b86c9677493d3ce2dc4f34e5851d2aa2"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/fibo_2/fonts/DejaVuSans.ttf",
+      "source_path": "fibo-2/fibo_2/fonts/DejaVuSans.ttf",
+      "source_commit": "81d9273fc1ea0b34d6a7a5a73e07b3fbb7d73e1d",
+      "source_blob": "725d11748a4b21c56750abe5603a854ca4ca4f04",
+      "bytes": 757076,
+      "sha256": "437a5ecec2ec177cba9284cbffc56055311347f3e9fe4f2b4b40323d0290a6db"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/fibo_2/fonts/LICENSE-Aileron.txt",
+      "source_path": "fibo-2/fibo_2/fonts/LICENSE-Aileron.txt",
+      "source_commit": "81d9273fc1ea0b34d6a7a5a73e07b3fbb7d73e1d",
+      "source_blob": "fd71d1133b300e3fe855171e335f694b975b656e",
+      "bytes": 673,
+      "sha256": "d9f3c3a524f8f3d671de2bfb42a924e9ca8aa4afb66fbee04441ad6e7f623fd2"
+    },
+    {
+      "path": "e2e/cpu/tiny/assets/fibo_2/fonts/LICENSE-DejaVu.txt",
+      "source_path": "fibo-2/fibo_2/fonts/LICENSE-DejaVu.txt",
+      "source_commit": "81d9273fc1ea0b34d6a7a5a73e07b3fbb7d73e1d",
+      "source_blob": "746d06306361f071b3a67226dce6c5971563fa50",
+      "bytes": 3844,
+      "sha256": "c67177807098edcacec9f10f724eb9f79d93fab5c9ad7422ca7e351a3376de97"
     }
   ]
 }
