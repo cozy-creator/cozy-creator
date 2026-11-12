@@ -279,6 +279,8 @@ impl OwnedBrowser {
         let owned = json!({ "session": live.credential, "birth": daemon_birth()? });
         let origin = serde_json::to_string(&format!("http://{address}")).map_err(|_| unavailable())?;
         let source = format!("if(location.origin==={origin})Object.defineProperty(globalThis,'__cozyOwned',{{value:{owned},writable:false,configurable:false}});");
+        // Blink runs new-document scripts only from an enabled Page agent; keep it enabled so reloads are injected too.
+        live.pipe.call("Page.enable", json!({}), Some(session)).await.map_err(|error| live.failed(error, Step::Inject))?;
         live.pipe.call("Page.addScriptToEvaluateOnNewDocument", json!({ "source": source }), Some(session)).await.map_err(|error| live.failed(error, Step::Inject))?;
         let mut url = url::Url::parse(&format!("http://{address}/")).map_err(|_| unavailable())?;
         url.path_segments_mut().map_err(|_| unavailable())?.extend(["projects", project_ref]);
