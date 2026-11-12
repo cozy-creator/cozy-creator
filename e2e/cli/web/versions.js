@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { implementationRow, selectVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
+const { implementationRow, approveVersion, projectFromPage, projectUrl, calcifer, carry: carryTo, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, photo, png, renderOf, settled, fitCanvas, until, importYaml, upload, yamlOf, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'waits.py');
 const failures = [];
@@ -214,20 +214,20 @@ async function died(why) {
   const displayed = (name) => box(name).locator('[data-displayed-sha]').first().getAttribute('data-displayed-sha').then((sha) => sha?.replace(/^sha256:/, ''));
 
   await open('Ada');
-  await selectVersion(page, 'Ada', 3);
+  await approveVersion(page, 'Ada', 3);
   check('retained_states_have_original_right_previews', await history('Ada').isVisible() && await previews('Ada').count() === 3 && await selected('Ada') === '3', await box('Ada').innerText());
   check('linear_counter_and_arrow_controls_are_removed', await noLinearControls('Ada') === 0);
   check('image_has_no_description_editor', await noDescription('Ada') === 0, await box('Ada').innerText());
   await settled(page);
   const wideGeometry = await geometry('Ada');
-  await selectVersion(page, 'Ada', 2);
+  await approveVersion(page, 'Ada', 2);
   await settled(page);
   const squareGeometry = await geometry('Ada');
   check('browsing_states_fixes_height_and_zoom_while_width_varies', stableHeightAndZoom(wideGeometry, squareGeometry) && Math.abs(wideGeometry.width - squareGeometry.width) > 20, { wideGeometry, squareGeometry });
-  await selectVersion(page, 'Ada', 3);
+  await approveVersion(page, 'Ada', 3);
   const beforeBrowse = (await asset('Ada')).prefixes.map((version) => [version.number, version.main.sha256]);
   const readerBefore = await asset('fixed');
-  await selectVersion(page, 'Ada', 1);
+  await approveVersion(page, 'Ada', 1);
   await until('selected version is durable', () => current('Ada'), (number) => number === 1);
   const readerAfter = await until('bare reference follows selected version', () => asset('fixed'), (row) => row.inputs !== readerBefore.inputs);
   const readKey = (row, number) => row.reads.find((read) => read.name === 'Ada' && read.version === number)?.key;
@@ -238,7 +238,7 @@ async function died(why) {
   check('browsing_preserves_all_versions', JSON.stringify((await asset('Ada')).prefixes.map((version) => [version.number, version.main.sha256])) === JSON.stringify(beforeBrowse));
   const warmedAda = await asset('Ada');
   for (const number of [2, 1]) {
-    await selectVersion(page, 'Ada', number);
+    await approveVersion(page, 'Ada', number);
     await until(`image ${number} decoded for warm switching`, () => displayed('Ada'), (sha) => sha === shaOf(warmedAda, number).replace(/^sha256:/, ''));
   }
   check('preview_selection_is_not_a_new_edit', await selected('Ada') === '1' && (await asset('Ada')).versions === 3);
@@ -269,15 +269,16 @@ async function died(why) {
   const flips = [];
   for (const number of [2, 1, 2, 1]) {
     flips.push(await flip(number));
-    await until('thumbnail click also persists its state', () => current('Ada'), (selected) => selected === number);
+    await until('thumbnail click previews its state', () => selected('Ada'), (selected) => selected === String(number));
   }
   check('decoded_state_switching_has_no_empty_flash', flips.every((look) => look.first !== null && look.first < 400 && look.emptyFrames === 0), flips);
+  check('warm_thumbnail_clicks_do_not_change_approval', await current('Ada') === 1);
 
   // A longer state history keeps the original scrollable previews, with both mouse and touch scrolling.
   await imported('many', 50);
   for (const shade of [51, 52, 53, 54, 55, 56, 57, 58]) await joined('many', shade);
   await open('many');
-  await selectVersion(page, 'many', 9);
+  await approveVersion(page, 'many', 9);
   check('all_alternative_states_keep_previews', await previews('many').count() === 9 && await selected('many') === '9');
   const side = history('many');
   await settled(page);
@@ -308,7 +309,7 @@ async function died(why) {
   check('right_previews_scroll_with_a_finger', byFinger > beforeFinger + 40, { beforeFinger, byFinger });
   const unmarked = await until('scroll marker gone', () => page.locator('.scroll-marker.on').count(), (count) => count === 0, 4000).then(() => true, (why) => String(why));
   check('scroll_marker_does_not_carry_or_remove_a_state', scrolling.marked === 1 && scrolling.ghosts === 0 && unmarked === true && (await asset('many')).versions === 9, { scrolling, unmarked });
-  await selectVersion(page, 'many', 5);
+  await approveVersion(page, 'many', 5);
   await until('fifth version selected', () => current('many'), (number) => number === 5);
   check('preview_selects_fifth_retained_state', await selected('many') === '5');
   await shut();
@@ -391,14 +392,14 @@ async function died(why) {
     await open('other');
     await until('new current state has a retained preview', () => selected('other'), (value) => value === '2');
     check('new_output_adds_a_retained_preview', await previews('other').count() === 2);
-    await selectVersion(page, 'other', 1);
+    await approveVersion(page, 'other', 1);
     await settled(page);
     const sourceGeometry = await geometry('other');
-    await selectVersion(page, 'other', 2);
+    await approveVersion(page, 'other', 2);
     await settled(page);
     const editedGeometry = await geometry('other');
     check('variant_browsing_keeps_height_zoom_and_tool_controls_stable', stableHeightAndZoom(sourceGeometry, editedGeometry) && ['x', 'y', 'width', 'height'].every((field) => Math.abs(sourceGeometry.controls[field] - editedGeometry.controls[field]) < 2), { sourceGeometry, editedGeometry });
-    await selectVersion(page, 'other', 1);
+    await approveVersion(page, 'other', 1);
     await (await renderOf(page, 'other')).click();
     const third = await until('editing an older version appends v3', () => asset('other'), (row) => row.versions === 3 && !row.making?.length, 5 * STEP_MS);
     check('editing_old_version_keeps_forward_history', third.version === 3 && third.prefixes.map((row) => row.number).join() === '1,2,3' && shaOf(third, 1) === originalSha && shaOf(third, 2) === shaOf(second, 2), third.prefixes);
@@ -407,7 +408,7 @@ async function died(why) {
     check('edit_reads_the_selected_source_version', editedFrom?.instructions?.references?.length === 1 && editedFrom.instructions.references[0].file === originalSha, editedFrom);
     importYaml(folder, `${yaml().trimEnd()}\n  current_reader:\n    tool: ${fixture}/wait\n    instructions: <other> now, with <other.1> kept.\n`);
     const followed = await until('current and explicit references read', () => asset('current_reader'), (row) => row.reads?.length === 2);
-    await selectVersion(page, 'other', 2);
+    await approveVersion(page, 'other', 2);
     const refChanged = await until('reader tracks selection', () => asset('current_reader'), (row) => row.inputs !== followed.inputs);
     const key = (row, version) => row.reads.find((read) => read.name === 'other' && read.version === version)?.key;
     check('selected_output_is_the_plain_reference', key(followed) !== key(refChanged) && key(followed, 1) === key(refChanged, 1), { before: followed.reads, after: refChanged.reads });

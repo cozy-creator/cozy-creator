@@ -257,14 +257,37 @@ async function died(error) {
   const panned = await until('the Focus image camera pans', imageCamera, (position) => Math.abs(position.x - wheeled.x) > 1 || Math.abs(position.y - wheeled.y) > 1);
   check('panning_keeps_focus_and_does_not_move_the_wander_camera', await focus.isVisible() && sameCamera(beforeGestures, await camera()), { wheeled, panned });
   check('panning_an_image_does_not_drag_out_a_new_asset', await page.locator('.carry-ghost').count() === 0 && JSON.stringify((await state()).assets.map((item) => item.name).sort()) === JSON.stringify(namesBeforePan));
-  await focus.getByRole('button', { name: 'Fit image', exact: true }).click();
-  await until('Fit resets the image camera', imageCamera, (position) => Math.abs(position.zoom - 1) < 0.0001 && Math.abs(position.x) < 0.5 && Math.abs(position.y) < 0.5);
+  check('Fit_button_is_removed', await focus.getByRole('button', { name: 'Fit image', exact: true }).count() === 0);
+  const zoomOut = focus.getByRole('button', { name: 'Zoom out image', exact: true });
+  for (let step = 0; step < 20 && (await imageCamera()).zoom > 1.0001; step++) {
+    const before = (await imageCamera()).zoom;
+    await zoomOut.click();
+    await until('zoom out approaches the fitted minimum', imageCamera, (position) => position.zoom < before);
+  }
+  await page.mouse.move(panRoom.x + panRoom.width / 2, panRoom.y + panRoom.height / 2);
+  await page.mouse.wheel(0, 600);
+  await until('zoom cannot go below the fitted full image', imageCamera, (position) => Math.abs(position.zoom - 1) < 0.0001 && Math.abs(position.x) < 0.5 && Math.abs(position.y) < 0.5);
   await expectFit(0.25);
-  check('Fit_keeps_focus_open_and_wander_unchanged', await focus.isVisible() && sameCamera(beforeGestures, await camera()));
+  check('fitted_minimum_keeps_focus_open_and_wander_unchanged', await focus.isVisible() && sameCamera(beforeGestures, await camera()));
   await page.keyboard.press('Escape');
   await focus.waitFor({ state: 'detached' });
   await settled(page);
   check('Escape_explicitly_exits_focus_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
+  await focusByClick();
+  await expectFit(0.25);
+  const mainImage = (await measure()).media;
+  await page.mouse.click(mainImage.x + mainImage.width / 2, mainImage.y + mainImage.height / 2);
+  check('clicking_the_main_image_does_not_exit_focus', await focus.isVisible());
+  const backgroundPoint = await focus.evaluate((element) => {
+    const viewport = element.getBoundingClientRect();
+    const heading = element.querySelector('.focus-heading').getBoundingClientRect();
+    const body = element.querySelector('.focus-body').getBoundingClientRect();
+    return { x: viewport.right - 4, y: (heading.bottom + body.top) / 2 };
+  });
+  await page.mouse.click(backgroundPoint.x, backgroundPoint.y);
+  await focus.waitFor({ state: 'detached' });
+  await settled(page);
+  check('clicking_the_empty_focus_background_exits_without_a_camera_jump', sameCamera(beforeGestures, await camera()) && (await palette()).shut === collapsed.shut && (await palette()).saved === collapsed.saved);
 
   // An unrendered video tool gets a large editable Beats-first workspace and a New tile.
   const videoTool = metadata.tools.find((item) => item.makes === 'video' && item.id !== 'cozy/edit'

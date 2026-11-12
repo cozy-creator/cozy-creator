@@ -195,8 +195,8 @@ function observeResizes() {
   });
 }
 
-// A box as a person reaches it, worked on or at rest: it's always on the canvas.
-const boxOf = (page, name) => page.locator(`.react-flow__node:has(.card[data-asset="${name}"])`).first();
+// The asset's current surface: Focus while open, otherwise its Wander node.
+const boxOf = (page, name) => page.locator(`[data-focused-asset="${name}"], .react-flow__node:has(.card[data-asset="${name}"])`).first();
 async function closeBox(page) {
   // By the address, as the page has it: after a reload the box is on its way, and not there to count yet, and `page.url()` hears of a move a moment late.
   // Left already, by a click off it say, the canvas may still be on its way back.
@@ -630,6 +630,13 @@ function rowsOf(folder, query) {
 
 /** Expand a tool category without creating anything and return one actual draggable implementation. */
 async function implementationRow(page, operation, id) {
+  const focused = page.locator('[data-focused-asset]');
+  if (await focused.count()) {
+    await focused.getByRole('button', { name: 'Back to canvas', exact: true }).click();
+    await focused.waitFor({ state: 'detached' });
+  }
+  const show = page.locator('aside.tools [aria-label="Show the tools"]');
+  if (await show.count()) await show.click();
   const category = page.locator(`.tools [data-operation="${operation}"]`);
   await category.waitFor();
   if (await category.getAttribute('aria-expanded') !== 'true') await category.click();
@@ -639,17 +646,24 @@ async function implementationRow(page, operation, id) {
   return row;
 }
 
-/** Select one of the retained states through the original right-hand preview rail. */
-async function selectVersion(page, name, wanted) {
+/** A thumbnail click previews a retained state without approving it. */
+async function previewVersion(page, name, wanted) {
   await openBox(page, name);
-  const folder = (await projectFromPage(page)).path;
   const card = boxOf(page, name);
   const take = card.locator(`.image-history.here-side .take[data-take="${wanted}"]`);
   await take.waitFor();
   await take.scrollIntoViewIfNeeded();
   await take.click();
-  await until(`${name} current version is persisted`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)?.version), (number) => number === wanted);
-  await until(`${name} selected thumbnail is current`, () => card.locator('.image-history.here-side .take.on[data-take]').getAttribute('data-take'), (number) => number === String(wanted));
+  await until(`${name} thumbnail is previewed`, () => card.locator('.image-history.here-side .take.on[data-take]').getAttribute('data-take'), (number) => number === String(wanted));
+}
+
+/** Approval is explicit and separate from thumbnail preview. */
+async function approveVersion(page, name, wanted) {
+  await previewVersion(page, name, wanted);
+  const folder = (await projectFromPage(page)).path;
+  const item = projectJson(folder).assets.find((asset) => asset.name === name);
+  if (!item.pinned || item.approved !== wanted) await boxOf(page, name).locator(`.image-history.here-side .take[data-take="${wanted}"]`).dblclick();
+  await until(`${name} version is approved`, () => Promise.resolve(projectJson(folder).assets.find((asset) => asset.name === name)), (asset) => asset?.version === wanted && asset?.approved === wanted && asset?.pinned);
 }
 
 /** Replace the tool with a real compatible implementation dragged from its category. */
@@ -666,4 +680,4 @@ async function chooseModel(page, name, id, operation) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { implementationRow, selectVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav, yamlOf };
+module.exports = { implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, importYaml, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav, yamlOf };

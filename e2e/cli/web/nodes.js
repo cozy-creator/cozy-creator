@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { implementationRow, selectVersion, chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
+const { implementationRow, approveVersion, chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -669,7 +669,7 @@ function linesOf(text, name) {
     await until('its two retained previews', () => box('Sheet').locator('.image-history.here-side .take[data-take]').count(), (count) => count === 2);
 
     // The original right-hand previews change the selected state durably without adding or pruning alternatives.
-    await selectVersion(page, 'Sheet', 1);
+    await approveVersion(page, 'Sheet', 1);
     await until('first version selected in the project', () => of('Sheet'), (held) => held.version === 1);
     check('selected_version_is_persistent', await box('Sheet').locator('.image-history .take.on[data-take]').getAttribute('data-take') === '1');
     check('images_keep_the_original_right_previews', await box('Sheet').locator('.image-history.here-side .take[data-take]').count() === 2);
@@ -701,7 +701,7 @@ function linesOf(text, name) {
     await open('Sheet');
     // The drag carries what the page holds, and that came by the stream, a moment behind the answer above.
     check('image_description_stays_hidden', await box('Sheet').locator('.desc-field').count() === 0);
-    await selectVersion(page, 'Sheet', 2);
+    await approveVersion(page, 'Sheet', 2);
     const selected = await of('Sheet');
     check('selection_keeps_versions_on_one_asset', selected.version === 2 && selected.versions === asked && !(await of('Sheet_2')), selected);
     check('selection_creates_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);
