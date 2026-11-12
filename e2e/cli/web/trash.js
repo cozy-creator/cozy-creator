@@ -8,7 +8,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until, upload } = require('./page');
+const { projectFromPage, calcifer, signIn, DARK_OPEN, MP4, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -66,9 +66,11 @@ async function died(why) {
   const shotTool = tools.find((tool) => tool.id === 'minimax-h3/generate') ?? tools.find((tool) => tool.package === 'minimax-h3' && tool.makes === 'video');
   if (!shotTool) throw new Error(`the Hub lists no H3 Shot: ${JSON.stringify(tools.map((tool) => tool.id))}`);
   const folder = mkdtempSync(join(tmpdir(), 'web-trash-'));
-  writeFileSync(join(folder, 'take.mp4'), MP4);
+  // Two different files: the same one twice is one take.
+  writeFileSync(join(folder, 'take1.mp4'), MP4);
+  writeFileSync(join(folder, 'take2.mp4'), DARK_OPEN);
   await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 5 }] }, at: { x: 100, y: 100 } });
-  for (let n = 0; n < 2; n++) await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
+  for (const file of ['take1.mp4', 'take2.mp4']) await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, file)) });
   await boxOf(page, 'shot').waitFor();
   await until('two takes', takes, (numbers) => numbers.length === 2);
   await fitCanvas(page);
