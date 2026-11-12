@@ -2,8 +2,8 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime>=0.43.1", "msgspec>=0.19"]
 # ///
-"""The cli suite's on-demand holder (cl-966): a call with BiRefNet as an on-demand slot, which holds its executor for a
-while and reads that model only when asked, as a stage would."""
+"""The cli suite's on-demand holder (cl-966): a call with an on-demand slot (BiRefNet; `keep`'s, fontbox), which holds its
+executor for a while and reads that model only when asked, as a stage would."""
 
 import time
 
@@ -43,3 +43,9 @@ def hold(payload: Hold, extra: Extra, tel: Telemetry) -> Held:
         with tel.stage("reading it"):
             extra.forward()
     return Held(seconds=payload.seconds)
+
+
+@app.entrypoint(accelerator=False, defaults={"extra": "lilylilith/fontbox@0.1.0"}, on_demand=("extra",))
+def keep(payload: Hold, extra: Extra, tel: Telemetry) -> Held:
+    """`hold`, its on-demand model fontbox."""
+    return hold(payload, extra, tel)
