@@ -263,8 +263,17 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
         Prepared::Run { submit, mut notes, offers } => {
             let given = given(&submit);
             let project = submit.out.as_deref().and_then(crate::project::of_landing).map(Path::to_owned);
-            let offer = offers.into_iter().next().unwrap_or_default().into_iter().find(|offer| offer.machine == submit.on);
-            let submitted = calcifer.submit_under(key, &digest, submit).await.map_err(refused)?;
+            let mut offer = offers.into_iter().next().unwrap_or_default().into_iter().find(|offer| offer.machine == submit.on);
+            let submitted = match calcifer.submit_under(key, &digest, submit).await.map_err(refused) {
+                // The machine placement chose went as it was sent (a pod releasing itself that second, cl-920): placed again, once.
+                Err(e) if ask.on.len() != 1 && crate::project::GONE.contains(&e.code.as_str()) => {
+                    let Prepared::Run { submit, .. } = prepare(api, key, &ask, For::Run).await? else { return Err(e) };
+                    notes.push(Note { level: NoteLevel::Warning, message: format!("{}: placed again on {}", e.message, submit.on) });
+                    offer = None;
+                    calcifer.submit_under(key, &digest, submit).await.map_err(refused)?
+                }
+                submitted => submitted?,
+            };
             if let Some(offer) = offer.filter(|_| !submitted.replay) {
                 calcifer.quoted(&submitted.run.id, offer.quoted());
             }

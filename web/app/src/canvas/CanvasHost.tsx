@@ -146,12 +146,17 @@ function ProjectSync({ id }: { id: string }) {
 function useMachines(store: CanvasStore, pinned: string[]) {
   const { client, status } = useConnection()
   const { data, isPending } = useQuery(machinesQuery(client))
-  const held = (data?.machines ?? []).filter((machine) => machine.ordered !== false && !machine.offline)
+  const listed = data?.machines ?? []
+  // A chosen machine that ended leaves the project's machines at once; one that's offline or ending takes nothing now (cl-920).
+  const alive = pinned.filter((name) => name === "local" || listed.some((machine) => machine.name === name && (machine.state === "ready" || machine.state === "booting") && !machine.offline))
+  // A test pod, a rental whose GPU memory is capped, runs only what names it.
+  const capped = (machine: (typeof listed)[number]) => (machine.status?.gpus ?? []).some((gpu) => (gpu.memory_limit_bytes ?? 0) > 0)
+  const held = listed.filter((machine) => machine.ordered !== false && !machine.offline)
   // One still booting takes what's sent to it, which waits for it there.
-  const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting"))
+  const rented = held.filter((machine) => machine.kind === "rental" && (machine.state === "ready" || machine.state === "booting") && !capped(machine))
   const up = held.filter((machine) => machine.kind !== "rental" && machine.kind !== "local" && machine.state === "ready" && !machine.unreachable)
   const automatic = [...rented, ...up].map((machine) => machine.name).concat(status.local_usable ? ["local"] : [])
-  const names = pinned.length ? pinned : automatic
+  const names = alive.length ? alive : automatic
   const key = names.join()
   // biome-ignore lint/correctness/useExhaustiveDependencies: the names, as text
   useEffect(() => {
