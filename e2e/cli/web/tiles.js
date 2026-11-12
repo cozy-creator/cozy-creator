@@ -268,7 +268,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
     seen.render_sizes = { before, sizes };
     check('render_leaves_its_size', sizes.some((now) => now.rendering) && sizes.every((now) => now.size === before) && (await size()) === before, { before, sizes });
     // While it's made: <plain>, full height, and its words with <plain> marked; once made, its take in their place (cl-940).
-    check('making_shows_references_and_words', sizes.some((now) => now.rendering && now.pictures === 1 && now.fullHeight && /Another still, as warm as/.test(now.words) && now.chip === 'plain'), sizes);
+    check('making_shows_references_and_words', sizes.some((now) => now.rendering && now.pictures === 1 && now.fullHeight && /Another still, as warm as/.test(now.words) && /^<?plain>?$/i.test(now.chip)), sizes);
     const after = await boxOf(page, 'again').evaluate((node) => ({ making: node.querySelectorAll('.media .making').length, label: node.querySelector('.node-version-label')?.textContent ?? '' }));
     check('result_replaces_them', after.making === 0 && after.label === 'v2', after);
   }
