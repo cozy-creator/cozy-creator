@@ -868,7 +868,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {/* At rest it keeps its size (cl-936): what's being made fades in over it, unless what it shows is approved; an image's covers its references (cl-940). */}
       {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !glimpse && <LatentPreview view={view} number={run} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
-      {failedTake ? <FailedHere message={failedTake.message.replace(`${name}: `, "")} copy={bodyText(failedTake, watch?.run, undefined)} /> : failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
+      {failedTake ? <FailedHere whole message={failedTake.message.replace(`${name}: `, "")} copy={bodyText(failedTake, watch?.run, undefined)} /> : failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}
       {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
@@ -895,9 +895,9 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 }
 
 /** Why its last render failed, along its bottom, until it's tried again. */
-function FailedHere({ message, copy }: { message: string; copy: string }) {
+function FailedHere({ message, copy, whole = false }: { message: string; copy: string; whole?: boolean }) {
   return (
-    <div className="run-face lines failed" data-phase="failed">
+    <div className={`run-face lines failed ${whole ? "whole" : ""}`} data-phase="failed">
       <p className="face-state error-text nodrag nopan">
         <b title={message}><span className="face-words">Didn't render: {message}</span></b>
         <CopyError text={copy} />
