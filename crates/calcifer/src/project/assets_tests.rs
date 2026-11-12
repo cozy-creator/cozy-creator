@@ -290,6 +290,18 @@ async fn typed_nodes_fixture() {
     assert_eq!(bound.payload["summary"]["text"], json!(source_prompt));
     assert!(bound.payload["summary"]["references"].is_array(), "binding genuinely produces a structured Prompt");
     drop(lock);
+    let hint = make(&api, &series.id, json!({"name":"source_hint","kind":"text","fields":{"text":"reference notes"}})).await;
+    landing.record(None, &original.name, "image", folder::Version {
+        files: folder::Files::from([("image".to_owned(), hash.clone())]),
+        fields: Some(serde_json::from_value(json!({"summary":format!("Use <{hint}>"),"beats":[{"description":format!("Keep <{hint}>"),"duration":12}]})).unwrap()),
+        ..Default::default()
+    }, "version", false, |_| {}).unwrap();
+    let snapshot_number = series.folder.lock().unwrap().asset(&original.name).unwrap().versions.last().unwrap().number;
+    super::super::rename_now(&series, &series.id, api::calcifer::project::Rename { from: hint, to: "renamed_hint".into() }).unwrap();
+    let Json(history) = read(State(api.clone()), Path((series.id.clone(), original.name.clone())), Query(Asked { call: false })).await.unwrap();
+    let renamed_fields = history.versions.iter().find(|version| version.number == snapshot_number).unwrap().fields.as_ref().unwrap();
+    assert_eq!(renamed_fields["summary"], json!("Use <renamed_hint>"));
+    assert_eq!(renamed_fields["beats"][0]["description"], json!("Keep <renamed_hint>"), "a history-only reference follows a node with no versions of its own");
     let reader = make(&api, &series.id, json!({"name":"reader","tool":"fixture/video","kind":"video","fields":{"summary":format!("<{}>", original.name)}})).await;
     {
         use super::super::{AskedText, Graph, Named, Now, Turn, walker};

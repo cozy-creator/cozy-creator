@@ -1989,9 +1989,12 @@ fn renamed_under(project: &Arc<Project>, id: &str, asked: Rename, follows: bool)
             return Err(refuse(Kind::Conflict, "rename_taken", format!("{to} has versions of its own already")));
         }
         let (from, versions) = (asked.from.clone(), old.map_or(0, |old| old.versions.len() as u32));
+        let saved_reads = lock.assets.values().flat_map(|held| held.on_record())
+            .chain(lock.pending.values().map(|pending| &pending.version)).filter_map(|version| version.fields.as_ref())
+            .any(|fields| fields.values().any(|value| graph::mentions_in(value).iter().any(|name| graph::mention_moved(name, &from, &to).is_some())));
         let stamps = restamps(folder, &doc, &back, &from, &to, &said);
         canvas::moved(folder, id, &from, &to)?;
-        if follows || old.is_some() || !stamps.is_empty() {
+        if follows || old.is_some() || !stamps.is_empty() || saved_reads {
             folder.update_lock(|lock| {
                 renamed(lock, &from, &to);
                 lock.called(&from, &to);
