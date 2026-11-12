@@ -854,7 +854,8 @@ def krea2_single_file(name: str) -> Table[TableRow]:
         model = cast(torch.nn.Module, Krea2Transformer2DModel())  # type: ignore[no-untyped-call]  # type checkers see diffusers' dummy class
     source = header(KREA2 / "krea2_raw_bf16.safetensors.header")
     checkpoint: dict[str, Route] = {k: Route(k, shape, 0, contiguous(shape)) for k, (_, shape) in source.items()}
-    converted = single_file_utils.convert_krea2_transformer_checkpoint_to_diffusers(checkpoint)
+    converted: dict[str, Route | Materialized] = single_file_utils.convert_krea2_transformer_checkpoint_to_diffusers(  # type: ignore[no-untyped-call]  # untyped
+        checkpoint)
     rows: list[TableRow] = []
     for target, value in model.state_dict().items():
         route = converted.pop(target)
