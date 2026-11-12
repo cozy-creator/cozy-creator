@@ -317,7 +317,8 @@ export function sourceOf(view: ElementView, shown: Shown | null): Source | null 
   if (!asset || view.placing) return null
   if (!shown && asset.kind === "video") {
     const run = watched(view)?.run ?? (view.viewed === undefined ? asset.making?.[0] : undefined)
-    if (run) return { run, output: "video" }
+    // What of it landed here plays on its glimpse; before any has, straight from its machine.
+    if (run) return view.glimpse?.media === "video" && view.glimpse.number === run ? null : { run, output: "video" }
   }
   if (shown?.field !== "video" && shown?.field !== "audio") return null
   if (!shown.absent) return FILE.test(shown.path) ? { path: shown.path } : null
@@ -353,13 +354,13 @@ export function viewable(view: ElementView | undefined): boolean {
 }
 
 /** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
-export function Player({ field, path, machine, seek, auto, onTime }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; onTime?(seconds: number): void }) {
+export function Player({ field, path, machine, seek, auto, from, onTime }: { field: string; path?: string; machine?: { run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; from?: number; onTime?(seconds: number): void }) {
   const { client, stream } = useConnection()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const [why, setWhy] = useState("This browser can't play it")
   const element = useRef<HTMLVideoElement & HTMLAudioElement>(null)
   const stopRef = useRef<() => void>(() => {})
-  const wanted = useRef<number | null>(null)
+  const wanted = useRef<number | null>(from ?? null)
   const asked = useRef(seek?.ask ?? 0)
   // Scrubbed, it holds the frame it was taken to, playing only when played.
   const still = useRef(false)
@@ -747,6 +748,13 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
+  const glimpsed = Boolean(view.glimpse && !shown && view.viewed === undefined && (making || asset?.failure))
+  // The take its glimpse was playing as, opened, landing: its player plays on from there.
+  const playhead = useRef<Playhead | null>(null)
+  const playsOn = open && !glimpsed && source && "path" in source && here?.run !== undefined && playhead.current?.run === here.run ? playhead.current.at : undefined
+  useEffect(() => {
+    if (playsOn !== undefined) playhead.current = null
+  }, [playsOn])
   // Its take being made, with nothing of it yet: what its words mention is behind its face.
   // An image or video being made at rest says what it's made from, in its frame (cl-940, cl-947), over what it shows.
   const makingMedia = !view.here && (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline && onItsWay && asset.rendering == null && makes(view)
@@ -758,7 +766,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   // What stopped its last try, in place: an approved box looked at shows nothing wrong (Card's dot).
   const failed = !busy && !placing && Boolean(asset?.failure) && view.viewed === undefined && !(asset?.pinned && faceOf(view) === "media")
   return (
-    <div className={`media ${asset?.kind === "image" ? "image-asset" : ""} ${pendingImage ? "pending-image" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${view.here && view.hereWords ? "writing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
+    <div className={`media ${glimpsed ? "glimpsed" : ""} ${asset?.kind === "image" ? "image-asset" : ""} ${pendingImage ? "pending-image" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${view.here && view.hereWords ? "writing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
       <div className="media-pixels" data-image-reference={asset?.kind === "image" && shown && !view.hereWords ? "" : undefined}>
         {preview && (
           <img
@@ -785,7 +793,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           <Icon name={glyph} />
         </span>
       )}
-      {view.glimpse && !shown && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
+      {glimpsed && view.glimpse && <Glimpse glimpse={view.glimpse} failed={!making} open={Boolean(view.here)} playhead={playhead} />}
       {full && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {makingMedia && <Making view={view} name={name} run={run} cardWidth={cardWidth} />}
@@ -809,6 +817,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           machine={"run" in source ? source : undefined}
           seek={view.seek}
           onTime={field === "video" ? (seconds) => store.patch(name, { scrub: seconds }) : undefined}
+          auto={playsOn !== undefined}
+          from={playsOn}
         />
       )}
       {children}
@@ -828,22 +838,72 @@ function FailedHere({ message, copy }: { message: string; copy: string }) {
   )
 }
 
-/** What a render has shown so far, as it lands: over the box, and kept dimmed when it fails. */
-function Glimpse({ glimpse, failed }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean }) {
+/** Where an opened glimpse was playing, by its run's number: the take that run makes plays on from there. */
+interface Playhead {
+  run: number
+  at: number
+}
+
+/**
+ * What a render has made so far, its newest revision here, over the box until its take lands, and kept dimmed when it fails. A video (a
+ * shot's segments 1..k, joined) plays silent and looping at rest; opened, beside its beats or not, it waits with its controls, to play with
+ * its sound and seek. A newer revision (1..k+1) loads where it was, playing on if it was.
+ */
+function Glimpse({ glimpse, failed, open, playhead }: { glimpse: NonNullable<ElementView["glimpse"]>; failed: boolean; open: boolean; playhead: { current: Playhead | null } }) {
   const { client } = useConnection()
   const [src, setSrc] = useState<string>()
+  const element = useRef<HTMLVideoElement>(null)
+  const resume = useRef<{ at: number; playing: boolean } | null>(null)
   useEffect(() => {
     let live = true
-    void client.transport.src(client.output(glimpse.run, glimpse.output, glimpse.index)).then((url) => {
-      if (live) setSrc(url)
+    void client.transport.src(client.output(glimpse.run, glimpse.output, glimpse.index, glimpse.rev)).then((url) => {
+      if (!live) return
+      const el = element.current
+      if (el?.currentSrc) resume.current = { at: el.currentTime, playing: !el.paused }
+      setSrc(url)
     })
     return () => {
       live = false
     }
-  }, [client, glimpse.run, glimpse.output, glimpse.index])
+  }, [client, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
+  useEffect(() => {
+    const el = element.current
+    if (!el) return
+    el.muted = !open
+    if (open) el.pause()
+    else void el.play().catch(() => {})
+  }, [open])
+  const heard = (el: HTMLVideoElement) => {
+    playhead.current = open && !el.paused ? { run: glimpse.number, at: el.currentTime } : null
+  }
   return (
-    <div className={`glimpse ${failed ? "failed" : ""}`} data-label={glimpse.label ?? ""}>
-      {src && (glimpse.media === "video" ? <video src={src} muted loop autoPlay playsInline /> : <img src={src} alt="" draggable={false} />)}
+    <div className={`glimpse ${failed ? "failed" : ""}`} data-label={glimpse.label ?? ""} data-rev={glimpse.rev}>
+      {src &&
+        (glimpse.media === "video" ? (
+          <video
+            ref={element}
+            src={src}
+            className={open ? "nodrag nopan nowheel" : undefined}
+            muted={!open}
+            loop={!open}
+            autoPlay={!open}
+            controls={open}
+            playsInline
+            preload="auto"
+            onLoadedMetadata={(event) => {
+              const was = resume.current
+              resume.current = null
+              if (!was) return
+              const el = event.currentTarget
+              el.currentTime = Math.min(was.at, el.duration || was.at)
+              if (was.playing) void el.play().catch(() => {})
+            }}
+            onTimeUpdate={(event) => heard(event.currentTarget)}
+            onPause={(event) => heard(event.currentTarget)}
+          />
+        ) : (
+          <img src={src} alt="" draggable={false} />
+        ))}
       {glimpse.label && <span className="glimpse-label">{glimpse.label}</span>}
     </div>
   )

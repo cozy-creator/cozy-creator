@@ -138,8 +138,8 @@ export interface ElementView {
   joining?: number
   /** It just arrived, and lands. */
   landing?: boolean
-  /** What its render has shown so far, the newest: kept, dimmed, if the render fails. */
-  glimpse?: { run: string; output: string; index: number; media: string; label?: string; sha256?: string }
+  /** What its render has shown so far, the newest revision that landed here, by its run's id and number: kept, dimmed, if the render fails. */
+  glimpse?: { run: string; number: number; output: string; index: number; rev: number; media: string; label?: string; sha256?: string }
   /** Another box's take let go on it, to pick up from: that take, as a mention of it, and where it's from. */
   pickingUp?: { take: string; from: string; number: number }
   /** The take that just landed, sliding in beside the last. */
@@ -838,7 +838,7 @@ export class CanvasStore {
     // Only what's here: an output of a run on another machine, or a revision that hasn't landed, has nothing yet to show. A preview published
     // as it goes is a revision that landed while its output is still in progress.
     const shown = [...(run.output ?? [])].reverse().find((item) => Boolean(item.url) && /^(image|video)\//.test(item.media_type))
-    const glimpse = shown && { run: run.id, output: shown.name, index: shown.index, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 ?? undefined }
+    const glimpse = shown && { run: run.id, number: run.number, output: shown.name, index: shown.index, rev: shown.rev, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 ?? undefined }
     const held = this.get(owner)?.glimpse
     this.patch(owner, glimpse && JSON.stringify(glimpse) !== JSON.stringify(held) ? { run, glimpse } : { run })
   }
@@ -1352,7 +1352,8 @@ export class CanvasStore {
     const asset = this.get(name)?.asset
     if (!asset) return
     const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
-    this.patch(name, { hereWords: asset.kind === "video" || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
+    // A render asked of a video's words stays on them; a take being made, picked, is looked at: what of it has landed plays (cl-907).
+    this.patch(name, { hereWords: (asset.kind === "video" && run === undefined) || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
   }
 
   seek(name: string, at: number, still = false) {
