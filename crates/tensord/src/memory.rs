@@ -65,6 +65,8 @@ pub(crate) fn row<'a>(entry: &str, inventory: &'a [receipt::Gpu]) -> Option<&'a 
 pub(crate) struct Tenant {
     pub plan: String,
     pub start: usize,
+    /// Its lane's GPUs from `start`.
+    pub width: usize,
     pub exact: Exact,
 }
 

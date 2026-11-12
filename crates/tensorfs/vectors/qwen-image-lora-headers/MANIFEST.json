@@ -1,0 +1,14 @@
+{
+ "note": "A published Qwen-Image-Edit-2511 LoRA (AI-Toolkit, Diffusers' names under diffusion_model.); qwenimage.lora maps it",
+ "members": [
+  {
+   "source": "ScottzillaSystems/qwen-image-edit-plus-nsfw-lora@66e89e998dd4ea1a359c4bf0dd5e17d2f0b06ef0",
+   "member": "qwen-image-edit-plus-nsfw-lora.safetensors",
+   "header_file": "qwen-image-edit-plus-nsfw-lora.safetensors.header",
+   "header_sha256": "4256b4bbdd90e89ef3d892d102beffedc3577fb0864fe524a017ef424706475a",
+   "header_bytes": 234864,
+   "full_length": 590058864,
+   "declared_source_sha256": "16c4841028615bb82c38e79756c0abad42494d85bca0daebc2939384a74d86bb"
+  }
+ ]
+}

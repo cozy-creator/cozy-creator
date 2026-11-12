@@ -22,17 +22,18 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   const view = useElement(name)
   const element = useRef<HTMLElement>(null)
   const entering = useSignal(store.focusEntering)
+  // Drawn once it has something to show: a box on its way in has nothing yet.
+  const shown = Boolean(view?.asset || view?.entity)
   useLayoutEffect(() => {
-    if (!entering) return
+    if (!entering || !shown) return
     const frame = requestAnimationFrame(() => {
       const viewer = element.current?.querySelector<HTMLElement>(".focus-viewer")
       const room = viewer?.clientWidth && viewer.clientHeight ? viewer : element.current?.querySelector<HTMLElement>(".focus-body")
-      if (!room) return
-      const rect = room.getBoundingClientRect()
-      store.enterFocus({ x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+      const rect = room?.getBoundingClientRect()
+      store.enterFocus(rect ? { x: rect.left, y: rect.top, width: rect.width, height: rect.height } : null)
     })
     return () => cancelAnimationFrame(frame)
-  }, [entering, name, store])
+  }, [entering, shown, name, store])
   useEffect(() => {
     if (!entering && store.get(name)?.hereWords) element.current?.querySelector<HTMLElement>(".focus-body [contenteditable=true], .focus-body textarea")?.focus({ preventScroll: true })
   }, [entering, name, store])

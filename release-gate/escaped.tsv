@@ -1,0 +1,7 @@
+# Bugs that reached users, each the expect row of the cell that reproduces it, the SKUs it must pass on, and its issue.
+# `verify.sh --release` refuses a release whose gates did not pass every row. Add the row with the cell.
+# row	SKUs (a bash pattern)	issue
+prompt-lm-capture	rtx-4090|rtx-5090	xs-182: capture_capacity in a prompt LM's decode after another model (var-017, cr-279: 0.45.0 runs 47036, 47038; suite execution)
+h3-u2-short-sparse	h100-*	xs-182: H3's sparse steps dense in a Hopper group's first call (cr-268: 0.45.0 run 47001, sparse 0 of 2304; suite multi-gpu)
+h3-u2-short-exchange	h100-*	xs-182: the copy-engine exchange unmapped under varena (cr-268: 0.45.0 runs 47001, 47019 route nccl; suite multi-gpu)
+h3-u2-finetune-video	*	cl-935: a 2-GPU call with a model fetched from the Hub failed credential_at_seam (0.45.0/0.45.1: 47352, 47432; fixed in Runtime 0.45.2; suite multi-gpu)

@@ -423,7 +423,8 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
             blocking(|| stage.relock_pinned(python.request.as_str(), &pins)).map_err(|e| unmet(e, &pins, &account, hub))?;
         }
     }
-    let (files, unshipped) = blocking(|| built(&stage, &python.request, &committed, &result.package, hub))?;
+    let reader = rc_reader(api, &project.version).await?;
+    let (files, unshipped) = blocking(|| built(&stage, &python.request, &committed, &result.package, hub, reader.as_deref()))?;
     for ui in unshipped {
         say(&format!("the wheel doesn't hold {ui}, so that function draws its declared box: keep it beside the module that names it, and have your build include it"));
     }
@@ -467,14 +468,26 @@ pub(super) async fn publish(api: &Arc<Api>, hub: &Origin, code: &LocalCode, ask:
     Ok(result)
 }
 
+/// The Runtime that reads a prerelease's interface from a dev home or an RC build of cozy (the e2e's candidates): the open
+/// RC's, which it is built for and runs on (cl-922), so it may declare what only that Runtime has (`When`). None: its lock's.
+async fn rc_reader(api: &Api, version: &str) -> Result<Option<String>, Error> {
+    let prerelease = version.parse::<pep440_rs::Version>().is_ok_and(|version| version.any_prerelease());
+    if !(api.machines.dev || crate::update::dev_build()) || !prerelease {
+        return Ok(None);
+    }
+    let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
+    Ok(api.machines.rc.now().await?.build("runtime", &platform).map(|(_, url)| url))
+}
+
 /// The staged project locked for this Hub, held to the committed lock, built, its git
-/// dependencies' wheels built, and described: the release's files.
+/// dependencies' wheels built, and described (by `reader`, else its locked Runtime): the release's files.
 fn built(
     stage: &Stage,
     python: &str,
     committed: &str,
     package: &str,
     hub: &Origin,
+    reader: Option<&str>,
 ) -> Result<(Vec<File>, Vec<String>), Error> {
     run(uv(&stage.uv, &stage.src).args(["lock", "--no-progress", "--python", python]), "lock_failed", "uv lock")?;
     let bound = fs::read_to_string(stage.src.join("uv.lock")).map_err(|e| refuse("lock_failed", e))?;
@@ -501,7 +514,7 @@ fn built(
         "uv build",
     )?;
     let git_wheels = git_wheels(stage, python)?;
-    let runtime = after.get("cozy-runtime").map(String::as_str);
+    let runtime = reader.or(after.get("cozy-runtime").map(String::as_str));
     let (said, document) = describe_with(&stage.uv, &stage.src, python, runtime)?;
     // A model default with no org stays as written: it names a first-party model (a machine reads
     // `sdxl@1.0.0` as `_/sdxl@1.0.0`), and the Runtime's interface parser refuses an org of `_`.

@@ -33,7 +33,7 @@ release_synthetic_checks() (
     local status=$?
     step cleanup
     python3 "$E2E/delete-test-package.py" "$WHO/$pkg" > /dev/null || check "package fixture cleanup failed"
-    for model_name in "$model" "$model-copy" "$model-store" "$model-lora" "$model-h3-lora"; do
+    for model_name in "$model" "$model-copy" "$model-store" "$model-lora" "$model-h3-lora" "$model-kept"; do
       if model_details "$model_name" > /dev/null 2>&1; then
         cozy --json model delete "$model_name" -y > /dev/null || check "cleanup failed for $model_name"
       fi
@@ -137,6 +137,13 @@ cozy --json model upload "$model@$commit" "$model-copy" --lane f16 > "$OUT/uploa
   && J --arg f "$model@$commit" '.from == $f and .lane == "f16"' "$OUT/upload-recorded.json" \
   || check "model upload of a Hub commit: $(tail -c 300 "$OUT/upload-recorded.json") $(tail -c 300 "$OUT/upload-recorded.err")"
 cozy --json model delete "$model-copy" -y > /dev/null 2>&1 || check "model delete of the recorded copy failed"
+# A Hub commit with a file added (xs-183: model data a package bundles goes into its checkpoint): only headers move, and the
+# file becomes the asset of a new component that holds it alone.
+printf '{"pdd_num_steps": 4}\n' > "$OUT/added.json"
+watched upload-added model upload "$model@$commit" "$model" --lane f16 --add extra/added.json="$OUT/added.json" --on "$ON" \
+  || check "model upload --add failed"
+grep -q '"added":\["extra/added.json"\]' "$OUT/upload-added.ndjson" 2> /dev/null \
+  || check "model upload --add: the result does not name extra/added.json: $(tail -c 300 "$OUT/upload-added.ndjson")"
 # While its commit is private (its random bytes are in no public release): a run capability reaches it and nothing else (cl-675).
 # Its own process: `cozy` there is the installed binary, not this suite's logging function.
 PATH="$(dirname "$COZY"):$PATH" "$here/../capabilities/run.sh" --out "$OUT/capabilities" --commit "$model@$commit" > "$OUT/capabilities.txt" \
@@ -196,6 +203,25 @@ if cozy --json lora delete "$model-lora@$lora_checkpoint" -y > "$OUT/referenced-
   check "a retained private release did not protect its checkpoint from deletion"
 fi
 cozy --json lora delete "$model-lora" -y > /dev/null || check "LoRA fixture cleanup failed"
+# A step-distilled LoRA (xs-183: H3 Turbo, Regenerate-2K): kohya's lora_down/lora_up pairs and a per-step table it keeps beside
+# them is a LoRA, not a component of some model.
+uv run -q --no-project python -I - "$OUT/tiny-kept.safetensors" <<'PYKEPT'
+import json, os, struct, sys
+shapes = {"blocks.0.attn.lora_down": [2, 4], "blocks.0.attn.lora_up": [4, 2], "blocks.0.adaln.table": [3, 4]}
+header, offset = {}, 0
+for key, shape in shapes.items():
+    n = 2 * shape[0] * shape[1]
+    header[key] = {"dtype": "F16", "shape": shape, "data_offsets": [offset, offset + n]}
+    offset += n
+raw = json.dumps(header).encode()
+raw += b" " * (-len(raw) % 8)
+open(sys.argv[1], "wb").write(struct.pack("<Q", len(raw)) + raw + os.urandom(offset))
+PYKEPT
+watched upload-kept lora upload "$OUT/tiny-kept.safetensors" "$model-kept" --lane f16 --source-format as-is --on "$ON" \
+  || check "step-distilled LoRA upload failed"
+cozy --json model ls "$model-kept" > "$OUT/search-kept.json" && J --arg m "$model-kept" '.models | any(.model == $m and .kind == "lora")' "$OUT/search-kept.json" \
+  || check "a LoRA keeping a per-step table beside its lora_down/lora_up pairs is not listed as a LoRA: $(head -c 300 "$OUT/search-kept.json")"
+cozy --json lora delete "$model-kept" -y > /dev/null || check "step-distilled LoRA fixture cleanup failed"
 # se-116: an H3 LoRA as upstream musubi-tuner writes it (one fused QKV module, f8a1b037's metadata) records the DiT its
 # --task trained, never the h3.lora table's `transformer` (matlowai/orb360 was trained on Ref2VA and read as FL2VA).
 uv run -q --no-project python -I - "$OUT/tiny-h3-lora.safetensors" <<'PYH3'

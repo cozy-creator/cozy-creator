@@ -27,7 +27,12 @@ pub(super) struct Document {
     pub(super) doc: AutoCommit,
     projection: Arc<Projection>,
     conflicts: Arc<OnceLock<Vec<String>>>,
+    /// Where it stands: what a typed edit was made on (`typed`).
+    heads: Arc<Vec<ChangeHash>>,
 }
+
+/// One splice of a box's words, in Unicode code points: `delete` of them at `at`, then `insert`.
+pub(super) type Splice = api::calcifer::project::Splice;
 
 // The selected native view shares unchanged roots and records across a write.
 // Only the native document is persisted.
@@ -233,7 +238,8 @@ pub(super) fn identity_bytes(bytes: &[u8], heads: &str) -> Option<(String, Strin
 
 impl Document {
     pub(super) fn load(bytes: &[u8], heads: &str, at: &Path) -> Result<Self, Error> {
-        let doc = load_native(bytes, heads)?.with_actor(actor(at));
+        let mut doc = load_native(bytes, heads)?.with_actor(actor(at));
+        let heads = Arc::new(doc.get_heads());
         let mut found = Vec::new();
         let projection = project(&doc, &mut found)?;
         if root_value(&projection, "schema").and_then(Value::as_u64) != Some(FORMAT as u64) {
@@ -245,6 +251,7 @@ impl Document {
             doc,
             projection: Arc::new(projection),
             conflicts: Arc::new(OnceLock::from(found)),
+            heads,
         })
     }
 
@@ -253,6 +260,7 @@ impl Document {
             doc: AutoCommit::new().with_actor(actor(at)),
             projection: Arc::default(),
             conflicts: Arc::new(OnceLock::new()),
+            heads: Arc::default(),
         }
     }
 
@@ -276,6 +284,7 @@ impl Document {
         let known_empty = self.conflicts.get().is_some_and(Vec::is_empty);
         reconcile_projection(&mut self.doc, &self.projection, &projection)?;
         self.doc.commit();
+        self.heads = Arc::new(self.doc.get_heads());
         self.projection = Arc::new(projection);
         // A local observing mutation cannot introduce concurrency. Imported snapshots seed
         // this cache during materialization; existing alternatives invalidate it on mutation.
@@ -285,6 +294,62 @@ impl Document {
         }
         self.conflicts = Arc::new(conflicts);
         Ok(())
+    }
+
+    /// Its heads, as a read names them.
+    pub(super) fn heads(&self) -> Vec<String> {
+        self.heads.iter().map(ToString::to_string).collect()
+    }
+
+    /// What the words at `path` of box `id` (a field, or words in it: `beats.0.description`) say once `splices`, made on them as the
+    /// document stood at `heads`, merge with all written since: by character, as Automerge merges text, so two people typing in one
+    /// prompt keep both (cl-904). Words that weren't text then (a project from before) merge from what they said then.
+    pub(super) fn typed(&self, id: &str, path: &str, heads: &[String], splices: &[Splice]) -> Result<String, Error> {
+        let field = path;
+        let heads = heads.iter().map(|head| head.parse::<ChangeHash>().map_err(invalid)).collect::<Result<Vec<_>, _>>()?;
+        // Typed on the project as it stands, as one person typing is: nothing to merge, and nothing copied.
+        if heads.iter().collect::<BTreeSet<_>>() == self.heads.iter().collect::<BTreeSet<_>>() {
+            let mut words: Vec<char> = self.projected_words(id, field).chars().collect();
+            for splice in splices {
+                let at = (splice.at as usize).min(words.len());
+                let delete = (splice.delete as usize).min(words.len() - at);
+                words.splice(at..at + delete, splice.insert.chars()).for_each(drop);
+            }
+            return Ok(words.into_iter().collect());
+        }
+        let mut now = self.doc.clone();
+        let mut then = now.fork_at(&heads).map_err(|_| {
+            Error::new(Kind::Conflict, "project_heads_unknown", "this edit was made on a project this Calcifer doesn't hold").remedy("read the project again")
+        })?;
+        if let Some(text) = text_of(&then, id, field)? {
+            for splice in splices {
+                splice_in(&mut then, &text, splice)?;
+            }
+            now.merge(&mut then).map_err(invalid)?;
+            return words_of(&now, id, field);
+        }
+        let (base, current) = (words_of(&then, id, field)?, words_of(&now, id, field)?);
+        let mut scratch = AutoCommit::new();
+        let text = scratch.put_object(ROOT, "words", ObjType::Text).map_err(invalid)?;
+        scratch.splice_text(&text, 0, 0, &base).map_err(invalid)?;
+        let mut theirs = scratch.fork();
+        let (at, delete, insert) = splice_between(&base, &current);
+        theirs.splice_text(&text, at, delete as isize, insert).map_err(invalid)?;
+        for splice in splices {
+            splice_in(&mut scratch, &text, splice)?;
+        }
+        scratch.merge(&mut theirs).map_err(invalid)?;
+        scratch.text(&text).map_err(invalid)
+    }
+
+    /// The words at `path` of box `id`, as the projection holds them: "" for none or for what isn't words.
+    fn projected_words(&self, id: &str, path: &str) -> String {
+        let Some(Group::Records(boxes)) = self.projection.get("boxes") else { return String::new() };
+        let found = boxes.get(id).and_then(|held| path.split('.').try_fold(held.get("fields")?, |at, step| match at {
+            Value::Array(items) => items.get(step.parse::<usize>().ok()?),
+            _ => at.get(step),
+        }));
+        found.and_then(Value::as_str).unwrap_or_default().to_owned()
     }
 
     /// Explicit conflict metadata, rather than silently presenting AutoSerde's selected winner.
@@ -817,7 +882,7 @@ fn reconcile_projection(doc: &mut AutoCommit, before: &Projection, after: &Proje
                         if old.is_some_and(|old| old.as_ref() == records.as_ref()) { continue; }
                         let object = doc.put_object(ROOT, key.as_str(), ObjType::Map).map_err(invalid)?;
                         for (id, value) in records.iter() {
-                            put_changed(doc, &object, Prop::Map(id.clone()), None, value, false)?;
+                            put_record(doc, key, &object, id, None, value)?;
                         }
                         continue;
                     }
@@ -837,12 +902,163 @@ fn reconcile_projection(doc: &mut AutoCommit, before: &Projection, after: &Proje
                     if previous.is_some_and(|row| Arc::ptr_eq(row, value) || row.as_ref() == value.as_ref()) {
                         continue;
                     }
-                    put_changed(doc, &object, Prop::Map(id.clone()), previous.map(Arc::as_ref), value, false)?;
+                    put_record(doc, key, &object, id, previous.map(Arc::as_ref), value)?;
                 }
             }
         }
     }
     Ok(())
+}
+
+/// A record of `namespace`. A box's words are Automerge text, each change to them a splice, so concurrent typing merges by character;
+/// its other fields, and every other record, are values (cl-904).
+fn put_record(doc: &mut AutoCommit, namespace: &str, records: &ObjId, id: &str, before: Option<&Value>, after: &Value) -> Result<(), Error> {
+    let (true, Some(wanted)) = (namespace == "boxes", after.as_object()) else {
+        return put_changed(doc, records, Prop::Map(id.to_owned()), before, after, false);
+    };
+    let held = match doc.get(records, id).map_err(invalid)? {
+        Some((AmValue::Object(ObjType::Map), held)) => held,
+        _ => doc.put_object(records, id, ObjType::Map).map_err(invalid)?,
+    };
+    let keys: Vec<String> = doc.keys(&held).collect();
+    for key in keys.iter().filter(|key| !wanted.contains_key(*key)) {
+        doc.delete(&held, key.as_str()).map_err(invalid)?;
+    }
+    for (key, value) in wanted {
+        let old = before.and_then(|before| before.get(key));
+        match (key.as_str(), value.as_object()) {
+            ("fields", Some(fields)) => {
+                let (object, reused) = match doc.get(&held, "fields").map_err(invalid)? {
+                    Some((AmValue::Object(ObjType::Map), object)) => (object, true),
+                    _ => (doc.put_object(&held, "fields", ObjType::Map).map_err(invalid)?, false),
+                };
+                let keys: Vec<String> = doc.keys(&object).collect();
+                for field in keys.iter().filter(|field| !fields.contains_key(*field)) {
+                    doc.delete(&object, field.as_str()).map_err(invalid)?;
+                }
+                for (field, value) in fields {
+                    let old = old.filter(|_| reused).and_then(|old| old.get(field));
+                    put_node(doc, &object, Prop::Map(field.clone()), old, value, false)?;
+                }
+            }
+            _ => put(doc, &held, Prop::Map(key.clone()), old, value, false)?,
+        }
+    }
+    Ok(())
+}
+
+/// A box's field, or what's in it: its words, at any depth, are Automerge text, each change to them the one splice that makes it; the maps
+/// and lists holding them stay the same objects, so what's typed in one row merges with what's typed in another.
+fn put_node(doc: &mut AutoCommit, parent: &ObjId, prop: Prop, before: Option<&Value>, after: &Value, insert: bool) -> Result<(), Error> {
+    let found = if insert { None } else { doc.get(parent, prop.clone()).map_err(invalid)? };
+    let made = |doc: &mut AutoCommit, kind: ObjType| -> Result<ObjId, Error> {
+        match (&prop, insert) {
+            (Prop::Seq(index), true) => doc.insert_object(parent, *index, kind),
+            _ => doc.put_object(parent, prop.clone(), kind),
+        }
+        .map_err(invalid)
+    };
+    match after {
+        Value::String(words) => {
+            let Some((AmValue::Object(ObjType::Text), text)) = found else {
+                let text = made(doc, ObjType::Text)?;
+                return doc.splice_text(&text, 0, 0, words).map_err(invalid);
+            };
+            let held = doc.text(&text).map_err(invalid)?;
+            if held == *words {
+                return Ok(());
+            }
+            let (at, delete, insert) = splice_between(&held, words);
+            doc.splice_text(&text, at, delete as isize, insert).map_err(invalid)
+        }
+        Value::Object(wanted) => {
+            let (object, reused) = match found {
+                Some((AmValue::Object(ObjType::Map), object)) => (object, true),
+                _ => (made(doc, ObjType::Map)?, false),
+            };
+            let keys: Vec<String> = doc.keys(&object).collect();
+            for key in keys.iter().filter(|key| !wanted.contains_key(*key)) {
+                doc.delete(&object, key.as_str()).map_err(invalid)?;
+            }
+            for (key, value) in wanted {
+                put_node(doc, &object, Prop::Map(key.clone()), before.filter(|_| reused).and_then(|before| before.get(key)), value, false)?;
+            }
+            Ok(())
+        }
+        Value::Array(items) => {
+            let (list, reused) = match found {
+                Some((AmValue::Object(ObjType::List), list)) => (list, true),
+                _ => (made(doc, ObjType::List)?, false),
+            };
+            let length = doc.length(&list);
+            for (index, value) in items.iter().enumerate() {
+                put_node(doc, &list, Prop::Seq(index), before.filter(|_| reused).and_then(|before| before.get(index)), value, index >= length)?;
+            }
+            for index in (items.len()..length).rev() {
+                doc.delete(&list, index).map_err(invalid)?;
+            }
+            Ok(())
+        }
+        _ => put(doc, parent, prop, before.filter(|_| found.is_some()), after, insert),
+    }
+}
+
+/// What turns `from` into `to`, in code points: where they first differ, how much of `from` goes, and what comes in its place.
+fn splice_between<'a>(from: &str, to: &'a str) -> (usize, usize, &'a str) {
+    let prefix = from.chars().zip(to.chars()).take_while(|(a, b)| a == b).count();
+    let (from_rest, to_rest) = (from.chars().count() - prefix, to.chars().count() - prefix);
+    let suffix = from.chars().rev().zip(to.chars().rev()).take(from_rest.min(to_rest)).take_while(|(a, b)| a == b).count();
+    let start = to.char_indices().nth(prefix).map_or(to.len(), |(at, _)| at);
+    let end = to.char_indices().nth(prefix + to_rest - suffix).map_or(to.len(), |(at, _)| at);
+    (prefix, from_rest - suffix, &to[start..end])
+}
+
+/// What's at `path` in box `id`'s fields: a field, then `.`, and the keys and list indexes in it.
+fn node_at(doc: &AutoCommit, id: &str, path: &str) -> Option<(AmValue<'static>, ObjId)> {
+    let get = |parent: &ObjId, prop: Prop| doc.get(parent, prop).ok().flatten().map(|(value, id)| (value.to_owned(), id));
+    let mut at = ROOT;
+    for step in ["boxes", id, "fields"] {
+        let Some((AmValue::Object(ObjType::Map), next)) = get(&at, Prop::Map(step.to_owned())) else { return None };
+        at = next;
+    }
+    let mut found = None;
+    for step in path.split('.') {
+        if let Some((value, next)) = found.take() {
+            let AmValue::Object(_) = value else { return None };
+            at = next;
+        }
+        let prop = match doc.object_type(&at) {
+            Ok(ObjType::List) => Prop::Seq(step.parse().ok()?),
+            _ => Prop::Map(step.to_owned()),
+        };
+        found = Some(get(&at, prop)?);
+    }
+    found
+}
+
+/// The words at `path` of box `id`, where they're text.
+fn text_of(doc: &AutoCommit, id: &str, path: &str) -> Result<Option<ObjId>, Error> {
+    Ok(match node_at(doc, id, path) {
+        Some((AmValue::Object(ObjType::Text), text)) => Some(text),
+        _ => None,
+    })
+}
+
+/// What the words at `path` of box `id` say, text or a plain value; nothing is "".
+fn words_of(doc: &AutoCommit, id: &str, path: &str) -> Result<String, Error> {
+    Ok(match node_at(doc, id, path) {
+        Some((AmValue::Object(ObjType::Text), text)) => doc.text(&text).map_err(invalid)?,
+        Some((value, _)) => value.into_string().unwrap_or_default(),
+        None => String::new(),
+    })
+}
+
+/// `splice` on `text`, held to what's there.
+fn splice_in(doc: &mut AutoCommit, text: &ObjId, splice: &Splice) -> Result<(), Error> {
+    let length = doc.length(text);
+    let at = (splice.at as usize).min(length);
+    let delete = (splice.delete as usize).min(length - at);
+    doc.splice_text(text, at, delete as isize, &splice.insert).map_err(invalid)
 }
 
 fn reconcile_map(doc: &mut AutoCommit, object: &ObjId, before: &Value, after: &Value, reused: bool) -> Result<(), Error> {

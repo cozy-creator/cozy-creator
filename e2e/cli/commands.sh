@@ -77,6 +77,20 @@ if [ "$(jq '.total' "$OUT/models-first-page.json")" -gt 1 ]; then
 fi
 model_details zhengpeng7/birefnet > "$OUT/model-info.json" && J '.releases[0].lanes | length > 0' "$OUT/model-info.json" || check "model metadata zhengpeng7/birefnet: no lanes"
 lane=$(jq -r '.releases[0].lanes[0].lane' "$OUT/model-info.json") || true
+# What each lane's checkpoint holds, from its header alone (xs-183): its components, one lane by --lane, and a LoRA's modules.
+cozy --json model show zhengpeng7/birefnet > "$OUT/model-show.json" \
+  && J '(.lanes | length > 0) and all(.lanes[]; (.header | startswith("sha256:")) and any(.components[]; .tensors > 0))' "$OUT/model-show.json" \
+  || check "model show zhengpeng7/birefnet: no lane with its components: $(head -c 300 "$OUT/model-show.json")"
+cozy --json model show zhengpeng7/birefnet --lane "$lane" > "$OUT/model-show-lane.json" \
+  && J --arg lane "$lane" '(.lanes | length) == 1 and .lanes[0].lane == $lane' "$OUT/model-show-lane.json" || check "model show --lane $lane: not that one lane"
+cozy model show zhengpeng7/birefnet > "$OUT/model-show.txt" 2>&1 && grep -Eq '^checkpoint +sha256:' "$OUT/model-show.txt" \
+  || check "model show: no checkpoint line: $(head -c 300 "$OUT/model-show.txt")"
+lora=$(cozy --json lora ls --limit 1 | jq -r '.models[0].model // empty') || true
+cozy --json lora show "$lora" > "$OUT/lora-show.json" && J 'any(.lanes[].components[]; .lora.modules > 0)' "$OUT/lora-show.json" \
+  || check "lora show ${lora:-<none listed>}: no component with LoRA modules: $(head -c 300 "$OUT/lora-show.json")"
+lora_lane=$(jq -r '.lanes[0].lane // empty' "$OUT/lora-show.json") || true
+cozy --json lora show "$lora" --lane "$lora_lane" > "$OUT/lora-show-lane.json" && J '(.lanes | length) == 1' "$OUT/lora-show-lane.json" \
+  || check "lora show $lora --lane $lora_lane: not one lane"
 
 step "renting, signed out"
 # The catalog's shape, never its stock: an empty market or a sold-out SKU is not a code failure.
@@ -496,6 +510,33 @@ local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
 # went by content with an environment per tree). The environment is keyed on what it is built from (lock, pyproject, path
 # dependencies), never the code: an edit to the code alone runs on the same one, an edit back runs the first code again, and a new
 # dependency builds another. Each step's `cozy run` wall time, the reply and the environment TensorD ran it in.
+# Local codes made ready at once on a computer with no uv yet (cl-911): Calcifer fetches uv once, and the others wait for that
+# fetch, where the second was refused `uv_unavailable` ("run this again", cli gate 43133580881). The local machine fetched uv
+# into the same tools folder when its candidates went on, so that is removed first, as on a computer that never had it.
+uv_at_once() {
+step "local codes at once on a fresh computer: one uv fetch, all of them run"
+[ -n "$LOCAL" ] || return 0
+local fetched=$HOME/.cozy/tools/uv pid dir found='' at=$OUT/at-once i pids=() code
+pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
+while IFS= read -r dir; do [ ! -x "$dir/uv" ] || found=$dir/uv; done < <(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^PATH=//p' | tr ':' '\n')
+[ -z "$found" ] || { check "uv at once: Calcifer finds uv on its PATH ($found), so it never fetches one"; return; }
+rm -rf "$fetched"
+rm -rf "$at" && mkdir -p "$at"
+for i in a b; do
+  cp -r "$here/weightless" "$at/$i" && sed -i "s/^name = \"e2e-weightless\"/name = \"e2e-at-once-$i\"/" "$at/$i/pyproject.toml"
+done
+cp "$here/script/words.py" "$at/words.py"
+for i in a/reverse b/reverse words.py; do
+  (in_project "$RUN_PROJECT" --json run "$at/$i" "text=at once" --on local > "$at/${i%%/*}.ndjson" 2> "$at/${i%%/*}.err") & pids+=($!)
+done
+for i in 0 1 2; do
+  code=0; wait "${pids[$i]}" || code=$?
+  [ "$code" = 0 ] || check "uv at once: run $((i + 1)) of 3 exited $code: $(tail -c 300 "$at/$(echo a b words.py | cut -d' ' -f$((i + 1))).err")"
+done
+! grep -l uv_unavailable "$at"/*.err "$at"/*.ndjson 2> /dev/null || check "uv at once: refused uv_unavailable: $(grep -h -o '[^"]*uv_unavailable[^"]*' "$at"/*.err "$at"/*.ndjson | head -1)"
+compgen -G "$fetched/*/uv" > /dev/null || check "uv at once: Calcifer never fetched uv into $fetched"
+}
+
 local_edits() {
 step "local code edited between runs"
 [ -n "$LOCAL" ] || return 0
@@ -615,14 +656,15 @@ cozy --json machine update local --runtime "$released" -y > "$OUT/held-update.js
   || { check "held prerelease: local refused Runtime $released: $(tail -c 300 "$OUT/held-update.json")"; return; }
 machine_ready
 if cell held-prerelease "$E2E_HELD/relay" "text=off the RC"; then
-  grep -q '"release": *"0.1.0"' "$OUT/held-prerelease.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/held-prerelease.ndjson" \
+  grep -q 'relay@0\.1\.0"' "$OUT/held-prerelease.ndjson" && ! grep -q '0\.2\.0rc' "$OUT/held-prerelease.ndjson" \
     || check "held prerelease: local on Runtime $released didn't run e2e-held 0.1.0: $(grep -o '"target": *"[^"]*"' "$OUT/held-prerelease.ndjson" | head -1)"
 fi
-if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0" && cell held-newer "$E2E_NEWER/relay" "text=newer"; then
-  grep -q '"release": *"0.1.1"' "$OUT/held-newer.ndjson" \
-    || check "held prerelease: holding e2e-newer 0.1.0, local didn't take 0.1.1: $(grep -o '"target": *"[^"]*"' "$OUT/held-newer.ndjson" | head -1)"
-  grep -q 'e2e-newer 0.1.1, newer than local.s 0.1.0' "$OUT/held-newer.ndjson" "$OUT/held-newer.err" \
-    || check "held prerelease: the run didn't say 0.1.1 is newer than local's 0.1.0: $(tail -c 300 "$OUT/held-newer.err")"
+# Unversioned, in words as a person reads it: the run says what it moved to.
+if cell held-newer-old "$E2E_NEWER/relay@0.1.0" "text=asked 0.1.0"; then
+  in_project "$RUN_PROJECT" run "$E2E_NEWER/relay" text=newer --on local > "$OUT/held-newer.out" 2> "$OUT/held-newer.err" \
+    || check "held prerelease: the unversioned e2e-newer run failed: $(tail -c 300 "$OUT/held-newer.err")"
+  grep -q 'e2e-newer 0.1.1, newer than local.s 0.1.0' "$OUT/held-newer.err" \
+    || check "held prerelease: holding e2e-newer 0.1.0, the run didn't say it takes 0.1.1: $(tail -c 300 "$OUT/held-newer.err")"
 fi
 cozy --json machine update local --runtime "$was" -y > "$OUT/held-back.json" 2>&1 \
   || check "held prerelease: local refused Runtime $was again: $(tail -c 300 "$OUT/held-back.json")"

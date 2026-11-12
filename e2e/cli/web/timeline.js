@@ -123,18 +123,18 @@ function plate(path, color, seconds, hz) {
   check('opened_it_has_the_room', onHover.width > atRest.width, { atRest, onHover });
   check('hover_opens_no_video', (await page.locator('video').count()) === 0);
   check('edit_has_no_project_picture_gallery', (await card(timelineName).locator('.pictures').count()) === 0);
-  // Keep the source boxes and the open Edit in reach for real canvas-to-track drags.
-  await page.click('.zoom-at');
-  await page.getByRole('menuitem', { name: 'Zoom to 50%', exact: true }).click();
-  await settled(page);
   const clips = () => page.$$eval('.tl-clip', (els) => els.map((el) => ({ name: el.dataset.name, in: Number(el.dataset.in), out: Number(el.dataset.out), frames: Number(el.dataset.frames), missing: el.dataset.missing })));
   const order = async () => (await clips()).map((clip) => clip.name).join(' ');
-  // A real drag, by its head, on a real mouse: back where it started, and in the box.
-  // A box goes from the canvas into a place on the Edit's track.
-  const dragIn = async (name, x, y) => {
-    await openEdit();
-    await carry(page, card(name).locator('.nm'), { x, y });
-    await until(`${name} on the track`, order, (now) => now.includes(name));
+  const onIt = async () => ((await edit())?.timeline?.tracks[0]?.clips ?? []).map((clip) => clip.name).join(' ');
+  // A real drag, by its head, on a real mouse: back where it started, and in the box. Focus is over the canvas (cl-893), so a box goes from
+  // the canvas onto the Edit at rest, after what's on it; in the Edit, a clip goes along its track to where it's let go.
+  const dragIn = async (name) => {
+    await away();
+    await page.keyboard.press('f');
+    await settled(page);
+    const target = await card(timelineName).locator('.media').boundingBox();
+    await carry(page, card(name).locator('.nm'), { x: target.x + target.width / 2, y: target.y + target.height / 2 });
+    await until(`${name} on the track`, onIt, (now) => now.split(' ').includes(name));
     return true;
   };
   // Clips close up with a little overshoot: a person takes hold of what has stopped.
@@ -144,13 +144,18 @@ function plate(path, color, seconds, hz) {
     await closedUp();
     return page.locator('.tl-clips').boundingBox();
   };
-  let track = await strip();
-  check('dragged_back', await dragIn('red', track.x + track.width / 2, track.y + 30));
-  track = await strip();
-  await dragIn('blue', track.x + track.width - 8, track.y + 30);
-  track = await strip();
-  // At the point it's dropped: before red.
-  await dragIn('title', track.x + 4, track.y + 30);
+  check('dragged_back', await dragIn('red'));
+  await dragIn('blue');
+  await dragIn('title');
+  check('each_after_what_is_on_it', (await onIt()) === 'red blue title', await onIt());
+  // At the point it's let go: before red.
+  const track = await strip();
+  const still = await page.locator('.tl-clip[data-name="title"]').boundingBox();
+  await page.mouse.move(still.x + still.width / 2, still.y + 24);
+  await page.mouse.down();
+  await page.mouse.move(track.x + 4, still.y + 24, { steps: 12 });
+  await page.mouse.up();
+  await until('the still first', order, (now) => now === 'title red blue').catch(() => {});
   check('dropped_at_the_point', (await order()) === 'title red blue', await order());
   // Whole, once measured: a clip Calcifer hasn't read yet lasts as a still does, for as long as ffprobe takes.
   const whole = JSON.stringify([3 * FPS, 2 * FPS, 3 * FPS]);

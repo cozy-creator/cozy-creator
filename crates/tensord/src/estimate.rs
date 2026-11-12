@@ -266,9 +266,9 @@ fn fetching(record: &Execution) -> u64 {
 
 /// Each waiting root's width as it would start, of those the machine chooses for (`chooses`).
 pub(crate) fn widths(service: &Service, pool: &crate::gpu_service::Pool) -> io::Result<HashMap<String, u32>> {
-    let queue = Here::of(service, pool.width()).queue()?;
+    let queue = Here::of(service, pool.serving_width()).queue()?;
     let jobs: Vec<Job> = queue.iter().map(|(_, job, _)| job.clone()).collect();
-    let placed = pack::pack(pool.width(), &jobs);
+    let placed = pack::pack(pool.serving_width(), &jobs);
     Ok(queue.into_iter().zip(placed)
         .filter(|((_, job, choosing), place)| job.running.is_none() && *choosing && place.width > 0)
         .map(|((id, ..), place)| (id, place.width))
@@ -307,7 +307,7 @@ fn absent(store: &tensorfs::store::Store, model: &v1::ModelRef) -> u64 {
 pub(crate) fn quote(runs: &Runs, actor: &str, request: v1::EstimateRequest) -> Result<v1::EstimateAnswer, Error> {
     let internal = |error: io::Error| Error::internal("estimate_unreadable", error.to_string());
     let service = &runs.service;
-    let here = Here::of(service, service.pool().map_or(0, |pool| pool.width()));
+    let here = Here::of(service, service.pool().map_or(0, |pool| pool.serving_width()));
     let mut queue: Vec<Job> = here.queue().map_err(internal)?.into_iter().map(|(_, job, _)| job).collect();
     let installations = service.engine.installations(actor).map_err(internal)?;
     let store = runs.publisher.store();
@@ -327,6 +327,13 @@ pub(crate) fn quote(runs: &Runs, actor: &str, request: v1::EstimateRequest) -> R
         // Weights not here: their download at this machine's link, and the load its runs measured putting them on its GPUs.
         let prepare_ms = pack::prepare_ms(installation.is_some(), fetch, here.link, time.load_ms);
         let mut quote = v1::Quote { key: job.key, basis: time.basis, prepare_ms: prepare_ms as u64, ..Default::default() };
+        // GPUs out of service (cl-935) leave too few for it: another machine runs it.
+        let wanted = (job.gpus as usize).max(usize::from(job.gpu));
+        if let Some(why) = service.pool().and_then(|pool| pool.unservable(None, wanted)) {
+            quote.refusal = Some(v1::Reason { code: "gpu_lost".into(), message: why, origin: "machine".into(), ..Default::default() });
+            asked.push((None, quote));
+            continue;
+        }
         if job.gpu && here.gpus == 0 {
             quote.refusal = Some(v1::Reason {
                 code: "no_gpu".into(),

@@ -298,17 +298,29 @@ kept?: { [key in string]: Card | null }, };
  * `PATCH /v1/projects/{id}/assets/{name}`: these inputs set, each by a control's `field`, and nothing else moved. A null clears one.
  * `tool` changes what makes it.
  */
-export type AssetPatch = { fields?: { [key in string]: JsonValue }, tool?: string | null, };
+export type AssetPatch = { fields?: { [key in string]: JsonValue }, tool?: string | null,
+/**
+ * Words typed, as splices made on the project at `heads`: merged by character with whatever was written since (cl-904).
+ */
+typed?: Typed | null, };
 
 /**
  * What a `PATCH` answers. `was` is the ETag it wrote over: equal to what a window read means nobody else wrote since.
  */
-export type AssetPatched = { name: string, etag: string, was: string, warnings?: Array<string>, };
+export type AssetPatched = { name: string, etag: string, was: string, warnings?: Array<string>,
+/**
+ * Each field written, whole, as it stands at `heads` once merged: what the page types on from.
+ */
+fields?: { [key in string]: JsonValue }, heads?: Array<string>, };
 
 /**
  * `GET /v1/projects/{id}/assets/{name}`: an asset and each of its versions, 1 first.
  */
 export type AssetVersions = { asset: Asset, versions: Array<Version>,
+/**
+ * The project document's heads it was read at, as a project's.
+ */
+heads?: Array<string>,
 /**
  * The numbers discarded that `PUT` can still bring back: `reclaim` ends that.
  */
@@ -808,7 +820,11 @@ memory_limit_bytes?: number,
 /**
  * It draws a screen now: a render on it makes the screen lag.
  */
-display?: boolean, };
+display?: boolean,
+/**
+ * Why nothing is placed on it now (cl-935); empty: in service.
+ */
+out_of_service?: string, };
 
 /**
  * A GPU the driver held back for heat (thermal or hardware slowdown) for most of a run that loaded it: what that run's
@@ -1724,7 +1740,12 @@ trained_on?: string | null, trigger?: string | null, strength?: number | null,
 /**
  * `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
  */
-base?: string | null, };
+base?: string | null,
+/**
+ * Files added to the checkpoint, `<component>/<path>` → a held file's `sha256:<hex>`: each becomes that component's asset
+ * (a component of none but these when the checkpoint has no such component).
+ */
+add?: { [key in string]: string }, };
 
 /**
  * Bytes moved and, when they took time, their rate and its share of the measured ceiling.
@@ -2149,6 +2170,10 @@ export type ProjectState = { id: string,
  * Its stable, nine-character public URL code.
  */
 code: string, path: string, assets: Array<Asset>,
+/**
+ * The project document's heads its boxes were read at: what words typed on them were typed on (`AssetPatch.typed`).
+ */
+heads?: Array<string>,
 /**
  * What is running and what is queued, in the order it goes.
  */
@@ -2903,6 +2928,11 @@ status: string, };
 export type Snap = { every: number, offset: number, first: number, };
 
 /**
+ * `delete` Unicode code points of the words at `at`, and `insert` in their place.
+ */
+export type Splice = { at: number, delete: number, insert: string, };
+
+/**
  * `ssh` into a rental, as root, trusting its host key the first time, in a known-hosts file of that rental's own.
  */
 export type Ssh = {
@@ -2971,9 +3001,21 @@ export type StuckProcess = { pid: number, command: string,
  */
 wchan: string,
 /**
- * When the machine found it stuck.
+ * When it was killed.
  */
-since_unix_ms: number, };
+since_unix_ms: number,
+/**
+ * Its resident host memory then.
+ */
+resident_bytes: number,
+/**
+ * The GPUs (by index) out of service while it holds their memory, nothing placed on them until it exits (cl-935).
+ */
+gpus: Array<number>,
+/**
+ * What the driver showed it holding on them.
+ */
+gpu_bytes: number, };
 
 /**
  * The answer to a submit: 202 when this call recorded the run, 200 (`replay`) when the key had.
@@ -3124,6 +3166,10 @@ auto?: boolean, placeholder?: string | null,
  * `Advanced()`: drawn in a collapsed Advanced section under More.
  */
 advanced?: boolean,
+/**
+ * `When()`: it applies only while a field beside it has a value; else the box dulls it and keeps its value.
+ */
+when?: When | null,
 /**
  * A prompt that takes only these kinds of file.
  */
@@ -3292,6 +3338,17 @@ note?: string | null, };
  * One track's clips as they read now.
  */
 export type TrackNow = { clips: Array<ClipNow>, };
+
+/**
+ * Splices of a box's words, by where they are: a field, or words in one (`beats.0.description`), made on the project document as it
+ * stood at `heads` (a read's).
+ */
+export type Typed = { heads: Array<string>, fields: { [key in string]: Array<Splice> },
+/**
+ * What the typer's words say with them: words that say it already are left as they are, so the same edit sent twice (a last
+ * write as a page goes, and a save on its way) lands once.
+ */
+to?: { [key in string]: string }, };
 
 /**
  * When a history entry was undone, and by whom.
@@ -3527,3 +3584,8 @@ export type WarmLevel = "off" | "installed" | "downloaded" | "imported" | "host"
  * Something noticed about a run that did not stop it: a stable code and a message.
  */
 export type Warning = { code: string, message: string, };
+
+/**
+ * `When(field, *values)`: a field that applies only while its sibling `field` is truthy, or is one of `values`.
+ */
+export type When = { field: string, values?: Array<JsonValue>, };

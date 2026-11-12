@@ -1,6 +1,7 @@
 // Typed words read over a picture (cl-901, Paul 11-12: "the text you type into a prompt should be more bold ... so it's easier to see against
 // a background image"), in a real browser on a real Calcifer. Qwen's Image on a busy picture, in Edit, its prompt over the picture: what's typed
-// is bold, with a halo of the panel's colour round each letter, on paper and on dark; a prompt anywhere else is bold too. A screenshot of each.
+// is bold, plain (no halo or outline), on a surface of the panel's colour over the picture (Paul, 11-12, cl-893), on paper and on dark; a prompt
+// anywhere else is bold too. A screenshot of each.
 //   node legible.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -84,10 +85,21 @@ async function died(why) {
   await page.keyboard.type(' a lighthouse at dusk, waves breaking white on black rocks, gulls over the lamp');
   await until('the words typed', () => prompt.innerText(), (text) => text.includes('gulls over the lamp'));
 
-  /** How the prompt's words are drawn: weight, colour and each shadow round them. */
+  /** How the prompt's words are drawn: weight, colour, each shadow round them, and the surface under them against the panel's colour (0–255, alpha 0–1). */
   const drawn = () => prompt.evaluate((element) => {
     const style = getComputedStyle(element);
-    return { weight: Number(style.fontWeight), color: style.color, shadows: style.textShadow === 'none' ? [] : style.textShadow.split(/,(?![^(]*\))/).map((one) => one.trim()), panel: getComputedStyle(document.documentElement).getPropertyValue('--panel').trim() };
+    const rgba = (value) => {
+      const srgb = value.match(/^color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)(?: \/ ([\d.]+))?\)$/);
+      if (srgb) return [Number(srgb[1]) * 255, Number(srgb[2]) * 255, Number(srgb[3]) * 255, srgb[4] === undefined ? 1 : Number(srgb[4])];
+      const rgb = value.match(/^rgba?\(([\d.]+), ([\d.]+), ([\d.]+)(?:, ([\d.]+))?\)$/);
+      return rgb ? [Number(rgb[1]), Number(rgb[2]), Number(rgb[3]), rgb[4] === undefined ? 1 : Number(rgb[4])] : null;
+    };
+    const probe = document.body.appendChild(document.createElement('i'));
+    probe.style.color = 'var(--panel)';
+    const panel = rgba(getComputedStyle(probe).color);
+    probe.remove();
+    return { weight: Number(style.fontWeight), color: style.color, shadows: style.textShadow === 'none' ? [] : style.textShadow.split(/,(?![^(]*\))/).map((one) => one.trim()),
+      surface: { background: style.backgroundColor, rgba: rgba(style.backgroundColor), panel } };
   });
   for (const theme of ['paper', 'dark']) {
     await page.evaluate((dark) => (dark ? (document.documentElement.dataset.theme = 'dark') : delete document.documentElement.dataset.theme), theme === 'dark');
@@ -95,7 +107,9 @@ async function died(why) {
     const said = await drawn();
     seen[theme] = said;
     check(`${theme}_words_over_the_picture_are_bold`, said.weight >= 700, said);
-    check(`${theme}_words_over_the_picture_have_a_halo`, said.shadows.length >= 3 && said.shadows.every((one) => /\b0px 0px [1-9]\d*(\.\d+)?px/.test(one)), said);
+    check(`${theme}_words_over_the_picture_are_plain`, said.shadows.length === 0, said);
+    const { rgba: under, panel } = said.surface;
+    check(`${theme}_words_over_the_picture_sit_on_the_panel`, Boolean(under && panel) && under[3] >= 0.8 && under.slice(0, 3).every((channel, i) => Math.abs(channel - panel[i]) <= 2), said.surface);
     await shot(`prompt-${theme}`);
   }
   await page.evaluate(() => delete document.documentElement.dataset.theme);

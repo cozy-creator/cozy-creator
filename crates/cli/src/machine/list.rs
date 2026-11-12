@@ -300,10 +300,18 @@ pub(crate) fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
     }
     for stuck in &status.stuck {
         let wchan = Some(&stuck.wchan).filter(|w| !w.is_empty()).map(|w| format!(" in {w}")).unwrap_or_default();
+        let gpus = match stuck.gpus.as_slice() {
+            [] => String::new(),
+            gpus => format!(
+                "; GPU {} out of service, {} of it held, until it exits",
+                gpus.iter().map(u32::to_string).collect::<Vec<_>>().join(", "),
+                crate::output::bytes(stuck.gpu_bytes)
+            ),
+        };
         fields.push((
             "waiting on".into(),
             format!(
-                "pid {} ({}), killed, in D state{wchan} since {} ago: it holds what it held until the kernel lets it exit",
+                "pid {} ({}), killed {} ago, stuck in the kernel (D state{wchan}): it holds what it held until the kernel lets it exit{gpus}",
                 stuck.pid, stuck.command, clock(now_ms() - stuck.since_unix_ms)
             ),
         ));
@@ -328,7 +336,14 @@ pub(crate) fn status_fields(status: &MachineStatus) -> Vec<(String, String)> {
         if !gpu.driver.is_empty() {
             cell += &format!(" · driver {}", gpu.driver);
         }
+        if !gpu.out_of_service.is_empty() {
+            cell += &format!(" · out of service: {}", gpu.out_of_service);
+        }
         fields.push((format!("GPU {}", gpu.index), cell));
+    }
+    // A process that never leaves the kernel holds its GPUs until the computer restarts (cl-935).
+    if !status.gpus.is_empty() && status.gpus.iter().all(|g| !g.out_of_service.is_empty()) {
+        fields.push(("no gpu serves".into(), "none is in service: if that lasts, `cozy machine end` this machine, and `--on new` rents another".into()));
     }
     // Beside each card's own size, so a limited card is not mistaken for a smaller one.
     let limited: Vec<_> = status.gpus.iter().filter(|g| g.memory_limit_bytes > 0).collect();

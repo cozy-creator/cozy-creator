@@ -1,5 +1,5 @@
 {
- "note": "krea2_raw_bf16 is byte-identical to krea/Krea-2-Raw raw.safetensors (the reference checkpoint's names); the style reference is Ostris AI-Toolkit's (ostris/krea2_turbo_style_reference), darkbrush Krea's own Diffusers-format LoRA",
+ "note": "krea2_raw_bf16 is byte-identical to krea/Krea-2-Raw raw.safetensors (the reference checkpoint's names); the style reference is Ostris AI-Toolkit's (ostris/krea2_turbo_style_reference), darkbrush Krea's own Diffusers-format LoRA; Patil's depth and tori29umai's silhouette control LoRAs spell factors .A/.B under the reference names and keep their widened image input (first [6144, 128]) whole",
  "members": [
   {
    "source": "Comfy-Org/Krea-2@1171f4dc7e325bf3734586942e737872506c73e1",
@@ -27,6 +27,24 @@
    "header_bytes": 68952,
    "full_length": 469291992,
    "declared_source_sha256": "f476ad1c0679bc6b14c815187e78a6ece43248f6d232faeccbfed0c4f37f36de"
+  },
+  {
+   "source": "Patil/Krea-2-depth-controlnet@21889413aa7282a6e78bd510247cceccad034b24",
+   "member": "depth-control-lora.safetensors",
+   "header_file": "depth-control-lora.safetensors.header",
+   "header_sha256": "28c562ef027618fd2efce6778964b19bbb9b4623f21417ada147cb27906e36aa",
+   "header_bytes": 41880,
+   "full_length": 861995928,
+   "declared_source_sha256": "fb80547ed79b47c1e3fea7bb9d36297e3917b2115fab6700ca1501350f9f483c"
+  },
+  {
+   "source": "tori29umai/krea2-controlnet@e00f2619c9e317990bec4ec60eb0975c8d5cbd95",
+   "member": "krea2-anythng_step_007000.safetensors",
+   "header_file": "krea2-anythng_step_007000.safetensors.header",
+   "header_sha256": "2ab429eb35ab8a63935ef58a382c1cb14d55035c11a934579654bd7ae613b1a4",
+   "header_bytes": 41904,
+   "full_length": 861995952,
+   "declared_source_sha256": "264011d01fa4821959547689a44f2b261a5beaf384d177c60c605caf3371b4b6"
   }
  ]
 }

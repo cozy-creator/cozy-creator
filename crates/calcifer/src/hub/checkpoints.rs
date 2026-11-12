@@ -306,6 +306,9 @@ pub(crate) async fn check_choices(api: &Api, hub: &str, target: &str, slots: &[(
                         if let Some(want) = adapts(&default_card, &default_facts) {
                             same_family(&want, reference, &card, &facts)?;
                         }
+                        if let Some(why) = default_facts.parts.keeps_lacking(&facts.parts, reads(slot)) {
+                            return Err(Error::new(Kind::Validation, "model_choice_unloadable", format!("{named} can't load {reference}: {why}")));
+                        }
                     }
                 }
             }

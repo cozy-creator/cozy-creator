@@ -234,6 +234,10 @@ fn fields(
             None if field.wire == Wire::Omissible => out.push_str(" (optional; model default)"),
             None => {}
         }
+        if let Some(when) = field.when() {
+            let toggle = fields.iter().any(|peer| peer.name == when.field && *peer.ty.plain() == Type::Bool);
+            let _ = write!(out, " ({})", when.words(toggle));
+        }
         out.push('\n');
         if let Some(nested) = members(&field.ty)
             && field.constraints.max_length != Some(0)

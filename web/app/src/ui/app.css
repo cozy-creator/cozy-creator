@@ -959,20 +959,30 @@ code {
   margin: 0;
 }
 .run-face .face-machine {
-  overflow: hidden;
+  gap: 0;
   color: var(--mute);
   font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .run-face .face-state b {
+  display: flex;
   flex: 1;
   min-width: 0;
   overflow: hidden;
   font-weight: var(--w-heading);
   font-variant-numeric: tabular-nums;
+}
+/* The words give way, the numbers never do (cl-953): where it runs before its time, what it's doing before how far. */
+.run-face .face-where,
+.run-face .face-words {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre;
+}
+.run-face .face-time,
+.run-face .face-count {
+  flex: none;
+  white-space: pre;
 }
 .run-face.failed .face-state b {
   color: var(--bad);
@@ -1055,8 +1065,9 @@ code {
   transition: transform 400ms linear;
 }
 /* An image or video being made, at rest (cl-940, cl-947): what its run reads, full-bleed, each at full height side by side; over them the start of its words
-   on a scrim, under the meter. A preview of what it makes (.latent-preview) covers the pictures, never the words. */
-.making {
+   on a scrim, under the meter. A preview of what it makes (.latent-preview) covers the pictures, never the words. Only the box's own: a take
+   being made, on its tile (.take.making), stays a button that takes a click. */
+.media > .making {
   position: absolute;
   inset: 0;
   pointer-events: none;
@@ -4707,6 +4718,13 @@ p.warn.slow {
   flex-wrap: wrap;
   gap: 4px 12px;
   margin-top: 4px;
+}
+/* "Prefer" with its checkbox, then Details, on one row (Paul 11-12). */
+.render-prefer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
 }
 .checks button.more {
   padding: 0;

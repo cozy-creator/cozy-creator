@@ -245,6 +245,18 @@ export function MachineDrawer() {
           {problem}
         </p>
       ))}
+      {machine.status?.gpus
+        .filter((gpu) => gpu.out_of_service)
+        .map((gpu) => (
+          <p className="warn" key={`out-${gpu.index}`}>
+            GPU {gpu.index} is out of service: {gpu.out_of_service}. Runs go to its other GPUs or machines.
+          </p>
+        ))}
+      {machine.status?.stuck?.map((stuck) => (
+        <p className="warn" key={stuck.pid}>
+          Pid {stuck.pid} ({stuck.command}) was killed and is stuck in the kernel{stuck.wchan ? ` (${stuck.wchan})` : ""}: what it holds stays held until it exits.
+        </p>
+      ))}
       {details && <Details machine={machine} now={now} />}
     </DrawerFrame>
   )

@@ -130,12 +130,12 @@ const AUTOMATIC = /Nothing checked: this project's renders are placed automatica
     const details = [...drawer.querySelectorAll('.checks button')].find((one) => one.textContent === 'Details');
     return {
       spec: head?.querySelector('.spec')?.textContent ?? null, spec_controls: head?.querySelectorAll('.spec input, .spec button, .spec a').length,
-      first: first?.className, beside: first?.parentElement?.className, checked: first?.checked, green: Boolean(drawer.querySelector('.machine-head.render-here')),
+      first: first?.className, beside: first?.closest('.render-prefer')?.parentElement?.className, label: first?.closest('label')?.textContent?.trim(), checked: first?.checked, green: Boolean(drawer.querySelector('.machine-head.render-here')),
       doing: drawer.querySelector('.doing-now')?.textContent ?? null, details: Boolean(details), folded: details?.getAttribute('aria-expanded') === 'false',
       kv_shown: drawer.querySelectorAll('.kv').length > 0,
     };
   });
-  check('drawer_from_the_canvas_leads_with_its_checkbox', face.first === 'render-check' && face.beside === 'checks' && face.spec_controls === 0 && face.checked === true && face.green, face);
+  check('drawer_from_the_canvas_leads_with_its_checkbox', face.first === 'render-check' && face.beside === 'checks' && face.label === 'Prefer' && face.spec_controls === 0 && face.checked === true && face.green, face);
   check('drawer_face_is_slim', face.doing !== null && face.details && face.folded === true && !face.kv_shown, face);
   await shot('drawer');
 

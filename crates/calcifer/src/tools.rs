@@ -128,8 +128,10 @@ pub(crate) fn path() -> Vec<PathBuf> {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default()
 }
 
-/// Held by this process's one fetch of ffmpeg.
+/// Held by this process's one fetch of each tool: several things want it first at once, one fetches, and the rest wait and find
+/// what it fetched (cl-911: a second local code was refused `uv_unavailable` while the first fetched uv).
 static FETCHING_FFMPEG: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static FETCHING_UV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// An ffmpeg that encodes libx264 here, the pinned build first.
 fn usable_ffmpeg(home: &Home) -> Option<Ffmpeg> {
@@ -143,7 +145,6 @@ pub(crate) async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
     if let Some(found) = usable_ffmpeg(home) {
         return Ok(found);
     }
-    // Several things want it first at once: one fetches, and the rest find what it fetched.
     let _one = FETCHING_FFMPEG.lock().await;
     if let Some(found) = usable_ffmpeg(home) {
         return Ok(found);
@@ -161,6 +162,10 @@ pub(crate) async fn ffmpeg(home: &Home, say: Say<'_>) -> Result<Ffmpeg, Error> {
 
 /// uv: the pinned build, else PATH's, else the pinned build fetched now.
 pub(crate) async fn uv(home: &Home, say: Say<'_>) -> Result<PathBuf, Error> {
+    if let Some(found) = tools::uv(&home.tools(), &path()) {
+        return Ok(found.path);
+    }
+    let _one = FETCHING_UV.lock().await;
     if let Some(found) = tools::uv(&home.tools(), &path()) {
         return Ok(found.path);
     }
