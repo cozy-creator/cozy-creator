@@ -424,7 +424,8 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob]) -> Vec<Quot
     let mut warm: HashSet<String> = queue.iter().map(|root| root.function.clone()).filter(|function| !function.is_empty()).collect();
     let free = frame.disk.as_ref().map_or(u64::MAX, |disk| disk.free_bytes);
     let lost = frame.gpus.iter().any(|gpu| !gpu.out_of_service.is_empty());
-    let mut installs = 0.0;
+    // Each code's install, once, after those ahead of it.
+    let (mut installs, mut installing) = (0.0, HashMap::<&str, f64>::new());
     let mut asked: Vec<(Option<usize>, Quote)> = vec![];
     for job in jobs {
         let mut quote = Quote { key: job.key.clone(), ..Default::default() };
@@ -465,10 +466,10 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob]) -> Vec<Quot
         // built, and after those ahead of it; what a run ahead brings is not fetched twice.
         let install_end = match held {
             true => 0.0,
-            false => {
+            false => *installing.entry(code).or_insert_with(|| {
                 installs += INSTALL_MS;
                 installs
-            }
+            }),
         };
         let new: u64 = job.models.iter().filter(|model| !line.lands.contains_key(&model.model)).map(|model| absent(frame, model)).sum();
         let models: Vec<String> = job.models.iter().map(|model| model.model.clone()).collect();
