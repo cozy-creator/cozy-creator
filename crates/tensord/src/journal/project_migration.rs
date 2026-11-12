@@ -206,17 +206,30 @@ struct Receipt {
     footprint: LegacyFootprint,
     inventory: InventoryReport,
     bindings: Vec<api::machine::ProjectExecutionMigrationBinding>,
+    #[serde(default)]
+    attributed_ids: Vec<u64>,
 }
-fn snapshot(conn: &Connection, project: &str) -> io::Result<Vec<Table>> {
+fn snapshot(conn: &Connection, project: &str, attributed: &[u64]) -> io::Result<Vec<Table>> {
     let prefix = format!("local-private:{}:{}:", project.len(), project);
-    let mut tables = vec![Table::read(
-        conn,
-        "executions",
-        "json_extract(invocation,'$.local_private.project_id')=?1",
-        project,
-    )?];
+    let selection = if attributed.is_empty() {
+        "json_extract(invocation,'$.local_private.project_id')=?1".to_owned()
+    } else {
+        let ids = attributed
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("(json_extract(invocation,'$.local_private.project_id')=?1 OR id IN ({ids}))")
+    };
+
+    let mut tables = vec![Table::read(conn, "executions", &selection, project)?];
     for name in EXECUTION_TABLES {
-        tables.push(Table::read(conn, name, "execution IN (SELECT id FROM executions WHERE json_extract(invocation,'$.local_private.project_id')=?1)", project)?);
+        tables.push(Table::read(
+            conn,
+            name,
+            &format!("execution IN (SELECT id FROM executions WHERE {selection})"),
+            project,
+        )?);
     }
     for name in ACTOR_TABLES {
         tables.push(Table::read(
@@ -327,6 +340,78 @@ fn footprint(
     }
     Ok(found)
 }
+fn copy_attributed_objects(
+    tables: &[Table],
+    scope: &LocalPrivateStorage,
+    source: &crate::storage::Store,
+    source_connection: &Connection,
+    actor: &str,
+) -> io::Result<Vec<String>> {
+    let target = crate::private_io::store(scope)?;
+    let mut todo = BTreeMap::new();
+    for table in tables.iter().filter(|table| table.name == "run_objects") {
+        let sha = table.column("sha256")?;
+        let length = table.column("length")?;
+        for row in &table.rows {
+            if let (Some(sha), Cell::Integer(length)) = (row[sha].text(), &row[length]) {
+                if *length >= 0 {
+                    todo.insert(sha.to_owned(), *length as u64);
+                }
+            }
+        }
+    }
+    let mut visited = BTreeSet::new();
+    let mut pending = vec![];
+    while let Some((sha256, length)) = todo.pop_first() {
+        if !visited.insert(sha256.clone()) {
+            continue;
+        }
+        let object = tensorfs::format::ObjectRef {
+            sha256: sha256.clone(),
+            length,
+        };
+        crate::private_io::retain(scope, std::slice::from_ref(&object))?;
+        if !target.holds(&object) {
+            let input = match source.file(&object) {
+                Ok(input) => input,
+                Err(_) => {
+                    pending.push(format!("legacy_required_object_unavailable:{sha256}"));
+                    continue;
+                }
+            };
+            target
+                .put(input, Some(&object))
+                .map_err(crate::storage::io_error)?;
+        }
+        // Uploaded code/resource manifests were checked against this actor's grants on the
+        // original acceptance. Never use an authored digest as authority for a foreign blob.
+        if object.length <= 4 << 20 {
+            let bytes = target.read(&object).map_err(crate::storage::io_error)?;
+            if let Ok(manifest) = serde_json::from_slice::<crate::local_source::Manifest>(&bytes) {
+                for member in manifest.files.into_iter().chain(manifest.wheels) {
+                    let allowed: bool = source_connection.query_row("SELECT EXISTS(SELECT 1 FROM objects WHERE actor=?1 AND sha256=?2 AND length=?3)", params![actor,member.digest,member.length], |row| row.get(0)).map_err(db_error)?;
+                    if allowed {
+                        todo.insert(member.digest, member.length);
+                    } else {
+                        pending.push("legacy_code_member_grant_unproven".into());
+                    }
+                }
+            }
+            if let Ok(members) = crate::trees::parse(&bytes) {
+                for member in members.into_values() {
+                    let allowed: bool = source_connection.query_row("SELECT EXISTS(SELECT 1 FROM objects WHERE actor=?1 AND sha256=?2 AND length=?3 UNION ALL SELECT 1 FROM run_objects WHERE sha256=?2 AND length=?3)", params![actor,member.sha256,member.length], |row| row.get(0)).map_err(db_error)?;
+                    if allowed {
+                        todo.insert(member.sha256, member.length);
+                    } else {
+                        pending.push("legacy_tree_member_grant_unproven".into());
+                    }
+                }
+            }
+        }
+    }
+    Ok(pending)
+}
+
 fn verify_request_objects(
     tables: &[Table],
     scope: &LocalPrivateStorage,
@@ -398,7 +483,18 @@ fn inventory(
         store.root(),
     )?);
     receipt.inventory = project_inventory::inspect(scope, logs, engine, store, &receipt.footprint)?;
+    let retained = receipt
+        .pending
+        .iter()
+        .filter(|item| {
+            item.starts_with("legacy_required_")
+                || item.starts_with("legacy_code_member_")
+                || item.starts_with("legacy_tree_member_")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     receipt.pending = receipt.inventory.pending.clone();
+    receipt.pending.extend(retained);
     receipt.pending.extend(retirement);
     receipt
         .pending
@@ -417,7 +513,7 @@ fn inventory(
     .into();
     save(target, receipt)?;
     checkpoint(target)?;
-    if !receipt.pending.is_empty() {
+    if finalized && !receipt.pending.is_empty() {
         return Err(io::Error::new(io::ErrorKind::WouldBlock, "project_storage_migration_pending: legacy artifacts have unresolved ownership; inspect the protected migration receipt"));
     }
     Ok(())
@@ -605,7 +701,15 @@ impl Journal {
         logs: &Path,
         engine: &Path,
         store: &crate::storage::Store,
+        actor: &str,
+        explicit: &[api::machine::ProjectExecutionMigrationBinding],
     ) -> io::Result<()> {
+        if explicit.len() > 256 {
+            return Err(db_error("legacy adoption exceeds its protocol bound"));
+        }
+        if explicit.is_empty() && !self.needs_project_migration(target, &scope.project_id)? {
+            return Ok(());
+        }
         target
             .connection
             .execute_batch(RECEIPTS)
@@ -657,7 +761,8 @@ impl Journal {
                 }
                 // A crash after target commit but before source commit leaves the exact old
                 // rows, or none after source commit. Partial ownership is never inferred.
-                let current = snapshot(&self.connection, &scope.project_id)?;
+                let current =
+                    snapshot(&self.connection, &scope.project_id, &receipt.attributed_ids)?;
                 if current.iter().any(|table| !table.rows.is_empty()) {
                     if digest(&current)? != receipt.digest {
                         return Err(io::Error::new(
@@ -665,15 +770,35 @@ impl Journal {
                             "legacy scope changed during a pending migration",
                         ));
                     }
-                    inventory(
-                        &target.connection,
-                        &mut receipt,
-                        scope,
-                        logs,
-                        engine,
-                        store,
-                        false,
-                    )?;
+                    if !receipt.attributed_ids.is_empty() {
+                        receipt.pending = copy_attributed_objects(
+                            &receipt.owned,
+                            scope,
+                            store,
+                            &self.connection,
+                            actor,
+                        )?;
+                    }
+                    let required = verify_request_objects(&receipt.owned, scope)?;
+                    if !required.is_empty()
+                        || !receipt
+                            .pending
+                            .iter()
+                            .filter(|pending| {
+                                pending.starts_with("legacy_required_")
+                                    || pending.starts_with("legacy_code_member_")
+                                    || pending.starts_with("legacy_tree_member_")
+                            })
+                            .collect::<Vec<_>>()
+                            .is_empty()
+                    {
+                        receipt.pending.extend(required);
+                        save(&target.connection, &receipt)?;
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "legacy required payload closure is incomplete",
+                        ));
+                    }
                     let transaction = self
                         .connection
                         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -699,7 +824,101 @@ impl Journal {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
-        let original = snapshot(&transaction, &scope.project_id)?;
+        let mut attributed = BTreeSet::new();
+        for binding in explicit {
+            if binding.source_workspace_id != self.workspace_id {
+                return Err(db_error(
+                    "legacy acceptance belongs to another source workspace",
+                ));
+            }
+            let row: Option<(u64, String, String)> = transaction
+                .query_row(
+                    "SELECT id,invocation,record FROM executions WHERE actor=?1 AND request_id=?2",
+                    params![actor, binding.request_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(db_error)?;
+            let (id, invocation, record) = row.ok_or_else(|| {
+                db_error("verified legacy acceptance is no longer available at this source")
+            })?;
+            let invocation: Invocation = serde_json::from_str(&invocation).map_err(db_error)?;
+            if invocation
+                .local_private
+                .as_ref()
+                .is_some_and(|old| old.project_id != scope.project_id)
+            {
+                return Err(db_error(
+                    "legacy acceptance is already tagged to another project",
+                ));
+            }
+            let record = decoded_execution(&record)?;
+            let accepted = record
+                .submission
+                .as_ref()
+                .ok_or_else(|| db_error("legacy acceptance has no source context"))?;
+            if accepted.actor != actor
+                || accepted.request_id != binding.request_id
+                || accepted.invocation_digest != binding.invocation_spec_digest
+                || accepted.invocation_digest.is_empty()
+            {
+                return Err(db_error(
+                    "legacy acceptance differs from the canonical verified binding",
+                ));
+            }
+            if invocation.local_private.is_none() {
+                attributed.insert(id);
+            }
+        }
+        // Exact lineage only: a selected parent's internally brokered children belong to its
+        // closure. Different tagged projects/actors are refused rather than adopted.
+        loop {
+            if attributed.is_empty() {
+                break;
+            }
+            if attributed.len() > 10000 {
+                return Err(db_error(
+                    "legacy lineage exceeds its migration batch boundary",
+                ));
+            }
+            let ids = attributed
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut statement = transaction.prepare(&format!("SELECT id,actor,invocation FROM executions WHERE CAST(json_extract(invocation,'$.parent') AS INTEGER) IN ({ids})")).map_err(db_error)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(db_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db_error)?;
+            let before = attributed.len();
+            for (id, child_actor, invocation) in rows {
+                let invocation: Invocation = serde_json::from_str(&invocation).map_err(db_error)?;
+                if child_actor.as_deref().is_some_and(|owner| owner != actor)
+                    || invocation
+                        .local_private
+                        .as_ref()
+                        .is_some_and(|old| old.project_id != scope.project_id)
+                {
+                    return Err(db_error("legacy child lineage crosses an unproven owner"));
+                }
+                if invocation.local_private.is_none() {
+                    attributed.insert(id);
+                }
+            }
+            if attributed.len() == before {
+                break;
+            }
+        }
+        let attributed_ids = attributed.into_iter().collect::<Vec<_>>();
+        let original = snapshot(&transaction, &scope.project_id, &attributed_ids)?;
         if original.iter().all(|table| table.rows.is_empty()) {
             transaction.commit().map_err(db_error)?;
             return Ok(());
@@ -718,6 +937,7 @@ impl Journal {
             .collect();
         let mut requests = vec![];
         let mut bindings = vec![];
+        let mut needed_preparations = BTreeSet::new();
         let mut actors = BTreeSet::new();
         let mut generations = BTreeSet::new();
         let actor_column = executions.column("actor")?;
@@ -727,14 +947,22 @@ impl Journal {
                     .text()
                     .ok_or_else(|| db_error("legacy execution has no record"))?,
             )?;
-            let descriptor = record
+            let scoped = record
                 .invocation
                 .local_private
                 .as_ref()
-                .ok_or_else(|| db_error("legacy execution has no positive project scope"))?;
-            if descriptor.project_id != scope.project_id
-                || descriptor.generation == 0
-                || descriptor.generation > scope.generation
+                .is_some_and(|descriptor| {
+                    descriptor.project_id == scope.project_id
+                        && descriptor.generation > 0
+                        && descriptor.generation <= scope.generation
+                });
+            let attributed = record.invocation.local_private.is_none()
+                && record
+                    .id
+                    .parse::<u64>()
+                    .ok()
+                    .is_some_and(|id| attributed_ids.contains(&id));
+            if (!scoped && !attributed)
                 || !record.state.terminal()
                 || record.pending_completion.is_some()
                 || record
@@ -753,7 +981,7 @@ impl Journal {
                     .ok_or_else(|| db_error("legacy scope index is missing"))?,
             )
             .map_err(db_error)?;
-            if indexed.local_private.as_ref() != Some(descriptor) {
+            if indexed.local_private != record.invocation.local_private {
                 return Err(db_error(
                     "legacy scope proof differs from its protected payload",
                 ));
@@ -774,6 +1002,10 @@ impl Journal {
                 actors.insert(actor.to_owned());
             }
             if let Some(submission) = record.submission {
+                if !submission.preparation_id.is_empty() {
+                    needed_preparations
+                        .insert((submission.actor.clone(), submission.preparation_id.clone()));
+                }
                 actors.insert(submission.actor);
                 bindings.push(api::machine::ProjectExecutionMigrationBinding {
                     request_id: submission.request_id.clone(),
@@ -784,6 +1016,107 @@ impl Journal {
             }
         }
         let mut owned = original.clone();
+        {
+            let executions = &mut owned[0];
+            for row in &mut executions.rows {
+                let mut record = decoded_execution(
+                    row[record_column]
+                        .text()
+                        .ok_or_else(|| db_error("legacy record is missing"))?,
+                )?;
+                if record.invocation.local_private.is_none() {
+                    record.invocation.local_private = Some(scope.clone());
+                    row[invocation_column] = Cell::Text(invocation_index(&record.invocation)?);
+                    row[record_column] = Cell::Text(encoded_execution(&record)?);
+                }
+            }
+        }
+        // Unscoped payloads become protected references in the copy, preserving canonical bytes.
+        for table in &mut owned {
+            if !EXECUTION_TABLES.contains(&table.name.as_str()) {
+                continue;
+            }
+            let execution = table.column("execution")?;
+            for row in &mut table.rows {
+                let Cell::Integer(id) = row[execution] else {
+                    return Err(db_error("legacy child row has no execution identity"));
+                };
+                if !attributed_ids.contains(&(id as u64)) {
+                    continue;
+                }
+                let sequence = table
+                    .columns
+                    .iter()
+                    .position(|column| column == "sequence")
+                    .and_then(|at| match row[at] {
+                        Cell::Integer(sequence) => Some(sequence),
+                        _ => None,
+                    });
+                for (column, value) in table.columns.iter().zip(row.iter_mut()) {
+                    let slot = match (table.name.as_str(), column.as_str()) {
+                        ("public_terminals", "events") => Some("terminal".into()),
+                        ("run_products", "product") => {
+                            sequence.map(|sequence| format!("product:{sequence}"))
+                        }
+                        ("run_measurements", "measurements") => Some("measurements".into()),
+                        ("run_logs", "record") => {
+                            sequence.map(|sequence| format!("log:{sequence}"))
+                        }
+                        ("run_calls", "record") => {
+                            sequence.map(|sequence| format!("call:{sequence}"))
+                        }
+                        ("triage", "record") => Some("triage".into()),
+                        ("run_specs", "spec") => Some("spec".into()),
+                        _ => None,
+                    };
+                    if let Some(slot) = slot {
+                        let bytes = match value {
+                            Cell::Text(text) => text.as_bytes(),
+                            Cell::Blob(bytes) => bytes.as_slice(),
+                            _ => return Err(db_error("legacy payload has the wrong type")),
+                        };
+                        let protected = private_journal::write(
+                            Some(scope),
+                            &payload_context(&id.to_string(), &slot),
+                            bytes,
+                        )?;
+                        *value = if matches!(value, Cell::Text(_)) {
+                            Cell::Text(String::from_utf8(protected).map_err(db_error)?)
+                        } else {
+                            Cell::Blob(protected)
+                        };
+                    }
+                }
+            }
+        }
+
+        for (owner, id) in needed_preparations {
+            let mut dependency = Table::read(&transaction, "preparations", "actor=?1", &owner)?;
+            let id_column = dependency.column("id")?;
+            dependency
+                .rows
+                .retain(|row| row[id_column].text() == Some(id.as_str()));
+            if !dependency.rows.is_empty() {
+                let actor_column = dependency.column("actor")?;
+                let record_column = dependency.column("record")?;
+                for row in &mut dependency.rows {
+                    let bytes = row[record_column]
+                        .text()
+                        .ok_or_else(|| db_error("legacy preparation is invalid"))?
+                        .as_bytes();
+                    let preparation: Preparation =
+                        serde_json::from_slice(bytes).map_err(db_error)?;
+                    let protected = private_journal::write(
+                        Some(scope),
+                        &format!("preparation:{owner}:{id}"),
+                        bytes,
+                    )?;
+                    row[actor_column] = Cell::Text(crate::private_io::resource_key(&owner));
+                    row[record_column] = Cell::Text(serde_json::json!({"installation":preparation.installation,"_private_payload":String::from_utf8(protected).map_err(db_error)?}).to_string());
+                }
+                owned.push(dependency);
+            }
+        }
         // A published package's installation was historically shared by actor, even for a
         // scoped invocation. Copy the exact referenced public dependency without retiring
         // the independent public software registration.
@@ -804,6 +1137,32 @@ impl Journal {
             }
         }
 
+        if !attributed_ids.is_empty() {
+            let object_rows = owned
+                .iter()
+                .find(|table| table.name == "run_objects")
+                .cloned();
+            if let Some(object_rows) = object_rows {
+                let sha = object_rows.column("sha256")?;
+                let required: BTreeSet<String> = object_rows
+                    .rows
+                    .iter()
+                    .filter_map(|row| row[sha].text().map(str::to_owned))
+                    .collect();
+                let mut grants = Table::read(&transaction, "objects", "actor=?1", actor)?;
+                let sha = grants.column("sha256")?;
+                let owner = grants.column("actor")?;
+                grants
+                    .rows
+                    .retain(|row| row[sha].text().is_some_and(|sha| required.contains(sha)));
+                for row in &mut grants.rows {
+                    row[owner] = Cell::Text(crate::private_io::resource_key(actor));
+                }
+                if !grants.rows.is_empty() {
+                    owned.push(grants);
+                }
+            }
+        }
         let mut references = BTreeMap::new();
         for table in &mut owned {
             for row in &mut table.rows {
@@ -831,6 +1190,11 @@ impl Journal {
         }
         let execution_ids = selected.into_iter().collect::<Vec<_>>();
         let footprint = footprint(&owned, scope, requests.clone(), execution_ids.clone())?;
+        let object_pending = if attributed_ids.is_empty() {
+            vec![]
+        } else {
+            copy_attributed_objects(&owned, scope, store, &transaction, actor)?
+        };
         let mut receipt = Receipt {
             source_workspace: self.workspace_id.clone(),
             digest: digest(&original)?,
@@ -839,10 +1203,11 @@ impl Journal {
             owned,
             requests,
             execution_ids,
-            pending: vec![],
+            pending: object_pending,
             footprint,
             inventory: InventoryReport::default(),
             bindings,
+            attributed_ids,
         };
         let target_empty: bool = target
             .connection
@@ -871,15 +1236,16 @@ impl Journal {
         target.workspace_id = self.workspace_id.clone();
         checkpoint(&target.connection)?;
         // The target and full required object closure/inventory are verified before source retirement.
-        inventory(
-            &target.connection,
-            &mut receipt,
-            scope,
-            logs,
-            engine,
-            store,
-            false,
-        )?;
+        let required = verify_request_objects(&receipt.owned, scope)?;
+        if !required.is_empty() || !receipt.pending.is_empty() {
+            receipt.pending.extend(required);
+            save(&target.connection, &receipt)?;
+            checkpoint(&target.connection)?;
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "legacy required payload closure is incomplete",
+            ));
+        }
         for table in receipt.original.iter().rev() {
             table.retire(&transaction)?;
         }

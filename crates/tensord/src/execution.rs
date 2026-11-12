@@ -219,11 +219,11 @@ impl Engine {
         let target = self.journal.lock().unwrap();
         source.needs_project_migration(&target, project)
     }
-    pub(crate) fn migrate_project_from(&self, ordinary: &Engine, scope: &api::machine::LocalPrivateStorage, logs: &Path) -> io::Result<()> {
+    pub(crate) fn migrate_project_from(&self, ordinary: &Engine, scope: &api::machine::LocalPrivateStorage, logs: &Path, actor: &str, bindings: &[api::machine::ProjectExecutionMigrationBinding]) -> io::Result<()> {
         // One writer per journal; global first is the only migration lock order.
         let mut source = ordinary.journal.lock().unwrap();
         let mut target = self.journal.lock().unwrap();
-        source.migrate_project_into(&mut target, scope, logs, ordinary.root.parent().unwrap_or(&ordinary.root), &ordinary.store)
+        source.migrate_project_into(&mut target, scope, logs, ordinary.root.parent().unwrap_or(&ordinary.root), &ordinary.store, actor, bindings)
     }
     /// Registers run `id`'s preparation until the answer is dropped. A cancel journaled before
     /// it registered stops it at once.

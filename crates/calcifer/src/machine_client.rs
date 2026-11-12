@@ -156,6 +156,13 @@ impl Machine {
         json(send(self.request(Method::POST, path::PROJECT_LEGACY_BINDINGS, &[&scope.storage.project_id]).json(&query)).await?).await
     }
 
+    pub(crate) async fn legacy_bindings(&self, request_ids: &[String]) -> Result<api::machine::ProjectExecutionLegacyLookupAnswer, Error> { self.legacy_project_bindings(request_ids).await }
+    pub(crate) async fn migrate_private_bindings(&self, verified: &api::machine::ProjectExecutionMigrationReceipt) -> Result<(), Error> {
+        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("verified adoption requires a selected project proof".into()))?;
+        let request = api::machine::ProjectExecutionMigrationRequest { legacy_requests: verified.bindings.clone() };
+        send(self.request(Method::POST, path::PROJECT_MIGRATE, &[&scope.storage.project_id]).json(&request)).await.map(|_| ())
+    }
+
     pub(crate) async fn migration_receipt(&self) -> Result<api::machine::ProjectExecutionMigrationReceipt, Error> {
         let scope = self.private.as_ref().ok_or_else(|| Error::Answer("migration coverage requires a selected project proof".into()))?;
         json(send(self.request(Method::GET, path::PROJECT_MIGRATE, &[&scope.storage.project_id])).await?).await
