@@ -127,6 +127,12 @@ fn export_warning(run: &RunRow, detail: impl std::fmt::Display) {
 }
 
 impl Calcifer {
+    pub(super) fn retire_exports(&self, ids:&std::collections::HashSet<String>) {
+        lock(&self.exports.appended).retain(|(id,..),_|!ids.contains(id.as_str()));
+        lock(&self.exports.moving).retain(|(id,..),_|!ids.contains(id.as_str()));
+        lock(&self.exports.runs).retain(|id,wake| { if ids.contains(id.as_str()) { wake.notify_waiters(); false } else { true } });
+    }
+
     /// Starts an exporter for each run that owes one, then for each run whose outputs change.
     pub(crate) fn export_outputs(self: &Arc<Self>) -> Result<(), Error> {
         let mut events = self.subscribe();
@@ -231,7 +237,7 @@ impl Calcifer {
         {
             return true;
         }
-        let link = match self.reach(&run, &mut None) {
+        let link = match self.reach(&run, &mut None).await {
             Ok(link) => link,
             Err(Failure::Lost(_)) => return false,
             Err(_) => return true,
@@ -273,7 +279,7 @@ impl Calcifer {
         let mut backoff = tensorfs::fetch::Backoff::background();
         loop {
             let mut changed = None;
-            let done = match self.reach(&run, &mut changed) {
+            let done = match self.reach(&run, &mut changed).await {
                 Ok(link) => self.export_item(&run, &item, &link, changed).await,
                 Err(failure) => Err(failure),
             };
@@ -299,6 +305,7 @@ impl Calcifer {
             let (run, items) = match self.next_exports(id) {
                 Ok(Some(next)) => next,
                 Ok(None) => return,
+                Err(StoreError::Locked(_)) => return,
                 Err(e) => {
                     warn!(run = %id, "{e}");
                     pause.wait(wake, None).await;
@@ -315,7 +322,7 @@ impl Calcifer {
                 continue;
             }
             let mut changed = None;
-            let exported = match self.reach(&run, &mut changed) {
+            let exported = match self.reach(&run, &mut changed).await {
                 Ok(link) => {
                     let exports = (items.iter())
                         .map(|item| self.export_item(&run, item, &link, changed.clone()));
@@ -398,7 +405,7 @@ impl Calcifer {
 
     /// The run's machine's connection, whose bulk lanes read; `changed` is told when the
     /// machine changes.
-    fn reach(
+    async fn reach(
         &self,
         run: &RunRow,
         changed: &mut Option<watch::Receiver<()>>,
@@ -413,10 +420,9 @@ impl Calcifer {
             return Err(Failure::Lost(format!("its machine {name} ended: {reason}")));
         }
         let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start")))?;
-        if name == "local" {
-            if let Some(scope) = crate::private_io::of_output(&run.out_dir).map_err(|error| Failure::Again(error.message))? {
-                return Ok(link.with_private(scope));
-            }
+        let owner=lock(&self.run_owners).get(run.id.as_str()).cloned().ok_or_else(||Failure::Again("project storage owner is unavailable".into()))?;
+        if let Some(owner)=owner {
+            return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Refused(error.code));
         }
         Ok(link)
     }

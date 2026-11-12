@@ -529,6 +529,7 @@ pub(crate) struct OutputRow {
 /// The store: writes on one connection, one at a time, each durable before it returns; reads on
 /// their own, which WAL lets go on while a write waits on the disk.
 pub(crate) struct Store {
+    legacy_home: PathBuf,
     writer: Mutex<Connection>,
     reader: Mutex<Connection>,
     durable: Durable,
@@ -1609,6 +1610,7 @@ impl Store {
         let mut journal = path.as_os_str().to_owned();
         journal.push("-wal");
         Ok(Self {
+            legacy_home: path.parent().unwrap_or(Path::new(".")).to_owned(),
             writer: Mutex::new(writer),
             reader: Mutex::new(reader),
             durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
@@ -1616,6 +1618,21 @@ impl Store {
     }
 
     pub(crate) fn migration_required(&self) -> Result<bool> {
+        // These are old authoritative sources, not an invitation to sweep a
+        // home directory. Unreadable and unattributed files stay pending.
+        for name in ["projects.json", "files"] {
+            match std::fs::symlink_metadata(self.legacy_home.join(name)) {
+                Ok(_) => return Ok(true),
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                Err(_)=>return Ok(true),
+            }
+        }
+        match std::fs::read_dir(self.legacy_home.join("after")) {
+            Ok(mut entries) if entries.next().is_some()=>return Ok(true),
+            Ok(_)=>{},
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+            Err(_)=>return Ok(true),
+        }
         self.read(|conn| {
             let tables: Vec<String> = {
                 let mut stmt = conn.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'legacy_project_%'")?;
@@ -1624,6 +1641,29 @@ impl Store {
             for table in tables {
                 let exists: bool = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM \"{}\")", table.replace('"', "\"\"")), [], |row| row.get(0))?;
                 if exists { return Ok(true); }
+            }
+            // Older source caches have no explicit owner. Do not silently call
+            // them independent maintenance merely because the SQL rows moved.
+            if conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='legacy_project_runs')",[],|row|row.get::<_,bool>(0))? {
+                for directory in [self.legacy_home.join("local"),self.legacy_home.parent().unwrap_or(&self.legacy_home).join("cache").join("digests")] {
+                    match std::fs::read_dir(directory) {
+                        Ok(mut entries) if entries.next().is_some()=>return Ok(true),
+                        Ok(_)=>{},
+                        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                        Err(_)=>return Ok(true),
+                    }
+                }
+                match std::fs::read_dir(self.legacy_home.join("code")) {
+                    Ok(entries)=>for entry in entries {
+                        let Ok(entry)=entry else { return Ok(true); };
+                        let Some(name)=entry.file_name().to_str().map(str::to_owned) else { return Ok(true); };
+                        let tree=format!("sha256:{name}");
+                        let admitted=conn.query_row("SELECT EXISTS(SELECT 1 FROM maintenance_source_admissions WHERE tree=?1)",[tree],|row|row.get::<_,bool>(0))?;
+                        if name.len()!=64 || !name.bytes().all(|byte|byte.is_ascii_hexdigit()) || !admitted { return Ok(true); }
+                    },
+                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                    Err(_)=>return Ok(true),
+                }
             }
             Ok(false)
         })

@@ -326,9 +326,6 @@ impl Projects {
         };
         drop(open);
         project.require_view()?;
-        if project.folder.lock()?.owes() {
-            walk(api, &project);
-        }
         Ok(project)
     }
 

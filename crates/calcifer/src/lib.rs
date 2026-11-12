@@ -335,6 +335,7 @@ impl Calcifer {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
+            let scope=match me.run_scope(id.as_str()) { Ok(scope)=>scope,Err(error)=>{ me.ended_here(&id,Err(error)); lock(&me.drivers).remove(&id); return; } };
             let canceled = async {
                 loop {
                     wake.notified().await;
@@ -344,7 +345,7 @@ impl Calcifer {
                 }
             };
             let end = tokio::select! {
-                end = work(Here { calcifer: me.clone(), id: id.clone() }) => end,
+                end = private_io::context(scope, work(Here { calcifer: me.clone(), id: id.clone() })) => end,
                 () = canceled => Err(::api::error::Error::new(::api::error::Kind::Conflict, "canceled", "canceled")),
             };
             me.ended_here(&id, end);
@@ -397,7 +398,7 @@ impl Calcifer {
     // Removed as project callers are moved to explicit scoped stores.
     pub(crate) fn store(&self) -> &Store { self.maintenance_store() }
 
-    pub(crate) fn attach_project(self: &Arc<Self>, store: &project::ProjectStore) -> store::Result<()> {
+    pub(crate) fn attach_project(self: &Arc<Self>, store: &project::ProjectStore) -> store::Result<bool> {
         let owner = store.owner();
         let ids: Vec<String> = store.read(|conn| {
             let mut rows = conn.prepare("SELECT id FROM runs")?;
@@ -409,7 +410,7 @@ impl Calcifer {
             for id in store.unsettled()? { self.drive(id); }
             for (id, _) in store.exports_owed()? { self.export(&id); }
         }
-        Ok(())
+        Ok(fresh)
     }
 
     pub(crate) fn project_store(&self, id: &str) -> store::Result<project::ProjectStore> {
@@ -420,8 +421,13 @@ impl Calcifer {
         match lock(&self.run_owners).get(id).cloned() {
             Some(Some(owner)) => owner.store().map(store::RunStore::Project),
             Some(None) => Ok(store::RunStore::Maintenance(&self.store)),
-            None => Err(StoreError::Protected("run_owner_required".into())),
+            None => Err(StoreError::Locked("run_owner_required".into())),
         }
+    }
+
+    fn run_scope(&self,id:&str)->Result<Option<private_io::Scope>,::api::error::Error> {
+        let owner=lock(&self.run_owners).get(id).cloned().ok_or_else(||::api::error::Error::new(::api::error::Kind::Conflict,"run_owner_required","the run's storage owner is unavailable"))?;
+        owner.map(|owner|private_io::scope_for_project(owner.project_id(),owner.root())).transpose()
     }
 
     fn with_run_store<T>(&self, id: &str, f: impl FnOnce(&store::RunStore<'_>) -> store::Result<T>) -> store::Result<T> {
@@ -446,8 +452,14 @@ impl Calcifer {
 
 
     pub(crate) fn retire_project(&self, project: &str) {
-        lock(&self.run_owners).retain(|_, owner| owner.as_ref().is_none_or(|owner| owner.project_id() != project));
+        let ids:HashSet<_>=lock(&self.run_owners).iter().filter_map(|(id,owner)|owner.as_ref().filter(|owner|owner.project_id()==project).map(|_|id.clone())).collect();
+        lock(&self.run_owners).retain(|id,_|!ids.contains(id));
         lock(&self.project_owners).remove(project);
+        lock(&self.live).retain(|id,_|!ids.contains(id.as_str()));
+        self.retire_exports(&ids);
+        for (id,wake) in lock(&self.drivers).iter() { if ids.contains(id.as_str()) { wake.notify_waiters(); } }
+        lock(&self.warm).clear();
+        for behind in lock(&self.behind).values_mut() { behind.retain(|id,_|!ids.contains(id)); }
     }
 
     /// What Calcifer still owes, which a next Calcifer would resume: every unsettled run's id,
@@ -1074,7 +1086,8 @@ impl Calcifer {
         let mut tasks = lock(&self.tasks);
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
-            me.follow_to_end(&id, &wake).await;
+            let scope=match me.run_scope(id.as_str()) { Ok(scope)=>scope,Err(error)=>{ let _=me.fail(&id,Reason {code:error.code,message:error.message,..Default::default()}); lock(&me.drivers).remove(&id); return; } };
+            private_io::context(scope,me.follow_to_end(&id,&wake)).await;
             lock(&me.drivers).remove(&id);
             lock(&me.live).remove(&id);
         });
@@ -1907,6 +1920,9 @@ impl Calcifer {
 
     /// Deletes the staged inputs of a settled run that no unsettled run names.
     fn release_inputs(&self, run: &RunRow) {
+        // Project inputs are part of its retained execution/source closure.
+        // Their lifetime follows the project, including completed run history.
+        if matches!(self.run_store(run.id.as_str()),Ok(store::RunStore::Project(_))) { return; }
         // A locked private view defers cleanup, never redirects it to plaintext staging.
         let Ok(input_root) = self.run_input_root(run) else { return };
         let _staging = lock(&self.staging);
@@ -2018,6 +2034,7 @@ fn stage(
     given: &[StagedInput],
     held: &[Digest],
 ) -> Result<Vec<(Digest, u64)>, Error> {
+    let project=project::source_project(inputs).map_err(Error::Refused)?;
     let mut objects = vec![];
     for source in given {
         let target = inputs.join(hex::encode(source.digest.bytes()));
@@ -2027,6 +2044,7 @@ fn stage(
                 return false;
             };
             let same = std::fs::metadata(&file).is_ok_and(|m| m.len() == source.length);
+            if project.as_ref().is_some_and(|root|!project::vault::logical(&file).starts_with(root)) { return false; }
             same && std::fs::hard_link(&file, &target).is_ok()
         };
         if !std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_file()) {

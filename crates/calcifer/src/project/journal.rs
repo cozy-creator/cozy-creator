@@ -110,7 +110,11 @@ impl Projects {
         project.require_view()?;
         let store = ProjectStore { project, controller: Arc::downgrade(&api.calcifer), _view: view };
         api.calcifer.maintenance_store().migrate_project(&store, &api.calcifer.inputs).map_err(|_| Error::new(api::error::Kind::Conflict,"project_migration_pending","legacy project history could not be verified; its source is preserved"))?;
-        api.calcifer.attach_project(&store).map_err(|_| Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"))?;
+        let fresh=api.calcifer.attach_project(&store).map_err(|_| Error::new(api::error::Kind::Unavailable, "project_journal", "the project journal is unavailable"))?;
+        if fresh {
+            tokio::spawn(crate::hub::jobs::resume_project(api.clone(),store.project_id().into()));
+            if store.project.folder.lock()?.owes() { super::walk(api,&store.project); }
+        }
         Ok(store)
     }
 

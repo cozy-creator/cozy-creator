@@ -31,6 +31,8 @@ use serde_json::Value;
 pub(crate) use api::code::source_files;
 
 use crate::{api::Api, rentals::Hubs};
+mod private_process;
+pub(crate) use private_process::active as private_process_active;
 
 /// The uv index name a project's sources use for cozy packages on the Hub: its account's own, else the root's (`bindings`).
 pub(crate) const INDEX: &str = "tensorhub";
@@ -800,6 +802,7 @@ pub(crate) fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> Su
         ..Default::default()
     };
     SubmitRun {
+        project: crate::private_io::current().map(|scope|scope.storage.project_id),
         agreed: None,
         stays: vec![],
         on,
@@ -809,7 +812,7 @@ pub(crate) fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> Su
         spec,
         inputs: source.inputs.clone(),
         held: vec![],
-        out: crate::private_io::current().map(|scope| crate::project::landing(&scope.storage.view_root)),
+        out: crate::private_io::current().map(|scope| crate::project::landing(&crate::project::vault::logical(&scope.storage.view_root))),
         warnings: vec![],
     }
 }
@@ -913,7 +916,7 @@ pub(crate) enum Install {
 pub(crate) async fn install_through(api: &Arc<Api>, key: &str, after: Option<&crate::hub::after::After>, submit: impl FnOnce() -> SubmitRun) -> Result<Install, Error> {
     let Some(run) = sent(api, key)? else {
         if let Some(after) = after {
-            api.calcifer.plan(key, after)?;
+            api.calcifer.plan(crate::private_io::current().as_ref().map(|scope|scope.storage.project_id.as_str()),key, after)?;
         }
         let run = api.calcifer.submit(key, submit()).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
         return Ok(Install::Going(run));
@@ -936,7 +939,10 @@ pub(crate) async fn ready(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, 
 /// The run sent under `key`, if one was.
 fn sent(api: &Api, key: &str) -> Result<Option<Run>, Error> {
     let calcifer = &api.calcifer;
-    let row = calcifer.store().keyed(key).map_err(|e| crate::api::Refusal::from(crate::Error::from(e)).0)?;
+    let row = match crate::private_io::current() {
+        Some(scope)=>calcifer.project_store(&scope.storage.project_id).and_then(|store|store.keyed(key)),
+        None=>calcifer.maintenance_store().keyed(key),
+    }.map_err(|e| crate::api::Refusal::from(crate::Error::from(e)).0)?;
     row.map(|row| calcifer.record(&row).map_err(|e| crate::api::Refusal::from(e).0)).transpose()
 }
 
@@ -981,7 +987,7 @@ pub(crate) fn run(command: &mut Command, code: &str, what: &str) -> Result<Strin
 
 /// `run`, a failure with the tool's whole stderr beside its refusal (what `uv_listed` reads).
 pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<String, (Error, String)> {
-    let out = command.output().map_err(|e| {
+    let out = private_process::output(command).map_err(|e| {
         let error = match e.kind() {
             std::io::ErrorKind::NotFound => Error::new(
                 Kind::Unavailable,
