@@ -3670,7 +3670,8 @@ input[type="checkbox"] {
   width: 100%;
   margin-top: 4px;
 }
-.chip.refused {
+/* A mention its tool can't use there: crossed out, its title says why, and no render sends it (cl-944). */
+.chip.unused {
   background: color-mix(in srgb, var(--ood) 13%, transparent);
   color: var(--ood);
   text-decoration: line-through;

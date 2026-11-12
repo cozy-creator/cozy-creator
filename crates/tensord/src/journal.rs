@@ -247,6 +247,8 @@ pub(crate) enum AdjustmentKind {
     Adjusted,
     Clamp,
     Warn,
+    /// An input the function has no use for, left out (cl-944).
+    Ignored,
 }
 
 impl AdjustmentKind {
@@ -255,6 +257,7 @@ impl AdjustmentKind {
             Self::Adjusted => "adjusted",
             Self::Clamp => "clamp",
             Self::Warn => "warn",
+            Self::Ignored => "ignored",
         }
     }
 }

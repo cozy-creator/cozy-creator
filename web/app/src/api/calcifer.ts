@@ -44,7 +44,7 @@ export type Adjustment = {
  */
 field: string,
 /**
- * `adjusted`, `clamp` or `warn`.
+ * `adjusted`, `clamp`, `warn` or `ignored` (an input the function has no use for).
  */
 kind: string, requested: string, applied: string, reason: string,
 /**
@@ -266,6 +266,10 @@ changed?: Array<string>,
  * A pin lists them too, for its text: it stands, and only fails if it is run again.
  */
 missing?: Array<string>,
+/**
+ * What its text mentions that its tool can't use, where: never sent, and shown struck through. Known once its package is.
+ */
+unused?: Array<Unused>,
 /**
  * An Edit's: its clips as they read now.
  */
@@ -2182,6 +2186,10 @@ run_files: number,
  */
 cuts?: Array<Cut>, warnings?: Array<ProjectWarning>,
 /**
+ * What its boxes' text mentions that their tools can't use, one line each: left out of their renders, nothing to act on.
+ */
+notes?: Array<ProjectWarning>,
+/**
  * Commands to run next, given what it holds and lacks.
  */
 next?: Array<string>,
@@ -3323,6 +3331,23 @@ warnings?: Array<string>,
  * What `If-Match` names from here on.
  */
 etag?: string | null, };
+
+/**
+ * A mention a box's tool can't use where it's written, and why (cl-944): never sent, never refused.
+ */
+export type Unused = {
+/**
+ * As written, without its brackets: `Image1`, `amy.2`, `walk:48-120`.
+ */
+mention: string,
+/**
+ * Where: `instructions`, `beats.0.description`.
+ */
+at: string,
+/**
+ * For people: `Moss Image can't use images`.
+ */
+why: string, };
 
 /**
  * The answer to `POST /v1/machines/{name}/update`: `202` with its update run, followed like any

@@ -61,7 +61,11 @@ pub(crate) async fn status(ctx: &Context, _args: Status) -> Result<ExitCode, Err
         document["counts"]["errors"] = json!(project.unsent.len());
         document["errors"] = json!(project.unsent.iter().take(if ctx.full { usize::MAX } else { 5 }).collect::<Vec<_>>());
     }
-    output::view(ctx, &document, &["project", "health", "counts", "warnings", "errors", "next"]);
+    // What a box's text mentions that its tool can't use: left out of its render, said once each, nothing to act on (cl-944).
+    if !project.notes.is_empty() {
+        document["notes"] = json!(project.notes.iter().map(|note| &note.message).collect::<Vec<_>>());
+    }
+    output::view(ctx, &document, &["project", "health", "counts", "warnings", "errors", "notes", "next"]);
     Ok(ExitCode::SUCCESS)
 }
 

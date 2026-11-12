@@ -320,10 +320,10 @@ function linesOf(text, name) {
   check('wrong_kind_said_as_carried', whileCarried.refuses && whileCarried.why.includes('takes a picture'), whileCarried);
   await noted('takes a picture').waitFor();
   check('wrong_kind_refused_at_the_drop', !('first_frame' in (await fieldsOf('shot'))), await fieldsOf('shot'));
-  // Written by hand, it's marked: a render warns and leaves it out (decision 8).
+  // Written by hand, it's struck through, saying why, and a render leaves it out (decision 8, cl-944).
   await api(`/v1/projects/${id}/assets/shot`, { method: 'PATCH', body: JSON.stringify({ fields: { first_frame: '<walk>' } }) });
-  const marked = await until('a wrong kind marked', () => shotBox.locator('.slot-control[data-field=first_frame] .chip.refused').getAttribute('title').catch(() => null), Boolean);
-  check('wrong_kind_by_hand_is_marked', marked.includes('leaves it out'), marked);
+  const marked = await until('a wrong kind marked', () => shotBox.locator('.slot-control[data-field=first_frame] .chip.unused').getAttribute('title').catch(() => null), Boolean);
+  check('wrong_kind_by_hand_is_marked', marked.includes("can't use videos"), marked);
   await shotBox.locator('[aria-label="Take walk out of First frame"]').click();
   await until('first frame unset', () => fieldsOf('shot'), (fields) => !('first_frame' in fields));
   await more('shot');
@@ -352,7 +352,7 @@ function linesOf(text, name) {
   check('a_slot_of_several', true);
   await shot('slots');
 
-  // Prompts: what a prompt can't send is marked and stays its name; words take only words.
+  // Prompts: what a prompt can't use is struck through and stays its name; words take only words (cl-944).
   await open('shot');
   await shotBox.locator('.mention-text[data-field=pictures]').click();
   await page.keyboard.type('With <walk> ');
@@ -360,8 +360,9 @@ function linesOf(text, name) {
   await shotBox.locator('.mention-text[data-field=negative]').click();
   await page.keyboard.type('Not <coast> ');
   await until('both typed', () => fieldsOf('shot'), (fields) => fields.pictures?.includes('<walk>') && fields.negative?.includes('<coast>'));
-  check('a_video_in_pictures_is_marked', (await shotBox.locator('.mention-text[data-field=pictures] .chip.refused').count()) === 1);
-  check('a_picture_in_words_is_marked', (await shotBox.locator('.mention-text[data-field=negative] .chip.refused').count()) === 1);
+  const struck = (field) => until(`${field} struck`, () => shotBox.locator(`.mention-text[data-field=${field}] .chip.unused`).count(), (count) => count === 1).then(() => true, () => false);
+  check('a_video_in_pictures_is_marked', await struck('pictures'));
+  check('a_picture_in_words_is_marked', await struck('negative'));
 
   // A video's range in a prompt: in and out on its frames, written in frames, shown as timecode.
   await shotBox.locator('.mention-text[data-field=summary]').click();

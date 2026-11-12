@@ -369,7 +369,7 @@ pub fn first_of(word: &str) -> String {
 }
 
 /// A package in words, its last part's: `qwen-image-2` is `Qwen Image 2`, and a word with no vowel is upper case, `sdxl` SDXL and `h3` H3.
-pub(crate) fn title(package: &str) -> String {
+pub fn title(package: &str) -> String {
     let words = package_word(package).split(['-', '_']).filter(|word| !word.is_empty());
     let word = |word: &str| match word.chars().any(|c| "aeiouAEIOU".contains(c)) {
         true => capitalized(word),

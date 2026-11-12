@@ -226,7 +226,8 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
                 let missing = doc.missing_inputs(i, &reserved, lock);
                 let call = binder::Call { name: &asset.name, tool: &doc.target(i), package: &package.name, callable: &callable, fields: &fields, reserved: &reserved, doc, own: Some(i), lock, stand, gone: &Default::default(), pickup: None, inline: &[] };
                 let bound = binder::bind(&call)?;
-                Ok::<_, Error>((bound.payload, missing.into_iter().chain(bound.warnings).collect::<Vec<String>>()))
+                let unused = bound.unused.iter().map(|unused| unused.line(&asset.name));
+                Ok::<_, Error>((bound.payload, missing.into_iter().chain(bound.warnings).chain(unused).collect::<Vec<String>>()))
             };
             match bound.await {
                 Ok((payload, said)) => (Some(serde_json::Value::Object(payload)), said),

@@ -60,9 +60,6 @@ function memberBound(parent: Bound, field: string): Bound {
 
 const said = (value: unknown): string => (typeof value === "string" ? value : "")
 
-/** What words take of a mention: nothing but words. */
-const WORDS_ONLY: Media[] = []
-
 interface Drawn {
   name: string
   field: ToolField
@@ -91,7 +88,7 @@ function Reset({ field, bound }: { field: ToolField; bound: Bound }) {
   )
 }
 
-/** Words, or a prompt: chips for what it mentions, and what a prompt can't send is marked, never sent. */
+/** Words, or a prompt: chips for what it mentions, and what its tool can't use there struck through, never sent (cl-944). */
 function TextField({ name, field, bound, view, place, label, focus, named, block, framed }: Drawn) {
   const store = useCanvasStore()
   const beat = /^beats\.\d+\./.test(place)
@@ -105,7 +102,6 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
       label={label}
       placeholder={field.placeholder ?? undefined}
       missing={view.asset?.missing ?? []}
-      takes={field.type === "words" ? WORDS_ONLY : ((field.takes as Media[] | null) ?? undefined)}
       focus={focus}
       thumbs={!framed && !references}
       onDraft={bound.draft}
@@ -318,7 +314,8 @@ export function whyNotIn(store: CanvasStore, accept: Media | undefined, mention:
   return `${label} takes ${WANTED[accept]}, and ${baseOf(mention)} is ${kind === "text" ? "words" : (WANTED[kind as Media] ?? "a file")}`
 }
 
-/** A slot's file: its thumbnail, and on a video its in and out. One of another kind, written by hand, is marked: a render ignores it (decision 8). */
+/** A slot's file: its thumbnail, and on a video its in and out. One its tool can't use, written by hand, is struck through, saying why: a render
+ *  leaves it out (decision 8, cl-944). */
 function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; mention: string; label: string; wrong: string | null; onRange(next: string): void; onOff(): void }) {
   const store = useCanvasStore()
   const said = store.mentionOf(mention, name)
@@ -331,7 +328,7 @@ function Held({ name, mention, label, wrong, onRange, onOff }: { name: string; m
   const frames = framesIn(file?.duration_ms, fps)
   return (
     <div className={`slot-held ${missing ? "missing" : ""}`}>
-      <span className={`chip ${wrong && !missing ? "refused" : ""}`} title={wrong && !missing ? `${wrong}: a render leaves it out` : mention} data-mention={mention}>
+      <span className={`chip ${wrong && !missing ? "unused" : ""}`} title={wrong && !missing ? wrong : mention} data-mention={mention}>
         {baseOf(mention)}
         {range && ` ${timecode(range.from, fps)}–${timecode(range.to ?? frames, fps)}`}
         {angled && ` ${degrees(angled)}`}
@@ -426,7 +423,7 @@ function SlotField({ name, field, bound, view, label, place, siblings }: Drawn &
       <span className="ctl-name">{field.label}</span>
       {why && <span className="refusal">{why}</span>}
       {held.map((one, i) => (
-        <Held key={`${i}:${baseOf(one)}`} name={name} mention={one} label={field.label} wrong={refusal(one)} onOff={() => write(held.filter((other) => other !== one))} onRange={(next) => write(held.map((other) => (other === one ? next : other)))} />
+        <Held key={`${i}:${baseOf(one)}`} name={name} mention={one} label={field.label} wrong={view.asset?.unused?.find((unused) => unused.at === place && unused.mention === one)?.why ?? null} onOff={() => write(held.filter((other) => other !== one))} onRange={(next) => write(held.map((other) => (other === one ? next : other)))} />
       ))}
       {(!held.length || field.multiple) && (
         <input

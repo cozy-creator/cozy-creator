@@ -1,13 +1,14 @@
 //! The one binder: a box's written fields, by its tool's types, as the call its function gets. The browser's Render and `cozy run`
 //! all use it. A prompt goes as its text, each mention spelled as its box is, with what that text mentions; a slot takes only what's
-//! written in it; a pickup comes only from the gesture. What's past a bound is clamped and said. It knows no model.
+//! written in it; a pickup comes only from the gesture. What's past a bound is clamped and said. It knows no model. A mention its tool
+//! can't use where it's written is never sent: `unusable` is the one rule, and the page strikes it through with the same reason (cl-944).
 use std::collections::BTreeSet;
 
 use api::{
     error::{Error, Kind},
     interface::{Callable, Field, Snap, Struct, Type, Wire},
-    calcifer::project::Pickup,
-    calcifer::tool::{MEDIA, PLATFORM},
+    calcifer::project::{Pickup, Unused},
+    calcifer::tool::{self, MEDIA, PLATFORM},
 };
 use serde_json::{Map, Value, json};
 
@@ -71,6 +72,8 @@ pub(crate) struct Bound {
     pub payload: Map<String, Value>,
     pub warnings: Vec<String>,
     pub cuts: Vec<Cut>,
+    /// The mentions its tool can't use, left out.
+    pub unused: Vec<Unused>,
 }
 
 /// A box a mention names, as a function is sent it.
@@ -100,27 +103,19 @@ struct Binder<'a> {
     unturned: Vec<String>,
 }
 
+/// What `call`'s text mentions that its tool can't use, where, and why: what a box shows struck through. It binds as a run would, sending nothing.
+pub(crate) fn unused(call: &Call) -> Vec<Unused> {
+    let mut binder = Binder { call, bound: Bound::default(), nothing: vec![], unturned: vec![] };
+    // Only a pickup refuses here, and a box at rest has none.
+    let _ = binder.fields();
+    binder.bound.unused
+}
+
 /// `call` bound. Err: nothing sensible can be sent, said free before any machine is involved.
 pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
     let mut binder = Binder { call, bound: Bound::default(), nothing: vec![], unturned: vec![] };
+    binder.fields()?;
     let declared = &call.callable.request;
-    for field in &declared.fields {
-        let at = field.name.as_str();
-        if let Type::Pickup(members) = field.ty.plain() {
-            if call.fields.contains_key(at) {
-                binder.warn(format!("{}'s {at}: a pickup isn't written; use Pick up from here", call.name));
-            }
-            if let Some(pickup) = call.pickup {
-                let value = binder.pickup(field, members, pickup)?;
-                binder.bound.payload.insert(at.to_owned(), value);
-            }
-            continue;
-        }
-        let Some(value) = call.fields.get(at) else { continue };
-        if let Some(value) = binder.typed(at, &field.ty, value)? {
-            binder.bound.payload.insert(at.to_owned(), value);
-        }
-    }
     if call.pickup.is_some() && !declared.fields.iter().any(|field| matches!(field.ty.plain(), Type::Pickup(_))) {
         binder.warn(format!("{}: {} picks up from no take: it renders whole", call.name, call.tool));
     }
@@ -164,6 +159,52 @@ pub(crate) fn bind(call: &Call) -> Result<Bound, Error> {
 }
 
 impl Binder<'_> {
+    /// Each declared field, as it's written.
+    fn fields(&mut self) -> Result<(), Error> {
+        let call = self.call;
+        for field in &call.callable.request.fields {
+            let at = field.name.as_str();
+            if let Type::Pickup(members) = field.ty.plain() {
+                if call.fields.contains_key(at) {
+                    self.warn(format!("{}'s {at}: a pickup isn't written; use Pick up from here", call.name));
+                }
+                if let Some(pickup) = call.pickup {
+                    let value = self.pickup(field, members, pickup)?;
+                    self.bound.payload.insert(at.to_owned(), value);
+                }
+                continue;
+            }
+            let Some(value) = call.fields.get(at) else { continue };
+            if let Some(value) = self.typed(at, &field.ty, value)? {
+                self.bound.payload.insert(at.to_owned(), value);
+            }
+        }
+        Ok(())
+    }
+
+    /// Why a mention of `kind`, written where `takes` is what's taken, isn't used: None, it is. Words take a text box's words; a slot
+    /// of `file` takes any file. What's said names the tool, and `here` when another of its fields would take it.
+    fn unusable(&self, takes: &[&str], kind: &str) -> Option<String> {
+        if takes.contains(&kind) || (takes.contains(&"file") && MEDIA.contains(&kind)) {
+            return None;
+        }
+        let here = if declares(&self.call.callable.request, kind) { " here" } else { "" };
+        let kinds = match kind {
+            "image" => "images",
+            "video" => "videos",
+            other => other,
+        };
+        Some(format!("{} can't use {kinds}{here}", tool::title(self.call.package)))
+    }
+
+    /// `inner`, written at `at`, left out for `why`.
+    fn left_out(&mut self, at: &str, inner: &str, why: String) {
+        let unused = Unused { mention: inner.to_owned(), at: at.to_owned(), why };
+        if !self.bound.unused.contains(&unused) {
+            self.bound.unused.push(unused);
+        }
+    }
+
     fn warn(&mut self, said: String) {
         if !self.bound.warnings.contains(&said) {
             self.bound.warnings.push(said);
@@ -227,49 +268,50 @@ impl Binder<'_> {
         Ok(out)
     }
 
-    /// Words: each text box is in them already, a tag stays, and a box with a file goes as its name.
+    /// Words: each text box is in them already, a tag stays, and any other box goes as its name, left out.
     fn words(&mut self, at: &str, text: &str) -> String {
-        let mut said = vec![];
-        let out = mentions_replaced(text, &mut |inner| {
+        mentions_replaced(text, &mut |inner| {
             if self.tag(inner) {
                 return None;
             }
             let mention = self.mention_of(inner)?;
-            if self.text_box(&mention) {
-                return None;
+            let kind = self.kind_of(&mention)?;
+            if let Some(why) = self.unusable(&["text"], &kind) {
+                self.left_out(at, inner, why);
+                return Some(mention.name.to_owned());
             }
-            self.box_of(&mention)?;
-            said.push(inner.to_owned());
-            Some(mention.name.to_owned())
-        });
-        for inner in said {
-            self.warn(format!("{}'s {at} takes words, so <{inner}> goes as its name", self.call.name));
-        }
-        out
+            None
+        })
     }
 
     /// A prompt: its text, each mention spelled as its box spells itself, and each box it mentions, once, in the order first mentioned. What
-    /// it doesn't take goes as its name.
+    /// it can't use goes as its name, left out.
     fn prompt(&mut self, at: &str, kinds: &[String], text: &str) -> Value {
+        let takes: Vec<&str> = kinds.iter().map(String::as_str).chain(["text"]).collect();
         let (mut references, mut keys, mut said, mut nothing) = (vec![], BTreeSet::new(), vec![], vec![]);
         let text = mentions_replaced(text, &mut |inner| {
             if self.tag(inner) {
                 return None;
             }
             let mention = self.mention_of(inner)?;
-            if self.text_box(&mention) {
-                return None;
-            }
-            let Some(named) = self.named(&mention) else {
+            let Some(kind) = self.kind_of(&mention) else {
                 nothing.push(inner.to_owned());
                 return None;
             };
-            let Some(named) = named else {
+            if kind == "text" {
+                return None;
+            }
+            if let Some(why) = self.unusable(&takes, &kind) {
+                self.left_out(at, inner, why);
+                return Some(mention.name.to_owned());
+            }
+            let Some(named) = self.named(&mention).flatten() else {
                 said.push(format!("{}'s {at}: <{inner}> has no file here, so it goes as its name", self.call.name));
                 return Some(mention.name.to_owned());
             };
-            if !kinds.contains(&named.kind) {
-                said.push(format!("{}'s {at} takes {}, so <{inner}>, {}, goes as its name", self.call.name, kinds.join(" or "), a(&named.kind)));
+            // A part that couldn't be cut is sent whole, which may be a kind this can't use.
+            if let Some(why) = self.unusable(&takes, &named.kind) {
+                self.left_out(at, inner, why);
                 return Some(mention.name.to_owned());
             }
             if keys.insert(named.key.clone()) {
@@ -307,8 +349,52 @@ impl Binder<'_> {
         self.box_of(mention).is_some_and(|j| self.call.doc.assets[j].text.is_some())
     }
 
-    /// What `mention` sends. None: it names nothing; Some(None): its box has no file.
+    /// What `mention` is, as far as it's known with nothing cut: `image`, `video`, `audio`, `text`, or an extra's name. An orbit's angle is
+    /// a picture, and a box with no file yet is the kind it makes. None: it names nothing.
+    fn kind_of(&self, mention: &graph::Mention) -> Option<String> {
+        if self.text_box(mention) {
+            return Some("text".to_owned());
+        }
+        let kind = match self.found(mention)? {
+            Some(named) => named.kind,
+            None => self.call.doc.assets[self.box_of(mention)?].kind.clone(),
+        };
+        Some(match mention.span {
+            Some(Span::Angle(_)) if kind == "video" => "image".to_owned(),
+            _ => kind,
+        })
+    }
+
+    /// What `mention` sends, a part of it cut. None: it names nothing; Some(None): its box has no file.
     fn named(&mut self, mention: &graph::Mention) -> Option<Option<Named>> {
+        let Some(mut named) = self.found(mention)? else { return Some(None) };
+        let cut = match mention.span {
+            None => return Some(Some(named)),
+            Some(Span::Frames(from, to)) => self.range(&named, from, to).map(|cut| Some((cut, named.kind.clone()))),
+            Some(span) => self.turned(&named, span),
+        };
+        match cut {
+            // A cut is a file of its own: what its source's file says of itself, and a picture's version's other files, aren't its.
+            Ok(Some((file, kind))) => {
+                if kind != named.kind {
+                    named.files.clear();
+                }
+                named.metadata.clear();
+                (named.file, named.kind) = (file, kind);
+            }
+            Ok(None) => self.unturned.push(named.key.clone()),
+            Err(why) => {
+                self.warn(format!("{}: <{}> {why}: it's sent whole", self.call.name, named.key));
+                if let Some(j) = self.box_of(mention) {
+                    named.key = graph::Mention { span: None, ..*mention }.spelled(&self.call.doc.assets[j].name);
+                }
+            }
+        }
+        Some(Some(named))
+    }
+
+    /// What `mention` names, before any part of it is cut. None: it names nothing; Some(None): its box has no file.
+    fn found(&self, mention: &graph::Mention) -> Option<Option<Named>> {
         let Call { doc, lock, stand, gone, .. } = self.call;
         let Some(j) = self.box_of(mention) else { return self.inline(mention).map(Some) };
         let asset = &doc.assets[j];
@@ -339,28 +425,7 @@ impl Binder<'_> {
         let version = number.and_then(|number| lock.asset(&asset.name)?.version(number));
         let made_by = version.and_then(|version| version.tool.clone()).unwrap_or_default();
         let metadata = version.map(|version| version.metadata_of(&file)).unwrap_or_default();
-        let mut named = Named { key: mention.spelled(&asset.name), kind, file, files, metadata, made_by, own: Some(j) == self.call.own };
-        let cut = match mention.span {
-            None => return Some(Some(named)),
-            Some(Span::Frames(from, to)) => self.range(&named, from, to).map(|cut| Some((cut, named.kind.clone()))),
-            Some(span) => self.turned(&named, span),
-        };
-        match cut {
-            // A cut is a file of its own: what its source's file says of itself, and a picture's version's other files, aren't its.
-            Ok(Some((file, kind))) => {
-                if kind != named.kind {
-                    named.files.clear();
-                }
-                named.metadata.clear();
-                (named.file, named.kind) = (file, kind);
-            }
-            Ok(None) => self.unturned.push(named.key.clone()),
-            Err(why) => {
-                self.warn(format!("{}: <{}> {why}: it's sent whole", self.call.name, named.key));
-                named.key = graph::Mention { span: None, ..*mention }.spelled(&asset.name);
-            }
-        }
-        Some(Some(named))
+        Some(Some(Named { key: mention.spelled(&asset.name), kind, file, files, metadata, made_by, own: Some(j) == self.call.own }))
     }
 
     /// The run's own reference `mention` names, whole: no version, part or range of it.
@@ -463,8 +528,8 @@ impl Binder<'_> {
         format!("{CUT}{n}")
     }
 
-    /// The files a slot takes from what's written in it: each mention, else a hash of the project's. One of the wrong kind is left out,
-    /// with a warning (decision 8).
+    /// The files a slot takes from what's written in it: each mention, else a hash of the project's. A mention of the wrong kind is left
+    /// out, as a prompt's is; a hash, with a warning (decision 8).
     fn slot(&mut self, at: &str, kind: &str, value: &Value, many: bool) -> Result<Vec<Named>, Error> {
         let written: Vec<&str> = match value {
             Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
@@ -490,13 +555,21 @@ impl Binder<'_> {
             }
             for inner in said {
                 let Some(mention) = self.mention_of(inner) else { continue };
-                match self.named(&mention) {
-                    None => self.nothing.push(inner.to_owned()),
-                    Some(None) => self.warn(format!("{}'s {at}: <{inner}> has no file here, so it's left empty", self.call.name)),
-                    Some(Some(named)) if kind != "file" && named.kind != kind => {
-                        self.warn(format!("{}'s {at} takes {}, and <{inner}> is {}: it's left empty", self.call.name, a(kind), a(&named.kind)));
+                let Some(held) = self.kind_of(&mention) else {
+                    self.nothing.push(inner.to_owned());
+                    continue;
+                };
+                if let Some(why) = self.unusable(&[kind], &held) {
+                    self.left_out(at, inner, why);
+                    continue;
+                }
+                match self.named(&mention).flatten() {
+                    None => self.warn(format!("{}'s {at}: <{inner}> has no file here, so it's left empty", self.call.name)),
+                    Some(named) if kind != "file" && named.kind != kind => {
+                        let why = self.unusable(&[kind], &named.kind).unwrap_or_default();
+                        self.left_out(at, inner, why);
                     }
-                    Some(Some(named)) => found.push(named),
+                    Some(named) => found.push(named),
                 }
             }
         }
@@ -622,6 +695,23 @@ impl Binder<'_> {
 /// Whether `kind` is a file a slot takes.
 fn is_file(kind: &str) -> bool {
     MEDIA.contains(&kind) || kind == "file"
+}
+
+/// Whether any field of `request` takes a file of `kind`, at any depth.
+fn declares(request: &Struct, kind: &str) -> bool {
+    request.fields.iter().any(|field| takes(&field.ty, kind))
+}
+
+fn takes(ty: &Type, kind: &str) -> bool {
+    match ty {
+        Type::Prompt(kinds) => kinds.iter().any(|held| held == kind),
+        Type::Asset(held) | Type::Media { kind: held, .. } => held == kind || (held == "file" && MEDIA.contains(&kind)),
+        Type::Pickup(_) => kind == "video",
+        Type::List(item) | Type::Map(item) => takes(item, kind),
+        Type::Struct(members) => declares(members, kind),
+        Type::Union { branches, .. } => branches.iter().any(|branch| takes(branch, kind)),
+        _ => false,
+    }
 }
 
 /// `a picture`, `a video`, `a sound`.
