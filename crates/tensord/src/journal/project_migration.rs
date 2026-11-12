@@ -1,6 +1,7 @@
 //! Positive-ownership migration of the legacy field-encrypted journal. The only durable
 //! receipt/snapshot is inside the verified project. Global retirement follows a durable copy.
 use super::project_inventory::{self, InventoryReport, LegacyFootprint};
+mod cleanup;
 use super::*;
 use api::machine::LocalPrivateStorage;
 use rusqlite::types::{Value as SqlValue, ValueRef};
@@ -111,6 +112,7 @@ impl Table {
         if self.name != "executions"
             && self.name != "held_names"
             && self.name != "private_object_uses"
+            && self.name != "object_uses"
             && !EXECUTION_TABLES.contains(&self.name.as_str())
             && !ACTOR_TABLES.contains(&self.name.as_str())
         {
@@ -193,6 +195,20 @@ impl Table {
         Ok(())
     }
 }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct CleanupDebt {
+    objects: Vec<tensorfs::format::ObjectRef>,
+    uses: BTreeMap<String, String>,
+    metadata: Vec<Table>,
+    generations: Vec<String>,
+    models: Vec<String>,
+    #[serde(default)]
+    generation_records: BTreeMap<String, Vec<u8>>,
+    #[serde(default)]
+    editable_caches: BTreeMap<String, String>,
+    pending: Vec<String>,
+    prepared: bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Receipt {
     source_workspace: String,
@@ -208,6 +224,8 @@ struct Receipt {
     bindings: Vec<api::machine::ProjectExecutionMigrationBinding>,
     #[serde(default)]
     attributed_ids: Vec<u64>,
+    #[serde(default)]
+    cleanup: CleanupDebt,
 }
 fn snapshot(conn: &Connection, project: &str, attributed: &[u64]) -> io::Result<Vec<Table>> {
     let prefix = format!("local-private:{}:{}:", project.len(), project);
@@ -450,7 +468,7 @@ fn retire_run_directory(source: &Path) -> io::Result<()> {
                     return Err(io::Error::new(
                         io::ErrorKind::ResourceBusy,
                         "a canonical legacy run file still has an active reader",
-                    ))
+                    ));
                 }
             }
         } else {
@@ -639,7 +657,17 @@ fn inventory(
     retirement.extend(super::project_retirement::retire_store_diagnostics(
         store.root(),
     )?);
-    receipt.inventory = project_inventory::inspect(scope, logs, engine, store, &receipt.footprint)?;
+    let mut footprint = receipt.footprint.clone();
+    footprint.manifests.retain(|sha| {
+        !receipt
+            .cleanup
+            .objects
+            .iter()
+            .any(|object| object.sha256 == sha.trim_start_matches("sha256:"))
+    });
+    // Candidate residues are accounted by the exact retirement result below. Other scope
+    // references are never assigned to this project by digest membership alone.
+    receipt.inventory = project_inventory::inspect(scope, logs, engine, store, &footprint)?;
     let retained = receipt
         .pending
         .iter()
@@ -655,6 +683,7 @@ fn inventory(
     receipt.pending = receipt.inventory.pending.clone();
     receipt.pending.extend(retained);
     receipt.pending.extend(retirement);
+    receipt.pending.extend(receipt.cleanup.pending.clone());
     receipt
         .pending
         .extend(verify_request_objects(&receipt.owned, scope)?);
@@ -673,7 +702,10 @@ fn inventory(
     save(target, receipt)?;
     checkpoint(target)?;
     if finalized && !receipt.pending.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::WouldBlock, "project_storage_migration_pending: legacy artifacts have unresolved ownership; inspect the protected migration receipt"));
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "project_storage_migration_pending: legacy artifacts have unresolved ownership; inspect the protected migration receipt",
+        ));
     }
     Ok(())
 }
@@ -886,13 +918,17 @@ impl Journal {
                 .map_err(db_error)?;
             rows.collect::<Result<_, _>>().map_err(db_error)?
         };
+        let mut uncovered = explicit.to_vec();
         for bytes in prior {
             let mut receipt: Receipt = serde_json::from_slice(&bytes).map_err(db_error)?;
             if receipt.source_workspace != self.workspace_id {
                 if receipt.phase == "complete" {
                     continue;
                 }
-                return Err(io::Error::new(io::ErrorKind::WouldBlock, "project_storage_migration_pending: a prior source workspace has not retired custody"));
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "project_storage_migration_pending: a prior source workspace has not retired custody",
+                ));
             }
             if digest(&receipt.original)? != receipt.digest {
                 return Err(db_error(
@@ -903,6 +939,14 @@ impl Journal {
                 || receipt.phase == "journal_retired"
                 || receipt.phase == "complete"
             {
+                cleanup::retire_metadata(
+                    &self.connection,
+                    &target.connection,
+                    &mut receipt,
+                    scope,
+                    engine,
+                    store,
+                )?;
                 inventory(
                     &target.connection,
                     &mut receipt,
@@ -912,6 +956,13 @@ impl Journal {
                     store,
                     true,
                 )?;
+                uncovered.retain(|binding| {
+                    !receipt.bindings.iter().any(|covered| {
+                        covered.request_id == binding.request_id
+                            && covered.source_workspace_id == binding.source_workspace_id
+                            && covered.invocation_spec_digest == binding.invocation_spec_digest
+                    })
+                });
                 continue;
             }
             if receipt.phase != "complete" {
@@ -986,6 +1037,14 @@ impl Journal {
                     transaction.commit().map_err(db_error)?;
                 }
                 self.finish_migration(target, &mut receipt)?;
+                cleanup::retire_metadata(
+                    &self.connection,
+                    &target.connection,
+                    &mut receipt,
+                    scope,
+                    engine,
+                    store,
+                )?;
                 inventory(
                     &target.connection,
                     &mut receipt,
@@ -996,6 +1055,10 @@ impl Journal {
                     true,
                 )?;
             }
+        }
+        let explicit = uncovered.as_slice();
+        if explicit.is_empty() && !self.contains_private_project(&scope.project_id)? {
+            return Ok(());
         }
         let transaction = self
             .connection
@@ -1393,6 +1456,7 @@ impl Journal {
             inventory: InventoryReport::default(),
             bindings,
             attributed_ids,
+            cleanup: CleanupDebt::default(),
         };
         let target_empty: bool = target
             .connection
@@ -1401,7 +1465,9 @@ impl Journal {
             })
             .map_err(db_error)?;
         if target.workspace_id != self.workspace_id && !target_empty {
-            return Err(db_error("project history has another workspace identity; canonical receipt attribution is required"));
+            return Err(db_error(
+                "project history has another workspace identity; canonical receipt attribution is required",
+            ));
         }
         let destination = target
             .connection
@@ -1416,6 +1482,8 @@ impl Journal {
                 [&self.workspace_id],
             )
             .map_err(db_error)?;
+        receipt.cleanup = cleanup::prepare(&transaction, &receipt, scope, store)?;
+        cleanup::copy_metadata(&destination, &mut receipt, scope)?;
         save(&destination, &receipt)?;
         destination.commit().map_err(db_error)?;
         target.workspace_id = self.workspace_id.clone();
@@ -1459,6 +1527,14 @@ impl Journal {
         }
         transaction.commit().map_err(db_error)?;
         self.finish_migration(target, &mut receipt)?;
+        cleanup::retire_metadata(
+            &self.connection,
+            &target.connection,
+            &mut receipt,
+            scope,
+            engine,
+            store,
+        )?;
         inventory(
             &target.connection,
             &mut receipt,
