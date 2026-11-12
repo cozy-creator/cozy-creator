@@ -163,6 +163,16 @@ impl Link {
         Ok(self.machine.estimate(jobs).await?)
     }
 
+    /// This key's upcoming jobs there, nearest first (cl-967).
+    pub(crate) async fn upcoming(&self, list: &v1::Upcoming) -> Result<v1::AheadAnswer, LinkError> {
+        Ok(self.machine.upcoming(list).await?)
+    }
+
+    /// What this key expects demand for there with no job yet (cl-967).
+    pub(crate) async fn prepare(&self, list: &v1::Prepare) -> Result<v1::AheadAnswer, LinkError> {
+        Ok(self.machine.prepare(list).await?)
+    }
+
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).
     pub(crate) async fn runs(&self, before: u64, limit: u32) -> Result<v1::RunList, LinkError> {
         Ok(self.machine.runs(before, limit).await?)

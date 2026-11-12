@@ -354,6 +354,9 @@ impl Runs {
         use crate::origin::priority;
         match self.service.engine.get(id) {
             Ok(record) if !record.invocation.parent.is_empty() => priority::next(priority::STARTED, rank),
+            Ok(record) if fetches_ahead(spec) && self.service.engine.caller_id(id).starts_with(crate::ahead::PREPARE) => {
+                priority::prepare(record.root_seq(), rank)
+            }
             Ok(record) if fetches_ahead(spec) => priority::ahead(record.root_seq(), rank),
             Ok(record) => priority::next(record.root_seq(), rank),
             Err(_) => priority::BEHIND,
