@@ -1562,9 +1562,9 @@ fn walk_tree(source: &FsPath, target: Option<&FsPath>, relative: &FsPath, manage
             let mut parts = relative.components();
             let first = parts.next().and_then(|part| part.as_os_str().to_str());
             let second = parts.next().and_then(|part| part.as_os_str().to_str());
+            use api::machine::project_area;
             if first == Some(api::machine::LOCAL_PRIVATE_MARKER) || first == Some(".vault-calcifer")
-                || (first == Some(".vault-machine") && matches!(second,
-                    Some("editable" | "generations" | "executors" | "home" | "jit" | "kernels" | "tmp" | "cache" | "matplotlib" | "uv-cache" | "uv-tools"))) { continue; }
+                || (first == Some(project_area::DIR) && second.is_some_and(project_area::rebuildable)) { continue; }
         }
         if kind.is_symlink() {
             // Legacy media links with no bytes already represent missing media. Keep

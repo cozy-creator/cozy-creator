@@ -56,7 +56,7 @@ impl Torch {
 
 /// A machine's own bases under `engine`, each with its torch version.
 pub(crate) fn bases(engine: &Path) -> Vec<(PathBuf, String)> {
-    let named = |e: &fs::DirEntry| e.file_name().to_string_lossy().starts_with("torch") && e.path().join("pyvenv.cfg").is_file();
+    let named = |e: &fs::DirEntry| e.file_name().to_string_lossy().starts_with(api::machine::project_area::TORCH_BASE) && e.path().join("pyvenv.cfg").is_file();
     fs::read_dir(engine).into_iter().flatten().flatten().filter(named)
         .filter_map(|e| Some((e.path(), torch_version(&e.path())?)))
         .collect()

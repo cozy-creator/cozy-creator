@@ -3340,7 +3340,7 @@ impl Pool {
     fn executor_endpoint(&self) -> io::Result<(PathBuf, PathBuf, File)> { self.executor_endpoint_in(None, false) }
 
     fn executor_endpoint_in(&self, private: Option<&Path>, protected: bool) -> io::Result<(PathBuf, PathBuf, File)> {
-        let base = private.map(|path| path.join("executors")).unwrap_or_else(|| self.root.clone());
+        let base = private.map(|path| path.join(api::machine::project_area::EXECUTORS)).unwrap_or_else(|| self.root.clone());
         fs::create_dir_all(&base)?;
         let root = base.join(crate::uuid::simple());
         fs::create_dir(&root)?;
@@ -3387,7 +3387,8 @@ impl Pool {
             environment.insert("TEMP".into(), tmp.clone());
             environment.insert("TMP".into(), tmp);
             let private_root = private_root.as_ref().expect("verified private root");
-            for (name, relative) in [("HOME", "home"), ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"), ("XDG_CACHE_HOME", "cache"), ("MPLCONFIGDIR", "matplotlib"), ("UV_CACHE_DIR", "uv-cache"), ("UV_TOOL_DIR", "uv-tools")] {
+            use api::machine::project_area as area;
+            for (name, relative) in [("HOME", area::HOME), ("XDG_CONFIG_HOME", area::CONFIG), ("XDG_DATA_HOME", area::DATA), ("XDG_STATE_HOME", area::STATE), ("XDG_CACHE_HOME", area::CACHE), ("MPLCONFIGDIR", area::MATPLOTLIB), ("UV_CACHE_DIR", area::UV_CACHE), ("UV_TOOL_DIR", area::UV_TOOLS)] {
                 let path = private_root.join(relative);
                 fs::create_dir_all(&path)?;
                 environment.insert(name.into(), path.to_string_lossy().into_owned());

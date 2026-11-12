@@ -31,6 +31,49 @@ pub const LOCAL_PRIVATE_DESCRIPTOR: &str = "cozy-local-private-storage";
 pub const LOCAL_PRIVATE_TOKEN: &str = "cozy-local-private-token";
 pub const LOCAL_PRIVATE_MARKER: &str = ".vault-local-execution.json";
 
+/// A project's machine area in its own storage (`DIR`): TensorD's state for the project's runs.
+/// Its journal, results and objects are the project's. What `rebuildable` names TensorD makes
+/// again on next use, so a storage conversion leaves it out.
+pub mod project_area {
+    pub const DIR: &str = ".vault-machine";
+    /// Package environments, by identity.
+    pub const GENERATIONS: &str = "generations";
+    /// Local sources' editable environments, beside `GENERATIONS`.
+    pub const EDITABLE: &str = "editable";
+    /// Each executor's working root.
+    pub const EXECUTORS: &str = "executors";
+    /// A launch's home, compiled kernels and JIT scope.
+    pub const HOME: &str = "home";
+    pub const KERNELS: &str = "kernels";
+    pub const JIT: &str = "jit";
+    /// Where child tools are pointed: temporary files, uv's cache, tools and Pythons, XDG folders, bytecode.
+    pub const TMP: &str = "tmp";
+    pub const UV_CACHE: &str = "uv-cache";
+    pub const UV_TOOLS: &str = "uv-tools";
+    pub const PYTHON: &str = "python";
+    pub const CONFIG: &str = "config";
+    pub const DATA: &str = "data";
+    pub const STATE: &str = "state";
+    pub const CACHE: &str = "cache";
+    pub const BYTECODE: &str = "bytecode";
+    pub const MATPLOTLIB: &str = "matplotlib";
+    /// The project's own PyTorch base, `torch-<version>`, staged in `TORCH_STAGING`.
+    pub const TORCH_BASE: &str = "torch-";
+    pub const TORCH_STAGING: &str = ".torch.partial";
+
+    const REBUILT: [&str; 16] = [GENERATIONS, EDITABLE, EXECUTORS, HOME, KERNELS, JIT, TMP, UV_CACHE, UV_TOOLS, PYTHON, CONFIG, DATA, STATE, CACHE, BYTECODE, MATPLOTLIB];
+
+    /// Whether `name`, an entry of the area, is one TensorD recreates when it is gone.
+    pub fn rebuildable(name: &str) -> bool {
+        REBUILT.contains(&name) || name == TORCH_STAGING || name.strip_prefix(TORCH_BASE).is_some_and(|version| !version.is_empty())
+    }
+
+    /// The `torch-<version>` base folder name.
+    pub fn torch_base(version: &str) -> String {
+        format!("{TORCH_BASE}{version}")
+    }
+}
+
 /// The strict project-owned execution contract. Older partial-private endpoints are not substitutes.
 pub const PROJECT_EXECUTION_PREFIX: &str = "/v1/project-execution";
 pub type ProjectExecutionScope = LocalPrivateStorage;
