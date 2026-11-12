@@ -87,7 +87,8 @@ outside evidence file and contains fixed case codes plus counts, hashes and stat
 The current sequence covers native capability, two encrypted projects, browser root/media/
 thumbnail requests, ranges, conditional requests, CSRF/auth refusal, empty durable browser
 stores, a pending B edit while A locks, whole-session retirement, unrelated browser survival,
-last-window closure, exact-browser crash and cold Calcifer restart. An actual native Save-As
+last-window closure, exact-browser crash, Caf SIGKILL with live pages followed by startup
+retirement of the exact owned process/profile receipt, and cold Calcifer restart. An actual native Save-As
 prompt/export journey and a managed-service capture/panic journey require their own explicit
 cases before those boundaries are marked qualified; this sequence does not substitute a CDP
 download override or a fake panic and call either one complete.
