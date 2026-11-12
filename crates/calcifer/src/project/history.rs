@@ -739,7 +739,21 @@ const LAPSED: &str = ": lapsed";
 
 /// The first change of `entry` that isn't as it should be before going `way`, and what it finds instead.
 fn moved<'a>(project: &Project, entry: &'a Entry, way: Way) -> Option<(&'a Change, String)> {
-    entry.changes.iter().find_map(|change| Some((change, moved_one(project, change, way)?)))
+    // A box this step itself puts back isn't there yet: its takes, fields and metadata come back with it, as its delete set them aside,
+    // so they're judged with it, not against its absence (the redo of an import, a box and its take, was refused as "gone").
+    let brought: Vec<String> = (entry.changes.iter())
+        .filter_map(|change| match change {
+            Change::Asset { name, before, after } if wanted(way, before, after).is_some() && found(way, before, after).is_none() => Some(name_key(name)),
+            _ => None,
+        })
+        .collect();
+    entry.changes.iter().find_map(|change| {
+        let with_its_box = !matches!(change, Change::Asset { .. } | Change::Card { .. } | Change::Renamed { .. }) && brought.contains(&name_key(change.name()));
+        if with_its_box {
+            return None;
+        }
+        Some((change, moved_one(project, change, way)?))
+    })
 }
 
 /// What `change` should find there before going `way`, and what it finds instead, if it isn't so.
