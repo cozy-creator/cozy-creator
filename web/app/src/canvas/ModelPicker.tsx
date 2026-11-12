@@ -18,7 +18,8 @@ type PickerModel = FoundModel & { description?: string | null }
 const entryOf = (value: unknown): Entry => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Entry : {}
 const adaptersOf = (value: unknown): unknown[] => Array.isArray(value) ? value : []
 const identityOf = (ref: string) => ref.split("@")[0]
-const title = (value: string) => value.split(/[-_]+/).filter(Boolean).map((part) => part.toLowerCase() === "lora" ? "LoRA" : !/[aeiou]/i.test(part) ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1)).join(" ")
+const SPELLED = new Map([["lora", "LoRA"], ["vae", "VAE"]])
+const title = (value: string) => value.split(/[-_]+/).filter(Boolean).map((part) => SPELLED.get(part.toLowerCase()) ?? (!/[aeiou]/i.test(part) ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1))).join(" ")
 const slotName = (slot: PickerSlot, qwen: boolean, slots: PickerSlot[]) => qwen && slot.slot === "rewriter" ? "Prompt-Enhancer I2I" : qwen && slot.slot === "expander" ? "Prompt-Enhancer T2I"
   : slots.filter((held) => held.param === slot.param).length > 1 ? `${title(slot.param)} (${title(slot.slot.split(".models.")[0])})` : title(slot.param)
 const modelName = (ref: string) => title(identityOf(ref).split("/").filter(Boolean).at(-1)?.replace(/\.safetensors$/, "") ?? ref)
@@ -43,18 +44,22 @@ export function slotsOf(tool: Tool | undefined): PickerSlot[] {
 }
 // By the Hub's family label and role, as the Hub lists them: a model slot, base or component, takes a model of its default's family.
 const compatible = (model: FoundModel | ModelDetail | undefined, family: string | null | undefined, kind: Kind | undefined) => Boolean(kind && family && model?.family === family && model?.role === (kind === "lora" ? "lora" : "model"))
+// A slot for one part of a model takes the models of its family the Hub tags as that part, and every other slot none of them.
+const PARTS = new Map([["text_encoder", "text-encoder"], ["vae", "vae"]])
+const tagsOf = (model: FoundModel | ModelDetail | undefined) => model?.tags?.map((tag) => tag.toLowerCase().replace(/_/g, "-")) ?? []
+const partFits = (model: FoundModel | ModelDetail | undefined, slot: PickerSlot) => {
+  const part = PARTS.get(slot.param)
+  return part ? tagsOf(model).includes(part) : !tagsOf(model).some((tag) => [...PARTS.values()].includes(tag))
+}
 const adapterFits = (model: FoundModel | ModelDetail, slot: PickerSlot) => {
   if (!compatible(model, slot.family, "lora") || identityOf(model.model) === "alibaba-pai/qwen-image-2.1-fun-acc") return false
-  const encoder = model.tags?.some((tag) => tag.toLowerCase().replace(/_/g, "-") === "text-encoder") ?? false
-  return slot.slot === "text_encoder" ? encoder : !encoder
+  // A VAE takes no LoRA.
+  return slot.param !== "vae" && partFits(model, slot)
 }
-const fitsSlot = (model: FoundModel | ModelDetail | undefined, ref: string, slot: PickerSlot, kind: Kind | undefined, funAcc: boolean) => {
+export const fitsSlot = (model: FoundModel | ModelDetail | undefined, ref: string, slot: PickerSlot, kind: Kind | undefined, funAcc: boolean) => {
   if (funAcc && slot.slot === "model" && identityOf(ref) === "qwen/qwen-image-2.1-turbo") return false
   if (ref === slot.default) return true
-  if (!compatible(model, slot.family, kind)) return false
-  const tags = model?.tags?.map((tag) => tag.toLowerCase().replace(/_/g, "-")) ?? []
-  if (slot.slot === "text_encoder") return tags.includes("text-encoder")
-  return !tags.includes("text-encoder") && !tags.includes("vae")
+  return compatible(model, slot.family, kind) && partFits(model, slot)
 }
 
 /** One modal edits every model slot without changing the node's tool or creating work. */
@@ -75,7 +80,7 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   const helper = imageEdit ? "rewriter" : "expander"
   const slots = slotsOf(tool).filter((slot) => !qwen || (slot.slot !== "expander" && slot.slot !== "rewriter") || slot.slot === helper)
   if (qwen) {
-    const order = [helper, "model", "text_encoder", "turbo_lora"]
+    const order = [helper, "model", "text_encoder", "vae", "turbo_lora"]
     const at = (slot: PickerSlot) => order.includes(slot.slot) ? order.indexOf(slot.slot) : order.length
     slots.sort((a, b) => at(a) - at(b))
   }
