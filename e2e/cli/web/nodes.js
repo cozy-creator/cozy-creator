@@ -326,13 +326,18 @@ function replaceFile(at, text) {
   const offered = await page.locator('.name-menu li').allTextContents();
   check('less_than_offers_names', offered.includes('source-a') && offered.includes('source-b'), offered);
   await shot('offered');
-  // Tab takes the name offered. Enter in a prompt renders, and takes the name first (cl-893, 20a9c5c92): a take landed and the words were gone.
-  await page.keyboard.press('Tab');
+  // Enter takes the name offered and nothing else: no render starts, and what's typed next goes on after it (Paul, 11-12, as Slack's list).
+  const runsBefore = (await api(`/v1/runs?project=${id}&limit=100`)).body?.runs?.length ?? 0;
+  await page.keyboard.press('Enter');
   await until('a chip', () => sheetText.locator('.chip').count(), (n) => n === 1);
   await page.keyboard.type('and ');
   // Everything saves itself (Paul, 11-05): a pause in typing writes it, a chip as its name.
   await until('a pause saves it', () => Promise.resolve(storedBox('Sheet')?.instructions ?? ''), (words) => words.includes('A sheet of <source-a> and'));
   check('a_pause_saves_it', JSON.stringify(storedBox('Sheet')) !== before2);
+  const sheetAfter = await of('Sheet');
+  const runsAfter = (await api(`/v1/runs?project=${id}&limit=100`)).body?.runs?.length ?? 0;
+  const faces = await box('Sheet').locator('.run-face').count();
+  check('enter_on_a_name_renders_nothing', runsAfter === runsBefore && !sheetAfter?.making?.length && faces === 0 && (await sheetText.innerText()).includes('and'), { runsBefore, runsAfter, making: sheetAfter?.making, faces, words: await sheetText.innerText() });
 
   // Any element dragged onto the box: its name goes in, where the caret was, and it goes back where it was with no move saved.
   await away();
