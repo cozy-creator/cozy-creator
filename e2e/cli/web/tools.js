@@ -277,6 +277,11 @@ function replaceFile(at, text) {
   await until('both beats in the file', () => fieldsOf('shot'), (fields) => fields.beats?.length === 2 && fields.beats[1].description?.includes('The second.'));
   // No running total under the beats (cl-903).
   check('no_running_total', (await shotBox.locator('.beats-edit[data-field=beats] .total').count()) === 0 && !/\b10 s\b/.test(await shotBox.locator('.beats-edit[data-field=beats] > .beats-last').innerText()), await shotBox.locator('.beats-edit[data-field=beats] > .beats-last').innerText());
+  // In the frame one section is open at a time, and the sections scroll (cl-938): Beat 2 shut, both heads are in view to drag between.
+  await beatRows().nth(1).getByRole('button', { name: 'Beat 2', exact: true }).click();
+  await until('the beats shut', () => beatRows().evaluateAll((rows) => rows.every((row) => row.querySelector(':scope > .beat-heading .beat-toggle')?.getAttribute('aria-expanded') === 'false')), Boolean, 5_000);
+  await shotBox.locator('[aria-label="Move beat 2"]').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(400);
   const grip = await shotBox.locator('[aria-label="Move beat 2"]').boundingBox();
   const first = await beatRows().first().boundingBox();
   await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
@@ -288,6 +293,8 @@ function replaceFile(at, text) {
   await shotBox.locator('[aria-label="Remove beat 2"]').click();
   await until('one beat left', () => fieldsOf('shot'), (fields) => fields.beats?.length === 1);
   check('a_row_goes', (await beatRows().count()) === 1);
+  // Its blocks are in its section, open to write in.
+  if (await beatRows().first().locator(':scope > .beat-heading .beat-toggle').getAttribute('aria-expanded') !== 'true') await beatRows().first().getByRole('button', { name: 'Beat 1', exact: true }).click();
   // A block in a row: absent until it's added, and × takes it out.
   await shotBox.locator('[data-field="beats.0.look"] .add-beat').click();
   await until('a look', () => fieldsOf('shot'), (fields) => fields.beats?.[0]?.look?.lens === 'wide');
