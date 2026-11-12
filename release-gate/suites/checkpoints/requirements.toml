@@ -90,7 +90,7 @@ tokenizer = { files = ["tokenizer_config.json", "tokenizer.json"] }
 t5_tokenizer = { files = ["tokenizer_config.json", "tokenizer.json"] }
 
 [[checkpoint]]
-reads = "fibo-2 model, full (its caption fonts: the package's copy until --add puts them here)"
+reads = "fibo-2 model, full"
 families = ["fibo-2"]
 kind = "weights"
 [checkpoint.components]
@@ -99,7 +99,7 @@ text_encoder = {}
 vae = {}
 scheduler = {}
 processor = { files = ["processor_config.json", "tokenizer_config.json", "tokenizer.json", "chat_template.jinja"] }
-fonts = { config = false, files = ["Aileron-Regular.otf", "DejaVuSans.ttf"] }
+model = { config = false, files = ["fonts/Aileron-Regular.otf", "fonts/DejaVuSans.ttf"] }
 
 [[checkpoint]]
 reads = "fibo-2 upsampler, edit_upsampler"
