@@ -157,7 +157,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
             <button
               key={machine.name}
               type="button"
-              className={`mtab ${open?.name === machine.name ? "on" : ""}`}
+              className={`mtab ${open?.name === machine.name ? "on" : ""} ${project?.machines?.includes(machine.name) ? "render-here" : ""}`}
               data-machine={machine.name}
               aria-expanded={open?.name === machine.name}
               title={`${gpusWords(machine)}, ${stateWords(machine, Date.now())}`}

@@ -10,13 +10,14 @@ import { DrawerFrame } from "../Drawer"
 import { usd } from "../format"
 import { End } from "./End"
 import { Rent } from "./Rent"
+import { useRenderMachines } from "./RenderHere"
 import { endsWords, gpusWords, stableName, stateClass, stateWords } from "./words"
 
-function MachineRow({ machine, now }: { machine: Machine; now: number }) {
+function MachineRow({ machine, now, here }: { machine: Machine; now: number; here: boolean }) {
   const to = useTo()
   const trying = machine.state === "booting" && machine.kind === "rental"
   return (
-    <li className={`runrow ${trying ? "trying" : ""}`}>
+    <li className={`runrow ${trying ? "trying" : ""} ${here ? "render-here" : ""}`} data-machine={machine.name}>
       <Link to={to(`machines/${encodeURIComponent(stableName(machine))}`)}>
         <span className="line">
           <span className={`dot ${stateClass(machine)}`} />
@@ -98,6 +99,7 @@ export function Machines() {
   const queries = useQueryClient()
   const to = useTo()
   const { data, error } = useQuery(machinesQuery(client))
+  const { project, chosen } = useRenderMachines()
 
   // Rentals other computers made, as `cozy machine ls` lists every Hub first. The list shows meanwhile, and a Hub that doesn't answer says so.
   useEffect(() => {
@@ -123,6 +125,8 @@ export function Machines() {
   const hourly = hourlyOf(rentals)
   const signedIn = useSignedIn() && !data?.signed_out?.length
   const renting = !client.transport.channel
+  // The project's machines that aren't up are listed too, so each can be taken off.
+  const gone = chosen.filter((name) => !machines.some((machine) => machine.name === name))
 
   return (
     <DrawerFrame title="Machines">
@@ -137,9 +141,20 @@ export function Machines() {
           {problem.hub} didn't answer: {problem.message}. Its rentals may still be billing.
         </p>
       ))}
+      {project && data && !chosen.length && <p className="muted">No machine is green, so this project's renders are placed automatically. Open one and press Render here to keep them on it.</p>}
       <ul className="rows">
         {mine.map((machine) => (
-          <MachineRow key={machine.name} machine={machine} now={now} />
+          <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} />
+        ))}
+        {gone.map((name) => (
+          <li key={name} className="runrow render-here" data-machine={name}>
+            <Link to={to(`machines/${encodeURIComponent(name)}`)}>
+              <span className="line">
+                <b>{name}</b>
+              </span>
+              <small className="under warn">Not up: this project's renders wait for it or another green machine</small>
+            </Link>
+          </li>
         ))}
       </ul>
       {others.length > 0 && (
@@ -149,7 +164,7 @@ export function Machines() {
           </summary>
           <ul className="rows">
             {others.map((machine) => (
-              <MachineRow key={machine.name} machine={machine} now={now} />
+              <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} />
             ))}
           </ul>
         </details>
