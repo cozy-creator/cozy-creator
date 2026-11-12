@@ -20,7 +20,7 @@ import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames 
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, shownOf, valuesOf, watched, widthFor } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -722,6 +722,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const asset = view.asset
   const versions = asset?.prefixes ?? []
   const shown = shownOf(view)
+  const tool = asset?.tool ? tools.get(asset.tool) : undefined
   const at = versions.findIndex((version) => version.number === shown?.number)
   const shownVersion = versions.find((version) => version.number === shown?.number)
   const face = faceOf(view)
@@ -766,6 +767,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           </span>
         )}
         {view.draft === undefined && (asset ? asset.kind === "image" && shown?.number !== undefined : isPicture(view)) && <span className="node-version-label">v{asset ? shown?.number : 1}</span>}
+        {/* What makes it, beside its name (Paul, 11-12: "I want to see what tools are attached"). */}
+        {view.draft === undefined && !lite && asset?.tool && <span className="node-tool" title={asset.tool}>{tool ? toolName(tool) : asset.tool}</span>}
         {view.draft === undefined && !lite && <span className="sp" />}
         {view.draft === undefined && here && asset?.kind !== "image" && versions.length > 1 && at >= 0 && (
           <span className="count">
