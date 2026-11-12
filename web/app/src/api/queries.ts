@@ -69,14 +69,24 @@ export const projectQuery = (client: Client, stream: EventStream, id: string) =>
     structuralSharing: keepAssets,
   })
 
-/** A list a late Hub left short is asked for again: what it read of the Hub so far is kept there, so it gets further each time. */
+/** Each list's answers in a row that a late Hub left short, and when the last came. */
+const short = new WeakMap<object, { at: number; n: number }>()
+
+/** A list a late Hub left short is asked for again, twice as late each time (10 s to 5 min): what it read of the Hub so far is kept there,
+ *  so it gets further each time. */
 export const toolsQuery = (client: Client, q: string, on: string | null, project: string | null) =>
   queryOptions({
     queryKey: ["tools", q, on, project],
     queryFn: ({ signal }) => client.tools(q, on, project, signal),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
-    refetchInterval: (query) => (query.state.data?.note ? 10_000 : false),
+    refetchInterval: (query) => {
+      if (!query.state.data?.note) return (short.delete(query), false)
+      const was = short.get(query)
+      const n = was?.at === query.state.dataUpdatedAt ? was.n : was ? was.n + 1 : 0
+      short.set(query, { at: query.state.dataUpdatedAt, n })
+      return Math.min(300_000, 10_000 * 2 ** n)
+    },
   })
 
 export const canvasQuery = (client: Client, stream: EventStream, id: string) =>
