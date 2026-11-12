@@ -198,7 +198,7 @@ async fn typed_nodes_fixture() {
         files: folder::Files::from([("image".to_owned(), hash.clone())]), ..Default::default()
     }, "version", true, |_| {}).unwrap();
     assert_eq!(Doc::load(&series.folder).unwrap().stand(&series.folder.lock().unwrap())[at].version(), Some(4));
-    super::super::unpin(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"name":original.name}).to_string()))).await.unwrap();
+    let _ = super::super::unpin(State(api.clone()), Path(series.id.clone()), Ok(Bytes::from(json!({"name":original.name}).to_string()))).await.unwrap();
     let unpinned = series.folder.written().unwrap();
     assert!(unpinned.get(&original.name).unwrap().get("approved").is_none());
     assert!(unpinned.get(&original.name).unwrap().get(format::SELECTED_VERSION).is_none());
@@ -212,7 +212,7 @@ async fn typed_nodes_fixture() {
     let conn = db::open(&directory.join(db::DB)).unwrap();
     let stored = db::load(&conn, &directory.join(db::DB)).unwrap();
     assert_eq!(stored.written.get(&original.name).unwrap().get(format::SELECTED_VERSION), Some(&json!(1)));
-    let Json(joined) = join(State(api.clone()), Path((series.id.clone(), original.name.clone())), Ok(Bytes::from(json!({"source":path}).to_string()))).await.unwrap();
+    let Json(joined) = join(State(api.clone()), Path((series.id.clone(), original.name.clone())), Ok(Bytes::from(json!({"source":hash}).to_string()))).await.unwrap();
     assert_eq!(joined.stands, Some(1), "joining another version preserves the approved reference");
 
     let first = make(&api, &series.id, json!({"name":"first-output","kind":"image","fields":{}})).await;
