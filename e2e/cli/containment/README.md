@@ -1,0 +1,138 @@
+# Hosted project containment qualification
+
+This fixture is prepared for an isolated Linux hosted runner. Do not dispatch it until the
+coordinator supplies the composed candidate and explicitly marks it ready. No part of this
+fixture launches a browser or reads a real user's home on the development workstation.
+
+The fixture uses the installed candidate CLI, its real Calcifer, the real encrypted provider,
+and the actual `OwnedBrowser` Chrome process. Existing `page.py` route shapes are reused with
+protocol-3 preflight. Existing browser proofs launch an independent Playwright browser and
+redeem a legacy session; they cannot establish this ownership contract.
+
+## Approved private observation seam
+
+The fixture starts the installed `cozy calcifer` itself with one inherited Unix socket at
+reserved fd 5. Calcifer may consume it only in the hosted qualification mode. No new HTTP,
+TCP debugging port, user-profile attachment, arbitrary script evaluator or redeemable URL is
+introduced. The fixture proves that socket's peer is its exact child process birth. A queued fixed domain
+prelude is peeked before consuming the stream; an unrelated inherited protocol is left alone.
+
+A closed request enum addresses only the already owned browser: `Snapshot`,
+`Exercise { project_ref, action, payload }`, and `CloseOwnedWindows`. Exercise actions are fixed
+code from this fixture, evaluated through the actor's existing private CDP pipe. Actions cover
+page readiness, actual DOM edit, media fetch/status, storage observation, close, and a fixed
+late-callback observation. There is no caller-selected JavaScript or CDP method. Snapshot's
+process/profile identities stay in the fixture's RAM; retained receipts contain their hashes
+and booleans only. Canary payloads travel only in this private socket or authenticated HTTP,
+never argv/environment. The production authority rules remain in force.
+
+If the seam is unavailable, the fixture must report unavailable qualification;
+it must not substitute a second browser and call that an OwnedBrowser pass.
+
+## Required real execution
+
+1. Refuse outside a fresh hosted Linux test-Hub runner; pin and hash the installed candidate.
+   Open two born-encrypted project folders with credentials supplied on stdin. Capture CLI
+   output in RAM. Write source, names, prompts, image metadata and all fixture-owned private
+   outputs only inside their unlocked project views.
+2. Open A and B through actual `cozy open`; verify the same owned Chrome birth and distinct
+   live pages. Start separate fixture-owned normal and unrelated Incognito Chrome processes
+   with no project data; prove exact births survive every Cozy retirement action.
+3. Exercise real project reads, root content, thumbnails and media ranges from the owned page.
+   Assert no-store on actual 200, 206, conditional requests and refused paths. A conditional
+   request returning 200 rather than 304 is valid if it is explicitly no-store; it is not a
+   fabricated 304 pass. Prove native and owned-session capability binding and CSRF refusals.
+4. Hold a real SQLite write transaction in B, enqueue a real browser edit, and request A's lock
+   through the CLI. Observe busy/pending work without discarding it. Release the transaction;
+   verify B's exact value from its own project DB, A locked, all owned pages/processes retired,
+   and unrelated fixture browser births still live. Late reads/preloads must not resurrect A.
+5. Reopen, close all owned windows, crash only the exact owned browser, and cold-restart only
+   the fixture's Calcifer. Observe old authority refusal and fresh-session ownership. Verify
+   process/profile retirement or retain an explicit incomplete-retirement failure.
+6. Run read-only scans of the exact home, global DB+WAL/SHM, service/log captures, configured
+   temporary/cache locations and browser profile. Scan raw bytes, filenames and SQLite logical
+   values; decode supported gzip/zlib bodies. During a live session, only the verified tmpfs
+   browser lease is an additional volatile allowance. After retirement it must be absent.
+   After locking A, its former mounted view is not an exclusion. B's still-unlocked view is
+   excluded only by its exact provider root and is scanned after B locks.
+7. Save one deliberate export through the browser's actual download prompt to a selected
+   external destination. Record its hash separately; never exempt it from the automatic-copy
+   scan without naming that deliberate export. Bookmarks inside the owned volatile profile
+   retire with the profile; this differs from a normal Chrome profile's Incognito behavior.
+
+Receipts retain fixed case names, checks, counts, hashes, status codes and timing boundaries.
+They never retain raw response/error bodies, SQL values, canaries, project-derived filenames,
+HARs, screenshots or browser console output. On failure, write sanitized counts/hashes and
+leave the owned synthetic project folders intact for coordinator-owned investigation. Never
+collect mixed raw daemon logs into the uploaded output directory.
+
+## Runtime entry and artifact limits
+
+`uv run --no-project e2e/cli/containment/run.py --ready-file READY.json --out OUT` refuses
+unless this is a hosted Linux runner, its isolated Hub is independently verified, a real display
+is present, the default installed Calcifer is stopped, and the coordinator's ready file contains
+`{"ready":true,"sha256":"<exact installed candidate SHA-256>"}`. That ready file is supplied by
+the coordinator after composition, never generated by this fixture. No workflow dispatch or
+local browser run is part of preparing these sources.
+
+The scanner reads every regular file and filename under the declared roots. Files up to
+64 MiB additionally receive SQLite-in-RAM, ZIP, gzip/zlib, LevelDB/Snappy and image decoding;
+larger files are counted as `large_raw_only`. The receipt preserves that limit explicitly.
+The fixed random black/white tile pattern recognizes a re-encoded private image/thumbnail
+without requiring the original PNG metadata to survive. Missing decoders, unreadable files,
+or undecodable recognized formats fail the case. No screenshot, HAR, tracing archive, raw
+process output or copied log directory is retained. The final receipt is the only generated
+outside evidence file and contains fixed case codes plus counts, hashes and statuses.
+
+The current sequence covers native capability, two encrypted projects, browser root/media/
+thumbnail requests, ranges, conditional requests, CSRF/auth refusal, empty durable browser
+stores, a pending B edit while A locks, whole-session retirement, unrelated browser survival,
+last-window closure, exact-browser crash and cold Calcifer restart. An actual native Save-As
+prompt/export journey and a managed-service capture/panic journey require their own explicit
+cases before those boundaries are marked qualified; this sequence does not substitute a CDP
+download override or a fake panic and call either one complete.
+
+## Optional actual native execution extension
+
+The coordinator may set `native_execution: true` and
+`allow_host_core_pattern_change: true` in the same exact-candidate ready file. This additionally
+requires `RUNNER_ENVIRONMENT=github-hosted`; it refuses a self-hosted runner. No local execution
+is authorized by preparing this extension.
+
+The extension invokes real weightless project code through the installed CLI/worker/Runtime.
+It verifies an allowed project write, actual denied absolute HOME and `/tmp` creates (after
+proving those parents writable with data-free fixture files), hard+soft core limit zero,
+denial of attempts to restore dumpability/core limits, and a real aborting Python child with
+no core file. It changes the owned VM's kernel core handler to an actual pipe and requires
+an explicit native refusal before project code executes, then switches to a regular handler
+for actual successful private execution and the media/browser sequence. The original host
+setting is retained only in RAM and restored in `finally`; restoration failure clears the
+receipt's completion flag. No production CLI flag, mock, request canary in argv/environment,
+or raw captured output artifact is introduced.
+
+## Optional real development/HMR case
+
+`development_web: true` in the coordinator's ready file additionally requires a hosted runner
+with pnpm and the checkout's web dependencies installed. The fixture owns one Vite process,
+sets only the explicit `[calcifer].development_web` field before its foreground Calcifer starts,
+and creates one independent source-only HMR probe. Through the same actual owned browser it
+loads that module, changes the file, and requires value 2 without a document replacement. The
+ordinary project reads/edits/lock/restart cases then run through that same Calcifer origin.
+Probe source and config are restored by exact identity/content checks; no laptop configuration,
+ordinary browser, bearer-injecting development proxy or raw browser trace is used.
+
+## Old-first published legacy subject
+
+`legacy_seed.publish_old(old_cli, work)` publishes the static `legacy-package` directory with
+the installed released 0.24.0 CLI before private canaries. Its pinned target is
+`e2e-containment-legacy/echo@0.1.0`; request fields are `source: File`, `text: str`, and optional
+`fail: bool`. It prints the text, returns a text file containing source bytes + newline + text,
+and raises with that text for the intentional failure case. The package embeds no canary.
+
+Bootstrap the outer owned test-Hub runner with the OLD CLI, pass the candidate separately to
+the legacy command, and keep the default home on schema 7 until old subjects are written.
+The helper verifies old installed/holder hashes, schema 7, owned Hub release/interface, and
+returns exact public bootstrap run IDs plus source/interface hashes. It neither clears nor
+reclassifies history or caches. Any explicitly authorized public-only reset belongs before
+creation of every project/canary; never use the normal isolated.sh end-of-seed home reset
+between private writer and candidate migration phases.
