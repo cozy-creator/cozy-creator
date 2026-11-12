@@ -1333,7 +1333,7 @@ impl Publisher {
     /// publishes (`precision`). The request's GPU
     /// count chooses the group independently of the weight lane; 0 uses the widest group every
     /// slot supports on the machine. A slot with neither is refused; an on-demand slot that does
-    /// not bind, for any reason, is the plan's `unbound` instead (xs-186).
+    /// not bind is the plan's `unbound` instead (xs-186).
     fn model(
         &self,
         service: &Service,
@@ -1442,9 +1442,10 @@ impl Publisher {
                     grants.push(grant);
                     warnings.extend(said);
                 }
-                // A slot the call may never read: why it did not bind fails the call only when its
-                // function reads it.
-                Err(failure) if slot["on_demand"] == true && failure.0 != CANCELED => {
+                // A slot the call may never read: a definite answer why it did not bind fails the
+                // call only when its function reads it. A Hub that doesn't answer is waited for
+                // (`patiently`), and a cancel ends the plan.
+                Err(failure) if slot["on_demand"] == true && !matches!(failure.0, CANCELED | UNREACHABLE) => {
                     let (parameter, refusal) = unbound_slot(slot, &request.choices, failure);
                     tracing::info!(slot = %parameter, code = %refusal.0, "an on-demand slot is unbound: {}", refusal.1);
                     unbound.insert(parameter, refusal);
