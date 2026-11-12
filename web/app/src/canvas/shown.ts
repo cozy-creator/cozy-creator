@@ -40,11 +40,10 @@ export const selectedOf = (view: ElementView): Shown | null => shownOf(view, tru
 export const HEAD = 32
 
 /**
- * What hangs off a box at rest, its name over it and its shape's word and add-ons under it, is drawn one size on screen as the canvas
- * zooms out, down to a zoom of 0.5; further out it shrinks with the canvas (--hang, set beside --text). So the room it takes is bounded,
- * and a box keeps that room clear: its name never lies on the box above, nor what hangs under one on the box below.
+ * What hangs off a box at rest, its name over it and its shape's word and add-ons under it, is drawn at the canvas's scale like the
+ * rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
  */
-export const HANG = 2
+const HANG = 2
 // As app.css and AddOns.css draw them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
 const SMALL_LINE = 10.5 * 1.35 * 1.25

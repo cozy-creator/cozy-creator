@@ -38,7 +38,7 @@ import { HistoryControls } from "./HistoryControls"
 import type { Box } from "./graph"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
-import { aspectOf, bodyBox, HANG, HEAD, madeHere, shownOf } from "./shown"
+import { aspectOf, bodyBox, HEAD, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
@@ -285,7 +285,7 @@ function Canvas({
   const stage = useRef<HTMLDivElement>(null)
   useLayoutEffect(() => {
     if (active) {
-      store.refreshSurface(flow.getViewport())
+      store.refreshSurface()
       return
     }
     // Keep draft/import owners alive under the cover, while closing any mention
@@ -793,38 +793,7 @@ function Canvas({
   useLayoutEffect(() => store.far.set(band === 2), [store, band])
   const sharpness = useStore((state) => 2 ** Math.max(-2, Math.ceil(Math.log2(state.transform[2] || 1))))
   useLayoutEffect(() => store.sharpness.set(sharpness), [store, sharpness])
-  // How large a box's words are drawn goes on the stage as the zoom crosses a step: no render, so a zoom draws no box again.
   const flowStore = useStoreApi<ElementNode, Edge>()
-  useLayoutEffect(() => {
-    let held = 0
-    let drawn = ""
-    let frame = 0
-    let latest: Viewport
-    const set = ([x, y, zoom]: [number, number, number]) => {
-      const text = textScale(zoom)
-      if (text !== held) {
-        held = text
-        stage.current?.style.setProperty("--text", String(text))
-        // Resting cards keep their existing inverse limit.
-        stage.current?.style.setProperty("--hang", String(Math.min(text, HANG)))
-      }
-      const now = `${x}:${y}:${zoom}`
-      if (now !== drawn) {
-        drawn = now
-        latest = { x, y, zoom }
-        if (!frame) frame = requestAnimationFrame(() => {
-          frame = 0
-          store.refreshSurface(latest)
-        })
-      }
-    }
-    set(flowStore.getState().transform)
-    const stop = flowStore.subscribe((state) => set(state.transform))
-    return () => {
-      stop()
-      cancelAnimationFrame(frame)
-    }
-  }, [flowStore, store])
   // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
   useLayoutEffect(() => {
     let [held, settle] = [flowStore.getState().transform[2], 0]
@@ -947,9 +916,6 @@ function Canvas({
  * 5,000 fitted were many windows of it, and every frame took 1.5 s.
  */
 const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.test(navigator.userAgent)
-
-/** How much a box's words are scaled against the canvas, so they read at nearly one size at any zoom: in steps, so a zoom sets it only as it crosses one. */
-const textScale = (zoom: number) => Math.round((1 / Math.min(2.5, Math.max(0.25, zoom))) * 20) / 20
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
 export function CanvasHost(props: { projectId: string | null; active: boolean; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {

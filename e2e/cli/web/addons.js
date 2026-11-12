@@ -222,7 +222,7 @@ assets:
   await until('off the one line', () => Promise.resolve(yaml()), (text) => !text.includes('wushu'));
   check('one_line_goes', (await chips('flowed').count()) === 0 && yaml().includes('instructions: One line.'), yaml());
 
-  // One size on screen down to a zoom of 0.5, past which they shrink with the canvas (e139a61c6), and never wider than their box.
+  // Drawn at the canvas's scale, as all of a box is (cl-890): the same size in canvas pixels at every zoom, and never wider than their box.
   const pane = page.locator('.react-flow__pane');
   const sizes = [];
   for (const steps of [0, 1, 3]) {
@@ -234,15 +234,14 @@ assets:
       const flow = document.querySelector('.react-flow__viewport');
       if (!chip || !flow) return null;
       const zoom = new DOMMatrix(getComputedStyle(flow).transform).a;
-      return { zoom, screen: parseFloat(getComputedStyle(chip).fontSize) * zoom, wide: chip.getBoundingClientRect().width / zoom };
+      return { zoom, font: parseFloat(getComputedStyle(chip).fontSize), wide: chip.getBoundingClientRect().width / zoom };
     });
     if (measure) sizes.push(measure);
   }
   seen.sizes = sizes;
-  const screens = sizes.filter((one) => one.zoom >= 0.5).map((one) => one.screen);
-  const [atHang, far] = [sizes.find((one) => Math.abs(one.zoom - 0.5) < 0.01), sizes.find((one) => one.zoom < 0.45)];
-  check('chip_near_one_size', screens.length > 1 && Math.max(...screens) / Math.min(...screens) < 1.2 && sizes.every((one) => one.wide <= 320), sizes);
-  check('chip_shrinks_far_out', Boolean(atHang && far) && Math.abs(far.screen / atHang.screen - far.zoom / atHang.zoom) < 0.1, sizes);
+  // Past 20% a chip is only a mark (AddOns.css).
+  const worded = sizes.filter((one) => one.zoom >= 0.2);
+  check('chip_scales_with_the_canvas', new Set(worded.map((one) => one.zoom)).size > 1 && worded.every((one) => one.font === worded[0].font && Math.abs(one.wide - worded[0].wide) < 0.5 && one.wide <= 320), sizes);
 
   // A compatible tool changes without changing the node's media type or its explicit adapter parameters.
   if (other) {
