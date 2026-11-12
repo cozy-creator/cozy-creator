@@ -85,3 +85,28 @@ if [ -z "$ONLY" ] || [[ $ONLY == *",wrong-family,"* ]]; then
     lora_delete wrong-family
   fi
 fi
+
+# MOSS Image's built-in edits (xs-184 phase 2): a prompt mentioning pictures runs under Moss-Image-Edit with no --lora;
+# image_to_image remakes a picture. Judged by eye (previews); each must complete with a picture. `only=moss-edit` runs all.
+moss_cell() {  # moss_cell <name> <function> [args...]
+  local name=$1 fn=$2 SAVED=$ONLY
+  shift 2
+  [ -z "$ONLY" ] || [[ $ONLY == *",$name,"* || $ONLY == *",moss-edit,"* ]] || return 0
+  [ -z "$ONLY" ] || ONLY="$ONLY$name,"
+  cell "$name" "$(pkg moss-image "$fn")" "$@"
+  expect "$name-made" "$([ -n "$(output "$name" 'png|webp|jpg')" ] && echo PASS || echo FAIL)" \
+    "run $(cat "$name.number"): $(run_get "$OUT" "$name" .status)"
+  ONLY=$SAVED
+}
+PERSON="[{\"name\": \"Person\", \"image\": \"$REF\"}]"
+moss_cell moss-edit-red generate seed:=$((R + 50)) references:="$PERSON" \
+  prompt="Change only the clothing of <Person> to a bright red jacket. Keep the face, hair, pose and background unchanged."
+moss_cell moss-edit-beach generate seed:=$((R + 51)) references:="$PERSON" \
+  prompt="Put <Person> on a sunny beach with the sea behind, keeping the person unchanged."
+moss_cell moss-edit-watercolor generate seed:=$((R + 52)) references:="$PERSON" prompt="Turn <Person> into a soft watercolor painting."
+moss_cell moss-hat generate seed:=$((R + 53)) prompt="a straw sun hat with a blue ribbon on a white table, studio photo"
+HAT=$(output moss-hat 'png|webp|jpg')
+[ -z "$HAT" ] || moss_cell moss-edit-two generate seed:=$((R + 54)) \
+  references:="[{\"name\": \"Person\", \"image\": \"$REF\"}, {\"name\": \"Hat\", \"image\": \"$HAT\"}]" \
+  prompt="<Person> wearing the hat from <Hat>, keeping the person, pose and background unchanged."
+moss_cell moss-img2img image_to_image --file image="$REF" prompt="an oil painting, thick brush strokes" strength:=0.6 seed:=$((R + 55))
