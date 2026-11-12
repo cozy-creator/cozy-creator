@@ -110,6 +110,17 @@ function linesOf(text, name) {
   // Named first, it's read by PyPI's Runtime, which knows no tool; the install a run makes on this machine's Runtime takes its place.
   importYaml(folder, `${yaml().trimEnd()}\n  shot:\n    tool: ${fixture}/shot\n    plate: <walk>\n`);
   await box('shot').waitFor();
+  // No box shows a description field for now (cl-900, Paul 11-12: "remove all of the 'description' boxes since they are confusing"): a
+  // picture, a video, a sound, a box with a tool; a stored one stays in the file.
+  await api(`/v1/projects/${id}/assets/walk`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'A walk by the sea' } }) });
+  await until('walk described', () => fieldsOf('walk'), (fields) => fields.description === 'A walk by the sea');
+  for (const name of ['coast', 'walk', 'hum', 'shot']) {
+    await open(name);
+    check(`${name}_shows_no_description`, (await box(name).locator('.desc-field, [aria-label="Description"]').count()) === 0, await box(name).innerText());
+  }
+  check('a_stored_description_stays', (await fieldsOf('walk')).description === 'A walk by the sea', await fieldsOf('walk'));
+  await shot('no-description');
+  await closeBox(page);
   if (local) execFileSync(COZY, ['--json', 'run', `${fixture}/still`, 'instructions=primed', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
   const tool = await until('the fixture listed', async () => (await api(`/v1/tools?project=${id}`)).body.tools.find((held) => held.local && held.id === `${fixture}/shot`), Boolean, FIRST_RUN_MS);
   // The sidebar names operations only; model implementations stay inside each node's configuration.
@@ -430,17 +441,6 @@ function linesOf(text, name) {
     check('pickup_of_another_take', fromOther.pickup?.out_frame === 7 && fromOther.pickup.take?.file?.file === 'VideoFile', fromOther.pickup);
     await shot('picked-up');
   }
-
-  // No box shows a description field for now (cl-900, Paul 11-12: "remove all of the 'description' boxes since they are confusing"): a
-  // picture, a video, a sound, a box with a tool; a stored one stays in the file.
-  await api(`/v1/projects/${id}/assets/walk`, { method: 'PATCH', body: JSON.stringify({ fields: { description: 'A walk by the sea' } }) });
-  await until('walk described', () => fieldsOf('walk'), (fields) => fields.description === 'A walk by the sea');
-  for (const name of ['coast', 'walk', 'hum', 'shot']) {
-    await open(name);
-    check(`${name}_shows_no_description`, (await box(name).locator('.desc-field, [aria-label="Description"]').count()) === 0, await box(name).innerText());
-  }
-  check('a_stored_description_stays', (await fieldsOf('walk')).description === 'A walk by the sea', await fieldsOf('walk'));
-  await shot('no-description');
 
   check('sidebar_still_only_nodes_and_tools', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .browse, .tools .box-shelf-head, .tools .tool-off, .tools input').count() === 0);
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
