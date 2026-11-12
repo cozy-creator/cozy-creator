@@ -567,13 +567,7 @@ impl Calcifer {
             let (id, name) = project::identity(dir);
             (run.project_id, run.project) = (Some(id), Some(name));
         }
-        // Its machine's GPU from the moment it has one, not only once it ran (cl-921).
-        if run.gpu.is_none()
-            && run.settled_at_ms.is_none()
-            && let Some(machine) = run.machine.as_deref()
-        {
-            run.gpu = Some(self.gpu_of(machine)).filter(|gpu| !gpu.is_empty());
-        }
+        self.live_gpu(&mut run);
         if let Some(live) = lock(&self.live).get(&row.id) {
             run.waiting.clone_from(&live.waiting);
             run.progress.clone_from(&live.progress);
@@ -847,6 +841,7 @@ impl Calcifer {
                 run.waiting.clone_from(&waiting);
                 run.progress.clone_from(&progress);
                 run.stalled = self.stalled(run);
+                self.live_gpu(run);
             }
             let _ = self.events.send((id.clone(), event));
         }
@@ -885,7 +880,9 @@ impl Calcifer {
             }
             if let Some(clock) = &mut live.clock {
                 let received = store::now_ms() as f64;
-                clock.observe(&progress, if progress.at_ms > 0 { progress.at_ms as f64 } else { received }, received);
+                let at = if progress.at_ms > 0 { progress.at_ms as f64 } else { received };
+                clock.moving(&progress, at);
+                clock.observe(&progress, at, received);
                 time_left(clock, &mut progress);
             }
             let was = live.progress.replace(progress.clone()).map(|p| p.stage);
@@ -1079,6 +1076,16 @@ impl Calcifer {
         let history = self.history(target);
         let gpu = history.iter().map(|took| took.gpu.as_str()).find(|gpu| eta::same_card(gpu, card))?.to_owned();
         eta::one_gpu_ms(&history, "", &gpu, size)
+    }
+
+    /// Its machine's GPU from the moment it has one, not only once it ran (cl-921): on its record and every lifecycle event, as it goes.
+    pub(crate) fn live_gpu(&self, run: &mut Run) {
+        if run.gpu.is_none()
+            && run.settled_at_ms.is_none()
+            && let Some(machine) = run.machine.as_deref()
+        {
+            run.gpu = Some(self.gpu_of(machine)).filter(|gpu| !gpu.is_empty());
+        }
     }
 
     /// The GPU `machine` has, by name, as it last said; empty: unknown.

@@ -183,9 +183,6 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const left = run ? leftOf(run) : undefined
   const time = since !== undefined && left != null ? ` - ${short(since)} / ${short(since + left)}` : ""
   const cancel = !["canceling", "failed", "result"].includes(face.phase)
-  // At rest, a meter of the whole job along its box's bottom edge, only for a true fraction (cl-928); Focus has the lines alone.
-  const whole = useWhole(run, since, left ?? undefined)
-  const meter = !above && !["canceling", "failed"].includes(face.phase) ? whole : undefined
   return (
     <div className={`prog run-face ${above ? "above" : "lines"} ${face.phase}`} data-phase={face.phase}>
       <p className="face-machine">{`${face.machine}${time}`}</p>
@@ -206,11 +203,24 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
           </button>
         )}
       </p>
-      {meter !== undefined && (
-        <span className="face-meter" role="progressbar" aria-label="The whole job" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(meter * 100)}>
-          <i style={{ transform: `scaleX(${meter})` }} />
-        </span>
-      )}
     </div>
+  )
+}
+
+/** At rest, how far the whole job is, as a thin meter along the top of its box (cl-928; Paul, 11-12: at the top): line 1's numbers, drawn
+ *  only once there's an estimate. Focus has the lines alone. */
+export function RunMeter({ view, number }: { view: ElementView; number?: number }) {
+  const { client } = useConnection()
+  const later = number !== undefined && number !== view.run?.number
+  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: later })
+  const run = later ? data : view.run
+  const now = useNow(true)
+  const since = run ? (now - run.created_at_ms) / 1000 : undefined
+  const whole = useWhole(run, since, run ? leftOf(run) : undefined)
+  if (whole === undefined || view.canceling || run?.cancel_requested || run?.status === "failed") return null
+  return (
+    <span className="tile-meter" role="progressbar" aria-label="The whole job" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(whole * 100)}>
+      <i style={{ transform: `scaleX(${whole})` }} />
+    </span>
   )
 }

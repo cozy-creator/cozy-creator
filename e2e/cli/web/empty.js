@@ -1,7 +1,8 @@
 // An empty box offers no New (cl-925, Paul 11-12: "when focused on a node, next to its name, do not have 'new' next to it if there are no
 // images or media to display there"), in a real browser on a real Calcifer. Qwen's Image and H3's Shot, nothing made: in Focus, no New take
 // and no New beside the name; once each has its first take, New is there. And a box's face never falls back to its stored description
-// (cl-900): a blank Edit described by hand shows nothing of it.
+// (cl-900): a blank Edit described by hand shows nothing of it. New stays while the first take is queued and running, and starts a second
+// beside it (cl-941).
 //   node empty.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
@@ -9,7 +10,10 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, until, upload } = require('./page');
+const { projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, renderOf, until, upload } = require('./page');
+
+/** A slow still, local code this computer runs (`project/tool.py`). */
+const TOOL = join(__dirname, '..', 'project', 'tool.py');
 
 const failures = [];
 const seen = {};
@@ -104,6 +108,36 @@ async function died(why) {
     await shot(`${box.name}-with-a-take`);
     await closeBox(page);
   }
+
+  // New stays while the first take is on its way, queued and then running, and starts a second beside it (cl-941, Paul 11-12: "it should always
+  // be there, if I have another image that is pending"). Where this computer runs models: a slow still, its first take rendered from Focus.
+  if ((await api('/v1/status')).body?.local_usable) {
+    const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: `${TOOL}/slow`, kind: 'image', name: 'pending', exact: true, fields: { instructions: 'the first', seconds: 90 }, at: { x: 1100, y: 100 } }) });
+    if (made.status >= 300) throw new Error(`pending: ${JSON.stringify(made)}`);
+    await boxOf(page, 'pending').waitFor();
+    await openBox(page, 'pending');
+    await (await renderOf(page, 'pending')).click();
+    const runs = async () => ((await api('/v1/runs?limit=100')).body?.runs ?? []).filter((run) => run.project_id === id && run.kind === 'call');
+    const phase = async () => ({ ...(await offers('pending')), runs: (await runs()).map((run) => run.status), takes: (await asset('pending'))?.versions ?? 0 });
+    const queued = await until('the first take on its way', phase, (now) => now.runs.length === 1 && now.takes === 0, 60_000).catch(phase);
+    seen.pending_queued = queued;
+    check('new_while_the_first_take_is_on_its_way', queued.take === 1 && queued.runs.length === 1 && queued.takes === 0, queued);
+    await shot('pending-queued');
+    const running = await until('the first take running', phase, (now) => now.runs[0] === 'in_progress', 400_000).catch(phase);
+    seen.pending_running = running;
+    check('new_while_the_first_take_runs', running.take === 1 && running.runs[0] === 'in_progress' && running.takes === 0, running);
+    await shot('pending-running');
+    // New starts a second take beside it.
+    await page.locator('.card.here[data-asset="pending"] .take.add').click();
+    await page.locator('.card.here[data-asset="pending"] .in-frame .mention-text').waitFor();
+    await page.locator('.card.here[data-asset="pending"] button[aria-label="Render"]').click();
+    const two = await until('a second take beside it', phase, (now) => now.runs.length === 2, 60_000).catch(phase);
+    seen.pending_two = two;
+    check('new_starts_a_second_take_beside_it', two.runs.length === 2 && two.runs.some((status) => status === 'in_progress'), two);
+    await shot('pending-second');
+    for (const run of await runs()) if (!['completed', 'failed', 'canceled'].includes(run.status)) await api(`/v1/runs/${run.id}/cancel`, { method: 'POST', body: '{}' });
+    await closeBox(page);
+  } else check('this_computer_runs_the_slow_still', false, (await api('/v1/status')).body);
 
   // A blank Edit with a description written by hand shows nothing of it on its face (cl-900): only what it's for.
   const blank = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: 'cozy/edit', kind: 'video', name: 'cut', exact: true, fields: { description: 'HIDDEN-DESCRIPTION' }, at: { x: 100, y: 700 } }) });

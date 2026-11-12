@@ -110,6 +110,7 @@ test = "pr: models"
 "--limit" = "pr: models"
 "--offset" = "pr: catalog pagination parser and model list pages"
 "--on" = "pr: models"
+"--fits" = "pr: slot_choices, Qwen Image's rewriter, Klein's upsampler and H3's base model"
 ["model install"]
 test = "pr: models"
 "--lane" = "pr: models"

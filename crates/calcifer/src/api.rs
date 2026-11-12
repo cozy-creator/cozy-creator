@@ -662,6 +662,12 @@ async fn events(
             .store()
             .events_after(row.id.as_str(), starting_after)?,
     );
+    // What it replays of a run still going says its machine's GPU, as its live events do.
+    for event in &mut pending {
+        if let Event::Created { run, .. } | Event::Queued { run, .. } | Event::InProgress { run, .. } = event {
+            api.calcifer.live_gpu(run);
+        }
+    }
     pending.extend(api.calcifer.live(&row.id));
     let follow = Follow {
         vault_token: crate::project::vault::readable_token(&row.out_dir),

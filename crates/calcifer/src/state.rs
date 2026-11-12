@@ -24,7 +24,8 @@ pub(crate) const TABLES: &str = "
         used_at_ms INTEGER NOT NULL,
         walking INTEGER NOT NULL DEFAULT 0,
         name TEXT NOT NULL DEFAULT '',
-        code TEXT NOT NULL DEFAULT ''
+        code TEXT NOT NULL DEFAULT '',
+        purge_ms INTEGER NOT NULL DEFAULT 0
     ) STRICT;
     CREATE TABLE IF NOT EXISTS sessions (
         token_sha256 TEXT PRIMARY KEY,
@@ -55,6 +56,7 @@ pub(crate) const TABLES: &str = "
         families TEXT NOT NULL,
         lora INTEGER NOT NULL,
         family TEXT,
+        parts TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (hub, sha256)
     ) STRICT, WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS after_steps (
@@ -78,6 +80,8 @@ pub(crate) struct KnownProject {
     pub used_at_ms: i64,
     /// Its walk was going: the next start walks it again.
     pub walking: bool,
+    /// When a deleted box's undo window next ends in it, in ms (cl-919): its files go then, or as the next start catches up. 0: none.
+    pub purge_ms: i64,
 }
 
 /// A browser session, by its secrets' digests.
@@ -92,7 +96,15 @@ fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
     let path = PathBuf::from(row.get::<_, String>(1)?);
     let name = Some(row.get::<_, String>(4)?).filter(|name| !name.is_empty());
     let name = name.unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
-    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)? })
+    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)?, purge_ms: row.get(6)? })
+}
+
+/// An index from before cl-919 knows of no deleted boxes' files to purge: its column, added, none due.
+pub(crate) fn project_purges(conn: &Connection) -> rusqlite::Result<()> {
+    match conn.prepare("SELECT purge_ms FROM projects LIMIT 0").is_ok() {
+        true => Ok(()),
+        false => conn.execute_batch("ALTER TABLE projects ADD COLUMN purge_ms INTEGER NOT NULL DEFAULT 0"),
+    }
 }
 
 /// A store from before cl-819 names no project: its column, added.
@@ -101,6 +113,14 @@ pub(crate) fn project_names(conn: &Connection) -> rusqlite::Result<()> {
     match named {
         true => Ok(()),
         false => conn.execute_batch("ALTER TABLE projects ADD COLUMN name TEXT NOT NULL DEFAULT ''"),
+    }
+}
+
+/// A store from before cl-943 keeps no header's parts: its column, added. Its rows were read under other facts, and go.
+pub(crate) fn header_parts(conn: &Connection) -> rusqlite::Result<()> {
+    match conn.prepare("SELECT parts FROM headers LIMIT 0").is_ok() {
+        true => Ok(()),
+        false => conn.execute_batch("ALTER TABLE headers ADD COLUMN parts TEXT NOT NULL DEFAULT ''"),
     }
 }
 
@@ -196,13 +216,13 @@ fn digest(key: &str) -> String {
 
 impl Store {
     pub(crate) fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
-        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name, code FROM projects WHERE id = ?1", [id], known).optional()?))
+        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name, code, purge_ms FROM projects WHERE id = ?1", [id], known).optional()?))
     }
 
     /// Every project opened here, last used first.
     pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name, code FROM projects ORDER BY used_at_ms DESC, id")?;
+            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name, code, purge_ms FROM projects ORDER BY used_at_ms DESC, id")?;
             Ok(statement.query_map([], known)?.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -230,6 +250,25 @@ impl Store {
                 params![id, path.to_string_lossy(), name, used_at_ms, code],
             )?;
             Ok(code)
+        })
+    }
+
+    /// `id`'s deleted boxes' files are due to go at `at_ms`, if that's sooner than what was due.
+    pub(crate) fn purge_due(&self, id: &str, at_ms: i64) -> Result<()> {
+        self.write(|tx| {
+            tx.execute("UPDATE projects SET purge_ms = ?2 WHERE id = ?1 AND (purge_ms = 0 OR purge_ms > ?2)", params![id, at_ms])?;
+            Ok(())
+        })
+    }
+
+    /// `id` purged, its next due at `next_ms` (0: none), as read when it was due at `was_ms`: a delete since, due later, stands too.
+    pub(crate) fn purged(&self, id: &str, was_ms: i64, next_ms: i64) -> Result<()> {
+        self.write(|tx| {
+            tx.execute(
+                "UPDATE projects SET purge_ms = CASE WHEN purge_ms = ?2 THEN ?3 WHEN ?3 = 0 THEN purge_ms ELSE MIN(purge_ms, ?3) END WHERE id = ?1",
+                params![id, was_ms, next_ms],
+            )?;
+            Ok(())
         })
     }
 
@@ -336,8 +375,11 @@ impl Store {
     pub(crate) fn header_facts(&self, families: &str) -> Result<HashMap<(String, String), Facts>> {
         self.write(|tx| {
             tx.execute("DELETE FROM headers WHERE families <> ?1", [families])?;
-            let mut statement = tx.prepare("SELECT hub, sha256, lora, family FROM headers")?;
-            let rows = statement.query_map([], |r| Ok(((r.get(0)?, r.get(1)?), Facts { lora: r.get(2)?, family: r.get(3)? })))?;
+            let mut statement = tx.prepare("SELECT hub, sha256, lora, family, parts FROM headers")?;
+            let rows = statement.query_map([], |r| {
+                let parts: String = r.get(4)?;
+                Ok(((r.get(0)?, r.get(1)?), Facts { lora: r.get(2)?, family: r.get(3)?, parts: serde_json::from_str(&parts).unwrap_or_default() }))
+            })?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -345,9 +387,10 @@ impl Store {
     /// What headers said, by Hub and sha256, read under `families`.
     pub(crate) fn keep_header_facts(&self, families: &str, read: &[((String, String), Facts)]) -> Result<()> {
         self.write(|tx| {
-            let mut statement = tx.prepare("INSERT OR REPLACE INTO headers (hub, sha256, families, lora, family) VALUES (?1, ?2, ?3, ?4, ?5)")?;
+            let mut statement = tx.prepare("INSERT OR REPLACE INTO headers (hub, sha256, families, lora, family, parts) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
             for ((hub, sha256), facts) in read {
-                statement.execute(params![hub, sha256, families, facts.lora, facts.family])?;
+                let parts = serde_json::to_string(&facts.parts).unwrap_or_default();
+                statement.execute(params![hub, sha256, families, facts.lora, facts.family, parts])?;
             }
             Ok(())
         })
@@ -477,7 +520,7 @@ pub(crate) fn import(store: &Store, dir: &Path) {
             steps.push((key.to_string_lossy().into_owned(), step.map(|step| step.to_string()), path));
         }
     }
-    let families = tensorfs::family::families_digest();
+    let families = tensorfs::family::facts_digest();
     let none = index.is_none() && sessions.is_none() && tools.is_none() && here.is_none() && headers.is_none() && steps.is_empty();
     if none {
         let _ = std::fs::remove_dir(&after_dir);

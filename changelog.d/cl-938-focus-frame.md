@@ -1,0 +1,1 @@
+A picture and a video are written the same way in Focus: in the frame, at its shape, its corner setting the shape. A video's Summary and Beats are sections there, each opened by its head, + Beat for another; behind them, faded and full height, the pictures the section being written mentions, or its take. Under the frame: its tool, Render, every other field, and Models & LoRAs.

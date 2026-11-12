@@ -459,6 +459,8 @@ impl Service {
                 return Ok(());
             }
         }
+        // A run's need comes before every guess at what another may read (cl-905).
+        crate::access::drop_guesses();
         self.sweep(missing, false);
         let room = match store.room() {
             Ok(room) => room,

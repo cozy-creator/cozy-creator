@@ -376,6 +376,12 @@ pub(crate) struct Asset {
     pub tried: Option<Tried>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failed: Option<Failed>,
+    /// When a delete set it aside: Undo brings it back until the window ends, then its files leave the project (cl-919, `purge`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_ms: Option<i64>,
+    /// The file its box showed of its own when it was deleted, which no version holds: an imported picture's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 /// What stopped the last try at it, on `inputs`: kept until a version lands or it's tried again, so a reader who wasn't watching hears it too.
@@ -401,6 +407,16 @@ impl Asset {
     /// Its versions and those discarded.
     pub(crate) fn on_record(&self) -> impl Iterator<Item = &Version> {
         self.versions.iter().chain(&self.discarded)
+    }
+
+    /// Every file it holds: its versions', discarded too, and the one its box showed of its own.
+    pub(crate) fn files(&self) -> impl Iterator<Item = &String> {
+        self.on_record().flat_map(|version| version.files.values()).chain(&self.held)
+    }
+
+    /// A delete set it aside and its undo window ended by `now`: nothing brings it back.
+    pub(crate) fn lapsed(&self, now: i64) -> bool {
+        self.deleted_ms.is_some_and(|at| at + super::purge::window_ms() <= now)
     }
 
     /// The words version `number` was made from: its own, else those of the latest before it that holds any.
@@ -787,21 +803,23 @@ impl Lock {
     }
 
     /// Each asset whose name the file has lost and with nothing on its way, set aside under a key no name can be, so that a later asset of that
-    /// name starts with no versions. It stays an orphan until `reclaim`, and renaming it in the browser still finds it.
-    pub(crate) fn tombstone(&mut self, named: impl Fn(&str) -> bool) {
+    /// name starts with no versions. It stays an orphan until its undo window ends (`purge`), and renaming it in the browser still finds it.
+    pub(crate) fn tombstone(&mut self, named: impl Fn(&str) -> bool) -> bool {
         let going: BTreeSet<String> = (self.pending.values().map(|pending| name_key(&pending.asset)))
             .chain(self.walk.asks.iter().flat_map(|ask| ask.takes.iter().map(|take| name_key(&take.asset))))
             .collect();
         let lost: Vec<String> = self.assets.keys().filter(|key| !key.contains(TOMBSTONE) && !named(key) && !going.contains(*key)).cloned().collect();
         lost.iter().for_each(|key| self.bury(key));
+        !lost.is_empty()
     }
 
-    /// The row under `key` set aside: its versions stay, an orphan's, and that name starts with none.
+    /// The row under `key` set aside, deleted now: what it holds stays, for Undo, until its window ends (`purge`), and that name starts with none.
     pub(crate) fn bury(&mut self, key: &str) {
-        let Some(mut held) = self.assets.remove(key).filter(|held| held.on_record().next().is_some()) else { return };
+        let Some(mut held) = self.assets.remove(key).filter(|held| held.files().next().is_some()) else { return };
         if held.name.is_empty() {
             held.name = key.to_owned();
         }
+        held.deleted_ms = Some(super::now_ms());
         let free = (1..).map(|n| format!("{key}{TOMBSTONE}{n}")).find(|at| !self.assets.contains_key(at)).expect("a free key");
         self.assets.insert(free, held);
     }
@@ -809,20 +827,67 @@ impl Lock {
     /// Every sha256 a version or a run has on record here, of any asset, discarded too: all `reclaim` may delete, once nothing uses it.
     pub(crate) fn recorded(&self) -> BTreeSet<String> {
         let discarded = self.assets.values().flat_map(|held| &held.discarded).flat_map(|version| version.files.values()).map(String::as_str);
-        self.named(|_| true).into_iter().chain(discarded).chain(self.runs.iter().map(|row| row.sha256.as_str())).map(str::to_owned).collect()
+        let held = self.assets.values().filter_map(|row| row.held.as_deref());
+        self.named(|_| true).into_iter().chain(discarded).chain(held).chain(self.runs.iter().map(|row| row.sha256.as_str())).map(str::to_owned).collect()
     }
 
-    /// The latest row `tombstone` set aside of `name`, back under its name, if nothing holds that. Whether one came back.
+    /// The latest row `tombstone` set aside of `name` that Undo can still bring back, back under its name, if nothing holds that. Whether one came back.
     pub(crate) fn untombstone(&mut self, name: &str) -> bool {
+        self.restore(name, "")
+    }
+
+    /// Box `id`'s row a delete set aside (any of `name`'s with no id), back under `name` as it was before, if its window hasn't ended and
+    /// nothing holds that name. Whether one came back.
+    pub(crate) fn restore(&mut self, name: &str, id: &str) -> bool {
         let key = name_key(name);
         if self.assets.contains_key(&key) {
             return false;
         }
+        let now = super::now_ms();
         let prefix = format!("{key}{TOMBSTONE}");
-        let latest = self.assets.keys().filter(|at| at.starts_with(&prefix)).max_by_key(|at| at[prefix.len()..].parse::<u32>().unwrap_or(0)).cloned();
-        let Some(held) = latest.and_then(|at| self.assets.remove(&at)) else { return false };
-        self.assets.insert(key, held);
+        let latest = |of_box: bool| {
+            (self.assets.iter())
+                .filter(|(at, held)| at.starts_with(&prefix) && (!of_box || held.id == id) && !held.lapsed(now) && held.files().next().is_some())
+                .max_by_key(|(at, _)| at[prefix.len()..].parse::<u32>().unwrap_or(0))
+                .map(|(at, _)| at.clone())
+        };
+        let at = latest(!id.is_empty()).or_else(|| latest(false));
+        let Some(mut held) = at.and_then(|at| self.assets.remove(&at)) else { return false };
+        (held.deleted_ms, held.held) = (None, None);
+        if held.on_record().next().is_some() {
+            self.assets.insert(key, held);
+        }
         true
+    }
+
+    /// Box `name` deleted now: its row and `pin`, the file it showed of its own, set aside for Undo under `id`, its box's.
+    pub(crate) fn set_aside(&mut self, name: &str, id: &str, pin: Option<String>) {
+        let key = self.row_of(name);
+        if pin.is_some() || self.assets.contains_key(&key) {
+            let row = self.asset_mut(name, "");
+            if row.id.is_empty() {
+                id.clone_into(&mut row.id);
+            }
+            row.held = pin.filter(|pin| !row.on_record().any(|version| version.files.values().any(|file| file == pin)));
+        }
+        self.bury(&key);
+    }
+
+    /// The tombstone row a delete of box `id` (else of `name`) set aside, the latest.
+    pub(crate) fn deleted_box(&self, name: &str, id: &str) -> Option<&Asset> {
+        let prefix = format!("{}{TOMBSTONE}", name_key(name));
+        let latest = |of_box: bool| {
+            (self.assets.iter())
+                .filter(|(at, held)| at.starts_with(&prefix) && (!of_box || held.id == id))
+                .max_by_key(|(at, _)| at[prefix.len()..].parse::<u32>().unwrap_or(0))
+                .map(|(_, held)| held)
+        };
+        latest(!id.is_empty()).or_else(|| latest(false))
+    }
+
+    /// Whether `name` is a box deleted from the project that Undo can still bring back.
+    pub(crate) fn was_deleted(&self, name: &str, now: i64) -> bool {
+        self.deleted_box(name, "").is_some_and(|held| !held.lapsed(now) && held.files().next().is_some())
     }
 
     /// `sha256` is on `machine`, and not here: for good, or with `name`, on its way here as the file that makes.
@@ -1988,6 +2053,11 @@ impl Folder {
             let _ = std::fs::remove_dir(self.dir.join(RUNS));
         }
         Ok((files, bytes, unrecorded, unheld))
+    }
+
+    /// Held while files are deleted: a file isn't kept between.
+    pub(super) fn collecting(&self) -> MutexGuard<'_, ()> {
+        self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Bytes on disk of `sha256`, if here.

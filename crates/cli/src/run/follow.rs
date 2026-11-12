@@ -844,6 +844,8 @@ pub(crate) fn said(progress: &Progress) -> String {
 /// little trusted, or that nothing like it has run to tell yet.
 pub(crate) fn left(progress: &Progress) -> Option<String> {
     match (progress.eta_s, progress.eta_basis) {
+        // Only the bytes it moves are known: at least that.
+        (Some(left), Some(EtaBasis::Bytes)) => Some(format!("at least {} left", output::span(left))),
         (Some(left), _) => {
             let about = if progress.eta_confidence.is_some_and(|c| c < 0.5) { "about " } else { "" };
             Some(format!("{about}{} left", output::span(left)))

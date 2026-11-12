@@ -1,8 +1,8 @@
-//! What a model is, from its header: only a LoRA's factors or weights of its own, and its family. A model's family is the label its owner
-//! gives it on the Hub, else what its header verifies as: an upload fills the label from its header, and the owner can set or clear it.
-//! The Hub's catalog carries only that label, and not for a model uploaded before it was filled: what its weights verify as, and whether
-//! it's a LoRA, are read here until the Hub derives them at publish (tensorhub th-367). A header is small and never changes, so each is
-//! read once, and only what it says is kept, in `state.db`'s `headers`: a first list reads every header, and a restart shouldn't.
+//! What a model is, from its header: only a LoRA's factors or weights of its own, its family, and what it holds as a model slot reads it.
+//! A model's family is the label its owner gives it on the Hub, else what its header verifies as; it groups and finds models and never
+//! decides what loads where: a slot loads what holds what its default holds (cl-943, [`tensorfs::family::parts`]). The Hub's catalog
+//! carries only the label, so headers are read here. A header is small and never changes, so each is read once, and only what it says is
+//! kept, in `state.db`'s `headers`: a first list reads every header, and a restart shouldn't.
 use std::{
     collections::{BTreeSet, HashMap},
     sync::{Mutex, OnceLock},
@@ -13,14 +13,16 @@ use futures_util::{StreamExt as _, stream};
 use ::api::hub::{Client, types};
 use api::{
     config::Origin,
+    choices::Choice,
     error::{Error, Kind},
     calcifer::hub::{FamilyFrom, FoundModel, ModelContentKind},
+    interface::{Callable, Interface, Slot},
     model_ref::{ModelKind, ModelRef},
     calcifer::tool::Tool,
 };
 use tensorfs::{
     Endpoint,
-    family::{self, Facts},
+    family::{self, Facts, parts::Reads},
     format::{Header, ObjectRef},
 };
 
@@ -43,7 +45,7 @@ static READ: OnceLock<Mutex<Read>> = OnceLock::new();
 
 fn read_so_far(api: &Api) -> &'static Mutex<Read> {
     READ.get_or_init(|| {
-        let facts = api.calcifer.store().header_facts(family::families_digest()).unwrap_or_else(|why| {
+        let facts = api.calcifer.store().header_facts(family::facts_digest()).unwrap_or_else(|why| {
             tracing::warn!("{why}: model headers are read again");
             HashMap::new()
         });
@@ -71,7 +73,7 @@ fn save(api: &Api) {
     if unkept.is_empty() {
         return;
     }
-    if let Err(why) = api.calcifer.store().keep_header_facts(family::families_digest(), &unkept) {
+    if let Err(why) = api.calcifer.store().keep_header_facts(family::facts_digest(), &unkept) {
         tracing::debug!("keeping what headers said: {why}");
     }
 }
@@ -117,8 +119,8 @@ pub(super) async fn of_card(api: &Api, hub: &Origin, card: &types::ModelCard) ->
     facts
 }
 
-/// Each row says what it is, from the card it was read from.
-pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], models: &mut [FoundModel]) {
+/// Each row says what it is, from the card it was read from; and what each header said.
+pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], models: &mut [FoundModel]) -> Vec<Option<Facts>> {
     let headers: Vec<Option<types::ObjectRef>> = cards.iter().map(|card| header_of(card).cloned()).collect();
     let unread = headers.iter().flatten().any(|header| kept(api, &key(hub, header)).is_none());
     let endpoint = match (unread, reader(api, hub)) {
@@ -137,11 +139,12 @@ pub(super) async fn said(api: &Api, hub: &Origin, cards: &[types::ModelCard], mo
     if unread {
         save(api);
     }
-    for (row, facts) in models.iter_mut().zip(facts) {
+    for (row, facts) in models.iter_mut().zip(&facts) {
         let weights = facts.as_ref().and_then(|facts| facts.family.as_deref());
         (row.family, row.family_from) = family(row.family.take(), weights);
         row.content_kind = facts.as_ref().map(content_kind);
     }
+    facts
 }
 
 /// How long the family a package's model is named by stands: its owner can change the label.
@@ -193,33 +196,159 @@ fn reference_header<'a>(card: &'a types::ModelCard, reference: &ModelRef) -> Opt
     }
 }
 
-/// Refuse a known kind/family mismatch before a model choice is written. Missing
-/// metadata is not treated as compatibility; the native loader remains authoritative.
-pub(crate) async fn check_choice(api: &Api, hub: &Origin, slot: &str, reference: &str, expected_family: Option<&str>, expected_kind: Option<ModelKind>) -> Result<Option<String>, Error> {
-    let parsed = ModelRef::parse(reference)?;
+/// The release a named one resolves to: the newest of its series after it, as TensorD resolves it (xs-183, `published::newest_fix`).
+fn newest_fix<'a>(release: &'a str, card: &'a types::ModelCard) -> &'a str {
+    let version = |text: &str| text.parse::<pep440_rs::Version>().ok();
+    let Some(named) = version(release) else { return release };
+    let series = &named.release()[..named.release().len().saturating_sub(1).max(1)];
+    (card.releases.iter())
+        .filter(|held| held.visibility == api::model_ref::ReleaseVisibility::Public)
+        .filter_map(|held| Some((version(&held.version)?, held.version.as_str())))
+        .filter(|(v, _)| v.release().starts_with(series) && *v > named && (named.is_pre() || !v.any_prerelease()))
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map_or(release, |(_, text)| text)
+}
+
+/// What `reference` is, as the run that names it loads it: a named release as the newest fix it resolves to, an unnamed one as the
+/// newest, a checkpoint as itself. None: it isn't a Hub model, or its card or header can't be read now.
+async fn held(api: &Api, client: &Client, endpoint: Option<&Endpoint>, hub: &Origin, reference: &str) -> Option<(types::ModelCard, Facts)> {
+    let parsed = ModelRef::parse(reference).ok()?;
     let model = match &parsed {
         ModelRef::Hub { model, .. } | ModelRef::Checkpoint { model, .. } => model,
-        _ => return Ok(None),
+        _ => return None,
     };
-    let Ok(client) = reader(api, hub) else { return Ok(None) };
-    let Ok(card) = client.get_model(&model.org, &model.name).await else { return Ok(None) };
-    let facts = match reference_header(&card, &parsed) {
-        Some(header) => match distribution(&client, hub).await {
-            Ok(endpoint) => read(api, &endpoint, hub, header).await,
-            Err(_) => kept(api, &key(hub, header)),
-        },
-        None => None,
+    let card = client.get_model(&model.org, &model.name).await.inspect_err(|why| tracing::debug!("{reference}: {why}")).ok()?;
+    let parsed = match parsed {
+        ModelRef::Hub { model, release: Some(release) } => ModelRef::Hub { release: Some(newest_fix(&release, &card).to_owned()), model },
+        other => other,
     };
+    let header = reference_header(&card, &parsed)?;
+    let facts = match endpoint {
+        Some(endpoint) => read(api, endpoint, hub, header).await,
+        None => kept(api, &key(hub, header)),
+    }?;
+    Some((card, facts))
+}
+
+/// The family a slot's LoRAs are judged by: what the header says, else the owner's label.
+fn adapts(card: &types::ModelCard, facts: &Facts) -> Option<String> {
+    facts.family.clone().or_else(|| card.model.family.clone().filter(|label| !label.is_empty()))
+}
+
+/// A function's slots as its choices name them: its own by parameter, its calls' by path.
+pub(crate) fn slots_of<'a>(interface: &'a Interface, callable: &'a Callable) -> Vec<(&'a str, &'a Slot)> {
+    let own = callable.models.iter().map(|slot| (slot.param.as_str(), slot));
+    own.chain(interface.call_slots(callable).into_iter().map(|slot| (slot.path.as_str(), slot))).collect()
+}
+
+/// The slots `key` names, as the binder takes it (`Choices::slots`): its own by parameter, a call's by path, else every call's of
+/// that parameter.
+pub(crate) fn slots_named<'a>(interface: &'a Interface, callable: &'a Callable, key: &str) -> Vec<&'a Slot> {
+    let all = slots_of(interface, callable);
+    let exact: Vec<&Slot> = all.iter().filter(|(held, _)| *held == key).map(|(_, slot)| *slot).collect();
+    match exact.is_empty() {
+        true => all.into_iter().filter(|(_, slot)| slot.param == key).map(|(_, slot)| slot).collect(),
+        false => exact,
+    }
+}
+
+/// How `slot` reads its checkpoint: the components its function fetches, and an LM's token loop at any size.
+pub(crate) fn reads(slot: &Slot) -> Reads<'_> {
+    Reads { components: &slot.components, any_size: slot.phase.as_deref() == Some("decode") }
+}
+
+/// Why a model slot can't load `facts`, whose default is `default`: none when it can (cl-943). Its family label plays no part.
+pub(crate) fn unloadable(slot: &Slot, default: &Facts, facts: &Facts) -> Option<String> {
+    match facts.lora {
+        true => Some("it is a LoRA".into()),
+        false => default.parts.lacking(&facts.parts, reads(slot)),
+    }
+}
+
+/// Refuses a choice its slot can't load, as headers say (cl-943). A model slot loads a checkpoint that holds what its default holds
+/// ([`unloadable`]); a LoRA slot, and each LoRA added to a slot, a LoRA of the family the default's header says. `slots` are a
+/// function's own by parameter and its calls' by path, as [`Choice::slot`] names them. A slot with no default, one that reads raw
+/// weights, and a header the Hub can't give now are the loader's to judge. `target` names the function in the remedy.
+pub(crate) async fn check_choices(api: &Api, hub: &str, target: &str, slots: &[(&str, &Slot)], choices: &[Choice]) -> Result<(), Error> {
+    let chosen: Vec<(&Slot, &Choice)> = (choices.iter())
+        .filter(|choice| choice.reference.is_some() || !choice.adapters.is_empty())
+        .filter_map(|choice| slots.iter().find(|(key, _)| *key == choice.slot).map(|(_, slot)| (*slot, choice)))
+        .filter(|(slot, _)| !slot.weights && slot.default.is_some())
+        .collect();
+    if chosen.is_empty() {
+        return Ok(());
+    }
+    let Ok(origin) = Origin::parse(hub) else { return Ok(()) };
+    let Ok(client) = reader(api, &origin) else { return Ok(()) };
+    let endpoint = distribution(&client, &origin).await.ok();
+    let (client, endpoint, hub) = (&client, endpoint.as_ref(), &origin);
+    let result = async {
+        for (slot, choice) in chosen {
+            let default = slot.default.as_deref().unwrap_or_default();
+            let Some((default_card, default_facts)) = held(api, client, endpoint, hub, default).await else { continue };
+            let named = &choice.slot;
+            let same_family = |want: &str, reference: &str, card: &types::ModelCard, facts: &Facts| match adapts(card, facts) {
+                Some(got) if !got.eq_ignore_ascii_case(want) => Err(Error::new(Kind::Validation, "model_choice_family", format!("{named} takes {want} LoRAs; {reference} is for {got}"))),
+                _ => Ok(()),
+            };
+            if let Some(reference) = choice.reference.as_deref()
+                && let Some((card, facts)) = held(api, client, endpoint, hub, reference).await
+            {
+                match (default_facts.lora, facts.lora) {
+                    (false, true) => {
+                        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{named} takes a model; {reference} is a LoRA"))
+                            .next(format!("cozy run … --lora {named}={reference}")));
+                    }
+                    (false, false) => {
+                        if let Some(why) = unloadable(slot, &default_facts, &facts) {
+                            return Err(Error::new(Kind::Validation, "model_choice_unloadable", format!("{named} can't load {reference}: {why}"))
+                                .next(format!("cozy model ls --fits {target}:{named}")));
+                        }
+                    }
+                    (true, false) => {
+                        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{named} takes a LoRA; {reference} is a model")));
+                    }
+                    (true, true) => {
+                        if let Some(want) = adapts(&default_card, &default_facts) {
+                            same_family(&want, reference, &card, &facts)?;
+                        }
+                    }
+                }
+            }
+            for adapter in &choice.adapters {
+                let Some((card, facts)) = held(api, client, endpoint, hub, &adapter.reference).await else { continue };
+                if !facts.lora {
+                    return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{} is a model, not a LoRA for {named}", adapter.reference))
+                        .next(format!("cozy run … --model {named}={}", adapter.reference)));
+                }
+                if let Some(want) = adapts(&default_card, &default_facts) {
+                    same_family(&want, &adapter.reference, &card, &facts)?;
+                }
+            }
+        }
+        Ok::<(), Error>(())
+    }
+    .await;
     save(api);
-    if let Some((expected, _)) = expected_kind.zip(known_kind(&card, facts.as_ref())).filter(|(expected, actual)| expected != actual) {
-        let expected = if expected == ModelKind::Lora { "a LoRA" } else { "base weights" };
-        return Err(Error::new(Kind::Validation, "model_choice_kind", format!("{slot} needs {expected}; {reference} is a different model kind")));
+    result
+}
+
+/// Each slot's default, as a run naming it loads it: what a choice for the slot is judged by.
+pub(crate) async fn defaults(api: &Api, hub: &Origin, slots: &[Slot]) -> Result<Vec<(Slot, Facts)>, Error> {
+    let client = reader(api, hub).map_err(|refused| refused.0)?;
+    let endpoint = distribution(&client, hub).await.ok();
+    let mut read = vec![];
+    for slot in slots {
+        let default = slot.default.as_deref().unwrap_or_default();
+        let found = held(api, &client, endpoint.as_ref(), hub, default).await;
+        let Some((_, facts)) = found else {
+            save(api);
+            return Err(Error::new(Kind::Unavailable, "model_unreadable", format!("{default}'s header can't be read now")).next(format!("cozy model ls {default}")));
+        };
+        read.push((slot.clone(), facts));
     }
-    let (family, _) = family(card.model.family.clone(), facts.as_ref().and_then(|facts| facts.family.as_deref()));
-    if let Some((expected, actual)) = expected_family.zip(family.as_deref()).filter(|(expected, actual)| !expected.eq_ignore_ascii_case(actual)) {
-        return Err(Error::new(Kind::Validation, "model_choice_family", format!("{slot} uses {expected}; {reference} is for {actual}")));
-    }
-    Ok(family)
+    save(api);
+    Ok(read)
 }
 
 /// Each declared slot says the family and kind of its default checkpoint.

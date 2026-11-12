@@ -260,7 +260,8 @@ a spec.
 Calcifer says how long a run has left, all of it until its results are here, so the page, `cozy run`, `run watch`, `run ls` and a
 machine's activity show one number. `eta_s` is the seconds left, `eta_confidence` 0 to 1, and `eta_basis` what it stands on:
 `machine` (runs like it on this machine), `gpu` (on other machines of its GPU, by the name each run's record keeps as `gpu`), `card`
-(on another card, scaled by the Hub's per-SKU speeds for the function, cl-913's bar's third tier), `steps` (its own steps alone), or
+(on another card, scaled by the Hub's per-SKU speeds for the function, cl-913's bar's third tier), `steps` (its own steps alone),
+`bytes` (only the bytes it moves now are known: their bytes left at their rate, at least that long), or
 `first_run` with no `eta_s` (nothing like it ran on any card this computer knows, and no step of its own yet). A live run's record
 keeps its machine's GPU in `gpu` from the moment it has a machine.
 
@@ -278,6 +279,7 @@ keeps its machine's GPU in `gpu` from the moment it has a machine.
   next starts. What its machine says before the prior's first stage (`importing <package>`, `starting the executor`, `loading …`) is
   the prior's start and load. Its results come here once it ends: the newest five like runs' results' bytes (their median) at its
   machine's last measured export rate are part of the time left until it ends, then its `arriving` is.
+- **Bytes.** Whatever it stands on, it is never less than the bytes it moves now (a download, a model loading) left at their rate.
 - **Smooth.** It's said again each second as it counts down. A new estimate within 10% (or 2 s) of what was shown is shown as it is; a
   bigger one is eased to over about a second, never jumped to.
 - **Parts.** A run whose stages are in parts a scope counts (`Segment 2 of 3`): once a part has ended, each part left takes as long as
@@ -478,7 +480,10 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   model is: a text encoder, a VAE, an upsampler), absent if it couldn't be read. Its `family` is its owner's label, else
   what its header verifies as; `family_from` says which (`owner`, or `weights` when its header verifies
   as it). `family=` lists every model the Hub labels so, page by page (`limit` of them), and the others
-  (up to 1000 read) whose header alone says it.
+  (up to 1000 read) whose header alone says it. `fits=<tool>:<slot>` (`project=` finds local code) lists the models (up to 1000
+  read) that slot loads, judged by headers against its default, never by family (cl-943): in the components its function
+  fetches, the same classes, every module at the default's shapes (any size for an LM's token loop, `phase: decode`), and run
+  data of every kind. `cozy run` and a box's model choices are refused `model_choice_unloadable` by the same check.
 - `GET /v1/models/{org}/{name}?release=`: `ModelDetail`, its releases (the one named) and, to its
   org's members, every commit; `family`, `family_from`, `weights_family` (what its header verifies as),
   `kind` and `tags` as above.

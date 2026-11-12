@@ -1,12 +1,17 @@
 // A box's corner pulled to an odd shape snaps to a ratio its tool makes (cl-936, Paul 11-12: "when we free-form select an aspect ratio, it
 // should probably auto-snap to one of our more sane aspect ratios, and one we can actually support, rather than arbitrary A:B values in the
 // thousands"), in a real browser on a real Calcifer. Qwen's Image takes any ratio from 1:16 to 16:1: its corner pulled to 1237:689, on the
-// canvas and in Focus, lands on 16:9, and that's what it says.
+// canvas and in Focus, lands on 16:9, and that's what it says. MiniMax H3 (se-128, Paul 11-12: "The end user should be able to pick a different
+// aspect ratio other than 16:9"): any shape within 4:1; Auto says what it makes, 16:9 with nothing set, a first frame's shape, never a mentioned
+// picture's; its corner sets one, and × takes it back to Auto.
 //   node aspect.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, settled, until } = require('./page');
+const { writeFileSync, mkdtempSync } = require('fs');
+const { join } = require('path');
+const { tmpdir } = require('os');
+const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -106,6 +111,63 @@ async function died(why) {
   check('in_focus_it_says_16_9', label === null || label.trim().startsWith('16:9'), label);
   await shot('focus');
   await closeBox(page);
+
+  // MiniMax H3: a portrait mentioned in its words leaves Auto at 16:9; a 9:16 first frame makes it 9:16; the corner sets 1:1; × is Auto again.
+  const h3 = ((await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? []).find((tool) => tool.package === 'minimax-h3' && tool.makes === 'video' && tool.fields.some((field) => field.field === 'first_frame'));
+  const h3Shape = h3?.fields.find((field) => field.type === 'shape');
+  seen.h3 = h3 && { id: h3.id, release: h3.release, shape: h3Shape && { ratios: h3Shape.ratios, min: h3Shape.min, max: h3Shape.max, auto: h3Shape.auto } };
+  // minimax-h3 0.12 takes any shape within 4:1; the Hub's final before it (0.11.1, until the 0.25.0 cut) only 16:9, and its box says so.
+  const bounded = Boolean(h3Shape?.auto && h3Shape.min <= 0.25 + 1e-6 && h3Shape.max >= 4 - 1e-6 && !(h3Shape.ratios ?? []).length);
+  const only169 = JSON.stringify(h3Shape?.ratios ?? []) === '["16:9"]';
+  check('h3_listed_with_its_shape', Boolean(h3Shape) && (bounded || only169), seen.h3);
+  if (h3Shape && only169) {
+    await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: h3.id, kind: 'video', name: 'shot', exact: true, fields: { beats: [{ duration: 5, description: 'A dancer on a rooftop.' }] }, at: { x: 200, y: 700 } }) });
+    await boxOf(page, 'shot').waitFor();
+    const said = await until('it says 16:9', () => boxOf(page, 'shot').locator('.ratio-rest').first().innerText().then((text) => text.trim(), () => null), (text) => text === '16:9').catch(() => null);
+    check('h3_before_0_12_says_16_9', said === '16:9', said);
+  }
+  if (h3Shape && bounded) {
+    const folder = mkdtempSync(join(tmpdir(), 'web-aspect-'));
+    for (const [name, width, height] of [['tall', 288, 512], ['face', 320, 400]]) {
+      writeFileSync(join(folder, `${name}.png`), png(90, width, height));
+      const imported = await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(folder, `${name}.png`)), name, exact: true, at: { x: 900 + width, y: 200 } }) });
+      if (imported.status >= 300) throw new Error(`import ${name}: ${JSON.stringify(imported)}`);
+    }
+    const beats = [{ duration: 5, description: '<face> dances on a rooftop.' }];
+    const h3Box = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: h3.id, kind: 'video', name: 'shot', exact: true, fields: { beats }, at: { x: 200, y: 700 } }) });
+    if (h3Box.status >= 300) throw new Error(`the H3 box: ${JSON.stringify(h3Box)}`);
+    await boxOf(page, 'shot').waitFor();
+    await fitCanvas(page);
+    await settled(page);
+    const said = () => boxOf(page, 'shot').locator('.ratio-rest').first().innerText().then((text) => text.trim(), () => null);
+    const saying = (want) => until(`it says ${want}`, said, (text) => text === want).catch(said);
+    seen.h3_auto = await saying('Auto · 16:9');
+    check('h3_auto_is_16_9_and_a_mentioned_portrait_leaves_it', seen.h3_auto === 'Auto · 16:9', seen.h3_auto);
+    await api(`${at}/assets/shot`, { method: 'PATCH', body: JSON.stringify({ fields: { first_frame: '<tall>' } }) });
+    seen.h3_first_frame = await saying('Auto · 9:16 from first frame');
+    check('h3_auto_takes_its_first_frames_9_16', seen.h3_first_frame === 'Auto · 9:16 from first frame', seen.h3_first_frame);
+    await openBox(page, 'shot');
+    const focus = page.locator('.focus-viewport');
+    await focus.locator('.corner').first().waitFor();
+    const corner = await focus.locator('.corner').first().boundingBox();
+    const media = await focus.locator('.media').first().boundingBox();
+    await page.mouse.move(corner.x + corner.width / 2, corner.y + corner.height / 2);
+    await page.mouse.down();
+    // Square: as tall as it is wide.
+    await page.mouse.move(corner.x + corner.width / 2 + 40, corner.y + corner.height / 2 + (media.width + 40 - media.height), { steps: 20 });
+    await page.mouse.up();
+    const pulled = await until('its shape saved', () => fieldsOf('shot'), (fields) => typeof fields.aspect_ratio === 'string').catch(() => fieldsOf('shot'));
+    const focusSaid = await focus.locator('[data-output-aspect]').first().innerText().then((text) => text.trim(), () => null);
+    seen.h3_pulled = { saved: pulled.aspect_ratio, said: focusSaid };
+    check('h3_corner_sets_1_1', pulled.aspect_ratio === '1:1' && Boolean(focusSaid?.startsWith('1:1')), seen.h3_pulled);
+    await focus.getByRole('button', { name: 'Auto aspect ratio', exact: true }).click();
+    const back = await until('back to Auto', () => fieldsOf('shot'), (fields) => fields.aspect_ratio == null).catch(() => fieldsOf('shot'));
+    const backSaid = await focus.locator('[data-output-aspect]').first().innerText().then((text) => text.trim(), () => null);
+    seen.h3_back = { saved: back.aspect_ratio ?? null, said: backSaid };
+    check('h3_x_is_auto_again', back.aspect_ratio == null && backSaid === 'Auto · 9:16 from first frame', seen.h3_back);
+    await shot('h3');
+    await closeBox(page);
+  }
 
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();

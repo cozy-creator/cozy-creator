@@ -582,10 +582,10 @@ class Baseline(TypedDict, total=False):
 class KnownFailing(TypedDict):
     """A known-failing.json row: a cell parked on a known open bug, not run until it is fixed."""
     sku: str  # or '*'
-    cell: str
+    cell: NotRequired[str]
     issue: str
-    what: str
-    cells: NotRequired[list[str]]  # the cells it parks (varena's check reads these)
+    what: NotRequired[str]
+    cells: NotRequired[list[str]]  # the cells it parks (gate.sh and varena's check read these)
 
 
 class GateDir(TypedDict):

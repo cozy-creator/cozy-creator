@@ -707,15 +707,19 @@ impl Doc {
 
     /// What is said of a name that is nothing in the project, and no tag of `tags`.
     /// What's said of `mention` in a box's text, which names nothing and is no tag of `tags`.
-    pub(super) fn not_there(&self, mention: &str, tags: &[String]) -> String {
-        self.no_longer(mention, tags)
+    pub(super) fn not_there(&self, mention: &str, tags: &[String], lock: &Lock) -> String {
+        self.no_longer(mention, tags, lock)
     }
 
-    fn no_longer(&self, name: &str, tags: &[String]) -> String {
+    fn no_longer(&self, name: &str, tags: &[String], lock: &Lock) -> String {
         if name_key(name) == SELF {
             return no_bare_self(name);
         }
         let named = graph::mention(name).map_or(name, |read| read.name);
+        // A box deleted is named as deleted until Undo brings it back (cl-919): no other box stands in for it.
+        if lock.was_deleted(named, super::now_ms()) {
+            return format!("<{name}> was deleted");
+        }
         match self.near(named, tags).map(|close| format!("{close}{}", &name[named.len()..])) {
             Some(close) => format!("<{name}> is no longer in the project: did you mean <{close}>?"),
             None => format!("<{name}> is no longer in the project"),
@@ -726,7 +730,7 @@ impl Doc {
     /// send its words to a model with no picture, and charge for that. None: it can.
     pub(crate) fn missing_inputs(&self, i: usize, tags: &[String], lock: &Lock) -> Option<String> {
         let mut said: Vec<String> = vec![];
-        let nothing = self.mentions_of_nothing(i, tags).map(|mention| self.no_longer(mention, tags));
+        let nothing = self.mentions_of_nothing(i, tags).map(|mention| self.no_longer(mention, tags, lock));
         nothing.chain(self.versions_gone(i, lock).into_iter().map(|(_, why)| why)).for_each(|line| if !said.contains(&line) { said.push(line) });
         (!said.is_empty()).then(|| format!("{}: {}", self.assets[i].name, said.join("; ")))
     }

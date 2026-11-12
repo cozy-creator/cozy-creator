@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { type DragEvent, type PointerEvent, type ReactNode, useEffect, useId, useRef, useState } from "react"
+import { createContext, type Dispatch, type DragEvent, type FocusEvent, type PointerEvent, type ReactNode, type SetStateAction, useContext, useEffect, useId, useRef, useState } from "react"
 import type { ToolField, Tool } from "../api/calcifer"
 import { runFullQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
@@ -7,19 +7,17 @@ import type { Media } from "../types"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
-import { AddOnRows } from "./AddOns"
 import { progressOfBeats } from "./beatProgress"
-import { addOnsOf } from "./checkpoints"
 import type { CanvasStore, ElementView } from "./CanvasStore"
 import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { atDefault, empty, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
+import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
 import { Ghosts, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
 import { makes, watched } from "./shown"
-import { mentionsIn, type Row, rowsIn } from "./text"
+import { mentionsIn, type Row, rowsIn, textsIn } from "./text"
 import { ToolBox } from "./ToolBox"
 import "./FocusParameters.css"
 
@@ -95,7 +93,9 @@ function Reset({ field, bound }: { field: ToolField; bound: Bound }) {
 function TextField({ name, field, bound, view, place, label, focus, named, block, framed }: Drawn) {
   const store = useCanvasStore()
   const beat = /^beats\.\d+\./.test(place)
-  const references = view.asset?.kind === "video" && view.hereWords && field.type === "prompt" && (place === "summary" || beat)
+  // In the frame its pictures are the frame's (Backdrop); elsewhere a video's prompt carries its own behind it.
+  const inFrame = Boolean(useContext(Sections)) || Boolean(framed)
+  const references = !inFrame && view.asset?.kind === "video" && view.hereWords && field.type === "prompt" && (place === "summary" || beat)
   const showLabel = !(references && beat && field.field === "description")
   const text = (
     <MentionText
@@ -107,7 +107,7 @@ function TextField({ name, field, bound, view, place, label, focus, named, block
       missing={view.asset?.missing ?? []}
       takes={field.type === "words" ? WORDS_ONLY : ((field.takes as Media[] | null) ?? undefined)}
       focus={focus}
-      thumbs={!framed && !references}
+      thumbs={!inFrame && !references}
       onDraft={bound.draft}
       onSave={bound.save}
       onSubmit={field.type === "prompt" ? () => store.run(name) : undefined}
@@ -500,7 +500,8 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
   const { client } = useConnection()
   const focused = useSignal(store.focusedName)
   const rows = fullRows(field, rowsIn(bound.value))
-  const accordion = view.asset?.kind === "video" && view.hereWords && field.field === "beats"
+  const sections = useContext(Sections)
+  const accordion = Boolean(sections) || (view.asset?.kind === "video" && view.hereWords && field.field === "beats")
   const run = accordion && focused === name ? watched(view)?.run : undefined
   const live = view.run?.number === run ? view.run : undefined
   const settled = (status: string | undefined) => status === "completed" || status === "failed" || status === "canceled"
@@ -521,11 +522,13 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
     return cut > 0 && elapsed <= cut + 1e-6
   })
   const keptCount = kept.filter(Boolean).length
-  const [expanded, setExpanded] = useState<number | null>(() => keptCount < rows.length ? keptCount : null)
+  const [own, setOwn] = useState<number | null>(() => keptCount < rows.length ? keptCount : null)
+  // In the frame, one section is open at a time, its first prompt's or a row's.
+  const [expanded, setExpanded] = sections ? [sections.row, sections.setRow] as const : [own, setOwn] as const
   const panelId = useId()
   // A new continuation opens its first unfinished Beat; editing rows keeps the chosen accordion open.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only a changed continuation resets which Beat is open
-  useEffect(() => setExpanded(keptCount < rows.length ? keptCount : null), [view.continuing])
+  useEffect(() => { if (!sections || view.continuing) setExpanded(keptCount < rows.length ? keptCount : null) }, [view.continuing])
   const called = field.label.replace(/s$/, "")
   const least = field.min_items ?? 0
   const list = useRef<HTMLDivElement>(null)
@@ -605,10 +608,10 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
         const status = progress?.[i]
         const statusWord = status?.state === "skipped" ? "Skipped" : kept[i] || status?.state === "kept" ? "Kept" : status?.state === "completed" ? "Complete" : status?.state === "in_progress" ? "Generating" : run !== undefined && progress ? "Queued" : null
         const handle = !kept[i] && rows.length - keptCount > 1 && <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>⋮⋮</span>
-        const remove = !kept[i] && rows.length > least && <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
+        const remove = !kept[i] && rows.length > least && <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} title={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
           bound.write(rows.filter((_, at) => at !== i))
           if (accordion) setExpanded((open) => open === null ? null : open === i ? Math.max(0, Math.min(i, rows.length - 2)) : open > i ? open - 1 : open)
-        }}><Icon name="close" /></button>
+        }}><Icon name="trash" /></button>
         const body = <div className="beat-body" inert={kept[i]}><Members name={name} group={field} bound={rowBound(i)} view={view} place={`${place}.${i}`} label={`${called} ${i + 1}`} /></div>
         const duration = timing ? value[timing.field] ?? timing.default : undefined
         const open = expanded === i
@@ -643,8 +646,8 @@ function BlockGroup({ name, field, bound, view, place, label }: Drawn) {
       <div className="group-head">
         <span className="ctl-name">{field.label}</span>
         {!field.required && (
-          <button type="button" className="iconb nodrag" aria-label={`Remove ${field.label.toLowerCase()}`} onClick={bound.unset}>
-            <Icon name="close" />
+          <button type="button" className="iconb nodrag" aria-label={`Remove ${field.label.toLowerCase()}`} title={`Remove ${field.label.toLowerCase()}`} onClick={bound.unset}>
+            <Icon name="trash" />
           </button>
         )}
       </div>
@@ -722,22 +725,94 @@ export function RenderButton({ name, view }: { name: string; view: ElementView }
   )
 }
 
-/** What goes in the frame while nothing's made to fill it, so you write on what you're making: its first prompt, else its first slot. A tool with its own box draws all of that itself. */
-function framed(view: ElementView, fields: ToolField[], tool: Tool | undefined): ToolField | undefined {
-  if (!view.hereWords || tool?.ui) return undefined
-  return fields.find((field) => field.type === "prompt" || field.type === "words") ?? fields.find((field) => field.type === "slot")
+/** The rows the frame opens one at a time, with its first prompt's section (cl-938): absent outside the frame. */
+const Sections = createContext<{ row: number | null; setRow: Dispatch<SetStateAction<number | null>> } | null>(null)
+
+/** What the frame holds while a take is written, as an image's prompt is held over it (cl-938, Paul 11-12): its first prompt (else its first
+ *  slot), and the list of prompts that adds up to it (H3's beats). A tool with its own box draws all of that itself. */
+export function framedOf(view: ElementView, fields: ToolField[], tool: Tool | undefined): ToolField[] {
+  // A picture or a video with no tool asks nothing: its words are a tool's to ask for (Paul, 11-12, cl-933).
+  if (!view.hereWords || tool?.ui || (!view.asset?.tool && view.asset?.kind !== "text")) return []
+  const first = fields.find((field) => field.type === "prompt" || field.type === "words") ?? fields.find((field) => field.type === "slot")
+  const rows = fields.find((field) => field.type === "group" && field.list && field.members?.some((member) => member.total) && field.members.some((member) => member.type === "prompt"))
+  return [...(first ? [first] : []), ...(rows ? [rows] : [])]
 }
 
+/** Behind what's written, faded, each picture it mentions at the frame's full height, side by side; a new set fades in as the writing moves. */
+function Backdrop({ name, view, mentions }: { name: string; view: ElementView; mentions: string[] }) {
+  const store = useCanvasStore()
+  useSignal(store.names)
+  const pictures = view.asset ? store.mentionedPictures(name, mentions) : []
+  if (!pictures.length) return null
+  return (
+    <div key={pictures.map((ghost) => ghost.mention).join(" ")} className="backdrop" aria-hidden>
+      {pictures.map((ghost) => (
+        <span key={ghost.mention} className="backdrop-picture" data-mention={ghost.mention}>
+          {ghost.sha256 ? (
+            <Thumb sha256={ghost.sha256} cardWidth={960 / pictures.length} />
+          ) : (
+            <svg className={`ghost-blank ${ghost.making ? "making" : ""}`} viewBox={`0 0 ${100 * (ghost.shape ?? 1)} 100`} preserveAspectRatio="xMidYMid meet">
+              <rect x="2" y="2" width={100 * (ghost.shape ?? 1) - 4} height="96" rx="3" />
+            </svg>
+          )}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+/** The frame being written in, the same for a picture and a video: one prompt fills it; two or more are sections, each opened by its head, one
+ *  at a time, with + for another row. Behind them the pictures the section being written mentions; with none being written, all it mentions;
+ *  with none mentioned, its take, faded (the media under it). */
 export function InFrame({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
-  const field = view.asset && framed(view, fieldsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined)
-  if (!field) return null
+  const [open, setOpen] = useState<"first" | number | null>("first")
+  const [writing, setWriting] = useState<"first" | number | null>(null)
+  const panel = useId()
+  const fields = view.asset ? framedOf(view, fieldsOf(view.asset, tools), view.asset.tool ? tools.get(view.asset.tool) : undefined) : []
+  if (!fields.length) return null
+  const [first, list] = fields
+  const values = (field: ToolField) => store.valueOf(name, field.field)
+  const rows = list ? rowsIn(values(list)) : []
+  const mentionsOf = (texts: string[]) => [...new Set(texts.flatMap(mentionsIn))]
+  const mentions = writing === "first" ? mentionsOf(textsIn(values(first))) : typeof writing === "number" ? mentionsOf(textsIn(rows[writing])) : mentionsOf([...textsIn(values(first)), ...rows.flatMap(textsIn)])
+  if (!list) {
+    return (
+      <div className="in-frame">
+        <Backdrop name={name} view={view} mentions={mentions} />
+        <ControlRow name={name} field={first} view={view} focus={store.focusing === name} named={false} framed />
+      </div>
+    )
+  }
+  const sectionOf = (target: EventTarget | null): "first" | number | null => {
+    const place = (target as Element | null)?.closest?.("[data-field]")?.getAttribute("data-field") ?? ""
+    const row = place.match(new RegExp(`^${list.field}\\.(\\d+)`))
+    return row ? Number(row[1]) : place === first.field ? "first" : null
+  }
+  const shut = open !== "first"
   return (
-    <div className="in-frame">
-      <Ghosts name={name} view={view} />
-      <ControlRow name={name} field={field} view={view} focus={store.focusing === name} named={false} framed />
-    </div>
+    <Sections.Provider value={{ row: typeof open === "number" ? open : null, setRow: (action) => setOpen((now) => {
+      const row = typeof action === "function" ? action(typeof now === "number" ? now : null) : action
+      return row ?? (now === "first" ? "first" : null)
+    }) }}>
+      <div className="in-frame sections nowheel"
+        onFocus={(event: FocusEvent<HTMLDivElement>) => setWriting(sectionOf(event.target))}
+        onBlur={(event: FocusEvent<HTMLDivElement>) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setWriting(null) }}>
+        <Backdrop name={name} view={view} mentions={mentions} />
+        <div className="frame-sections">
+          <div className="beat beat-accordion frame-first" data-section={first.field}>
+            <div className="beat-heading">
+              <button type="button" className="beat-toggle" aria-expanded={!shut} aria-controls={panel} onClick={() => setOpen(shut ? "first" : null)}><b>{first.label}</b><Icon name="forward" /></button>
+            </div>
+            <div className="beat-panel" id={panel} data-open={!shut || undefined} aria-hidden={shut} inert={shut}>
+              <div className="beat-body"><ControlRow name={name} field={first} view={view} focus={store.focusing === name} named={false} framed /></div>
+            </div>
+          </div>
+          <ControlRow name={name} field={list} view={view} focus={false} named={false} framed />
+        </div>
+      </div>
+    </Sections.Provider>
   )
 }
 
@@ -757,60 +832,71 @@ function HeldLine({ field, value }: { field: string; value: unknown }) {
 /** What beside Render is only a thing to set: the rest of the face wants a line. */
 const small = (field: ToolField) => field.type === "toggle" || field.type === "number" || (field.type === "choice" && !field.descriptions)
 
-/** What a box asks and holds, under it. Advanced controls and output resolution remain visible without opening another section. */
-export function AssetEdit({ name, view, editing, prominent = false, head, actions, children }: { name: string; view: ElementView; editing: boolean; prominent?: boolean; head?: ReactNode; actions: ReactNode; children?: ReactNode }) {
+/** What a box asks and holds, under its frame (what it's written in is in the frame, InFrame); its tool and Models & LoRAs are beneath the
+ *  node (ToolLine). In Focus (`focused`), the same for a picture and a video (cl-938): Render, then every field at once, nothing under
+ *  More or Advanced (cl-934). Elsewhere what isn't on the face is under More. What's only a thing to set is grouped, named. */
+export function AssetEdit({ name, view, editing, focused = false, actions, children }: { name: string; view: ElementView; editing: boolean; focused?: boolean; actions: ReactNode; children?: ReactNode }) {
   const store = useCanvasStore()
   const tools = useSignal(store.tools)
   if (!view.asset) return null
   const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
-  const declared = makes(view) ? fieldsOf(view.asset, tools) : []
-  const videoForm = prominent && view.asset.kind === "video"
-  const priority = (field: ToolField) => field.field === "summary" ? 0 : field.type === "group" && (field.field === "beats" || field.members?.some((member) => member.total)) ? 1 : 2
-  const fields = prominent ? [...declared].sort((a, b) => priority(a) - priority(b)) : declared
-  const inFrame = prominent ? undefined : framed(view, fields, tool)
+  const fields = makes(view) ? fieldsOf(view.asset, tools) : []
+  const inFrame = framedOf(view, fields, tool)
   const first = fields.find((field) => field.type === "prompt" || field.type === "words")
   // The box's own shape is its shape: its corner sets it.
-  const rest = fields.filter((field) => field !== inFrame && field.type !== "timeline" && field.type !== "shape")
-  const faced = editing ? rest.filter((field) => videoForm ? field.field === "summary" || field.field === "beats" || Boolean(field.required) || (field.type === "slot" && !empty(store.valueOf(name, field.field))) : prominent ? !field.advanced : field.field === "megapixels" || onFace(field, store.valueOf(name, field.field))) : []
+  const rest = fields.filter((field) => !inFrame.includes(field) && field.type !== "timeline" && field.type !== "shape")
+  const faced = !editing ? [] : focused ? rest : rest.filter((field) => field.field === "megapixels" || onFace(field, store.valueOf(name, field.field)))
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, fields)
   const folded = rest.filter((field) => !faced.includes(field))
   const plainFolded = folded.filter((field) => !field.advanced)
   const expert = folded.filter((field) => field.advanced)
-  const parameters = [...faced.filter(small), ...(!videoForm ? expert.filter(small) : [])]
+  const parameters = [...faced.filter(small), ...expert.filter(small)]
   const open = store.showsMore(name)
-  const addOns = addOnsOf(store.valueOf(name, "lora"), store.valueOf(name, "models")).length > 0
   const row = (field: ToolField) => {
-    const control = <ControlRow key={field.field} name={name} field={field} view={view} focus={!prominent && store.focusing === name && field === first} named={folded.includes(field)} />
-    return prominent && field.type === "group" && field.list ? <section key={field.field} className="focus-parameter-group"><h3>{field.label}</h3>{control}</section> : control
+    const control = <ControlRow key={field.field} name={name} field={field} view={view} focus={store.focusing === name && field === first} named={folded.includes(field)} />
+    return focused && field.type === "group" && field.list ? <section key={field.field} className="focus-parameter-group"><h3>{field.label}</h3>{control}</section> : control
   }
+  const held = beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)
   return (
-    <div className={`edit-face ${prominent ? "prominent" : ""}`}>
-      {head && <div className="tool-head">{head}</div>}
+    <div className={`edit-face ${focused ? "focused" : ""}`}>
       <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => !small(field))} folded={plainFolded} row={row}>
         {(lines, more) => {
-          const behind = (more !== null && plainFolded.length > 0) || (videoForm && expert.length > 0) || addOns || beyond.length > 0
+          const behind = !focused && ((more !== null && plainFolded.length > 0) || beyond.length > 0)
+          const render = (
+            <div className="row actions">
+              {behind && <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
+              {actions}
+            </div>
+          )
+          const grouped = more !== null && parameters.length > 0 && <div className="edit-parameters">{parameters.map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named />)}</div>
+          if (focused) {
+            return (
+              <>
+                {render}
+                {editing && lines && <div className="edit-shown">{lines}</div>}
+                {grouped}
+                {held}
+                {children}
+              </>
+            )
+          }
           return (
             <>
               {editing && lines && <div className="edit-shown">{lines}</div>}
-              {!videoForm && more !== null && expert.some((field) => !small(field)) && <div className="advanced">{expert.filter((field) => !small(field)).map(row)}</div>}
-              {more !== null && parameters.length > 0 && <div className="edit-parameters">{parameters.map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named />)}</div>}
+              {more !== null && expert.some((field) => !small(field)) && <div className="advanced">{expert.filter((field) => !small(field)).map(row)}</div>}
+              {grouped}
               {behind ? (
                 open && (
                   <div className="edit-more">
-                    {open && more}
-                    {videoForm && expert.length > 0 && <div className="advanced">{expert.map(row)}</div>}
-                    {open && <AddOnRows name={name} />}
-                    {open && beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
+                    {more}
+                    {held}
                     {children}
                   </div>
                 )
               ) : (
                 children
               )}
-              <div className="row actions">
-                {behind && <button type="button" className="more-toggle nodrag" aria-expanded={open} onClick={() => store.setMore(name, !open)}><span className="more-word">{open ? "Less" : "More"}</span></button>}
-                {actions}
-              </div>
+              {render}
             </>
           )
         }}
@@ -818,4 +904,3 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
     </div>
   )
 }
-

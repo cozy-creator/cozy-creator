@@ -45,6 +45,17 @@
   font: 28px / 1.3 var(--mono);
   min-height: 44px;
 }
+.focus-heading .focus-version-label {
+  font: 22px / 1.3 var(--mono);
+}
+.focus-heading .focus-version-label.writing {
+  padding: 2px 10px;
+  border-radius: var(--round);
+  background: var(--ember);
+  color: var(--panel);
+  font-family: var(--sans);
+  font-weight: 600;
+}
 .focus-version-label,
 .node-version-label {
   flex: none;
@@ -73,7 +84,8 @@
   height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) min(26vw, 280px);
-  grid-template-rows: minmax(0, 1fr) minmax(var(--focus-footer-room, 52px), auto);
+  /* The frame; its tool under it; Render and the fields (cl-938), the same for a picture and a video. */
+  grid-template-rows: minmax(0, 1fr) auto minmax(var(--focus-footer-room, 0px), auto);
   gap: 12px 20px;
   background: none;
   border: 0;
@@ -173,7 +185,7 @@ body:has(.focus-viewport) .zoom {
 .focus-card > .image-controls {
   grid-column: 1;
   grid-row: 2;
-  align-self: end;
+  align-self: start;
   justify-self: center;
   position: relative;
   left: auto;
@@ -187,13 +199,13 @@ body:has(.focus-viewport) .zoom {
   --tiny: 16px;
   --heading: 24px;
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 3;
   align-self: start;
   position: relative;
   left: auto;
   top: auto;
   width: 100% !important;
-  max-height: calc(var(--focus-footer-room, 200px) - 48px);
+  max-height: var(--focus-footer-room, 200px);
   transform: none;
 }
 .focus-card .here-all .slide,
@@ -227,8 +239,7 @@ body:has(.focus-viewport) .zoom {
   width: 24px;
   height: 24px;
 }
-.focus-card .media .ratio-rest,
-.focus-card .authoring-ratio .ratio-rest {
+.focus-card .media .ratio-rest {
   font-size: 18px;
 }
 .media > .ratio-rest {
@@ -249,43 +260,35 @@ body:has(.focus-viewport) .zoom {
   width: 26px;
   height: 26px;
 }
-.authoring-ratio {
-  position: absolute;
-  right: 16px;
-  bottom: 82px;
-  z-index: 6;
+/* A video in Focus: its scrubber and Pick up from here, under it (cl-933). */
+.focus-viewport .video-scrub {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0 0;
 }
-.authoring-ratio .ratio-rest {
-  position: static;
-  display: inline-flex;
+.focus-viewport .video-scrub input[type="range"] {
+  width: 100%;
+  accent-color: var(--ember);
+}
+.focus-viewport .video-scrub .row {
+  display: flex;
   align-items: center;
   gap: 6px;
 }
-.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video {
-  grid-template-columns: minmax(0, 1fr) min(22vw, 260px);
-  grid-template-rows: minmax(0, 1fr);
+/* Small, a word's size, and under the player, never over it (Paul, 11-12). */
+.focus-viewport .video-scrub .pick-up {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--round);
+  background: var(--card);
+  color: var(--ink);
+  font: 12px / 1.3 var(--sans);
+  cursor: pointer;
 }
-.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .focus-viewer {
-  display: none;
-}
-.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-under {
-  grid-column: 1;
-  grid-row: 1;
-  align-self: stretch;
-  height: 100%;
-  min-height: 0;
-  max-height: none;
-  overflow: hidden;
-}
-.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-side {
-  grid-column: 2;
-}
-.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-under > .here-all {
-  min-height: 0;
-  overflow-y: auto;
-}
-.media:has(video.live) .video-pickup-action {
-  bottom: 52px;
+.focus-viewport .video-scrub .pick-up:hover {
+  border-color: var(--line2);
 }
 .image-tool-name {
   flex: 1;
@@ -308,4 +311,51 @@ body:has(.focus-viewport) .zoom {
   .focus-viewport { inset: 58px 6px 6px; }
   .card.focus-card { grid-template-columns: minmax(0, 1fr) min(25vw, 150px); gap: 8px; }
   .focus-heading { gap: 8px; }
+}
+/* New and Render on the title row, above the frame's right edge, the same for every tool, never hidden while a take renders (Paul, 11-12). */
+.focus-card > .focus-actions {
+  position: absolute;
+  top: -12px;
+  right: calc(min(26vw, 280px) + 20px);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transform: translateY(-100%);
+}
+.focus-actions .run {
+  min-height: 44px;
+  padding: 8px 20px 8px 16px;
+  font-size: 19px;
+}
+.focus-actions .run .icon {
+  width: 20px;
+  height: 20px;
+}
+.focus-actions .take.add.focus-new {
+  width: auto;
+  height: 44px;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--line2);
+  border-radius: var(--round);
+  background: var(--float);
+  color: var(--ink);
+  font: 600 19px / 1 var(--sans);
+}
+.focus-actions .take.add.focus-new.on {
+  border-color: var(--ember);
+  background: var(--tint);
+}
+.focus-actions .take.add.focus-new .icon {
+  width: 18px;
+  height: 18px;
+  vertical-align: 0;
+}
+.focus-viewport:has(.focus-actions) .focus-title {
+  padding-right: 360px;
+}
+@media (max-width: 760px) {
+  .focus-card > .focus-actions { right: calc(min(25vw, 150px) + 8px); }
+  .focus-viewport:has(.focus-actions) .focus-title { padding-right: 260px; }
 }

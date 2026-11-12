@@ -6,6 +6,7 @@ import { projectQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useProjectId, useTo } from "../app/Shell"
 import { downloadable } from "../canvas/Media"
+import { nodeState, StateDot } from "../canvas/StateDot"
 import { Menu, useMenuAt } from "../ui/Menu"
 import { DrawerFrame } from "./Drawer"
 
@@ -23,7 +24,7 @@ function Picture({ id, sha256 }: { id: string; sha256: string }) {
   return src ? <img src={src} alt="" draggable={false} /> : null
 }
 
-function Row({ id, asset }: { id: string; asset: Asset }) {
+function Row({ id, asset, waiting }: { id: string; asset: Asset; waiting: boolean }) {
   const { client } = useConnection()
   const to = useTo()
   const menu = useMenuAt()
@@ -33,6 +34,7 @@ function Row({ id, asset }: { id: string; asset: Asset }) {
     <li className={`assetrow ${asset.starred ? "starred" : ""}`} data-asset={asset.name} onContextMenu={saves ? menu.open : undefined}>
       <Link to={to(`assets/${encodeURIComponent(asset.name)}`)}>
         <span className="asset-thumb">{asset.sha256 && asset.kind !== "audio" && !asset.absent && <Picture id={id} sha256={asset.sha256} />}</span>
+        <StateDot state={nodeState(asset, { waiting, failureShown: !asset.pinned })} unseen={asset.unseen?.length ?? 0} noun={asset.noun} />
         <span className="nm">{asset.name}</span>
         <span className="sp" />
         <small>{asset.kind}</small>
@@ -67,12 +69,14 @@ export function Files() {
   const { data } = useQuery(projectQuery(client, stream, id))
   const assets = data?.assets ?? []
   const listed = [...assets.filter((asset) => asset.starred), ...assets.filter((asset) => !asset.starred)]
+  // In the project's line and not started: queued (its dot, as on the canvas).
+  const queued = new Set((data?.queue ?? []).filter((item) => !item.running).map((item) => item.name))
   return (
     <DrawerFrame title="Files">
       {data && !listed.length && <p className="muted">Nothing in this project yet.</p>}
       <ul className="assetlist">
         {listed.map((asset) => (
-          <Row key={asset.name} id={id} asset={asset} />
+          <Row key={asset.name} id={id} asset={asset} waiting={queued.has(asset.name)} />
         ))}
       </ul>
     </DrawerFrame>

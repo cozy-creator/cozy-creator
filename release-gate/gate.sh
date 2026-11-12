@@ -192,6 +192,8 @@ one_beat() {
 declare -A AHEAD
 ahead() {
   local name=$1 target=$2 want=() key; shift 2
+  # Suite progress (`COLD`) times a first use as a user meets it: its install and download are the cell.
+  [ -z "${COLD:-}" ] || return 0
   while [ $# -gt 0 ]; do
     case $1 in model.*=*|--lane=*|--lora=*) want+=("$1") ;; --lane|--lora) want+=("$1" "${2:-}"); shift ;; esac
     shift

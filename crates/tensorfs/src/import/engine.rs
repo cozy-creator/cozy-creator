@@ -147,6 +147,10 @@ pub(crate) struct Component {
     pub folders: BTreeMap<String, String>,
     #[serde(default)]
     pub cast: Option<Dtype>,
+    /// The source file's `__metadata__` field whose JSON object is this component's config
+    /// (RelayVSR writes its model config there).
+    #[serde(default)]
+    pub config_from: Option<String>,
     /// Source keys every matching source has and the output does not take.
     #[serde(default)]
     pub drop: Vec<String>,

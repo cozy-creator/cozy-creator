@@ -40,25 +40,25 @@ export const selectedOf = (view: ElementView): Shown | null => shownOf(view, tru
 export const HEAD = 32
 
 /**
- * What hangs off a box at rest, its name over it and its shape's word and add-ons under it, is drawn at the canvas's scale like the
- * rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
+ * What hangs off a box at rest, its name over it and its tool, shape and render's lines under it (cl-932), is drawn at the canvas's scale
+ * like the rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
  */
 const HANG = 2
-// As app.css and AddOns.css draw them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
+// As app.css draws them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
 const SMALL_LINE = 10.5 * 1.35 * 1.25
 const CLOSE = 30
 /** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
 const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
-/** An add-on chip: a small line, 2 px over and under it, and its border; the gap under each; and how far under its box they start. */
-const CHIP = Math.ceil((SMALL_LINE + 4) * HANG + 2)
-const CHIP_GAP = Math.ceil(4 * HANG)
-const STACK_GAP = 4
+/** A render's two lines (RunFace, on lines of 1.35), with the gap over them. */
+const RUN = 2 * 10.5 * 1.35 * 1.35 + 4
 
-/** The room a box keeps clear under it: its add-ons, else its shape's word, then the room the name of a box below it rises into. */
-export function underOf(view: ElementView, chips: number): number {
-  const hung = chips ? STACK_GAP + chips * CHIP + (chips - 1) * CHIP_GAP : view.asset?.tool ? Math.ceil(SMALL_LINE * HANG) : 0
-  return hung + RISE
+/** The room a box keeps clear under it (cl-932): its tool and shape, and if it renders, how its render goes, then the room the name of a box
+ *  below it rises into. */
+export function underOf(view: ElementView): number {
+  const asset = view.asset
+  const line = asset && (asset.tool || asset.kind !== "text") ? SMALL_LINE + 2 : 0
+  return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
 const ENTITY_DESC = 60
 const ENTITY_SLOTS = 72
@@ -115,12 +115,13 @@ export function refusal(tool: Tool | undefined, view: ElementView | undefined): 
   return `${toolName(tool!)} takes ${takes.map((one) => SEVERAL[one]).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
 }
 
-/** The take being made that it looks at: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made, and its number once it's landed.
- *  At rest, an approved box looks at what's approved, and what's made lands beside it, unseen (cl-928). */
+/** The take being made that it looks at, open: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made,
+ *  and its number once it's landed. At rest a box looks at what it showed, so a render never changes its size (cl-936): an approved one
+ *  goes on showing what's approved, and what's made lands beside it, unseen (cl-928); with none, the new take is its state once it lands. */
 export function watched(view: ElementView): { run?: number; number?: number } | undefined {
   const { watchRun, watchFrom: from } = view
   if (watchRun === undefined && from === undefined) return undefined
-  if (!view.here && view.asset?.pinned) return undefined
+  if (!view.here) return undefined
   const versions = view.asset?.prefixes ?? []
   const newer = (run?: number | null) => (run ?? 0) > (from ?? 0)
   const run = watchRun ?? Math.max(0, ...(view.asset?.making ?? []).filter(newer), ...versions.filter((held) => newer(held.run)).map((held) => held.run ?? 0))
@@ -156,10 +157,12 @@ export function sentShape(view: ElementView, number?: number): number | undefine
 export function aspectOf(view: ElementView): number {
   const made = reshapes(view) ? (ratioOf(view.shape) ?? madeShape(view)) : undefined
   if (made) return made
-  // Showing a take, its own shape, whatever the last one measured was.
+  // Showing a take, its own shape, whatever the last one measured was. A take just landed and not measured yet (its file on its way here)
+  // keeps the shape of the newest one that is: a box never changes size because a render landed (cl-936).
   const shown = shownOf(view)
   const measured = shown?.width && shown.height ? shown.width / shown.height : undefined
-  return measured ?? view.aspect ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
+  const before = [...(view.asset?.prefixes ?? [])].reverse().find((held) => held.main?.width && held.main.height)?.main
+  return measured ?? view.aspect ?? (before ? before.width! / before.height! : undefined) ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
 }
 
 /** Image navigation keeps the height established by v1 and the saved canvas width.
