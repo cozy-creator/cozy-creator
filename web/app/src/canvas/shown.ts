@@ -157,10 +157,12 @@ export function sentShape(view: ElementView, number?: number): number | undefine
 export function aspectOf(view: ElementView): number {
   const made = reshapes(view) ? (ratioOf(view.shape) ?? madeShape(view)) : undefined
   if (made) return made
-  // Showing a take, its own shape, whatever the last one measured was.
+  // Showing a take, its own shape, whatever the last one measured was. A take just landed and not measured yet (its file on its way here)
+  // keeps the shape of the newest one that is: a box never changes size because a render landed (cl-936).
   const shown = shownOf(view)
   const measured = shown?.width && shown.height ? shown.width / shown.height : undefined
-  return measured ?? view.aspect ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
+  const before = [...(view.asset?.prefixes ?? [])].reverse().find((held) => held.main?.width && held.main.height)?.main
+  return measured ?? view.aspect ?? (before ? before.width! / before.height! : undefined) ?? ((shown?.field ?? view.asset?.kind ?? view.placing?.media) === "audio" ? 3 : 16 / 9)
 }
 
 /** Image navigation keeps the height established by v1 and the saved canvas width.
