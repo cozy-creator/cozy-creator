@@ -62,6 +62,7 @@ pub(crate) struct Api {
     pub(crate) sessions: crate::sessions::Sessions,
     pub(crate) browser: crate::browser::OwnedBrowser,
     pub(crate) browser_address: std::sync::OnceLock<std::net::SocketAddr>,
+    pub(crate) development_web: std::sync::OnceLock<std::net::SocketAddr>,
     /// The components packages ship, as read for the page.
     pub(crate) tool_uis: crate::tool_ui::Held,
     bearer: [u8; 32],
@@ -92,6 +93,7 @@ impl Api {
             sessions: crate::sessions::Sessions::open(calcifer.maintenance_store()),
             browser: crate::browser::OwnedBrowser::new(),
             browser_address: std::sync::OnceLock::new(),
+            development_web: std::sync::OnceLock::new(),
             calcifer,
             machines,
             projects: Default::default(),
@@ -227,7 +229,7 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
         .route("/v1/session", post(legacy_session))
         .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
         .merge(crate::page::routes())
-        .fallback(unknown_route)
+        .fallback(crate::page::fallback)
         .method_not_allowed_fallback(unknown_route)
         .layer(middleware::from_fn(guard))
         .layer(DefaultBodyLimit::max(MAX_BODY))
@@ -655,7 +657,7 @@ async fn status(State(api): State<Arc<Api>>) -> Result<Json<CalciferStatus>, Ref
     }))
 }
 
-async fn unknown_route(method: Method, uri: Uri) -> Refusal {
+pub(crate) async fn unknown_route(method: Method, uri: Uri) -> Refusal {
     refuse(
         Kind::NotFound,
         "unknown_route",

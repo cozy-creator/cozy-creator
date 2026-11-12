@@ -69,6 +69,9 @@ pub struct CalciferConfig {
     /// record says which.
     #[serde(deserialize_with = "calcifer_port")]
     pub port: Option<u16>,
+    /// Explicit local Vite backend. Its assets/HMR are served through Calcifer's owned origin.
+    #[serde(deserialize_with = "development_web")]
+    pub development_web: Option<std::net::SocketAddr>,
 }
 
 /// `[machine]`: this computer's machine (TensorD, `cozy machine serve`), which judges these. A
@@ -188,6 +191,14 @@ fn calcifer_port<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u16>, 
     match port(d)? {
         Some(0) => Err(serde::de::Error::custom("Calcifer's port must be between 1 and 65535")),
         port => Ok(port),
+    }
+}
+
+fn development_web<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<std::net::SocketAddr>, D::Error> {
+    let address = Option::<std::net::SocketAddr>::deserialize(d)?;
+    match address {
+        Some(address) if !address.ip().is_loopback() || address.port() == 0 => Err(serde::de::Error::custom("calcifer.development_web must be a nonzero loopback socket address")),
+        address => Ok(address),
     }
 }
 

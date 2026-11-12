@@ -178,5 +178,7 @@ On Linux, `scripts/dev-local.sh` watches the checkout with Watchexec, builds inc
 successful builds into `~/.cozy/bin/cozy`, and restarts `cozy-calcifer.service`. It needs Watchexec,
 pnpm, Python 3, binutils, and the pinned Rust toolchain. `scripts/dev-local.sh --once` runs one update.
 
-For browser hot reload, run `pnpm --dir web/app dev --host 127.0.0.1`. Vite uses the local Calcifer
-through the existing development proxy. The watcher also rebuilds the page embedded in the binary.
+For browser hot reload, set `development_web = "127.0.0.1:5173"` under `[calcifer]` in
+`~/.cozy/config.toml`, restart Calcifer, then run `pnpm --dir web/app dev` and `cozy open`.
+The owned Cozy browser stays on Calcifer's port; only development assets and HMR reach Vite.
+Remove the setting to use the embedded page. Direct Vite `/v1` access grants no Cozy authority.
