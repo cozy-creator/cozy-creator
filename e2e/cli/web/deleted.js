@@ -94,10 +94,11 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   seen.thumbs_before = thumbsOf(pic.sha256);
   check('dropped_file_in_files', inFiles(pic.sha256));
 
-  // 2. Its box deleted. From here, what's asked for its picture is counted.
+  // 2. Its box deleted as a person does: a click opens it, and its ✕ deletes it. From here, what's asked for its picture is counted.
   const asked = [];
   page.on('request', (request) => { if (request.url().includes(hexOf(pic.sha256))) asked.push(new URL(request.url()).pathname); });
-  await deleteBox('pic');
+  await openBox(page, 'pic');
+  await page.locator('.card.here[data-asset="pic"] [aria-label=Delete]').first().click();
   await until('pic gone', () => asset('pic'), (held) => held === null);
   check('deleted_box_gone', (await box('pic').count()) === 0);
 
@@ -124,6 +125,7 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   await page.keyboard.press('Backspace');
   await page.keyboard.press('Backspace');
   await away();
+  await openBox(page, 'words');
   const words = box('words').locator('.mention-text[data-field="text"]');
   await words.click();
   await page.keyboard.press('End');
