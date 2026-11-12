@@ -490,6 +490,9 @@ pub struct PackageRelease {
     pub package_interface: Value,
     #[serde(default)]
     pub summary: String,
+    /// What its wheel requires (`Requires-Dist`): the Runtime it runs on among them.
+    #[serde(default)]
+    pub requirements: Vec<String>,
 }
 
 /// The release a card is of, by name.
