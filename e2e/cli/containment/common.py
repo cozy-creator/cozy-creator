@@ -105,9 +105,19 @@ class Native:
 
     def command(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None, success: bool = True) -> bytes:
         # Do not use e2e's argv.log/raw .ndjson wrappers for private qualification data.
-        completed = subprocess.run([str(self.cli), "--json", *words], input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
-        require((completed.returncode == 0) == success, "cli_exit")
-        return completed.stdout
+        deadline = time.monotonic() + 90
+        while True:
+            completed = subprocess.run([str(self.cli), "--json", *words], input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+            if success and completed.returncode and (words[:2] == ("vault", "lock") or words[:1] == ("open",)):
+                try:
+                    busy = json.loads(completed.stdout).get("error", {}).get("code") == "project_busy"
+                except (ValueError, AttributeError):
+                    busy = False
+                if busy and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    continue
+            require((completed.returncode == 0) == success, "cli_exit")
+            return completed.stdout
 
     def document(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None) -> dict:
         return json.loads(self.command(*words, cwd=cwd, stdin=stdin))
