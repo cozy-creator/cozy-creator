@@ -170,6 +170,10 @@ export type Asset = { name: string, standing: Standing,
  */
 making?: Array<number>,
 /**
+ * Its takes asked for and not landed, in the order they go, each by its id.
+ */
+takes?: Array<TakeNow>,
+/**
  * Its file's type: `image`, `video` or `audio`.
  */
 kind: string,
@@ -2898,7 +2902,12 @@ outdated?: boolean,
 /**
  * Pick up from here: one box's new take goes on from this take's frame.
  */
-pickup?: Pickup | null, };
+pickup?: Pickup | null,
+/**
+ * The ids of the takes it asks for, one each, made by whoever asks (the page, as Render is pressed): a take is known by its id
+ * from here to its version. Only for one box named; asked again with an id it already has, it's the same take. None: Calcifer's.
+ */
+takes?: Array<string>, };
 
 /**
  * A line a render said, once however often it came: of the assets `names` (a warning's are those whose runs gave it), or of the
@@ -3036,6 +3045,12 @@ preparing?: boolean,
  * client writes it into the package's folder, as `cargo run` writes Cargo.lock.
  */
 lock?: string | null, };
+
+/**
+ * A take of an asset that hasn't landed, by its id, from the render that asked it to its version (`VersionPrefix::id`): queued
+ * until its turn, then sent, with its run once that has a number (cl-945).
+ */
+export type TakeNow = { id: string, queued?: boolean, run?: number | null, };
 
 /**
  * Bytes make_room took of one class (F, O, S, N, D, W, P).
@@ -3505,7 +3520,11 @@ export type VersionPatched = { name: string, number: number, metadata: { [key in
 /**
  * A version's number and the hash prefix project.yaml can name its file by.
  */
-export type VersionPrefix = { number: number, prefix: string,
+export type VersionPrefix = { number: number,
+/**
+ * Its id: the take's that made it, from the render that asked for it on.
+ */
+id?: string, prefix: string,
 /**
  * The take it picked up from.
  */

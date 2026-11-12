@@ -67,6 +67,10 @@ newtakes() { DB_WEB=newtakes db_existing_web; }
 # web/focusfinish.js.
 focusfinish() { DB_WEB=focusfinish db_existing_web; }
 
+# A take is one id from Render to its version: listed at once, never off, through a slow Calcifer, a reload and a Cancel (cl-945):
+# web/takeids.js.
+takeids() { DB_WEB=takeids db_existing_web; }
+
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return
 [ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }

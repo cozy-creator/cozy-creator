@@ -426,8 +426,8 @@ impl Graph {
     }
 
     /// Those waiting that `wanted` names leave, and what reads them finds it at its turn. Answers them, and those going, whose runs are the caller's to cancel.
-    pub(crate) fn cancel(&mut self, wanted: impl Fn(&str) -> bool) -> (Vec<usize>, Vec<usize>) {
-        let named: Vec<usize> = (0..self.jobs.len()).filter(|&id| !matches!(self.jobs[id].state, State::Ended(_)) && wanted(&self.jobs[id].asset)).collect();
+    pub(crate) fn cancel(&mut self, wanted: impl Fn(&str, &str) -> bool) -> (Vec<usize>, Vec<usize>) {
+        let named: Vec<usize> = (0..self.jobs.len()).filter(|&id| !matches!(self.jobs[id].state, State::Ended(_)) && wanted(&self.jobs[id].asset, &self.jobs[id].key)).collect();
         let (going, dropped): (Vec<usize>, Vec<usize>) = named.into_iter().partition(|&id| self.jobs[id].state == State::Going);
         dropped.iter().for_each(|&id| self.end(id, End::Dropped));
         (dropped, going)

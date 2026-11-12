@@ -34,7 +34,7 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -116,10 +116,10 @@ export interface ElementView {
   sent?: Record<string, unknown>
   /** The `etag` its own last write left, until a read catches up: a read of an older write of its own isn't news. */
   known?: string
-  /** Its render waits for a machine, with its pickup if it has one. */
-  waiting?: { pickup?: Pickup }
-  /** This computer would render it poorly, so it asks before it does, with its pickup if it has one. */
-  asking?: { fit: Fit; also?: { pickup?: Pickup } }
+  /** Its render waits for a machine, with its pickup and its take's id. */
+  waiting?: Also
+  /** This computer would render it poorly, so it asks before it does, with its pickup and its take's id. */
+  asking?: { fit: Fit; also?: Also }
   /** Seconds into a video, scrubbed to. */
   scrub?: number
   /** Its ratio while it's being reshaped. */
@@ -134,10 +134,13 @@ export interface ElementView {
   hot?: boolean
   /** What's dragged over it can't go in, and why. */
   refused?: string
-  /** Rendered from its words: the newest take asked after this run is the one looked at (`watched`). */
-  watchFrom?: number
-  /** A take being made, picked by its tile: its run, looked at until it lands, and then as it lands. */
-  watchRun?: number
+  /** The take its frame looks at while it's made, by id (cl-945): from its Render, or its tile picked, until it lands and is looked at. */
+  watch?: string
+  /** Takes this page asked for, by id, listed from the click (cl-945): each until Calcifer lists it, or a read begun after its render's
+   *  answer (`until`, as `pending`) still doesn't. */
+  taking?: { id: string; until: number }[]
+  /** Takes canceled from this page, by id: never listed again, though Calcifer lists one until its run has stopped. */
+  gone?: string[]
   /** How many files dropped on it are on their way to being its versions. */
   joining?: number
   /** It just arrived, and lands. */
@@ -203,6 +206,9 @@ export const CARD_WIDTH = 240
 type Flow = ReactFlowInstance<ElementNode, Edge>
 const NOT_THERE = Symbol("the box went before its turn came")
 const NOT_YET = Number.POSITIVE_INFINITY
+
+/** What goes with one render: a pickup, and its take's id, made at the click (cl-945). */
+type Also = { pickup?: Pickup; take?: string }
 export const UNDO_MS = 10_000
 const TYPING_PAUSE_MS = 300
 /** How long after the last take landed what landed is said: several at once are one note (cl-937). */
@@ -862,9 +868,11 @@ export class CanvasStore {
     const owner = this.owners.get(run.number) ?? [...this.views].find(([, view]) => watched(view)?.run === run.number)?.[0]
     if (!owner) return
     const viewed = this.get(owner)
-    if (viewed && watched(viewed)?.run === run.number && (run.status === "failed" || run.status === "canceled")) this.patch(owner, { watchRun: undefined, watchFrom: undefined })
+    if (viewed && watched(viewed)?.run === run.number && (run.status === "failed" || run.status === "canceled")) this.patch(owner, { watch: undefined })
+    // The run its frame is on: the take looked at (cl-945), else the first going. Another's progress is its own tile's.
     const making = this.get(owner)?.asset?.making ?? []
-    if (run.number !== Math.min(...making)) return
+    const view = this.get(owner)
+    if (run.number !== ((view && watched(view)?.run) ?? Math.min(...making))) return
     // Only what's here: an output of a run on another machine, or a revision that hasn't landed, has nothing yet to show. A preview published
     // as it goes is a revision that landed while its output is still in progress.
     const shown = [...(run.output ?? [])].reverse().find((item) => Boolean(item.url) && /^(image|video)\//.test(item.media_type))
@@ -897,7 +905,8 @@ export class CanvasStore {
       this.unsentSaid.add(failure.message)
       say(failure.message, new ApiError(0, failure), { stays: true })
     }
-    const queued = new Set((state.queue ?? []).filter((item) => !item.running).map((item) => item.name))
+    // Queued: its turn not come, as the walk's queue says, or a take of it not sent yet, as its row lists it (cl-945).
+    const queued = new Set([...(state.queue ?? []).filter((item) => !item.running).map((item) => item.name), ...state.assets.filter((asset) => asset.takes?.some((take) => take.queued)).map((asset) => asset.name)])
     const warnings = warningsOf(state).byElement
     this.owners.clear()
     const said = (view: ElementView, name: string) => {
@@ -920,9 +929,16 @@ export class CanvasStore {
         const answered = view.asked !== undefined && view.asked < this.began
         if (asset.failure && this.hasRead && (answered || asset.failure.message !== view.asset?.failure?.message)) say(`${asset.name} didn't render`, new ApiError(0, { ...asset.failure, message: asset.failure.message.replace(`${asset.name}: `, "") }), { stays: true })
         if (Boolean(view.queued) !== queued.has(asset.name)) change.queued = queued.has(asset.name)
-        if (view.canceling && !asset.making?.length && !queued.has(asset.name)) change.canceling = undefined
+        if (view.canceling && !asset.making?.length && !asset.takes?.length && !queued.has(asset.name)) change.canceling = undefined
         if (view.pending !== undefined && view.pending < this.began) change.pending = undefined
         if (answered) change.asked = undefined
+        // Its own takes (cl-945): each listed from the click until Calcifer lists it, as a take or as its version, or a read begun after
+        // its render's answer still doesn't (nothing was made, and the answer said why). No read from before then takes one off.
+        const listed = new Set([...(asset.takes ?? []).map((take) => take.id), ...(asset.prefixes ?? []).map((held) => held.id).filter(Boolean)])
+        const taking = view.taking?.filter((take) => !listed.has(take.id) && take.until >= this.began)
+        if (view.taking && taking?.length !== view.taking.length) change.taking = taking?.length ? taking : undefined
+        const gone = view.gone?.filter((id) => asset.takes?.some((take) => take.id === id))
+        if (view.gone && gone?.length !== view.gone.length) change.gone = gone?.length ? gone : undefined
         const over = view.over?.filter((ask) => ask.until >= this.began)
         if (view.over && over?.length !== view.over.length) change.over = over?.length ? over : undefined
         if (view.asset !== asset || view.landed) {
@@ -930,22 +946,20 @@ export class CanvasStore {
           if (!asset.making?.length) change.run = undefined
           const newest = asset.prefixes?.at(-1)?.number
           if (newest && newest !== view.asset?.prefixes?.at(-1)?.number && view.asset) Object.assign(change, { slid: newest, glimpse: undefined })
-          // A take its run was seen making landed: it's said, with View (cl-937). A file dropped on it or one undo brings back isn't.
+          // A take seen being made landed: it's said, with View (cl-937). A file dropped on it or one undo brings back isn't.
           const made = asset.prefixes?.at(-1)
-          if (this.hasRead && made && newest !== view.asset?.prefixes?.at(-1)?.number && made.run != null && view.asset?.making?.includes(made.run)) this.sayLater(asset.name, made.number, made.main?.sha256)
+          const making = (held?: { id?: string; run?: number | null }) => Boolean(held && ((held.id && takingOf(view).some((take) => take.id === held.id)) || (held.run != null && view.asset?.making?.includes(held.run))))
+          if (this.hasRead && made && newest !== view.asset?.prefixes?.at(-1)?.number && making(made)) this.sayLater(asset.name, made.id || undefined, made.number, made.main?.sha256)
           // Its first take, landing while it's open on its words with nothing typed: it shows the take. An image tool's words are its next take's, and stay.
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: open, it's the one looked at. At rest a box goes on
           // showing what it showed (cl-936), what's approved staying and what lands beside it unseen (cl-928): its watch goes once nothing is on its way.
           const seen = watched({ ...view, asset })
-          if (!view.here && (view.watchFrom !== undefined || view.watchRun !== undefined) && !asset.making?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined })
-          else if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
-          // Bind a queued preview to its run and retain it through the gap between execution and the version landing.
-          else if (seen?.run !== undefined) {
-            const status = this.runs.get(seen.run)?.status
-            if (status === "failed" || status === "canceled") Object.assign(change, { watchRun: undefined, watchFrom: undefined })
-            else Object.assign(change, { watchRun: seen.run, watchFrom: undefined })
-          }
+          const still = (id: string) => listed.has(id) || Boolean(taking?.some((take) => take.id === id))
+          if (!view.here && view.watch !== undefined && !asset.takes?.length && !taking?.length && !queued.has(asset.name) && ("asked" in change ? change.asked : view.asked) === undefined) change.watch = undefined
+          else if (seen?.number !== undefined) Object.assign(change, { watch: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
+          // Ended with no version (failed, canceled): nothing of it to look at.
+          else if (view.watch !== undefined && !still(view.watch)) change.watch = undefined
           // Read back: what was sent is what it holds, or someone wrote since. A read of a write of its own, older than its last, says neither.
           // What's typed and what's still on its way show over it, field by field: the page's unsent words win, and every other field is what's read.
           const between = asset.etag !== view.known && this.own.get(asset.name)?.has(asset.etag ?? "")
@@ -1302,7 +1316,7 @@ export class CanvasStore {
   pickTake(name: string, number: number) {
     const asset = this.get(name)?.asset
     if (!asset) return
-    this.patch(name, { watchRun: undefined, watchFrom: undefined, ...(["image", "video"].includes(asset.kind) ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
+    this.patch(name, { watch: undefined, ...(["image", "video"].includes(asset.kind) ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
     this.view(name, number === asset.version ? undefined : number)
     if (asset.kind === "image") return
     if (!asset.tool || asset.timeline) return
@@ -1321,7 +1335,7 @@ export class CanvasStore {
     if (!asset || !numbersOf(asset).includes(number)) return
     if (asset.kind === "image" && this.inPlace?.name === key) this.inPlace.moved = true
     void this.save(key)
-    this.patch(key, { viewed: undefined, watchRun: undefined, watchFrom: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
+    this.patch(key, { viewed: undefined, watch: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
     if (asset.pinned && asset.approved === number) return
     const edit = this.step(`Selected version ${number} of ${key}`, [key])
     this.over(key, { pinned: true, approved: number, version: number }, (served, write) => this.client.approve(this.projectId!, served, String(number), write), "select version", edit)
@@ -1372,19 +1386,18 @@ export class CanvasStore {
       const fps = shown.fps ?? FPS
       const frame = pickupAt(Math.round(Math.max(0, seconds) * fps), framesIn(shown.duration_ms, fps), tool.pickup)
       this.focusFit?.()
-      this.patch(key, { hereWords: true, watchFrom: undefined, watchRun: undefined, continuing: frame ? { take: `<${key}.${number}>`, out_frame: frame, beats_from: frame / fps } : undefined, continuingFps: fps })
+      this.patch(key, { hereWords: true, watch: undefined, continuing: frame ? { take: `<${key}.${number}>`, out_frame: frame, beats_from: frame / fps } : undefined, continuingFps: fps })
       this.focusing = key
     } catch (error) { say("Couldn't load this video's prompts", error) }
   }
 
-  /** Looks at a take still being made: the run picked, or with none the next one asked. Its tile is picked, its progress on the frame. */
-  watchTake(name: string, run?: number) {
+  /** Looks at a take still being made, by its id: its tile is picked, and its own progress fills the frame, a video's too (Paul, 11-12).
+   *  `words`: its words stay over it, as a video's do once it's rendered. */
+  watchTake(name: string, take: string, words = false) {
     const asset = this.get(name)?.asset
     if (!asset) return
-    const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
-    // A render asked of a video's words stays on them; a take being made, picked, is looked at: what of it has landed plays (cl-907). On its
-    // words while one renders, the title row says so, and New is a draft: "New take", its last take behind (cl-934).
-    this.patch(name, { hereWords: (asset.kind === "video" && run === undefined) || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
+    const run = asset.takes?.find((held) => held.id === take)?.run ?? undefined
+    this.patch(name, { hereWords: words || undefined, viewed: undefined, watch: take, glimpse: undefined, ...(run !== undefined && this.runs.has(run) ? { run: this.runs.get(run) } : {}) })
   }
 
   seek(name: string, at: number) {
@@ -1396,12 +1409,17 @@ export class CanvasStore {
    * A new take or version: the box says Queued now, and anything typed goes first. What Calcifer runs itself needs no machine; with none up for the rest, it asks
    * for one and goes when one is. Its key is made here, once, so however often this is tried it asks one render.
    */
-  run(name: string, also: { pickup?: Pickup } = {}, here = false) {
+  run(name: string, also: Also = {}, here = false) {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     const asset = view?.asset
     if (!asset) return
     if (!also.pickup && view.continuing) also = { ...also, pickup: view.continuing }
+    // Its take has its id from the click, and is listed under it at once (cl-945). However often this goes on, after a question or a
+    // machine coming up, it's that take.
+    const take = also.take ?? newTakeId()
+    also = { ...also, take }
+    if (!view.taking?.some((held) => held.id === take)) this.patch(key, { taking: [...(view.taking ?? []), { id: take, until: NOT_YET }] })
     const tool = this.tools.get().get(asset.tool ?? "")
     if (tool?.package.split("/").at(-1) === "minimax-h3" && tool.fields.some((field) => field.field === "turbo")) this.setDraft(key, "turbo", true)
     const local = here || madeHere(asset.tool)
@@ -1420,14 +1438,18 @@ export class CanvasStore {
     }
     // From an image tool's words, the box looks at the take being made, and its + goes back to them. Not before it goes: what it waits
     // for or asks first is said under its words.
-    if (asset.kind === "image" || asset.kind === "video") this.watchTake(key)
+    if (asset.kind === "image" || asset.kind === "video") this.watchTake(key, take, asset.kind === "video")
     this.patch(key, { waiting: undefined, asking: undefined, scrub: undefined, pickingUp: undefined, glimpse: undefined, asked: NOT_YET })
     const id = this.ids.get(key)
-    const settle = (asked?: number) => this.patchId(id, { asked })
+    // Answered, its take is Calcifer's to list from a read begun after; not sent, it's no take.
+    const settle = (asked?: number) => {
+      this.patchId(id, { asked })
+      this.untake(id, take, asked)
+    }
     const once = `take-${crypto.randomUUID()}`
     this.act(key, {
       // None named but here: Calcifer places it, as a `cozy run` naming none.
-      send: async (served, write) => ((await saved) ? this.client.render(this.projectId!, [served], local ? on : [], once, also, write.once) : null),
+      send: async (served, write) => ((await saved) ? this.client.render(this.projectId!, [served], local ? on : [], once, { pickup: also.pickup, takes: [take] }, write.once) : null),
       done: (answer) => {
         settle(answer ? nextProjectOrder() : undefined)
         this.readAfter([id])
@@ -1440,15 +1462,30 @@ export class CanvasStore {
   }
 
   /** How this computer would do it, by Calcifer, once what's typed is in: poorly, and nothing said for that, the box asks; else it renders. */
-  private async askFirst(key: string, also: { pickup?: Pickup }, saved: Promise<boolean>) {
+  private async askFirst(key: string, also: Also, saved: Promise<boolean>) {
     const id = this.ids.get(key)
     if (!id) return
-    if (!(await saved) || !this.projectId) return this.patchId(id, { asked: undefined })
+    if (!(await saved) || !this.projectId) {
+      this.untake(id, also.take)
+      return this.patchId(id, { asked: undefined })
+    }
     const fit = await this.client.fit(this.projectId, [this.served.get(id) ?? key]).catch(() => null)
     const name = this.namesById.get(id)
     if (!name) return
-    if (unsaid(fit)) this.patchId(id, { asked: undefined, asking: { fit, also } })
-    else this.run(name, also, true)
+    // Asked first, nothing goes: no take until it's answered, and that answer renders a take of its own.
+    if (unsaid(fit)) {
+      this.untake(id, also.take)
+      this.patchId(id, { asked: undefined, asking: { fit, also: { pickup: also.pickup } } })
+    } else this.run(name, also, true)
+  }
+
+  /** Its take `take`, asked from this page: Calcifer's to list from a read begun after `until`; with none, it was never sent, and it goes. */
+  private untake(id: string | undefined, take: string | undefined, until?: number) {
+    const name = id && this.namesById.get(id)
+    const taking = name ? this.views.get(name)?.taking : undefined
+    if (!name || !take || !taking?.some((held) => held.id === take)) return
+    const left = until === undefined ? taking.filter((held) => held.id !== take) : taking.map((held) => (held.id === take ? { ...held, until } : held))
+    this.patch(name, { taking: left.length ? left : undefined, ...(until === undefined && this.views.get(name)?.watch === take ? { watch: undefined } : {}) })
   }
 
   /** Render here: kept for its tools on this computer, so it isn't asked again, and it renders. */
@@ -1823,11 +1860,11 @@ export class CanvasStore {
   }
 
   /** Takes landed and not said yet: said together once none has landed for a moment (cl-937). */
-  private landedNow: { name: string; number: number; sha256?: string }[] = []
+  private landedNow: { name: string; id?: string; number: number; sha256?: string }[] = []
   private landedTimer = 0
 
-  private sayLater(name: string, number: number, sha256?: string) {
-    this.landedNow.push({ name, number, sha256 })
+  private sayLater(name: string, id: string | undefined, number: number, sha256?: string) {
+    this.landedNow.push({ name, id, number, sha256 })
     clearTimeout(this.landedTimer)
     this.landedTimer = window.setTimeout(() => this.sayLanded(), LANDED_MS)
   }
@@ -1840,29 +1877,37 @@ export class CanvasStore {
       return view && !(this.focusedName.get() === this.resolveName(name) && shownOf(view)?.number === number)
     })
     if (!landed.length) return
-    const [{ name, number, sha256 }] = landed
+    const [{ name, id, number, sha256 }] = landed
+    // That take, by its id (cl-945), whatever has landed since.
     const view = { label: "View", run: () => {
       this.openHere(name)
-      this.pickTake(name, number)
+      this.pickTake(name, this.get(name)?.asset?.prefixes?.find((held) => id && held.id === id)?.number ?? number)
     } }
     if (landed.length > 1) return void say(`${landed.length} renders finished: ${[...new Set(landed.map((one) => one.name))].join(", ")}`, undefined, { action: view, ms: 10_000 })
     const noun = this.get(name)?.asset?.noun ?? "take"
     say(`${name} finished: ${noun} ${number}`, undefined, { action: view, ms: 10_000, picture: sha256 && this.projectId ? this.client.thumb(this.projectId, sha256, 96) : undefined })
   }
 
-  /** Stops one of its runs, gone from the box at once, and its others go on. */
-  cancelRun(name: string, run: number) {
+  /** Stops one of its takes, by its id (cl-945), gone from the box at once, and its others go on: one sent, its run; one queued, that take. */
+  cancelTake(name: string, take: Taking) {
     const view = this.get(name)
-    const making = view?.asset?.making
-    if (view?.asset?.kind === "image" && watched(view)?.run === run) this.patch(name, { watchRun: undefined, watchFrom: undefined })
-    if (making) this.over(name, { making: making.filter((number) => number !== run) }, (_, write) => this.client.cancelRun(String(run), write.once).then(() => ({})), `cancel run ${run} of`, undefined)
+    const asset = view?.asset
+    if (!view || !asset) return
+    if (watched(view)?.id === take.id) this.patch(name, { watch: undefined })
+    const taking = view.taking?.filter((held) => held.id !== take.id)
+    if (taking?.length !== view.taking?.length) this.patch(name, { taking: taking?.length ? taking : undefined })
+    if (take.id) this.patch(name, { gone: [...(view.gone ?? []), take.id] })
+    // One with an id is off by it (`gone`), and what's listed after stays as read; a run no take names is off its runs until a read.
+    const making = take.id ? {} : { making: asset.making?.filter((number) => number !== take.run) }
+    const send = take.run !== undefined ? (_: string, write: Write) => this.client.cancelRun(String(take.run), write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(this.projectId!, [take.id], write.once).then(() => ({}))
+    this.over(name, making, send, take.run !== undefined ? `cancel run ${take.run} of` : "cancel a take of", undefined)
   }
 
   /** Its render stops, wherever it is: what's queued leaves, its runs are canceled (as `cozy run cancel`), and it says Cancelling… until
    *  they end. No question is asked: Undo renders it again. */
   cancelRender(name: string) {
     const busy = Boolean(this.get(name)?.asset?.making?.length || this.get(name)?.queued)
-    this.patch(name, { asked: undefined, canceling: busy || undefined, ...(this.get(name)?.asset?.kind === "image" ? { watchRun: undefined, watchFrom: undefined } : {}) })
+    this.patch(name, { asked: undefined, taking: undefined, canceling: busy || undefined, ...(this.get(name)?.asset?.kind === "image" ? { watch: undefined } : {}) })
     this.act(name, {
       send: (served, write) => this.client.cancelRender(this.projectId!, [served], write.once),
       done: () => say(`Canceled ${name}'s render`, undefined, { action: { label: "Undo", run: () => this.run(name) }, ms: 8_000 }),

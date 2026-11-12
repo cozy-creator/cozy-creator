@@ -490,7 +490,7 @@ export class Client {
   }
 
   /** A new version of each of `names`, on these machines; none: Calcifer's to say (cl-894). A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
-  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated"> = {}, once?: AbortSignal): Promise<Asked> {
+  render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated" | "takes"> = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
   }
 
@@ -595,6 +595,11 @@ export class Client {
   /** These assets' queued work dropped and their runs canceled. */
   cancelRender(id: string, names: string[], once?: AbortSignal): Promise<unknown> {
     return this.write("POST", `${project(id)}/cancel`, { names }, undefined, { once })
+  }
+
+  /** These takes, by id, dropped from the queue or their runs canceled (cl-945). */
+  cancelTakes(id: string, takes: string[], once?: AbortSignal): Promise<unknown> {
+    return this.write("POST", `${project(id)}/cancel`, { names: [], takes }, undefined, { once })
   }
 
   rename(id: string, from: string, to: string, write: Write = {}): Promise<Renamed> {

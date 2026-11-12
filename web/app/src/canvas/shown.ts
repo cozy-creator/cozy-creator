@@ -115,17 +115,35 @@ export function refusal(tool: Tool | undefined, view: ElementView | undefined): 
   return `${toolName(tool!)} takes ${takes.map((one) => SEVERAL[one]).join(" and ")}; ${view.name} is ${ONE[kind] ?? `a ${kind}`}`
 }
 
-/** The take being made that it looks at, open: the one picked (`watchRun`), else the newest asked since `watchFrom`. Its run while it's made,
- *  and its number once it's landed. At rest a box looks at what it showed, so a render never changes its size (cl-936): an approved one
- *  goes on showing what's approved, and what's made lands beside it, unseen (cl-928); with none, the new take is its state once it lands. */
-export function watched(view: ElementView): { run?: number; number?: number } | undefined {
-  const { watchRun, watchFrom: from } = view
-  if (watchRun === undefined && from === undefined) return undefined
-  if (!view.here) return undefined
-  const versions = view.asset?.prefixes ?? []
-  const newer = (run?: number | null) => (run ?? 0) > (from ?? 0)
-  const run = watchRun ?? Math.max(0, ...(view.asset?.making ?? []).filter(newer), ...versions.filter((held) => newer(held.run)).map((held) => held.run ?? 0))
-  return { run: run || undefined, number: run ? versions.find((held) => held.run === run)?.number : undefined }
+/** The take its frame looks at while it's made, open, by its id (cl-945): its run once that has a number, and its number once it's landed.
+ *  At rest a box looks at what it showed, so a render never changes its size (cl-936): an approved one goes on showing what's approved,
+ *  and what's made lands beside it, unseen (cl-928); with none, the new take is its state once it lands. */
+export function watched(view: ElementView): { id: string; run?: number; number?: number } | undefined {
+  const id = view.watch
+  if (id === undefined || !view.here) return undefined
+  const version = view.asset?.prefixes?.find((held) => held.id === id)
+  const take = view.asset?.takes?.find((held) => held.id === id)
+  return { id, run: take?.run ?? version?.run ?? undefined, number: version?.number }
+}
+
+/** A take not landed, by its id: what Calcifer lists, then this page's own it doesn't list yet, from the click (cl-945). */
+export interface Taking {
+  id: string
+  run?: number
+  queued?: boolean
+}
+
+/** Its takes not landed, in the order they were asked: a take is listed from the click to its version, and is never another's. */
+export function takingOf(view: ElementView): Taking[] {
+  const landed = new Set([...(view.asset?.prefixes ?? []).map((held) => held.id).filter(Boolean), ...(view.gone ?? [])])
+  const listed = (view.asset?.takes ?? []).filter((take) => !landed.has(take.id)).map((take) => ({ id: take.id, run: take.run ?? undefined, queued: take.queued }))
+  const known = new Set(listed.map((take) => take.id))
+  return [...listed, ...(view.taking ?? []).filter((take) => !known.has(take.id) && !landed.has(take.id)).map((take) => ({ id: take.id, queued: true }))]
+}
+
+/** A take's id, made where it's asked for, as Calcifer makes one: `project-` and 32 hex digits. */
+export function newTakeId(): string {
+  return `project-${Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")}`
 }
 
 /** The run making the take a box's frame is on while it's made: the one it looks at, else the first going. None: not sent yet. */
