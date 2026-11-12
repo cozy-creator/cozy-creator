@@ -1,4 +1,4 @@
-import { type DragEvent, type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import { type DragEvent, type PointerEvent, type ReactNode, useEffect, useId, useRef, useState } from "react"
 import type { ToolField, Tool } from "../api/calcifer"
 import type { Media } from "../types"
 import { Icon } from "../ui/Icon"
@@ -10,7 +10,7 @@ import type { CanvasStore, ElementView } from "./CanvasStore"
 import { carriedAt, carriedFile, LET_GO } from "./carry"
 import { ClipRange } from "./ClipRange"
 import { useCanvasStore, useElement } from "./context"
-import { atDefault, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
+import { atDefault, empty, fieldsOf, fieldWords, fullRows, heldBeyond, newRow, onFace, optionWord, totalOf, WANTED } from "./controls"
 import { Ghosts, Thumb } from "./Media"
 import { MentionText } from "./MentionText"
 import { angleOf, baseOf, degrees, FPS, framesIn, rangeOf, ranged, timecode } from "./ranges"
@@ -489,6 +489,9 @@ function Members({ name, group, bound, view, place, label }: { name: string; gro
 /** Rows, each its members, with + and × down to its least and up to its most, dragged by the grip to reorder. A file holding fewer shows them, to write in, and holds them once one's touched. */
 function ListGroup({ name, field, bound, view, place }: Drawn) {
   const rows = fullRows(field, rowsIn(bound.value))
+  const accordion = view.asset?.kind === "video" && view.hereWords && field.field === "beats"
+  const [expanded, setExpanded] = useState<number | null>(0)
+  const panelId = useId()
   const called = field.label.replace(/s$/, "")
   const least = field.min_items ?? 0
   const total = totalOf(field, rows)
@@ -503,6 +506,7 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
       const [one] = next.splice(held.from, 1)
       next.splice(held.to, 0, one)
       bound.write(next)
+      if (accordion) setExpanded((open) => open === null ? null : open === held.from ? held.to : held.from < open && held.to >= open ? open - 1 : held.from > open && held.to <= open ? open + 1 : open)
     }
     move(null)
   }
@@ -545,7 +549,7 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
     onDragEnd() { move(null) },
   })
   const add = rows.length < (field.max_items ?? Infinity) && (
-    <button type="button" className="add-beat nodrag" title={`Add a ${called.toLowerCase()}`} onClick={() => bound.write([...rows, newRow(field)])}>
+    <button type="button" className="add-beat nodrag" title={`Add a ${called.toLowerCase()}`} onClick={() => { bound.write([...rows, newRow(field)]); if (accordion) setExpanded(rows.length) }}>
       + {called}
     </button>
   )
@@ -564,23 +568,23 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
         event.stopPropagation()
         drop()
       }}>
-      {rows.map((_, i) => (
-        <div className={`beat ${rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} data-beat-index={i} key={i}>
-          {rows.length > 1 && (
-            <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>
-              ⋮⋮
-            </span>
-          )}
-          <div className="beat-body">
-            <Members name={name} group={field} bound={rowBound(i)} view={view} place={`${place}.${i}`} label={`${called} ${i + 1}`} />
-          </div>
-          {rows.length > least && (
-            <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => bound.write(rows.filter((_, at) => at !== i))}>
-              <Icon name="close" />
-            </button>
-          )}
+      {rows.map((value, i) => {
+        const handle = rows.length > 1 && <span className="grip nodrag nopan" role="button" aria-label={`Move ${called.toLowerCase()} ${i + 1}`} title="Drag to reorder" {...grip(i)}>⋮⋮</span>
+        const remove = rows.length > least && <button type="button" className="iconb nodrag" aria-label={`Remove ${called.toLowerCase()} ${i + 1}`} onClick={() => {
+          bound.write(rows.filter((_, at) => at !== i))
+          if (accordion) setExpanded((open) => open === null ? null : open === i ? Math.max(0, Math.min(i, rows.length - 2)) : open > i ? open - 1 : open)
+        }}><Icon name="close" /></button>
+        const body = <div className="beat-body"><Members name={name} group={field} bound={rowBound(i)} view={view} place={`${place}.${i}`} label={`${called} ${i + 1}`} /></div>
+        const timing = field.members?.find((member) => member.total)
+        const duration = timing ? value[timing.field] ?? timing.default : undefined
+        const open = expanded === i
+        return <div className={`beat ${accordion ? "beat-accordion" : ""} ${rows.length > least ? "can-go" : ""} ${moving?.from === i ? "moving" : ""} ${moving && moving.to === i && moving.from !== i ? "landing" : ""}`} data-beat-index={i} key={i}>
+          {accordion ? <>
+            <div className="beat-heading">{handle}<button type="button" className="beat-toggle" aria-label={`${called} ${i + 1}`} aria-expanded={open} aria-controls={`${panelId}-${i}`} onClick={() => setExpanded(open ? null : i)}><b>{called} {i + 1}</b>{duration != null && <span>{String(duration)} {timing?.unit ?? ""}</span>}<Icon name="forward" /></button>{remove}</div>
+            <div className="beat-panel" id={`${panelId}-${i}`} data-open={open || undefined} aria-hidden={!open} inert={!open}>{body}</div>
+          </> : <>{handle}{body}{remove}</>}
         </div>
-      ))}
+      })}
       <div className="beats-last">
         {total && (
           <span className="total">
@@ -749,13 +753,14 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
   if (!view.asset) return null
   const tool = view.asset.tool ? tools.get(view.asset.tool) : undefined
   const declared = makes(view) ? fieldsOf(view.asset, tools) : []
+  const videoForm = prominent && view.asset.kind === "video"
   const priority = (field: ToolField) => field.field === "summary" ? 0 : field.type === "group" && (field.field === "beats" || field.members?.some((member) => member.total)) ? 1 : 2
   const fields = prominent ? [...declared].sort((a, b) => priority(a) - priority(b)) : declared
   const inFrame = prominent ? undefined : framed(view, fields, tool)
   const first = fields.find((field) => field.type === "prompt" || field.type === "words")
   // The box's own shape is its shape: its corner sets it.
   const rest = fields.filter((field) => field !== inFrame && field.type !== "timeline" && field.type !== "shape")
-  const faced = editing ? rest.filter((field) => prominent ? !field.advanced : field.field === "megapixels" || onFace(field, store.valueOf(name, field.field))) : []
+  const faced = editing ? rest.filter((field) => videoForm ? field.field === "summary" || field.field === "beats" || Boolean(field.required) || (field.type === "slot" && !empty(store.valueOf(name, field.field))) : prominent ? !field.advanced : field.field === "megapixels" || onFace(field, store.valueOf(name, field.field))) : []
   const beyond = heldBeyond({ ...view.asset.fields, ...view.sent, ...view.drafts }, fields)
   const folded = rest.filter((field) => !faced.includes(field))
   const plainFolded = folded.filter((field) => !field.advanced)
@@ -771,11 +776,11 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
       {head && <div className="tool-head">{head}</div>}
       <ToolBox tool={tool} name={name} view={view} shown={faced.filter((field) => prominent || !small(field))} folded={plainFolded} row={row}>
         {(lines, more) => {
-          const behind = (more !== null && plainFolded.length > 0) || addOns || beyond.length > 0
+          const behind = (more !== null && plainFolded.length > 0) || (videoForm && expert.length > 0) || addOns || beyond.length > 0
           return (
             <>
               {editing && lines && <div className="edit-shown">{lines}</div>}
-              {more !== null && expert.length > 0 && <div className="advanced">{expert.map(row)}</div>}
+              {!videoForm && more !== null && expert.length > 0 && <div className="advanced">{expert.map(row)}</div>}
               <div className="row actions">
                 {!prominent && more !== null && faced.filter(small).map((field) => <ControlRow key={field.field} name={name} field={field} view={view} focus={false} named={false} />)}
                 {actions}
@@ -789,6 +794,7 @@ export function AssetEdit({ name, view, editing, prominent = false, head, action
                 open && (
                   <div className="edit-more">
                     {open && more}
+                    {videoForm && expert.length > 0 && <div className="advanced">{expert.map(row)}</div>}
                     {open && <AddOnRows name={name} />}
                     {open && beyond.map(([field, value]) => <HeldLine key={field} field={field} value={value} />)}
                     {children}
