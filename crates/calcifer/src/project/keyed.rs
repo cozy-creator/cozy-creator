@@ -76,6 +76,9 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
     if matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         return next.run(request).await;
     }
+    // Generic invocation already has its canonical journal key. Caching a
+    // preparing reply here would prevent its retry from ever submitting the call.
+    if request.uri().path().ends_with("/runs/submit") {return next.run(request).await;}
     let key = request.headers().get("idempotency-key").and_then(|v| v.to_str().ok()).map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned);
     let Some(key) = key else { return next.run(request).await };
     let (mut parts, body) = request.into_parts();

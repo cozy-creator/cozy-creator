@@ -44,6 +44,7 @@ pub(crate) struct SealingStore<'a> {
     transition: &'a vault::ProjectTransition,
 }
 impl SealingStore<'_> {
+    pub(crate) fn keep_worker_migration_receipt(&self,machine:&str,receipt:&api::machine::ProjectExecutionMigrationReceipt)->store::Result<usize> {self.write(|tx|keep_worker_receipt(tx,self.project_id(),machine,receipt))}
     pub(crate) fn owner_id(&self)->Option<&str> {Some(&self.project.id)}
     pub(crate) fn legacy_worker_pending(&self)->store::Result<bool> { self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending')",[self.project_id()],|row|row.get(0))?)) }
     pub(crate) fn legacy_worker_requests(&self)->store::Result<Vec<(String,String,Option<u64>)>> {
@@ -139,6 +140,7 @@ impl Projects {
 }
 
 impl ProjectStore {
+    pub(crate) fn keep_worker_migration_receipt(&self,machine:&str,receipt:&api::machine::ProjectExecutionMigrationReceipt)->store::Result<usize> {self.write(|tx|keep_worker_receipt(tx,self.project_id(),machine,receipt))}
     fn validate(&self)->store::Result<()> {
         match self.access {
             Access::Viewing=>self.project.require_view().map_err(project_error),
@@ -224,6 +226,27 @@ fn project_error(error: Error) -> StoreError {
         "project_locked" | "project_view_changed" | "project_busy" => StoreError::Locked(error.code.to_owned()),
         _ => StoreError::Protected(error.code.to_owned()),
     }
+}
+
+/// Called only after the selected authenticated worker returned its COMPLETE
+/// migration receipt. A computation memo or a client-supplied spec hash is not a binding.
+fn keep_worker_receipt(tx:&Transaction<'_>,project:&str,machine:&str,receipt:&api::machine::ProjectExecutionMigrationReceipt)->store::Result<usize> {
+    if machine!="local" {return Err(StoreError::Protected("legacy_remote_worker_pending".into()));}
+    let mut covered=0;
+    for binding in &receipt.bindings {
+        let canonical=tx.query_row("SELECT EXISTS(SELECT 1 FROM runs JOIN journal_migrations ON journal_migrations.source='controller-v7:run:'||runs.id WHERE runs.id=?1 AND runs.owner=?2 AND runs.machine=?3)",params![binding.request_id,project,machine],|row|row.get::<_,bool>(0))?;
+        if !canonical {continue;}
+        let digest=binding.invocation_spec_digest.strip_prefix("sha256:").unwrap_or(&binding.invocation_spec_digest);
+        if binding.source_workspace_id.is_empty() || digest.len()!=64 || !digest.bytes().all(|byte|byte.is_ascii_hexdigit()) {return Err(StoreError::Protected("legacy_worker_binding_invalid".into()));}
+        let source=format!("worker-custody:{}",binding.request_id);
+        let record=serde_json::to_string(binding).map_err(|_|StoreError::Protected("legacy_worker_binding_invalid".into()))?;
+        let prior=tx.query_row("SELECT record FROM journal_migrations WHERE source=?1",[&source],|row|row.get::<_,String>(0)).optional()?;
+        if prior.as_ref().is_some_and(|prior|prior!=&record) {return Err(StoreError::Protected("legacy_worker_binding_changed".into()));}
+        tx.execute("INSERT OR IGNORE INTO journal_migrations(source,digest,record) VALUES(?1,?2,?3)",params![source,binding.invocation_spec_digest,record])?;
+        tx.execute("UPDATE runs SET custody='owned' WHERE id=?1 AND owner=?2 AND machine=?3",params![binding.request_id,project,machine])?;
+        covered+=1;
+    }
+    Ok(covered)
 }
 
 pub(super) const SCHEMA: &str = "    CREATE TABLE runs (

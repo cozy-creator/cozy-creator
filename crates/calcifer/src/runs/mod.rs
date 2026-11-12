@@ -65,16 +65,20 @@ pub(crate) async fn submit_project(
 ) -> Result<Response, Refusal> {
     let bytes = body?;
     prebuilt(&bytes)?;
-    let mut ask: RunRequest = parse(&bytes)?;
+    let mut raw:serde_json::Value=parse(&bytes)?;
+    let legacy_on=raw.get("on").is_some_and(serde_json::Value::is_string);
+    if legacy_on {let value=raw.get("on").cloned().expect("checked on");raw["on"]=serde_json::json!([value]);}
+    let mut ask:RunRequest=serde_json::from_value(raw).map_err(|_|Refusal(Error::new(Kind::Validation,"invalid_run_request","the run request is invalid")))?;
     let (id,recorded) = { let store = api.projects.store(&api, &project).await.map_err(Refusal)?; (store.project_id().to_owned(),store.recorded(&key)?) };
     // A migrated retry keeps its exact original body digest. Its old locator
     // may have moved; the existing row inside this admitted owner is authority.
     if let Some((row,recorded))=recorded {
-        if recorded!=digest(&ask) {return Err(Refusal(crate::api::conflict(&key)));}
+        if recorded!=digest(&ask) && legacy_024_digest(&ask).as_deref()!=Some(recorded.as_str()) {return Err(Refusal(crate::api::conflict(&key)));}
         return vault::project_reply(&api,Some(&project),async {
             Ok((StatusCode::OK,Json(Submitted {run:api.calcifer.record(&row)?,replay:true,notes:vec![],preparing:false,lock:None})))
         }).await;
     }
+    if legacy_on {return Err(Refusal(Error::new(Kind::Usage,"legacy_run_request","legacy request encoding is supported only for an existing migrated retry")));}
     if let Some(named) = ask.project.as_deref() {
         let actual = { let store = api.projects.store(&api, named).await.map_err(Refusal)?; store.project_id().to_owned() };
         if actual != id { return Err(Refusal(Error::new(Kind::Validation, "project_scope_mismatch", "the route and request name different projects"))); }
@@ -379,6 +383,21 @@ pub(crate) fn asked(row: &crate::store::RunRow) -> Option<api::calcifer::RunAske
 fn digest(ask: &RunRequest) -> String {
     let asked = RunRequest { agreed: None, ..ask.clone() };
     format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&asked).expect("serializes"))))
+}
+
+/// v0.24.0 serialized one optional placement before the set-valued wire change.
+/// This exact original field order is used only to prove a read-only replay;
+/// no canonical digest is rewritten and no fresh legacy invocation is admitted.
+fn legacy_024_digest(ask:&RunRequest)->Option<String> {
+    if ask.on.len()>1 || ask.attention_capture.is_some() {return None;}
+    let mut value=serde_json::to_value(RunRequest {agreed:None,..ask.clone()}).ok()?;
+    let fields=value.as_object_mut()?;
+    match ask.on.first() {Some(on)=>{fields.insert("on".into(),serde_json::to_value(on).ok()?);},None=>{fields.remove("on");}}
+    const ORDER:[&str;19]=["target","code","on","hub","input","input_text","terms","files","fidelities","loras","paths","gpus","lane","attention_kernel","warm","project","recipes","agreed","attention_capture"];
+    let mut bytes=vec![b'{'];let mut comma=false;
+    for field in ORDER {if let Some(value)=fields.get(field) {if comma {bytes.push(b',');}comma=true;serde_json::to_writer(&mut bytes,field).ok()?;bytes.push(b':');serde_json::to_writer(&mut bytes,value).ok()?;}}
+    bytes.push(b'}');
+    Some(format!("sha256:{}",hex::encode(Sha256::digest(bytes))))
 }
 
 enum Prepared {
