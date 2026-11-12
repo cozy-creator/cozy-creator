@@ -36,7 +36,8 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { bodyBox, bodyWidth, canvasBox, faceOf, farNameOf, HEAD, HEAD_FOOT, heightFor, hexOf, IN_BOX, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, sameStep, selectedOf, sentShape, type Shown, shownOf, stepOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor, type ZoomStep } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, farNameOf, HEAD, HEAD_FOOT, heightFor, hexOf, inBoxOf, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, sameStep, selectedOf, sentShape, type Shown, shownOf, stepOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor, type ZoomStep } from "./shown"
+import { viewState } from "./StateDot"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -372,8 +373,9 @@ export class CanvasStore {
    * only a box let go is where it was let go, as it was drawn.
    */
   private lifts = new Map<string, number>()
-  /** Far out, the boxes whose names keep to their box: one reaching past it would lie on what's beside it. */
-  private inBox = new Set<string>()
+  /** Far out, the boxes whose names keep to their box, and the room that leaves them (`--name-room`): one reaching past it would lie on
+   *  what's beside it. */
+  private inBox = new Map<string, string>()
   private reflowing = false
   private nameWidth?: (text: string, px: number) => number
   /** On its way out, until a read begun after when its delete was answered: one from before doesn't bring it back, and one from after says, as
@@ -531,9 +533,12 @@ export class CanvasStore {
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view) return
-    this.views.set(key, { ...view, ...change })
+    const now = { ...view, ...change }
+    this.views.set(key, now)
     this.notify(key)
     if (SHAPING.some((field) => field in change)) this.follow(key, view)
+    // Far out a dot coming or going moves its name along.
+    if (this.zoomStep.band && (viewState(view) === null) !== (viewState(now) === null)) this.reflowSoon()
   }
 
   /** Its auto shape again, and, if what a mention of it sends moved, theirs. */
@@ -839,7 +844,7 @@ export class CanvasStore {
     const named = new Map<string, string>()
     for (const [name, id] of this.ids) {
       if ((this.lifts.get(name) ?? 0) !== (next.lifts.get(name) ?? 0)) moved.set(id, name)
-      if (this.inBox.has(name) !== next.inBox.has(name)) named.set(id, name)
+      if (this.inBox.get(name) !== next.inBox.get(name)) named.set(id, name)
     }
     this.lifts = next.lifts
     this.inBox = next.inBox
@@ -852,7 +857,8 @@ export class CanvasStore {
       nodes.map((node) => {
         let changed = node
         const renamed = named.get(node.id)
-        if (renamed) changed = { ...changed, style: this.inBox.has(renamed) ? { ...changed.style, "--name-room": IN_BOX } as CSSProperties : undefined }
+        const room = renamed && this.inBox.get(renamed)
+        if (renamed) changed = { ...changed, style: room ? ({ ...changed.style, "--name-room": room } as CSSProperties) : undefined }
         const name = ids.has(node.id) ? moved.get(node.id) : undefined
         const pose = name && this.poseOf(name)
         if (!pose) return changed
@@ -872,20 +878,20 @@ export class CanvasStore {
    * drawn, so a short one keeps the room rows give it and one on two lines takes two. A name reaching past its box (a word wider than it,
    * cl-958) does so only into room that's free: lying on what's beside it, it keeps to its box, and it's laid out again with that.
    */
-  private layoutAt(step: ZoomStep): { lifts: Map<string, number>; inBox: Set<string> } {
-    const inBox = new Set<string>()
+  private layoutAt(step: ZoomStep): { lifts: Map<string, number>; inBox: Map<string, string> } {
+    const inBox = new Map<string, string>()
     if (!step.band) return { lifts: new Map(), inBox }
     const measure = this.measureName()
-    const boxes: { name: string; text: string; box: Box }[] = []
+    const boxes: { name: string; text: string; box: Box; dot: boolean }[] = []
     for (const name of this.ids.keys()) {
       const view = this.views.get(name)
       const pose = this.poseOf(name)
-      if (view && pose) boxes.push({ name, text: view.placing ? this.shownName(name) : view.name, box: bodyBox(view, pose) })
+      if (view && pose) boxes.push({ name, text: view.placing ? this.shownName(name) : view.name, box: bodyBox(view, pose), dot: viewState(view) !== null })
     }
     boxes.sort((a, b) => a.box.y - b.box.y || (a.name < b.name ? -1 : 1))
     const meets = (a: Box, b: Box) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
     for (let pass = 0; ; pass++) {
-      const laid = boxes.map(({ name, text, box }) => ({ name, box, ...farNameOf(text, box.w, step, measure, inBox.has(name)) }))
+      const laid = boxes.map(({ name, text, box, dot }) => ({ name, box, dot, ...farNameOf(text, box.w, step, measure, dot, inBox.has(name)) }))
       const lifts = new Map<string, number>()
       for (const [at, { name, box, rise, reach, clear }] of laid.entries()) {
         let lift = 0
@@ -899,17 +905,17 @@ export class CanvasStore {
       }
       if (pass === 3) return { lifts, inBox }
       // Where each is drawn, its picture and its name, and where a name reaching past its box goes beside it.
-      const drawn = laid.map(({ name, box, rise, reach, clear }) => {
+      const drawn = laid.map(({ name, box, dot, rise, reach, clear }) => {
         const y = box.y + (lifts.get(name) ?? 0)
         const label = { x: box.x, y: y - rise, w: reach, h: rise + (HEAD - HEAD_FOOT) }
         const past = reach > box.w ? { x: box.x + box.w, y: label.y - clear / 2, w: reach - box.w + clear / 2, h: label.h + clear / 2 } : null
-        return { name, body: { ...box, y }, label, past }
+        return { name, dot, body: { ...box, y }, label, past }
       })
       let more = false
       for (const one of drawn) {
         if (!one.past || inBox.has(one.name)) continue
         if (drawn.some((other) => other !== one && (meets(one.past!, other.body) || meets(one.past!, other.label)))) {
-          inBox.add(one.name)
+          inBox.set(one.name, inBoxOf(one.dot))
           more = true
         }
       }
@@ -1287,7 +1293,7 @@ export class CanvasStore {
       id,
       type: view.entity ? "entity" : "element",
       position: { x: row.x, y: row.y + (this.lifts.get(name) ?? 0) },
-      ...(this.inBox.has(name) ? { style: { "--name-room": IN_BOX } as CSSProperties } : {}),
+      ...(this.inBox.has(name) ? { style: { "--name-room": this.inBox.get(name) } as CSSProperties } : {}),
       data: { name, width },
       width: drawn.w,
       origin: [(row.x - drawn.x) / drawn.w, (row.y - drawn.y) / drawn.h],
@@ -2238,7 +2244,8 @@ export class CanvasStore {
     const lift = this.lifts.get(from)
     this.lifts.delete(from)
     if (lift) this.lifts.set(to, lift)
-    if (this.inBox.delete(from)) this.inBox.add(to)
+    const room = this.inBox.get(from)
+    if (room && this.inBox.delete(from)) this.inBox.set(to, room)
     if (this.moreOpen.delete(from)) {
       this.moreOpen.add(to)
       this.onMore?.([...this.moreOpen])
