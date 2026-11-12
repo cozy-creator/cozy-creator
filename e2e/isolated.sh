@@ -124,7 +124,7 @@ case $suite:$shard in
   # web-localfit's heavy tool paints its edit base with BiRefNet (a take is one since cl-909); only Linux's web-core runs it.
   cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
-  cli:lines) needs='packages birefnet downloads' ;;
+  cli:lines | cli:ondemand) needs='packages birefnet downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras' ;;
   cli:) needs='packages birefnet downloads loras' ;;
