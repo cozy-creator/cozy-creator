@@ -684,7 +684,7 @@ pub(crate) async fn events(
         api.calcifer.row_store(&row)?.events_after(row.id.as_str(), starting_after)?,
     );
     let owner=api.calcifer.row_owner(&row)?;
-    let inert=owner.as_ref().is_some_and(|owner|owner.project_id()!=row.owner);
+    let inert=row.custody_pending || owner.as_ref().is_some_and(|owner|owner.project_id()!=row.owner);
     if !inert { pending.extend(api.calcifer.live(&row.id)); }
     let follow = Follow {
         owner,

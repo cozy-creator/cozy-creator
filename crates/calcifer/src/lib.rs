@@ -735,7 +735,7 @@ impl Calcifer {
             };
         }
         run.stalled=owned.then(||self.stalled(&run)).flatten();
-        if row.custody_pending && row.state!=State::Settled {run.waiting=Some("legacy worker custody must be verified before this execution can resume".into());run.progress=None;run.queue_position=None;}
+        if row.custody_pending && row.state!=State::Settled {run.stalled=None;run.waiting=Some("legacy worker custody must be verified before this execution can resume".into());run.progress=None;run.queue_position=None;}
         if !owned && row.state!=State::Settled {run.waiting=Some("copied history; this execution is not resumed".into());run.progress=None;run.queue_position=None;}
         Ok(run)
     }
