@@ -2206,10 +2206,7 @@ async fn runs(
             said(&name, format!("{name} is made here, free, when what it reads settles"));
             // Named, it is made again, as anything named is.
             if !missing {
-                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: format::KINDS.contains(&asset.kind.as_str()), new: true, pickup: None });
-            }
-            if approve {
-                say(format!("approve {name} in the browser once it is made; open it with `cozy open`"));
+                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: true, pickup: None });
             }
             continue;
         }
@@ -2236,7 +2233,7 @@ async fn runs(
             continue;
         }
         let makes_new = !missing || pickup.is_some();
-        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: approve || format::KINDS.contains(&asset.kind.as_str()), new: makes_new, pickup: pickup.clone() };
+        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: makes_new, pickup: pickup.clone() };
         takes.extend((0..if makes_new { n } else { 1 }).map(take));
     }
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
@@ -4719,7 +4716,8 @@ impl Walk {
         self.folder().update_lock(|lock| number.set(lock.number(&name, &asset.kind)))?;
         version.number = number.get();
         let selected = version.main().cloned();
-        self.record_free(&name, &asset.kind, version, noun(doc, lock, i))?;
+        let approve = ask.takes.iter().any(|take| name_key(&take.asset) == name_key(&name) && take.approve);
+        self.record_free(&name, &asset.kind, version, noun(doc, lock, i), approve)?;
         if let Some(sha256) = selected {
             self.select_asked(&ask.id, &name, number.get(), &sha256)?;
         }
@@ -4925,16 +4923,17 @@ impl Walk {
     }
 
     /// Lists the built-in tool's next version, retaining its earlier media states.
-    fn record_free(&self, name: &str, kind: &str, version: Version, noun: &str) -> Result<(), Error> {
+    fn record_free(&self, name: &str, kind: &str, version: Version, noun: &str, approve: bool) -> Result<(), Error> {
         let number = version.number;
         self.folder().act(|| {
+            let initialize = format::can_initialize_approval(self.folder(), name)?;
             self.folder().update_lock(|lock| {
                 let held = lock.asset_mut(name, kind);
                 held.versions.push(version.clone());
                 held.versions.sort_by_key(|version| version.number);
                 held.failed = None;
             })?;
-            if let Some(sha256) = version.main() {
+            if let Some(sha256) = version.main() && (approve || initialize) {
                 self.folder().edit(|written| written.selected(name, number, sha256))?;
             }
             Ok(())
@@ -4948,6 +4947,7 @@ impl Walk {
     fn record(&self, key: Option<&str>, name: &str, kind: &str, mut version: Version, noun: &str, approve: bool, settle: impl Fn(&mut Lock)) -> Result<(), Error> {
         let number = std::cell::Cell::new(version.number);
         self.folder().act(|| {
+            let initialize = format::KINDS.contains(&kind) && format::can_initialize_approval(self.folder(), name)?;
             self.folder().update_lock(|lock| {
                 if let Some(key) = key {
                     lock.pending.remove(key);
@@ -4963,7 +4963,7 @@ impl Walk {
                 held.tried = None;
                 held.failed = None;
             })?;
-            if (approve || format::KINDS.contains(&kind)) && let Some(sha256) = version.main() {
+            if let Some(sha256) = version.main() && (approve || initialize) {
                 self.folder().edit(|written| written.selected(name, number.get(), sha256))?;
             }
             Ok(())
