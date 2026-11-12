@@ -98,6 +98,11 @@ pub fn main() -> ExitCode {
     // Inherited native proof IPC stays available here, never in browser/worker/helper children.
     #[cfg(unix)]
     platform::process::cloexec_from(3);
+    // The trusted controller never executes project code in-process. Stop OS-managed dump
+    // capture before configuration, keybags, state recovery or native proof payloads are read.
+    if platform::private_exec::disable_project_parent_dumps().is_err() {
+        return ExitCode::FAILURE;
+    }
     // The panic payload and location never enter stderr or the health sink.
     std::panic::set_hook(Box::new(|_| crate::health::service_health(crate::health::HealthEvent::Panicked)));
     // Before the runtime's workers start: Linux names the calling thread.
