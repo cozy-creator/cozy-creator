@@ -789,7 +789,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
           {asset && !view.placing && !lite && (!focused || view.hereWords) && <Corner name={name} view={view} width={width} focused={focused} />}
         </Media>
       )}</FocusFrame>
-      {!lite && asset && (asset.kind === "image" || (asset.kind === "video" && !asset.timeline && !editing)) && !view.placing && <ImageVersions name={name} view={view} width={width} />}
+      {here && !lite && asset && (asset.kind === "image" || (asset.kind === "video" && !asset.timeline && !editing)) && !view.placing && <ImageVersions name={name} view={view} width={width} />}
       {!lite && asset && asset.kind !== "image" && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
