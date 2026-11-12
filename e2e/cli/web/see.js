@@ -240,8 +240,8 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
   check('wire_warns_of_nothing_here', !read.warnings?.some((said) => said.name === 'hollow_thing'), read.warnings);
   check('wire_description', of('hero').fields?.description?.includes('few words'), of('hero').fields);
 
-  // Elements of every kind, each by what it is.
-  const kinds = { hero_art: 'file', sea_sound: 'file', clip: 'file', picture: 'frame', edit: 'edit' };
+  // Elements of every kind, each by what it is: a file is the container of its kind (Image, Audio, Video: cl-893, d49ac60ec).
+  const kinds = { hero_art: 'image', sea_sound: 'audio', clip: 'video', picture: 'frame', edit: 'edit' };
   for (const [name, kind] of Object.entries(kinds)) check(`kind_${name}`, (await tag(page, name)) === kind, await tag(page, name));
   await away(page);
   await until('an unmade shot shows its words', () => element(page, 'shot').locator('.words').textContent(), (text) => text.includes('looks hard'));
