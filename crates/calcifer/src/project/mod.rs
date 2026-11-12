@@ -1703,7 +1703,7 @@ fn takes_now(project: &Project, walk: &folder::WalkFile) -> HashMap<String, Vec<
     let mut list = |asset: &str, id: &str| {
         if listed.insert(id.to_owned()) {
             let run = runs.get(id).copied();
-            takes.entry(name_key(asset)).or_default().push(TakeNow { id: id.to_owned(), queued: run.is_none(), run: run.filter(|run| *run > 0) });
+            takes.entry(name_key(asset)).or_default().push(TakeNow { id: id.to_owned(), queued: run.is_none(), run: run.filter(|run| *run > 0), failure: None });
         }
     };
     {
@@ -1758,7 +1758,10 @@ fn row(reading: &Reading, i: usize) -> Row {
         name: asset.name.clone(),
         standing: row_standing,
         making: vec![],
-        takes: vec![],
+        // Its takes that failed, each with why (cl-954); what's on its way goes over them (`overlaid`).
+        takes: (held.into_iter().flat_map(|held| held.ended.iter().rev()))
+            .map(|ended| TakeNow { id: ended.id.clone(), queued: false, run: ended.run, failure: Some(ended.error.clone()) })
+            .collect(),
         kind: asset.kind.clone(),
         noun: noun.into(),
         tool: doc.makes(i).then(|| doc.target(i)),
@@ -2440,6 +2443,10 @@ fn cancelled(api: &Arc<Api>, project: &Arc<Project>, names: &[String], takes: &[
     let wanted = |name: &str, take: &str| all || keys.contains(&name_key(name)) || takes.iter().any(|id| id == take);
     project.join(&lock);
     let (dropped, canceled) = stop_jobs(api, project, &lock, &wanted, all, why).map_err(Refusal)?;
+    // A take that failed, named: dismissed (cl-954).
+    if !takes.is_empty() && lock.assets.values().any(|held| held.ended.iter().any(|ended| takes.contains(&ended.id))) {
+        folder.update_lock(|lock| lock.assets.values_mut().for_each(|held| held.ended.retain(|ended| !takes.contains(&ended.id)))).map_err(Refusal)?;
+    }
     project.asked.notify_one();
     sync_jobs(project, numbered(api)).map_err(Refusal)?;
     // `all` stops what is fetched ahead too; the walker stops what fewer leave unneeded.
@@ -3836,7 +3843,7 @@ impl Walk {
                 self.settled(&ask, &asset, &key)?;
                 match self.sending(&ask, &on).is_empty() {
                     true => self.not_sent(&asset),
-                    false => self.failed_of(&asset, &kind, inputs, None, Error::new(Kind::NotFound, "file_missing", message), first),
+                    false => self.failed_of(&asset, &kind, inputs, None, None, Error::new(Kind::NotFound, "file_missing", message), first),
                 }
                 end(id, End::Failed);
             }
@@ -3900,7 +3907,7 @@ impl Walk {
                 }
                 Err(error) => {
                     self.send_failed(&ask, &name, &error)?;
-                    self.failed_of(&name, &kind, inputs, None, error, first);
+                    self.failed_of(&name, &kind, inputs, None, Some(&key), error, first);
                     ended(id, End::Failed, &name);
                 }
             },
@@ -3918,7 +3925,7 @@ impl Walk {
                         self.project.jobs.ended_if_open(&job, &name);
                     }
                     Err(error) => {
-                        self.failed_of(&name, &kind, inputs, None, error, first);
+                        self.failed_of(&name, &kind, inputs, None, Some(&job), error, first);
                         self.tried(&ask, &name)?;
                         ended(id, End::Failed, &name);
                     }
@@ -3929,7 +3936,7 @@ impl Walk {
                     match &name {
                         Some(name) => {
                             self.project.walker.lock().expect("walker lock").moved(name);
-                            self.failed_of(name, "", None, None, error, first);
+                            self.failed_of(name, "", None, None, None, error, first);
                         }
                         None => self.failed(error, first),
                     }
@@ -3939,7 +3946,7 @@ impl Walk {
                 let failed = landed.landed.as_ref().is_ok_and(Result::is_err);
                 let asset = landed.name.clone();
                 self.project.walker.lock().expect("walker lock").sent.remove(&job);
-                if let Some((id, version)) = self.landed(landed, followed, first)? {
+                if let Some((id, version)) = self.landed(landed, &job, followed, first)? {
                     let name = asset.clone();
                     work.push(async move { Done::Arrived { name, result: self.arrived_owed(&id, version).await } }.boxed());
                 }
@@ -3957,13 +3964,13 @@ impl Walk {
     }
 
     /// A followed run came to its end: it is followed no more, and what failed is said as its asset's and kept on it.
-    fn landed(&self, landed: Followed, followed: &mut HashSet<String>, first: &mut Option<Error>) -> Result<Option<(RunId, Option<Coming>)>, Error> {
+    fn landed(&self, landed: Followed, job: &str, followed: &mut HashSet<String>, first: &mut Option<Error>) -> Result<Option<(RunId, Option<Coming>)>, Error> {
         followed.remove(&landed.key);
         match landed.landed? {
             Ok(behind) => Ok(behind),
             Err(error) => {
                 match &landed.name {
-                    Some(name) => self.failed_of(name, "", landed.inputs, landed.run, error, first),
+                    Some(name) => self.failed_of(name, "", landed.inputs, landed.run, Some(job), error, first),
                     None => self.failed(error, first),
                 }
                 Ok(None)
@@ -4042,7 +4049,8 @@ impl Walk {
 
     /// What failed of `name`, by `run` if it is of one: said now, kept for whoever reads it later, never sent again this walk; what does not read
     /// it goes on. Canceling is said, and isn't a failure of the asset.
-    fn failed_of(&self, name: &str, kind: &str, inputs: Option<String>, run: Option<u64>, error: Error, first: &mut Option<Error>) {
+    /// Of take `take`, by its id, when it's one: kept on its asset as that take's, listed until it's dismissed (cl-954).
+    fn failed_of(&self, name: &str, kind: &str, inputs: Option<String>, run: Option<u64>, take: Option<&str>, error: Error, first: &mut Option<Error>) {
         {
             let mut missed = self.missed.lock().expect("missed lock");
             missed.failed += 1;
@@ -4050,7 +4058,18 @@ impl Walk {
         }
         if error.code != CANCELED {
             let failed = Failed { inputs, error: error.clone() };
-            if let Err(error) = self.folder().update_lock(|lock| lock.asset_mut(name, kind).failed = Some(failed.clone())) {
+            let ended = take.filter(|take| !take.is_empty()).map(|id| folder::Ended { id: id.to_owned(), run, error: error.clone() });
+            let kept = self.folder().update_lock(|lock| {
+                let held = lock.asset_mut(name, kind);
+                held.failed = Some(failed.clone());
+                if let Some(ended) = &ended {
+                    held.ended.retain(|was| was.id != ended.id);
+                    held.ended.push(ended.clone());
+                    let over = held.ended.len().saturating_sub(folder::ENDED_KEPT);
+                    held.ended.drain(..over);
+                }
+            });
+            if let Err(error) = kept {
                 warn!("{name}: {error}");
             }
         }

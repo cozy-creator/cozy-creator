@@ -5,7 +5,7 @@ import { Icon } from "../ui/Icon"
 import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
 import { NameField } from "./NameField"
-import { makingRun, shownOf, watched } from "./shown"
+import { failureOf, makingRun, shownOf, watched } from "./shown"
 import { RunFace, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
 import { noHash } from "./text"
@@ -89,7 +89,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
-      {(onItsWay || arriving !== undefined) && view.asset?.rendering == null && !view.asset?.timeline && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above />}
+      {(onItsWay || arriving !== undefined) && view.asset?.rendering == null && !view.asset?.timeline && !failureOf(view) && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above />}
       {view.warned && warnings.length > 0 && (
         <div className="warned-lines focus-warnings">
           {warnings.map((warning) => (

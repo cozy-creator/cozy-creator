@@ -12,7 +12,7 @@ import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
-import { aspectOf, faceOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
+import { aspectOf, faceOf, failureOf, hexOf, makes, makingRun, type Shown, shownOf, valueIn, valuesOf, watched } from "./shown"
 import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
@@ -774,7 +774,9 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const open = Boolean(view.here && !view.hereWords)
   const shown = shownOf(view)
   const watch = watched(view)
-  const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined)
+  // The take looked at failed: its error in its frame, nothing of it on its way (cl-954).
+  const failedTake = failureOf(view)
+  const pendingImage = asset?.kind === "image" && Boolean(watch && watch.number === undefined) && !failedTake
   // Drawn: only the take shown, as its takes and label say, once its file is here; never another in its place (cl-942). Its neighbours,
   // or those of what showed before a take was asked for, stay decoded.
   const nearImage = asset?.kind === "image" ? shown ?? shownOf({ ...view, watch: undefined }) : null
@@ -785,7 +787,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
   const onItsWay = making || Boolean(view.queued) || view.asked !== undefined
-  const busy = onItsWay && (Boolean(watch && watch.number === undefined) || !shown)
+  const busy = onItsWay && (Boolean(watch && watch.number === undefined) || !shown) && !failedTake
   // Made, with its file still on its way here: it says so, as a render on its way does.
   const arriving = useArriving(view)
   const run = onItsWay ? makingRun(view) : arriving
@@ -823,7 +825,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   // Its take being made, with nothing of it yet: what its words mention is behind its face.
   // An image or video being made at rest says what it's made from, in its frame (cl-940, cl-947), over what it shows; an image too, open on
   // a take of it being made (cl-945).
-  const makingMedia = (!view.here || (asset?.kind === "image" && Boolean(watch && watch.number === undefined) && !view.hereWords)) && (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline && onItsWay && asset.rendering == null && makes(view)
+  const makingMedia = !failedTake && (!view.here || (asset?.kind === "image" && Boolean(watch && watch.number === undefined) && !view.hereWords)) && (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline && onItsWay && asset.rendering == null && makes(view)
   const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !glimpse && !makingMedia
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   // On its way, its face says so whole, unless a take is looked at, a glimpse of what it's making shows or its words are being written:
@@ -866,7 +868,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {/* At rest it keeps its size (cl-936): what's being made fades in over it, unless what it shows is approved; an image's covers its references (cl-940). */}
       {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !glimpse && <LatentPreview view={view} number={run} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
-      {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
+      {failedTake ? <FailedHere message={failedTake.message.replace(`${name}: `, "")} copy={bodyText(failedTake, watch?.run, undefined)} /> : failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}
       {view.here && asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}

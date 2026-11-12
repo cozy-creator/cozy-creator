@@ -235,17 +235,28 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
           </button>
         </span>
       )}
-      {pending.map((take) => (
-        <span key={take.id} className="take-at">
-          <button type="button" className={`take making ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} title={take.run !== undefined ? `Run ${take.run}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
-            <span className={`state-dot ${take.run !== undefined ? "running" : "queued"}`} role="img" aria-label={take.run !== undefined ? "Rendering" : "Queued"} />
-            {take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
-          </button>
-          <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
-            <Icon name="close" />
-          </button>
-        </span>
-      ))}
+      {pending.map((take) => {
+        // One that failed stays, red, its error a click away, until it's deleted (cl-954).
+        const failed = take.failure ? take.failure.message.replace(`${name}: `, "") : undefined
+        const state = failed !== undefined ? "failed" : take.run !== undefined ? "running" : "queued"
+        return (
+          <span key={take.id} className="take-at">
+            <button type="button" className={`take making ${state === "failed" ? "failed" : ""} ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} data-state={state} title={failed !== undefined ? `Didn't render: ${failed}` : take.run !== undefined ? `Run ${take.run}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
+              <span className={`state-dot ${state}`} role="img" aria-label={state === "failed" ? "Failed" : state === "running" ? "Rendering" : "Queued"} />
+              {failed !== undefined ? <span className="take-failed">Failed</span> : take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
+            </button>
+            {failed !== undefined ? (
+              <button type="button" className="take-off" aria-label="Delete this failed take" title="Delete" onClick={() => store.cancelTake(name, take)}>
+                <Icon name="trash" />
+              </button>
+            ) : (
+              <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
+                <Icon name="close" />
+              </button>
+            )}
+          </span>
+        )
+      })}
       {making.map((run) => (
         <span key={run} className="take-at">
           <button type="button" className="take making" title={`Run ${run}`}>

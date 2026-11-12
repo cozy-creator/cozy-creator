@@ -1565,6 +1565,14 @@ video.preview.on {
   border: 4px solid var(--ember);
   pointer-events: none;
 }
+/* A take that failed stays in the column (cl-954): red, saying so, until it's deleted. */
+.here-side .take.making.failed {
+  border-color: var(--bad);
+}
+.take-failed {
+  color: var(--bad);
+  font: 600 var(--title) / 1.2 var(--sans);
+}
 .here-side .take.making {
   background: var(--card);
   border: 1px solid var(--ember);

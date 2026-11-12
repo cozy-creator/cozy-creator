@@ -440,6 +440,8 @@ case $SHARD in
   web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
   # A take is one id from Render to its version, listed at once and never off, through a slow Calcifer and a reload (cl-945), with cl-942's.
   web-takeids) export DB_WEB="takeids focusfinish"; parts="tools_read db_existing_web logs" ;;
+  # A take that fails stays in its column, red, its error to read and copy, through a reload, until its trash deletes it (cl-954).
+  web-failedtakes) export DB_WEB=failedtakes; parts="tools_read db_existing_web logs" ;;
   # A project cozy 0.24.0 made keeps every take under this cozy, and a take asked by id lands as that version (cl-945).
   old-takes) parts="old_takes logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
@@ -478,6 +480,7 @@ case $SHARD in
     newtakes
     focusfinish
     takeids
+    failedtakes
     old_takes
     prepares
     db_migrate

@@ -72,6 +72,10 @@ focusfinish() { DB_WEB=focusfinish db_existing_web; }
 # web/takeids.js.
 takeids() { DB_WEB=takeids db_existing_web; }
 
+# A take that fails stays in its column under its id, red, its own error with Copy when picked, through a reload, until its trash deletes
+# it (cl-954): web/failedtakes.js.
+failedtakes() { DB_WEB=failedtakes db_existing_web; }
+
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return
 [ -z "${ALONE:-}" ] || { check "cancel/undo proof requires an owned fresh-runner Calcifer"; return; }
