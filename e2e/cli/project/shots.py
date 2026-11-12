@@ -82,7 +82,8 @@ def shoot(payload: ShotBox, out: Outputs) -> Take:
     warnings: list[str] = []
     if pickup is not None and SEAM <= pickup.out_frame < _frames(pickup.take.file) and pickup.out_frame != SEAM:
         warnings.append(f"a pickup starts where a segment does, so this keeps up to frame {SEAM}, not {pickup.out_frame}")
-    seams = [SEAM] if _frames(video) > SEAM else []
+    # Its frames are its source's: an output can't be read back while it runs.
+    seams = [SEAM] if _frames(source) > SEAM else []
     # cast: Runtime takes a saved file of its kind in a Latents field (_invoke._fills)
     return Take(video, cast(Latents, out.save_bytes(os.urandom(32), media_type="application/octet-stream")), out.save_bytes(json.dumps(given).encode(), media_type="application/json"), warnings, seams)
 
