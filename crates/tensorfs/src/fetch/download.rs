@@ -1049,23 +1049,33 @@ impl Shared {
         GiveWay { shared: Arc::clone(self), order }
     }
 
-    /// The most urgent task nobody has started that someone still wants.
+    /// The most urgent task nobody has started that someone still wants, unless the floor holds it:
+    /// read under the queue's lock, as the floor moves, so none starts past one that fell meanwhile.
     fn pop(&self) -> Option<Arc<Task>> {
         let mut queue = lock(&self.queue);
         let mut popped = None;
-        while let Some(Reverse((priority, _, sha256))) = queue.heap.pop() {
+        while let Some(Reverse((priority, _, sha256))) = queue.heap.peek().cloned() {
             let Some(task) = queue.tasks.get(&sha256).cloned() else {
+                queue.heap.pop();
                 continue;
             };
             if task.started.load(Ordering::Acquire) || task.priority.load(Ordering::Acquire) != priority {
+                queue.heap.pop();
                 continue;
             }
             if queue.unwanted(&task) {
                 self.unbusy();
+                queue.heap.pop();
                 continue;
             }
+            if priority > queue.floor() {
+                break;
+            }
+            queue.heap.pop();
             task.started.store(true, Ordering::Release);
             task.enter(Phase::Starting);
+            // Under the lock the floor moves under: its line comes in the order they happened.
+            tracing::info!(object = %task.object.sha256, bytes = task.object.length, priority, "fetching");
             popped = Some(task);
             break;
         }
@@ -1156,7 +1166,6 @@ impl Shared {
                 continue;
             };
             let priority = task.priority.load(Ordering::Acquire);
-            tracing::info!(object = %task.object.sha256, bytes = task.object.length, priority, "fetching");
             let shared = Arc::clone(&self);
             tokio::spawn(async move {
                 let began = Instant::now();
