@@ -148,6 +148,8 @@ step "web-aspect: a corner pulled to 1237:689 lands on 16:9, on the canvas and i
 web_proof aspect "$chrome" "$pw" ''
 step "web-scrub: a take's segments under its player, Redo from one, another box continuing it from its end; an empty box with no tool asks nothing"
 web_proof scrub "$chrome" "$pw" ''
+step "web-agent: the agent API: nodes listed, and read whole as a file with every default, their takes and revs; explain in words and as JSON Schema (cl-956)"
+web_proof agent "$chrome" "$pw" ''
 step "web-trash: a take's discard and a box's delete are trash cans, Undo brings a take back, and Focus's close is an X"
 web_proof trash "$chrome" "$pw" ''
 step "web-toolword: a box with a tool says it under its picture (cl-932), readable and shrinking with the box; one with none says nothing"

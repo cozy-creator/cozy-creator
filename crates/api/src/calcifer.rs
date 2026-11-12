@@ -22,6 +22,7 @@ pub mod hub;
 pub mod project;
 pub use crate::machine::{RemoveModel, RemovedModel};
 pub mod report;
+pub mod node;
 pub mod tool;
 
 /// What a run does on its machine (`RunSpec.kind`), or that Calcifer carries it out itself, on no machine.

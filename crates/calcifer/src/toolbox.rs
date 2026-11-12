@@ -415,11 +415,23 @@ async fn read_all(api: &Arc<Api>, hub: &str, wanted: Vec<(String, String)>) -> V
 
 /// What a box of `tool` asks for, read as `read` reads it. None: it can't be read.
 pub(crate) async fn fields_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Option<Vec<tool::ToolField>> {
+    tool_of(api, tool, dir).await.ok().map(|held| held.fields)
+}
+
+/// `tool` as `GET /v1/tools` lists it, read as a run of it on this computer would be, from its package's declarations: nothing of it runs.
+pub(crate) async fn tool_of(api: &Arc<Api>, tool: &str, dir: &Path) -> Result<Tool, Error> {
+    if api::calcifer::node::plain(tool.trim()).trim_start_matches("_/") == tool::EDIT {
+        return Ok(tool::edit());
+    }
     let hub = api.machines.hubs.default_origin();
-    let found = target::describe(api, &hub, tool, None, Some(dir), &runs::default_on(api)).await.ok()?;
-    let interface = Interface::parse(&found.interface).ok()?;
-    let function = found.function.as_deref().or(target::only_function(&interface))?.to_owned();
-    tool::tools_of(&found.package, "", &interface).into_iter().find(|held| held.function == function).map(|held| held.fields)
+    let found = target::describe(api, &hub, tool, None, Some(dir), &runs::default_on(api)).await?;
+    let interface = Interface::parse(&found.interface).map_err(|why| Error::new(Kind::Unavailable, "package_interface_invalid", format!("{tool}: {why}")))?;
+    let Some(function) = found.function.as_deref().or(target::only_function(&interface)).map(str::to_owned) else {
+        let functions = interface.public().iter().map(|name| format!("{}/{name}", shown(&found.package))).collect::<Vec<_>>().join(", ");
+        return Err(Error::new(Kind::Usage, "tool_names_no_function", format!("{tool} is a package: a tool is one of its functions: {functions}")));
+    };
+    tool::tools_of(&found.package, &found.release, &interface).into_iter().find(|held| held.function == function)
+        .ok_or_else(|| Error::new(Kind::Usage, "tool_not_a_tool", format!("{tool} is no tool: its function declares no @app.tool, or makes no media")))
 }
 
 /// A box's model choices, bound as a run binds them, refused where their slot can't take them (`checkpoints::check_choices`).

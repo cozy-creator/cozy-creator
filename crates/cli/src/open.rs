@@ -1,6 +1,6 @@
 //! Open the current project in a browser and print its local URL.
 use std::{
-    io::{self, IsTerminal as _, Write},
+    io::{self, Write},
     net::{Ipv4Addr, TcpListener},
     process::{Command, ExitCode, Stdio},
 };
@@ -58,7 +58,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
 /// One explicit Open may prompt for an unlock. Pipes and JSON never acquire credentials implicitly.
 async fn current_or_unlock(ctx: &Context) -> Result<State, Error> {
     match project::current(ctx).await {
-        Err(error) if error.code == "project_locked" && !ctx.json && io::stdin().is_terminal() && ctx.term.stderr => {
+        Err(error) if error.code == "project_locked" && output::can_ask(ctx) => {
             project::vault::unlock_for_open(ctx).await?;
             project::current(ctx).await
         }

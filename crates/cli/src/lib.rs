@@ -18,6 +18,7 @@ mod dev;
 mod doctor;
 mod machine;
 mod model;
+mod node;
 mod open;
 mod output;
 mod package;
@@ -67,6 +68,10 @@ enum Command {
     Open(open::Args),
     /// Run a function in the current project.
     Run(run::Args),
+    /// List the current project's nodes, or print named ones whole as a file.
+    Get(node::Get),
+    /// What a file of nodes can hold: kinds, tools and their fields.
+    Explain(node::Explain),
     /// Render nodes of the current project and what they read, as the page's Render does.
     Render(render::Args),
     /// Show the current project's health and warnings.
@@ -175,6 +180,8 @@ fn usage_error(error: &clap::Error, arguments: &[std::ffi::OsString]) -> Error {
 async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
     match command {
         Command::Run(args) => run::exec(ctx, args).await,
+        Command::Get(args) => node::get(ctx, args).await,
+        Command::Explain(args) => node::explain(ctx, args).await,
         Command::Render(args) => render::exec(ctx, args).await,
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
