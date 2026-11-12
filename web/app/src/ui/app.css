@@ -1197,6 +1197,14 @@ code {
   height: 12px;
   align-self: center;
 }
+/* Each take on its way its own state, on its tile (cl-945): grey queued, blue rendering. */
+.take .state-dot {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  z-index: 2;
+  pointer-events: none;
+}
 .take .take-unseen {
   position: absolute;
   top: 5px;

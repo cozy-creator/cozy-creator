@@ -855,8 +855,10 @@ export class CanvasStore {
     if (!owner) return
     const viewed = this.get(owner)
     if (viewed && watched(viewed)?.run === run.number && (run.status === "failed" || run.status === "canceled")) this.patch(owner, { watch: undefined })
+    // The run its frame is on: the take looked at (cl-945), else the first going. Another's progress is its own tile's.
     const making = this.get(owner)?.asset?.making ?? []
-    if (run.number !== Math.min(...making)) return
+    const view = this.get(owner)
+    if (run.number !== ((view && watched(view)?.run) ?? Math.min(...making))) return
     // Only what's here: an output of a run on another machine, or a revision that hasn't landed, has nothing yet to show. A preview published
     // as it goes is a revision that landed while its output is still in progress.
     const shown = [...(run.output ?? [])].reverse().find((item) => Boolean(item.url) && /^(image|video)\//.test(item.media_type))
@@ -1375,11 +1377,13 @@ export class CanvasStore {
     } catch (error) { say("Couldn't load this video's prompts", error) }
   }
 
-  /** Looks at a take still being made, by its id: its tile is picked, its progress on the frame. */
-  watchTake(name: string, take: string) {
+  /** Looks at a take still being made, by its id: its tile is picked, and its own progress fills the frame, a video's too (Paul, 11-12).
+   *  `words`: its words stay over it, as a video's do once it's rendered. */
+  watchTake(name: string, take: string, words = false) {
     const asset = this.get(name)?.asset
     if (!asset) return
-    this.patch(name, { hereWords: asset.kind === "video" || undefined, viewed: undefined, watch: take })
+    const run = asset.takes?.find((held) => held.id === take)?.run ?? undefined
+    this.patch(name, { hereWords: words || undefined, viewed: undefined, watch: take, glimpse: undefined, ...(run !== undefined && this.runs.has(run) ? { run: this.runs.get(run) } : {}) })
   }
 
   seek(name: string, at: number) {
@@ -1420,7 +1424,7 @@ export class CanvasStore {
     }
     // From an image tool's words, the box looks at the take being made, and its + goes back to them. Not before it goes: what it waits
     // for or asks first is said under its words.
-    if (asset.kind === "image" || asset.kind === "video") this.watchTake(key, take)
+    if (asset.kind === "image" || asset.kind === "video") this.watchTake(key, take, asset.kind === "video")
     this.patch(key, { waiting: undefined, asking: undefined, scrub: undefined, pickingUp: undefined, glimpse: undefined, asked: NOT_YET })
     const id = this.ids.get(key)
     // Answered, its take is Calcifer's to list from a read begun after; not sent, it's no take.

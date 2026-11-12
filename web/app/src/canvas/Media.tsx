@@ -786,6 +786,8 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   // Made, with its file still on its way here: it says so, as a render on its way does.
   const arriving = useArriving(view)
   const run = onItsWay ? makingRun(view) : arriving
+  // What a render showed so far: only the run its frame is on's, never another take's (cl-945).
+  const glimpse = view.glimpse && (run === undefined || view.glimpse.number === run) ? view.glimpse : undefined
   const here = shown && !shown.absent ? shown : null
   // A video whose file says `orbit` turns, not plays: open, a drag turns it from the file here.
   const orbit = field === "video" ? orbitOf(shown) : null
@@ -808,7 +810,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
-  const glimpsed = Boolean(view.glimpse && !shown && view.viewed === undefined && (making || asset?.failure))
+  const glimpsed = Boolean(glimpse && !shown && view.viewed === undefined && (making || asset?.failure))
   // The take its glimpse was playing as, opened, landing: its player plays on from there.
   const playhead = useRef<Playhead | null>(null)
   const playsOn = open && !glimpsed && source && "path" in source && here?.run !== undefined && playhead.current?.run === here.run ? playhead.current.at : undefined
@@ -816,13 +818,14 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
     if (playsOn !== undefined) playhead.current = null
   }, [playsOn])
   // Its take being made, with nothing of it yet: what its words mention is behind its face.
-  // An image or video being made at rest says what it's made from, in its frame (cl-940, cl-947), over what it shows.
-  const makingMedia = !view.here && (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline && onItsWay && asset.rendering == null && makes(view)
-  const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !view.glimpse && !makingMedia
+  // An image or video being made at rest says what it's made from, in its frame (cl-940, cl-947), over what it shows; an image too, open on
+  // a take of it being made (cl-945).
+  const makingMedia = (!view.here || (asset?.kind === "image" && Boolean(watch && watch.number === undefined) && !view.hereWords)) && (asset?.kind === "image" || asset?.kind === "video") && !asset.timeline && onItsWay && asset.rendering == null && makes(view)
+  const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !glimpse && !makingMedia
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
   // On its way, its face says so whole, unless a take is looked at, a glimpse of what it's making shows or its words are being written:
   // then along its bottom.
-  const full = (busy || arriving !== undefined) && view.viewed === undefined && !view.glimpse && !(view.here && view.hereWords)
+  const full = (busy || arriving !== undefined) && view.viewed === undefined && !glimpse && !(view.here && view.hereWords)
   // What stopped its last try, in place: an approved box looked at shows nothing wrong (Card's dot).
   const failed = !busy && !placing && Boolean(asset?.failure) && view.viewed === undefined && !(asset?.pinned && faceOf(view) === "media")
   return (
@@ -853,12 +856,12 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           <Icon name={glyph} />
         </span>
       )}
-      {glimpsed && view.glimpse && <Glimpse glimpse={view.glimpse} failed={!making} open={Boolean(view.here)} playhead={playhead} />}
+      {glimpsed && glimpse && <Glimpse glimpse={glimpse} failed={!making} open={Boolean(view.here)} playhead={playhead} />}
       {full && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {makingMedia && <Making view={view} name={name} run={run} cardWidth={cardWidth} />}
       {/* At rest it keeps its size (cl-936): what's being made fades in over it, unless what it shows is approved; an image's covers its references (cl-940). */}
-      {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
+      {(busy || (!view.here && making && (!asset?.pinned || makingMedia))) && run !== undefined && view.viewed === undefined && !glimpse && <LatentPreview view={view} number={run} />}
       {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
       {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
       {/* What it can do is in Focus: at rest a box is its name, its picture, its tool and shape, and how its render goes (cl-932). */}

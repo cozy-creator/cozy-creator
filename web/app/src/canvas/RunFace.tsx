@@ -9,7 +9,7 @@ import { size, stageParts } from "../panels/runs/words"
 import { useSignal } from "../ui/signal"
 import type { ElementView } from "./CanvasStore"
 import { useCanvasStore, useElement } from "./context"
-import { shownOf } from "./shown"
+import { shownOf, watched } from "./shown"
 
 /**
  * A render on its way, as Paul wrote it (11-12), two plain lines and nothing else:
@@ -189,7 +189,7 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const time = since !== undefined && left != null ? ` - ${short(since)} / ${short(since + left)}` : ""
   const cancel = !["canceling", "failed", "result"].includes(face.phase)
   return (
-    <div className={`prog run-face ${above ? "above" : "lines"} ${face.phase}`} data-phase={face.phase}>
+    <div className={`prog run-face ${above ? "above" : "lines"} ${face.phase}`} data-phase={face.phase} data-run={number}>
       {/* Its words give way to a narrow box; its numbers never do (cl-953). */}
       <p className="face-machine">
         <span className="face-where">{face.machine}</span>
@@ -206,9 +206,11 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
             className="face-cancel nodrag"
             aria-label={`Cancel ${name}'s render`}
             onClick={(event) => {
-              // Its box isn't opened by it.
+              // Its box isn't opened by it. The take looked at, by its id, when one is: its others go on (cl-945).
               event.stopPropagation()
-              store.cancelRender(name)
+              const take = watched(view)
+              if (take) store.cancelTake(name, { id: take.id, run: take.run })
+              else store.cancelRender(name)
             }}
           >
             Cancel

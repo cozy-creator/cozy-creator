@@ -3,7 +3,7 @@ import type { NodeProps, Viewport } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
 import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import { machinesQuery } from "../api/queries"
+import { machinesQuery, runQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
 import type { MainFile, Tool, ToolField } from "../api/calcifer"
@@ -49,7 +49,11 @@ function kindOf(view: ElementView): string {
 
 /** How far a take being made is: its package installing or its weights arriving show as such, never as its own percentage. */
 function TakeProgress({ view, run }: { view: ElementView; run: number }) {
-  const mine = view.run?.number === run ? view.run : undefined
+  // Its own run, each tile (cl-945): the box follows only the one its frame is on.
+  const { client } = useConnection()
+  const framed = view.run?.number === run
+  const { data } = useQuery({ ...runQuery(client, run), enabled: !framed })
+  const mine = framed ? view.run : data
   const on = useWaitsOn(mine)
   if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
   const fraction = mine?.progress?.done_fraction
@@ -233,7 +237,8 @@ function Takes({ view, name, width, side, focused = false }: { view: ElementView
       )}
       {pending.map((take) => (
         <span key={take.id} className="take-at">
-          <button type="button" className={`take making ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} title={take.run !== undefined ? `Run ${take.run}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
+          <button type="button" className={`take making ${watch?.id === take.id ? "on" : ""}`} data-take-id={take.id} data-run={take.run} title={take.run !== undefined ? `Run ${take.run}` : "Queued"} onClick={() => store.watchTake(name, take.id)}>
+            <span className={`state-dot ${take.run !== undefined ? "running" : "queued"}`} role="img" aria-label={take.run !== undefined ? "Rendering" : "Queued"} />
             {take.run !== undefined ? <TakeProgress view={view} run={take.run} /> : "…"}
           </button>
           <button type="button" className="take-off" aria-label={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel what's queued"} title={take.run !== undefined ? `Cancel run ${take.run}` : "Cancel this take"} onClick={() => store.cancelTake(name, take)}>
