@@ -295,9 +295,9 @@ jobs:
               from common import Receipt, Failure
               with tempfile.TemporaryDirectory() as directory:
                   receipt = Receipt(Path(directory) / 'receipt.json', '0' * 64)
-                  receipt.add('cli_failure', action_open=True, browser_startup_diagnostic='FATAL: public pre-page setup')
+                  receipt.add('safe', observation_sha256='0' * 64, passed=True, records=1)
                   for case, facts in [('other', {'browser_startup_diagnostic': 'rejected'}),
-                                      ('cli_failure', {'action_open': False, 'browser_startup_diagnostic': 'rejected'}),
+                                      ('cli_failure', {'action_open': True, 'browser_startup_diagnostic': 'rejected'}),
                                       ('cli_failure', {'action_open': True, 'browser_startup_diagnostic': 'x' * 4097}),
                                       ('cli_failure', {'action_open': True, 'raw_output': 'rejected'})]:
                       try:

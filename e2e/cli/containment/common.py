@@ -126,12 +126,7 @@ class Receipt:
             if isinstance(value, dict):
                 return all(re.fullmatch(r"[a-z][a-z0-9_]*", key) and safe(item) for key, item in value.items())
             return False
-        ordinary = dict(facts)
-        setup = ordinary.pop("browser_startup_diagnostic", None)
-        setup_safe = setup is None or (case == "cli_failure" and facts.get("action_open") is True
-            and isinstance(setup, str) and len(setup.encode()) <= 4096
-            and all(ord(ch) >= 32 or ch in "\n\t" for ch in setup))
-        require(re.fullmatch(r"[a-z][a-z0-9_]*", case) and safe(ordinary) and setup_safe, "receipt_schema")
+        require(re.fullmatch(r"[a-z][a-z0-9_]*", case) and safe(facts), "receipt_schema")
         self.value["cases"][case] = facts
         self.save()
 
@@ -210,7 +205,7 @@ class Native:
             if isinstance(protocol, int) and not isinstance(protocol, bool) and protocol in {-32700, -32600, -32601, -32602, -32603, -32000}:
                 facts["browser_protocol_code"] = protocol
             for field in ("browser_startup_unreadable", "browser_startup_bounded", "browser_startup_no_sandbox", "browser_startup_no_display",
-                          "browser_startup_permission_denied", "browser_startup_invalid_descriptor", "browser_startup_no_space",
+                          "browser_startup_permission_denied", "browser_startup_invalid_descriptor", "browser_startup_no_space", "browser_startup_socket_path_too_long",
                           "browser_startup_namespace", "browser_startup_crashpad", "browser_startup_fatal", "browser_startup_devtools_pipe",
                           "browser_startup_zygote", "browser_startup_logging", "browser_startup_profile", "browser_startup_allocator",
                           "browser_startup_ozone_display", "browser_startup_dbus", "browser_startup_user_namespace", "browser_startup_icu",
@@ -225,9 +220,6 @@ class Native:
             digest = metadata.get("browser_startup_sha256")
             if isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest):
                 facts["browser_startup_sha256"] = digest
-            setup = metadata.get("browser_startup_diagnostic")
-            if isinstance(setup, str) and len(setup.encode()) <= 4096 and all(ord(ch) >= 32 or ch in "\n\t" for ch in setup):
-                facts["browser_startup_diagnostic"] = setup
         return facts
 
     def command(self, *words: str, cwd: Path | None = None, stdin: bytes | None = None, success: bool = True) -> bytes:

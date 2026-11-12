@@ -1,6 +1,6 @@
 //! Real Chrome startup stderr, anonymous RAM only. Seal before any credential injection so
-//! later page/project output cannot enter it. Only setup observations leave this module.
-use std::{fs::File, io, os::unix::fs::FileExt as _, path::Path, process::Stdio};
+//! later page/project output cannot enter it. Only closed observations leave this module.
+use std::{fs::File, io, os::unix::fs::FileExt as _, process::Stdio};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
@@ -19,7 +19,7 @@ impl Capture {
         rustix::fs::fcntl_add_seals(&self.0, SealFlags::WRITE | SealFlags::GROW | SealFlags::SHRINK | SealFlags::SEAL).map_err(Into::into)
     }
 
-    pub(super) fn facts(&self, profile: &Path) -> Map<String, Value> {
+    pub(super) fn facts(&self) -> Map<String, Value> {
         let mut facts = Map::new();
         let Ok(metadata) = self.0.metadata() else { facts.insert("browser_startup_unreadable".into(), json!(true)); return facts };
         let mut bytes = vec![0u8; 64 << 10];
@@ -34,6 +34,7 @@ impl Capture {
             ("browser_startup_no_display", &["Missing X server", "cannot open display", "Failed to open display"] as &[&str]),
             ("browser_startup_permission_denied", &["Permission denied", "Operation not permitted"] as &[&str]),
             ("browser_startup_invalid_descriptor", &["Invalid file descriptor", "Bad file descriptor", "Remote debugging pipe file descriptors are not open"] as &[&str]),
+            ("browser_startup_socket_path_too_long", &["Socket path too long:"] as &[&str]),
             ("browser_startup_no_space", &["No space left on device"] as &[&str]),
             ("browser_startup_namespace", &["Failed to move to new namespace", "Failed to unshare"] as &[&str]),
             ("browser_startup_crashpad", &["crashpad", "Crashpad", "crash_reporter"] as &[&str]),
@@ -53,37 +54,6 @@ impl Capture {
         ] {
             facts.insert(name.into(), json!(literals.iter().any(|literal| bytes.windows(literal.len()).any(|window| window == literal.as_bytes()))));
         }
-        // This handle is discarded before credentials or a page are installed. Retain only
-        // bounded, normalized software-startup diagnostics, never console/project output.
-        let text = String::from_utf8_lossy(&bytes);
-        let fatal: Vec<_> = text.lines().filter(|line| ["FATAL:", "Check failed:", "CHECK failed", "Assertion", "error while loading shared libraries:"].iter().any(|word| line.contains(word))).collect();
-        let unknown = ["no_sandbox", "no_display", "permission_denied", "invalid_descriptor", "no_space", "namespace", "crashpad"]
-            .iter().all(|name| facts.get(&format!("browser_startup_{name}")) != Some(&Value::Bool(true)));
-        let diagnostic = if !fatal.is_empty() { fatal.join("\n") } else if unknown { text.to_string() } else { String::new() };
-        facts.insert("browser_startup_diagnostic".into(), json!(normalize(&diagnostic, profile)));
         facts
     }
-}
-
-fn normalize(text: &str, profile: &Path) -> String {
-    let mut clean = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            match chars.next() {
-                Some('[') => for next in chars.by_ref() { if ('@'..='~').contains(&next) { break; } },
-                Some(']') => while let Some(next) = chars.next() { if next == '\u{7}' || next == '\u{1b}' && chars.next_if_eq(&'\\').is_some() { break; } },
-                _ => {},
-            }
-            continue;
-        }
-        if !ch.is_control() || ch == '\n' || ch == '\t' { clean.push(ch); }
-    }
-    for (path, replacement) in [(Some(profile.to_owned()), "<ram-profile>"), (std::env::home_dir(), "<home>"), (Some(std::env::temp_dir()), "<temp>")] {
-        if let Some(path) = path { let path = path.to_string_lossy(); if path.len() > 1 { clean = clean.replace(path.as_ref(), replacement); } }
-    }
-    let mut end = clean.len().min(4096);
-    while !clean.is_char_boundary(end) { end -= 1; }
-    clean.truncate(end);
-    clean
 }

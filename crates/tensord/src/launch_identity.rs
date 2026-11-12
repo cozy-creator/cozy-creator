@@ -359,8 +359,8 @@ fn boundary_directory(path: &Path) -> io::Result<()> {
     Ok(platform::durable::set_mode(path, 0o711)?)
 }
 
-/// Runtime modules start without processing authored .pth/sitecustomize startup files.
-/// Only the selected environment's package directory is added; ordinary launch stays unchanged.
+/// Trusted capability/trampoline modules start without authored .pth/sitecustomize files.
+/// Actual project executors use normal isolated environment startup for editable modules.
 pub(crate) const MODULE_BOOTSTRAP: &str = "import pathlib,runpy,sys;root=pathlib.Path(sys.executable).absolute().parent.parent;sys.path[:0]=[str(p) for p in (*(root/'lib').glob('python*/site-packages'),root/'Lib'/'site-packages') if p.is_dir()];sys.argv=sys.argv[1:];runpy.run_module(sys.argv[0],run_name='__main__')";
 
 pub(crate) fn module(python: &Path, module: &str) -> io::Result<Command> {
