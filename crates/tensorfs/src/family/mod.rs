@@ -8,6 +8,7 @@
 //! against these and records [`Record`] in the header (`family`); a LoRA records [`Adapter`]s
 //! (`adapter`). Neither is ever guessed: unverified, the field is absent.
 
+pub mod parts;
 pub(crate) mod probe;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -133,6 +134,12 @@ pub fn families_digest() -> &'static str {
     DIGEST.get_or_init(|| crate::sha256::hex_digest(FAMILIES.join("\0").as_bytes()))
 }
 
+/// What [`Facts`] are read under: the families and what [`parts`] counts. A reader keeping facts reads them again when it changes.
+pub fn facts_digest() -> &'static str {
+    static DIGEST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DIGEST.get_or_init(|| crate::sha256::hex_digest(format!("{}\0parts 1", families_digest()).as_bytes()))
+}
+
 pub(crate) fn named(name: &str) -> Option<&'static Family> {
     families().iter().find(|f| f.name == name)
 }
@@ -202,6 +209,9 @@ pub struct Facts {
     pub lora: bool,
     /// What its ingest recorded, else what its keys and shapes verify as now. Never guessed: none when neither says.
     pub family: Option<String>,
+    /// What it holds, as a model slot reads it.
+    #[serde(default)]
+    pub parts: parts::Parts,
 }
 
 /// Whether every tensor of a stored component is a LoRA's, as its source may have spelled it (kohya's
@@ -222,7 +232,7 @@ impl Facts {
             true => adapted(&header.metadata, &loras),
             false => based(header, &bases),
         };
-        Some(Facts { lora, family })
+        Some(Facts { lora, family, parts: parts::Parts::of(header) })
     }
 }
 

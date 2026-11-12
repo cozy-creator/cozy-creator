@@ -53,6 +53,45 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
     return ImageResult(image, width, height, payload.seed or 0, payload.instructions.text)
 `;
 
+// A Shot as H3's is written, weightless: a summary that mentions pictures, made in steps into a 16:9 clip, as a blank video box is drawn.
+const REEL = `# /// script
+# requires-python = ">=3.12"
+# dependencies = ["cozy-runtime[media]>=0.45", "msgspec>=0.19", "numpy>=2"]
+# ///
+"""The tiles cell's video tool: a summary, as MiniMax H3's Shot takes one, made in steps into a short grey clip."""
+
+import time
+
+import msgspec
+import numpy as np
+from cozy_runtime.author import App, Context, Outputs, Telemetry
+from cozy_runtime.fields import Image, Prompt
+from cozy_runtime.media import VideoFile
+
+app = App()
+
+
+class Shot(msgspec.Struct, kw_only=True):
+    summary: Prompt[Image] = Prompt()
+    pace: float = 0.4
+
+
+class Reel(msgspec.Struct):
+    video: VideoFile
+
+
+@app.tool(label="Shot", named="reel", accelerator=False)
+def reel(ctx: Context, payload: Shot, out: Outputs, tel: Telemetry) -> Reel:
+    with tel.stage("denoise"):
+        for step in range(20):
+            time.sleep(payload.pace)
+            ctx.progress(step, 20)
+    frames = np.full((24, 72, 128, 3), 40, dtype=np.uint8)
+    for n in range(24):
+        frames[n][:, n * 5 : n * 5 + 4] = 230
+    return Reel(out.save_video(frames, fps=24))
+`;
+
 const failures = [];
 const seen = {};
 noStall(seen, died);
@@ -71,7 +110,7 @@ async function died(why) {
 
 /** A tool as the page names it (shown.ts toolName). */
 const named = (tool) => (tool.package_title && tool.package_title !== tool.label ? `${tool.package_title} · ${tool.label}` : tool.label);
-const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
+const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
 
 (async () => {
   const base = calcifer();
@@ -117,9 +156,11 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
   writeFileSync(join(folder, 'take.mp4'), MP4);
   const tool = join(project, `tiles_${Date.now()}.py`);
   writeFileSync(tool, TOOL);
+  const shotTool = join(project, `reel_${Date.now()}.py`);
+  writeFileSync(shotTool, REEL);
 
   // A box this computer renders; a picture with Qwen's Image and a video with H3's Shot, each with a take; a picture with no tool.
-  importYaml(project, `version: 4\nassets:\n  slow:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n  again:\n    tool: ${tool}/draw\n    instructions: Another still.\n    pace: 0.3\n`);
+  importYaml(project, `version: 4\nassets:\n  slow:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n  again:\n    tool: ${tool}/draw\n    instructions: Another still, as warm as <plain>.\n    pace: 0.3\n  reel:\n    tool: ${shotTool}/reel\n    summary: The sea at dusk, the light of <plain>.\n`);
   const tools = [...((await api(`/v1/tools?project=${id}&q=qwen`)).body?.tools ?? []), ...((await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? [])];
   const image = tools.find((one) => one.package === 'qwen-image-2' && one.makes === 'image');
   const video = tools.find((one) => one.id === 'minimax-h3/generate') ?? tools.find((one) => one.package === 'minimax-h3' && one.makes === 'video');
@@ -129,9 +170,9 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
   await post(`${at}/assets`, { tool: video.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 5 }] }, at: { x: 380, y: 0 } });
   await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
   await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png')), name: 'plain', exact: true, at: { x: 820, y: 0 } });
-  for (const name of ['still', 'shot', 'plain', 'slow', 'again']) await boxOf(page, name).waitFor();
+  for (const name of ['still', 'shot', 'plain', 'slow', 'again', 'reel']) await boxOf(page, name).waitFor();
   // The two this computer renders, in a row under the others.
-  projectJson(project, 'PATCH', '/canvas', { cards: { slow: { x: 0, y: 560 }, again: { x: 380, y: 560 } } });
+  projectJson(project, 'PATCH', '/canvas', { cards: { slow: { x: 0, y: 560 }, again: { x: 380, y: 560 }, reel: { x: 760, y: 560 } } });
   await until('the rows placed', () => boxOf(page, 'again').evaluate((node) => node.getBoundingClientRect().top > document.querySelector('.react-flow__node:has(.card[data-asset="still"])').getBoundingClientRect().bottom), Boolean).catch(() => {});
   await page.mouse.move(2, 1298);
   await page.keyboard.press('f');
@@ -239,7 +280,18 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
         const card = node.querySelector('.card');
         if (!card) return;
         const [c, b] = [card.getBoundingClientRect(), node.getBoundingClientRect()];
-        const now = { size: [c.width, c.height, b.width, b.height].map((n) => Math.round((n / zoom()) * 10) / 10).join('x'), rendering: Boolean(card.querySelector('.tile-under .run-face')) };
+        // An image being made shows, in its frame, the pictures its run reads, full height, and the start of its words (cl-940).
+        const making = card.querySelector('.media .making');
+        const media = card.querySelector('.media').getBoundingClientRect();
+        const pictures = [...(making?.querySelectorAll('.making-pictures img') ?? [])].filter((img) => img.complete && img.naturalWidth > 0);
+        const now = {
+          size: [c.width, c.height, b.width, b.height].map((n) => Math.round((n / zoom()) * 10) / 10).join('x'),
+          rendering: Boolean(card.querySelector('.tile-under .run-face')),
+          pictures: pictures.length,
+          fullHeight: pictures.every((img) => Math.abs(img.getBoundingClientRect().height - media.height) < 1.5),
+          words: making?.querySelector('.making-words')?.textContent ?? '',
+          chip: making?.querySelector('.making-words .chip')?.textContent ?? '',
+        };
         if (JSON.stringify(sizes.at(-1)) !== JSON.stringify(now)) sizes.push(now);
       };
       new MutationObserver(look).observe(node, { subtree: true, childList: true, attributes: true, characterData: true });
@@ -253,6 +305,55 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
     const sizes = await page.evaluate(() => window.againSizes);
     seen.render_sizes = { before, sizes };
     check('render_leaves_its_size', sizes.some((now) => now.rendering) && sizes.every((now) => now.size === before) && (await size()) === before, { before, sizes });
+    // While it's made: <plain>, full height, and its words with <plain> marked; once made, its take in their place (cl-940).
+    check('making_shows_references_and_words', sizes.some((now) => now.rendering && now.pictures === 1 && now.fullHeight && /Another still, as warm as/.test(now.words) && /^<?plain>?$/i.test(now.chip)), sizes);
+    const after = await boxOf(page, 'again').evaluate((node) => ({ making: node.querySelectorAll('.media .making').length, label: node.querySelector('.node-version-label')?.textContent ?? '' }));
+    check('result_replaces_them', after.making === 0 && after.label === 'v2', after);
+  }
+
+  // A video being made shows its summary and the pictures it reads the same way, and its take replaces them; it never resizes (cl-947).
+  if (local) {
+    const reelOf = async () => (await api(at)).body.assets.find((one) => one.name === 'reel');
+    const size = () => boxOf(page, 'reel').evaluate((node) => {
+      const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+      const [card, box] = [node.querySelector('.card').getBoundingClientRect(), node.getBoundingClientRect()];
+      return [card.width, card.height, box.width, box.height].map((n) => Math.round((n / zoom) * 10) / 10).join('x');
+    });
+    const before = await size();
+    await boxOf(page, 'reel').evaluate((node) => {
+      const seen = (window.reelSeen = []);
+      const zoom = () => new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
+      const look = () => {
+        const card = node.querySelector('.card');
+        if (!card) return;
+        const [c, b] = [card.getBoundingClientRect(), node.getBoundingClientRect()];
+        const making = card.querySelector('.media .making');
+        const media = card.querySelector('.media').getBoundingClientRect();
+        const pictures = [...(making?.querySelectorAll('.making-pictures img') ?? [])].filter((img) => img.complete && img.naturalWidth > 0);
+        const now = {
+          size: [c.width, c.height, b.width, b.height].map((n) => Math.round((n / zoom()) * 10) / 10).join('x'),
+          rendering: Boolean(card.querySelector('.tile-under .run-face')),
+          pictures: pictures.length,
+          fullHeight: pictures.every((img) => Math.abs(img.getBoundingClientRect().height - media.height) < 1.5),
+          words: making?.querySelector('.making-words')?.textContent ?? '',
+          chip: making?.querySelector('.making-words .chip')?.textContent ?? '',
+        };
+        if (JSON.stringify(seen.at(-1)) !== JSON.stringify(now)) seen.push(now);
+      };
+      new MutationObserver(look).observe(node, { subtree: true, childList: true, attributes: true, characterData: true });
+      new ResizeObserver(look).observe(node);
+      look();
+    });
+    await post(`${at}/runs`, { names: ['reel'], on: ['local'] });
+    await until('reel has its take', reelOf, (row) => row?.versions === 1 && !row.making?.length, FIRST_RUN_MS);
+    await settled(page);
+    await page.waitForTimeout(1000);
+    const samples = await page.evaluate(() => window.reelSeen);
+    seen.reel_render = { before, samples };
+    const after = await boxOf(page, 'reel').evaluate((node) => ({ making: node.querySelectorAll('.media .making').length, label: node.querySelector('.node-version-label')?.textContent ?? '', video: Boolean(node.querySelector('.media .media-pixels img, .media .media-pixels video')) }));
+    check('video_making_shows_summary_and_references', samples.some((now) => now.rendering && now.pictures === 1 && now.fullHeight && /The sea at dusk, the light of/.test(now.words) && /^<?plain>?$/i.test(now.chip)), samples);
+    check('video_take_replaces_them', after.making === 0 && after.label === 'v1' && after.video, after);
+    check('video_render_leaves_its_size', samples.every((now) => now.size === before) && (await size()) === before, { before, sizes: [...new Set(samples.map((now) => now.size))] });
   }
 
   // Open, what it can do is still there.

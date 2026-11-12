@@ -1,11 +1,8 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["cozy-runtime[media]==0.45.0", "tensorfs==0.24.1", "msgspec>=0.19"]
+# dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
 # ///
-"""web/ignored.js's functions, which say what they got: `pictures` a prompt of pictures, `words` words only (cl-944).
-
-Pinned to the release candidate's own series, so the candidate Runtime stands in for its lock (tensord's environment.rs
-`stands_in`): a lock on a newer published patch runs that patch instead. Move the pins with the candidate's series."""
+"""web/ignored.js's functions, which say what they got: `pictures` a prompt of pictures, `words` words only (cl-944)."""
 
 import msgspec
 from cozy_runtime.author import App

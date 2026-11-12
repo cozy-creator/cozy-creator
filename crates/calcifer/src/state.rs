@@ -56,6 +56,7 @@ pub(crate) const TABLES: &str = "
         families TEXT NOT NULL,
         lora INTEGER NOT NULL,
         family TEXT,
+        parts TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (hub, sha256)
     ) STRICT, WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS after_steps (
@@ -112,6 +113,14 @@ pub(crate) fn project_names(conn: &Connection) -> rusqlite::Result<()> {
     match named {
         true => Ok(()),
         false => conn.execute_batch("ALTER TABLE projects ADD COLUMN name TEXT NOT NULL DEFAULT ''"),
+    }
+}
+
+/// A store from before cl-943 keeps no header's parts: its column, added. Its rows were read under other facts, and go.
+pub(crate) fn header_parts(conn: &Connection) -> rusqlite::Result<()> {
+    match conn.prepare("SELECT parts FROM headers LIMIT 0").is_ok() {
+        true => Ok(()),
+        false => conn.execute_batch("ALTER TABLE headers ADD COLUMN parts TEXT NOT NULL DEFAULT ''"),
     }
 }
 
@@ -366,8 +375,11 @@ impl Store {
     pub(crate) fn header_facts(&self, families: &str) -> Result<HashMap<(String, String), Facts>> {
         self.write(|tx| {
             tx.execute("DELETE FROM headers WHERE families <> ?1", [families])?;
-            let mut statement = tx.prepare("SELECT hub, sha256, lora, family FROM headers")?;
-            let rows = statement.query_map([], |r| Ok(((r.get(0)?, r.get(1)?), Facts { lora: r.get(2)?, family: r.get(3)? })))?;
+            let mut statement = tx.prepare("SELECT hub, sha256, lora, family, parts FROM headers")?;
+            let rows = statement.query_map([], |r| {
+                let parts: String = r.get(4)?;
+                Ok(((r.get(0)?, r.get(1)?), Facts { lora: r.get(2)?, family: r.get(3)?, parts: serde_json::from_str(&parts).unwrap_or_default() }))
+            })?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -375,9 +387,10 @@ impl Store {
     /// What headers said, by Hub and sha256, read under `families`.
     pub(crate) fn keep_header_facts(&self, families: &str, read: &[((String, String), Facts)]) -> Result<()> {
         self.write(|tx| {
-            let mut statement = tx.prepare("INSERT OR REPLACE INTO headers (hub, sha256, families, lora, family) VALUES (?1, ?2, ?3, ?4, ?5)")?;
+            let mut statement = tx.prepare("INSERT OR REPLACE INTO headers (hub, sha256, families, lora, family, parts) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
             for ((hub, sha256), facts) in read {
-                statement.execute(params![hub, sha256, families, facts.lora, facts.family])?;
+                let parts = serde_json::to_string(&facts.parts).unwrap_or_default();
+                statement.execute(params![hub, sha256, families, facts.lora, facts.family, parts])?;
             }
             Ok(())
         })
@@ -507,7 +520,7 @@ pub(crate) fn import(store: &Store, dir: &Path) {
             steps.push((key.to_string_lossy().into_owned(), step.map(|step| step.to_string()), path));
         }
     }
-    let families = tensorfs::family::families_digest();
+    let families = tensorfs::family::facts_digest();
     let none = index.is_none() && sessions.is_none() && tools.is_none() && here.is_none() && headers.is_none() && steps.is_empty();
     if none {
         let _ = std::fs::remove_dir(&after_dir);

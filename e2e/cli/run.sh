@@ -9,12 +9,13 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-unused|web-ignored|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-trash|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-unused|web-ignored|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
+. "$(dirname "$0")/lines.sh"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
@@ -151,6 +152,7 @@ if [ "$first" != none ]; then
   grep -Eq "\"number\": *$first([^0-9]|\$)" "$OUT/runs.json" || check "cozy run ls does not list run $first"
 fi
 phases first
+quiet first
 }
 
 # phases <cell>: every stage the cell's run went through is in the page's words (web/app/src/panels/runs/stages.json, which the
@@ -161,6 +163,18 @@ phases() {
 python3 "$E2E/cli/stages.py" "$OUT/$1.ndjson" "$E2E/../web/app/src/panels/runs/stages.json" > "$OUT/$1.phases" 2>&1 \
   || check "phases of $1: $(grep PROBLEM "$OUT/$1.phases" | head -5 | paste -sd';' -)$(tail -n 2 "$OUT/$1.phases" | grep -v PROBLEM)"
 cat "$OUT/$1.phases"
+}
+
+# quiet <cell>: a run whose fallbacks the Runtime caught and recovered from warns of nothing (cl-921, cozy-runtime #2145): no warning
+# line in its log, none on its record and no `warn` adjustment. BiRefNet's fp16 weights computed in float32 on the CPU was one (cr-247).
+quiet() {
+[ -s "$OUT/$1.ndjson" ] || return 0
+local said
+said=$(grep '^{' "$OUT/$1.ndjson" | jq -c 'select(.type == "run.log" and (.level == "warn" or .level == "warning" or .level == "error")) | .text' | head -3)
+[ -z "$said" ] || check "quiet $1: its log warned: $said"
+J '(.warnings // []) | length == 0' "$OUT/$1.json" || check "quiet $1: its record warns: $(jq -c .warnings "$OUT/$1.json")"
+J '[.adjustments[]? | select(.kind == "warn")] | length == 0' "$OUT/$1.json" \
+  || check "quiet $1: a warn adjustment: $(jq -c '[.adjustments[]? | select(.kind == "warn")]' "$OUT/$1.json")"
 }
 
 # The restarted machine runs a request with a file input in a new executor (weightless: the first run loads weights).
@@ -276,18 +290,22 @@ cozy --json package uninstall local/one_script --on local > /dev/null || check "
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
 case $SHARD in
-  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine slow_runs prepares completions calcifer_faults calcifer_restarts update remove" ;;
+  '') parts="entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles slot_choices old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine slow_runs prepares completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
   executors) parts="second_executor lifetime kept_preparing update remove" ;;
   local-wake) parts="local_wake_update logs" ;;
+  # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
+  lines) parts="machine_lines logs" ;;
   entrypoints) parts="entrypoints" ;;
-  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
+  commands) parts="entrypoints catalog basics yaml_requests run_filters bound_runs own_references no_descriptions orbit_angles slot_choices old_runtime hostile_media machine_show_runs writes_once project_stream logs" ;;
   # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
   web) parts="tools_read web_serves page_resend logs" ;;
   project-stream) parts="project_stream logs" ;;
   # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path, the page too.
   slow) parts="slow_runs logs" ;;
   project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
+  # A box from Render to its take, each phase of its face kept as a picture (cl-921).
+  web-activity) export DB_WEB=activity; parts="tools_read db_existing_web logs" ;;
   web-core) parts="tools_read web_core page_resend logs" ;;
   web-firefox) parts="tools_read web_firefox logs" ;;
   # The palette against a Hub holding every first-party package (e2e/isolated.sh), and with none (cl-896).
@@ -298,13 +316,19 @@ case $SHARD in
   web-aspect) export DB_WEB=aspect; parts="tools_read db_existing_web logs" ;;
   # A video scrubbed in Focus (cl-933).
   web-scrub) export DB_WEB=scrub; parts="tools_read db_existing_web logs" ;;
+  # One Models & LoRAs picker for every tool; H3's fields unfolded (cl-934). Its Hub holds an H3 LoRA (isolated.sh).
+  web-models) export DB_WEB=models; parts="tools_read db_existing_web logs" ;;
+  # One editing view for a picture and a video: the frame holds the prompt sections, Render and the fields under it (cl-938).
+  web-frame) export DB_WEB=frame; parts="tools_read db_existing_web logs" ;;
+  # Deleting by a trash can (cl-939).
+  web-trash) export DB_WEB=trash; parts="tools_read db_existing_web logs" ;;
   # The tool beside a box's name (cl-927).
   web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
   # A box's models and LoRAs, open (web/addons.js; at rest it has no chips, cl-932).
   web-addons) export DB_WEB=addons; parts="tools_read db_existing_web logs" ;;
   # A mention its tool can't use, crossed out and never sent (cl-944).
   web-unused) export DB_WEB=unused; parts="tools_read db_existing_web logs" ;;
-  # What the Runtime leaves out of a raw request, with a note (cl-944): on the candidate's series (project/raw.py).
+  # What the Runtime leaves out of a raw request, with a note (cl-944).
   web-ignored) export DB_WEB=ignored; parts="tools_read db_existing_web logs" ;;
   # The right-side panel closed by a click off it (cl-929).
   web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;

@@ -1042,6 +1042,49 @@ code {
   transform-origin: left;
   transition: transform 400ms linear;
 }
+/* An image or video being made, at rest (cl-940, cl-947): what its run reads, full-bleed, each at full height side by side; over them the start of its words
+   on a scrim, under the meter. A preview of what it makes (.latent-preview) covers the pictures, never the words. */
+.making {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.making-pictures {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  background: var(--well);
+}
+.making-pictures img {
+  position: static;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+}
+.making-words {
+  position: absolute;
+  top: calc(var(--s3) + 3px * var(--ui));
+  left: var(--s3);
+  right: var(--s3);
+  z-index: 2;
+  display: -webkit-box;
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  overflow: hidden;
+  border-radius: var(--round);
+  background: var(--scrim);
+  color: var(--ink);
+  font: calc(var(--t-body) * var(--ui)) / 1.35 var(--sans);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+.making-words .chip {
+  text-shadow: none;
+}
 /* At rest, a render breathes around its box, outside its edge (cl-928, Paul 11-12): ambient, no progress. How far it is, is on its face. */
 .render-wave {
   position: absolute;
@@ -1498,12 +1541,11 @@ video.preview.on {
 .field-block .mention-text {
   font-size: var(--body);
 }
-.tool-head {
+/* What makes a box, over its Render (cl-934). */
+.edit-foot {
   display: flex;
-  padding: 2px 0 4px;
-}
-.tool-head .add-ons {
-  position: static;
+  flex-direction: column;
+  gap: 6px;
 }
 .here-all {
   display: flex;
@@ -1554,7 +1596,8 @@ video.preview.on {
   z-index: 1;
 }
 .media:has(.live) .take-out,
-.media:has(.orbit) .take-out {
+.media:has(.orbit) .take-out,
+.media.glimpsed .take-out {
   display: none;
 }
 /* The one being looked at, and the one approved: each plain at a glance, on the row and the tile. */
@@ -1893,6 +1936,25 @@ video.preview.on {
 }
 .take.making {
   color: var(--mak);
+}
+/* What a take being made has made so far, on its tile, under how far it's got (cl-907). */
+.take.making:has(.take-glimpse) {
+  position: relative;
+  overflow: hidden;
+}
+.take-glimpse {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.take-glimpse + .take-said {
+  position: relative;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--card) 80%, transparent);
 }
 .take.fresh {
   animation: take-in 240ms cubic-bezier(0.2, 1.4, 0.4, 1);
@@ -3831,6 +3893,7 @@ input[type="checkbox"] {
 .glimpse {
   position: absolute;
   inset: 0;
+  background: var(--card);
 }
 .glimpse img,
 .glimpse video {

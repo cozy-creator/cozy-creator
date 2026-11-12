@@ -130,7 +130,7 @@ async function died(why) {
     // New starts a second take beside it.
     await page.locator('.card.here[data-asset="pending"] .take.add').click();
     await page.locator('.card.here[data-asset="pending"] .in-frame .mention-text').waitFor();
-    await page.locator('.card.here[data-asset="pending"] .here-under button[aria-label="Render"]').click();
+    await page.locator('.card.here[data-asset="pending"] button[aria-label="Render"]').click();
     const two = await until('a second take beside it', phase, (now) => now.runs.length === 2, 60_000).catch(phase);
     seen.pending_two = two;
     check('new_starts_a_second_take_beside_it', two.runs.length === 2 && two.runs.some((status) => status === 'in_progress'), two);

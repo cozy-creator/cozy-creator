@@ -2,7 +2,6 @@
 // model cannot use"), for what reaches a function past Calcifer's binder: an API caller's raw prompt, sent as `cozy run … field:=<json>`.
 // A picture, a video and a sound in a prompt of pictures: the picture is kept, the video and the sound are left out, each its name in the
 // text and one `ignored` row; a picture where only words go: its name, one row. Nothing is refused, and `cozy run watch` says each once.
-// Its functions (project/raw.py) are locked to the candidate's series, so the candidate Runtime is what runs them.
 //   node ignored.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER; $COZY: the cozy under test.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);

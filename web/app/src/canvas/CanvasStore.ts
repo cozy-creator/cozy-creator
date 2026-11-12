@@ -124,6 +124,8 @@ export interface ElementView {
   shape?: string
   /** The shape it makes with none set: `autoOf`. */
   auto?: number
+  /** What sets that shape, in words (`first frame`, `<amy>`); none: its tool's own. */
+  autoFrom?: string
   /** Its warnings are open under it. */
   warned?: boolean
   /** Something is being dragged over it. */
@@ -138,8 +140,8 @@ export interface ElementView {
   joining?: number
   /** It just arrived, and lands. */
   landing?: boolean
-  /** What its render has shown so far, the newest: kept, dimmed, if the render fails. */
-  glimpse?: { run: string; output: string; index: number; media: string; label?: string; sha256?: string }
+  /** What its render has shown so far, the newest revision that landed here, by its run's id and number: kept, dimmed, if the render fails. */
+  glimpse?: { run: string; number: number; output: string; index: number; rev: number; media: string; label?: string; sha256?: string }
   /** Another box's take let go on it, to pick up from: that take, as a mention of it, and where it's from. */
   pickingUp?: { take: string; from: string; number: number }
   /** The take that just landed, sliding in beside the last. */
@@ -512,9 +514,9 @@ export class CanvasStore {
 
   /** Its auto shape, kept on its view: the view it has now. Only a box showing no picture is drawn by it; one showing a picture keeps it for what reads it. */
   private reauto(key: string, view: ElementView): ElementView {
-    const auto = this.autoOf(view)
-    if (auto === view.auto) return view
-    const now = { ...view, auto }
+    const { ratio: auto, from: autoFrom } = this.autoOf(view)
+    if (auto === view.auto && autoFrom === view.autoFrom) return view
+    const now = { ...view, auto, autoFrom }
     this.views.set(key, now)
     if (reshapes(now)) {
       this.notify(key)
@@ -523,22 +525,37 @@ export class CanvasStore {
     return now
   }
 
-  /** The shape a box makes with none set, as Cozy's image packages take it: the first picture it mentions, held to what its tool makes, else its tool's own. */
-  private autoOf(view: ElementView): number | undefined {
+  /** The shape a box makes with none set, and what sets it. A picture tool's, as Cozy's image packages take it: the first picture it mentions, held
+   *  to what its tool makes, else its tool's own. A video tool's: the first picture or video in its slots (H3's first or last frame), never a
+   *  mention, as a portrait of who's in it makes no vertical shot; else 16:9 (se-128). */
+  private autoOf(view: ElementView): { ratio?: number; from?: string } {
     const asset = view.asset
     const tools = this.tools.get()
-    const control = asset && makes(view) ? fieldsOf(asset, tools).find((held) => held.type === "shape") : undefined
-    if (!asset || !control) return undefined
-    if (!control.auto) return heldTo(control, ratioOf(control.default) ?? 1)
+    const fields = asset && makes(view) ? fieldsOf(asset, tools) : []
+    const control = fields.find((held) => held.type === "shape")
+    if (!asset || !control) return {}
+    if (!control.auto) return { ratio: heldTo(control, ratioOf(control.default) ?? 1) }
     const kind = tools.get(asset.tool ?? "")?.makes ?? asset.kind
-    for (const mention of this.mentionsOf(view)) {
+    const shapeOf = (mention: string, media: string[]) => {
       const read = this.mentionOf(mention, view.name)
       const of = read ? this.views.get(read.name) : undefined
-      const ratio = read && of?.asset?.kind === kind ? sentShape(of, read.number) : undefined
-      if (ratio) return heldTo(control, ratio)
+      return read && of?.asset && media.includes(of.asset.kind) ? sentShape(of, read.number) : undefined
+    }
+    if (kind === "video") {
+      for (const slot of fields.filter((held) => held.type === "slot")) {
+        for (const mention of textsIn(valueIn(view, slot.field)).flatMap(mentionsIn)) {
+          const ratio = shapeOf(mention, ["image", "video"])
+          if (ratio) return { ratio: heldTo(control, ratio), from: slot.label.toLowerCase() }
+        }
+      }
+      return { ratio: heldTo(control, ratioOf(control.default) ?? 16 / 9) }
+    }
+    for (const mention of this.mentionsOf(view)) {
+      const ratio = shapeOf(mention, [kind])
+      if (ratio) return { ratio: heldTo(control, ratio), from: `<${mention}>` }
     }
     // The SDK's own default with none: 1:1.
-    return heldTo(control, ratioOf(control.default) ?? 1)
+    return { ratio: heldTo(control, ratioOf(control.default) ?? 1) }
   }
 
   /** The pictures a box's words mention, or `mentions` of it, in order: the version named, else what each shows. */
@@ -838,7 +855,7 @@ export class CanvasStore {
     // Only what's here: an output of a run on another machine, or a revision that hasn't landed, has nothing yet to show. A preview published
     // as it goes is a revision that landed while its output is still in progress.
     const shown = [...(run.output ?? [])].reverse().find((item) => Boolean(item.url) && /^(image|video)\//.test(item.media_type))
-    const glimpse = shown && { run: run.id, output: shown.name, index: shown.index, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 ?? undefined }
+    const glimpse = shown && { run: run.id, number: run.number, output: shown.name, index: shown.index, rev: shown.rev, media: shown.media_type.split("/")[0], label: shown.label, sha256: shown.sha256 ?? undefined }
     const held = this.get(owner)?.glimpse
     this.patch(owner, glimpse && JSON.stringify(glimpse) !== JSON.stringify(held) ? { run, glimpse } : { run })
   }
@@ -1352,7 +1369,9 @@ export class CanvasStore {
     const asset = this.get(name)?.asset
     if (!asset) return
     const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
-    this.patch(name, { hereWords: asset.kind === "video" || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
+    // A render asked of a video's words stays on them; a take being made, picked, is looked at: what of it has landed plays (cl-907). On its
+    // words while one renders, the title row says so, and New is a draft: "New take", its last take behind (cl-934).
+    this.patch(name, { hereWords: (asset.kind === "video" && run === undefined) || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
   }
 
   seek(name: string, at: number, still = false) {

@@ -339,6 +339,11 @@ export function MentionText({
     if ((event.metaKey || event.ctrlKey) && (event.key === "Enter" || event.key.toLowerCase() === "s")) {
       event.preventDefault()
       onSave()
+      // Cmd/Ctrl+Enter in any prompt renders (Paul, 11-12).
+      if (event.key === "Enter" && onSubmit) {
+        event.stopPropagation()
+        onSubmit()
+      }
     }
   }
 

@@ -1,0 +1,1 @@
+What deletes or discards is a trash can, saying what it deletes, and Undo brings it back: a box, a take, a beat, a block, a LoRA, a tool taken off, a queued render. ✕ only closes: Focus, drawers, notes, menus.

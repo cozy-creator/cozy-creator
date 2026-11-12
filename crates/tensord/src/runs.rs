@@ -141,6 +141,27 @@ pub(crate) struct RunContext {
     pub(crate) models: Vec<stored::ModelChoice>,
     /// What its weights come under before its call's executor reads them (`Fetch::ahead`).
     pub(crate) ahead: Option<Arc<crate::access::Fetch>>,
+    /// An orchestrator's guesses at what its calls read (`fetch_internal`), until its first call
+    /// wants its own.
+    pub(crate) guessing: Option<std::sync::Weak<crate::access::Fetch>>,
+}
+
+/// Whom a resolution is for: the account its org-relative model names belong to, its provider
+/// tokens, its GPUs, and its run's place in the machine's install and download lines.
+#[derive(Clone)]
+struct Asker {
+    owner: String,
+    providers: Providers,
+    gpus: u32,
+    order: u64,
+}
+
+/// Where a preparation's stage and bytes go.
+type Report = Arc<dyn Fn(&str, u64, u64) + Send + Sync>;
+
+/// A project's fetch ahead: a function's warm run, for a job still waiting on another's output.
+fn fetches_ahead(spec: &Spec) -> bool {
+    spec.warm && !spec.entrypoint.is_empty() && spec.set.is_none() && !matches!(spec.source, Source::Models)
 }
 
 /// A choice for the run's own slots: a bare parameter, or one under its own name.
@@ -317,6 +338,48 @@ pub(crate) fn upload(
 }
 
 impl Runs {
+    /// Run `id`'s place in this machine's install and download lines (cl-905), `rank` within it: a
+    /// started run's call first, then each root in job order (its acceptance, as its GPU work
+    /// queues); a project's fetch ahead behind every run, as the job it prepares will be.
+    fn order(&self, id: &str, spec: &Spec, rank: u32) -> u64 {
+        use crate::origin::priority;
+        match self.service.engine.get(id) {
+            Ok(record) if !record.invocation.parent.is_empty() => priority::next(priority::STARTED, rank),
+            Ok(record) if fetches_ahead(spec) => priority::ahead(record.root_seq(), rank),
+            Ok(record) => priority::next(record.root_seq(), rank),
+            Err(_) => priority::BEHIND,
+        }
+    }
+
+    fn asker(&self, id: &str, spec: &Spec) -> Asker {
+        Asker { owner: spec.owner.clone(), providers: spec.providers.clone(), gpus: spec.gpus, order: self.order(id, spec, 0) }
+    }
+
+    /// What a function that loads no model itself reads, from its package's internal functions that
+    /// construct one: sure, what they all read up front; guesses, each one's own, in its package's
+    /// order (`Reads`). One that doesn't resolve is left out.
+    #[allow(clippy::too_many_arguments)]
+    fn internal_reads(
+        &self, actor: &str, id: &str, installation: &Installation, hub: Option<hub::Source>, asker: &Asker,
+        (models, lane): (&[stored::ModelChoice], &str), observe: Option<&Report>, stop: Option<&Stop>,
+    ) -> Result<crate::access::Reads, Refused> {
+        let mut plans = vec![];
+        for callee in internal_models(installation)? {
+            let own: Vec<_> = models.iter().filter(|c| own_choice(c, &callee)).cloned().collect();
+            let report = observe.cloned().map(|report| Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total)) as crate::published::Observer);
+            match self.resolve(actor, id, Some(installation.clone()), None, hub.clone(), asker, &callee, &own, lane, report, stop) {
+                Ok((_, Some(plan), ..)) => plans.push((callee, plan.upfront())),
+                Ok(_) => {}
+                Err(error) => match crate::private_io::current().is_none() {
+                    true => tracing::warn!("run {id}: {callee}'s weights aren't fetched ahead: {}", error.message),
+                    false => tracing::warn!("private run {id}: model prefetch is unavailable"),
+                },
+            }
+        }
+        let each: Vec<_> = plans.iter().map(|(_, upfront)| upfront.clone()).collect();
+        Ok(crate::access::Reads { sure: shared_of(&each), guesses: plans })
+    }
+
     /// The run this id already names, if its spec is `digest`; another spec is a conflict.
     pub(crate) fn existing(&self, actor: &str, id: &str, digest: &str, legacy_digest: Option<&str>) -> Result<Option<Execution>, Refused> {
         match self.service.engine.get_public(Some(actor), id) {
@@ -750,7 +813,7 @@ impl Runs {
             let hardware = self.service.gpu().map(|gpu| gpu.hardware(gpu.width() as u32)).unwrap_or_default();
             let (stage, saving) = (format!("downloading {}", choice.model), format!("saving {}", choice.model));
             let wait = crate::activity::wait(crate::activity::Kind::Download, &choice.model, &self.service.engine.caller_id(id));
-            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, structure, stop, &|done, total| {
+            let (named, landed) = publisher.download(&self.service, hub_access()?, named, &hardware, structure, self.order(id, spec, 0), stop, &|done, total| {
                 // Every byte is here (a total this small is still only the header's): what is left is the disk's,
                 // and a slow one has held a run at 100% for over a minute with no word (tfs-143).
                 let now = if total >= 1 << 20 && done >= total { &saving } else { &stage };
@@ -779,7 +842,7 @@ impl Runs {
     }
     /// The run's code and models made ready: Ok(None) once it is dispatchable, Ok(Some) for a
     /// warm run's result.
-    fn prepare(&self, actor: &str, id: &str, spec: Spec, stoppable: &Stoppable) -> Result<Option<ResultRecord>, Refused> {
+    fn prepare(self: &Arc<Self>, actor: &str, id: &str, spec: Spec, stoppable: &Stoppable) -> Result<Option<ResultRecord>, Refused> {
         let engine = self.service.engine.clone();
         let run = id.to_string();
         // Byte counts arrive per chunk: a new stage and a finished count show at once, bytes at
@@ -836,7 +899,7 @@ impl Runs {
                     let observe = observe.clone();
                     move |stage: &str, done: u64, total: u64| observe(stage, done, total)
                 });
-                let installed = local.install(&self.service, actor, digest, Some(&stoppable.stop), id, observer)?;
+                let installed = local.install(&self.service, actor, digest, Some(&stoppable.stop), id, self.order(id, &spec, 0), observer)?;
                 self.supersede(actor, &installed)?;
                 local.collect(actor, &installed.package);
                 Some(installed)
@@ -863,7 +926,7 @@ impl Runs {
             held,
             release,
             hub.clone(),
-            &spec,
+            &self.asker(id, &spec),
             &spec.entrypoint,
             &own,
             &spec.lane,
@@ -894,6 +957,14 @@ impl Runs {
                 }
                 fetch
             });
+            if plan.is_none() && spec.parent.is_empty() && internal_models(&installation).is_ok_and(|internal| !internal.is_empty()) {
+                ahead = Some(self.fetch_internal(actor, id, &installation, hub.clone(), &spec));
+            }
+            // A call wants what it reads now: its caller's guesses at it end, and their room is free.
+            let caller = self.contexts.lock().unwrap().get(&spec.parent).and_then(|context| context.guessing.as_ref()?.upgrade());
+            if let Some(guesses) = caller {
+                guesses.drop_guessed();
+            }
         }
         if let (false, Some(gpu)) = (spec.warm, self.service.gpu()) {
             gpu.prespawn(generation.clone());
@@ -959,39 +1030,22 @@ impl Runs {
                 true => self.warm_models(actor, id, &spec, &*observe, stoppable)?,
                 false => vec![],
             };
-            // A function that loads no model itself runs on what it calls, and which of its package's internal functions
-            // that is, only it knows: H3's shot takes one transformer with references and another without. So what they all
-            // load, and that only.
-            let plans: Vec<_> = match plan {
-                None if !install_only => {
-                    let mut plans = vec![];
-                    for callee in internal_models(&installation)? {
-                        let own: Vec<_> = spec.models.iter().filter(|c| own_choice(c, &callee)).cloned().collect();
-                        let report = observe.clone();
-                        let resolved = self.resolve(actor, id, Some(installation.clone()), None, hub.clone(), &spec, &callee, &own, &spec.lane,
-                            Some(Box::new(move |stage: &str, done: u64, total: u64| report(stage, done, total))), Some(&stoppable.stop));
-                        match resolved {
-                            Ok((_, plan, ..)) => plans.extend(plan),
-                            Err(error) if plans.is_empty() => {
-                                if spec.local_private.is_none() { tracing::warn!("run {id}: {callee}'s weights aren't fetched ahead: {}", error.message); }
-                                else { tracing::warn!("private run {id}: model prefetch is unavailable"); }
-                            },
-                            Err(_) => {}
-                        }
-                    }
-                    plans
+            // A function's warm run (a project's fetch ahead) ends holding what it reads: what its calls read up front, or what all
+            // an orchestrator's internal functions do (sure to be read), only if that fits, at its place in the machine's download line;
+            // then each internal function's own, behind every sure need, while it fits beside what comes first. Which one an
+            // orchestrator calls only it knows (H3's shot takes one transformer with references and another without): a wrong guess
+            // costs bytes, never room, as nothing is evicted for it. An on-demand model comes when a stage reads it (cl-804).
+            let reads = match plan {
+                _ if install_only => crate::access::Reads::default(),
+                Some(plan) => crate::access::Reads { sure: plan.upfront(), guesses: vec![] },
+                None => {
+                    let observer: Report = observe.clone();
+                    let chosen = (spec.models.as_slice(), spec.lane.as_str());
+                    self.internal_reads(actor, id, &installation, hub.clone(), &self.asker(id, &spec), chosen, Some(&observer), Some(&stoppable.stop))?
                 }
-                plan => plan.into_iter().collect(),
             };
-            // A function's warm run (a project's fetch ahead) ends holding what its constructions
-            // read up front: only if that fits. It is a guess, so it never makes room. An
-            // on-demand model comes when a stage reads it: the request may never (cl-804).
             let mut moved = tensorfs::fetch::Landed::default();
-            if !plans.is_empty() {
-                let each: Vec<_> = plans.iter().map(Plan::upfront).collect();
-                // Only what they all share: that's sure to be read. The rest comes when its run begins, which on a slow link costs no
-                // more time than fetching it now, as fetching ahead is canceled then, and on a fast one costs seconds, while bytes for a
-                // function that isn't called are paid for wherever downloads are billed.
+            if !reads.sure.is_empty() || !reads.guesses.is_empty() {
                 let fits = |absent: u64| {
                     let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
                     match absent > free {
@@ -1000,7 +1054,8 @@ impl Runs {
                     }
                 };
                 let weights = format!("{}'s weights", installation.package);
-                moved = self.download(hub.clone(), &shared_of(&each), fits, &*observe, stoppable, &weights, &self.service.engine.caller_id(id))?;
+                let (sure, guess) = (|rank| self.order(id, &spec, rank), |rank| self.order_guess(id, rank));
+                moved = self.download(hub.clone(), &reads, (&sure, &guess), fits, &*observe, stoppable, &weights, id)?;
             }
             // The installed release, its interface and the installation a call may name, in the
             // warm run's result.
@@ -1062,6 +1117,7 @@ impl Runs {
                 gpus: spec.gpus,
                 lane: spec.lane.clone(),
                 models: spec.models.clone(),
+                guessing: ahead.as_ref().filter(|_| plan.is_none()).map(Arc::downgrade),
                 ahead,
             };
             self.contexts.lock().unwrap().insert(id.into(), context);
@@ -1093,19 +1149,32 @@ impl Runs {
         Ok(None)
     }
 
-    /// Every chunk of `selected` (header, components) here from `hub`, its bytes the warm run's
-    /// progress and the machine's download of `weights` for run `caller`; `room` is asked for those absent first.
+    /// Every chunk of `reads` here from `hub` (`Fetch::lined`), its sure ones at `order.0`, its guesses at `order.1`, its bytes
+    /// the warm run's progress and the machine's download of `weights` for run `id`; `room` is asked for the sure ones absent
+    /// first, and each guess is fetched only while it fits on the disk beside what comes first.
     #[allow(clippy::too_many_arguments)]
-    fn download(&self, hub: Option<hub::Source>, selected: &[(String, Vec<String>)], room: impl FnOnce(u64) -> Result<(), Refused>,
-        observe: &(dyn Fn(&str, u64, u64) + Sync), stoppable: &Stoppable, weights: &str, caller: &str) -> Result<tensorfs::fetch::Landed, Refused> {
+    fn download(&self, hub: Option<hub::Source>, reads: &crate::access::Reads, order: (&dyn Fn(u32) -> u64, &dyn Fn(u32) -> u64),
+        room: impl FnOnce(u64) -> Result<(), Refused>, observe: &(dyn Fn(&str, u64, u64) + Sync), stoppable: &Stoppable, weights: &str,
+        id: &str) -> Result<tensorfs::fetch::Landed, Refused> {
         let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub, u64::MAX);
-        room(fetch.absent(selected)?)?;
-        let wait = crate::activity::wait(crate::activity::Kind::Download, weights, caller);
+        room(fetch.absent(&reads.sure)?)?;
+        let free = match reads.guesses.is_empty() {
+            true => 0,
+            false => crate::reclaim::Disk::measure(self.publisher.store().root())?.free(),
+        };
+        let lined = fetch.lined(reads, order.0, order.1, free)?;
+        for note in &lined.held_back {
+            if let Err(error) = self.service.engine.append_warning(id, note) {
+                crate::private_io::warning(&self.service.engine, id, format_args!("{note} ({error})"));
+            }
+        }
+        let caller = self.service.engine.caller_id(id);
+        let wait = crate::activity::wait(crate::activity::Kind::Download, weights, &caller);
         let report = |done, total| {
             wait.moved("", done, total);
             observe("downloading its weights", done, total)
         };
-        fetch.download(selected, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
+        fetch.download(lined, &caller, &stoppable.stop, &report).map_err(|e| match stoppable.stop.is_cancelled() {
             true => refused(crate::published::CANCELED, "the run was canceled while it downloaded"),
             false => {
                 let text = e.to_string();
@@ -1115,6 +1184,46 @@ impl Runs {
                 }
             }
         })
+    }
+
+    /// A guess of run `id`'s (`priority::guess`), `rank` within it: behind every run's sure needs, in job order.
+    fn order_guess(&self, id: &str, rank: u32) -> u64 {
+        let seq = self.service.engine.get(id).map_or(u64::MAX, |record| record.root_seq());
+        crate::origin::priority::guess(seq, rank)
+    }
+
+    /// A root that loads no model itself (an orchestrator) gets its internal functions' weights on the way while it starts
+    /// and imports (cl-905): what they all read at its place in the download line, then each one's own as a guess, while it
+    /// fits beside what comes first. Nothing waits on them; they end with its call, or its cancel. Room is made for the sure
+    /// ones as for any run's: they are read.
+    fn fetch_internal(self: &Arc<Self>, actor: &str, id: &str, installation: &Installation, hub: Option<hub::Source>, spec: &Spec) -> Arc<crate::access::Fetch> {
+        use crate::origin::priority;
+        let fetch = crate::access::Fetch::new(self.publisher.machine().clone(), hub.clone(), u64::MAX);
+        let (runs, held, actor, id, asker) = (self.clone(), fetch.clone(), actor.to_string(), id.to_string(), self.asker(id, spec));
+        let (installation, models, lane) = (installation.clone(), spec.models.clone(), spec.lane.clone());
+        let (seq, private) = (self.service.engine.get(&id).map_or(u64::MAX, |record| record.root_seq()), spec.local_private.clone());
+        let started = std::thread::Builder::new().name("internal-prefetch".into()).spawn(move || crate::private_io::within(private, || {
+            let lined = (|| -> Result<crate::access::Lined, Refused> {
+                let reads = runs.internal_reads(&actor, &id, &installation, hub, &asker, (&models, &lane), None, None)?;
+                runs.service.room_for(&id, held.absent(&reads.sure)?).map_err(|why| refused("machine_disk_full", why))?;
+                let free = crate::reclaim::Disk::measure(runs.publisher.store().root())?.free();
+                held.lined(&reads, &|rank| priority::next(seq, rank), &|rank| priority::guess(seq, rank), free).map_err(Refused::from)
+            })();
+            let lined = match lined {
+                Ok(lined) => lined,
+                Err(refusal) => return crate::private_io::warning(&runs.service.engine, &id, format_args!("its functions' weights aren't fetched ahead: {}", refusal.message)),
+            };
+            for note in &lined.held_back {
+                crate::private_io::warning(&runs.service.engine, &id, format_args!("{note}"));
+            }
+            if let Err(error) = held.hint(lined, &runs.service.engine.caller_id(&id)) {
+                crate::private_io::warning(&runs.service.engine, &id, format_args!("its functions' weights aren't fetched ahead: {error}"));
+            }
+        }));
+        if let Err(error) = started {
+            tracing::warn!("its functions' weights aren't fetched ahead: {error}");
+        }
+        fetch
     }
 
     /// A warm set member, built one way whether a warm run makes it or a restart brings it back
@@ -1207,7 +1316,7 @@ impl Runs {
                 held,
                 release,
                 hub.clone(),
-                spec,
+                &self.asker(id, spec),
                 entrypoint,
                 choices,
                 &item.lane,
@@ -1242,7 +1351,7 @@ impl Runs {
                         Some(installation.clone()),
                         None,
                         hub.clone(),
-                        spec,
+                        &self.asker(id, spec),
                         &callee,
                         &own,
                         &item.lane,
@@ -1261,7 +1370,9 @@ impl Runs {
                     let room = |absent| self.service.room_for(id, absent)
                         .map_err(|why| refused("machine_disk_full", why.trim_start_matches("machine_disk_full: ")));
                     let weights = format!("{}'s weights", installation.package);
-                    self.download(hub.clone(), &plan.read(), room, &**observe, stoppable, &weights, &self.service.engine.caller_id(id))?;
+                    let reads = crate::access::Reads { sure: plan.read(), guesses: vec![] };
+                    let (sure, guess) = (|rank| self.order(id, spec, rank), |rank| self.order_guess(id, rank));
+                    self.download(hub.clone(), &reads, (&sure, &guess), room, &**observe, stoppable, &weights, id)?;
                 }
                 kept.push(serde_json::to_string(&KeptMember {
                     installation: installation.alias.clone(),
@@ -1379,7 +1490,7 @@ impl Runs {
         held: Option<Installation>,
         release: Option<Published>,
         hub: Option<hub::Source>,
-        spec: &Spec,
+        asker: &Asker,
         entrypoint: &str,
         choices: &[stored::ModelChoice],
         lane: &str,
@@ -1393,12 +1504,13 @@ impl Runs {
             package,
             release,
             installed: held,
-            owner: spec.owner.clone(),
-            providers: spec.providers.clone(),
+            owner: asker.owner.clone(),
+            providers: asker.providers.clone(),
             entrypoint: entrypoint.into(),
             choices: choices.to_vec(),
-            gpus: spec.gpus,
+            gpus: asker.gpus,
             lane: lane.into(),
+            order: asker.order,
         };
         let prepared = self
             .publisher
@@ -1578,7 +1690,7 @@ impl Runs {
                         None => None,
                     };
                     let (hub, models) = (spec.hub.clone(), spec.models.clone());
-                    runs.resolve(&actor, "", held, None, hub, &spec, &spec.entrypoint, &models, &spec.lane, None, None)
+                    runs.resolve(&actor, "", held, None, hub, &runs.asker("", &spec), &spec.entrypoint, &models, &spec.lane, None, None)
                 })();
             match prepared {
                 Ok((installation, Some(plan), _)) if plan.degree > 0 && !plan.slots.is_empty() => {

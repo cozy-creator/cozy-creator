@@ -655,9 +655,10 @@ export class Client {
     return this.opened(`${run(id)}/events${after ? `?starting_after=${after}` : ""}`, signal)
   }
 
-  /** Where an output's bytes are served, once they landed here. */
-  output(id: string, name: string, index: number): string {
-    return `${run(id)}/outputs/${encodeURIComponent(name)}${index ? `?index=${index}` : ""}`
+  /** Where an output's bytes are served, once they landed here. With `rev`, that revision's own address: a player loads a newer one afresh. */
+  output(id: string, name: string, index: number, rev?: number): string {
+    const query = new URLSearchParams([...(index ? [["index", String(index)]] : []), ...(rev ? [["rev", String(rev)]] : [])]).toString()
+    return `${run(id)}/outputs/${encodeURIComponent(name)}${query ? `?${query}` : ""}`
   }
 
   /** A running run's newest picture of what it's making, from its machine (cr-282): asking is what keeps it making them. */
@@ -762,11 +763,14 @@ export class Client {
 
   // Models
 
-  /** The Hub's models: of `family` only when it's said, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
-  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; noTag?: string } = {}): Promise<ModelSearch> {
+  /** The Hub's models: of `family` only when it's said, only those a tool's slot loads when `fits` (`<tool>:<slot>`, judged by their
+   *  headers; `project` finds local code) is, and with no `noTag` (`nsfw` leaves out models that make sexual or nude images). */
+  models(q: string, limit: number, signal?: AbortSignal, only: { family?: string; fits?: string; project?: string; noTag?: string } = {}): Promise<ModelSearch> {
     const asked = new URLSearchParams({ limit: String(limit) })
     if (q) asked.set("q", q)
     if (only.family) asked.set("family", only.family)
+    if (only.fits) asked.set("fits", only.fits)
+    if (only.fits && only.project) asked.set("project", only.project)
     if (only.noTag) asked.set("no_tag", only.noTag)
     return this.json(`/v1/models?${asked}`, { signal })
   }

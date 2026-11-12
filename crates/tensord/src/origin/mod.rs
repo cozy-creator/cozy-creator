@@ -31,16 +31,30 @@ const VOLUME_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// How often a blocked call looks at its stop.
 const TICK: Duration = Duration::from_millis(100);
 
-/// Queue order: smaller first.
+/// The machine's one download line, smaller first (cl-905): what a reader is blocked on, then each
+/// run's needs in job order (acceptance, as its GPU work queues), then what jobs waiting on another's
+/// output will read, then guesses, then warm sets. The downloader finishes one before the next.
 pub(crate) mod priority {
     /// A reader is blocked on it.
     pub(crate) const NOW: u64 = 0;
     /// The order of what a started run fetches (its calls' weights): ahead of every queued root,
     /// whose order is its acceptance, from 1.
     pub(crate) const STARTED: u64 = 0;
+    fn at(class: u64, run: u64, rank: u32) -> u64 {
+        1 + (class << 62 | run.min((1 << 30) - 1) << 32 | u64::from(rank))
+    }
     /// Next for `run` (by acceptance), `rank` within it.
     pub(crate) fn next(run: u64, rank: u32) -> u64 {
-        1 + (run.min((1 << 31) - 1) << 32 | u64::from(rank))
+        at(0, run, rank)
+    }
+    /// What a job waiting on another's output reads, fetched ahead by `run` (a project's warm run):
+    /// behind every run's, as that job's own run will be when it is sent.
+    pub(crate) fn ahead(run: u64, rank: u32) -> u64 {
+        at(1, run, rank)
+    }
+    /// What `run` may read (an orchestrator's internal functions'): after every sure need.
+    pub(crate) fn guess(run: u64, rank: u32) -> u64 {
+        at(2, run, rank)
     }
     /// Kept for later (a warm set's `downloaded`).
     pub(crate) const BEHIND: u64 = u64::MAX;
@@ -177,6 +191,23 @@ impl Machine {
             (pulled.landed.origin, pulled.landed.volume) =
                 (pulled.landed.origin + structure.landed.origin, pulled.landed.volume + structure.landed.volume);
             Ok(pulled)
+        })
+    }
+
+    /// Every one of `wants` (objects from a remote, at an order) here, fetched when absent, all in
+    /// line at once: the downloader takes them by their orders. Their bytes count into `progress`.
+    pub(crate) fn all(&self, wants: Vec<(Remote, Vec<ObjectRef>, u64)>, progress: Arc<Progress>, stop: &Stop) -> Result<Landed> {
+        let wants = (wants.into_iter())
+            .map(|(remote, objects, priority)| Ok((self.of(&remote)?, remote.origin, objects, priority)))
+            .collect::<Result<Vec<_>>>()?;
+        self.block(stop, async move {
+            let lines: Vec<Want> = wants.iter().map(|(.., priority)| Want { components: None, priority: *priority, progress: Some(progress.as_ref()) }).collect();
+            let each = wants.iter().zip(&lines).map(|((fetcher, origin, objects, _), want)| fetcher.objects(origin, objects, want));
+            let mut landed = Landed::default();
+            for one in futures_util::future::try_join_all(each).await? {
+                (landed.origin, landed.volume, landed.local) = (landed.origin + one.origin, landed.volume + one.volume, landed.local + one.local);
+            }
+            Ok(landed)
         })
     }
 

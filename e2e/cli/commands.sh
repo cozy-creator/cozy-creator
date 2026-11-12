@@ -302,6 +302,39 @@ in_project "$RUN_PROJECT" --json run "$here/project/angles.py/angles" 'pictures:
   || check "angles: an angle of a video that isn't an orbit was not refused mention_not_orbit before any run (exit $code): $(tail -c 300 "$OUT/angles-plain.json")"
 }
 
+# cl-943: a model slot offers each model its checkpoint loads in, judged by headers against the slot's default (the components
+# it reads, their classes, modules and run data; an LM's token loop at any size), never by a family label; `cozy run` refuses
+# the same before anything runs. Stand-ins with production's layouts: e2e/cli/slot_models.py, published by isolated.sh.
+slot_choices() {
+step "a slot offers what loads in it, by headers"
+local code=0 before
+fits() {  # fits <tool:slot> <name>
+  cozy --json model ls --fits "$1" --limit 100 > "$OUT/fits-$2.json" 2> "$OUT/fits-$2.err" || check "model ls --fits $1: $(head -c 300 "$OUT/fits-$2.err") $(head -c 300 "$OUT/fits-$2.json")"
+}
+offers() { J --arg m "$2" 'any(.models[]; .model == $m)' "$OUT/fits-$1.json" || check "$1 doesn't offer $2: $(jq -c '[.models[].model]' "$OUT/fits-$1.json")"; }
+refuses() { J --arg m "$2" 'all(.models[]; .model != $m)' "$OUT/fits-$1.json" || check "$1 offers $2, which $3"; }
+fits qwen-image-2/image:rewriter rewriter
+offers rewriter darrellbest/qwen-image-2.1-pe-i2i-abliterated
+offers rewriter pottokao/qwen-image-2.1-pe-t2i-abliterated
+offers rewriter qwen/qwen3.6-27b
+refuses rewriter qwen/qwen3.6-35b-a3b "is another class"
+refuses rewriter qwen/qwen3.5-9b-mtp "holds only a head"
+fits flux.3-klein/image:upsampler upsampler
+offers upsampler atomicchat/flux-3-klein-upsampler-abliterated
+offers upsampler black-forest-labs/flux-3-klein-upsampler
+refuses upsampler qwen/qwen3.5-9b-mtp "holds only a head"
+fits minimax-h3/generate:base_model h3
+offers h3 minimaxai/minimax-h3
+offers h3 sexgod1979/pinkcherry
+refuses h3 tenstrip/eros-max "lacks its text encoder's processor"
+refuses h3 qwen/qwen3.6-27b "is another model"
+before=$(cozy --json run ls --limit 0 | jq '.runs | length')
+in_project "$RUN_PROJECT" --json run qwen-image-2/image instructions=fox --model rewriter=qwen/qwen3.6-35b-a3b > "$OUT/run-unloadable.json" 2>&1 || code=$?
+{ [ "$code" != 0 ] && J '.error.code == "model_choice_unloadable" and (.error.message | test("Qwen3_5MoeForConditionalGeneration"))' "$OUT/run-unloadable.json" \
+  && [ "$(cozy --json run ls --limit 0 | jq '.runs | length')" = "$before" ]; } \
+  || check "run --model rewriter=<another class>: exit $code, not refused model_choice_unloadable before any run: $(tail -c 400 "$OUT/run-unloadable.json")"
+}
+
 # cl-854: a lock on Runtime 0.43 can't speak a 0.23 machine's executor protocol. One whose range takes the machine's
 # Runtime runs on it, its install saying to re-lock; one whose range refuses it installs nothing, refused in one line
 # naming the re-lock. Both locks are PyPI's 0.43.1 and TensorFS 0.22.1.

@@ -5,9 +5,14 @@
 //! A request place left free with nothing waiting takes the back half of the in-flight range with the most
 //! left (aria2's dynamic split, BitTorrent's end game), so a dripping object's tail gets many requests.
 //!
-//! - **Order.** The queue is a plain number, smaller first; equal numbers go in arrival order. An
-//!   object wanted twice is downloaded once. Requests take their places in line as their object
-//!   starts, so an object's ranges run together. A task nothing wants stops (cl-686).
+//! - **Order.** The queue is a plain number, smaller first; equal numbers go in arrival order. Its
+//!   high 32 bits name a job (TensorD's: a run, in job order), its low ones a part within it. An
+//!   object wanted twice is downloaded once, at the more urgent of its numbers. Requests take their
+//!   places in line as their object starts, so an object's ranges run together. A place that comes
+//!   free while an earlier job's object is still in flight takes the back half of its range instead
+//!   of starting a later job's: one job's download at a time at full speed, its tail never shared
+//!   with the next (cl-905); a job's own parts follow one another with the link full. A task nothing
+//!   wants stops (cl-686).
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every byte
 //!   enters the store's admission, which hashes it: wrong bytes are never admitted. A process sharing
 //!   the store that is fetching an object is waited for, not raced (tfs-142).
@@ -55,6 +60,11 @@ const STEAL: u64 = 512 << 10;
 const START: usize = 8;
 const WINDOW: Duration = Duration::from_millis(500);
 const GAIN: f64 = 1.1;
+
+/// The job a queue order names: its high 32 bits.
+fn job(priority: u64) -> u64 {
+    priority >> 32
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -280,11 +290,15 @@ enum FileRead {
 }
 
 /// A range in flight as its stealers see it: the bytes it reached and the byte it ends at, which a
-/// steal moves back. The object fetches what was taken (`ranges`).
+/// steal moves back. A request's has its object's task, whose order says who helps it first, and
+/// where what was taken goes (`ranges`).
 struct Flight {
     span: Mutex<(u64, u64)>,
-    taken: Option<mpsc::UnboundedSender<(u64, u64, Slot)>>,
+    taken: Option<Taken>,
 }
+
+/// A request's range's object, and where a back half taken from it goes.
+type Taken = (Arc<Task>, mpsc::UnboundedSender<(u64, u64, Slot)>);
 
 /// One range of an object, its bytes written at their offsets as they arrive (`WRITE_BYTES` at a time,
 /// off the runtime), registered among the ranges in flight while it lives.
@@ -300,7 +314,7 @@ struct Part<'s> {
 
 impl<'s> Part<'s> {
     /// A range of `[from, end)`; with `taken`, one free places may take from (a request's, not a file's).
-    fn new(shared: &'s Shared, admission: &Partial, from: u64, end: u64, taken: Option<mpsc::UnboundedSender<(u64, u64, Slot)>>) -> Result<Part<'s>> {
+    fn new(shared: &'s Shared, admission: &Partial, from: u64, end: u64, taken: Option<Taken>) -> Result<Part<'s>> {
         let stealable = taken.is_some();
         let flight = Arc::new(Flight { span: Mutex::new((from, end)), taken });
         if stealable {
@@ -594,30 +608,40 @@ impl Shared {
     /// left, while that half is at least `STEAL`; the range's own request stops where the half begins.
     fn steal(&self) {
         while let Some(slot) = self.slots.idle() {
-            let flights = lock(&self.flights).clone();
-            let most = flights.iter().max_by_key(|flight| {
-                let span = lock(&flight.span);
-                span.1.saturating_sub(span.0)
-            });
-            let Some(flight) = most else { return };
-            let mut span = lock(&flight.span);
-            let left = span.1.saturating_sub(span.0);
-            if left < 2 * STEAL {
+            if self.take_half(slot, None).is_some() {
                 return;
             }
-            let (half, end) = (span.0 + left / 2, span.1);
-            span.1 = half;
-            // Sent while the span is held: its range can't end and its object can't finish before.
-            let Some(taken) = &flight.taken else { return };
-            if let Err(error) = taken.send((half, end, slot)) {
-                span.1 = end;
-                drop(span);
-                drop(error);
-                return;
-            }
-            self.stats.steals.fetch_add(1, Ordering::Relaxed);
-            tracing::debug!(from = half, end, "a free place took the back half of a range");
         }
+    }
+
+    /// `slot` takes the back half of the in-flight range with the most left of those whose object is an
+    /// earlier job's than order `before` (of any, when None), while that half is at least `STEAL`. The
+    /// slot back when there is none.
+    fn take_half(&self, slot: Slot, before: Option<u64>) -> Option<Slot> {
+        let flights = lock(&self.flights).clone();
+        let urgent = |flight: &&Arc<Flight>| {
+            before.is_none_or(|before| flight.taken.as_ref().is_some_and(|(task, _)| job(task.priority.load(Ordering::Acquire)) < job(before)))
+        };
+        let most = flights.iter().filter(urgent).max_by_key(|flight| {
+            let span = lock(&flight.span);
+            span.1.saturating_sub(span.0)
+        });
+        let Some((flight, (_, taken))) = most.and_then(|flight| Some((flight, flight.taken.as_ref()?))) else { return Some(slot) };
+        let mut span = lock(&flight.span);
+        let left = span.1.saturating_sub(span.0);
+        if left < 2 * STEAL {
+            return Some(slot);
+        }
+        let (half, end) = (span.0 + left / 2, span.1);
+        span.1 = half;
+        // Sent while the span is held: its range can't end and its object can't finish before.
+        if let Err(error) = taken.send((half, end, slot)) {
+            span.1 = end;
+            return Some(error.0.2);
+        }
+        self.stats.steals.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!(from = half, end, "a free place took the back half of a range");
+        None
     }
 
     /// Whether a range in flight has a back half left to take.
@@ -647,17 +671,20 @@ impl Shared {
         self.slots.forget(gone);
     }
 
-    /// A place in line for `object`, joining its task when one is open.
+    /// A place in line for `object`, joining its task when one is open: at the more urgent of the two
+    /// orders, an unstarted one's place in line and a started one's claim on the places that come free.
     pub(crate) fn want(&self, object: &ObjectRef, origin: &Arc<dyn Origin>, priority: u64) -> Waiter {
         let mut queue = lock(&self.queue);
         let task = match queue.tasks.get(&object.sha256).cloned() {
             Some(task) => {
                 task.waiters.fetch_add(1, Ordering::AcqRel);
-                if priority < task.priority.load(Ordering::Acquire) && !task.started.load(Ordering::Acquire) {
+                if priority < task.priority.load(Ordering::Acquire) {
                     task.priority.store(priority, Ordering::Release);
-                    queue.seq += 1;
-                    let seq = queue.seq;
-                    queue.heap.push(Reverse((priority, seq, object.sha256.clone())));
+                    if !task.started.load(Ordering::Acquire) {
+                        queue.seq += 1;
+                        let seq = queue.seq;
+                        queue.heap.push(Reverse((priority, seq, object.sha256.clone())));
+                    }
                 }
                 task
             }
@@ -691,6 +718,23 @@ impl Shared {
             }
         };
         Waiter { answer: task.done.subscribe(), task }
+    }
+
+    /// The order of the most urgent task nobody has started that someone still wants, which stays in line.
+    fn next(&self) -> Option<u64> {
+        let mut queue = lock(&self.queue);
+        while let Some(Reverse((priority, _, sha256))) = queue.heap.peek().cloned() {
+            if let Some(task) = queue.tasks.get(&sha256).cloned() {
+                if !task.started.load(Ordering::Acquire) && task.priority.load(Ordering::Acquire) == priority {
+                    if !queue.unwanted(&task) {
+                        return Some(priority);
+                    }
+                    self.unbusy();
+                }
+            }
+            queue.heap.pop();
+        }
+        None
     }
 
     /// The most urgent task nobody has started that someone still wants.
@@ -758,6 +802,14 @@ impl Shared {
             if self.closed.load(Ordering::Acquire) {
                 return;
             }
+            // An earlier job's range in flight comes before a later job's object: the place takes its back half.
+            let permit = match self.next() {
+                Some(next) => match self.take_half(permit, Some(next)) {
+                    Some(permit) => permit,
+                    None => continue,
+                },
+                None => permit,
+            };
             // Nothing to start: the place goes back to the ranges waiting for one until a want comes.
             // Held here at the tail it starved them for good (run 32321).
             let Some(task) = self.pop() else {
@@ -765,6 +817,8 @@ impl Shared {
                 notified.await;
                 continue;
             };
+            let priority = task.priority.load(Ordering::Acquire);
+            tracing::info!(object = %task.object.sha256, bytes = task.object.length, priority, "fetching");
             let shared = Arc::clone(&self);
             tokio::spawn(async move {
                 let began = Instant::now();
@@ -780,7 +834,7 @@ impl Shared {
                         let (bytes, kept, requests) = (task.object.length, task.kept(), task.asked.load(Ordering::Relaxed));
                         let (took, range) = *lock(&task.slowest);
                         let (slowest_range_s, slowest_range_kbps) = (took.as_secs_f64(), range as f64 / took.as_secs_f64().max(1e-3) / 1e3);
-                        tracing::info!(object = %task.object.sha256, bytes, kept, ?tier, seconds = began.elapsed().as_secs_f64(), requests, slowest_range_s, slowest_range_kbps, "landed");
+                        tracing::info!(object = %task.object.sha256, bytes, kept, ?tier, seconds = began.elapsed().as_secs_f64(), requests, slowest_range_s, slowest_range_kbps, priority, "landed");
                     }
                 }
                 shared.finish(&task, outcome);
@@ -898,8 +952,9 @@ impl Shared {
 
     /// What the object lacks, as `PART` ranges side by side, each written at its offset, and the back
     /// halves free places take from them (`steal`).
-    async fn ranges(&self, task: &Task, admission: &Partial, here: &HttpLocation<'_>, first: &mut Option<Slot>) -> Result<()> {
+    async fn ranges(&self, task: &Arc<Task>, admission: &Partial, here: &HttpLocation<'_>, first: &mut Option<Slot>) -> Result<()> {
         let (taken, mut takes) = mpsc::unbounded_channel();
+        let taken = (Arc::clone(task), taken);
         let mut flying = FuturesUnordered::new();
         for (from, end) in lacking(&admission.held(), task.object.length) {
             flying.push(self.part(task, Part::new(self, admission, from, end, Some(taken.clone()))?, here, first.take()));
