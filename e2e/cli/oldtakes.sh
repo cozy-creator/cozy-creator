@@ -23,9 +23,9 @@ old --json machine show local > "$OUT/old-local.json" || { check "old takes: mac
 old --json machine update local --runtime "$OLD_RUNTIME" --tensorfs "$OLD_TENSORFS" -y > "$OUT/old-update.json" \
   || { check "old takes: its machine: $(tail -c 400 "$OUT/old-update.json") $(tail -c 300 "$OUT/cozy-old.err")"; return; }
 old --json new "$P" > "$OUT/old-new.json" || { check "old takes: new: $(tail -c 300 "$OUT/cozy-old.err")"; return; }
-printf 'version: 4\nassets:\n  card: {tool: /opt/cozy-old/draw.py/draw, instructions: A still of one colour %s.}\n' "$RANDOM" > "$OUT/old-takes.yaml"
-old_api "$P" /yaml -X PUT -H 'Content-Type: application/yaml' --data-binary "@$OUT/old-takes.yaml" > "$OUT/old-yaml.json" 2>&1 \
-  || { check "old takes: its YAML: $(tail -c 300 "$OUT/old-yaml.json")"; return; }
+old_api "$P" /assets -X POST -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg words "A still of one colour $RANDOM." '{name: "card", exact: true, tool: "/opt/cozy-old/draw.py/draw", kind: "image", fields: {instructions: $words}}')" \
+  > "$OUT/old-box.json" 2>&1 || { check "old takes: its box: $(tail -c 300 "$OUT/old-box.json")"; return; }
 for i in 1 2; do
   old_api "$P" /runs -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: old-takes-$i-$RANDOM$RANDOM" -d '{"names":["card"],"on":["local"]}' > "$OUT/old-render-$i.json" 2>&1 \
     || { check "old takes: render $i: $(tail -c 300 "$OUT/old-render-$i.json")"; return; }

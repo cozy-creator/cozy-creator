@@ -15,7 +15,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { calcifer, importYaml, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, STEP_MS } = require('./page');
+const { addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, STEP_MS } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const TOOL = `# /// script
@@ -128,7 +128,7 @@ const RECORD = () => {
 
   const tool = join(folder, `takeids_${Date.now()}.py`);
   writeFileSync(tool, TOOL);
-  importYaml(folder, `version: 4\nassets:\n  card:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n`);
+  addBoxes(folder, [{ name: 'card', tool: `${tool}/draw`, kind: 'image', fields: { instructions: 'A still of one colour.' } }]);
   const landed = (count) => until(`card's take ${count}`, asset, (row) => row?.versions === count && !row.takes?.length, FIRST_RUN_MS);
   const record = () => page.evaluate(RECORD);
   const now = () => page.evaluate(() => window.takesNow());
