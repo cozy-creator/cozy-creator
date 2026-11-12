@@ -90,6 +90,9 @@ impl Publisher {
     /// design, since packages declare a minimum and machines run the newest Torch.
     pub(crate) fn build(&self, env: &Path, project: &Project, job: &Job) -> Result<Built, Failure> {
         let _install = job.within(crate::activity::Kind::Install, project.package);
+        // One build at a time, in job order (cl-905): its tools' downloads and disk don't split with another's.
+        let said = |reason: Option<String>| job.waiting(reason);
+        let _turn = crate::line::INSTALLS.turn(job.order, &job.caller, project.label, job.stop.as_ref(), &said).ok_or_else(super::canceled)?;
         let layer = self.layer(job, None)?;
         let missed = match self.build_on(env, project, job, layer.as_deref(), &[]) {
             Err((TORCH_MISSED, missed)) => missed,

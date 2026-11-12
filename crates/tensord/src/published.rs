@@ -118,6 +118,8 @@ pub(crate) struct Request {
     pub gpus: u32,
     /// The main model's lane; empty lets the Hub pick for the hardware.
     pub lane: String,
+    /// Its place in this machine's install and download lines (`origin::priority`): its run's.
+    pub order: u64,
 }
 
 impl Request {
@@ -197,6 +199,8 @@ pub(crate) struct Job {
     pub(crate) waiting: Option<Box<dyn Fn(Option<String>) + Send + Sync>>,
     /// What the machine lists it doing now for its run (`activity`), which its stages move.
     pub(crate) within: Mutex<Option<crate::activity::Waiting>>,
+    /// Its run's place in this machine's install and download lines (`origin::priority`).
+    pub(crate) order: u64,
 }
 impl Job {
     fn set(&self, stage: String, moved: u64, total: u64) {
@@ -469,6 +473,7 @@ impl Publisher {
         let job = Job {
             observer: observe,
             stop: stop.cloned(),
+            order: request.order,
             caller: service.engine.caller_id(&run),
             waiting: (!run.is_empty()).then(|| {
                 Box::new(move |reason| {
@@ -603,11 +608,13 @@ impl Publisher {
         made
     }
 
-    /// `named` from its Hub into the store, its ref recording the pull: its tree and header, then
-    /// the `components` given (all when `None`, none when empty). Answers the bytes that came from
+    /// `named` from its Hub into the store, its ref recording the pull: its tree and header (now: a
+    /// resolution reads them), then the `components` given (all when `None`, none when empty) at
+    /// `order`, its run's place in the machine's download line. Answers the bytes that came from
     /// the Hub and from the datacenter volume, and those the store held already (`local`, as the
     /// components' walk found them). Whatever is here moves nothing.
-    fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, stop: Option<&Stop>,
+    #[allow(clippy::too_many_arguments)]
+    fn pull(&self, source: &hub::Source, named: &Named, components: Option<&[String]>, order: u64, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
         let _inventory = crate::held_models::ModelChange;
         let header = named.header()?;
@@ -650,7 +657,7 @@ impl Publisher {
         }
         let progress = Arc::new(Counted::default());
         let pulled = origin::watched(&progress, bytes, || {
-            self.machine.pull(&remote, header, components, priority::NOW, Some(progress.clone()), &stop)
+            self.machine.pull(&remote, header, components, order, Some(progress.clone()), &stop)
         });
         let pulled = pulled.map_err(failed)?;
         logged(&pulled);
@@ -658,11 +665,11 @@ impl Publisher {
         Ok(Landed { origin: structure.landed.origin + landed.origin, volume: structure.landed.volume + landed.volume, local: landed.local })
     }
 
-    /// `named` downloaded whole, as a request's weights are: what a caller asked for whole
-    /// (`cozy model download`, an adapter).
-    fn ensure(&self, source: &hub::Source, named: &Named, stop: Option<&Stop>,
+    /// `named` downloaded whole at `order`, as a request's weights are: what a caller asked for
+    /// whole (an adapter).
+    fn ensure(&self, source: &hub::Source, named: &Named, order: u64, stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync)) -> Result<Landed, Failure> {
-        self.pull(source, named, None, stop, bytes)
+        self.pull(source, named, None, order, stop, bytes)
     }
 
     /// The Hub checkpoint `header` is, as this machine pulled it (`Pulled`); none for one never
@@ -687,7 +694,7 @@ impl Publisher {
         let names: Vec<String> = checkpoints.iter().map(Named::shown).collect();
         job.stage(format!("resolving {}", names.join(" and ")));
         for named in checkpoints {
-            self.pull(source, named, Some(&[]), job.stop.as_ref(), &|_, _| ())?;
+            self.pull(source, named, Some(&[]), priority::NOW, job.stop.as_ref(), &|_, _| ())?;
         }
         Ok(())
     }
@@ -818,8 +825,8 @@ impl Publisher {
         Ok(Named { tree: held.tree, lane: held.lane, header: Some(held.header), ..named })
     }
 
-    /// A Hub checkpoint resolved (`resolve`) and downloaded into the store (a warm run's model
-    /// choice: `cozy model download`): whole, or its header and tree alone (`structure`: a
+    /// A Hub checkpoint resolved (`resolve`) and downloaded into the store at `order` (a warm run's
+    /// model choice: `cozy model download`): whole, or its header and tree alone (`structure`: a
     /// composition's base, whose components stay the Hub's). Answers what the Hub named and its
     /// bytes by where they came from (`pull`).
     #[allow(clippy::too_many_arguments)]
@@ -830,6 +837,7 @@ impl Publisher {
         named: Named,
         hardware: &Hardware,
         structure: bool,
+        order: u64,
         stop: Option<&Stop>,
         bytes: &(dyn Fn(u64, u64) + Sync),
     ) -> Result<(Named, Landed), Refused> {
@@ -837,7 +845,7 @@ impl Publisher {
         let named = self.resolve(service, source, named, hardware).map_err(failed)?;
         // Held payload bytes move nothing; resolve already checked capability-backed authority.
         let components = structure.then_some(&[][..]);
-        let moved = self.pull(source, &named, components, stop, bytes).map_err(failed)?;
+        let moved = self.pull(source, &named, components, order, stop, bytes).map_err(failed)?;
         Ok((named, moved))
     }
 
@@ -1799,7 +1807,7 @@ fn apply_adapters(
             })?;
             // An adapter is small and its view composes from all of it: it comes whole.
             let _download = job.within(crate::activity::Kind::Download, &adapter.model);
-            publisher.ensure(source, &named, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
+            publisher.ensure(source, &named, job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
             named.header()?.id()
         } else {
             // A provider-source LoRA (civitai://, hf://) is made here, normalized at ingest.
@@ -1833,7 +1841,7 @@ fn apply_adapters(
     // The view reads the base's own chunks, from this store: they come first.
     let base = object(&grant.manifest)?;
     if let (Some(pulled), Some(source)) = (publisher.pulled(&base).map_err(io_failure)?, source) {
-        publisher.ensure(source, &pulled, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
+        publisher.ensure(source, &pulled, job.order, job.stop.as_ref(), &|d, t| job.bytes(d, t))?;
     }
     // The view is composed by reference and kept in memory, never written; Load sends its bytes.
     let composed = crate::adapter::compose(store, &base, &selections)

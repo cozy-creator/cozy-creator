@@ -188,8 +188,9 @@ impl Default for Config {
     }
 }
 
-/// What a pull wants: components (all when `None`), its place in the queue (smaller first),
-/// and where it reports progress.
+/// What a pull wants: components (all when `None`), its place in the queue (smaller first; its high
+/// 32 bits its job, whose download finishes before a later job's starts), and where it reports
+/// progress.
 #[derive(Default)]
 pub struct Want<'a> {
     pub components: Option<&'a [String]>,
