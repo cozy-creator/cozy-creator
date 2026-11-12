@@ -1535,8 +1535,11 @@ fn is_local(with: &str) -> bool {
 /// If that isn't recent, it is asked again in the background.
 fn heard_of(api: &Arc<Api>, with: &str, dir: &FsPath) -> Option<Arc<Package>> {
     let local = is_local(with);
-    // Local code is its folder's: two projects' `./tool.py` are two packages.
-    let key = if local { format!("{}\n{with}", dir.display()) } else { with.to_owned() };
+    // Local code by where it is: two projects' `./tool.py` are two packages, and one absolute path is one however many projects name it.
+    let key = match local && !with.starts_with('~') && !FsPath::new(with).is_absolute() {
+        true => dir.join(with).display().to_string(),
+        false => with.to_owned(),
+    };
     let mut heard = api.projects.heard.lock().expect("heard lock");
     let entry = heard.entry(key.clone()).or_default();
     if entry.asked.is_none_or(|asked| asked.elapsed() > HEARD_FOR) {

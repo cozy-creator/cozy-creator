@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-trash|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-unused|web-ignored|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-trash|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-unused|web-ignored|web-closes|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -330,6 +330,8 @@ case $SHARD in
   web-unused) export DB_WEB=unused; parts="tools_read db_existing_web logs" ;;
   # What the Runtime leaves out of a raw request, with a note (cl-944).
   web-ignored) export DB_WEB=ignored; parts="tools_read db_existing_web logs" ;;
+  # Twenty projects closed once nothing reads them, and their memory back (web/closes.js).
+  web-closes) export DB_WEB=closes; parts="tools_read db_existing_web logs" ;;
   # The right-side panel closed by a click off it (cl-929).
   web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;
   # No New on an empty box (cl-925).
