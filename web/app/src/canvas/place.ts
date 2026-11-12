@@ -170,7 +170,7 @@ export class Placer {
       at,
       async (clear, write, pushes) => this.client.import(await this.project(), key, { source: file.sha256, name: file.name, at: clear, description, moves: pushes.moves, placed: pushes.placed }, write),
       (error) => say(`Couldn't take out ${file.name}`, error),
-      (name, _, made) => from !== undefined && number !== undefined && this.store.movedOut(from, number, name, made),
+      (name, _, made) => !file.copy && from !== undefined && number !== undefined && this.store.movedOut(from, number, name, made),
       edit,
     )
   }

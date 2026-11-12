@@ -133,7 +133,7 @@ export function makingRun(view: ElementView): number | undefined {
 export const paints = (view: ElementView, tools: Map<string, Tool>) => makes(view) && !view.asset?.timeline && tools.get(view.asset?.tool ?? "")?.makes === "image"
 
 /** Showing no picture, or its words, a box is the shape it will make, which its corner changes; showing one, it's that picture's. */
-export const reshapes = (view: ElementView) => makes(view) && !(view.asset?.kind === "image" && shownOf(view)) && (Boolean(view.hereWords) || !shownOf(view))
+export const reshapes = (view: ElementView) => makes(view) && (Boolean(view.hereWords) || !shownOf(view))
 
 /** The shape it will make: the one set, else what its tool takes with none. */
 const madeShape = (view: ElementView) => ratioOf(valueIn(view, "aspect_ratio")) ?? view.auto

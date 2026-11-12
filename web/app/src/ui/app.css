@@ -1013,7 +1013,7 @@ video.preview.on {
   width: 100%;
   height: 100%;
   min-height: 0;
-  object-fit: cover;
+  object-fit: contain;
 }
 .in-frame .mention-text {
   position: relative;
@@ -2665,8 +2665,7 @@ a.tab:hover {
 }
 .image-version-row,
 .image-navigation,
-.image-tool,
-.image-output-ratio {
+.image-tool {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -2719,18 +2718,22 @@ a.tab:hover {
   border: 1px solid var(--line);
   border-radius: var(--round);
 }
-.image-output-ratio {
-  justify-content: space-between;
-  padding-top: 6px;
-}
-.image-output-ratio select {
-  width: auto;
-}
 .media.image-asset .media-pixels > img {
   object-fit: contain;
 }
 .media.image-editing .media-pixels {
   opacity: 0.22;
+}
+.media.image-editing:has(.ghosts img) .media-pixels {
+  opacity: 0;
+}
+.image-history-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.image-history .take img {
+  object-fit: contain;
 }
 .tool:active {
   cursor: grabbing;

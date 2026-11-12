@@ -18,7 +18,7 @@ export const OPERATIONS = [
   { key: "video", label: "Video", makes: "video" },
   { key: "edit_video", label: "Edit Video", makes: "video" },
   { key: "upscale_video", label: "Upscale Video", makes: "video" },
-  { key: "timeline", label: "Timeline", makes: "video" },
+  { key: "timeline", label: "Video Timeline", makes: "video" },
   { key: "llm", label: "LLM", makes: "text" },
 ] as const
 
@@ -48,7 +48,7 @@ export function operationOf(tool: Tool): Operation | null {
 }
 
 export const modelLabel = (tool: Tool) => {
-  if (tool.id === VIDEO_EDIT_TOOL.id) return "Timeline"
+  if (tool.id === VIDEO_EDIT_TOOL.id) return "Video Timeline"
   const model = tool.model?.default?.split("@")[0]?.replace(/^_\//, "")
   return model ? `${tool.package_title || model} (${model})` : `${tool.package_title || tool.package} · ${tool.label}`
 }

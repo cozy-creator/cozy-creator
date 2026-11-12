@@ -73,6 +73,8 @@ export interface ElementView {
   name: string
   /** The operation chosen on this page; a model can support both image creation and editing. */
   operation?: Operation
+  /** The optional versions strip beside an image; closed until its counter is clicked. */
+  imageHistory?: boolean
   asset?: Asset
   entity?: Entity
   /** An entity's: how the assets it links stand, the worst of them. */
@@ -166,6 +168,8 @@ export interface CarriedFile {
   /** The box it's from, and its number there. */
   from?: string
   number?: number
+  /** A retained alternative dragged out makes an independent copy. */
+  copy?: boolean
 }
 
 /** Rows an edit pushed aside, sent with the box it makes: by name, the rows by node id, and by name the revision each was worked out from. */
