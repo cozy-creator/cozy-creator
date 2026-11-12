@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -25,6 +25,7 @@ class Run(TypedDict):
     id: str
     number: int
     target: str
+    project_id: NotRequired[str]
 
 
 class RunsPage(TypedDict):
@@ -123,24 +124,32 @@ def observed_run(body: bytes) -> Run:
     raise AssertionError("the real CLI returned no identifiable private run")
 
 
-def runs_page(prefix: str, before: int | None = None) -> RunsPage:
+def history(path: str, query: dict[str, object]) -> tuple[int, dict[str, object]]:
     # Use the installed Calcifer's ordinary authenticated API. Never save its bearer
     # or a complete private response in the proof's artifacts.
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
-    query = {"package": prefix, "limit": 1}
-    if before is not None:
-        query["before"] = before
     request = urllib.request.Request(
-        f"http://{holder['address']}/v1/runs?{urllib.parse.urlencode(query)}",
-        headers={"Authorization": f"Bearer {holder['token']}"},
+        f"http://{holder['address']}{path}?{urllib.parse.urlencode(query)}",
+        headers={"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3"},
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            return cast(RunsPage, json.load(response))  # cast: the runs route's JSON
+            return response.status, json.load(response)
     except urllib.error.HTTPError as error:
-        raise AssertionError(f"the authenticated private history query returned HTTP {error.code}") from None
+        return error.code, json.load(error)
     except urllib.error.URLError:
         raise AssertionError("the authenticated private history query could not reach Calcifer") from None
+
+
+def runs_page(prefix: str, project_id: str | None, before: int | None = None) -> RunsPage:
+    """One run of `prefix` per page: the project's history route, or with no project Calcifer's own."""
+    query: dict[str, object] = {"package": prefix, "limit": 1}
+    if before is not None:
+        query["before"] = before
+    route = f"/v1/projects/{urllib.parse.quote(project_id, safe='')}/runs" if project_id else "/v1/runs"
+    status, body = history(route, query)
+    assert status == 200, f"the authenticated private history query returned HTTP {status}"
+    return cast(RunsPage, body)  # cast: the runs route's JSON
 
 
 def target_history(cli: Path, output: Path, label: str, proof: TargetProof, *, locked: bool = False) -> list[str]:
@@ -149,25 +158,30 @@ def target_history(cli: Path, output: Path, label: str, proof: TargetProof, *, l
     prefix = target[:-8]
     listed = json.loads(command(cli, output, label, "run", "ls", "--all", "--package", prefix, "--limit", "0"))
     rows = listed["runs"]
+    # A project's runs live in its own journal, never in Calcifer's global history.
+    page = runs_page(prefix, None)
+    assert not page["runs"] and page["older"] == 0, "private target history reached Calcifer's global history"
     if locked:
         assert not rows and listed["older"] == 0, "locked private target history remained visible through the CLI"
-        page = runs_page(prefix)
-        assert not page["runs"] and page["older"] == 0, "locked private target history remained visible through the API"
+        status, body = history(f"/v1/projects/{urllib.parse.quote(proof['project_id'], safe='')}/runs", {"package": prefix, "limit": 1})
+        refusal = body.get("error")
+        assert status == 409 and isinstance(refusal, dict) and refusal.get("code") == "project_locked" and "runs" not in body, "locked private target history remained visible through the API"
         return []
     ids = [row["id"] for row in rows]
     assert set(proof["ids"]).issubset(ids), "authorized private target history lost an original run"
     assert all(row["target"] == target for row in rows), "private prefix query returned an unrelated target"
+    assert all(row.get("project_id") == proof["project_id"] for row in rows), "private target history listed another project's run"
     assert len(ids) == len(set(ids)), "private target history duplicated a run"
     assert [row["number"] for row in rows] == sorted((row["number"] for row in rows), reverse=True), "private target history is not newest first"
     assert listed["older"] == 0, "the CLI did not finish its requested complete private history"
     before = None
     for index, expected in enumerate(rows):
-        page = runs_page(prefix, before)
+        page = runs_page(prefix, proof["project_id"], before)
         assert len(page["runs"]) == 1 and page["runs"][0]["id"] == expected["id"], "private target cursor skipped or repeated a run"
         assert page["runs"][0]["target"] == target, "private target cursor returned an unrelated run"
         assert page["older"] == len(rows) - index - 1, "private target pagination counted unrelated or unreadable rows"
         before = expected["number"]
-    page = runs_page(prefix, before)
+    page = runs_page(prefix, proof["project_id"], before)
     assert not page["runs"] and page["older"] == 0, "private target pagination did not end"
     (output / f"{label}-receipt.json").write_text(json.dumps({"prefix_filter": True, "cursor_pages": len(rows), "exact_older": True, "retained_run_ids": ids}, indent=2))
     return ids
@@ -257,7 +271,9 @@ def ''' + target_canary + '''(payload: Request, out: Outputs) -> Answer:
     assert any(contains(path, markers) for path in files if ".vault-machine" in path.parts), "no protected machine journal/source/result was retained"
     store = Path(os.environ.get("TENSORFS_HOME", str(Path.home() / ".cache/tensorfs")))
     roots = [home, store, project]
-    exclusions = [home / "calcifer/vaults", args.out.resolve()]
+    # The view is mounted inside the project: its decrypted window, not storage. Its backing is scanned.
+    assert os.path.ismount(view), "the live vault view is not a mount"
+    exclusions = [home / "calcifer/vaults", args.out.resolve(), view]
     leaked, checked = scan(roots, exclusions, stamp, markers)
     (args.out / "scan.json").write_text(json.dumps({"checked_new_or_modified_files": checked, "leaked_paths": leaked}, indent=2))
     assert not leaked, "private test markers reached global plaintext storage; see scan.json"
