@@ -718,6 +718,11 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
       {busy && <OnItsWay view={view} name={name} number={run} />}
       {asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
+      {asset?.kind === "video" && tools.get(asset.tool ?? "")?.pickup && !view.hereWords && shown && <button type="button" className="image-edit-action video-pickup-action nodrag nopan" onClick={(event) => {
+        event.stopPropagation()
+        const playing = event.currentTarget.closest(".media")?.querySelector<HTMLVideoElement>("video.live")
+        void store.beginVideoPickup(name, playing?.currentTime ?? view.scrub ?? 0)
+      }}>Pick up from here</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit: open it and drag to turn">

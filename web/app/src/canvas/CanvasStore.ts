@@ -30,7 +30,7 @@ import { Field, fit, type Give, GLIDE_MS, pushAside } from "./clear"
 import { type Box, homesFor, readsOf, warningsOf } from "./graph"
 import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo, shapesOf, snapped } from "./controls"
-import { angleOf, baseOf } from "./ranges"
+import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
 import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, madeHere, makes, NARROWEST, paints, ratioOf, refusal, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
@@ -105,6 +105,9 @@ export interface ElementView {
   here?: boolean
   /** Worked on where it stands, and showing its words, not a take. */
   hereWords?: boolean
+  /** A new draft keeps this version's prefix while regenerating from its original beat clock. */
+  continuing?: Pickup
+  continuingFps?: number
   run?: Run
   /** What's typed and not saved, by field. A card culled away keeps it here. */
   drafts?: Record<string, unknown>
@@ -895,7 +898,7 @@ export class CanvasStore {
           if (newest && !view.asset?.prefixes?.length && view.here && view.hereWords && !view.drafts && !asset.timeline && !paints(view, this.tools.get())) change.hereWords = undefined
           // The take it was rendered to look at landed, with nothing newer being made: it's the one looked at.
           const seen = watched({ ...view, asset })
-          if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number })
+          if (seen?.number !== undefined) Object.assign(change, { watchFrom: undefined, watchRun: undefined, viewed: seen.number === asset.version ? undefined : seen.number, ...(asset.kind === "video" ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
           // Bind a queued preview to its run and retain it through the gap between execution and the version landing.
           else if (seen?.run !== undefined) {
             const status = this.runs.get(seen.run)?.status
@@ -1281,7 +1284,7 @@ export class CanvasStore {
   pickTake(name: string, number: number) {
     const asset = this.get(name)?.asset
     if (!asset) return
-    this.patch(name, { watchRun: undefined, watchFrom: undefined, ...(asset.kind === "image" ? { hereWords: undefined } : {}) })
+    this.patch(name, { watchRun: undefined, watchFrom: undefined, ...(["image", "video"].includes(asset.kind) ? { hereWords: undefined, continuing: undefined, continuingFps: undefined } : {}) })
     this.view(name, number === asset.version ? undefined : number)
     if (asset.kind === "image") return
     if (!asset.tool || asset.timeline) return
@@ -1331,12 +1334,36 @@ export class CanvasStore {
     this.patch(name, { hereWords: undefined })
   }
 
+  /** Restore this take's authoring fields before continuing from the displayed playhead. */
+  async beginVideoPickup(name: string, seconds: number) {
+    const key = this.resolveName(name)
+    const view = this.get(key)
+    const shown = view && shownOf(view)
+    const tool = this.tools.get().get(view?.asset?.tool ?? "")
+    if (!view?.asset || shown?.field !== "video" || shown.number === undefined || !tool?.pickup || !this.projectId) return
+    const number = shown.number
+    try {
+      const source = (await this.client.asset(this.projectId, key)).versions.find((version) => version.number === number)
+      const now = this.get(key)
+      if (!now || shownOf(now)?.number !== number) return
+      const fields = source && "fields" in source ? source.fields : undefined
+      if (fields && typeof fields === "object" && !Array.isArray(fields)) {
+        const saved = fields as Record<string, unknown>
+        for (const field of new Set([...tool.fields.map((field) => field.field), "models", "lora"])) this.setDraft(key, field, saved[field] ?? null)
+      }
+      const fps = shown.fps ?? FPS
+      const frame = pickupAt(Math.round(Math.max(0, seconds) * fps), framesIn(shown.duration_ms, fps), tool.pickup)
+      this.patch(key, { hereWords: true, watchFrom: undefined, watchRun: undefined, continuing: frame ? { take: `<${key}.${number}>`, out_frame: frame, beats_from: frame / fps } : undefined, continuingFps: fps })
+      this.focusing = key
+    } catch (error) { say("Couldn't load this video's prompts", error) }
+  }
+
   /** Looks at a take still being made: the run picked, or with none the next one asked. Its tile is picked, its progress on the frame. */
   watchTake(name: string, run?: number) {
     const asset = this.get(name)?.asset
     if (!asset) return
     const runs = [...(asset.making ?? []), ...(asset.prefixes ?? []).map((held) => held.run ?? 0)]
-    this.patch(name, { hereWords: undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
+    this.patch(name, { hereWords: asset.kind === "video" || undefined, viewed: undefined, watchRun: run, watchFrom: run === undefined ? Math.max(0, ...runs) : undefined })
   }
 
   seek(name: string, at: number) {
@@ -1353,6 +1380,9 @@ export class CanvasStore {
     const view = this.views.get(key)
     const asset = view?.asset
     if (!asset || view.conflict) return
+    if (!also.pickup && view.continuing) also = { ...also, pickup: view.continuing }
+    const tool = this.tools.get().get(asset.tool ?? "")
+    if (tool?.package.split("/").at(-1) === "minimax-h3" && tool.fields.some((field) => field.field === "turbo")) this.setDraft(key, "turbo", true)
     const on = here || madeHere(asset.tool) ? ["local"] : this.machines()
     const saved = this.save(key)
     if (!on.length) {
@@ -2092,11 +2122,15 @@ export class CanvasStore {
       }
       // What its tool's words don't take is refused, saying why, unless it merges in as one of its own.
       const tool = this.tools.get().get(view?.asset?.tool ?? "")
-      const merges = (one: ElementView | undefined) => Boolean(view?.asset && holdsPictures(view.asset) && one?.asset?.kind === view.asset.kind)
+      const merges = (one: ElementView | undefined) => Boolean(view?.asset && !view.asset.tool && holdsPictures(view.asset) && one?.asset?.kind === view.asset.kind)
       const refused = names.map((one) => this.get(one)).map((one) => (merges(one) ? null : refusal(tool, one))).find(Boolean)
       if (refused) {
         this.setHot(name, refused)
         return { over: () => {}, drop: () => void say(refused) }
+      }
+      if (view?.asset?.kind === "image" && view.asset.tool) {
+        this.setHot(name)
+        return { over: () => {}, drop: (names) => this.takeInto(name, names) }
       }
       // A box of pictures takes a box of the same kind: it merges in.
       if (view?.asset && holdsPictures(view.asset) && !view.asset.timeline && !madeHere(view.asset.tool)) {
