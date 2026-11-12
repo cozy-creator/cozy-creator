@@ -226,9 +226,14 @@ web_deleted() {
 web_undo_window() {
   local config=$HOME/.cozy/config.toml pid
   awk -v n="$2" '/^undo_seconds *=/ { next } { print } /^\[calcifer\]/ && n != "" { print "undo_seconds = " n; put = 1 } END { if (n != "" && !put) printf "\n[calcifer]\nundo_seconds = %s\n", n }' "$config" > "$config.next" && mv "$config.next" "$config"
+  local waited=0
   pid=$(jq -r .pid < "$1")
   kill -TERM "$pid" 2> /dev/null || true
-  while kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
+  # One still running 120 s on is a failure, not a hang.
+  while kill -0 "$pid" 2> /dev/null; do
+    [ "$waited" -lt 600 ] || { check "Calcifer $pid still runs 120 s after SIGTERM"; kill -9 "$pid" 2> /dev/null; break; }
+    sleep 0.2; waited=$((waited + 1))
+  done
   [ -z "${3:-}" ] || "$3"
   bash -c "$(web_start)" || true
 }

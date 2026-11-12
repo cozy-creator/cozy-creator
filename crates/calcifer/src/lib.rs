@@ -100,6 +100,8 @@ pub(crate) struct Calcifer {
     events: broadcast::Sender<(RunId, Event)>,
     live: Mutex<HashMap<RunId, Live>>,
     drivers: Mutex<HashMap<RunId, Arc<Notify>>>,
+    /// Runs told to cancel whose request is still to be kept: a project's edit held its writer when it asked.
+    canceling: Mutex<HashSet<String>>,
     machines: Mutex<HashMap<String, Machine>>,
     tasks: Mutex<JoinSet<()>>,
     /// Orders staging a run's inputs against deleting a settled run's.
@@ -263,6 +265,7 @@ impl Calcifer {
             events: broadcast::channel(4096).0,
             live: Mutex::default(),
             drivers: Mutex::default(),
+            canceling: Mutex::default(),
             machines: Mutex::default(),
             tasks: Mutex::default(),
             staging: Mutex::default(),
@@ -766,7 +769,20 @@ impl Calcifer {
     }
 
     /// Asks for the run's cancellation: unsent, it ends here; sent, its machine ends it.
-    pub(crate) fn cancel(&self, id: &RunId) -> Result<Option<Run>, Error> {
+    pub(crate) fn cancel(self: &Arc<Self>, id: &RunId) -> Result<Option<Run>, Error> {
+        if let store::RunStore::Project(store) = self.run_store(id.as_str())? && store.acting() {
+            // Asked from inside the project's own edit (a delete of what the run makes), which holds its writer until it commits:
+            // its machine is told now, and the request is kept once the edit lets the writer go.
+            lock(&self.canceling).insert(id.as_str().to_owned());
+            self.wake(id);
+            let (me, id) = (self.clone(), id.clone());
+            std::thread::spawn(move || {
+                if let Ok(events) = me.with_run_store(id.as_str(), |store| store.request_cancel(id.as_str())) { me.publish(&id, events); }
+                lock(&me.canceling).remove(id.as_str());
+                me.wake(&id);
+            });
+            return Ok(None);
+        }
         let events = self.with_run_store(id.as_str(), |store| store.request_cancel(id.as_str()))?;
         self.publish(id, events);
         self.wake(id);
@@ -1880,7 +1896,7 @@ impl Calcifer {
                         if run.state == State::Settled {
                             return Ok(()); // ended here: its machine was lost
                         }
-                        if run.cancel_requested && !canceled {
+                        if (run.cancel_requested || lock(&self.canceling).contains(id.as_str())) && !canceled {
                             link.cancel(&run.sent_id()).await?;
                             canceled = true;
                         }
