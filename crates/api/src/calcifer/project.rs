@@ -976,11 +976,12 @@ pub struct Runs {
     /// The new version is approved when it lands; only with `n` 1.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// Make only what has no state, rather than a new version.
+    /// Bring them up to date (`cozy render`), rather than a new version of each: `n` of each named that has no state, none of one
+    /// being made (it's joined), and what they read with no state first, a cut's too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub missing: bool,
-    /// With `all`: also make a new version of each pin that is out of date when its turn comes in reading order, which goes when that
-    /// lands. The version it held stays, to be approved again.
+    /// Also make a new version of each pin out of date, when its turn comes in reading order: with `all`, every one; else those named
+    /// and what they read. What reads it in this render reads that; the version it held stays approved.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outdated: bool,
     /// Pick up from here: one box's new take goes on from this take's frame.

@@ -101,6 +101,8 @@ pub(crate) struct Named {
     pub key: String,
     pub asset: String,
     pub approve: bool,
+    /// What it reads with no state renders first, a cut's too (`cozy render`): a cut named otherwise cuts what stands.
+    pub covers: bool,
 }
 
 /// What a render owes as it stands: what it asked, less what it has sent.
@@ -233,8 +235,8 @@ impl Graph {
         for &i in order.iter().rev() {
             let node = &nodes[i];
             let named = !taken[i].is_empty();
-            // Naming a cut cuts what stands, free: it pays for nothing it reads.
-            covered[i] |= named && !node.free;
+            // Naming a cut cuts what stands, free: it pays for nothing it reads, unless its take covers what it reads.
+            covered[i] |= named && (!node.free || taken[i].iter().any(|take| take.covers));
             if covered[i] && (!holds[i] || named || (node.free && !node.pinned)) {
                 for &read in &node.reads {
                     covered[read] = true;
