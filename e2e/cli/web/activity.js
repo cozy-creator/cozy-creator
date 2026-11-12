@@ -152,13 +152,13 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const faces = said.faces.waits ?? [];
   const firstOf = (test) => faces.findIndex(test);
   const installs = firstOf((face) => /^Installing activity_\d+/.test(face.says));
-  const tokens = firstOf((face) => /^Rewriting prompt: \d+ tokens$/.test(face.says));
+  const tokens = firstOf((face) => /^Rewriting prompt: \d+ tokens?$/.test(face.says));
   const steps = firstOf((face) => /^Segment 1 of 2: Denoising - Step \d \/ 4$/.test(face.says));
   const frames = firstOf((face) => /^Segment 2 of 2: Decoding video - Frame \d+ \/ 12$/.test(face.says));
   check('face_never_wordless', faces.length > 0 && faces.every((face) => face.says.trim()), faces);
   check('face_phases_in_order', installs >= 0 && tokens > installs && steps > tokens && frames > steps, { installs, tokens, steps, frames, faces });
   // Each stage says what it counts: a decode's tokens, never steps; frames; steps only where it denoises (Paul, 11-12).
-  check('face_counts_tokens_not_steps', faces.filter((face) => /Rewriting prompt/.test(face.says)).every((face) => /^Rewriting prompt: \d+ tokens$/.test(face.says)), faces);
+  check('face_counts_tokens_not_steps', faces.filter((face) => /Rewriting prompt/.test(face.says)).every((face) => /^Rewriting prompt: \d+ tokens?$/.test(face.says)), faces);
   check('face_denoise_only_denoising', faces.every((face) => !/denois/i.test(face.says) || /^Segment [12] of 2: Denoising( - Step \d \/ 4)?$/.test(face.says)), faces.filter((face) => /denois/i.test(face.says)));
   check('face_decodes_frames', faces.some((face) => /^Segment [12] of 2: Decoding video - Frame \d+ \/ 12$/.test(face.says)) && !faces.some((face) => /Decoding video.*Step/.test(face.says)), faces);
   // The bar and the time left are the whole render's: in its second part the bar is past half of it, never back to a part's start.
