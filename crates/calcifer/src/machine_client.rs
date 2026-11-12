@@ -134,6 +134,7 @@ impl Machine {
 
     /// Feature/authentication probe before any private file bytes cross the wire.
     pub(crate) async fn probe_private(&self) -> Result<(), Error> {
+        self.migrate_private().await?;
         let capability: api::machine::ProjectExecutionCapabilities =
             json(send(self.request(Method::GET, path::HEALTH, &[])).await?).await?;
         if !capability.ready() {
@@ -144,7 +145,18 @@ impl Machine {
         Ok(())
     }
 
+    pub(crate) async fn migrate_private(&self) -> Result<(), Error> {
+        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("migration requires a selected project proof".into()))?;
+        send(self.request(Method::POST, path::PROJECT_MIGRATE, &[&scope.storage.project_id])).await.map(|_| ())
+    }
+
+    pub(crate) async fn migration_receipt(&self) -> Result<api::machine::ProjectExecutionMigrationReceipt, Error> {
+        let scope = self.private.as_ref().ok_or_else(|| Error::Answer("migration coverage requires a selected project proof".into()))?;
+        json(send(self.request(Method::GET, path::PROJECT_MIGRATE, &[&scope.storage.project_id])).await?).await
+    }
+
     pub(crate) async fn close_private(&self) -> Result<(), Error> {
+        self.migrate_private().await?;
         let scope = self.private.as_ref().ok_or_else(|| Error::Answer("closing private storage requires a selected project".into()))?;
         send(self.request(Method::POST, path::PRIVATE_CLOSE, &[&scope.storage.project_id])).await.map(|_| ())
     }

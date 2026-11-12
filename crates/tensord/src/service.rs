@@ -44,6 +44,7 @@ pub(crate) struct Service {
     dispatcher: Mutex<Option<std::thread::JoinHandle<()>>>,
     reclaimer: Mutex<Option<std::thread::JoinHandle<()>>>,
     project_scope: Option<api::machine::LocalPrivateStorage>,
+    project_admitted: std::sync::atomic::AtomicBool,
     stopped: Mutex<bool>,
     retained: Mutex<HashMap<String, Arc<File>>>,
     pool: Mutex<Option<Arc<Pool>>>,
@@ -142,6 +143,7 @@ impl Service {
             parallelism,
             shared_pool: project_scope.is_some(),
             project_scope: project_scope.clone(),
+            project_admitted: std::sync::atomic::AtomicBool::new(project_scope.is_none()),
             dispatcher: Mutex::default(),
             reclaimer: Mutex::default(),
             stopped: Mutex::new(false),
@@ -182,6 +184,11 @@ impl Service {
         *service.reclaimer.lock().unwrap() = Some(std::thread::Builder::new().name("machine-reclaim".into()).spawn(move || Self::reclaim_loop(weak))?);
         Ok(service)
     }
+    pub(crate) fn admit_project(&self) {
+        self.project_admitted.store(true, std::sync::atomic::Ordering::Release);
+        self.engine.notify_activity();
+    }
+    pub(crate) fn pause_project(&self) { self.project_admitted.store(false, std::sync::atomic::Ordering::Release); }
     /// The executor pool every run runs on, once configured.
     pub(crate) fn pool(&self) -> Option<Arc<Pool>> {
         self.pool.lock().unwrap().clone()
@@ -381,6 +388,7 @@ impl Service {
             std::thread::sleep(std::time::Duration::from_millis(500));
             match weak.upgrade() {
                 Some(service) if !*service.stopped.lock().unwrap() => {
+                    if !service.project_admitted.load(std::sync::atomic::Ordering::Acquire) { continue; }
                     // The first once its packages are configured, so the disk is measured early.
                     let due = swept.map_or_else(|| service.publisher.lock().unwrap().is_some(), |at| at.elapsed() >= SWEEP_EVERY);
                     if due {
@@ -610,7 +618,7 @@ impl Service {
     /// its place in line.
     fn dispatch_ready(&self) -> io::Result<()> {
         let stopped = self.stopped.lock().unwrap();
-        if *stopped {
+        if *stopped || !self.project_admitted.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(());
         }
         let Some(pool) = self.pool() else {

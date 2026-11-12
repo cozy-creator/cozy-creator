@@ -60,6 +60,7 @@ pub(crate) struct Engine {
     scheduler: Mutex<HashMap<u64, u64>>,
     project: Option<api::machine::LocalPrivateStorage>,
     machine_activity: OnceLock<Weak<Engine>>,
+    runtime_namespace: String,
 }
 
 /// One run's preparation, registered while it lasts: its cancel stops `stop`, which ends the
@@ -192,6 +193,7 @@ impl Engine {
             scheduler: Mutex::default(),
             project: crate::private_io::current(),
             machine_activity: OnceLock::new(),
+            runtime_namespace: crate::uuid::simple(),
         }))
     }
 
@@ -207,10 +209,22 @@ impl Engine {
         self.scheduler.lock().unwrap().iter().find_map(|(root, key)| (*key == scheduler).then_some(*root))
     }
     pub(crate) fn scheduler_family(&self, family: Option<&str>) -> Option<String> {
-        family.map(|family| format!("{}:{family}", self.workspace_id()))
+        family.map(|family| format!("{}:{family}", self.runtime_namespace))
     }
-    pub(crate) fn resource_id(&self, id: &str) -> String { format!("{}:{id}", self.workspace_id()) }
+    pub(crate) fn resource_id(&self, id: &str) -> String { format!("{}:{id}", self.runtime_namespace) }
+    pub(crate) fn runtime_namespace(&self) -> &str { &self.runtime_namespace }
 
+    pub(crate) fn needs_project_migration_from(&self, ordinary: &Engine, project: &str) -> io::Result<bool> {
+        let source = ordinary.journal.lock().unwrap();
+        let target = self.journal.lock().unwrap();
+        source.needs_project_migration(&target, project)
+    }
+    pub(crate) fn migrate_project_from(&self, ordinary: &Engine, scope: &api::machine::LocalPrivateStorage, logs: &Path) -> io::Result<()> {
+        // One writer per journal; global first is the only migration lock order.
+        let mut source = ordinary.journal.lock().unwrap();
+        let mut target = self.journal.lock().unwrap();
+        source.migrate_project_into(&mut target, scope, logs, ordinary.root.parent().unwrap_or(&ordinary.root), &ordinary.store)
+    }
     /// Registers run `id`'s preparation until the answer is dropped. A cancel journaled before
     /// it registered stops it at once.
     /// A verified scope rebind may resume a queued preparation exactly once.

@@ -1,5 +1,7 @@
 //! Durable acceptance and transitions. Observation has no lifecycle side effects.
 use platform::process::Birth;
+mod project_migration;
+mod project_inventory;
 use crate::private_journal;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};

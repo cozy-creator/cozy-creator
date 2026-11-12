@@ -1395,7 +1395,7 @@ impl Pool {
         let engines: Vec<_> = self.engines.lock().unwrap().iter().filter_map(Weak::upgrade).collect();
         for key in runs {
             for engine in &engines {
-                if let Some(id) = key.strip_prefix(&format!("{}:", engine.workspace_id())) {
+                if let Some(id) = key.strip_prefix(&engine.resource_id("")) {
                     engine.fault(id, Failure::machine("gpu_fault", fault.to_string()));
                 }
             }
@@ -3102,7 +3102,7 @@ impl Pool {
     }
 
     pub(crate) fn forget_project_measurements(&self, engine: &Engine) {
-        for gpu in self.devices.iter().filter_map(|device| device.memory.as_ref()) { gpu.figures.forget_project(&engine.workspace_id()); }
+        for gpu in self.devices.iter().filter_map(|device| device.memory.as_ref()) { gpu.figures.forget_project(engine.runtime_namespace()); }
     }
     /// The caller first proves this project has no active work/finalization. Public executors are untouched.
     pub(crate) fn close_private_namespace(&self, scope: &api::machine::LocalPrivateStorage) -> io::Result<()> {
