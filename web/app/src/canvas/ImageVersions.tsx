@@ -13,7 +13,7 @@ export function ImageVersions({ name, view, width }: { name: string; view: Eleme
   const tools = useSignal(store.tools)
   const [modelsOpen, setModelsOpen] = useState(false)
   const asset = view.asset
-  if (!asset || (asset.kind !== "image" && asset.kind !== "video")) return null
+  if (!asset?.tool || (asset.kind !== "image" && asset.kind !== "video")) return null
   const tool = asset.tool ? tools.get(asset.tool) : undefined
   const word = tool ? modelLabel(tool) : asset.tool ? `${asset.kind === "video" ? "Video" : "Image"} tool` : undefined
   return (
