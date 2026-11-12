@@ -67,9 +67,9 @@ const FIELD = { png: 'image', jpg: 'image', mp4: 'video', wav: 'audio' };
 const constants = (folder) => {
   const found = {};
   const files = readdirSync(folder).includes('files') ? readdirSync(join(folder, 'files')) : [];
-  // A box that only approves a file.
+  // A box that only approves a file: an import writes its version's number and its kind beside it.
   for (const [name, fields] of Object.entries(storedOf(folder))) {
-    if (Object.keys(fields).join() !== 'approved') continue;
+    if (Object.keys(fields).filter((field) => !['selected_version', 'node_kind'].includes(field)).join() !== 'approved') continue;
     const hash = String(fields.approved);
     found[name] = { field: FIELD[files.find((file) => file.startsWith(hash))?.split('.').pop()], hash };
   }

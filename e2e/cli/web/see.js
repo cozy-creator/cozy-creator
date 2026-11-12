@@ -179,7 +179,10 @@ async function rest(page, handle) {
   // Calcifer's frame, are given the kind they make.
   const local = (await api('/v1/status')).local_usable && !process.env.ALONE;
   const draw = join(__dirname, '..', 'project', 'draw.py');
+  // What a box reads is made before it, so each lands to the right of what it reads.
   addBoxes(folder, [
+    { name: 'hero', kind: 'image', fields: { approved: prefix, description: 'A hero of few words.' } },
+    { name: 'older', kind: 'image', fields: { approved: olderPrefix, description: 'The same hero, older.' } },
     { name: 'shot', tool: 'see-no-such-package/shoot', kind: 'image', fields: { summary: '<hero> looks hard at <clip>.', beats: [{ duration: 4, description: '<older> waits on the shore.' }, { duration: 3, description: 'It goes on.' }] } },
     { name: 'picture', tool: 'cozy/frame', kind: 'image', fields: { video: '<clip>', at: 0.5 } },
     { name: 'edit', tool: 'cozy/edit', fields: { tracks: [{ clips: ['<clip>', '<clip_b>'] }] } },
@@ -187,8 +190,6 @@ async function rest(page, handle) {
     { name: 'hollow_thing', fields: { text: 'Nothing makes this.' } },
     { name: 'needs', tool: 'cozy/frame', kind: 'image', fields: { video: '<hollow_thing>' } },
     ...(local ? [{ name: 'card', tool: `${draw}/draw`, fields: { instructions: 'A still of one colour.' } }] : []),
-    { name: 'hero', kind: 'image', fields: { approved: prefix, description: 'A hero of few words.' } },
-    { name: 'older', kind: 'image', fields: { approved: olderPrefix, description: 'The same hero, older.' } },
   ]);
   const named = ['hero_art', 'older_art', 'sea_sound', 'clip', 'clip_b', 'dark_open', 'shot', 'picture', 'edit', 'odd', 'hollow_thing', 'needs', 'hero', 'older', ...(local ? ['card'] : [])];
 
