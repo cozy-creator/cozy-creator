@@ -136,3 +136,31 @@ returns exact public bootstrap run IDs plus source/interface hashes. It neither 
 reclassifies history or caches. Any explicitly authorized public-only reset belongs before
 creation of every project/canary; never use the normal isolated.sh end-of-seed home reset
 between private writer and candidate migration phases.
+
+The standalone `legacy.sh` command takes skew's `OUT OLD_COZY RUNTIME TENSORFS`
+arguments followed by `--candidate NEW_COZY --ready-file READY.json`. Bootstrap
+skew with the checksum-verified released 0.24.0 executable via `--cozy-bin`,
+`--admin`, and `--command e2e/cli/containment/legacy.sh`; pass the candidate only
+after `--`. The coordinator must disable skew's mixed machine-log capture for
+this privacy command. `scan.py` from the composed containment fixture is required.
+
+On a fresh GitHub-hosted runner, before any canary or project exists, the command
+verifies that the only old controller runs are the exact public publication IDs,
+all settled typed package-publication jobs, and that the project index is empty.
+After proving both old writer locks/process cohorts stopped, it performs the
+explicitly approved public-only reset of exact controller SQL/code/input/after and
+digest-cache paths. Account keys, machine identity and installed tools survive.
+No reset is allowed after the first project is created.
+
+The actual released writer then records successful and failed published CPU runs,
+File inputs, stdout/failure logs, output bytes, and a known original idempotent ask.
+The candidate sees the same real V7 home after both old cohorts stop. Real SQLite
+contention keeps the first automatic adoption pending; a native, TLS-pinned,
+owner-signed request proves that a wrong actual worker binding refuses while both
+canonical legacy sources survive. Ordinary project history then drives the real
+binding bridge and verifies exact numbers/keys/digests/cursors/log/output rows,
+inside input closure, and unchanged worker attempt/acceptance/start/finish facts.
+An actual old client is refused. Finally the command encrypts, locks, scans outside
+storage, moves the encrypted folder, cold-unlocks, verifies history and the same
+old request retry, then locks and scans again. The only retained outside result is
+the sanitized `legacy-receipt.json`; this source preparation is not execution proof.
