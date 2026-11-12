@@ -44,12 +44,16 @@ def main() -> None:
         except ProcessLookupError:
             break
         time.sleep(0.1)
-    parent = project.parent
-    stages = sorted(path.name for path in parent.glob(".cozy-vault-stage-*"))
-    receipts = sorted(path.name for path in parent.glob(".cozy-vault-*.transaction.json"))
-    runtime = sorted(path.name for path in (Path.home() / ".cozy/calcifer/vaults").glob("stage-*"))
-    assert len(stages) == 1 and len(receipts) == 1, f"no half-made stage to recover: {stages} {receipts}"
-    print(json.dumps({"interrupted": seen, "stages": len(stages), "receipts": len(receipts), "runtime": len(runtime)}))
+    # A conversion is contained in its project: its stage, the source it moves aside, its receipt and its mounts.
+    stages = sorted(path.name for path in project.glob(".cozy-vault-stage-*"))
+    sources = sorted(path.name for path in project.glob(".cozy-project-source-*"))
+    receipt = (project / ".vault-transition.json").is_file()
+    runtime = sorted(path.name for path in project.glob(".cozy-vault-stage-*/.vault-runtime/*") if path.is_dir())
+    assert len(stages) == 1 and len(sources) == 1 and receipt, f"no half-made stage to recover: {stages} {sources} {receipt}"
+    outside = sorted(str(path) for path in [*project.parent.glob(".cozy-vault-*"), *project.parent.glob(".cozy-project-source-*"),
+                                            *(Path.home() / ".cozy/calcifer/vaults").glob("stage-*")])
+    assert not outside, f"the conversion wrote outside its project: {outside}"
+    print(json.dumps({"interrupted": seen, "stages": len(stages), "sources": len(sources), "receipts": int(receipt), "runtime": len(runtime)}))
 
 
 if __name__ == "__main__":

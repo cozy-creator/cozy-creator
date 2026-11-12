@@ -224,13 +224,23 @@ vault_leftovers() (
   work=$(mktemp -d "$OUT/vault-leftovers.XXXXXX")
   secrets=$(mktemp -d "$OUT/vault-leftovers-credentials.XXXXXX")
   L=$work/leftovers fake=$work/.cozy-project-source-planted copy=$work/leftovers-copy
-  trap 'in_project "$L" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  # A Calcifer the interrupt killed starts again before anything else reads this folder: its start detaches the
+  # conversion's dead mount and recovers the stage. A mount a failed recovery left (its checks already failed) would
+  # break the artifact upload, so it is detached last.
+  trap 'cozy --json machine ls > /dev/null 2>&1 || true; in_project "$L" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"
+    mounts | while IFS= read -r m; do fusermount3 -uz "$m" 2> /dev/null || fusermount -uz "$m" 2> /dev/null || true; done' EXIT
   printf '%s\n' 'synthetic leftovers passphrase' > "$secrets/pass"
   chmod 600 "$secrets/pass"
-  # What a conversion may leave: its stage, the original it moves aside, its receipt and its mounts' folders.
+  # Encrypted views mounted under the fixture, live or dead.
+  mounts() { awk '$0 ~ / - fuse\.securefs / {print $5}' /proc/self/mountinfo | grep -F -- "$work/" || true; }
+  # What a conversion may leave: in the project, its stage, the original it moves aside, its receipt and its mounts'
+  # runtime folders; beside it or in Calcifer's home, where conversions once staged, anything; and any mount.
   left() {
-    find "$work" -maxdepth 1 \( -name '.cozy-vault-stage-*' -o -name '.cozy-project-source-*' -o -name '.cozy-vault-*.transaction.json' \) -print
+    find "$L" -maxdepth 1 \( -name '.cozy-vault-stage-*' -o -name '.cozy-project-source-*' -o -name '.vault-transition.json' \) -print 2> /dev/null || true
+    find "$L/.vault-runtime" -mindepth 1 -maxdepth 1 -type d -print 2> /dev/null || true
+    find "$work" -maxdepth 1 \( -name '.cozy-vault-*' -o -name '.cozy-project-source-*' \) -print
     find "$HOME/.cozy/calcifer/vaults" -mindepth 1 -maxdepth 1 \( -name 'stage-*' -o -name 'source-*' -o -name 'decrypt-*' -o -name 'new-*' \) -print 2> /dev/null || true
+    mounts
   }
   listed_clean() {
     fixture_projects > "$work/ls-$1.json" || { check "leftovers: project list ($1) failed"; return; }
