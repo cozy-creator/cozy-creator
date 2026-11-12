@@ -70,11 +70,12 @@ async function died(why) {
 
   // H3's Shot, its beats' words the prompts Paul pastes into.
   const searched = (await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? [];
-  const shotTool = searched.find((tool) => tool.package === 'minimax-h3' && tool.fields.some((field) => field.field === 'beats'));
+  const beated = searched.filter((tool) => tool.package === 'minimax-h3' && tool.fields.some((field) => field.field === 'beats'));
+  const shotTool = beated.find((tool) => tool.id === 'minimax-h3/generate') ?? beated[0];
   seen.tool = shotTool?.id ?? searched.map((tool) => tool.id);
   if (!shotTool) throw new Error('the Hub lists no H3 tool with beats');
   const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: shotTool.id, kind: 'video', name: 'scene', exact: true, fields: { beats: [{ description: '', duration: 5 }, { description: '', duration: 5 }] }, at: { x: 80, y: 520 } }) });
-  if (made.status !== 200) throw new Error(`the Shot box: ${JSON.stringify(made)}`);
+  if (made.status >= 300) throw new Error(`the Shot box: ${JSON.stringify(made)}`);
   await fitCanvas(page);
   await openBox(page, 'scene');
   // Open, the box is where it's worked on, on the canvas or over it (Focus).
