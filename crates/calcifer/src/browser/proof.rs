@@ -136,7 +136,8 @@ mod linux {
                     Action::Edit { asset, field, value } => {
                         let at = fixed(live, session, json!({ "kind": "locate", "asset": asset })).await?;
                         if at["found"] != true { return Ok(json!({ "typed": false, "located": false, "focused": false })); }
-                        // A single click only selects a box; a person opens it for writing with a double click.
+                        // A single click only selects a box; a person moves there and opens it for writing with a double click.
+                        live.pipe.call("Input.dispatchMouseEvent", json!({ "type": "mouseMoved", "x": at["x"], "y": at["y"] }), Some(session)).await?;
                         for count in [1, 2] {
                             for kind in ["mousePressed", "mouseReleased"] { live.pipe.call("Input.dispatchMouseEvent", json!({ "type": kind, "button": "left", "clickCount": count, "x": at["x"], "y": at["y"] }), Some(session)).await?; }
                         }
