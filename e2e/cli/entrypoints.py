@@ -18,6 +18,9 @@ PUBLIC = {
     "open",
     "run",
     "get",
+    "apply",
+    "diff",
+    "delete",
     "explain",
     "render",
     "status",
@@ -36,7 +39,7 @@ PUBLIC = {
 }
 REMOVED = {
     "help",
-    "push", "pull", "org", "project", "import", "export", "add", "set", "delete", "approve", "unapprove", "cancel",
+    "push", "pull", "org", "project", "import", "export", "add", "set", "approve", "unapprove", "cancel",
     "wait", "history", "undo", "redo", "rename", "reclaim",
 }
 

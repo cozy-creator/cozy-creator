@@ -70,6 +70,12 @@ enum Command {
     Run(run::Args),
     /// List the current project's nodes, or print named ones whole as a file.
     Get(node::Get),
+    /// Merge a file of nodes into the current project.
+    Apply(node::Apply),
+    /// What `cozy apply -f` would change, written nowhere.
+    Diff(node::Diff),
+    /// Remove nodes; the page's Undo brings them back.
+    Delete(node::Delete),
     /// What a file of nodes can hold: kinds, tools and their fields.
     Explain(node::Explain),
     /// Render nodes of the current project and what they read, as the page's Render does.
@@ -183,6 +189,9 @@ async fn dispatch(ctx: &Context, command: Command) -> Result<ExitCode, Error> {
         Command::Get(args) => node::get(ctx, args).await,
         Command::Explain(args) => node::explain(ctx, args).await,
         Command::Render(args) => render::exec(ctx, args).await,
+        Command::Apply(args) => node::apply(ctx, args).await,
+        Command::Diff(args) => node::diff(ctx, args).await,
+        Command::Delete(args) => node::delete(ctx, args).await,
         Command::Machine(args) => machine::exec(ctx, args).await,
         Command::Package(args) => package::exec(ctx, args).await,
         Command::Model(args) => model::exec(ctx, args).await,

@@ -1,19 +1,22 @@
 //! The agent API (tracker design/agent-api.md): a project's nodes as a file, read whole with `cozy get`, written back with `cozy apply`,
 //! the same merge shown by `cozy diff`, gone by `cozy delete`, and what a file can hold by `cozy explain`. One file of nodes, edited with
 //! the agent's own editor; Calcifer merges each node against the rev it was read at, so a person's edits on the page meanwhile stand.
-use std::process::ExitCode;
+use std::{
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
 use api::{
     calcifer::{
-        node::{self, Nodes},
-        project::{Asset, State},
+        node::{self, Applied, Apply as ApplyAsk, Nodes},
+        project::{Asset, AssetDeleted, State},
         tool::{Tool, Tools},
     },
     error::{Error, Kind},
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use crate::{Context, calcifer_client::{Client, path}, output};
+use crate::{Context, calcifer_client::{Client, path}, output, run::mint_key, send::Sender};
 
 mod yaml;
 
@@ -56,6 +59,49 @@ pub(crate) struct Explain {
     /// JSON Schema 2020-12 instead of words.
     #[arg(long)]
     schema: bool,
+}
+
+const APPLY: &str = "Examples
+  cozy get shot_2 > shot_2.yaml       read it, edit it with any editor, then
+  cozy apply -f shot_2.yaml           merge it in; the file is rewritten as it stands, with new revs
+  cozy apply -f film.yaml --force-conflicts
+  cozy get --all | cozy apply -f -    the merged nodes print on stdout
+
+Each node merges against its rev: what the file changed is written, what the project changed since stands, and a value both
+changed is a conflict (words both edited merge unless the edits overlap). A new name makes a node; a take with only
+`file: <path>` imports that file as its next take. Exit 0 applied, 1 refused (nothing written).";
+
+const DIFF: &str = "Examples
+  cozy diff -f shot_2.yaml
+
+What `cozy apply -f` would change, its own merge with nothing written. Exit 0 no changes, 1 changes, 2 it would refuse.";
+
+/// Merge a file of nodes into the project: one edit, which the page's Undo takes back.
+#[derive(clap::Args, Debug)]
+#[command(after_help = APPLY)]
+pub(crate) struct Apply {
+    /// The file: YAML or JSON, node name to node; `-` reads stdin.
+    #[arg(short = 'f', long = "filename", value_name = "FILE", required = true)]
+    file: PathBuf,
+    /// Where both sides changed a value, keep the file's.
+    #[arg(long)]
+    force_conflicts: bool,
+}
+
+/// What `cozy apply -f` would change, written nowhere.
+#[derive(clap::Args, Debug)]
+#[command(after_help = DIFF)]
+pub(crate) struct Diff {
+    /// The file: YAML or JSON, node name to node; `-` reads stdin.
+    #[arg(short = 'f', long = "filename", value_name = "FILE", required = true)]
+    file: PathBuf,
+}
+
+/// Remove nodes: one edit, which the page's Undo brings back.
+#[derive(clap::Args, Debug)]
+pub(crate) struct Delete {
+    #[arg(value_name = "NAME", required = true)]
+    names: Vec<String>,
 }
 
 /// The project the current directory is, as its routes name it.
@@ -251,4 +297,251 @@ fn print(lines: &[String]) {
     for line in lines {
         anstream::println!("{line}");
     }
+}
+
+/// A file of nodes, read: its nodes as JSON, each take with only `file:` held for the project and named by its hash.
+async fn read_file(ctx: &Context, project: &Project, file: &Path) -> Result<Map<String, Value>, Error> {
+    let stdin = file == Path::new("-");
+    let text = match stdin {
+        true => std::io::read_to_string(std::io::stdin()).map_err(|why| Error::new(Kind::Usage, "file_unreadable", format!("stdin: {why}")))?,
+        false => std::fs::read_to_string(file).map_err(|why| Error::new(Kind::NotFound, "file_unreadable", format!("{}: {why}", file.display())))?,
+    };
+    let shown = if stdin { "stdin".to_owned() } else { file.display().to_string() };
+    let nodes = match serde_json::from_str::<Value>(&text).or_else(|_| api::yaml::to_json(&text)) {
+        Ok(Value::Object(nodes)) => nodes,
+        Ok(Value::Null) => Map::new(),
+        Ok(_) => return Err(Error::new(Kind::Validation, "file_not_nodes", format!("{shown} is not a map of node name to node")).next("cozy explain")),
+        Err(why) => return Err(Error::new(Kind::Validation, "file_not_yaml", format!("{shown}: {why}"))),
+    };
+    let base = match stdin {
+        true => std::env::current_dir().map_err(|why| Error::new(Kind::Unavailable, "cwd", why.to_string()))?,
+        false => std::path::absolute(file).ok().and_then(|at| at.parent().map(Path::to_path_buf)).unwrap_or_default(),
+    };
+    let mut nodes = nodes;
+    let mut sender = None;
+    for node in nodes.values_mut() {
+        let Some(takes) = node.get_mut("takes").and_then(Value::as_array_mut) else { continue };
+        for take in takes.iter_mut() {
+            let Some(entry) = take.as_object_mut().filter(|entry| entry.len() == 1) else { continue };
+            let Some(written) = entry.get("file").and_then(Value::as_str).filter(|file| !file.starts_with("sha256:")) else { continue };
+            let at = api::target::spelled(written, &base, &ctx.user_home);
+            if sender.is_none() {
+                sender = Some(Sender::for_project(ctx, &project.id).await?);
+            }
+            let digest = sender.as_ref().expect("a sender").file(&at).await?;
+            entry.insert("file".to_owned(), json!(digest.to_string()));
+        }
+    }
+    Ok(nodes)
+}
+
+pub(crate) async fn apply(ctx: &Context, args: Apply) -> Result<ExitCode, Error> {
+    let project = Project::current(ctx).await?;
+    let nodes = read_file(ctx, &project, &args.file).await?;
+    let ask = ApplyAsk { nodes: nodes.clone(), dry_run: false, force_conflicts: args.force_conflicts };
+    let applied: Applied = project.calcifer.post(&project.at(&["apply"]), &ask, Some(&mint_key())).await?;
+    let to_stdout = args.file == Path::new("-");
+    if let Some(merged) = applied.merged.as_ref().filter(|_| applied.applied) {
+        // Each node of the file as it stands now, with its new rev, in the file's order: applying it again changes nothing.
+        let mut file = Map::new();
+        for name in nodes.keys() {
+            if let Some(node) = merged.nodes.get(name) {
+                file.insert(name.clone(), node.clone());
+            }
+        }
+        let text = yaml::file(&file, &merged.older);
+        match to_stdout {
+            true if !ctx.json => anstream::print!("{text}"),
+            true => {}
+            false => std::fs::write(&args.file, text).map_err(|why| Error::new(Kind::Unavailable, "file_unwritten", format!("{}: {why}", args.file.display())))?,
+        }
+    }
+    if ctx.json {
+        output::json(&applied);
+        return Ok(if applied.applied { ExitCode::SUCCESS } else { ExitCode::from(1) });
+    }
+    if !applied.applied {
+        refused(&applied);
+        return Ok(ExitCode::from(1));
+    }
+    said(&applied);
+    let mut lines = vec![];
+    for did in ["created", "configured", "unchanged"] {
+        let named: Vec<String> = applied.nodes.iter().filter(|outcome| outcome.did == did).map(|outcome| {
+            // A node made says only its takes; one changed, what changed.
+            let changed: Vec<&str> = outcome.changed.iter().map(String::as_str).filter(|said| did == "configured" || said.starts_with("take ")).collect();
+            match changed.is_empty() || did == "unchanged" {
+                true => outcome.name.clone(),
+                false => format!("{} ({})", outcome.name, changed.join(", ")),
+            }
+        }).collect();
+        if !named.is_empty() {
+            lines.push(format!("{did}: {}", named.join(", ")));
+        }
+    }
+    let line = if lines.is_empty() { "0 nodes".to_owned() } else { lines.join("\n") };
+    match to_stdout {
+        true => output::say(ctx, &line),
+        false => {
+            anstream::println!("{line}");
+            anstream::println!("{} rewritten: each node as it stands, with its rev", args.file.display());
+        }
+    }
+    let next: Vec<&str> = applied.next.iter().map(String::as_str).collect();
+    output::next(ctx, &next);
+    Ok(ExitCode::SUCCESS)
+}
+
+pub(crate) async fn diff(ctx: &Context, args: Diff) -> Result<ExitCode, Error> {
+    let project = Project::current(ctx).await?;
+    let nodes = read_file(ctx, &project, &args.file).await?;
+    let ask = ApplyAsk { nodes, dry_run: true, force_conflicts: false };
+    // Nothing is written, so nothing is kept under a key.
+    let applied: Applied = project.calcifer.private_post(&project.at(&["apply"]), &ask).await?;
+    let refuses = !applied.errors.is_empty() || !applied.conflicts.is_empty();
+    let code = if refuses { 2 } else if applied.changes.is_empty() { 0 } else { 1 };
+    if ctx.json {
+        output::json(&applied);
+        return Ok(ExitCode::from(code));
+    }
+    said(&applied);
+    for change in &applied.changes {
+        if change.before.is_null() && change.after.is_array() && !change.path.contains('.') {
+            let made: Vec<&str> = change.after.as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            anstream::println!("+ {}{}", change.path, if made.is_empty() { String::new() } else { format!(" ({})", made.join(", ")) });
+            continue;
+        }
+        anstream::println!("{}", change.path);
+        for (mark, value) in [("-", &change.before), ("+", &change.after)] {
+            for line in shown(value).lines() {
+                anstream::println!("  {mark} {line}");
+            }
+        }
+    }
+    if refuses {
+        for error in &applied.errors {
+            anstream::println!("error: {}: {}", error.path, error.message);
+        }
+        conflicts(&applied);
+        return Ok(ExitCode::from(code));
+    }
+    match applied.changes.is_empty() {
+        true => output::nothing(ctx, "no changes"),
+        false => output::next(ctx, &[&format!("cozy apply -f {}", args.file.display())]),
+    }
+    Ok(ExitCode::from(code))
+}
+
+/// A refused apply: every error with its fix and every conflict, and what to do.
+fn refused(applied: &Applied) {
+    said(applied);
+    let mut counted = vec![];
+    if !applied.errors.is_empty() {
+        counted.push(format!("{} error{}", applied.errors.len(), if applied.errors.len() == 1 { "" } else { "s" }));
+    }
+    if !applied.conflicts.is_empty() {
+        counted.push(format!("{} conflict{}", applied.conflicts.len(), if applied.conflicts.len() == 1 { "" } else { "s" }));
+    }
+    anstream::eprintln!("nothing applied: {}", counted.join(", "));
+    for error in &applied.errors {
+        anstream::eprintln!("  {}: {}", error.path, error.message);
+    }
+    for conflict in &applied.conflicts {
+        anstream::eprintln!("  {}", conflict_line(conflict));
+    }
+    if let Some(next) = conflict_next(applied) {
+        anstream::eprintln!("next: {next}");
+    }
+}
+
+fn conflicts(applied: &Applied) {
+    for conflict in &applied.conflicts {
+        anstream::println!("{}", conflict_line(conflict));
+    }
+    if let Some(next) = conflict_next(applied) {
+        anstream::println!("next: {next}");
+    }
+}
+
+/// `conflict: shot_2.beats.0.duration: yours 6, the page's 8 since its rev 3e1f0a9c`.
+fn conflict_line(conflict: &node::Conflict) -> String {
+    format!("conflict: {}: yours {}, {}'s {} since its rev {}", conflict.path, inline(&conflict.yours), conflict.by, inline(&conflict.theirs), conflict.rev)
+}
+
+fn conflict_next(applied: &Applied) -> Option<String> {
+    match applied.conflicts.as_slice() {
+        [] => None,
+        [one] if !one.theirs.is_object() && !one.theirs.is_array() => {
+            Some(format!("set {} and apply, or apply --force-conflicts to keep {}", inline(&one.theirs), inline(&one.yours)))
+        }
+        _ => Some("settle each in the file and apply, or apply --force-conflicts to keep yours".to_owned()),
+    }
+}
+
+/// What it fixed and what it left, on stderr.
+fn said(applied: &Applied) {
+    if applied.applied {
+        for conflict in &applied.conflicts {
+            anstream::eprintln!("kept yours: {}: {}, over {}'s {}", conflict.path, inline(&conflict.yours), conflict.by, inline(&conflict.theirs));
+        }
+    }
+    for warning in &applied.warnings {
+        output::warn(&at(&warning.path, &warning.message));
+    }
+    for note in &applied.notes {
+        anstream::eprintln!("note: {}", at(&note.path, &note.message));
+    }
+}
+
+fn at(path: &str, message: &str) -> String {
+    if path.is_empty() { message.to_owned() } else { format!("{path}: {message}") }
+}
+
+/// A value on a line of its own: words as they are, anything else as JSON.
+fn shown(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => "null".to_owned(),
+        other => other.to_string(),
+    }
+}
+
+fn inline(value: &Value) -> String {
+    match value {
+        Value::String(text) if !text.contains('\n') => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+pub(crate) async fn delete(ctx: &Context, args: Delete) -> Result<ExitCode, Error> {
+    let project = Project::current(ctx).await?;
+    let state: State = project.calcifer.get(&format!("{}?assets=true", project.at(&[]))).await?;
+    let held: Vec<&str> = state.assets.iter().map(|asset| asset.name.as_str()).collect();
+    let mut missing = vec![];
+    for name in &args.names {
+        let key = |name: &str| name.replace(['_', '-'], " ").to_lowercase();
+        if !held.iter().any(|held| key(held) == key(name)) {
+            missing.push(match node::near(name, held.iter().copied()) {
+                Some(near) => format!("{name} (did you mean {near}?)"),
+                None => name.clone(),
+            });
+        }
+    }
+    if !missing.is_empty() {
+        return Err(Error::new(Kind::NotFound, "node_unknown", format!("the project has no node {}: nothing deleted", missing.join(", "))).next("cozy get"));
+    }
+    // One edit, one entry of the history: the page's Undo brings them all back.
+    let edit = mint_key();
+    let mut gone = vec![];
+    for name in &args.names {
+        let deleted: AssetDeleted = project.calcifer.delete_edit(&project.at(&["assets", name]), &edit).await?;
+        gone.push(deleted.name);
+    }
+    if ctx.json {
+        output::json(&json!({"deleted": gone}));
+        return Ok(ExitCode::SUCCESS);
+    }
+    anstream::println!("deleted: {}", gone.join(", "));
+    anstream::println!("the page's Undo brings {} back", if gone.len() == 1 { "it" } else { "them" });
+    Ok(ExitCode::SUCCESS)
 }

@@ -37,6 +37,8 @@ const OWN: [&str; 7] = ["tool", "approved", "description", "text", NODE_KIND, SE
 #[derive(Clone, Debug)]
 pub(super) struct View {
     pub name: String,
+    /// The box's own id: its words are text at a path of it.
+    pub id: String,
     /// The node's kind: an Edit's `edit`, else its file's.
     pub kind: String,
     /// Its tool as its box writes it.
@@ -76,6 +78,7 @@ pub(super) fn view(boxed: &Boxed, lock: &Lock, folder: &Folder) -> View {
     }
     View {
         name: boxed.name.clone(),
+        id: boxed.id.clone(),
         kind: node::kind_of(media, plain.as_deref()).to_owned(),
         text: (media == TEXT && tool.is_none()).then(|| text(TEXT).unwrap_or_default()),
         tool,
@@ -265,16 +268,23 @@ pub(super) struct Asked {
 /// too, and the rev it was read at. Its tools are read as a run of them here would read them, from their packages' declarations.
 pub(super) async fn read(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked): Query<Asked>) -> Result<Json<Nodes>, Refusal> {
     let project = api.projects.get(&api, &id)?;
+    let names: Vec<String> = asked.names.as_deref().unwrap_or_default().split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned).collect();
+    let which = if asked.takes { Shown::All } else { Shown::Some };
+    Ok(Json(nodes_of(&api, &project, &names, which).await.map_err(Refusal)?))
+}
+
+/// `names` (each a node, or `name.N` for one take of it; none, every node) as the file holds them, each showing `which` takes.
+pub(super) async fn nodes_of(api: &Arc<Api>, project: &Arc<super::Project>, names: &[String], which: Shown) -> Result<Nodes, Error> {
     let folder = &project.folder;
-    let (written, heads) = folder.reading_document(|written, heads| (written.clone(), heads)).map_err(Refusal)?;
-    let lock = folder.lock().map_err(Refusal)?;
-    let wanted: Vec<(String, Option<u32>)> = match asked.names.as_deref().map(str::trim).filter(|names| !names.is_empty()) {
-        None => written.boxes.iter().map(|held| (held.name.clone(), None)).collect(),
-        Some(names) => names.split(',').map(str::trim).filter(|name| !name.is_empty()).map(|name| named(&written, name)).collect::<Result<_, _>>().map_err(Refusal)?,
+    let (written, heads) = folder.reading_document(|written, heads| (written.clone(), heads))?;
+    let lock = folder.lock()?;
+    let wanted: Vec<(String, Option<u32>)> = match names {
+        [] => written.boxes.iter().map(|held| (held.name.clone(), None)).collect(),
+        names => names.iter().map(|name| named(&written, name)).collect::<Result<_, _>>()?,
     };
     let views: Vec<(View, Option<u32>)> = wanted.iter().filter_map(|(name, one)| Some((view(written.get(name)?, &lock, folder), *one))).collect();
-    let tools = tools(&api, views.iter().filter_map(|(view, _)| view.tool.clone()), &folder.dir).await;
-    let going = super::takes_now(&project, &folder.walk_now().map_err(Refusal)?);
+    let tools = tools(api, views.iter().filter_map(|(view, _)| view.tool.clone()), &folder.dir).await;
+    let going = super::takes_now(project, &folder.walk_now()?);
     let rev = node::rev_of(&heads);
     let mut answer = Nodes { rev: rev.clone(), ..Nodes::default() };
     for (id, read) in &tools {
@@ -284,11 +294,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path(id): Path<String>, Qu
     }
     for (view, one) in &views {
         let tool = view.tool.as_ref().and_then(|id| tools.get(id)).and_then(|read| read.as_ref().ok());
-        let which = match (one, asked.takes) {
-            (Some(number), _) => Shown::One(*number),
-            (None, true) => Shown::All,
-            (None, false) => Shown::Some,
-        };
+        let which = one.map_or(which, Shown::One);
         let going = going.get(&name_key(&view.name)).map(Vec::as_slice).unwrap_or_default();
         let (value, older) = node(view, tool, &takes(&view.name, &lock, &folder.dir, going), which, &rev);
         if older > 0 {
@@ -296,5 +302,5 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path(id): Path<String>, Qu
         }
         answer.nodes.insert(view.name.clone(), value);
     }
-    Ok(Json(answer))
+    Ok(answer)
 }
