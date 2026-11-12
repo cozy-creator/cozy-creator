@@ -1,10 +1,10 @@
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
+import { modelChoiceLabel } from "./ModelPicker"
 
 type Entry = Record<string, unknown>
 const entryOf = (value: unknown): Entry => value && typeof value === "object" && !Array.isArray(value) ? value as Entry : {}
 const entries = (value: unknown): Entry[] => Array.isArray(value) ? value.map(entryOf) : []
-const nameOf = (ref: string) => ref.split("@")[0].replaceAll("-", " ").replaceAll("_", " ").replace("/", " / ")
 const slotName = (slot: string) => slot === "rewriter" ? "Prompt-Enhancer I2I" : slot === "expander" ? "Prompt-Enhancer T2I" : slot.replaceAll("_", " ")
 
 /** The effective overrides remain visible while the picker is closed. */
@@ -22,7 +22,7 @@ export function ModelConfig({ name }: { name: string }) {
   })
   for (const held of entries(store.valueOf(name, "lora"))) if (typeof held.ref === "string") rows.push({ ref: held.ref, slot: tool?.model?.slot ?? "model", lora: true, strength: held.strength })
   if (!rows.length) return null
-  return <ul className="active-models" aria-label="Active models and LoRAs">{rows.map((row, index) => <li key={`${row.slot}:${row.ref}:${index}`}><span className="active-model-slot">{slotName(row.slot)} · {row.lora ? "LoRA" : "Checkpoint"}</span><span className="active-model-name" title={row.ref}>{nameOf(row.ref)}</span>{row.lora && <Strength value={row.strength} />}</li>)}</ul>
+  return <ul className="active-models" aria-label="Active models and LoRAs">{rows.map((row, index) => <li key={`${row.slot}:${row.ref}:${index}`}><span className="active-model-slot">{slotName(row.slot)} · {row.lora ? "LoRA" : "Checkpoint"}</span><span className="active-model-name" title={row.ref}>{modelChoiceLabel(row.ref)}</span>{row.lora && <Strength value={row.strength} />}</li>)}</ul>
 }
 
 function Strength({ value }: { value: unknown }) {

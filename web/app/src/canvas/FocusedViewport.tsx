@@ -28,6 +28,9 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   const version = shownOf(view)?.number
   return (
     <section ref={element} className="focus-viewport" aria-label="Focused asset" data-focused-asset={name}
+      onClick={(event) => {
+        if (!(event.target as Element).closest(".media, .tl, .focus-heading, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]")) onClose()
+      }}
       onContextMenu={(event) => {
         if ((event.target as Element).closest("input, textarea, [contenteditable]")) return
         event.preventDefault()
