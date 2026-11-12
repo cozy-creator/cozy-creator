@@ -91,11 +91,7 @@ function linesOf(text, name) {
   const of = async (name) => (await state()).assets.find((held) => held.name === name);
   const fieldsOf = async (name) => (await of(name))?.fields ?? {};
   const box = (name) => boxOf(page, name);
-  const open = async (name) => {
-    await openBox(page, name);
-    const item = await of(name);
-    if (item?.kind === 'video' && item.tool && !item.timeline && !item.versions) await box(name).getByRole('button', { name: 'New video', exact: true }).click();
-  };
+  const open = (name) => openBox(page, name);
   const more = async (name) => {
     await open(name);
     const toggle = box(name).locator('.more-toggle');

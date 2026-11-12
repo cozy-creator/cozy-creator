@@ -8,6 +8,7 @@ const { join } = require('path');
 const { boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const NAME = 'focus_image';
+const STANDARD_ASPECTS = ['21:9', '16:9', '3:2', '4:3', '5:4', '1:1', '4:5', '3:4', '2:3', '9:16'];
 const failures = [];
 const seen = {};
 let during = 'setup';
@@ -369,7 +370,7 @@ async function died(error) {
     await expectFit(0.25);
     check('old_tall_state_stays_previewable_after_generation', await history.locator('.take.on[data-take]').getAttribute('data-take') === '2' && (await asset()).versions === 11);
 
-    // The weightless tool declares a continuous AspectRatio, with no discrete ratio list.
+    // A bounded AspectRatio snaps to the standard supported ratios while its frame stays free until release.
     await newImage.click();
     const aspectBadge = card.locator('.focus-viewer .media > [data-output-aspect]');
     await aspectBadge.waitFor();
@@ -388,9 +389,9 @@ async function died(error) {
     const requestedShape = await aspectBadge.getAttribute('data-output-aspect');
     const [ratioWidth, ratioHeight] = requestedShape.split(':').map(Number);
     const requestedRatio = ratioWidth / ratioHeight;
-    check('aspect_drag_holds_free_bounds_until_release', sameRect(beforeResize.viewer, heldResize.viewer) && sameRect(heldResize.media, stableResize.media)
+    check('aspect_drag_holds_free_bounds_until_release', STANDARD_ASPECTS.includes(requestedShape) && sameRect(beforeResize.viewer, heldResize.viewer) && sameRect(heldResize.media, stableResize.media)
       && Math.abs(heldResize.media.x - beforeResize.media.x) < 2 && Math.abs(heldResize.media.y - beforeResize.media.y) < 2
-      && Math.abs(heldResize.media.width - (beforeResize.media.width - 150)) < 4 && Math.abs(heldResize.media.height - (beforeResize.media.height + 90)) < 4
+      && Math.abs(heldResize.media.width - (beforeResize.media.width - 150)) < 4 && Math.abs(heldResize.media.height - heldResize.media.width / requestedRatio) < 4
       && !frameFits(heldResize, requestedRatio), { beforeResize, heldResize, stableResize, requestedShape });
     await shot('aspect-dragging');
     await page.mouse.up();
@@ -619,6 +620,7 @@ async function died(error) {
   writeFileSync(clip, MP4);
   await api(`${at}/assets/${VIDEO}/versions`, 'POST', { source: await upload(session.token, clip) });
   const completedVideo = videoFocus.locator('.here-side .take[data-take="1"]');
+  const newVideo = videoFocus.getByRole('button', { name: 'New video', exact: true });
   await completedVideo.waitFor();
   await completedVideo.click();
   await videoFocus.locator('.focus-viewer').getByRole('button', { name: 'Play', exact: true }).click();
