@@ -3289,7 +3289,7 @@ execution_ms?: number | null,
  */
 text?: string | null,
 /**
- * Its saved generation request, including structured prompts and model choices; absent when unknown.
+ * Its saved editable inputs, before prompt binding, including model choices; absent when unknown.
  */
 fields?: { [key in string]: JsonValue } | null, };
 

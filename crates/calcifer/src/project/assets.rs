@@ -135,6 +135,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     let i = find(doc, &name).map_err(Refusal)?;
     let asset = model.row(&project, i);
     let pinned = asset.approved;
+    let recovered = authored_versions(&project, doc, lock, &model.stand, i);
     let versions = (lock.asset(&asset.name).into_iter().flat_map(|held| &held.versions))
         .map(|version| VersionRow {
             number: version.number,
@@ -149,7 +150,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             warnings: version.warnings.clone(),
             pickup: version.pickup.clone(),
             text: lock.asset(&asset.name).and_then(|held| held.text_of(version.number)).map(str::to_owned),
-            fields: fields_of(&api, &project, version),
+            fields: version.fields.clone().or_else(|| recovered.get(&version.inputs).cloned()),
             execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
         })
         .collect();
@@ -291,20 +292,28 @@ pub(super) async fn patch(
     patched.map(Json).map_err(Refusal)
 }
 
-/// Older versions can recover their exact structured request while their own run is still retained.
-fn fields_of(api: &Api, project: &Project, version: &folder::Version) -> Option<Map<String, Value>> {
-    if let Some(fields) = &version.fields {
-        return Some(fields.clone());
+/// Old rows are recoverable only from authored documents with the same complete
+/// input key. A bound request cannot reverse text expansion or removed mentions.
+fn authored_versions(project: &Project, doc: &Doc, lock: &folder::Lock, stand: &[format::Standing], i: usize) -> BTreeMap<String, Map<String, Value>> {
+    let wanted: BTreeSet<&str> = lock.asset(&doc.assets[i].name).into_iter().flat_map(|held| &held.versions)
+        .filter(|version| version.fields.is_none() && !version.inputs.is_empty()).map(|version| version.inputs.as_str()).collect();
+    let mut found = BTreeMap::new();
+    if wanted.is_empty() {
+        return found;
     }
-    let row = match &version.run_id {
-        Some(id) => api.calcifer.store().run(id.as_str()).ok().flatten(),
-        None => api.calcifer.store().run_by_number(version.run?).ok().flatten(),
-    }?;
-    let root = super::of_landing(&row.out_dir)?;
-    if super::identity(root).0 != project.id {
-        return None;
+    if let Some(key) = stand[i].inputs.as_ref().filter(|key| wanted.contains(key.as_str())) {
+        found.insert(key.clone(), doc.authoring_fields(i));
     }
-    crate::runs::asked(&row).map(|asked| asked.input)
+    let mut walker = project.walker.lock().expect("walker lock");
+    for reading in walker.readings.values_mut() {
+        if found.len() == wanted.len() { break }
+        let Some(at) = reading.doc.find(&doc.assets[i].name) else { continue };
+        reading.ensure(at, lock);
+        if let Some(key) = reading.done[at].inputs.as_ref().filter(|key| wanted.contains(key.as_str())) {
+            found.entry(key.clone()).or_insert_with(|| reading.doc.authoring_fields(at));
+        }
+    }
+    found
 }
 
 /// What a change of `tool` needs of the pictures asset `name` holds: `None` with none. A tool going on a picture nothing numbers makes it a version, as if that
