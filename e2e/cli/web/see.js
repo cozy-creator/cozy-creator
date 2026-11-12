@@ -586,7 +586,8 @@ async function rest(page, handle) {
   }
 
   // The tabs: as many as fit the bar, each where it was and as wide while the window resizes, the rest behind "N more", which opens All
-  // projects with them first; a search there, by name and by folder; and + ready for a new one's name.
+  // projects with them first; a search there, by name and by folder; and the open project's name ready for a new one's name (cl-958: the
+  // bar's one + is Add files).
   const trees = ['alder', 'birch', 'cedar', 'dogwood', 'elm', 'fir', 'ginkgo', 'hazel', 'ironwood', 'juniper', 'larch', 'maple', 'oak', 'pine', 'rowan', 'spruce'];
   // As Calcifer has it: macOS's temp folder is a link (/var → /private/var).
   const forest = realpathSync(mkdtempSync(join(tmpdir(), 'web-tabs-')));
@@ -705,13 +706,13 @@ async function rest(page, handle) {
     await snap('tabs-found');
     await find.fill('');
 
-    // +: the New field, ready, from the drawer open and from the canvas.
+    // The open project's name: the New field, ready, from the drawer open and from the canvas.
     const naming = () => tab.evaluate(() => document.activeElement?.getAttribute('aria-label'));
-    await tab.click('nav.ptabs .ptab.new');
+    await tab.click('nav.ptabs a.ptab.on');
     await until('+ in the drawer names a new one', naming, (label) => label === "New project's name").then(() => check('tabs_plus_in_drawer', true), (error) => check('tabs_plus_in_drawer', false, error.message));
     await tab.click('.drawer [aria-label="Close"]');
     await tab.waitForSelector('.drawer', { state: 'detached' });
-    await tab.click('nav.ptabs .ptab.new');
+    await tab.click('nav.ptabs a.ptab.on');
     await until('+ names a new one', naming, (label) => label === "New project's name").then(() => check('tabs_plus', true), (error) => check('tabs_plus', false, error.message));
     await tab.close();
   } finally {
