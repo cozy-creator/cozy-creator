@@ -32,7 +32,8 @@ pub(crate) fn whole_ms(engine: &Engine, record: &Execution) -> io::Result<Option
         true => vec![],
         false => engine.run_times(&function_key(&invocation.package, &invocation.entrypoint), HISTORY)?,
     };
-    let time = estimate::time(&runs, &JobSize::of(&invocation.input), 0.0, None);
+    // A started run is its function's first call here when none ran before it (cold), else a later one (warm).
+    let time = estimate::time(&runs, &JobSize::of(&invocation.input), 0.0, None, !runs.is_empty());
     Ok((time.basis != v1::Basis::None).then(|| time.at(held_width(record))))
 }
 
