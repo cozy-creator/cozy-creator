@@ -514,6 +514,7 @@ case $SHARD in
     hub_dependency
     hub_published
     held_prerelease
+    runtime_floor
     child_latents
     path_manifest
     rental_end

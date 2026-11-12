@@ -341,7 +341,7 @@ async fn every_tool(api: &Arc<Api>, hub: &str) -> Result<Arc<Vec<Offered>>, Erro
     let reads = released.into_iter().map(|(package, release)| async move {
         match cards::card_requiring(|| api.machines.hubs.reader(hub), root, hub, &package, &release).await {
             Ok(card) => {
-                let pair: Arc<[String]> = card.requirements().unwrap_or_default().into_iter().filter(|required| on_the_pair(required).is_some()).map(str::to_owned).collect();
+                let pair: Arc<[String]> = card.requirements().unwrap_or_default().into_iter().filter(|required| on_the_pair(required)).map(str::to_owned).collect();
                 tool::tools_of(&package, &card.release, &card.interface).into_iter().map(|tool| Offered { tool, pair: pair.clone() }).collect()
             }
             Err(why) => {
@@ -382,35 +382,19 @@ async fn stack(api: &Arc<Api>, hub: &str, on: &On) -> Option<BTreeMap<&'static s
     Some(PAIR.into_iter().zip([runtime, tensorfs]).filter(|(_, version)| !version.is_empty()).collect())
 }
 
-/// Whether a release whose wheel requires `pair` runs on `stack`: each of its requirements admits that member's version, by its release
-/// numbers alone (a dev build of 0.45.0 is 0.45.0). One that can't be read holds nothing back, as TensorD's own check decides.
+/// Whether a release whose wheel requires `pair` runs on `stack`: each member's requirement admits that member's version
+/// (`api::release::runs`: an RC build of the next minor runs a release capped below it). One that can't be read holds nothing
+/// back, as TensorD's own check decides.
 fn runs_on(pair: &[String], stack: &BTreeMap<&str, String>) -> bool {
-    pair.iter().all(|required| {
-        let Some((member, versions)) = on_the_pair(required) else { return true };
-        let Some(version) = stack.get(member).and_then(|version| version.parse::<pep440_rs::Version>().ok()) else { return true };
-        versions.contains(&version.only_release())
+    PAIR.iter().all(|member| match (api::release::required(pair.iter().map(String::as_str), member), stack.get(member)) {
+        (Some(versions), Some(version)) => api::release::runs(&versions, version),
+        _ => true,
     })
 }
 
-/// A requirement on the pair outside any extra (`cozy-runtime[media]<0.46,>=0.45.0`): its member, and the versions it admits.
-fn on_the_pair(required: &str) -> Option<(&'static str, pep440_rs::VersionSpecifiers)> {
-    let (required, marker) = required.split_once(';').unwrap_or((required, ""));
-    if marker.contains("extra") {
-        return None;
-    }
-    let end = required.find(|c: char| " <>=!~[(".contains(c)).unwrap_or(required.len());
-    let name = required[..end].trim().to_lowercase().replace(['_', '.'], "-");
-    let member = PAIR.into_iter().find(|member| *member == name)?;
-    let rest = required[end..].trim_start();
-    let rest = match rest.strip_prefix('[') {
-        Some(extras) => &extras[extras.find(']')? + 1..],
-        None => rest,
-    };
-    let rest = rest.trim().trim_start_matches('(').trim_end_matches(')').trim();
-    if rest.is_empty() {
-        return None;
-    }
-    Some((member, rest.parse().ok()?))
+/// Whether a requirement (`cozy-runtime[media]<0.46,>=0.45.0`) is on a member of the pair, outside any extra.
+fn on_the_pair(required: &str) -> bool {
+    PAIR.iter().any(|member| api::release::required([required], member).is_some())
 }
 
 /// Each `(package, release)`'s tools, in the order asked.
