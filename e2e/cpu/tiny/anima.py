@@ -206,6 +206,8 @@ def _hole(folder: Path) -> Path:
 
 _FOX = _shared.picture("fox", 160, 128)
 _DEPTH = _shared.picture("depth", 128, 128)
+
+
 def _prompt(text: str, *keys: str) -> dict[str, Json]:
     """A `Prompt[Image]` (0.9.0's prompt and instructions): its words and the pictures they mention."""
     return {"text": text, "references": [{"key": key, "type": "image"} for key in keys]}
@@ -213,6 +215,9 @@ def _prompt(text: str, *keys: str) -> dict[str, Json]:
 
 _SMALL: dict[str, Json] = {"prompt": _prompt("masterpiece, a red fox in the snow"), "steps": 2, "seed": 7, "megapixels": 1}
 _BOX: dict[str, Json] = {"instructions": _prompt("a red fox in the snow"), "megapixels": "1", "seed": 7}
+#: Why a request with pictures or control maps does not run on the tiny DiT.
+_PLANNED = ("mentioned pictures and control maps run through the plan's block forward, which installs only on Anima "
+            "Base's 28 blocks of 2048 (optimization._install_transformer_plan): the tiny DiT refuses adapters_unplanned")
 
 CELLS: list[Cell] = [
     {"entry": "generate", "name": "text", "payload": _SMALL, "check": size(1024, 1024)},
@@ -227,14 +232,15 @@ CELLS: list[Cell] = [
     # The inpaint map's area redrawn from noise, the rest put back each step; its adapter off.
     {"entry": "generate", "name": "inpaint-area", "payload": {**_SMALL, "control": [{"kind": "inpaint", "strength": 0.0}]},
      "files": {"control.0.image": _hole}, "check": size(1024, 1024)},
+    # Each builds its adapters (SigLIP2 and the IP-Adapter, or the LLLites), then refuses in the denoise.
     {"entry": "generate", "name": "reference", "payload": {**_SMALL, "prompt": _prompt("masterpiece, <fox> in the snow", "fox")},
-     "files": {"prompt.references.0.file": _FOX}, "check": size(1024, 1024)},
+     "files": {"prompt.references.0.file": _FOX}, "check": size(1024, 1024), "skip": _PLANNED},
     {"entry": "generate", "name": "depth", "payload": {**_SMALL, "control": [{"kind": "depth"}]},
-     "files": {"control.0.image": _DEPTH}, "check": size(1024, 1024)},
+     "files": {"control.0.image": _DEPTH}, "check": size(1024, 1024), "skip": _PLANNED},
     {"entry": "generate", "name": "controls",
      "payload": {**_SMALL, "control": [{"kind": "pose"}, {"kind": "lineart"}, {"kind": "sketch", "strength": 0.5}]},
-     "files": {f"control.{index}.image": _DEPTH for index in range(3)}, "check": size(1024, 1024)},
+     "files": {f"control.{index}.image": _DEPTH for index in range(3)}, "check": size(1024, 1024), "skip": _PLANNED},
     {"entry": "generate", "name": "inpaint", "payload": {**_SMALL, "control": [{"kind": "inpaint"}]},
-     "files": {"control.0.image": _hole}, "check": size(1024, 1024)},
+     "files": {"control.0.image": _hole}, "check": size(1024, 1024), "skip": _PLANNED},
     quantize("circlestone-labs/anima@1.0.0", "fp8", "anima", "anima@0.6.1"),
 ]
