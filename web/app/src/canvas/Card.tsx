@@ -14,7 +14,7 @@ import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
-import { fieldsOf, snapped } from "./controls"
+import { fieldsOf, shapesOf, snapped } from "./controls"
 import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
 import { NameField } from "./NameField"
@@ -471,8 +471,10 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
   const pulled = useRef<{ w: number; h: number; shape?: string } | null>(null)
   const [nearest, setNearest] = useState<string | null>(null)
   const label = nearest ?? override ?? (dynamic ? "Auto" : defaultShape)
+  // Pulled, it snaps to the nearest ratio its tool makes: its own list, else the usual ones within its bounds; never an arbitrary A:B (Paul, 11-12).
   const shapeFor = (width: number, height: number) => {
-    if (ratios.length) return snapped(width / height, ratios)
+    const allowed = ratios.length ? ratios : control ? shapesOf(control) : []
+    if (allowed.length) return snapped(width / height, allowed)
     let w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height))
     const ratio = Math.min(control?.max ?? Infinity, Math.max(control?.min ?? 0, w / h))
     if (ratio !== w / h) { w = Math.round(ratio * 1_000_000); h = 1_000_000 }
