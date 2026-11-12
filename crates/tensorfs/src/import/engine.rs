@@ -1372,7 +1372,9 @@ fn plan_lokr(
         }
         out.push(planned(component, &format!("{}.{name}", row.target), t, &Ops::default(), None)?);
     }
-    if let Some((key, t)) = alpha {
+    // Whole factors scale by 1 and their alpha is unused (ComfyUI's), often ai-toolkit's full-rank 1e10, inf in F16.
+    let decomposed = w1.is_none() || w2.is_none();
+    if let Some((key, t)) = alpha.filter(|_| decomposed) {
         if !t.shape.is_empty() || !matches!(t.dtype, Dtype::F16 | Dtype::BF16 | Dtype::F32) {
             return refused(format!("{key}: not a scalar float alpha"));
         }

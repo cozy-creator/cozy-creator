@@ -442,14 +442,13 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
                         validate(adapter, source_component, key, tensor)?;
                         factors.insert(role, tensor.shape.clone());
                     }
-                    let stated = match pair.get("alpha") {
-                        Some((key, tensor)) if plain(tensor) => validate(adapter, source_component, key, tensor)?,
-                        _ => None,
-                    };
-                    // ComfyUI's and LyCORIS' scale: α / r for a decomposed factor's rank r, else 1.
-                    let (rank, alpha) = match decomposed {
-                        Some(r) => (r, stated.unwrap_or(r as f64)),
-                        None => (1, 1.0),
+                    // ComfyUI's and LyCORIS' scale: α / r for a decomposed factor's rank r, else 1 (α unused).
+                    let (rank, alpha) = match (decomposed, pair.get("alpha")) {
+                        (Some(r), Some((key, tensor))) if plain(tensor) => {
+                            (r, validate(adapter, source_component, key, tensor)?.unwrap_or(r as f64))
+                        }
+                        (Some(r), _) => (r, r as f64),
+                        (None, _) => (1, 1.0),
                     };
                     let rows = match pair.get("rows") {
                         Some((key, _)) => kron_rows(adapter, source_component, key, a * c)?,
