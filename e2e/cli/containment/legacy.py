@@ -38,7 +38,7 @@ PHASES = frozenset({
     "startup", "public_bootstrap", "public_reset", "old_subject_create",
     "old_subject_success", "old_subject_failure", "old_subject_retry",
     "old_subject_verify_outputs", "old_subject_verify_logs", "old_subject_verify_numbers",
-    "old_subject_snapshot", "old_subject_stop", "candidate_install",
+    "old_subject_snapshot", "old_subject_stop", "old_subject_pin", "candidate_install",
     "candidate_update", "candidate_doctor", "wrong_binding", "native_adoption",
     "interrupted_import", "calcifer_crash", "calcifer_restart", "rehistory", "released_client", "encrypt", "lock_scan",
     "move_cold_retry", "complete",
@@ -786,6 +786,11 @@ def qualify(args, receipt: Receipt) -> None:
     checkpoint(receipt, "public_reset")
     reset_public_bootstrap(old, provenance)
     receipt.add("old_public_bootstrap", passed=True, old_binary_sha256=digest(args.old), source_sha256=provenance["source_sha256"])
+
+    # A released 0.24 machine takes the newest Runtime PyPI resolves; Runtime 0.46 needs TensorFS 0.25,
+    # another release line. Hold the old cohort to its own line (last pair this subject passed with).
+    checkpoint(receipt, "old_subject_pin")
+    command(args.old, "machine", "update", "local", "--runtime", "0.45.1", "--tensorfs", "0.24.2", "-y")
 
     # No reset is legal after this point. Every following byte is real old
     # application data and must be migrated or explicitly remain pending.
