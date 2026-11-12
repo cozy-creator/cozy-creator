@@ -7,53 +7,6 @@
   pointer-events: none;
 }
 
-/* On a box being worked on, its tool is a row among the rest, at the sheet's small step. At rest a box has no stack (cl-932). */
-.add-ons {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.here-all .add-on {
-  font-size: var(--small);
-}
-.add-on {
-  max-width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--float);
-  color: var(--ink);
-  font: calc(var(--t-small) * var(--ui)) / 1.25 var(--mono);
-}
-.add-on.tool,
-.add-on.fine-tune {
-  border-color: var(--ember);
-}
-.add-on-word {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.add-on button {
-  flex: none;
-  display: flex;
-  padding: 0;
-  color: var(--faint);
-}
-.add-on button:hover {
-  color: var(--bad);
-}
-.add-on .icon {
-  width: 13px;
-  height: 13px;
-}
-
 .active-models {
   margin: 8px 0 0;
   padding: 0;
