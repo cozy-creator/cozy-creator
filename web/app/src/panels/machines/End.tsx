@@ -5,7 +5,7 @@ import { Copyable } from "../../ui/Copyable"
 import { say } from "../../ui/notes"
 import { Confirm, Failure, useAsk } from "../common"
 import { usd } from "../format"
-import { stableName } from "./words"
+import { called, handle, stableName } from "./words"
 
 /** Puts what an ask answered into the list at once; the stream says the same a moment later. */
 function useKeepInList() {
@@ -21,6 +21,8 @@ export function End({ machine }: { machine: Machine }) {
   const ask = useAsk()
   const id = stableName(machine)
   const hourly = machine.rental && usd(machine.rental.usd_micros_per_hour)
+  // A rental its Hub hasn't named a host for is said as what it rents, which a question can't name.
+  const it = machine.placeholder ? "this rental" : machine.name
 
   const end = (force: boolean) =>
     void ask.run(async () => {
@@ -50,7 +52,7 @@ export function End({ machine }: { machine: Machine }) {
         <Confirm
           label="End"
           disabled={ask.busy}
-          says={`End ${machine.name}? Another computer rented it, and whatever it's doing for that computer stops.${hourly ? ` It bills ${hourly}/h until the Hub affirms it gone.` : ""}`}
+          says={`End ${it}? Another computer rented it, and whatever it's doing for that computer stops.${hourly ? ` It bills ${hourly}/h until the Hub affirms it gone.` : ""}`}
           yes="End it"
           onYes={() => end(false)}
         />
@@ -68,8 +70,8 @@ export function End({ machine }: { machine: Machine }) {
           disabled={ask.busy}
           says={
             order
-              ? `Stop the order for ${machine.name}? It buys nothing more, and anything it already placed is ended.`
-              : `End ${machine.name}? Outputs of its runs that haven't landed here land first, then it shuts down. Its files on the pod go.${hourly ? ` It bills ${hourly}/h until the Hub affirms it gone.` : ""}`
+              ? `Stop ${machine.placeholder ? "this order" : `the order for ${machine.name}`}? It buys nothing more, and anything it already placed is ended.`
+              : `End ${it}? Outputs of its runs that haven't landed here land first, then it shuts down. Its files on the pod go.${hourly ? ` It bills ${hourly}/h until the Hub affirms it gone.` : ""}`
           }
           yes="End it"
           onYes={() => end(false)}
@@ -81,7 +83,7 @@ export function End({ machine }: { machine: Machine }) {
           <Confirm
             label="End now"
             disabled={ask.busy}
-            says={`End ${machine.name} now? Outputs of its runs that haven't landed here are given up for good.`}
+            says={`End ${it} now? Outputs of its runs that haven't landed here are given up for good.`}
             yes="End it and give them up"
             onYes={() => end(true)}
           />
@@ -92,9 +94,9 @@ export function End({ machine }: { machine: Machine }) {
       )}
       {machine.end_failed && (
         <div className="failure" role="alert">
-          <span>{machine.name} was not shut down: {machine.end_failed}</span>
+          <span>{called(machine)} was not shut down: {machine.end_failed}</span>
           <span className="remedy">Nothing was ended, and it may still be billing. End it again to ask again.</span>
-          <Copyable text={`cozy machine end ${machine.name}`} />
+          <Copyable text={`cozy machine end ${handle(machine)}`} />
         </div>
       )}
       <Failure error={ask.error} lead="Couldn't end it" />

@@ -1066,7 +1066,16 @@ at?: string, };
 /**
  * One machine as Calcifer knows it: its kind, state, address, rental, latest status and runs.
  */
-export type Machine = { name: string, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null,
+export type Machine = {
+/**
+ * A rental's name is its host's, as its Hub names it once it places it there (Paul 11-12: one host, one name).
+ */
+name: string,
+/**
+ * What a rental is said as, in its name's place, until its Hub names the host it's placed on: `Renting an RTX 4090…`.
+ * Its name meanwhile is a handle, never shown. Placed again on another host, it's said so again until that host's word.
+ */
+placeholder?: string | null, kind: MachineKind, state: MachineState, hub?: string, rental_id?: string | null,
 /**
  * The name it had before its Hub named it; it keeps resolving.
  */

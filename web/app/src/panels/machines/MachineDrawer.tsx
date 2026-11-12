@@ -14,7 +14,7 @@ import { End } from "./End"
 import { Installed } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
 import { RenderHere, useRenderMachines } from "./RenderHere"
-import { endsWords, gpusWords, kindWords, named, spentWords, stateClass, stateWords } from "./words"
+import { called, endsWords, gpusWords, kindWords, named, spentWords, stateClass, stateWords } from "./words"
 
 /** The idle clock, and renewing it, which only a person asks for. */
 function KeepUp({ machine, now }: { machine: Machine; now: number }) {
@@ -166,7 +166,7 @@ export function MachineDrawer() {
   const ended = machine.state === "ended"
   const here = chosen.includes(machine.name)
   return (
-    <DrawerFrame title={machine.name} back={to("machines")}>
+    <DrawerFrame title={called(machine)} back={to("machines")}>
       <div className={`run-head ${here ? "render-here" : ""}`}>
         <span className={`dot ${stateClass(machine)}`} />
         <b>{stateWords(machine, now)}</b>

@@ -98,10 +98,10 @@ pub(crate) fn print(ctx: &Context, list: &MachineList) {
     }
     for m in live() {
         for note in Notices::default().fresh(m) {
-            println!("{}: {note}", m.name);
+            println!("{}: {note}", m.called());
         }
         if unreachable_since(m).is_some() {
-            println!("{}: `cozy machine end {}` ends it", m.name, m.name);
+            println!("{}: `cozy machine end {}` ends it", m.called(), m.handle());
         }
     }
     if rentals.count > 0 && ctx.full {
@@ -117,7 +117,7 @@ pub(crate) fn rows(ctx: &Context, list: &MachineList) -> Vec<Vec<String>> {
     live.map(|m| {
         let rental = m.rental.as_ref();
         vec![
-            m.name.clone(),
+            m.called().to_owned(),
             kind_cell(ctx, m),
             gpus_cell(m),
             family_cell(m.status.as_ref()),
@@ -152,7 +152,7 @@ pub(crate) async fn show(ctx: &Context, name: &str) -> Result<ExitCode, Error> {
 /// `cozy machine show`'s record of `m`, printed once or drawn live.
 pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
     let mut record = output::Record::new()
-        .field("machine", &m.name)
+        .field("machine", m.called())
         .field("kind", kind(m))
         .field("state", state_cell(m));
     if let Some(alias) = m.alias.as_deref().filter(|a| *a != m.name) {
@@ -202,7 +202,7 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
             record = record.field("image", digest);
         }
         if let Some(ssh) = &r.ssh {
-            record = record.field("ssh", format!("{ssh} (cozy machine ssh {})", m.name));
+            record = record.field("ssh", format!("{ssh} (cozy machine ssh {})", m.handle()));
         }
         if let Some(provider) = &r.provider {
             let at = r.datacenter.as_deref().map_or(String::new(), |d| format!(" {d}"));
@@ -215,7 +215,7 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
             "the Hub cannot reach it since {} ago, though its provider reports it running; \
              `cozy machine end {}` ends it",
             clock(now_ms() - since),
-            m.name
+            m.handle()
         ));
     }
     if let Some(reason) = &m.reason {
@@ -535,7 +535,7 @@ fn unreachable_since(m: &Machine) -> Option<i64> {
 fn end_failed(m: &Machine) -> Option<String> {
     let why = m.end_failed.as_deref()?;
     let billing = if m.kind == MachineKind::Rental { " and may still be billing" } else { "" };
-    Some(format!("{} was not shut down{billing}: {why}. `cozy machine end {}` asks again.", m.name, m.name))
+    Some(format!("{} was not shut down{billing}: {why}. `cozy machine end {}` asks again.", m.called(), m.handle()))
 }
 
 /// What an offline machine's owner can do: it is kept, never replaced, and refuses runs meanwhile.

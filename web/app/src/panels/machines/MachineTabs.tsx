@@ -8,7 +8,7 @@ import { Icon } from "../../ui/Icon"
 import { Bar } from "../common"
 import { workWords } from "../runs/words"
 import { type Doing, doingOf, fetchedWords, fractionOf, operationName, runName, waits, working } from "./activity"
-import { gpusWords, stableName, stateWords } from "./words"
+import { called, gpusWords, stableName, stateWords } from "./words"
 
 type Mark = "broken" | "up" | "download" | "install" | "work" | "idle"
 
@@ -111,9 +111,9 @@ function Activity({ machine, doing, boxes, to, chip, close }: { machine: Machine
     }
   }, [chip, close])
   return (
-    <div className="activity" ref={held} role="dialog" aria-label={`What ${machine.name} is doing`} style={at ? { top: at.top, right: at.right } : { visibility: "hidden" }}>
+    <div className="activity" ref={held} role="dialog" aria-label={`What ${called(machine)} is doing`} style={at ? { top: at.top, right: at.right } : { visibility: "hidden" }}>
       <header>
-        <b>{machine.name}</b>
+        <b>{called(machine)}</b>
         <span className="said">{[gpusWords(machine), stateWords(machine, Date.now())].filter(Boolean).join(", ")}</span>
         <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)} onClick={close}>
           Details
@@ -170,7 +170,7 @@ export function MachineTabs({ to, projectId }: { to: (rest?: string) => string; 
               {marksOf(machine, doing).map((mark) => (
                 <MarkOf key={mark} mark={mark} />
               ))}
-              <b>{machine.name}</b>
+              <b>{called(machine)}</b>
               {total > 0 && <span className="load">{total}</span>}
             </button>
           )

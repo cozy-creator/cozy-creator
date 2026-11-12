@@ -675,6 +675,22 @@ impl Calcifer {
         Ok(())
     }
 
+    /// Renames a machine that has not served (its Hub named it); its runs move with it, and the
+    /// old name stays its alias.
+    pub(crate) fn rename_machine(&self, old: &str, new: &str) -> Result<bool, Error> {
+        let renamed = self.store.rename_machine(old, new)?;
+        if renamed {
+            let mut machines = lock(&self.machines);
+            for name in [old, new] {
+                if let Some(entry) = machines.remove(name) {
+                    entry.changed.send_replace(());
+                }
+            }
+            self.machine_changed();
+        }
+        Ok(renamed)
+    }
+
     /// Adds a warning to an unsettled run.
     pub(crate) fn warn(&self, id: &RunId, warning: &::api::calcifer::Warning) -> Result<(), Error> {
         let events = self.store.warn(id.as_str(), warning)?;
