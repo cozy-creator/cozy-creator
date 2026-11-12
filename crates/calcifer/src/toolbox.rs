@@ -384,11 +384,11 @@ pub(crate) async fn validate_models(api: &Arc<Api>, target: &str, dir: &Path, fi
         let Some(slot) = tool.models.iter().find(|slot| slot.slot == choice.slot) else { continue };
         let mut family = slot.family.clone();
         if let Some(reference) = choice.reference.as_deref() {
-            let found = crate::hub::checkpoints::check_choice(api, &origin, &slot.slot, reference, family.as_deref(), false).await?;
+            let found = crate::hub::checkpoints::check_choice(api, &origin, &slot.slot, reference, family.as_deref(), slot.kind).await?;
             family = family.or(found);
         }
         for adapter in choice.adapters {
-            crate::hub::checkpoints::check_choice(api, &origin, &slot.slot, &adapter.reference, family.as_deref(), true).await?;
+            crate::hub::checkpoints::check_choice(api, &origin, &slot.slot, &adapter.reference, family.as_deref(), Some(api::model_ref::ModelKind::Lora)).await?;
         }
     }
     Ok(())

@@ -286,6 +286,8 @@ export class CanvasStore {
   readonly menu = signal<{ name: string; x: number; y: number } | null>(null)
   /** The box whose file is being looked at large, over everything. */
   readonly viewing = signal<string | null>(null)
+  /** The one asset shown in the viewport-sized Focus surface; the canvas camera stays in Wander. */
+  readonly focusedName = signal<string | null>(null)
   /** Zoomed this far out a box is its picture, its name and marks for its stack, which is all that can be seen: thousands are drawn at once. */
   readonly far = signal(false)
   /** The canvas's zoom as pictures are asked for it: a power of two, so a zoom asks for a sharper picture only as it doubles. */
@@ -423,6 +425,7 @@ export class CanvasStore {
     this.flow = null
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
     this.inPlace = null
+    this.focusedName.set(null)
     this.dragging.clear()
     this.dragFrom.clear()
     this.setHot(null)
@@ -443,6 +446,10 @@ export class CanvasStore {
     }
     this.menu.set(null)
     this.viewing.set(null)
+    if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
+    this.inPlace = null
+    this.closeSurface()
+    this.focusedName.set(null)
   }
 
   // Reading, by name
@@ -1801,6 +1808,7 @@ export class CanvasStore {
       this.inPlace.name = to
       this.hereRenamed(to)
     }
+    if (this.focusedName.get() === from) this.focusedName.set(to)
     this.notify(to)
     this.flow?.updateNodeData(id, { name: to })
   }

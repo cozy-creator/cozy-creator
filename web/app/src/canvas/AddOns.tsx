@@ -14,7 +14,8 @@ export function Chip({ word, title, kind, off, mark, pick }: { word: string; tit
   if (mark) return <li className={`add-on ${kind ?? ""}`} title={title} />
   return (
     <li className={`add-on ${kind ?? ""}`} title={title} onClick={(event) => event.stopPropagation()}>
-      {pick ? <button type="button" className="add-on-word" aria-label="Models and LoRAs" onClick={pick}>{word}</button> : <span className="add-on-word">{word}</span>}
+      <span className="add-on-word">{word}</span>
+      {pick && <button type="button" aria-label="Models and LoRAs" onClick={pick}>Models &amp; LoRAs</button>}
       {off && (
         <button type="button" className="nodrag" aria-label={off.label} title="Take it off" onClick={off.take}>
           <Icon name="close" />

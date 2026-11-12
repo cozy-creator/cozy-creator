@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import type { NodeProps, Viewport } from "@xyflow/react"
 import { useReactFlow } from "@xyflow/react"
-import { type CSSProperties, type MouseEvent, memo, type PointerEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { type CSSProperties, type MouseEvent, memo, type PointerEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
 import { machinesQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
@@ -21,7 +21,7 @@ import { MentionText } from "./MentionText"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { FPS, framesIn, timecode } from "./ranges"
-import { aspectOf, bodyBox, bodyWidth, faceOf, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -203,6 +203,7 @@ function Takes({ view, name, width, side }: { view: ElementView; name: string; w
             {version.main && !version.main.absent ? (
               <TakeThumb main={version.main} width={width} onShown={version === newest && version.main.field === "image" ? () => preload(client, store.projectId, version.main!.sha256) : undefined} />
             ) : null}
+            {asset.kind === "image" && <span className="variant-number">v{version.number}</span>}
           </button>
           <button type="button" className="take-off" aria-label={`Discard ${asset.noun} ${version.number}`} title={`Discard ${asset.noun} ${version.number}`} onClick={() => store.discardTake(name, version.number)}>
             <Icon name="close" />
@@ -464,7 +465,7 @@ function Description({ name, view, rule }: { name: string; view: ElementView; ru
 }
 
 /** The corner, pulled to size a box. Showing no picture, or its words, a box takes its tool's shape from the pull, both ways: the nearest it can make shows in the middle, and it settles there when let go. Showing a picture, it only scales. */
-function Corner({ name, view, width }: { name: string; view: ElementView; width: number }) {
+function Corner({ name, view, width, focused = false }: { name: string; view: ElementView; width: number; focused?: boolean }) {
   const store = useCanvasStore()
   const flow = useReactFlow()
   const tools = useSignal(store.tools)
@@ -526,7 +527,9 @@ function Corner({ name, view, width }: { name: string; view: ElementView; width:
           if (!pose) return
           event.currentTarget.setPointerCapture(event.pointerId)
           const zoom = flow.getZoom()
-          const delta = store.surfaceOf(name)?.resizeDelta ?? ((a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (b.x - a.x) / zoom, y: (b.y - a.y) / zoom }))
+          const frame = event.currentTarget.closest(".media")?.getBoundingClientRect()
+          const inverse = focused && frame?.width ? pose.w / frame.width : 1 / zoom
+          const delta = (focused ? undefined : store.surfaceOf(name)?.resizeDelta) ?? ((a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (b.x - a.x) * inverse, y: (b.y - a.y) * inverse }))
           from.current = { x: event.clientX, y: event.clientY, w: pose.w, h: bodyBox(view, pose).w / aspectOf(view), delta, owner: store.inPlace }
           if (store.inPlace) store.inPlace.pulled = true
         }}
@@ -559,7 +562,24 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
-const CardBody = memo(function CardBody({ name, width }: { name: string; width: number }) {
+function FocusFrame({ enabled, aspect, children }: { enabled: boolean; aspect: number; children: ReactNode }) {
+  const element = useRef<HTMLDivElement>(null)
+  const [room, setRoom] = useState({ width: 0, height: 0 })
+  useLayoutEffect(() => {
+    if (!enabled || !element.current) return
+    const held = element.current
+    const measure = () => setRoom((was) => was.width === held.clientWidth && was.height === held.clientHeight ? was : { width: held.clientWidth, height: held.clientHeight })
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(held)
+    return () => observer.disconnect()
+  }, [enabled])
+  if (!enabled) return <>{children}</>
+  const width = room.width && room.height ? Math.min(room.width, room.height * aspect) : undefined
+  return <div ref={element} className="focus-viewer" style={{ "--focus-media-w": width ? `${width}px` : "100%", "--focus-media-h": width ? `${width / aspect}px` : "100%" } as CSSProperties}>{children}</div>
+}
+
+const CardBody = memo(function CardBody({ name, width, focused = false }: { name: string; width: number; focused?: boolean }) {
   const store = useCanvasStore()
   const flow = useReactFlow<ElementNode>()
   const view = useElement(name)
@@ -581,7 +601,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   })
   // One geometry owner for the real card, including the lower panel and its takes.
   useLayoutEffect(() => {
-    if (!here || owner?.name !== name || !self.current) return
+    if (focused || !here || owner?.name !== name || !self.current) return
     const card = self.current
     const id = store.idOf(name)
     if (!id) return
@@ -691,7 +711,7 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
       for (const [name, value, priority] of original) card.style.setProperty(name, value, priority)
       if (width) card.style.setProperty("width", width, priority)
     }
-  }, [here, name, store, flow, owner])
+  }, [here, focused, name, store, flow, owner])
   if (!view) return null
 
   const asset = view.asset
@@ -714,10 +734,10 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
   return (
     <div
       ref={self}
-      className={`card ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === (view.asset.approved ?? view.asset.version) ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
+      className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === (view.asset.approved ?? view.asset.version) ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
-      style={{ width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` } as CSSProperties}
+      style={(focused ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 210 : 52 : asset?.tool ? 220 : 0}px` } : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }) as CSSProperties}
       onClick={buttonsOnly}
       onAnimationEnd={(event) => {
         if (event.target === event.currentTarget && view.landing) store.patch(name, { landing: undefined })
@@ -784,12 +804,12 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
         )}
         <span className={`dot ${dotOf(view)}`} />
       </div>
-      {asset?.timeline && editing ? (
+      <FocusFrame enabled={focused} aspect={aspectOf(view)}>{asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (
         <Media view={view} name={name} cardWidth={here ? HERE_THUMB : width} restWidth={width}>
           {here && (asset?.kind === "text" && !asset.tool ? <TextAsset name={name} view={view} /> : <InFrame name={name} view={view} />)}
-          {here && !view.hereWords && asset && shownVersion?.main && (
+          {here && !focused && !view.hereWords && asset && shownVersion?.main && (
             <div
               className="take-out nodrag nopan"
               onPointerDown={(event) => {
@@ -798,9 +818,9 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
               }}
             />
           )}
-          {asset && !view.placing && !lite && <Corner name={name} view={view} width={width} />}
+          {asset && !view.placing && !lite && (!focused || view.hereWords) && <Corner name={name} view={view} width={width} focused={focused} />}
         </Media>
-      )}
+      )}</FocusFrame>
       {!lite && asset?.kind === "image" && !view.placing && <ImageVersions name={name} view={view} width={width} />}
       {!lite && asset && asset.kind !== "image" && !view.placing && !looking && <ShapeLine name={name} view={view} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
@@ -841,10 +861,21 @@ const CardBody = memo(function CardBody({ name, width }: { name: string; width: 
 
 /** Thin, as React Flow renders it: identity and body width come from one geometry publication. */
 export function Card({ data }: NodeProps<ElementNode>) {
+  const store = useCanvasStore()
+  const focused = useSignal(store.focusedName)
+  const view = useElement(data.name)
+  if (focused === data.name) return <div className="focus-placeholder" style={{ width: view ? bodyWidth(view, data.width) : data.width, height: view ? heightFor(view, data.width) : 1 }} />
   return (
     <>
       <CardBody name={data.name} width={data.width} />
       <AddOns name={data.name} />
     </>
   )
+}
+
+export function FocusedCard({ name }: { name: string }) {
+  const store = useCanvasStore()
+  const view = useElement(name)
+  if (!view) return null
+  return <CardBody name={name} width={store.poseOf(name)?.w ?? widthFor(view)} focused />
 }
