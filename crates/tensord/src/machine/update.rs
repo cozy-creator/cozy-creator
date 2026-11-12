@@ -1216,7 +1216,7 @@ impl Updates {
             let machine = self.machine.as_ref().ok_or_else(|| invalid("this machine fetches nothing"))?;
             let stop = self.stop.lock().unwrap().clone();
             let downloads = self.paths.update("downloads");
-            return super::pypi::wheel_at(&choice.url, &choice.sha256, &choice.file, &downloads, machine, &stop);
+            return super::pypi::wheel_at(&choice.url, &choice.sha256, &choice.file, &downloads, machine, crate::origin::priority::NOW, &stop);
         }
         if !choice.file.is_empty() {
             let path = self

@@ -27,7 +27,7 @@ pub(crate) fn wheel(distribution: &str, version: &str, uv: &super::uv::Uv, pytho
     let plan = super::update::compile_sdk(uv, python, &input, stop, true)?
         .map_err(|why| io::Error::other(format!("{project} {version}: {why}")))?;
     let wheel = selected(&plan, &project, version)?;
-    wheel_at(&wheel.url, &wheel.hashes.sha256, &wheel.filename()?, dir, machine, stop)
+    wheel_at(&wheel.url, &wheel.hashes.sha256, &wheel.filename()?, dir, machine, priority::NOW, stop)
 }
 
 #[derive(serde::Deserialize)]
@@ -75,7 +75,7 @@ fn selected(plan: &str, distribution: &str, version: &str) -> io::Result<Artifac
 /// The newest GitHub prerelease of `distribution` whose version `meets` admits and that holds a wheel
 /// for this machine, landed in `dir`: its version and path. None: no release meets it. Err: the
 /// releases couldn't be read, which says nothing of what is published.
-pub(crate) fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<Option<(String, PathBuf)>> {
+pub(crate) fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: &Path, machine: &Machine, order: u64, stop: &Stop) -> io::Result<Option<(String, PathBuf)>> {
     #[derive(serde::Deserialize)]
     struct Release { tag_name: String, #[serde(default)] draft: bool }
     // Nothing yet says what is published: `NotConnected`, asking again may be answered.
@@ -96,7 +96,7 @@ pub(crate) fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: 
             Err(e) => return Err(unread(e)),
         };
         if let Some((file, sha256)) = api::prerelease::wheel(&sums, distribution, version, &platform) {
-            let wheel = wheel_at(&format!("{base}/{file}"), sha256, file, dir, machine, stop)?;
+            let wheel = wheel_at(&format!("{base}/{file}"), sha256, file, dir, machine, order, stop)?;
             return Ok(Some((version.to_owned(), wheel)));
         }
     }
@@ -104,8 +104,8 @@ pub(crate) fn prerelease(distribution: &str, meets: &dyn Fn(&str) -> bool, dir: 
 }
 
 /// Wheel `file` at an https `url`, redirects followed: its bytes are held to `sha256`, so no host
-/// vouches for anything. Other bytes fail `wheel_digest_mismatch`.
-pub(crate) fn wheel_at(url: &str, sha256: &str, file: &str, dir: &Path, machine: &Machine, stop: &Stop) -> io::Result<PathBuf> {
+/// vouches for anything. Other bytes fail `wheel_digest_mismatch`. At `order` in the download line: an install's, its job's.
+pub(crate) fn wheel_at(url: &str, sha256: &str, file: &str, dir: &Path, machine: &Machine, order: u64, stop: &Stop) -> io::Result<PathBuf> {
     // A private server's root as uv trusts it: the bundle SSL_CERT_FILE names. Only this fetch
     // reads it; the Hub's clients trust their own CA alone.
     let bundle = api::config::environment().get("SSL_CERT_FILE").and_then(|path| fs::read(path).ok()).filter(|pem| !pem.is_empty());
@@ -120,13 +120,13 @@ pub(crate) fn wheel_at(url: &str, sha256: &str, file: &str, dir: &Path, machine:
             io::Error::new(kind, format!("{file} from {url}: {e}"))
         }
     };
-    let blob = object_at(machine, url, sha256, None, bundle, stop).map_err(failed)?;
+    let blob = object_at(machine, url, sha256, None, bundle, order, stop).map_err(failed)?;
     land(&blob, dir, file)
 }
 
 /// Object `sha256` at `url` (its length asked of the server when not given), through the store:
 /// its path there. `trust` is a PEM bundle of roots beyond the public ones.
-pub(crate) fn object_at(machine: &Machine, url: &str, sha256: &str, length: Option<u64>, trust: Option<Vec<u8>>, stop: &Stop) -> Result<PathBuf> {
+pub(crate) fn object_at(machine: &Machine, url: &str, sha256: &str, length: Option<u64>, trust: Option<Vec<u8>>, order: u64, stop: &Stop) -> Result<PathBuf> {
     let length = match length {
         Some(length) => length,
         None => {
@@ -135,13 +135,13 @@ pub(crate) fn object_at(machine: &Machine, url: &str, sha256: &str, length: Opti
         }
     };
     let object = ObjectRef { sha256: sha256.into(), length };
-    fetch(machine, url, &object, trust.map(Arc::new), stop)
+    fetch(machine, url, &object, trust.map(Arc::new), order, stop)
 }
 
 /// One object from one URL, through the store.
-fn fetch(machine: &Machine, url: &str, object: &ObjectRef, trust: Option<Arc<Vec<u8>>>, stop: &Stop) -> Result<PathBuf> {
+fn fetch(machine: &Machine, url: &str, object: &ObjectRef, trust: Option<Arc<Vec<u8>>>, order: u64, stop: &Stop) -> Result<PathBuf> {
     let remote = Remote { origin: Arc::new(Url(url.into())), trust, local: is_loopback_origin(url) };
-    machine.objects(&remote, std::slice::from_ref(object), priority::NOW, stop)?;
+    machine.objects(&remote, std::slice::from_ref(object), order, stop)?;
     machine.store().path(object).map_err(|e| e.refusal())
 }
 

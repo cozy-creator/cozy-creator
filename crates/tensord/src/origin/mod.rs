@@ -32,13 +32,14 @@ const VOLUME_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// run's needs in job order (acceptance, as its GPU work queues), then what jobs waiting on another's
 /// output will read, then guesses, then warm sets. The downloader finishes one before the next.
 pub(crate) mod priority {
-    /// A reader is blocked on it.
-    pub(crate) const NOW: u64 = 0;
-    /// The order of what a started run fetches (its calls' weights): ahead of every queued root,
-    /// whose order is its acceptance, from 1.
+    /// What the machine itself is blocked on (its update), no job's. Before it, 0: a started call's read of what isn't
+    /// here yet (cl-966).
+    pub(crate) const NOW: u64 = 1;
+    /// The run a started run's fetches are ordered as (its calls' weights): ahead of every queued
+    /// root, whose order is its acceptance, from 1.
     pub(crate) const STARTED: u64 = 0;
     fn at(class: u64, run: u64, rank: u32) -> u64 {
-        1 + (class << 62 | run.min((1 << 30) - 1) << 32 | u64::from(rank))
+        2 + (class << 62 | run.min((1 << 30) - 1) << 32 | u64::from(rank))
     }
     /// Next for `run` (by acceptance), `rank` within it.
     pub(crate) fn next(run: u64, rank: u32) -> u64 {
