@@ -17,8 +17,43 @@ from urllib.parse import quote, urlsplit
 DOMAIN = "cozy.project-containment.proof.v1"
 
 
+# Closed fixture case codes only; never serialize a free-form exception message.
+_FAILURE_CODES = frozenset({
+    'a_lock_after_b_saved', 'a_lock_unexpected_refusal', 'actual_private_browser_flags',
+    'actual_private_browser_redirects', 'b_edit_not_persisted', 'born_encrypted',
+    'browser_birth_reused', 'browser_durable_storage', 'browser_edit_not_visible',
+    'browser_ownership_distinct', 'busy_edit_resume', 'busy_lock_lost_b_draft',
+    'chrome_missing', 'cli_exit', 'closed_health_sink',
+    'cold_page_ready', 'composed_candidate_not_ready', 'core_control_not_authorized',
+    'core_pattern_invalid', 'crash_page_ready', 'crashed_browser_tree_not_retired',
+    'crashed_profile_not_retired', 'csrf_no_store_refusal', 'encrypted_create_identity',
+    'exact_unlocked_project_root', 'fixture_failure', 'fixture_requires_stopped_calcifer',
+    'foreign_browser_changed', 'foreign_browser_start', 'foreign_cleanup_birth',
+    'foreign_profile_tmpfs', 'holder_loopback', 'holder_ready',
+    'hosted_display_missing', 'hosted_linux_only', 'kill_process_birth',
+    'last_window_process_tree_alive', 'last_window_profile_left', 'lock_closed_admission_before_browser_drain',
+    'lock_discarded_pending_b_edit', 'lock_not_started', 'native_absolute_write_not_denied',
+    'native_allowed_preexists', 'native_auth_required', 'native_capability',
+    'native_core_file_created', 'native_core_protection_failed', 'native_file_not_retained_after_restart',
+    'native_history_not_retained_after_restart', 'native_http_status', 'native_outside_file_created',
+    'native_private_run_identity_missing', 'native_project_write_failed', 'native_terminal_result_missing',
+    'old_holder_authority_survived', 'outside_baseline_replaced', 'outside_project_canary',
+    'owned_browser_tree_not_retired', 'owned_host_core_control_required', 'owned_host_core_control_unavailable',
+    'owned_no_store_200', 'owned_no_store_206', 'owned_no_store_conditional',
+    'owned_page_ready', 'owned_profile_volatile', 'piped_core_not_refused',
+    'piped_core_refusal_not_specific', 'private_browser_argv_canary', 'proof_action',
+    'proof_fd5_in_use', 'proof_frame', 'proof_handshake',
+    'proof_process_birth', 'real_browser_edit', 'receipt_schema',
+    'regular_core_native_execution_failed', 'reopened_page_ready', 'response_object',
+    'restart_holder_ready', 'scan_decoder_unavailable', 'scan_markers_missing',
+    'shared_owned_browser', 'whole_browser_retirement',
+})
+
 class Failure(Exception):
     """Only fixed case codes may leave the fixture; never include response/error bodies."""
+    def __init__(self, code: str):
+        self.code = code if code in _FAILURE_CODES else "fixture_failure"
+        super().__init__(self.code)
 
 
 def require(ok: object, code: str) -> None:
