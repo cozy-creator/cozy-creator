@@ -342,8 +342,14 @@ function check(name, ok, detail) {
   const landed = await until('the delete and its undo', history, (held) => held.entries.some((entry) => entry.words === 'Deleted red' && entry.undone)).catch(history);
   check('offline_landed_in_order', landed.entries?.some((entry) => entry.words === 'Deleted red' && entry.undone) && Boolean(lines('red')), landed.entries?.slice(0, 3));
   check('offline_file_as_before', held() === before, storedOf(folder));
+  // A real restart: STOP is a SIGTERM, which returns while Calcifer drains, so the old one is waited out before START starts another.
+  const calciferPid = () => JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).pid;
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (why) { return why.code === 'EPERM'; } };
+  const stopped = calciferPid();
   execSync(process.env.STOP, { shell: 'bash', stdio: 'ignore' });
+  await until('the old Calcifer gone', () => Promise.resolve(alive(stopped)), (up) => !up);
   execSync(process.env.START, { shell: 'bash', stdio: 'ignore' });
+  check('calcifer_restarted', calciferPid() !== stopped, { before: stopped, after: calciferPid() });
   const kept = await edit('history', '-n', '3');
   check('history_survives_a_restart', kept.entries.some((entry) => entry.words === 'Deleted red' && entry.undone), kept);
   const again = await edit('redo');

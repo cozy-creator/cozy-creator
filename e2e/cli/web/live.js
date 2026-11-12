@@ -386,7 +386,9 @@ function replaceFile(at, text) {
   }));
   await timed('hand_delete', { gone: 'live_auto' }, () => saved(() => projectJson(folder, 'DELETE', '/assets/live_auto')));
   await timed('hand_mended', { name: 'live_b', has: 'Mended' }, () => saved(() => projectJson(folder, 'PATCH', '/assets/live_b', { fields: { text: 'Mended' } })));
-  refused.length = 0;
+  // Nothing so far was refused on purpose (the broken project.yaml this once cleared for is gone), so every refusal counts at the end.
+  // A conflict asked of the person: Paul ruled none (cl-904, merged by character), whatever it would be called.
+  const asked = async () => (await page.getByRole('alertdialog').count()) + (await box('live_tool').getByRole('button', { name: /keep mine|keep theirs|take the file/i }).count());
 
   // What's typed and not saved stays. A command changing another field of that asset leaves it to go on, and what's typed is saved over it.
   const words = box('live_tool').locator('.mention-text[data-field=instructions]');
@@ -396,14 +398,15 @@ function replaceFile(at, text) {
   await page.keyboard.press('End');
   await page.keyboard.type(' TYPED-ONE');
   // It's behind More, so what shows is that the page read it.
-  const readIt = page.waitForResponse((answer) => new URL(answer.url()).pathname.endsWith('/assets/live_tool'));
+  // The page's read of it, not its own save of what's typed (a PATCH to the same path).
+  const readIt = page.waitForResponse((answer) => answer.request().method() === 'GET' && new URL(answer.url()).pathname.endsWith('/assets/live_tool'));
   const other = await project('set', 'live_tool', 'style=noir');
   await readIt;
   times.another_field = Date.now() - other.at;
   check('another_field_live', times.another_field <= LIVE_MS, times.another_field);
-  await page.waitForTimeout(100);
+  await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   check('another_field_leaves_it', (await typedText()).includes('TYPED-ONE'), await typedText());
-  check('another_field_nothing_asked', (await box('live_tool').locator('button:has-text("Keep mine")').count()) === 0);
+  check('another_field_nothing_asked', (await asked()) === 0);
   await page.mouse.click(1700, 1100);
   await until('typed saved over it', async () => (await held('live_tool')).fields, (fields) => fields?.instructions?.includes('TYPED-ONE') && fields?.style === 'noir');
   check('typed_and_theirs_both_stand', true);
@@ -427,7 +430,7 @@ function replaceFile(at, text) {
   const merged = await until('the page shows them merged', typedText, (text) => text.includes('FROM-THE-CLI') && text.endsWith('TYPED-TWO MORE')).catch(typedText);
   check('typing_goes_on_merged', merged.includes('FROM-THE-CLI') && merged.endsWith('TYPED-TWO MORE'), merged);
   await shot('merged');
-  check('nothing_asked', (await box('live_tool').locator('button:has-text("Keep mine")').count()) === 0);
+  check('nothing_asked', (await asked()) === 0);
 
   // Renamed by a command while being typed in: the same box, and what's typed stays.
   await open('live_tool');

@@ -91,7 +91,7 @@ async function died(why) {
     const media = await boxOf(page, name).locator('.media').first().boundingBox();
     await page.mouse.dblclick(media.x + media.width / 2, media.y + media.height / 2);
     await focused(name).waitFor();
-    await page.waitForTimeout(300);
+    await settled(page);
   };
   const left = async () => {
     await until('Focus left', () => page.locator('.focus-viewport').count(), (n) => n === 0);
@@ -133,10 +133,12 @@ async function died(why) {
   };
   let point = await media('one');
   await page.mouse.dblclick(point.x, point.y);
-  await page.waitForTimeout(60);
+  // Still entering (FocusedViewport's data-entering, while the canvas moves in): looked for every frame, so a move of a few frames is caught.
+  const entering = await page.waitForFunction(() => Boolean(document.querySelector('[data-focused-asset="one"][data-entering]')), null, { polling: 'raf', timeout: 5000 }).then(() => true, () => false);
   await page.keyboard.press('Escape');
   await left();
   seen.at_once = await viewport();
+  check('left_at_once_while_it_was_entering', entering);
   check('left_at_once_the_canvas_is_where_it_was', same(before, seen.at_once), { before, after: seen.at_once });
   await enter('one');
   await page.goBack();
@@ -149,7 +151,7 @@ async function died(why) {
   point = await media('one');
   await page.mouse.dblclick(point.x, point.y);
   await focused('one').waitFor();
-  await page.waitForTimeout(300);
+  await settled(page);
   await page.keyboard.press('Escape');
   await left();
   seen.in_again_on_the_way_back = await viewport();
@@ -157,8 +159,10 @@ async function died(why) {
 
   // Its picture zoomed in Focus first.
   await enter('one');
-  for (let i = 0; i < 3; i++) await page.getByRole('button', { name: 'Zoom in image', exact: true }).click().catch(() => page.keyboard.press('Control+='));
-  await page.waitForTimeout(400);
+  for (let i = 0; i < 3; i++) await page.getByRole('button', { name: 'Zoom in image', exact: true }).click();
+  // Zoomed: its Zoom out is enabled only past 1× (FocusFrame.tsx). Unzoomed, this would be Esc again, not this case.
+  const zoomedIn = await until('its picture zoomed', () => page.getByRole('button', { name: 'Zoom out image', exact: true }).isEnabled(), Boolean, 5000).then(() => true, () => false);
+  check('zoomed_in_focus_its_picture_zoomed', zoomedIn);
   await page.keyboard.press('Escape');
   await left();
   seen.zoomed_in_focus = await viewport();
@@ -171,7 +175,7 @@ async function died(why) {
     dispatchEvent(new PopStateEvent('popstate'));
   }, new URL(await projectUrl(id, '/assets/two')).pathname);
   await focused('two').waitFor();
-  await page.waitForTimeout(400);
+  await settled(page);
   await shot('second-box');
   await page.keyboard.press('Escape');
   await left();

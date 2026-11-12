@@ -9,6 +9,7 @@
 // 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
+const { readFileSync } = require('fs');
 const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
 
 const failures = [];
@@ -20,8 +21,11 @@ function check(name, ok, detail) {
   during = name;
   if (!ok) failures.push(name);
 }
+// What this cell took off this computer's tool list, put back if it dies first: the cells after it read the same list.
+let putBack;
 async function died(why) {
   failures.push(`${during}: ${why}`);
+  if (putBack) await putBack().catch(() => {});
   await lastLook();
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(1);
@@ -153,18 +157,22 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   await shot('boxes');
 
   // Taken off, it's off the list at rest and the palette; its package added, it's back.
+  putBack = () => fetch(`${calcifer()}/v1/tools/list`, { method: 'POST', headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ add: image.split('/')[0] }) });
   const off = await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ remove: [image] }) });
   check('taken_off', off.status === 200 && off.body?.without?.includes(image), off);
   await page.reload();
   const offRows = await implementationRow(page, 'image').then(() => page.locator(`.tools [data-implementation][data-tool-operation="image"]`).evaluateAll((rows) => rows.map((one) => one.dataset.tool)));
   check('off_the_list_and_the_palette', !(await api(`/v1/tools?project=${id}`)).body.tools.some((tool) => tool.id === image) && !offRows.includes(image), offRows);
   const back = await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ add: image.split('/')[0] }) });
+  putBack = undefined;
   check('back_when_added', back.status === 200 && !back.body?.without?.includes(image) && (await api(`/v1/tools?project=${id}`)).body.tools.some((tool) => tool.id === image), back);
 
   // No Hub: what's installed, and the palette says so. Then Calcifer as it was, and the Hub's tools again.
   seen.hub_checked = Boolean(process.env.NO_HUB && process.env.RESTART);
   if (seen.hub_checked) {
-    await shell(process.env.NO_HUB).catch(() => {});
+    // Each restart done, or said: a failed one leaves the old Calcifer answering, on its Hub, and the cells after on the wrong one.
+    const noHub = await shell(process.env.NO_HUB).then(() => true, (why) => String(why));
+    check('restarted_with_no_hub', noHub === true, noHub);
     await until('Calcifer back with no Hub', () => api('/v1/status').catch(() => null), (answer) => answer?.status === 200);
     const away = (await api(`/v1/tools?project=${id}`)).body;
     seen.no_hub = { note: away?.note, tools: away?.tools?.length };
@@ -173,7 +181,8 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
     const said = await until('the palette says so', () => page.locator('.tools [data-palette="tools"] p').allInnerTexts(), (texts) => texts.some((text) => text.includes("only what's installed"))).catch((why) => String(why));
     check('the_palette_says_so', Array.isArray(said), said);
     await shot('no-hub');
-    await shell(process.env.RESTART).catch(() => {});
+    const onHub = await shell(process.env.RESTART).then(() => true, (why) => String(why));
+    check('restarted_on_its_hub', onHub === true, onHub);
     await until('Calcifer back as it was', () => api('/v1/status').catch(() => null), (answer) => answer?.status === 200);
     const again = await until('the Hub read again', async () => (await api(`/v1/tools?project=${id}`)).body, (body) => body && !body.note && body.tools.some((tool) => tool.id === image)).catch(() => null);
     check('the_hub_tools_back', Boolean(again));

@@ -119,7 +119,7 @@ function deletionEvidence(page, pathname, events) {
     check('not_written_while_held', boxes().includes('goes'), boxes());
     await holder.release();
     await until('saved once it is let go', () => Promise.resolve(boxes()), (names) => !names.includes('goes'));
-    check('saved_once_let_go', boxes().includes('stays'), boxes());
+    check('saved_once_let_go', !boxes().includes('goes') && boxes().includes('stays'), boxes());
     await until('the note goes', () => note.count(), (n) => n === 0);
     check('the_note_goes', true);
     check('no_page_errors', errors.length === 0, errors);

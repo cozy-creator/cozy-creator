@@ -100,9 +100,12 @@ async function drag(page, name, dx, dy) {
     check('no_sign_in_needed', (await third.locator('.gate').count()) === 0 && (await third.evaluate(() => localStorage.getItem('cozy.session'))) === held);
     check('still_on_canvas', (await third.locator('.nm:text-is("here")').count()) === 1);
     const wasRow = await row('here');
+    const otherWas = await place(second, 'here');
     await drag(third, 'here', 90, 40);
     await until('a move lands after the restart', () => row('here'), (now) => now !== wasRow);
-    await until('the other tab still follows', () => second.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('offline')));
+    // The other tab is back too: it shows the move, not merely no "offline".
+    await until('the other tab still follows', () => place(second, 'here'), (now) => now !== otherWas);
+    check('the_other_tab_follows_after_the_restart', (await second.locator('.pill.warn').allTextContents()).every((line) => !line.includes('offline')));
     await third.reload();
     await third.waitForSelector('.nm:text-is("here")');
     check('reload_after_restart', true);
