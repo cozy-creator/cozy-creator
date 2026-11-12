@@ -161,6 +161,11 @@ fn book(folder: &Folder) -> Arc<Book> {
     })
 }
 
+/// When the oldest edit the history keeps was made: no Undo reaches past it.
+pub(super) fn oldest_ms(folder: &Folder) -> Option<i64> {
+    book(folder).entries.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|entry| entry.at_ms).min()
+}
+
 /// `changes`, made by `by`, in `entries`: one more entry, or onto what `edits` began, if one did and it stands. The rows that change.
 fn add(entries: &mut Vec<Entry>, by: By, edits: Vec<String>, changes: Vec<Change>, lock: Option<&Lock>) -> (Vec<db::OpRow>, Vec<(String, u64)>) {
     let joins = entries.iter_mut().rev().find(|entry| entry.undone.is_none() && entry.edits.iter().any(|edit| edits.contains(edit)));
@@ -700,6 +705,11 @@ fn conflict(book: &Book, entry: &Entry, change: &Change, way: Way, what: &str) -
         let said = format!("can't {} \"{}\": {what}: reclaiming unused files cleared it, so it can't come back", way.verb(), entry.words);
         return Refusal(Error::new(Kind::Conflict, "history_conflict", said).next("cozy open"));
     }
+    // A box whose undo window ended: its files are gone, and none of it comes back (cl-919).
+    if let Some(what) = what.strip_suffix(LAPSED) {
+        let said = format!("can't {} \"{}\": {what}, so it can no longer be restored", way.verb(), entry.words);
+        return Refusal(Error::new(Kind::Conflict, "history_lapsed", said));
+    }
     let entries = book.entries.lock().unwrap_or_else(|e| e.into_inner());
     let later = entries.iter().rev().find(|other| other.id > entry.id && other.undone.is_none() && other.changes.iter().any(|held| held.touches(change.name())));
     let verb = way.verb();
@@ -725,6 +735,8 @@ fn said_by(by: &By) -> String {
 
 /// How `moved_one` ends what it says of a take `reclaim` cleared, which `conflict` reads.
 const CLEARED: &str = ": cleared";
+/// How it ends what it says of a box deleted longer ago than the undo window.
+const LAPSED: &str = ": lapsed";
 
 /// The first change of `entry` that isn't as it should be before going `way`, and what it finds instead.
 fn moved<'a>(project: &Project, entry: &'a Entry, way: Way) -> Option<(&'a Change, String)> {
@@ -738,6 +750,12 @@ fn moved_one(project: &Project, change: &Change, way: Way) -> Option<String> {
     match change {
         Change::Asset { name, before, after } => {
             let now = written.get(name);
+            if let (Some(back), None) = (wanted(way, before, after), now)
+                && let Some(lock) = folder.lock().ok()
+                && lapsed(folder, &lock, back)
+            {
+                return Some(format!("{name} was deleted more than {} ago, and its files are gone{LAPSED}", super::purge::window_said()));
+            }
             match (found(way, before, after), now) {
                 (None, Some(_)) => Some(format!("{name} is in the project again")),
                 (Some(_), None) => Some(format!("{name} is gone")),
@@ -787,6 +805,17 @@ fn found<T>(way: Way, before: T, after: T) -> T {
 /// What a change going `way` leaves.
 fn wanted<T>(way: Way, before: T, after: T) -> T {
     if way == Way::Back { before } else { after }
+}
+
+/// Whether box `back`, deleted, is past bringing back: what it held was set aside longer ago than the undo window, or its own file has left
+/// the project.
+fn lapsed(folder: &Folder, lock: &Lock, back: &Boxed) -> bool {
+    let now = now_ms();
+    if lock.deleted_box(&back.name, &back.id).is_some_and(|held| held.lapsed(now)) {
+        return true;
+    }
+    let Some(approved) = back.get("approved").filter(|approved| !approved.is_null()) else { return false };
+    super::format::approved_file(Some(approved), lock).is_none_or(|sha256| lock.files.get(&sha256).is_none_or(|file| folder.missing(file)))
 }
 
 fn same_fields(a: &Boxed, b: &Boxed) -> bool {

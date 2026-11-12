@@ -2813,10 +2813,15 @@ export class CanvasStore {
     return inTurn
   }
 
-  /** The name a new box takes now, as Calcifer would give it: what's on the canvas, what's being placed, and what waits to be brought back is taken. */
+  /** The name a new box takes now, as Calcifer would give it: what's on the canvas and what's being placed is taken. A deleted box's name is free (cl-919). */
   private nameFor(wanted: string): string {
-    const taken = [...this.views].map(([key, view]) => (view.placing ? view.name : key))
-    return freeName(wanted, [...taken, ...(this.state?.orphans ?? []).map((orphan) => orphan.name)])
+    return freeName(wanted, [...this.views].map(([key, view]) => (view.placing ? view.name : key)))
+  }
+
+  /** Whether `mention` names a box deleted from the project that Undo can still bring back: it resolves to nothing, and says so (cl-919). */
+  deletedName(mention: string): boolean {
+    const key = nameKey(baseOf(mention))
+    return (this.state?.orphans ?? []).some((orphan) => nameKey(orphan.name) === key)
   }
 
   /**

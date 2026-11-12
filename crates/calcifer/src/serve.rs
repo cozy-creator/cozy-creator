@@ -216,6 +216,7 @@ mod port_tests {
 /// Serves `loaded.home` on `127.0.0.1`, at [`listen`]'s port, until `POST /v1/down`.
 pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let (home, port) = (&loaded.home, loaded.config.calcifer.port);
+    crate::project::purge::set_window(loaded.config.calcifer.undo_seconds);
     let (began, mut steps) = (Instant::now(), Steps(Instant::now()));
     let failed = |error| refuse(home, error);
     let lock = LockFile::new(home.calcifer_lock());
@@ -320,6 +321,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     crate::events::tell(api.clone());
     crate::project::previews(api.clone());
     crate::project::resume(&api);
+    crate::project::purge::start(api.clone());
 
     api.stopped().await;
     tokio::task::block_in_place(|| crate::project::vault::close_all(&api)).map_err(failed)?;
