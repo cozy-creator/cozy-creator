@@ -2730,6 +2730,7 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         waiting: None,
         progress: None,
         video_progress: None,
+        arriving: None,
         report: None,
         warnings: row.warnings.clone(),
         adjustments: row.outcome.iter().flat_map(|outcome| outcome.adjustments.iter().cloned()).collect(),

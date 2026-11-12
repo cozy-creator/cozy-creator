@@ -563,11 +563,9 @@ impl Calcifer {
                 .collect();
             run.warnings.extend(said);
         }
-        // Its result coming here once it ended: what it is doing now, as its progress.
-        if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled)
-            && let Some(arriving) = self.arriving(&row.id)
-        {
-            run.progress = Some(arriving);
+        // Its results coming here once it ended.
+        if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) {
+            run.arriving = self.arriving(&row.id);
         }
         if queued(&run) {
             // Its machine's count, else the runs waiting ahead of it for that machine.

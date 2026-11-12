@@ -31,9 +31,6 @@ export interface Face {
 
 const sentence = (said: string) => said.charAt(0).toUpperCase() + said.slice(1)
 
-/** What Calcifer calls a run's result coming here (`outputs::ARRIVING`). */
-const ARRIVING = "downloading the result"
-
 /** A GPU as people say it: `NVIDIA GeForce RTX 4090` is `RTX 4090`. */
 const gpuWords = (name: string) => name.replace(/^NVIDIA\s+/i, "").replace(/^GeForce\s+/i, "").replace(/\s+Laptop GPU$/i, " Laptop")
 
@@ -56,7 +53,7 @@ function rentedWords(machine: Machine): string {
 
 /** Its time left, as Calcifer estimates the whole run's: `about 3 min left` while that's little trusted. */
 function runLeft(run: Run): string | undefined {
-  const progress = run.progress
+  const progress = run.status === "completed" ? run.arriving : run.progress
   if (progress?.eta_s != null) return `${(progress.eta_confidence ?? 1) < 0.5 ? "about " : ""}${leftWords(progress.eta_s)}`
   if (progress?.eta_basis === "first_run") return "first run on this machine"
   return undefined
@@ -148,9 +145,9 @@ export function faceOf(seen: Seen): Face {
     return face("download", `Downloading weights · ${fetched(on)}`, { stageFraction: fraction, left: own ?? (on.eta_s != null ? `at least ${leftWords(on.eta_s)}` : undefined) })
   }
   if (run.queue_position != null) return face("queued", `Queued on ${run.machine}`, { detail: [`number ${run.queue_position} in line`, waiting].filter(Boolean).join(" · ") })
-  // Made, and on its way here (Calcifer's `downloading the result`): its own phase, by its bytes and their rate, its take not here yet.
+  // Made, and on its way here (Calcifer's `arriving`): its own phase, by its bytes and their rate, its take not here yet.
   if (run.status === "completed") {
-    const arriving = run.progress?.stage === ARRIVING && run.progress.bytes_total ? run.progress : undefined
+    const arriving = run.arriving?.bytes_total ? run.arriving : undefined
     if (arriving) {
       const detail = [`${bytes(arriving.bytes_done)} of ${bytes(arriving.bytes_total)}`, arriving.bytes_per_s ? `${bytes(arriving.bytes_per_s)}/s` : ""].filter(Boolean).join(" · ")
       return face("result", "Downloading the result", { detail, fraction: arriving.bytes_done / arriving.bytes_total })
@@ -218,7 +215,8 @@ export function factsOf({ run, on, face, now, others, boxOf }: { run?: Run; on?:
 function useBar(run: Run | undefined, face: Face, now: number): number | undefined {
   // Only a fraction of the whole job is a bar: none for a phase's own count, and nothing that only moves (Paul, 11-12).
   const held = useRef<{ on: string; fraction: number } | null>(null)
-  const left = run?.progress?.eta_s
+  // Once it ended, what's left is its result coming here.
+  const left = run?.status === "completed" ? run.arriving?.eta_s : run?.progress?.eta_s
   const since = run ? now - run.created_at_ms : 0
   const whole = run && left != null ? Math.min(0.99, since / Math.max(1, since + left * 1000)) : undefined
   const fraction = whole ?? face.fraction

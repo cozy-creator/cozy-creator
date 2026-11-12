@@ -1385,7 +1385,7 @@ fn exports(event: &api::calcifer::Event) -> bool {
     use api::calcifer::Event;
     !matches!(
         event,
-        Event::Log { .. } | Event::Call { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::OutputDelta { .. }
+        Event::Log { .. } | Event::Call { .. } | Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } | Event::OutputDelta { .. }
     )
 }
 

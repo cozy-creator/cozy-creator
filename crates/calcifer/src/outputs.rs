@@ -478,7 +478,7 @@ impl Calcifer {
                     // Once it ended: while it goes, its own work is what it says.
                     let ended = matches!(self.store.run(run.id.as_str()), Ok(Some(now)) if now.state == crate::store::State::Settled);
                     if ended && let Some(progress) = self.arriving(&run.id) {
-                        let _ = self.events.send((run.id.clone(), Event::Progress { progress }));
+                        let _ = self.events.send((run.id.clone(), Event::Arriving { progress }));
                     }
                     continue;
                 }
