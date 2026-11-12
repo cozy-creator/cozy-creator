@@ -119,7 +119,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
   writeFileSync(tool, TOOL);
 
   // A box this computer renders; a picture with Qwen's Image and a video with H3's Shot, each with a take; a picture with no tool.
-  importYaml(project, `version: 4\nassets:\n  slow:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n  again:\n    tool: ${tool}/draw\n    instructions: Another still.\n    pace: 0.3\n`);
+  importYaml(project, `version: 4\nassets:\n  slow:\n    tool: ${tool}/draw\n    instructions: A still of one colour.\n  again:\n    tool: ${tool}/draw\n    instructions: Another still, as warm as <plain>.\n    pace: 0.3\n`);
   const tools = [...((await api(`/v1/tools?project=${id}&q=qwen`)).body?.tools ?? []), ...((await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? [])];
   const image = tools.find((one) => one.package === 'qwen-image-2' && one.makes === 'image');
   const video = tools.find((one) => one.id === 'minimax-h3/generate') ?? tools.find((one) => one.package === 'minimax-h3' && one.makes === 'video');
@@ -239,7 +239,18 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
         const card = node.querySelector('.card');
         if (!card) return;
         const [c, b] = [card.getBoundingClientRect(), node.getBoundingClientRect()];
-        const now = { size: [c.width, c.height, b.width, b.height].map((n) => Math.round((n / zoom()) * 10) / 10).join('x'), rendering: Boolean(card.querySelector('.tile-under .run-face')) };
+        // An image being made shows, in its frame, the pictures its run reads, full height, and the start of its words (cl-940).
+        const making = card.querySelector('.media .making');
+        const media = card.querySelector('.media').getBoundingClientRect();
+        const pictures = [...(making?.querySelectorAll('.making-pictures img') ?? [])].filter((img) => img.complete && img.naturalWidth > 0);
+        const now = {
+          size: [c.width, c.height, b.width, b.height].map((n) => Math.round((n / zoom()) * 10) / 10).join('x'),
+          rendering: Boolean(card.querySelector('.tile-under .run-face')),
+          pictures: pictures.length,
+          fullHeight: pictures.every((img) => Math.abs(img.getBoundingClientRect().height - media.height) < 1.5),
+          words: making?.querySelector('.making-words')?.textContent ?? '',
+          chip: making?.querySelector('.making-words .chip')?.textContent ?? '',
+        };
         if (JSON.stringify(sizes.at(-1)) !== JSON.stringify(now)) sizes.push(now);
       };
       new MutationObserver(look).observe(node, { subtree: true, childList: true, attributes: true, characterData: true });
@@ -253,6 +264,10 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
     const sizes = await page.evaluate(() => window.againSizes);
     seen.render_sizes = { before, sizes };
     check('render_leaves_its_size', sizes.some((now) => now.rendering) && sizes.every((now) => now.size === before) && (await size()) === before, { before, sizes });
+    // While it's made: <plain>, full height, and its words with <plain> marked; once made, its take in their place (cl-940).
+    check('making_shows_references_and_words', sizes.some((now) => now.rendering && now.pictures === 1 && now.fullHeight && /Another still, as warm as/.test(now.words) && /^<?plain>?$/i.test(now.chip)), sizes);
+    const after = await boxOf(page, 'again').evaluate((node) => ({ making: node.querySelectorAll('.media .making').length, label: node.querySelector('.node-version-label')?.textContent ?? '' }));
+    check('result_replaces_them', after.making === 0 && after.label === 'v2', after);
   }
 
   // Open, what it can do is still there.

@@ -1042,6 +1042,49 @@ code {
   transform-origin: left;
   transition: transform 400ms linear;
 }
+/* An image being made, at rest (cl-940): what its run reads, full-bleed, each at full height side by side; over them the start of its words
+   on a scrim, under the meter. A preview of what it makes (.latent-preview) covers the pictures, never the words. */
+.making {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.making-pictures {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  background: var(--well);
+}
+.making-pictures img {
+  position: static;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  object-fit: cover;
+}
+.making-words {
+  position: absolute;
+  top: calc(var(--s3) + 3px * var(--ui));
+  left: var(--s3);
+  right: var(--s3);
+  z-index: 2;
+  display: -webkit-box;
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  overflow: hidden;
+  border-radius: var(--round);
+  background: var(--scrim);
+  color: var(--ink);
+  font: calc(var(--t-body) * var(--ui)) / 1.35 var(--sans);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+.making-words .chip {
+  text-shadow: none;
+}
 /* At rest, a render breathes around its box, outside its edge (cl-928, Paul 11-12): ambient, no progress. How far it is, is on its face. */
 .render-wave {
   position: absolute;
