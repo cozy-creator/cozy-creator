@@ -277,6 +277,9 @@ pub(crate) struct Version {
     /// The words it was made from, only where they aren't the version before it's (`Asset::text_of`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// The actual structured generation request, retained independently of its run's history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl Version {

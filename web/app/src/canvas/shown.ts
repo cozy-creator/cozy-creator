@@ -15,15 +15,15 @@ export interface Shown extends MainFile {
  * What a card shows: the version being looked at, else its state, else, out of date or with nothing else, its newest. A constant's
  * state may be no version at all.
  */
-export function shownOf(view: ElementView): Shown | null {
+export function shownOf(view: ElementView, selectedOnly = false): Shown | null {
   const asset = view.asset
   if (!asset) return view.landed ? { output: view.landed.field, path: "", sha256: view.landed.sha256, field: view.landed.field } : null
   // Looking at a take still being made: nothing of it to show yet, and no other take's picture stands in.
-  const watch = watched(view)
+  const watch = selectedOnly ? undefined : watched(view)
   if (watch && watch.number === undefined) return null
   const versions = asset.prefixes ?? []
   const version = (number?: number | null) => versions.find((held) => held.number === number)
-  const held = version(view.viewed) ?? version(asset.version)
+  const held = (selectedOnly ? undefined : version(watch?.number) ?? version(view.viewed)) ?? version(asset.version)
   if (held?.main) return { ...held.main, number: held.number, run: held.run ?? undefined }
   if (asset.sha256 && asset.path && asset.field) {
     const { path, sha256, field, width, height, duration_ms, alpha, absent, machine } = asset
@@ -33,15 +33,17 @@ export function shownOf(view: ElementView): Shown | null {
   return newest?.main ? { ...newest.main, number: newest.number, run: newest.run ?? undefined } : null
 }
 
+/** Inputs use the completed selected state, independently of a displayed pending run. */
+export const selectedOf = (view: ElementView): Shown | null => shownOf(view, true)
+
 /** A card's size, unmeasured, so a card culled away still counts in a fit. */
 export const HEAD = 32
 
 /**
- * What hangs off a box at rest, its name over it and its shape's word and add-ons under it, is drawn one size on screen as the canvas
- * zooms out, down to a zoom of 0.5; further out it shrinks with the canvas (--hang, set beside --text). So the room it takes is bounded,
- * and a box keeps that room clear: its name never lies on the box above, nor what hangs under one on the box below.
+ * What hangs off a box at rest, its name over it and its shape's word and add-ons under it, is drawn at the canvas's scale like the
+ * rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
  */
-export const HANG = 2
+const HANG = 2
 // As app.css and AddOns.css draw them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
 const SMALL_LINE = 10.5 * 1.35 * 1.25

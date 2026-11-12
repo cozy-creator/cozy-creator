@@ -205,6 +205,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/runs/{run}/events", get(crate::api::events))
         .route("/v1/projects/{id}/runs/{run}/outputs/{name}", get(crate::outputs::serve))
         .route("/v1/projects/{id}/runs/{run}/play", get(crate::play::play))
+        .route("/v1/projects/{id}/runs/{run}/preview", get(crate::previews::serve))
         .route("/v1/projects/{id}/fit", post(fit::fit))
         .route("/v1/projects/{id}/fit/here", post(fit::here))
         .route("/v1/projects/{id}/cancel", post(cancel))
@@ -1436,12 +1437,13 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![], machines: project.folder.machines() }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder) }));
         }
     };
     // What a reader now holds is what any change from here is told against.
     project.told.lock().expect("told lock").get_or_insert_with(|| model::Told::now(&project, model.clone()));
     let mut state = model.state(&project, asked.assets);
+    state.machines = chosen(&api, &project.folder);
     state.covered = covered;
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_file));
@@ -1796,6 +1798,7 @@ fn row(reading: &Reading, i: usize) -> Row {
         version: standing.version(),
         approved: asset.pin.as_ref().and(standing.version()),
         pinned: asset.pin.is_some(),
+        starred: asset.starred,
         inputs: standing.inputs.clone(),
         path: main_path(lock, &files),
         files: listed(lock, &files),
@@ -2187,7 +2190,8 @@ async fn runs(
 ) -> Result<(StatusCode, Json<Asked>), Refusal> {
     let body = body?;
     let mut asked: Runs = parse(&body)?;
-    if asked.on.is_empty() || asked.on.iter().any(|on| matches!(on, On::New(_))) {
+    api::calcifer::machine_set(&asked.on).map_err(Refusal)?;
+    if asked.on.iter().any(|on| matches!(on, On::New(_))) {
         let said = "a project's runs go to machines: rent one first, then name it with --on";
         return Err(Refusal(Error::new(Kind::Usage, "project_on_new", said).next("cozy machine rent")));
     }
@@ -2204,12 +2208,17 @@ async fn runs(
     api.calcifer.project_store(&project.id)?.admit_new_work()?;
     asked.on=crate::private_io::check_project_placement(&project.id,&project.root,&asked.on).map_err(Refusal)?;
     let id = project.id.clone();
+    // None named: where `cozy run` naming none goes (cl-894).
+    let on = match asked.on.is_empty() {
+        true => crate::runs::unnamed_set(&api, Some(&id)).await.map_err(Refusal)?,
+        false => asked.on,
+    };
     project.unsent.lock().expect("unsent lock").clear();
     // What this render uses: the project as it is now, its export kept by digest until the render ends.
     let text = project.folder.text().map_err(Refusal)?;
     let doc = Doc::read(&project.folder, &text).map_err(Refusal)?;
     let digest = hex::encode(Sha256::digest(text.as_bytes()));
-    let target = Target { on: asked.on, hub };
+    let target = Target { on, hub };
     let all = matches!(asked.names.as_slice(), [only] if name_key(only) == name_key(ALL));
     let lock = project.folder.lock().map_err(Refusal)?;
     let stand = doc.stand(&lock);
@@ -2288,10 +2297,7 @@ async fn runs(
             said(&name, format!("{name} is made here, free, when what it reads settles"));
             // Named, it is made again, as anything named is.
             if !missing {
-                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: format::KINDS.contains(&asset.kind.as_str()), new: true, pickup: None });
-            }
-            if approve {
-                say(format!("approve {name} in the browser once it is made; open it with `cozy open`"));
+                takes.push(Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: true, pickup: None });
             }
             continue;
         }
@@ -2318,7 +2324,7 @@ async fn runs(
             continue;
         }
         let makes_new = !missing || pickup.is_some();
-        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve: approve || format::KINDS.contains(&asset.kind.as_str()), new: makes_new, pickup: pickup.clone() };
+        let take = |_| Take { key: new_key(), asset: name.clone(), target: target.clone(), approve, new: makes_new, pickup: pickup.clone() };
         takes.extend((0..if makes_new { n } else { 1 }).map(take));
     }
     if let (Some(error), true, false) = (first, takes.is_empty(), all) {
@@ -2826,6 +2832,7 @@ async fn save(
 async fn file(
     State(api): State<Arc<Api>>,
     Path((id, file)): Path<(String, String)>,
+    Query(saved): Query<crate::files::Download>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
     let project = api.projects.get(&api, &id)?;
@@ -2837,6 +2844,9 @@ async fn file(
     }
     let mut response = send(&project.folder.path(&format!("{}/{file}", folder::FILES)), &format!("\"{hex}\""), &headers)?;
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(crate::files::IMMUTABLE));
+    if let Some(name) = saved.download {
+        crate::files::save_as(&mut response, &name, ext);
+    }
     Ok(response)
 }
 
@@ -2913,6 +2923,10 @@ struct Walk {
     faults: Mutex<HashMap<(String, String, String), u32>>,
     /// The machines it stopped sending to (`fault`), with the renders that stops: one asked later tries again.
     stopped: Mutex<BTreeMap<String, BTreeSet<String>>>,
+    /// The renders whose machines were all gone, which it said go where they finish soonest (cl-920).
+    fell_back: Mutex<HashSet<String>>,
+    /// How many times each job was placed again after its machine went as it was sent (cl-920).
+    replaced: Mutex<HashMap<String, u32>>,
     /// That this computer's first need of ffprobe was met: it measures what a function reads of a file.
     measuring: AtomicBool,
     /// The ranges of videos cut on this computer, by hash, where each is: sent from there, never kept in the project.
@@ -2927,6 +2941,9 @@ const WINDOW: usize = 32;
 const HELD_UP: std::time::Duration = std::time::Duration::from_secs(1);
 /// With several machines, a job a machine would start after this long waits here, so it commits to no queue early (cl-816).
 const HOLD_MS: i64 = 1000;
+/// What a send refused for a machine that went meanwhile says (`Machines::reach`): the job is placed again (cl-920), this many times.
+pub(crate) const GONE: [&str; 3] = ["machine_ended", "machine_offline", "machine_ending"];
+const PLACED_AGAIN: u32 = 3;
 /// How often jobs held for a busy machine are quoted again.
 const HELD_LOOK: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long a job's package may take to say what it calls, and its models' cards what they weigh, before its machines are asked without.
@@ -3017,6 +3034,8 @@ impl Walk {
             missed: Mutex::default(),
             faults: Mutex::default(),
             stopped: Mutex::default(),
+            fell_back: Mutex::default(),
+            replaced: Mutex::default(),
             measuring: AtomicBool::new(false),
             clips: Mutex::new(HashMap::new()),
             ended: Mutex::default(),
@@ -3100,6 +3119,8 @@ impl Walk {
 
     /// Which of `on` render `ask` may still send to.
     fn sending(&self, ask: &str, on: &[On]) -> Vec<On> {
+        let on = self.live(ask, on);
+        let on = on.as_slice();
         let stopped = self.stopped.lock().expect("stopped lock");
         if stopped.is_empty() {
             return on.to_vec();
@@ -3113,6 +3134,29 @@ impl Walk {
             })
             .cloned()
             .collect()
+    }
+
+    /// Of `on`, the machines that take work now (cl-920, Paul 11-12: "if those machines are ended then either try a different machine or
+    /// tell me to rent a new one"): with every one gone (ended, ending, offline), where a render naming none goes, said once a render.
+    fn live(&self, ask: &str, on: &[On]) -> Vec<On> {
+        let api = self.host.api();
+        let gone: Vec<String> = (on.iter())
+            .filter_map(|on| match on {
+                On::Machine(name) => api.machines.gone(name),
+                _ => None,
+            })
+            .collect();
+        if gone.is_empty() || gone.len() < on.len() {
+            return on.iter().filter(|on| !matches!(on, On::Machine(name) if api.machines.gone(name).is_some())).cloned().collect();
+        }
+        // Placement retries retain this project's storage policy before any
+        // pricing or upload; a departed machine never opens a global fallback.
+        let automatic = crate::private_io::check_project_placement(&self.project.id,&self.project.root,&[On::Any]).unwrap_or_default();
+        if self.fell_back.lock().expect("fell back lock").insert(ask.to_owned()) {
+            let set = automatic.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+            self.say(Told::Warning { message: format!("{}: it goes where it finishes soonest of {set}", gone.join("; ")), name: None });
+        }
+        automatic
     }
 
     /// Sizes a function reads are ffprobe's: with files to measure and none here, this computer's first need fetches it behind the walk, which
@@ -3836,6 +3880,11 @@ impl Walk {
                         }
                     }
                 }
+                // Its machine went as it was sent (a pod releasing itself that second, cl-920): placed again, never failed.
+                Err(error) if GONE.contains(&error.code.as_str()) && self.place_again(&key) => {
+                    self.say(Told::Said { message: format!("{name}: {}; placing it again", error.message), name: Some(name.clone()) });
+                    self.project.walker.lock().expect("walker lock").graph.put_back(id);
+                }
                 Err(error) => {
                     self.send_failed(&ask, &name, &error)?;
                     self.failed_of(&name, &kind, inputs, None, error, first);
@@ -3907,6 +3956,14 @@ impl Walk {
                 Ok(None)
             }
         }
+    }
+
+    /// Whether job `key`, whose machine went as it was sent, is placed again: a few times, then it fails as sent.
+    fn place_again(&self, key: &str) -> bool {
+        let mut replaced = self.replaced.lock().expect("replaced lock");
+        let times = replaced.entry(key.to_owned()).or_default();
+        *times += 1;
+        *times <= PLACED_AGAIN
     }
 
     /// `name` could not be sent: when that is its machines' doing, not its own, it counts as what they failed.
@@ -4133,7 +4190,7 @@ impl Walk {
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
             warnings.iter().for_each(|message| self.say(Told::Warning { message: message.clone(), name: None }));
-            let mut version = Version { inputs: inputs.clone(), warnings, text: doc.text(i), ..Default::default() };
+            let mut version = Version { inputs: inputs.clone(), warnings, text: doc.text(i), fields: Some(doc.authoring_fields(i)), ..Default::default() };
             if seeded {
                 // A failed run's seed is kept for the next try on these inputs, so finished segments aren't paid twice.
                 // Try again is a render of what failed on these inputs: the same seed, so its finished calls come from the memo.
@@ -4713,12 +4770,19 @@ impl Walk {
         })
     }
 
-    /// Readers in this render follow the media version it just made, while explicit
-    /// numbered references in the frozen text keep their original meaning.
+    /// An initially empty source gains the media this render made. A completed
+    /// selected source stays the ask's input snapshot unless --outdated refreshes it.
     fn select_asked(&self, ask: &str, name: &str, number: u32, sha256: &str) -> Result<(), Error> {
         let walk = self.folder().walk_now()?;
         let Some(mine) = walk.walk.asks.iter().find(|mine| mine.id == ask) else { return Ok(()) };
-        let mut written = written::Written::from_yaml(&self.folder().text_of(mine)?)?;
+        let before = self.folder().text_of(mine)?;
+        if !mine.outdated {
+            let doc = Doc::read(self.folder(), &before)?;
+            if doc.find(name).is_some_and(|i| doc.assets[i].pin.is_some()) {
+                return Ok(());
+            }
+        }
+        let mut written = written::Written::from_yaml(&before)?;
         written.selected(name, number, sha256)?;
         let text = written.to_yaml();
         let digest = hex::encode(Sha256::digest(text.as_bytes()));
@@ -4763,7 +4827,7 @@ impl Walk {
                 self.say(Told::Warning { message: format!("{name} reads {}'s newest {noun}, {number}, which is out of date", read.name), name: None });
             }
         }
-        let mut version = Version { inputs, ..Default::default() };
+        let mut version = Version { inputs, fields: Some(doc.authoring_fields(i)), ..Default::default() };
         match doc.tool(i).expect("a tool") {
             Tool::Cut => {
                 // Once a walk: what it cuts stands, or says why not.
@@ -4804,7 +4868,8 @@ impl Walk {
         self.folder().update_lock(|lock| number.set(lock.number(&name, &asset.kind)))?;
         version.number = number.get();
         let selected = version.main().cloned();
-        self.record_free(&name, &asset.kind, version, noun(doc, lock, i))?;
+        let approve = ask.takes.iter().any(|take| name_key(&take.asset) == name_key(&name) && take.approve);
+        self.record_free(&name, &asset.kind, version, noun(doc, lock, i), approve)?;
         if let Some(sha256) = selected {
             self.select_asked(&ask.id, &name, number.get(), &sha256)?;
         }
@@ -5009,8 +5074,8 @@ impl Walk {
         Ok(without)
     }
 
-    /// Lists the built-in tool's next version, retaining its earlier media states.
-    fn record_free(&self, name: &str, kind: &str, version: Version, noun: &str) -> Result<(), Error> {
+    /// Lists the built-in tool's next version, retaining its earlier media states, approved only when `approve` (cl-908).
+    fn record_free(&self, name: &str, kind: &str, version: Version, noun: &str, approve: bool) -> Result<(), Error> {
         let number = version.number;
         self.folder().act(|| {
             self.folder().update_lock(|lock| {
@@ -5019,7 +5084,7 @@ impl Walk {
                 held.versions.sort_by_key(|version| version.number);
                 held.failed = None;
             })?;
-            if let Some(sha256) = version.main() {
+            if approve && let Some(sha256) = version.main() {
                 self.folder().edit(|written| written.selected(name, number, sha256))?;
             }
             Ok(())
@@ -5027,8 +5092,8 @@ impl Walk {
         self.say_landed(name, &version, noun, number)
     }
 
-    /// Lists `version` as its asset's newest (dropping the pending run under `key` in the same write), pinned when `approve`, and
-    /// says it landed.
+    /// Lists `version` as its asset's newest (dropping the pending run under `key` in the same write), and says it landed. Only
+    /// `approve` (`--approve`) approves it: a new take never changes what's approved, and a box with none approved stays so (cl-908).
     #[allow(clippy::too_many_arguments)]
     fn record(&self, key: Option<&str>, name: &str, kind: &str, mut version: Version, noun: &str, approve: bool, settle: impl Fn(&mut Lock)) -> Result<(), Error> {
         let number = std::cell::Cell::new(version.number);
@@ -5048,7 +5113,7 @@ impl Walk {
                 held.tried = None;
                 held.failed = None;
             })?;
-            if (approve || format::KINDS.contains(&kind)) && let Some(sha256) = version.main() {
+            if approve && let Some(sha256) = version.main() {
                 self.folder().edit(|written| written.selected(name, number.get(), sha256))?;
             }
             Ok(())
@@ -5198,10 +5263,28 @@ pub(crate) async fn run_on(api: &Arc<Api>, set: &[On], hub: &str, package: &str,
     (chosen.map(|(chosen, _)| chosen), offers, said)
 }
 
-/// The machines the project `named` pins its runs to (cl-873); none: wherever they finish soonest.
+/// The machines the project `named` pins its runs to (cl-873), those that ended left out (cl-920); none: wherever they finish soonest.
+/// With every one of them gone now (ending, or offline by its Hub's word), wherever they finish soonest too.
 pub(crate) fn machines_of(api: &Arc<Api>, named: &str) -> Result<Vec<On>, Error> {
     let project = api.projects.get(api, named).map_err(|Refusal(e)| e)?;
-    Ok(project.folder.machines().into_iter().map(On::Machine).collect())
+    let pinned = chosen(api, &project.folder);
+    match pinned.iter().all(|name| api.machines.gone(name).is_some()) {
+        true => Ok(vec![]),
+        false => Ok(pinned.into_iter().map(On::Machine).collect()),
+    }
+}
+
+/// A project's machines (cl-873) without those that ended or are no machines here (cl-920): a machine that ends leaves every project's
+/// list, kept so at its next read.
+pub(crate) fn chosen(api: &Api, folder: &Folder) -> Vec<String> {
+    let kept = folder.machines();
+    let live: Vec<String> = kept.iter().filter(|name| !api.machines.ended_here(name)).cloned().collect();
+    if live.len() != kept.len()
+        && let Err(e) = folder.set_machines(&live)
+    {
+        warn!("{}: leaving its ended machines out: {}", folder.dir.display(), e.message);
+    }
+    live
 }
 
 /// Where a file stands in its list: its place in the innermost list holding it, as Runtime orders it (`references.1.file` is 1).

@@ -8,8 +8,8 @@ use crate::{
 };
 pub(crate) use executor_api::{
     Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, CheckpointItem,
-    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke, Load, Map, MemoSettings, ModelPrefetch, Outcome,
-    Output, PrepareRequest, Publish, Request, SavedFile,
+    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke, Kind, Load, Map, MemoSettings, ModelPrefetch, Outcome,
+    Output, PrepareRequest, Preview, Publish, Request, SavedFile,
     StageMemoStore, Start, RESULT_DOCUMENT,
 };
 use serde::{Deserialize, Serialize};
@@ -1018,6 +1018,14 @@ impl DeviceExecutor {
     }
     pub(crate) fn line(&self) -> Line {
         Line(Arc::downgrade(&self.writer))
+    }
+    /// What tells this executor a client watches call `request`'s previews (`Command::Preview`);
+    /// none for an executor that makes no previews.
+    pub(crate) fn previews(&self, request: &str) -> Option<crate::execution::PreviewWatch> {
+        let (line, request) = (self.line(), request.to_owned());
+        (self.hello.previews > 0).then(|| -> crate::execution::PreviewWatch {
+            Arc::new(move |for_ms| line.send(&Command::Preview(Preview { request_id: request.clone(), for_ms })))
+        })
     }
     pub(crate) fn lookahead(&self) -> Lookahead {
         Lookahead { line: self.line(), state: self.lookahead.clone() }

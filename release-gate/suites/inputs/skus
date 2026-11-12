@@ -1,0 +1,4 @@
+# A real 16 GB card (sm120, nvfp4 lanes), and a 32 GB one whose LM-heavy cells run again capped at 8 GiB. SKU, disk GB:
+# every text-path package lands on it.
+rtx-5060-ti 500
+rtx-5090 500

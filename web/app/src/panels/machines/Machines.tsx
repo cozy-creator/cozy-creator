@@ -10,39 +10,30 @@ import { DrawerFrame } from "../Drawer"
 import { usd } from "../format"
 import { End } from "./End"
 import { Rent } from "./Rent"
-import { useRenderMachines } from "./RenderHere"
-import { called, endsWords, gpusWords, stableName, stateClass, stateWords } from "./words"
+import { Checks, RenderCheck, Spec, useRenderMachines } from "./RenderHere"
+import { endsWords, stableName } from "./words"
 
 function MachineRow({ machine, now, here }: { machine: Machine; now: number; here: boolean }) {
   const to = useTo()
   const trying = machine.state === "booting" && machine.kind === "rental"
   return (
-    <li className={`runrow ${trying ? "trying" : ""} ${here ? "render-here" : ""}`} data-machine={machine.name}>
-      <Link to={to(`machines/${encodeURIComponent(stableName(machine))}`)}>
-        <span className="line">
-          <span className={`dot ${stateClass(machine)}`} />
-          <b>{called(machine)}</b>
-          <small>{gpusWords(machine)}</small>
-          <span className="sp" />
-          {machine.rental && <small>{usd(machine.rental.usd_micros_per_hour)}/h</small>}
-          {Boolean(machine.running || machine.queued) && (
-            <small>
-              {machine.running ?? 0} running, {machine.queued ?? 0} queued
-            </small>
-          )}
-        </span>
+    <li className={`runrow machine ${trying ? "trying" : ""} ${here ? "render-here" : ""}`} data-machine={machine.name}>
+      <Spec machine={machine} now={now} />
+      {Boolean(machine.running || machine.queued) && (
         <small className="under">
-          {trying ? `Still trying${machine.attempt ? `, attempt ${machine.attempt.number}` : ""}: ${stateWords(machine, now)}` : stateWords(machine, now)}
+          {machine.running ?? 0} running, {machine.queued ?? 0} queued
         </small>
-        {machine.state === "ready" && machine.kind === "rental" && <small className="under">{endsWords(machine, now)}</small>}
-        {machine.end_failed && <small className="under warn">Not shut down, may still be billing: {machine.end_failed}</small>}
-        {machine.state === "ending" && <small className="under warn">{machine.ending ? `Waiting to end it: ${machine.ending}` : "Bills until its Hub affirms it gone"}</small>}
-      </Link>
-      {trying && machine.ordered !== false && (
-        <div className="rowend">
-          <End machine={machine} />
-        </div>
       )}
+      {trying && machine.attempt && <small className="under">Still trying, attempt {machine.attempt.number}</small>}
+      {machine.state === "ready" && machine.kind === "rental" && <small className="under">{endsWords(machine, now)}</small>}
+      {machine.end_failed && <small className="under warn">Not shut down, may still be billing: {machine.end_failed}</small>}
+      {machine.state === "ending" && <small className="under warn">{machine.ending ? `Waiting to end it: ${machine.ending}` : "Bills until its Hub affirms it gone"}</small>}
+      <Checks machine={machine}>
+        <Link className="more" to={to(`machines/${encodeURIComponent(stableName(machine))}`)}>
+          Details
+        </Link>
+        {trying && machine.ordered !== false && <End machine={machine} />}
+      </Checks>
     </li>
   )
 }
@@ -141,19 +132,24 @@ export function Machines() {
           {problem.hub} didn't answer: {problem.message}. Its rentals may still be billing.
         </p>
       ))}
-      {project && data && !chosen.length && <p className="muted">No machine is green, so this project's renders are placed automatically. Open one and press Render here to keep them on it.</p>}
+      {project && data && !chosen.length && <p className="muted">Nothing checked: this project's renders are placed automatically. Check machines to keep them there.</p>}
       <ul className="rows">
         {mine.map((machine) => (
           <MachineRow key={machine.name} machine={machine} now={now} here={chosen.includes(machine.name)} />
         ))}
         {gone.map((name) => (
-          <li key={name} className="runrow render-here" data-machine={name}>
-            <Link to={to(`machines/${encodeURIComponent(name)}`)}>
-              <span className="line">
-                <b>{name}</b>
-              </span>
-              <small className="under warn">Not up: this project's renders wait for it or another green machine</small>
-            </Link>
+          <li key={name} className="runrow machine render-here" data-machine={name}>
+            <div className="spec">
+              <b>{name}</b>
+              <span>not up</span>
+            </div>
+            <small className="under warn">This project's renders wait for it or another checked machine</small>
+            <div className="checks">
+              <RenderCheck name={name} />
+              <Link className="more" to={to(`machines/${encodeURIComponent(name)}`)}>
+                Details
+              </Link>
+            </div>
           </li>
         ))}
       </ul>

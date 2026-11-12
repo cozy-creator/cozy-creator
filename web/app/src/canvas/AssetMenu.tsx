@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState } from "react"
-import { createPortal } from "react-dom"
-import type { Tool } from "../api/calcifer"
+import { useCallback } from "react"
+import type { MainFile } from "../api/calcifer"
+import { useConnection } from "../app/Connection"
+import { Menu } from "../ui/Menu"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
-import { makes, toolName } from "./shown"
+import { downloadable } from "./Media"
+import { shownOf } from "./shown"
+import { versionIn } from "./versions"
 import { retimed } from "./timeline/model"
-import { toolFitsNode } from "./palette"
-
-type Open = "menu" | "tool"
 
 const FRAME_RATES = [24, 25, 30, 48, 50, 60]
 const ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:2", "2.39:1"]
@@ -54,95 +54,79 @@ function EditSettings({ name }: { name: string }) {
   )
 }
 
-/** A right click on a box: an Edit's settings, what makes it, its name, and gone. */
+/** A right click on a box: an Edit's settings, Download, its star, its name, and gone. On a take, Download alone. */
 export function AssetMenu() {
   const store = useCanvasStore()
   const menu = useSignal(store.menu)
-  return menu ? <Menu key={`${menu.name}:${menu.x}:${menu.y}`} name={menu.name} x={menu.x} y={menu.y} /> : null
+  return menu ? <BoxMenu key={`${menu.name}:${menu.number}:${menu.x}:${menu.y}`} name={menu.name} x={menu.x} y={menu.y} number={menu.number} /> : null
 }
 
-function Menu({ name, x, y }: { name: string; x: number; y: number }) {
+function BoxMenu({ name, x, y, number }: { name: string; x: number; y: number; number?: number }) {
+  const { client } = useConnection()
   const store = useCanvasStore()
   const view = useElement(name)
-  const tools = useSignal(store.tools)
-  const [open, setOpen] = useState<Open>("menu")
-  const shell = useRef<HTMLDivElement>(null)
-  const close = () => store.menu.set(null)
-  useEffect(() => {
-    const away = (event: Event) => {
-      if (!shell.current?.contains(event.target as globalThis.Node)) store.menu.set(null)
-    }
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") store.menu.set(null)
-    }
-    window.addEventListener("pointerdown", away)
-    window.addEventListener("keydown", key)
-    return () => {
-      window.removeEventListener("pointerdown", away)
-      window.removeEventListener("keydown", key)
-    }
-  }, [store])
+  const close = useCallback(() => store.menu.set(null), [store])
   const asset = view?.asset
-  const tool = asset?.tool
-  const sameKind: Tool[] = asset ? [...tools.values()].filter((other) => toolFitsNode(other, asset) && other.id !== tool) : []
   const edit = Boolean(asset?.timeline)
-  const rendered = makes(view) && !edit
-  const left = Math.min(x, window.innerWidth - 300)
-  const top = Math.min(y, window.innerHeight - 340)
-  return createPortal(
-    <div ref={shell} className="asset-menu" role="menu" aria-label={`${name}'s menu`} style={{ left, top }}>
-      {open === "menu" && (
-        <>
-          {edit && <EditSettings name={name} />}
-          {rendered && (
-            <button type="button" role="menuitem" onClick={() => setOpen("tool")}>
-              Change the tool
-            </button>
-          )}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              store.openName(name)
-              close()
-            }}
-          >
-            Rename
-          </button>
-          {asset && (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                store.remove([name])
-                close()
-              }}
-            >
-              Delete
-            </button>
-          )}
-        </>
+  // The box saves as its name, `hei.png`; a take as its version's, `hei.2.png`.
+  const file: MainFile | null | undefined = number === undefined ? view && shownOf(view) : versionIn(asset, number)?.main
+  const download = file && downloadable(file) && store.projectId && (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={() => {
+        client.download(client.file(store.projectId!, file.path), number === undefined ? name : `${name}.${number}`)
+        close()
+      }}
+    >
+      Download
+    </button>
+  )
+  if (number !== undefined) {
+    return (
+      <Menu x={x} y={y} label={`${name}.${number}'s menu`} close={close}>
+        {download}
+      </Menu>
+    )
+  }
+  return (
+    <Menu x={x} y={y} label={`${name}'s menu`} close={close}>
+      {edit && <EditSettings name={name} />}
+      {download}
+      {asset && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            store.star(name, !asset.starred)
+            close()
+          }}
+        >
+          {asset.starred ? "Unstar" : "Star"}
+        </button>
       )}
-      {open === "tool" && (
-        <ul className="menu-list">
-          {sameKind.map((other) => (
-            <li key={other.id}>
-              <button
-                type="button"
-                title={other.description || other.id}
-                onClick={() => {
-                  store.putTool(name, other)
-                  close()
-                }}
-              >
-                {toolName(other)}
-              </button>
-            </li>
-          ))}
-          {!sameKind.length && <li className="muted">No other tool makes {asset?.kind === "image" ? "an image" : `a ${asset?.kind}`} here</li>}
-        </ul>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          store.openName(name)
+          close()
+        }}
+      >
+        Rename
+      </button>
+      {asset && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            store.remove([name])
+            close()
+          }}
+        >
+          Delete
+        </button>
       )}
-    </div>,
-    document.body,
+    </Menu>
   )
 }

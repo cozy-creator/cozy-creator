@@ -1,7 +1,7 @@
 // The real browser/Calcifer/securefs path. Synthetic project only; no requests are mocked.
 const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
-const { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } = require('fs');
+const { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { dirname, join } = require('path');
 const { calcifer, signIn, launch, png, MP4, until, drop, openCanvas, importFile, projectJson, projectUrl, settled, fitCanvas, pointAt } = require('./page');
@@ -286,6 +286,12 @@ const newPage = async () => {
   check('private_upload_uses_project_route', fileWrites.length > 0 && fileWrites.every((write) => write.path.startsWith('/v1/project-files/') && write.project === id));
   const stored = await page.evaluate(() => JSON.stringify(Object.fromEntries(Object.keys(localStorage).map((key) => [key, localStorage.getItem(key)]))));
   check('no_private_browser_persistence', !stored.includes(recovery) && !stored.includes('synthetic browser passphrase') && !stored.includes('private_vault_picture') && !stored.includes('private_after_encryption'));
+  // Unlocked, a right click's Download is the person's own export: the file's bytes, named after its box (cl-891).
+  stage = 'private download';
+  await page.locator('.react-flow__node:has(.card[data-asset="private_after_encryption"]) .nm').first().click({ button: 'right' });
+  const [saved] = await Promise.all([page.waitForEvent('download'), page.locator('.asset-menu').getByRole('menuitem', { name: 'Download', exact: true }).click()]);
+  const savedBytes = readFileSync(await saved.path());
+  check('private_download_is_its_file', saved.suggestedFilename() === 'private_after_encryption.png' && savedBytes.equals(privateBytes), { name: saved.suggestedFilename(), bytes: savedBytes.length, wanted: privateBytes.length });
 
   // Real browser network loss must cover private content without destroying its
   // in-memory pending edit. Hiding and showing the same tab adds no lock authority.

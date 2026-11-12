@@ -45,7 +45,14 @@ export const OWN = ["description", "models", "lora", "node_kind", "selected_vers
 /** What a box asks for: its tool's fields, or what its fields hold. Nothing here knows any function. */
 export function fieldsOf(asset: Asset, tools: Map<string, Tool>): ToolField[] {
   const tool = asset.tool ? tools.get(asset.tool) : undefined
-  return tool ? tool.fields : fromFields(asset.fields ?? {})
+  const hidden = tool?.package.split("/").at(-1) === "minimax-h3" ? ["seed", "quality", "steps", "turbo"] : ["seed"]
+  const visible = (fields: ToolField[]): ToolField[] => fields.filter((field) => field.type !== "seed" && !hidden.includes(field.field)).map((field) => {
+    const single = field.type === "shape" && field.ratios?.length === 1 ? field.ratios[0] : field.options?.length === 1 ? field.options[0] : field.type === "number" && field.min != null && field.min === field.max ? field.min : undefined
+    const value = field.default ?? single
+    const fixed = value != null && !(typeof value === "string" && value.toLowerCase() === "auto")
+    return { ...field, default: value, auto: Boolean(field.auto && !fixed), ...(field.members ? { members: visible(field.members) } : {}) }
+  })
+  return visible(tool ? tool.fields : fromFields(asset.fields ?? {}))
 }
 
 export const empty = (value: unknown) => value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length)
@@ -81,7 +88,7 @@ export const fieldWords = (field: string) => field[0].toUpperCase() + field.slic
 
 /** What it holds that no field declares, such as a hand-written key: it reaches a render all the same. Its description is its own line, and a LoRA or a fine-tune is an add-on. */
 export const heldBeyond = (fields: Record<string, unknown> | undefined, declared: ToolField[]) =>
-  Object.entries(fields ?? {}).filter(([field, value]) => !OWN.includes(field) && !empty(value) && !declared.some((held) => held.field === field))
+  Object.entries(fields ?? {}).filter(([field, value]) => !["seed", "quality", "steps", "turbo"].includes(field) && !OWN.includes(field) && !empty(value) && !declared.some((held) => held.field === field))
 
 /** What a slot or a prompt's mention can hold, in words. */
 export const WANTED: Record<Media, string> = { image: "a picture", video: "a video", audio: "a sound" }

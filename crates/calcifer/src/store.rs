@@ -639,6 +639,21 @@ macro_rules! journal_methods {
     pub(crate) fn forget_after(&self, key: &str) -> Result<()> {
         self.write(|tx| { tx.execute("DELETE FROM after_steps WHERE key_sha256=?1", [key_digest(key)])?; Ok(()) })
     }
+    /// `machine`'s settled updates that completed, newest first, each with the key it was asked under (cl-922).
+    pub(crate) fn updates(&self, machine: &str, limit: u32) -> Result<Vec<(RunRow, String)>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare(&format!(
+                "SELECT {RUN_COLUMNS}, idempotency_key FROM runs WHERE machine = ?1 AND kind = 'update' AND state = 'settled'
+                     AND status = 'completed' AND (?3 IS NULL OR owner=?3) AND custody='owned' ORDER BY number DESC LIMIT ?2"
+            ))?;
+            let rows = statement.query_map(params![machine, limit, self.owner_id()], |r| {
+                let key: String = r.get(r.as_ref().column_count() - 1)?;
+                run_row(r).map(|row| row.map(|row| (row, key)))
+            })?;
+            rows.map(|row| row?).collect()
+        })
+    }
+
     /// Unsettled runs no machine was chosen for, oldest first, with where each may go.
     pub(crate) fn unplaced(&self) -> Result<Vec<RunRow>> {
         self.read(|conn| {
@@ -2759,6 +2774,7 @@ impl From<&MachineRow> for Machine {
             reach: None,
             ending: None,
             end_failed: None,
+            rc: None,
         }
     }
 }
@@ -3036,6 +3052,8 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
         settled_at_ms: row.settled_at_ms,
         waiting: None,
         progress: None,
+        video_progress: None,
+        arriving: None,
         report: None,
         warnings: row.warnings.clone(),
         adjustments: row.outcome.iter().flat_map(|outcome| outcome.adjustments.iter().cloned()).collect(),

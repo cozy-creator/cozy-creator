@@ -87,11 +87,11 @@ head -n $(($(wc -l < "$OUT/set-pair.txt") - before)) "$OUT/set-pair.txt" > "$OUT
 code=0; in_project "$P" --json run "$echo" text=mixed --on stand-a,new > "$OUT/set-mixed.json" 2>&1 || code=$?
 [ "$code" != 0 ] && J '.error.code == "on_set"' "$OUT/set-mixed.json" || check "run --on stand-a,new: exit $code: $(head -c 300 "$OUT/set-mixed.json")"
 
-# The machines panel's Render here: the same pin, green where the panel lists it, Render all inside it, and the CLI's choice live.
+# The machines' checkboxes: the same pin, green where they're listed, Render all inside it, and the CLI's choice live.
 local pw=$OUT/playwright chrome
 chrome=$(web_chrome)
 if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1; then
-  step "web-renderhere: Render here pins a project to local and stand-a, green in the panel; Render all stays inside; the CLI's choice shows live"
+  step "web-renderhere: two machines checked in the panel, green and the project's machines; Render all stays on them; the CLI's choice shows live; a chip's flyout checks one"
   STANDS="stand-a stand-b" web_proof renderhere "$chrome" "$pw" ''
   jq -c '.seen.placed // empty' "$OUT/web-renderhere.json" 2> /dev/null || true
 else
@@ -116,4 +116,63 @@ cmp -s "$OUT/set-before-down.txt" "$OUT/set-after-down.txt" || check "a run none
 
 in_project "$P" --json machine use > "$OUT/set-any.json" && J '.machines == []' "$OUT/set-any.json" || check "machine use with none: $(cat "$OUT/set-any.json")"
 for name in stand-a stand-b; do timeout 60 "$COZY" --json machine end "$name" --force -y > "$OUT/$name-end.json" 2>&1 || true; done
+}
+
+# local_idle (cl-894): this computer's machine stopped, as 15 idle minutes stop it, and no other machine. A render naming none, as the
+# page asks one with no machine chosen (e2e/page.py `--on auto`, and the page itself: web/localidle.js), and `cozy run` naming none
+# each start it and run there; Calcifer placed the render among `local` alone. Before, the page counted only a `ready` local: it sent
+# no machine, or with none asked to rent one.
+
+# local_stop: this computer's machine exits as its idle clock ends it (SIGTERM, a clean exit), and Calcifer lists it stopped.
+local_stop() {
+  local pid
+  pid=$(machine_pid)
+  [ -n "$pid" ] || { check "local idle: no pid for this computer's machine"; return 1; }
+  kill -TERM "$pid" 2> /dev/null || true
+  for _ in $(seq 60); do
+    cozy --json machine ls | J '.machines[] | select(.name == "local") | .state == "stopped"' && return 0
+    sleep 1
+  done
+  check "local idle: this computer's machine isn't listed stopped: $(cozy --json machine ls | jq -c '[.machines[] | select(.name == "local") | {state}]')"
+  return 1
+}
+
+# idle_runs <project> <function> <file>: that function's runs in the project, `machine status` each.
+idle_runs() { in_project "$1" --json run ls --limit 0 | jq -r --arg f "$2" '.runs[] | select(.kind == "call" and (.target | test("/" + $f + "(@\\S+)?$"))) | "\(.machine) \(.status)"' > "$3"; }
+
+local_idle() {
+step "local idle (cl-894): this computer's machine stopped and no other: a render naming none, from page.py and the page, and cozy run, each start it and run there"
+[ -n "$LOCAL" ] || return
+local P=$OUT/local-idle page=$E2E/page.py pw=$OUT/playwright chrome
+cozy --json new --unencrypted "$P" > "$OUT/idle-new.json" 2>&1 || { check "local idle: new: $(tail -c 300 "$OUT/idle-new.json")"; return; }
+cozy --json machine ls | J '[.machines[] | select(.name != "local" and .state != "ended")] | length == 0' \
+  || { check "local idle: a machine besides local is listed: $(cozy --json machine ls | jq -c '[.machines[] | {name, state}]')"; return; }
+python3 "$page" add "$P" idle_still --tool "$here/project/tool.py/still" --fields '{"instructions": "An idle still"}' > "$OUT/idle-add.json" 2>&1 \
+  || { check "local idle: page.py add: $(tail -c 300 "$OUT/idle-add.json")"; return; }
+
+# What the page asks with no machine chosen: none sent, Calcifer places it.
+local_stop || return
+(cd "$P" && python3 "$page" render "$P" --on auto idle_still) > "$OUT/idle-render.txt" 2>&1 \
+  || check "local idle: page.py render --on auto, local stopped: $(tail -c 400 "$OUT/idle-render.txt")"
+(cd "$P" && python3 "$page" board "$P") | J '.on == ["local"]' \
+  || check "local idle: Calcifer placed the render among $( (cd "$P" && python3 "$page" board "$P") | jq -c .on), not local"
+idle_runs "$P" still "$OUT/idle-still.txt"
+grep -qx 'local completed' "$OUT/idle-still.txt" || check "local idle: the render didn't run on local: $(tr '\n' ';' < "$OUT/idle-still.txt")"
+
+# `cozy run` naming none, local stopped again.
+local_stop || return
+in_project "$P" --json run minimax-h3-tools/echo text=idle > "$OUT/idle-run.ndjson" 2> "$OUT/idle-run.err" \
+  || check "local idle: cozy run naming no machine, local stopped: $(tail -c 300 "$OUT/idle-run.err")"
+idle_runs "$P" echo "$OUT/idle-echo.txt"
+grep -qx 'local completed' "$OUT/idle-echo.txt" || check "local idle: cozy run didn't run on local: $(tr '\n' ';' < "$OUT/idle-echo.txt")"
+
+# The page itself: local stops while a project is open, then Render all.
+chrome=$(web_chrome)
+if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1; then
+  step "web-localidle: local stops while a project is open, no other machine: Render all starts it and renders there"
+  web_proof localidle "$chrome" "$pw" ''
+  jq -c '.seen.placed // empty' "$OUT/web-localidle.json" 2> /dev/null || true
+else
+  check "web-localidle: no Chrome or playwright here (${chrome:-none}): $(tail -c 300 "$OUT/web-npm.log" 2> /dev/null)"
+fi
 }

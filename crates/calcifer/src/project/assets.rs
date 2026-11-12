@@ -9,7 +9,7 @@ use axum::{
     Json,
     body::Bytes,
     extract::{Path, Query, State, rejection::BytesRejection},
-    http::{HeaderMap, StatusCode, header},
+    http::StatusCode,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -135,6 +135,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     let i = find(doc, &name).map_err(Refusal)?;
     let asset = model.row(&project, i);
     let pinned = asset.approved;
+    let recovered = authored_versions(&project, doc, lock, &model.stand, i);
     let versions = (lock.asset(&asset.name).into_iter().flat_map(|held| &held.versions))
         .map(|version| VersionRow {
             number: version.number,
@@ -149,6 +150,7 @@ pub(super) async fn read(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             warnings: version.warnings.clone(),
             pickup: version.pickup.clone(),
             text: lock.asset(&asset.name).and_then(|held| held.text_of(version.number)).map(str::to_owned),
+            fields: version.fields.clone().or_else(|| recovered.get(&version.inputs).cloned()),
             execution_ms: (version.execution_ms > 0).then_some(version.execution_ms),
         })
         .collect();
@@ -186,12 +188,12 @@ pub(super) struct Asked {
     call: bool,
 }
 
-/// `PATCH /v1/projects/{id}/assets/{name}`: its inputs set over what it holds this moment, in one transaction. With `If-Match`, only if it
-/// is still what that read: an edit of another asset never conflicts. A render going keeps the text it was asked with.
+/// `PATCH /v1/projects/{id}/assets/{name}`: the fields it names set over what it holds this moment, in one transaction, whoever wrote
+/// them last; the rest stay (cl-904, Paul 11-12: a page's writes merge field by field, never refused). A render going keeps the text it was
+/// asked with.
 pub(super) async fn patch(
     State(api): State<Arc<Api>>,
     Path((id, name)): Path<(String, String)>,
-    headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<AssetPatched>, Refusal> {
     let asked: AssetPatch = parse(&body?)?;
@@ -233,7 +235,6 @@ pub(super) async fn patch(
         }),
         _ => None,
     };
-    let read = headers.get(header::IF_MATCH).and_then(|value| value.to_str().ok()).map(str::to_owned);
     let patched = folder.act(|| {
         let holds = match &asked.tool {
             Some(tool) => Some(pictures(folder, &name, tool, true)?.map(|(number, _)| number)),
@@ -276,10 +277,6 @@ pub(super) async fn patch(
         }
         let mut edited = written.clone();
         let warnings = edited.set(&name, &fields)?;
-        // It already says this: a retry of a write whose answer was lost, or the same words from two places. Nothing to choose between.
-        if edited != written && read.as_ref().is_some_and(|read| *read != was) {
-            return Err(Error::new(Kind::Conflict, "asset_changed", format!("{name} changed since it was read")).remedy("read it again and make the edit on what it holds"));
-        }
         folder.edit(|now| {
             *now = edited;
             Ok(())
@@ -288,6 +285,30 @@ pub(super) async fn patch(
         Ok(AssetPatched { name: name.clone(), etag, was, warnings })
     });
     patched.map(Json).map_err(Refusal)
+}
+
+/// Old rows are recoverable only from authored documents with the same complete
+/// input key. A bound request cannot reverse text expansion or removed mentions.
+fn authored_versions(project: &Project, doc: &Doc, lock: &folder::Lock, stand: &[format::Standing], i: usize) -> BTreeMap<String, Map<String, Value>> {
+    let wanted: BTreeSet<&str> = lock.asset(&doc.assets[i].name).into_iter().flat_map(|held| &held.versions)
+        .filter(|version| version.fields.is_none() && !version.inputs.is_empty()).map(|version| version.inputs.as_str()).collect();
+    let mut found = BTreeMap::new();
+    if wanted.is_empty() {
+        return found;
+    }
+    if let Some(key) = stand[i].inputs.as_ref().filter(|key| wanted.contains(key.as_str())) {
+        found.insert(key.clone(), doc.authoring_fields(i));
+    }
+    let mut walker = project.walker.lock().expect("walker lock");
+    for reading in walker.readings.values_mut() {
+        if found.len() == wanted.len() { break }
+        let Some(at) = reading.doc.find(&doc.assets[i].name) else { continue };
+        reading.ensure(at, lock);
+        if let Some(key) = reading.done[at].inputs.as_ref().filter(|key| wanted.contains(key.as_str())) {
+            found.entry(key.clone()).or_insert_with(|| reading.doc.authoring_fields(at));
+        }
+    }
+    found
 }
 
 /// What a change of `tool` needs of the pictures asset `name` holds: `None` with none. A tool going on a picture nothing numbers makes it a version, as if that
@@ -415,6 +436,7 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
     let before = stale_names(&doc, &doc.stand(&folder.lock().map_err(Refusal)?));
     let (number, already) = folder
         .act(|| {
+            let initialize = format::can_initialize_approval(folder, &name)?;
             if let Some(pin) = &asset.pin {
                 constant_numbered(folder, asset, pin)?;
             }
@@ -424,7 +446,9 @@ pub(super) async fn join(State(api): State<Arc<Api>>, Path((id, name)): Path<(St
             if !already {
                 history::take(folder, &name, number, noun(&doc, &folder.lock()?, i), Took::Absent, Took::Listed);
             }
-            folder.edit(|written| written.selected(&name, number, &kept.file.sha256))?;
+            if initialize {
+                folder.edit(|written| written.selected(&name, number, &kept.file.sha256))?;
+            }
             Ok((number, already))
         })
         .map_err(Refusal)?;

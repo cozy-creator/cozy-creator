@@ -239,6 +239,11 @@ impl Link {
         Ok(Box::pin(lines.map_err(LinkError::from)))
     }
 
+    /// The run's newest preview; none while it has none. Asking keeps the machine making them.
+    pub(crate) async fn preview(&self, id: &str) -> Result<Option<crate::machine_client::Preview>, LinkError> {
+        Ok(self.machine.preview(id).await?)
+    }
+
     /// Asks the machine to cancel the run. A machine that never received it records it canceled,
     /// so a late send of it is answered with that.
     pub(crate) async fn cancel(&self, id: &str) -> Result<v1::RunState, LinkError> {

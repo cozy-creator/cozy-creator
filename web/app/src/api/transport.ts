@@ -17,6 +17,8 @@ export interface Transport {
   src(path: string): Promise<string>
   /** A URL with Range, or the MSE player. */
   play(path: string, el: HTMLMediaElement): Playback
+  /** An ordinary browser download of what `path` answers, into the Downloads folder. */
+  save(path: string): void
 }
 
 /** This tab, as a project's history says who made an edit. */
@@ -89,6 +91,19 @@ export function sameOrigin(session: () => BrowserSession | null): Transport {
       return response
     },
     src: async (path) => { const project = guard(path); await storage(project?.signal); project?.check(); return media(path) },
+    save(path) {
+      void (async () => {
+        const project = guard(path)
+        await storage(project?.signal)
+        project?.check()
+        const link = document.createElement("a")
+        link.href = media(path)
+        link.download = ""
+        document.body.append(link)
+        link.click()
+        link.remove()
+      })().catch(() => {})
+    },
     play(path, el) {
       let live = true
       const project = guard(path)

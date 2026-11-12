@@ -142,10 +142,12 @@ export interface Options {
   edit?: string
   /** The outbox action this try is of: every try of one ask goes under one `Idempotency-Key`, so Calcifer does it once. */
   action?: string
+  /** It goes on as the page goes (`fetch`'s `keepalive`). */
+  keepalive?: boolean
 }
 
 /** One try of a write, the edit it's of, and its action. */
-export type Write = Pick<Options, "once" | "edit" | "action">
+export type Write = Pick<Options, "once" | "edit" | "action" | "keepalive">
 
 /** The `Idempotency-Key` of a write: the one it names, else one per action and ask, so each try of the same ask is the same key and a try
  * that asks something else (a batch grown since) is another. FNV-1a: tries of one action are all it tells apart. */
@@ -221,6 +223,7 @@ export class Client {
       options.onAttempt?.(attempt)
     }
     if (options.edit) init = { ...init, headers: { ...Object.fromEntries(new Headers(init.headers)), "Cozy-Edit": options.edit } }
+    if (options.keepalive) init = { ...init, keepalive: true }
     for (let attempt = 1; ; attempt++) {
       let failure: ApiError
       try {
@@ -507,7 +510,7 @@ export class Client {
     return this.write("POST", `${project(id)}/unpin`, { name }, undefined, write)
   }
 
-  /** A new version of each of `names`, on these machines. A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
+  /** A new version of each of `names`, on these machines; none: Calcifer's to say (cl-894). A `pickup` goes with this one render of one box; `outdated`, with `all`, re-runs pins that are. */
   render(id: string, names: string[], on: string[], key: string, also: Pick<Runs, "pickup" | "outdated"> = {}, once?: AbortSignal): Promise<Asked> {
     return this.write("POST", `${project(id)}/runs`, { names, on, ...also }, key, { once })
   }
@@ -533,14 +536,9 @@ export class Client {
   }
 
   /** These inputs set. With `read`, only if its own lines are still what that read. */
-  patchAsset(id: string, name: string, body: AssetPatch, read?: string, write: Write = {}): Promise<AssetPatched> {
-    const headers: Record<string, string> = { "Content-Type": "application/json" }
-    if (read) headers["If-Match"] = read
-    const path = `${project(id)}/assets/${encodeURIComponent(name)}`
-    const text = JSON.stringify(body)
-    const asked = keyOf("PATCH", path, `${read ?? ""}\n${text}`, undefined, write.action)
-    if (asked) headers["Idempotency-Key"] = asked
-    return this.json(path, { method: "PATCH", headers, body: text }, write)
+  /** The fields it names, over whatever they hold: the rest stay as anyone left them. */
+  patchAsset(id: string, name: string, body: AssetPatch, write: Write = {}): Promise<AssetPatched> {
+    return this.write("PATCH", `${project(id)}/assets/${encodeURIComponent(name)}`, body, undefined, write)
   }
 
   deleteAsset(id: string, name: string, write: Write = {}): Promise<AssetDeleted> {
@@ -636,6 +634,11 @@ export class Client {
     return `${project(id)}/${file.split("/").map(encodeURIComponent).join("/")}`
   }
 
+  /** A file route's file downloaded as `name`, its extension Calcifer's: `hei.2` saves `hei.2.png`. */
+  download(path: string, name: string): void {
+    this.transport.save(`${path}${path.includes("?") ? "&" : "?"}download=${encodeURIComponent(name)}`)
+  }
+
   // Runs
 
   runs(id: string, filter: RunFilter, limit: number, signal?: AbortSignal): Promise<RunList> {
@@ -671,6 +674,11 @@ export class Client {
   /** Where an output's bytes are served, once they landed here. */
   output(address: ProjectRun, name: string, index: number): string {
     return `${run(address)}/outputs/${encodeURIComponent(name)}${index ? `?index=${index}` : ""}`
+  }
+
+  /** A running run's newest picture of what it's making, from its machine (cr-282): asking is what keeps it making them. */
+  runPreview(address: ProjectRun): string {
+    return `${run(address)}/preview`
   }
 
   /** How to play an output straight from its machine. */

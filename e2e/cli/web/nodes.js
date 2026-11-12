@@ -1,6 +1,6 @@
 // Assets as a person works them (web-ui.md, Tools and nodes), in a real browser on a real Calcifer. The shell: a name, Render all, a menu; tools
 // on the left, each dragged out to make a box. A box is its picture or its text at rest. Text with chips, the file still plain; a name dragged in; a fresh box as its prompt, or its prompt
-// and one beat, with all else behind More; controls from what it holds; reshaping; beats; conflicts; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
+// and one beat, with all else behind More; controls from what it holds; reshaping; beats; another's edits merged; deleting and Undo. Where this computer runs models, Paul's example, real: drop a picture, drop a tool, drag the
 // picture in, type, render, approve, delete the picture: what's approved stands, rendering it again fails naming what's gone, the rest goes on,
 // Undo brings it back. Takes side by side, one dragged out, Pick up from here, Render all.
 //   node nodes.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { implementationRow, selectVersion, chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
+const { implementationRow, previewVersion, approveVersion, chooseModel, projectFromPage, projectAction, projectJson, calcifer, carry, signIn, MP4, boxLog, boxOf, closeBox, openBox, openCanvas, fitCanvas, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, renderOf, rowsOf, settled, until, watchBoxes, importYaml, yamlOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -227,7 +227,7 @@ function linesOf(text, name) {
   for (const kind of ['image', 'audio', 'text']) {
     const name = blanks[kind].name;
     await toolOnto(videoTool, name);
-    await until('incompatible drop explained', () => page.locator('.notes, .note-list, [role=status]').allInnerTexts(), (notes) => notes.some((text) => text.includes(name) && (text.includes("can't go on") || text.includes('node'))));
+    await until('incompatible drop explained', () => page.locator('.notes, .note-list, [role=status]').allInnerTexts(), (notes) => notes.some((text) => text.includes('makes video: drop it on a video box')));
     const now = await of(name);
     check(`video_rejected_by_${kind}_without_extra_node`, now.tool === blank(kind).tool && now.kind === blank(kind).kind && JSON.stringify((await state()).assets.map((held) => held.name).sort()) === JSON.stringify(allBefore), now);
   }
@@ -257,10 +257,10 @@ function linesOf(text, name) {
     const fresh = await dragOut(fromTheList, x, y);
     await chooseModel(page, fresh.name, tool, "image");
     await until("local model selected", () => of(fresh.name), (held) => held.tool === tool);
-    await box(fresh.name).locator('.nm').dblclick();
-    await page.waitForSelector('.nm-field');
-    await page.keyboard.type(name);
-    await page.keyboard.press('Enter');
+    await box(fresh.name).getByRole('button', { name: 'Rename node', exact: true }).click();
+    const naming = box(fresh.name).locator('.focus-heading input[aria-label="Name"]');
+    await naming.fill(name);
+    await naming.press('Enter');
     await until(`named ${name}`, () => of(name), Boolean);
     await away();
     return fresh;
@@ -299,10 +299,10 @@ function linesOf(text, name) {
   await away();
   await page.waitForTimeout(100);
 
-  // The image keeps its deletion target and its current-version controls at rest.
+  // A plain imported image keeps its deletion target at rest, with no linear counter/arrow control.
   const atRest = box('source-a').locator('.head button[aria-label="Delete"]');
   check('at_rest_delete_is_always_visible', await atRest.isVisible() && ((await atRest.boundingBox())?.width ?? 0) >= 24, await box('source-a').innerText());
-  check('at_rest_image_has_version_controls', await box('source-a').getByLabel('Current version', { exact: true }).innerText() === '1/1' && await box('source-a').getByRole('button', { name: 'Previous version', exact: true }).isDisabled() && await box('source-a').getByRole('button', { name: 'Next version', exact: true }).isDisabled());
+  check('at_rest_image_has_no_linear_version_controls', await box('source-a').getByLabel('Current version', { exact: true }).count() === 0 && await box('source-a').getByRole('button', { name: /^(Previous|Next) version$/ }).count() === 0);
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
   await open('Sheet');
   check('hover_shows_render', (await box('Sheet').locator('button[aria-label=Render]').count()) === 1);
@@ -431,7 +431,7 @@ function linesOf(text, name) {
   const field = async (re) => (linesOf(yaml(), 'knobs') ?? '').match(re)?.[1];
   check('summary_is_its_prompt', (await knobs.locator('.in-frame .mention-text').getAttribute('data-field')) === 'summary');
   // Its description has a field of its own, always open.
-  check('words_and_beats_shown', (await knobs.locator('.mention-text:not([data-field=description])').count()) === 2 && (await knobs.locator('.desc-field .mention-text').count()) === ((await of('knobs')).kind === 'image' ? 0 : 1) && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=Megapixels]').count()) === 0, await knobs.innerText());
+  check('words_and_beats_shown_without_an_asset_description', (await knobs.locator('.mention-text:not([data-field=description])').count()) === 2 && (await knobs.locator('.desc-field').count()) === 0 && (await knobs.locator('.beat').count()) === 1 && (await knobs.locator('.edit-more, input[aria-label=Megapixels]').count()) === 0, await knobs.innerText());
   check('no_line_beside_more', (await knobs.locator('.more-marks').count()) === 0 && (await knobs.locator('.more-toggle').innerText()).trim() === 'More', await knobs.locator('.more-toggle').innerText());
   await more('knobs');
   check('what_it_holds_behind_more', (await knobs.locator('input[aria-label=Megapixels]').inputValue()) === '1' && (await knobs.locator('label:has-text("turbo") input').isChecked()), await knobs.locator('.edit-more').innerText());
@@ -505,7 +505,8 @@ function linesOf(text, name) {
   await api(`/v1/projects/${id}/assets/knobs`, { method: 'DELETE' });
   await until('knobs gone', () => box('knobs').count(), (n) => n === 0);
 
-  // Conflicts are per asset: another's edit doesn't count, its own does, and neither side is lost.
+  // Another's edit merges field by field (cl-904): of another asset, or another field, it applies; of the words being typed, the page's unsent
+  // words stand and are saved, with nothing asked.
   await open('Sheet');
   await sheetText.click();
   await page.keyboard.press('End');
@@ -514,16 +515,23 @@ function linesOf(text, name) {
   // Read again: the canvas is drawn in on Sheet, so what else is on it may not be drawn.
   await until('its etag read again', async () => (await of('kept_words'))?.fields?.description ?? '', (text) => text.includes('Rewritten'));
   await until('another\'s edit is no conflict', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes('mine'));
+  // Its write waits until theirs is in, as a slower network's would.
+  let theirsIn;
+  const going = new Promise((done) => (theirsIn = done));
+  const late = (call) => (call.request().method() === 'PATCH' ? going.then(() => call.fallback().catch(() => {})) : call.fallback());
+  await page.route('**/v1/projects/*/assets/Sheet', late);
   await sheetText.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' again');
   importYaml(folder, yaml().replace(' mine', ' theirs'));
-  await box('Sheet').locator('.status.ood:has-text("changed under this")').waitFor();
-  await shot('conflict');
-  check('a_conflict_writes_nothing', linesOf(yaml(), 'Sheet').includes(' theirs') && !linesOf(yaml(), 'Sheet').includes(' again'), linesOf(yaml(), 'Sheet'));
-  await box('Sheet').locator('button:has-text("Keep mine")').click();
-  await until('mine kept', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes(' again'));
-  check('kept_mine', true);
+  check('theirs_in_the_file', linesOf(yaml(), 'Sheet').includes(' theirs'), linesOf(yaml(), 'Sheet'));
+  await page.waitForTimeout(1000);
+  await shot('unsent-words-stand');
+  check('unsent_words_stand', (await sheetText.innerText()).includes('mine again'), await sheetText.innerText());
+  theirsIn();
+  await page.unroute('**/v1/projects/*/assets/Sheet', late);
+  await until('mine saved over theirs', () => Promise.resolve(linesOf(yaml(), 'Sheet')), (lines) => lines?.includes(' mine again'));
+  check('nothing_asked', (await box('Sheet').locator('button:has-text("Keep mine")').count()) === 0);
 
   // A caret never rests in a name, where what's typed goes nowhere: a click on one puts it just after, and what's typed there is saved there.
   await open('Sheet');
@@ -543,24 +551,24 @@ function linesOf(text, name) {
     await page.keyboard.type(' typed');
     typedAfter.box = await until('typed after the name, in the box', () => sheetText.innerText(), (text) => /source-a>?\s+typed/i.test(text));
     await page.mouse.click(1500, 1000);
-    typedAfter.file = await until('typed after the name, in the file', async () => ({ lines: linesOf(yaml(), 'Sheet'), conflict: await box('Sheet').locator('.status.ood:has-text("changed under this")').count() }), (now) => now.lines?.includes('<source-a> typed') || now.conflict > 0);
+    typedAfter.file = await until('typed after the name, in the file', async () => ({ lines: linesOf(yaml(), 'Sheet') }), (now) => now.lines?.includes('<source-a> typed'));
   } catch (error) {
     typedAfter.error = String(error.message ?? error).slice(0, 400);
   }
   check('typed_after_a_name', Boolean(typedAfter.file?.lines?.includes('<source-a> typed')), typedAfter);
   await away();
 
-  // Right click: rename, delete, and what it's made with.
+  // Right click: download, star, rename and delete; a box's tool changes only by a drop from the palette (Paul, 11-12).
   await away();
   await box('source-b').locator('.nm').click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
-  check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
+  check('file_menu', (await page.locator('.asset-menu > button').allTextContents()).join() === 'Download,Star,Rename,Delete', await page.locator('.asset-menu > button').allTextContents());
   await page.keyboard.press('Escape');
   await open('Sheet');
-  await box('Sheet').locator('.nm').click({ button: 'right' });
+  await box('Sheet').getByRole('button', { name: 'Rename node', exact: true }).click({ button: 'right' });
   await page.waitForSelector('.asset-menu');
   const items = await page.locator('.asset-menu > button').allTextContents();
-  check('box_menu', ['Change the tool', 'Rename', 'Delete'].every((item) => items.includes(item)), items);
+  check('box_menu', ['Rename', 'Delete'].every((item) => items.includes(item)) && !items.includes('Change the tool'), items);
   await page.keyboard.press('Escape');
 
   // A fresh box, from the list: one prompt, or a prompt and one beat that's in the file from the start. All else is behind More, which stays as it's left, says what's set there, and saves what `cozy status` reads.
@@ -587,10 +595,10 @@ function linesOf(text, name) {
       const fresh = await dragOut(await implementationRow(page, 'image'), point.x, point.y);
       await chooseModel(page, fresh.name, implementationOf(name).id, 'image');
       await until('the selected implementation lands', () => of(fresh.name), (held) => held.tool === implementationOf(name).id);
-      await box(fresh.name).locator('.nm').dblclick();
-      await page.waitForSelector('.nm-field');
-      await page.keyboard.type(`${name}_1`);
-      await page.keyboard.press('Enter');
+      await box(fresh.name).getByRole('button', { name: 'Rename node', exact: true }).click();
+      const naming = box(fresh.name).locator('.focus-heading input[aria-label="Name"]');
+      await naming.fill(`${name}_1`);
+      await naming.press('Enter');
       await box(`${name}_1`).waitFor();
       await open(`${name}_1`);
     };
@@ -667,13 +675,16 @@ function linesOf(text, name) {
     check('rendered_with_no_reload', await page.evaluate(() => window.notReloaded === true));
     await render('Sheet', 2);
     await open('Sheet');
-    await until('its count', () => box('Sheet').getByLabel('Current version', { exact: true }).textContent(), (text) => text === '2/2');
+    await until('its two retained previews', () => box('Sheet').locator('.image-history.here-side .take[data-take]').count(), (count) => count === 2);
 
-    // Back/forward changes the one selected state, durably, without adding versions.
-    await selectVersion(page, 'Sheet', 1);
+    // Preview is local; double-click approval is the separate persistent action.
+    const beforePreview = (await of('Sheet')).version;
+    await previewVersion(page, 'Sheet', 1);
+    check('thumbnail_preview_does_not_approve', (await of('Sheet')).version === beforePreview);
+    await approveVersion(page, 'Sheet', 1);
     await until('first version selected in the project', () => of('Sheet'), (held) => held.version === 1);
-    check('selected_version_is_persistent', (await box('Sheet').getByLabel('Current version', { exact: true }).innerText()) === '1/2');
-    check('images_have_no_thumbnail_strip', await box('Sheet').locator('.here-side .take, .takes .take[data-take]').count() === 0);
+    check('selected_version_is_persistent', await box('Sheet').locator('.image-history .take.on[data-take]').getAttribute('data-take') === '1');
+    check('images_keep_the_original_right_previews', await box('Sheet').locator('.image-history.here-side .take[data-take]').count() === 2);
     check('image_view_has_no_description', await box('Sheet').locator('.desc-field').count() === 0);
     await openBox(page, 'Sheet');
     const viewButton = box('Sheet').getByRole('button', { name: 'View image', exact: true });
@@ -682,7 +693,7 @@ function linesOf(text, name) {
     const selectedBefore = (await of('Sheet')).version;
     await renderOf(page, 'Sheet');
     check('editing_keeps_current_selection', (await of('Sheet')).version === selectedBefore && await box('Sheet').locator('.in-frame').count() === 1);
-    await box('Sheet').getByRole('button', { name: 'View image', exact: true }).click();
+    await previewVersion(page, 'Sheet', 1);
 
     // Stored version deletion and Undo remain available independently of the removed strip.
     const asked = await versions('Sheet');
@@ -702,9 +713,9 @@ function linesOf(text, name) {
     await open('Sheet');
     // The drag carries what the page holds, and that came by the stream, a moment behind the answer above.
     check('image_description_stays_hidden', await box('Sheet').locator('.desc-field').count() === 0);
-    await selectVersion(page, 'Sheet', 2);
+    await previewVersion(page, 'Sheet', 2);
     const selected = await of('Sheet');
-    check('selection_keeps_versions_on_one_asset', selected.version === 2 && selected.versions === asked && !(await of('Sheet_2')), selected);
+    check('preview_keeps_approval_and_versions_on_one_asset', selected.version === 1 && selected.versions === asked && !(await of('Sheet_2')) && await box('Sheet').locator('.image-history .take.on[data-take]').getAttribute('data-take') === '2', selected);
     check('selection_creates_no_new_bytes', readdirSync(join(folder, 'files')).length === filesBefore);
     await shot('versions');
 
@@ -876,7 +887,7 @@ function linesOf(text, name) {
     // The box is back as it's asked for, ahead of the file and its versions: then all its versions, in the project and on the page.
     const restored = await until('its versions back', () => versions('Other'), (n) => n === takes).catch(() => versions('Other'));
     await open('Other');
-    const shown = Number((await box('Other').getByLabel('Current version', { exact: true }).innerText()).split('/')[1]);
+    const shown = await box('Other').locator('.image-history.here-side .take[data-take]').count();
     check('undo_brings_its_versions', restored === takes && shown === takes, { takes, restored, shown });
     await away();
 
@@ -950,9 +961,9 @@ function linesOf(text, name) {
   check('sidebar_still_only_nodes_and_tools', JSON.stringify(await page.locator('.tools h4').allTextContents()) === JSON.stringify(['Nodes', 'Tools']) && await page.locator('.tools .browse, .tools .box-shelf-head, .tools .tool-off, .tools input').count() === 0);
   check('csp_holds', (await page.evaluate(() => window.violations)).length === 0, await page.evaluate(() => window.violations));
   await new Promise((done) => setTimeout(done, 300));
-  // Only the conflict it asked for: anything else a project's route refused is a fault, however the page took it.
+  // Anything a project's route refused is a fault, however the page took it.
   // Nor a read of what the stream said changed, gone by then: that's how the page hears it's gone.
-  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && !(refusal.code === 'asset_changed' && refusal.url.endsWith('/assets/Sheet')) && !(refusal.code === 'asset_unknown' && refusal.method === 'GET'));
+  const unasked = refused.filter((refusal) => refusal.url.includes('/v1/projects/') && !(refusal.code === 'asset_unknown' && refusal.method === 'GET'));
   check('nothing_refused_unasked', unasked.length === 0, unasked);
   check('no_page_errors', errors.length === 0, { errors, refused });
   console.log(JSON.stringify({ failures, seen }, null, 2));

@@ -3,11 +3,11 @@
 for p in "${PRODUCTS[@]}"; do product "$p"; done
 # A 16-bit request attends exactly: Klein's image blocks declare 8-bit attention, its bf16 lane must not take it.
 # Escaped from #2050 to cozy-creator #2224: TensorD sent every request bits 0, so `--lane bf16` attended at 8 bits.
-cell klein-bf16 "$(pkg flux.3 generate_turbo)" --lane bf16 prompt="$OBJECT on a marble plinth, studio photo" seed:=$((R + 40))
+cell klein-bf16 "$(pkg flux.3-klein generate_turbo)" --lane bf16 prompt="$OBJECT on a marble plinth, studio photo" seed:=$((R + 40))
 if [ -f klein-bf16.json ]; then
   a=$(run_get "$OUT" klein-bf16 '[.measurements.observations[]? | select(.name == "attention.selected") | .value] | unique | join(",")')
   expect klein-bf16-exact "$([ -n "$a" ] && ! grep -qE 'kitchen|sage|fp8|fp4|sol|flashinfer' <<<"$a" && echo PASS || echo FAIL)" \
-    "flux.3 --lane bf16 attention: ${a:-none recorded}"
+    "flux.3-klein --lane bf16 attention: ${a:-none recorded}"
 fi
 # Second executor process: a GPU memory limit write restarts the machine, so every executor is new.
 if [ -z "$ONLY" ] || [[ $ONLY == *",sdxl-p2,"* || $ONLY == *",sdxl,"* ]]; then

@@ -18,14 +18,20 @@ use crate::{Context, output};
 /// A run not yet settled is followed to its end in every mode (Ctrl-C stops following, never the
 /// run): with `--json`, Calcifer's events as NDJSON, then the run's record as the last line.
 /// `once`: a snapshot instead. The exit code is the run's: 1 when it failed or was canceled.
-pub(crate) async fn exec(ctx: &Context, id: &str, once: bool, download: Option<&std::path::Path>) -> Result<ExitCode, Error> {
+pub(crate) async fn exec(
+    ctx: &Context,
+    id: &str,
+    once: bool,
+    download: Option<&std::path::Path>,
+    previews: Option<&std::path::Path>,
+) -> Result<ExitCode, Error> {
     let calcifer = ctx.calcifer().await?;
     let address = crate::calcifer_client::RunAddress::current(ctx, id).await?;
     // `--full`: what it measured, its calls and what it was asked; a person's view and `--json` hold the rest.
     let detail: &[(&str, &str)] = if ctx.full { &[("detail", "full")] } else { &[] };
     let mut run: Run = calcifer.get_query(&address.path(), detail).await?;
     if !once && !follow::settled(&run) {
-        let ended = follow::follow(ctx, run).await?;
+        let ended = super::previewed(ctx, run, previews).await?;
         if let Some(dir) = download {
             super::downloaded(ctx, &ended, dir).await?;
         }

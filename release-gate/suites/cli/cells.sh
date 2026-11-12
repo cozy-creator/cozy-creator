@@ -172,6 +172,13 @@ stall_cell() {
   curl -sS -N --max-time 1500 -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/events" < /dev/null > "$stream" 2> stall-events.err & page=$!
   for _ in $(seq 50); do [ -s "$stream" ] && break; sleep 0.2; done
   [ -s "$stream" ] || { cli_fail "stall: the page's stream said nothing: $(tail -c 200 stall-events.err)"; kill "$page" 2> /dev/null; return; }
+  # A project's board reaches a stream that holds it, as the page holds the project it shows (`PUT /v1/events/{stream}`).
+  local sid pid
+  sid=$(sed -n 's/^data: //p' "$stream" | jq -r 'select(.type == "hello") | .stream' 2> /dev/null | head -1)
+  pid=$( (cd "$S" && "$CLI" --json --full status) | jq -r '.project.id // empty')
+  curl -sS -X PUT -H "Authorization: Bearer $(jq -r .token "$lock")" -H 'Content-Type: application/json' -d "{\"projects\": [\"$pid\"]}" \
+    "http://$(jq -r .address "$lock")/v1/events/$sid" > stall-hold.json 2>&1
+  jq -e --arg p "$pid" '.held | index($p)' stall-hold.json > /dev/null 2>&1 || cli_fail "stall: the page's stream ${sid:-?} doesn't hold ${pid:-the project}: $(head -c 200 stall-hold.json)"
   cli_page render "$S" --on "$M" --queue held > stall-render.log 2>&1 || cli_fail "stall: render --queue: $(tail -c 300 stall-render.log)"
   # The run starts once held is running: two local codes made ready at once on a fresh computer refuse the second while the
   # first fetches uv (`uv_unavailable`, cli gate 43133580881), which isn't what this cell is about.

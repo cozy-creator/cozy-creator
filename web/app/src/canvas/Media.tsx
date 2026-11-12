@@ -2,15 +2,12 @@ import { useQuery } from "@tanstack/react-query"
 import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
-import { runFullQuery, runQuery, runsQuery } from "../api/queries"
+import { runFullQuery, runQuery } from "../api/queries"
 import { holdMedia, playingHere } from "../api/events"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
-import { leftWords } from "../panels/format"
-import { fractionOf, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
-import { long, workWords } from "../panels/runs/words"
-import type { Run, Tool } from "../api/calcifer"
-import { useCanvasStore, useElement } from "./context"
+import type { MainFile } from "../api/calcifer"
+import { useCanvasStore } from "./context"
 import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
@@ -20,6 +17,8 @@ import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
 import { BufferedImage } from "./BufferedImage"
+import { RunFace, useArriving } from "./RunFace"
+import { bodyText, CopyError } from "../ui/CopyError"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
 const STRIP_FRAMES = 8
@@ -325,10 +324,16 @@ type Source = { path: string } | { run: number; output: string }
 // A project's file, by its hash. Anything else from a state isn't followed.
 const FILE = /^files\/[0-9a-f]{64}(\.\w+)?$/
 
+/** Its bytes are in the project's files/, which the file route serves, so a person can download it. */
+export const downloadable = (file: Pick<MainFile, "path" | "absent">) => !file.absent && FILE.test(file.path)
+
 export function sourceOf(view: ElementView, shown: Shown | null): Source | null {
   const asset = view.asset
   if (!asset || view.placing) return null
-  if (asset.making?.length && asset.kind === "video" && view.viewed === undefined) return { run: Math.min(...asset.making), output: "video" }
+  if (!shown && asset.kind === "video") {
+    const run = watched(view)?.run ?? (view.viewed === undefined ? asset.making?.[0] : undefined)
+    if (run) return { run, output: "video" }
+  }
   if (shown?.field !== "video" && shown?.field !== "audio") return null
   if (!shown.absent) return FILE.test(shown.path) ? { path: shown.path } : null
   return shown.machine && shown.run ? { run: shown.run, output: shown.output } : null
@@ -364,7 +369,7 @@ export function viewable(view: ElementView | undefined): boolean {
 }
 
 /** Played on click, or at once with `auto`, one of the two live ones across tabs: a file Calcifer serves, by its API path, or one straight from a machine. */
-export function Player({ field, path, machine, seek, auto }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean }) {
+export function Player({ field, path, machine, seek, auto, onTime }: { field: string; path?: string; machine?: { project: string; run: number; output: string }; seek?: ElementView["seek"]; auto?: boolean; onTime?(seconds: number): void }) {
   const { client, stream } = useConnection()
   const [state, setState] = useState<"idle" | "waiting" | "playing" | "unplayable">("idle")
   const [why, setWhy] = useState("This browser can't play it")
@@ -455,6 +460,8 @@ export function Player({ field, path, machine, seek, auto }: { field: string; pa
         className={`live nodrag nopan nowheel ${field}`}
         controls
         preload="none"
+        onTimeUpdate={(event) => onTime?.(event.currentTarget.currentTime)}
+        onSeeked={(event) => onTime?.(event.currentTarget.currentTime)}
         onEnded={() => stopRef.current()}
         onError={() => {
           const el = element.current
@@ -484,11 +491,7 @@ function Progress({ veil = true, fraction, says, phase, rendering }: Way) {
   )
 }
 
-const installsOf = (tool?: Tool) => tool && (tool.installs ?? tool.package)
-const settingUp = (run: Run) => run.kind === "update" || run.target.startsWith("install ")
-const sentence = (said: string) => said.charAt(0).toUpperCase() + said.slice(1)
-
-/** How far a render on its way has got, and the one line it says. */
+/** How far it's got, in one line: an import placed, or an Edit rendered here. */
 interface Way {
   veil?: boolean
   fraction?: number
@@ -497,52 +500,63 @@ interface Way {
   rendering?: boolean
 }
 
-/** A render on its way, in one line, the most specific first: an Edit rendering here; what it reads and waits for, with that one's work; its
- *  package installing or its weights arriving, from what its machine lists, before its run is sent too; its counted steps; its place in a
- *  line; what it's doing; its machine getting ready; else queued. Its own work says so once it's worth it: `Denoise steps: 3/8, 25 s left`.
- *  The veil is its run's, while it's made. The take looked at may be one asked after the first going: it's that one's. */
-function OnItsWay({ view, name, number }: { view: ElementView; name: string; number?: number }) {
+/** How often a rendering box asks its run's machine for a preview while none comes: the machine makes them only while asked. */
+const PREVIEW_ASK_MS = 8000
+
+/** What its run is making, faded under how far it's got (cr-282): the newest picture its machine made of the latents. Asked for as
+ *  each new one is made, and every few seconds while none is, which is what keeps the machine making them; an answer with no new
+ *  one leaves the last in place. The take replaces it. */
+function LatentPreview({ view, number }: { view: ElementView; number: number }) {
   const { client } = useConnection()
   const store = useCanvasStore()
-  const tools = useSignal(store.tools)
-  const asset = view.asset
-  const making = asset?.standing === "making"
-  const later = number !== undefined && number !== view.run?.number
-  const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && later) })
+  const project = store.projectId
+  const later = number !== view.run?.number
+  const { data } = useQuery({ ...runQuery(client, project ?? "", number), enabled: Boolean(project && later) })
   const run = later ? data : view.run
-  const on = useWaitsOn(run)
-  // Waiting for what it reads, it says that, and nothing of a machine's work for another box.
-  const waits = making ? null : store.waitsFor(name)
-  const installing = useInstalling(run || waits ? undefined : installsOf(asset?.tool ? tools.get(asset.tool) : undefined))
-  const read = useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
-  const going = useQuery({ ...runsQuery(client, store.projectId ?? "", { status: "in_progress" }, 100), enabled: Boolean(store.projectId && !run) })
-  const lined = useQuery({ ...runsQuery(client, store.projectId ?? "", { status: "queued" }, 100), enabled: Boolean(store.projectId && !run) })
-  if (asset?.rendering != null) return <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />
-  if (waits && !on) {
-    const theirs = read?.asset?.making?.length ? read.run : undefined
-    const words = theirs && theirs.status !== "completed" ? workWords(theirs) : ""
-    return <Progress fraction={theirs?.progress?.done_fraction ?? undefined} says={`Waits for <${waits}>${words ? `: ${words}` : ""}`} />
-  }
-  const before = on ?? installing
-  if (before?.kind === "install") return <Progress phase="install" says={`Installing ${packageWords(before.subject)}…`} />
-  if (before?.kind === "download") {
-    const fraction = fractionOf(before)
-    const left = before.eta_s == null ? "" : `, ${leftWords(before.eta_s)}`
-    return <Progress phase="download" fraction={fraction} says={`Waiting on download… ${fraction === undefined ? "" : `${Math.round(fraction * 100)}%`}${left}`} />
-  }
-  // A run that ended says no more of how far: it's all there, on its way here.
-  if (run?.status === "completed") return <Progress fraction={1} />
-  const work = run && long(run, Date.now()) ? workWords(run) : ""
-  const counted = Boolean(run?.progress?.total || run?.progress?.bytes_total)
-  const machine = !run && [...(going.data?.runs ?? []), ...(lined.data?.runs ?? [])].find(settingUp)?.machine
-  const says =
-    (counted && work) ||
-    (run?.queue_position !== undefined && `Queued, number ${run.queue_position} in line`) ||
-    (run?.waiting && sentence(run.waiting)) ||
-    work ||
-    (machine && `Getting ${machine} ready`) ||
-    ((!run || run.status === "queued") && "Queued")
-  return <Progress veil={making} fraction={run?.progress?.done_fraction ?? undefined} says={says || undefined} />
+  const running = run?.status === "in_progress" && run.machine_state !== "queued"
+  const newest = run?.progress?.preview ?? 0
+  const [ask, setAsk] = useState(0)
+  const [shown, setShown] = useState<{ url: string; tag: string }>()
+  const held = useRef<{ url: string; tag: string }>(undefined)
+  useEffect(() => {
+    if (running) setAsk((n) => n + 1)
+  }, [running, newest])
+  useEffect(() => {
+    if (!running) return
+    const timer = setInterval(() => setAsk((n) => n + 1), PREVIEW_ASK_MS)
+    return () => clearInterval(timer)
+  }, [running])
+  useEffect(() => {
+    if (!project || !running || !ask) return
+    const epoch = mediaEpoch.get(project) ?? 0
+    const asked = new AbortController()
+    const tag = held.current?.tag
+    void (async () => {
+      const response = await client.transport.fetch(client.runPreview({ project, run: number }), { signal: asked.signal, headers: tag ? { "If-None-Match": tag } : {} })
+      const now = response.headers.get("etag")
+      if (response.status !== 200 || !now || now === tag) return
+      const blob = await response.blob()
+      if (asked.signal.aborted || !store.active || store.projectId !== project || (mediaEpoch.get(project) ?? 0) !== epoch) return
+      const picture = { url: URL.createObjectURL(blob), tag: now }
+      if (held.current) URL.revokeObjectURL(held.current.url)
+      held.current = picture
+      setShown(picture)
+    })().catch(() => {})
+    return () => asked.abort()
+  }, [client, store, project, number, running, ask])
+  useEffect(() => {
+    setShown(undefined)
+    return () => {
+      if (held.current) URL.revokeObjectURL(held.current.url)
+      held.current = undefined
+    }
+  }, [project, number])
+  if (!shown || !project || !store.active) return null
+  return (
+    <div className="latent-preview" data-preview={shown.tag}>
+      <img src={shown.url} alt="" draggable={false} />
+    </div>
+  )
 }
 
 /** The picture in a box's frame, one take's alone. At rest, as wide as it's drawn, in line with the rest. Open, its small thumbnail at once, the one
@@ -599,7 +613,7 @@ export function Ghosts({ name, view, mentions, cardWidth = 960 }: { name: string
     if (view.asset?.kind !== "image" || frame || !element.current) return
     const held = element.current
     const measure = () => {
-      if (held.clientWidth > 0 && held.clientHeight > 0) setFrame({ width: held.clientWidth, height: held.clientHeight })
+      if (held.clientWidth > 0 && held.clientHeight > 0) setFrame({ width: held.clientWidth, height: held.clientHeight / 2 })
     }
     measure()
     const observer = new ResizeObserver(measure)
@@ -630,8 +644,8 @@ function askedIn(input: Record<string, unknown> | undefined, field: string): str
   return typeof text === "string" ? text : null
 }
 
-/** A take being made, with nothing of it yet: where its picture will be, the words its run was asked, read only, as they were written in its
- *  frame, over what they mention, until it lands. Asked and not sent yet, it has no run: the box's own words are what's sent. */
+/** A take being made, with nothing of it yet: behind its face (RunFace), what the words its run was asked mention, until it lands. Asked and
+ *  not sent yet, it has no run: the box's own words are what's sent. */
 function MadeFrom({ view, name, run, cardWidth }: { view: ElementView; name: string; run?: number; cardWidth: number }) {
   const { client } = useConnection()
   const store = useCanvasStore()
@@ -642,15 +656,7 @@ function MadeFrom({ view, name, run, cardWidth }: { view: ElementView; name: str
   const own = valueIn(view, control.field)
   const words = run === undefined || isError ? (typeof own === "string" ? own : null) : askedIn(data?.request?.input, control.field)
   if (!words?.trim()) return null
-  // What they mention under how far it's got, and the words over it.
-  return (
-    <>
-      <Ghosts name={name} view={view} mentions={mentionsIn(words)} cardWidth={cardWidth} />
-      <div className="made-from">
-        <Said words={words} view={view} name={name} />
-      </div>
-    </>
-  )
+  return <Ghosts name={name} view={view} mentions={mentionsIn(words)} cardWidth={cardWidth} />
 }
 
 export function Media({ view, name, cardWidth, restWidth = cardWidth, children }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode }) {
@@ -666,8 +672,11 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
-  const busy = (making || Boolean(view.queued) || view.asked !== undefined) && (asset?.kind !== "image" || pendingImage || !shown)
-  const run = busy ? makingRun(view) : undefined
+  const onItsWay = making || Boolean(view.queued) || view.asked !== undefined
+  const busy = onItsWay && (Boolean(watch && watch.number === undefined) || !shown)
+  // Made, with its file still on its way here: it says so, as a render on its way does.
+  const arriving = useArriving(view)
+  const run = onItsWay ? makingRun(view) : arriving
   const here = shown && !shown.absent ? shown : null
   // A video whose file says `orbit` turns, not plays: open, a drag turns it from the file here.
   const orbit = field === "video" ? orbitOf(shown) : null
@@ -686,12 +695,18 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
     const next = imageVersions[imageAt + offset]?.main
     return next && !next.absent ? [next.sha256] : []
   })
+  const neighborPaths = Object.fromEntries(imageVersions.flatMap((version) => version.main && !version.main.absent ? [[version.main.sha256, version.main.path]] : []))
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
-  // Its take being made, with nothing of it yet: its frame says what it's made from.
+  // Its take being made, with nothing of it yet: what its words mention is behind its face.
   const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !view.glimpse
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
+  // On its way, its face says so whole, unless a take is looked at, a glimpse of what it's making shows or its words are being written:
+  // then along its bottom.
+  const full = (busy || arriving !== undefined) && view.viewed === undefined && !view.glimpse && !(view.here && view.hereWords)
+  // What stopped its last try, in place: an approved box looked at shows nothing wrong (Card's dot).
+  const failed = !busy && !placing && Boolean(asset?.failure) && view.viewed === undefined && !(asset?.pinned && faceOf(view) === "media")
   return (
     <div className={`media ${asset?.kind === "image" ? "image-asset" : ""} ${pendingImage ? "pending-image" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
       <div className="media-pixels" data-image-reference={asset?.kind === "image" && shown && !view.hereWords ? "" : undefined}>
@@ -707,9 +722,9 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           />
         )}
         {here && field === "video" && <Poster shown={here} cardWidth={cardWidth} name={name} scrubbed={view.scrub} previewing={previewing} />}
-        {bufferedImage && field === "image" && <BufferedImage sha256={bufferedImage.sha256} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
+        {bufferedImage && field === "image" && <BufferedImage sha256={bufferedImage.sha256} originalPath={bufferedImage.path} neighborPaths={neighborPaths} neighbors={neighbors} cardWidth={cardWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
         {here && field !== "video" && field !== "image" && <FramePicture key={here.sha256} sha256={here.sha256} open={Boolean(view.here)} restWidth={restWidth} onSize={setAspect} onShown={() => store.showThumb(name)} />}
-        {shown?.absent && <span className="media-note">{shown.machine ? `On ${shown.machine}` : "On another computer"}</span>}
+        {shown?.absent && arriving === undefined && <span className="media-note">{shown.machine ? `Kept on ${shown.machine}` : "Kept on another computer"}</span>}
         {!shown && firstClip && <Thumb sha256={firstClip} cardWidth={cardWidth} />}
       </div>
       {blank && words && !madeFrom && <Said words={words} view={view} name={name} />}
@@ -720,11 +735,20 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           <Icon name={glyph} />
         </span>
       )}
-      {view.glimpse && !(asset?.kind === "image" && shown) && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
-      {busy && view.viewed === undefined && <div className="media-making" />}
+      {view.glimpse && !shown && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
+      {full && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
+      {busy && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
-      {busy && <OnItsWay view={view} name={name} number={run} />}
+      {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
+      {(onItsWay || arriving !== undefined) && asset?.rendering == null && !view.here && <RunFace view={view} name={name} number={run} full={full} />}
+      {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} copy={bodyText(asset!.failure!, view.run?.number, view.run?.machine)} />}
+      {asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
+      {asset?.kind === "video" && tools.get(asset.tool ?? "")?.pickup && !view.hereWords && shown && <button type="button" className="image-edit-action video-pickup-action nodrag nopan" onClick={(event) => {
+        event.stopPropagation()
+        const playing = event.currentTarget.closest(".media")?.querySelector<HTMLVideoElement>("video.live")
+        void store.beginVideoPickup(name, playing?.currentTime ?? view.scrub ?? 0)
+      }}>Pick up from here</button>}
       {turning && here && <OrbitView key={here.sha256} path={turning.path} shown={here} orbit={turning.orbit} />}
       {orbit && here && !open && !busy && (
         <span className="orbit-badge" title="An orbit: open it and drag to turn">
@@ -738,9 +762,24 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           path={"path" in source ? client.file(store.projectId, source.path) : undefined}
           machine={"run" in source ? { ...source, project: store.projectId } : undefined}
           seek={view.seek}
+          onTime={field === "video" ? (seconds) => store.patch(name, { scrub: seconds }) : undefined}
         />
       )}
       {children}
+    </div>
+  )
+}
+
+/** Why its last render failed, along its bottom, until it's tried again. */
+function FailedHere({ message, copy }: { message: string; copy: string }) {
+  return (
+    <div className="run-face strip failed" data-phase="failed">
+      <div className="face">
+        <div className="face-state error-text nodrag nopan">
+          <b title={message}>Didn't render: {message}</b>
+          <CopyError text={copy} />
+        </div>
+      </div>
     </div>
   )
 }

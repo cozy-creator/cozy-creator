@@ -3,7 +3,7 @@
 # GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
 # call with no holder or session. Then the page as a person uses it: Place (web/place.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), undo and redo of the project's history from the page and the CLI (web/undo.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
-# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), a box from its tool's fields (web/tools.js), a tool on a box of the kind it makes (web/kinds.js), every tool the Hub lists in the palette (web/palette.js), an orbit video turned (web/orbit.js), an Edit rendered (web/timeline.js),
+# models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), the background and dots at every zoom (web/canvas.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), checkpoints on boxes (web/addons.js), versions by name and a tool on a box (web/versions.js), right click Download (web/download.js), a starred asset first in Files (web/star.js), a box from its tool's fields (web/tools.js), a tool on a box of the kind it makes (web/kinds.js), typed words that read over a picture (web/legible.js), a Shot's beats laid out (web/beats.js), pasted mentions marked as typed and loaded (web/paste.js), a press from inside never dismissing (web/dismiss.js), every tool the Hub lists in the palette (web/palette.js), an orbit video turned (web/orbit.js), an Edit rendered (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), projects closed once nothing reads them (web/closes.js), a package's own UI (web/package_ui.js), the
 # canvas in a second engine, and a save past project.db held by another program (web/held.js).
 # Alone (`e2e/cli/web.sh --out DIR`) it drives this computer's cozy as it is, in the default home. It runs nothing, and leaves
@@ -68,6 +68,9 @@ if [ -n "$restart" ]; then
   step "web-offline: Calcifer stopped: Turbo, a prompt twice, approve, two moves, a rename, a delete and a drop, each shown at once and counted in the top bar; started again, all in project.db in its order"
   STOP=$(web_halt "$lock") START=$(web_start) web_proof offline "$chrome" "$pw" "$restart"
   jq -c '{said: .seen.said_offline, after: .seen.after}' "$OUT/web-offline.json" 2> /dev/null || true
+  step "web-durable: what's typed flushed and merged by field: read back before its answer, through a Calcifer kill -9 with no reload, the box left at once, the page reloaded at once, another writer's words meanwhile"
+  web_proof durable "$chrome" "$pw" "$restart"
+  jq -c '.seen.restart' "$OUT/web-durable.json" 2> /dev/null || true
   step "web-undo: a delete, a merge, a tool off, words, a move, approve and unapprove, a take discarded, each undone and redone; the CLI's undone from the page and the page's from the CLI; a clobbering undo refused; undo offline, then a restart"
   STOP=$(web_halt "$lock") START=$(web_start) web_proof undo "$chrome" "$pw" "$restart"
   jq -c '{refused: .seen.refused, list: .seen.list}' "$OUT/web-undo.json" 2> /dev/null || true
@@ -81,7 +84,7 @@ if [ "$scope" = native ]; then
 fi
 step "web-drawers: a real run live to its end and a cancel, one log stream across tabs, the machines"
 web_proof drawers "$chrome" "$pw" ''
-step "web-activity: each machine top right, an install and a download listed once under it with their waiters, a box saying it waits"
+step "web-activity: each machine top right, an install and a download listed once under it with their waiters; a cold render's face, each phase in order with its numbers and time left; Cancel waiting and rendering"
 web_proof activity "$chrome" "$pw" ''
 step "web-signin: AuthKit's form to a stand-in Hub: a new account, a wrong code, too soon, either email's code, signed out, a deleted account restored"
 if [ -z "${WEB_ALONE:-}" ]; then
@@ -93,9 +96,12 @@ local no_hub=''
 [ -n "${WEB_ALONE:-}" ] || no_hub=$(web_restart "$lock" http://127.0.0.1:9)
 NO_HUB=$no_hub web_proof see "$chrome" "$pw" "$restart"
 jq -c '.seen.scale // empty' "$OUT/web-see.json" 2> /dev/null || true
-step "web-zoom: − the zoom + in the canvas's corner, its menu's fit and 100%, on a box worked on, and 300 boxes panned"
+step "web-zoom: − the zoom + in the canvas's corner, its menu's fit and 100%, on a box worked on, drawn at the canvas's scale, and 300 boxes panned"
 web_proof zoom "$chrome" "$pw" ''
 jq -c '{pan_70: .seen.pan_70, pan_11: .seen.pan_11}' "$OUT/web-zoom.json" 2> /dev/null || true
+step "web-canvas: the background zoomed with the canvas, its farther layers less, and the dots over it and under the boxes, at 0.1 to 3 on each theme; a pan's and a zoom's frames"
+web_proof canvas "$chrome" "$pw" ''
+jq -c '.seen.frames // empty' "$OUT/web-canvas.json" 2> /dev/null || true
 if [ "$scope" = full ]; then
   step "web-layout: every kind of box in every state, far out to close, at 1280x720, 1600x1000 and 2560x1440 at 2x, and the frame around the canvas: nothing on another, cut off, past its edge, touching or too small to read"
   web_proof layout "$chrome" "$pw" ''
@@ -112,10 +118,24 @@ web_proof addons "$chrome" "$pw" ''
 jq -c '.seen.skipped // empty' "$OUT/web-addons.json" 2> /dev/null || true
 step "web-versions: <name.N> and <self.N>, a tool on and off a box, a picture joining one, a version deleted with Undo, reclaim, a rename during a real render, takes approved by a double tap, a merge, a box's shape, Render while it makes"
 web_proof versions "$chrome" "$pw" ''
+step "web-download: right click, Download: a box as hei.png, another take as hei.2.png, a run's output, each its own bytes, as an attachment Calcifer names"
+web_proof download "$chrome" "$pw" ''
+step "web-menu: a box with a tool, right clicked: no Change the tool; its tool changes only by a drop from the palette"
+web_proof menu "$chrome" "$pw" ''
+step "web-star: Star from a box's menu: in project.db, nothing out of date, first in Files with a ★, kept by a reload, Undo and Redo, Unstar"
+web_proof star "$chrome" "$pw" ''
 step "web-tools: a box drawn from its tool's fields by type, groups two deep, slots refusing what doesn't fit, a video's range, previews, Pick up from here"
 web_proof tools "$chrome" "$pw" ''
-step "web-kinds: a tool goes on a box of the kind it makes: a video tool refused on a picture, and let go on it a new video box beside it that mentions it; BiRefNet on it starts from <self.1>"
+step "web-kinds: a tool goes on a box of the kind it makes: a video tool refused on a picture; a video tool on a picture and an image tool on a video change nothing and say why at the bottom left; BiRefNet on it starts from <self.1>"
 web_proof kinds "$chrome" "$pw" ''
+step "web-dismiss: a selection or a press from inside a surface let go outside keeps it open; pressed and let go outside, it closes"
+web_proof dismiss "$chrome" "$pw" ''
+step "web-legible: typed words over a busy picture are bold with a halo, on paper and on dark; every prompt is bold"
+web_proof legible "$chrome" "$pw" ''
+step "web-beats: H3's Shot with three beats: six lines of words each, growing with them; a short length slider; no running total"
+web_proof beats "$chrome" "$pw" ''
+step "web-paste: lines pasted into a beat, plain and rich, mark each mention at once (_ and digits, .N, a range, an angle); typed and loaded, marked the same"
+web_proof paste "$chrome" "$pw" ''
 step "web-palette: every tool the Hub lists under what it makes, one dragged out and one onto a video box, one taken off and back, and with no Hub said so"
 NO_HUB=$no_hub web_proof palette "$chrome" "$pw" "$restart"
 step "web-orbit: a function's file declared an orbit, by cozy run and a box's take, into project.db and the page: no play button, a drag turns it and wraps, off and back by Undo, on for a dropped video"
@@ -127,6 +147,9 @@ PATH=${own:+$(dirname "$own"):}$PATH web_proof timeline "$chrome" "$pw" ''
 step "web-live: the real CLI and a hand's saves on an open canvas: each within a second, what's typed kept, 200 edits, the stream fallen behind"
 web_proof live "$chrome" "$pw" ''
 jq -c '{times: .seen.times_ms, burst: .seen.burst, behind: .seen.behind}' "$OUT/web-live.json" 2> /dev/null || true
+step "web-previews: a rendering box shows what its run is making, faded under how far it's got, and its take replaces it"
+web_proof previews "$chrome" "$pw" ''
+jq -c '.seen.previews // empty' "$OUT/web-previews.json" 2> /dev/null || true
 if [ "$scope" = full ]; then
   step "web-scale: 5,000 assets: status, opening it, one edit, a landing, panning, memory"
   web_proof scale "$chrome" "$pw" ''

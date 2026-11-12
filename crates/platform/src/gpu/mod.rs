@@ -125,6 +125,26 @@ pub fn probe(visible: Option<&str>) -> (Vec<Gpu>, Vec<String>) {
     (gpus, problems)
 }
 
+/// Whether every pair of these GPUs (`CUDA_VISIBLE_DEVICES` entries) reaches the other over
+/// NVLink, as NVML reports peer access; false for fewer than two, or when NVML cannot say.
+pub fn nvlinked(entries: &[&str]) -> bool {
+    use nvml_wrapper::enum_wrappers::device::{P2pCapabilitiesIndex, P2pStatus};
+    let Ok(nvml) = Nvml::init() else { return false };
+    let devices: Option<Vec<_>> = entries
+        .iter()
+        .map(|entry| match entry.parse::<u32>() {
+            Ok(index) => nvml.device_by_index(index).ok(),
+            Err(_) => nvml.device_by_uuid(*entry).ok(),
+        })
+        .collect();
+    let Some(devices) = devices.filter(|devices| devices.len() > 1) else { return false };
+    devices.iter().enumerate().all(|(a, one)| {
+        devices.iter().enumerate().filter(|(b, _)| *b != a).all(|(_, other)| {
+            matches!(one.p2p_status(other, P2pCapabilitiesIndex::NvLink), Ok(P2pStatus::Ok))
+        })
+    })
+}
+
 /// An Apple Silicon Mac's GPU; `None` elsewhere, where NVML answers.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn apple() -> Option<Vec<Gpu>> {

@@ -42,6 +42,33 @@ on:
         description: Caller's id, shown in the run name so the caller can find its run
         type: string
         default: ''
+  # rc-dev.yaml's builds.
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+      build:
+        type: string
+        default: cozy
+      features:
+        type: string
+        default: ''
+      runner:
+        type: string
+        default: ubuntu-latest
+      billed_runner:
+        type: string
+        default: ''
+      publish_run:
+        type: string
+        default: ''
+      fixture_ref:
+        type: string
+        default: ''
+      nonce:
+        type: string
+        default: ''
 run-name: dev-build ${{ inputs.ref }} ${{ inputs.build }} ${{ inputs.nonce }}
 
 permissions:
@@ -176,6 +203,24 @@ jobs:
         with:
           cache-on-failure: true
           workspaces: . -> target/manylinux2_28
+      # <version>+dev.g<sha8>, as cozy's and the Runtime's dev builds are: a machine on it says so, and a release replaces it.
+      - name: Stamp TensorFS's version
+        if: contains(inputs.build, 'tensorfs')
+        run: |
+          python3 - "$(git rev-parse --short=8 HEAD)" <<'PY'
+          import re, sys
+          stamp = "+dev.g" + sys.argv[1]
+          for path in ("crates/tensorfs/Cargo.toml", "crates/tensorfs-py/Cargo.toml", "crates/tensorfs-py/pyproject.toml"):
+              text, n = re.subn(r'(?m)^version = "([^"+]+)"$', lambda m: f'version = "{m.group(1)}{stamp}"', open(path).read(), count=1)
+              assert n == 1, path
+              open(path, "w").write(text)
+          lock = open("Cargo.lock").read()
+          for name in ("tensorfs", "tensorfs-py"):
+              lock, n = re.subn(rf'(name = "{name}"\nversion = "[^"+]+)(")', lambda m: m.group(1) + stamp + m.group(2), lock, count=1)
+              assert n == 1, name
+          open("Cargo.lock", "w").write(lock)
+          print("tensorfs", stamp)
+          PY
       - name: Build the TensorFS wheel
         if: contains(inputs.build, 'tensorfs')
         uses: PyO3/maturin-action@v1

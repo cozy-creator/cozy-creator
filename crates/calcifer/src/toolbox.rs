@@ -1,7 +1,7 @@
 //! What can be dropped on a canvas: `GET /v1/tools`, every function that makes media of every package the Hub lists, of what a machine has
 //! installed and of what a search finds on the Hub, less the tools you took off; and what a tool makes, for a node of it.
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -86,7 +86,10 @@ async fn list_tools(api: &Arc<Api>, asked: Asked) -> Result<Json<Tools>, Refusal
     let held = held(api, &hub, &on).await;
     let (listed, mut note) = api.listing.tools(api, &hub).await;
     let installed: BTreeSet<&str> = held.iter().map(|tool| tool.package.as_str()).collect();
-    let listed: Vec<Tool> = listed.iter().filter(|tool| !installed.contains(tool.package.as_str())).cloned().collect();
+    // What can't run on the machines' Runtime isn't offered (run 46790: flux-3-klein@0.7.0, locked to Runtime 0.44).
+    let stack = stack(api, &hub, &on).await;
+    let runs = |offered: &&Offered| stack.as_ref().is_none_or(|stack| runs_on(&offered.pair, stack));
+    let listed: Vec<Tool> = (listed.iter()).filter(|offered| !installed.contains(offered.tool.package.as_str())).filter(runs).map(|offered| offered.tool.clone()).collect();
     let mut tools: Vec<Tool> = std::iter::once(tool::edit()).chain(local).chain(held).chain(listed).collect();
     let (added, unread) = on_your_list(api, &hub, &mine, &tools).await;
     note = note.or(unread);
@@ -268,7 +271,7 @@ pub(crate) struct Listing(Mutex<HashMap<String, Listed>>);
 
 #[derive(Clone, Default)]
 struct Listed {
-    tools: Arc<Vec<Tool>>,
+    tools: Arc<Vec<Offered>>,
     read_at: Option<Instant>,
     /// The last read that didn't answer: when, and why.
     failed: Option<(Instant, String)>,
@@ -276,7 +279,7 @@ struct Listed {
 
 impl Listing {
     /// `hub`'s tools, and why they're old or none: its last read, else this one, which goes on past [`HUB_LATE`] for a later list.
-    async fn tools(&self, api: &Arc<Api>, hub: &str) -> (Arc<Vec<Tool>>, Option<String>) {
+    async fn tools(&self, api: &Arc<Api>, hub: &str) -> (Arc<Vec<Offered>>, Option<String>) {
         let key = canonical(hub);
         let kept = self.0.lock().expect("listing lock").get(&key).cloned().unwrap_or_default();
         if kept.read_at.is_some_and(|at| at.elapsed() < LISTED_FOR) {
@@ -309,7 +312,7 @@ impl Listing {
         }
     }
 
-    fn keep(&self, hub: &str, read: Result<Arc<Vec<Tool>>, String>) {
+    fn keep(&self, hub: &str, read: Result<Arc<Vec<Offered>>, String>) {
         let mut held = self.0.lock().expect("listing lock");
         let listed = held.entry(canonical(hub)).or_default();
         match read {
@@ -320,7 +323,7 @@ impl Listing {
 }
 
 /// The tools of every package `hub` lists with a release, each at its newest.
-async fn every_tool(api: &Arc<Api>, hub: &str) -> Result<Arc<Vec<Tool>>, Error> {
+async fn every_tool(api: &Arc<Api>, hub: &str) -> Result<Arc<Vec<Offered>>, Error> {
     let reader = api.machines.hubs.reader(hub)?;
     let mut wanted = vec![];
     loop {
@@ -331,8 +334,81 @@ async fn every_tool(api: &Arc<Api>, hub: &str) -> Result<Arc<Vec<Tool>>, Error> 
             break;
         }
     }
-    let released = wanted.into_iter().filter_map(|(package, release)| Some((package, release?))).collect();
-    Ok(Arc::new(read_all(api, hub, released).await))
+    let released: Vec<(String, String)> = wanted.into_iter().filter_map(|(package, release)| Some((package, release?))).collect();
+    let root = api.machines.hubs.home().root();
+    let reads = released.into_iter().map(|(package, release)| async move {
+        match cards::card_requiring(|| api.machines.hubs.reader(hub), root, hub, &package, &release).await {
+            Ok(card) => {
+                let pair: Arc<[String]> = card.requirements().unwrap_or_default().into_iter().filter(|required| on_the_pair(required).is_some()).map(str::to_owned).collect();
+                tool::tools_of(&package, &card.release, &card.interface).into_iter().map(|tool| Offered { tool, pair: pair.clone() }).collect()
+            }
+            Err(why) => {
+                tracing::debug!("{package}@{release}: {}", why.message);
+                vec![]
+            }
+        }
+    });
+    Ok(Arc::new(stream::iter(reads).buffered(READS).collect::<Vec<Vec<Offered>>>().await.into_iter().flatten().collect()))
+}
+
+/// A tool the Hub lists, and what its release requires of the Runtime pair.
+#[derive(Clone)]
+struct Offered {
+    tool: Tool,
+    /// Its wheel's requirements on `cozy-runtime` and `tensorfs` (`Requires-Dist`).
+    pair: Arc<[String]>,
+}
+
+/// The pair a machine runs packages on.
+const PAIR: [&str; 2] = ["cozy-runtime", "tensorfs"];
+
+/// The pair the tools at rest must run on: what `on` last said it runs, asking it nothing, else what the Hub has every machine run.
+/// None: neither is known, and nothing is held back.
+async fn stack(api: &Arc<Api>, hub: &str, on: &On) -> Option<BTreeMap<&'static str, String>> {
+    let said = match on {
+        On::Machine(name) => api.machines.named(name).ok().flatten().and_then(|row| api.machines.picture(&row).ok()?.status),
+        _ => None,
+    };
+    let (runtime, tensorfs) = match said.filter(|status| !status.runtime.is_empty()) {
+        Some(status) => (status.runtime, status.tensorfs),
+        None => {
+            let software = async { api.machines.hubs.anonymous(hub)?.get_software().await.map_err(cards::refusal) };
+            let software = tokio::time::timeout(HUB_LATE, software).await.ok()?.ok()?;
+            (software.runtime, software.tensorfs)
+        }
+    };
+    Some(PAIR.into_iter().zip([runtime, tensorfs]).filter(|(_, version)| !version.is_empty()).collect())
+}
+
+/// Whether a release whose wheel requires `pair` runs on `stack`: each of its requirements admits that member's version, by its release
+/// numbers alone (a dev build of 0.45.0 is 0.45.0). One that can't be read holds nothing back, as TensorD's own check decides.
+fn runs_on(pair: &[String], stack: &BTreeMap<&str, String>) -> bool {
+    pair.iter().all(|required| {
+        let Some((member, versions)) = on_the_pair(required) else { return true };
+        let Some(version) = stack.get(member).and_then(|version| version.parse::<pep440_rs::Version>().ok()) else { return true };
+        versions.contains(&version.only_release())
+    })
+}
+
+/// A requirement on the pair outside any extra (`cozy-runtime[media]<0.46,>=0.45.0`): its member, and the versions it admits.
+fn on_the_pair(required: &str) -> Option<(&'static str, pep440_rs::VersionSpecifiers)> {
+    let (required, marker) = required.split_once(';').unwrap_or((required, ""));
+    if marker.contains("extra") {
+        return None;
+    }
+    let end = required.find(|c: char| " <>=!~[(".contains(c)).unwrap_or(required.len());
+    let name = required[..end].trim().to_lowercase().replace(['_', '.'], "-");
+    let member = PAIR.into_iter().find(|member| *member == name)?;
+    let rest = required[end..].trim_start();
+    let rest = match rest.strip_prefix('[') {
+        Some(extras) => &extras[extras.find(']')? + 1..],
+        None => rest,
+    };
+    let rest = rest.trim().trim_start_matches('(').trim_end_matches(')').trim();
+    if rest.is_empty() {
+        return None;
+    }
+    Some((member, rest.parse().ok()?))
 }
 
 /// Each `(package, release)`'s tools, in the order asked.

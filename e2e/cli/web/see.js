@@ -566,7 +566,7 @@ ${local ? `  card:\n    instructions: A still of one colour.\n    tool: ${draw}/
     check('scale_far_shows_all', far.fewest === COUNT && seen.scale.pan_11.edges === 0, seen.scale.pan_11);
     await tab.close();
 
-    // Far out, words stay near one size (Paul, 11-06): at 15%, no name, chip, ratio or wait lies on another box. A name sits above its box
+    // Far out, at 15%, no name, chip, ratio or wait lies on another box (Paul, 11-06; drawn at the canvas's scale, cl-890). A name sits above its box
     // (d88da410a) and what hangs from it in the room under it (e139a61c6).
     tab = await openTab(0.15, 800);
     const strays = await tab.evaluate(() => {

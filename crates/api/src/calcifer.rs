@@ -438,6 +438,13 @@ pub struct Run {
     /// Live: the machine's latest progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    /// With `?detail=full`: verified video segment frame ranges and published completion, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_progress: Option<VideoProgress>,
+    /// Live, once it ended: its results coming here (`downloading the result`), their bytes in
+    /// place of all of them, their rate and the time that leaves, until they land.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arriving: Option<Progress>,
     /// A run waiting for its turn: its place in its machine's line (1 is next: only the work
     /// running is ahead of it), or among the runs waiting for a machine to be chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -483,6 +490,37 @@ impl Run {
             None => self.number.to_string(),
         }
     }
+}
+
+/// A video's verified segment plan and the completed prefix, in absolute shot frames.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VideoProgress {
+    pub fps: u32,
+    /// Frames kept from an earlier video; no computation is claimed for them in this run.
+    pub resumed_at: u64,
+    /// End of the published completed prefix, including the frames kept before this run.
+    pub completed_frames: u64,
+    pub segments: Vec<VideoSegmentProgress>,
+}
+
+/// One actual generated segment; a segment may overlap several authored beats.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VideoSegmentProgress {
+    pub from_frame: u64,
+    pub to_frame: u64,
+    pub status: VideoSegmentStatus,
+}
+
+/// Completed means this segment's output was published, not an estimated elapsed share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum VideoSegmentStatus {
+    Pending,
+    InProgress,
+    Completed,
 }
 
 /// What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.
@@ -660,6 +698,10 @@ pub struct Progress {
     pub completed: u64,
     #[serde(default)]
     pub total: u64,
+    /// What `completed` counts: empty for steps, `tokens` for a decode's, whose `total` is only
+    /// its cap: a count, never a share of it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
     #[serde(default)]
     pub bytes_done: u64,
     #[serde(default)]
@@ -690,7 +732,38 @@ pub struct Progress {
     /// What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_basis: Option<EtaBasis>,
+    /// The number of its newest preview of what it's making (`GET /v1/runs/{id}/preview`), from 1;
+    /// none until its machine made one for a client asking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<u64>,
 }
+
+impl Progress {
+    /// It counts a decode's tokens, whose total is only a cap.
+    pub fn tokens(&self) -> bool {
+        self.unit == TOKENS
+    }
+
+    /// The part of the whole it is in, as a scope of its stage's path names it up front (`Segment 2 of 3 / denoise`): its number, 1
+    /// first, and how many there are.
+    pub fn part(&self) -> Option<(u64, u64)> {
+        self.stage.split(" / ").find_map(|scope| {
+            let mut words = scope.rsplit(' ');
+            let of: u64 = words.next()?.parse().ok()?;
+            (words.next()? == "of").then_some(())?;
+            let at: u64 = words.next()?.parse().ok()?;
+            (at >= 1 && at <= of).then_some((at, of))
+        })
+    }
+
+    /// Its stage without the scopes it is in: `decode_video` of `Segment 2 of 3 / decode_video`.
+    pub fn own_stage(&self) -> &str {
+        self.stage.rsplit(" / ").next().unwrap_or(&self.stage)
+    }
+}
+
+/// The unit of a decode's count (`Progress::unit`).
+pub const TOKENS: &str = "tokens";
 
 /// What a time left stands on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -811,6 +884,9 @@ pub enum Event {
     /// Why the run waits now; an empty reason: it waits no longer.
     #[serde(rename = "run.waiting")]
     Waiting { reason: String },
+    /// Its results coming here once it ended, each second until they land (`Run::arriving`).
+    #[serde(rename = "run.arriving")]
+    Arriving { progress: Progress },
 }
 
 impl Event {
@@ -883,7 +959,7 @@ impl Event {
             | Event::Call {
                 sequence_number, ..
             } => Some(*sequence_number),
-            Event::Progress { .. } | Event::Waiting { .. } => None,
+            Event::Progress { .. } | Event::Waiting { .. } | Event::Arriving { .. } => None,
         }
     }
 
@@ -1124,6 +1200,22 @@ pub struct Machine {
     /// and a rental may still bill. Ending it again asks again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_failed: Option<String>,
+    /// In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rc: Option<RcFollow>,
+}
+
+/// A dev home's rental and the open RC's newest builds (cl-922).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RcFollow {
+    /// The open RC: `0.25.0`.
+    pub rc: String,
+    /// `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand gave it
+    /// other software, which it keeps; `none`: the RC has no build for it, or can't be read now.
+    pub state: String,
+    /// What it runs or moves to, what holds it, or why there is none, in words.
+    pub detail: String,
 }
 
 fn yes() -> bool {
@@ -1596,19 +1688,27 @@ pub struct MachineList {
 }
 
 impl MachineList {
-    /// Where a render goes with no machine named, the plan placing each job on whichever ends it first (Paul, 11-05): every rental of this
-    /// controller up or on its way, any other computer's that's up, then this one, the last choice, which starts when used. With none of them,
-    /// `local`, which says why it can't where it can't.
+    /// Where a render goes with no machine named (`render_set`).
     pub fn render_set(&self) -> Vec<On> {
-        let held = |machine: &&Machine| machine.ordered && machine.offline.is_none();
-        let rented = self.machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting));
-        let added = self.machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
-        let mut set: Vec<On> = rented.chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
-        if set.is_empty() || platform::Os::CURRENT.local_inference() {
-            set.push(On::Machine("local".into()));
-        }
-        set
+        render_set(&self.machines)
     }
+}
+
+/// Where a render goes with no machine named, the plan placing each job on whichever ends it first (Paul, 11-05): every rental of this
+/// controller up or on its way, any other computer's that's up, then this one, the last choice, which starts when used. With none of them,
+/// `local`, which says why it can't where it can't. Never a test pod, a rental whose GPU memory is capped (a VRAM-capped matrix pod): it
+/// runs only what names it (cl-920).
+pub fn render_set(machines: &[Machine]) -> Vec<On> {
+    let held = |machine: &&Machine| machine.ordered && machine.offline.is_none();
+    let capped = |machine: &Machine| machine.status.as_ref().is_some_and(|status| status.gpus.iter().any(|gpu| gpu.memory_limit_bytes > 0));
+    let rented = (machines.iter().filter(held))
+        .filter(|machine| machine.kind == MachineKind::Rental && matches!(machine.state, MachineState::Ready | MachineState::Booting) && !capped(machine));
+    let added = machines.iter().filter(held).filter(|machine| machine.kind == MachineKind::Added && machine.state == MachineState::Ready && machine.unreachable.is_none());
+    let mut set: Vec<On> = rented.chain(added).map(|machine| On::Machine(machine.name.clone())).collect();
+    if set.is_empty() || platform::Os::CURRENT.local_inference() {
+        set.push(On::Machine("local".into()));
+    }
+    set
 }
 
 /// Live rentals summed: how many, what they cost an hour now, and what they accrued so far.

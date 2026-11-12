@@ -197,6 +197,10 @@ approved?: number | null,
  */
 pinned?: boolean,
 /**
+ * A person starred it, to find it again (cl-892): `starred: true` in its fields, which `PATCH` sets. Never part of its key.
+ */
+starred?: boolean,
+/**
  * Its memo key's inputs now; None while something it reads has no state.
  */
 inputs?: string | null,
@@ -729,6 +733,10 @@ lanes: Array<string>, private: boolean,
  */
 author: ModelAuthor | null,
 /**
+ * Its owner's recommended LoRA strength, when provided; not applied by a render automatically.
+ */
+strength?: number | null,
+/**
  * What its header says it is. None: it couldn't be read.
  */
 kind?: ModelContentKind | null,
@@ -1157,7 +1165,11 @@ ending?: string | null,
  * Why its last end failed (this computer's sign-in, or the Hub's refusal): nothing was ended,
  * and a rental may still bill. Ending it again asks again.
  */
-end_failed?: string | null, };
+end_failed?: string | null,
+/**
+ * In a dev home (`dev = true`), a rental this computer ordered and the open RC's builds (cl-922).
+ */
+rc?: RcFollow | null, };
 
 /**
  * What a machine is to Calcifer: this computer's, a rental, or another computer's added by address.
@@ -1970,7 +1982,12 @@ export type Progress = { stage: string, fraction?: number | null,
 /**
  * How far this stage is, when it says.
  */
-stage_fraction?: number | null, completed: number, total: number, bytes_done: number, bytes_total: number, step_ms: number,
+stage_fraction?: number | null, completed: number, total: number,
+/**
+ * What `completed` counts: empty for steps, `tokens` for a decode's, whose `total` is only
+ * its cap: a count, never a share of it.
+ */
+unit?: string, bytes_done: number, bytes_total: number, step_ms: number,
 /**
  * The stage's steady step time: the median of its last five steps after the first; 0 before
  * its second.
@@ -2001,7 +2018,12 @@ eta_confidence?: number | null,
 /**
  * What `eta_s` stands on; `first_run` with none: nothing like it ran on this machine or its GPU.
  */
-eta_basis?: EtaBasis | null, };
+eta_basis?: EtaBasis | null,
+/**
+ * The number of its newest preview of what it's making (`GET /v1/runs/{id}/preview`), from 1;
+ * none until its machine made one for a client asking.
+ */
+preview?: number | null, };
 
 /**
  * `GET /v1/projects/{id}/address`: project identity without evaluating its assets; accepts a containing directory.
@@ -2191,6 +2213,24 @@ warnings?: Array<string>,
  * Where the quoted offer is, for an ask that named its provider or a Hub admin's.
  */
 provider?: string | null, datacenter?: string | null, };
+
+/**
+ * A dev home's rental and the open RC's newest builds (cl-922).
+ */
+export type RcFollow = {
+/**
+ * The open RC: `0.25.0`.
+ */
+rc: string,
+/**
+ * `current`: it runs the RC's builds; `behind`: it moves to them once it has no work; `held`: an update by hand gave it
+ * other software, which it keeps; `none`: the RC has no build for it, or can't be read now.
+ */
+state: string,
+/**
+ * What it runs or moves to, what holds it, or why there is none, in words.
+ */
+detail: string, };
 
 /**
  * A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.
@@ -2547,6 +2587,15 @@ waiting?: string | null,
  */
 progress?: Progress | null,
 /**
+ * With `?detail=full`: verified video segment frame ranges and published completion, when available.
+ */
+video_progress?: VideoProgress | null,
+/**
+ * Live, once it ended: its results coming here (`downloading the result`), their bytes in
+ * place of all of them, their rate and the time that leaves, until they land.
+ */
+arriving?: Progress | null,
+/**
  * A run waiting for its turn: its place in its machine's line (1 is next: only the work
  * running is ahead of it), or among the runs waiting for a machine to be chosen.
  */
@@ -2604,7 +2653,7 @@ seed?: number | null, };
 /**
  * One event of a run's stream.
  */
-export type RunEvent = { "type": "run.created", sequence_number: number, run: Run, } | { "type": "run.queued", sequence_number: number, run: Run, } | { "type": "run.in_progress", sequence_number: number, run: Run, } | { "type": "run.completed", sequence_number: number, run: Run, } | { "type": "run.failed", sequence_number: number, run: Run, } | { "type": "run.canceled", sequence_number: number, run: Run, } | { "type": "output_item.added", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.delta", sequence_number: number, output_index: number, item_id: string, rev: number, length: number, appended_from?: number | null, checkpoint?: CheckpointRef | null, } | { "type": "output_item.done", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.landed", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "run.log", sequence_number: number, at_ms: number, level: string, text: string, } | { "type": "run.call", sequence_number: number, call: Call, } | { "type": "run.progress", progress: Progress, } | { "type": "run.waiting", reason: string, };
+export type RunEvent = { "type": "run.created", sequence_number: number, run: Run, } | { "type": "run.queued", sequence_number: number, run: Run, } | { "type": "run.in_progress", sequence_number: number, run: Run, } | { "type": "run.completed", sequence_number: number, run: Run, } | { "type": "run.failed", sequence_number: number, run: Run, } | { "type": "run.canceled", sequence_number: number, run: Run, } | { "type": "output_item.added", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.delta", sequence_number: number, output_index: number, item_id: string, rev: number, length: number, appended_from?: number | null, checkpoint?: CheckpointRef | null, } | { "type": "output_item.done", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "output_item.landed", sequence_number: number, output_index: number, item: OutputItem, } | { "type": "run.log", sequence_number: number, at_ms: number, level: string, text: string, } | { "type": "run.call", sequence_number: number, call: Call, } | { "type": "run.progress", progress: Progress, } | { "type": "run.waiting", reason: string, } | { "type": "run.arriving", progress: Progress, };
 
 /**
  * A run's id: the caller's id on the machine (`RunRequest.id`), the same in Calcifer, the CLI
@@ -2748,7 +2797,7 @@ export type RunStatus = "queued" | "in_progress" | "completed" | "failed" | "can
 /**
  * `POST /v1/projects/{id}/runs`: `n` new versions of each of `names`, with new seeds, a pinned one's to look at, and of what it reads
  * only if that has no state. With `all`, of everything not pinned. It joins the project's walk, which sends each once what it reads
- * is settled; `on` lists the machines they may go to.
+ * is settled; `on` lists the machines they may go to. None: Calcifer's to say, as for a `cozy run` naming none.
  */
 export type Runs = { names: Array<string>, n: number, on: Array<On>,
 /**
@@ -3297,7 +3346,11 @@ execution_ms?: number | null,
 /**
  * The words it was made from.
  */
-text?: string | null, };
+text?: string | null,
+/**
+ * Its saved editable inputs, before prompt binding, including model choices; absent when unknown.
+ */
+fields?: { [key in string]: JsonValue } | null, };
 
 /**
  * `DELETE /v1/projects/{id}/assets/{name}/versions/{number}` and `POST …/versions`: a version discarded, or joined.
@@ -3375,6 +3428,29 @@ without?: Array<string>,
  * An Edit's: the clips that made this version, which an edit can carry on from.
  */
 timeline?: TimelineNow | null, };
+
+/**
+ * A video's verified segment plan and the completed prefix, in absolute shot frames.
+ */
+export type VideoProgress = { fps: number,
+/**
+ * Frames kept from an earlier video; no computation is claimed for them in this run.
+ */
+resumed_at: number,
+/**
+ * End of the published completed prefix, including the frames kept before this run.
+ */
+completed_frames: number, segments: Array<VideoSegmentProgress>, };
+
+/**
+ * One actual generated segment; a segment may overlap several authored beats.
+ */
+export type VideoSegmentProgress = { from_frame: number, to_frame: number, status: VideoSegmentStatus, };
+
+/**
+ * Completed means this segment's output was published, not an estimated elapsed share.
+ */
+export type VideoSegmentStatus = "pending" | "in_progress" | "completed";
 
 /**
  * One member of this controller's warm set on the machine.

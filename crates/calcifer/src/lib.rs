@@ -32,6 +32,8 @@ mod outputs;
 mod others;
 mod page;
 mod placement;
+mod previews;
+mod rc;
 pub(crate) mod private_io;
 mod play;
 mod project;
@@ -145,6 +147,13 @@ struct Live {
     clock: Option<eta::Clock>,
     /// What its machine quoted as it was sent, which its clock takes.
     quoted: Option<eta::Quoted>,
+    /// What its log has warned of while it goes, each once: its record says them with its own warnings.
+    warned: Vec<String>,
+}
+
+/// A log line at a level its followers are warned at, as `cozy run` says it.
+pub(crate) fn warns(level: &str) -> bool {
+    matches!(level, "warn" | "warning" | "error")
 }
 
 /// How often a running run's time left is said again as it counts down.
@@ -724,6 +733,15 @@ impl Calcifer {
         if let Some(live) = lock(&self.live).get(&row.id).filter(|_|owned) {
             run.waiting.clone_from(&live.waiting);
             run.progress.clone_from(&live.progress);
+            let said: Vec<Warning> = (live.warned.iter())
+                .filter(|text| !run.warnings.iter().any(|warning| warning.message == **text))
+                .map(|text| Warning { code: "log".into(), message: text.clone() })
+                .collect();
+            run.warnings.extend(said);
+        }
+        // Its results coming here once it ended.
+        if owned && matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) {
+            run.arriving = self.arriving(&row.id);
         }
         if queued(&run) {
             // Its machine's count, else the runs waiting ahead of it for that machine.
@@ -1204,7 +1222,9 @@ impl Calcifer {
                 return;
             }
             let Some(name) = run.machine.clone() else {
-                if run.wants != "any" {
+                // A rental ordered for it says what it rents (`Rentals::rent_for`) until it is named.
+                let renting = lock(&self.live).get(id).and_then(|live| live.waiting.as_deref()).is_some_and(|w| w.starts_with("renting "));
+                if run.wants != "any" && !renting {
                     self.waiting(id, "waiting for a machine to be chosen".into());
                 }
                 wake.notified().await;
@@ -1299,8 +1319,8 @@ impl Calcifer {
             {
                 match machines.current(&name).await {
                     Ok(None) => {}
-                    Ok(Some(_)) => {
-                        self.waiting(id, format!("updating {name} to cozy {} first", crate::update::this_release()));
+                    Ok(Some(update)) => {
+                        self.waiting(id, format!("updating {name} first (run {}: {})", update.number, update.target));
                         pause.wait(wake, None).await;
                         continue;
                     }
@@ -1617,6 +1637,14 @@ impl Calcifer {
                     false => continue,
                 }
             }
+            // Which RC builds it runs on, said with the run once (cl-922).
+            if row.state == State::Queued
+                && row.kind != ::api::calcifer::Kind::Update
+                && let Some(line) = self.machines().and_then(|machines| machines.rc_line(machine))
+                && let Ok(events) = self.row_store(&row)?.note(row.id.as_str(), "machine", &line)
+            {
+                self.publish(&row.id, events);
+            }
             sent.push((own, v1::RunRequest { id: row.id.to_string(), spec }));
         }
         let at = sent.iter().position(|(own, _)| *own).expect("its own run is sent");
@@ -1722,7 +1750,16 @@ impl Calcifer {
             frames += 1;
             let durable = frame.sequence;
             match frame.event {
-                Frame::Log(line) => batch.logs.push((frame.at_ms, line.level, line.text)),
+                Frame::Log(line) => {
+                    if warns(&line.level) {
+                        let mut live = lock(&self.live);
+                        let warned = &mut live.entry(id.clone()).or_default().warned;
+                        if !warned.contains(&line.text) {
+                            warned.push(line.text.clone());
+                        }
+                    }
+                    batch.logs.push((frame.at_ms, line.level, line.text));
+                }
                 Frame::Call(call) => {
                     let call = ::api::calcifer::Call {
                         run: call.run,
@@ -2067,11 +2104,13 @@ pub(crate) fn progress_of(p: v1::Progress, at_ms: i64) -> Progress {
         stage_fraction: p.stage_fraction.filter(|f| *f >= 0.0),
         completed: p.completed,
         total: p.total,
+        unit: p.unit,
         bytes_done: p.bytes_done,
         bytes_total: p.bytes_total,
         step_ms: p.step_ms,
         step_steady_ms: p.step_steady_ms,
         at_ms,
+        preview: (p.preview > 0).then_some(p.preview),
         ..Default::default()
     };
     progress.done_fraction = done_fraction(&progress);
@@ -2092,18 +2131,24 @@ fn megapixels(input: &serde_json::Map<String, serde_json::Value>) -> Option<f64>
     number("megapixels").or_else(|| Some(number("width")? * number("height")? / 1e6))
 }
 
-/// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'.
+/// How far a run is: its own fraction, else its stage's, else its steps', else its bytes'; within a part of a whole its scope names
+/// (`Segment 2 of 3`), that part's share of the whole. A decode's tokens are no share of their cap.
 fn done_fraction(progress: &Progress) -> Option<f64> {
     let of = |done: u64, total: u64| (total > 0).then(|| done as f64 / total as f64);
-    (progress.fraction.filter(|f| *f >= 0.0))
-        .or(progress.stage_fraction)
-        .or_else(|| of(progress.completed, progress.total))
-        .or_else(|| of(progress.bytes_done, progress.bytes_total))
+    let steps = (!progress.tokens()).then(|| of(progress.completed, progress.total)).flatten();
+    let stage = (progress.stage_fraction)
+        .or(steps)
+        .or_else(|| of(progress.bytes_done, progress.bytes_total));
+    let whole = match progress.part() {
+        Some((at, of)) => Some((at - 1) as f64 / of as f64 + stage.unwrap_or(0.0).clamp(0.0, 1.0) / of as f64),
+        None => stage,
+    };
+    progress.fraction.filter(|f| *f >= 0.0).or(whole)
 }
 
 /// A stage's bytes a second over its last 10 s (and at least its last two counts), once a second
 /// of them is seen. A new stage, or a count that went back, starts again.
-fn rate(moving: &mut (String, VecDeque<(Instant, u64)>), stage: &str, done: u64, now: Instant) -> Option<f64> {
+pub(crate) fn rate(moving: &mut (String, VecDeque<(Instant, u64)>), stage: &str, done: u64, now: Instant) -> Option<f64> {
     let (name, seen) = moving;
     if name != stage || seen.back().is_some_and(|(_, last)| done < *last) {
         (*name, *seen) = (stage.to_owned(), VecDeque::new());
