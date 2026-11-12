@@ -312,6 +312,8 @@ async function loseAnswers(page, method, path, times) {
   await page.waitForSelector('.ptabs .ptab.on');
   await box(name).waitFor();
   const tab = (project) => page.getByTitle(project.path, { exact: true });
+  // The open project's tab: its title is its folder, then what a click on it does (cl-958).
+  const opened = (project) => page.locator('.ptab.on[aria-current="page"]').and(page.getByTitle(new RegExp(`^${project.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\n`)));
   const here = page.locator('.ptab.on');
   await page.mouse.move(1400, 1000);
   await page.mouse.down();
@@ -321,7 +323,7 @@ async function loseAnswers(page, method, path, times) {
   const view = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const kept = await view();
   await tab(second_project).click();
-  await page.locator('.ptab.on').and(page.getByTitle(second_project.path, { exact: true })).waitFor();
+  await opened(second_project).waitFor();
   await page.waitForSelector('.empty-canvas');
   check('a_tab_opens_its_project', (await box(name).count()) === 0, await here.innerText());
   await page.getByTitle(folder, { exact: true }).click();
