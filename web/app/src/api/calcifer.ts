@@ -726,6 +726,10 @@ lanes: Array<string>, private: boolean,
  */
 author: ModelAuthor | null,
 /**
+ * Its owner's recommended LoRA strength, when provided; not applied by a render automatically.
+ */
+strength?: number | null,
+/**
  * What its header says it is. None: it couldn't be read.
  */
 kind?: ModelContentKind | null,

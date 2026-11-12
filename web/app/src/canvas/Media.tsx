@@ -317,7 +317,10 @@ export const downloadable = (file: MainFile) => !file.absent && FILE.test(file.p
 export function sourceOf(view: ElementView, shown: Shown | null): Source | null {
   const asset = view.asset
   if (!asset || view.placing) return null
-  if (asset.making?.length && asset.kind === "video" && view.viewed === undefined) return { run: Math.min(...asset.making), output: "video" }
+  if (!shown && asset.kind === "video") {
+    const run = watched(view)?.run ?? (view.viewed === undefined ? asset.making?.[0] : undefined)
+    if (run) return { run, output: "video" }
+  }
   if (shown?.field !== "video" && shown?.field !== "audio") return null
   if (!shown.absent) return FILE.test(shown.path) ? { path: shown.path } : null
   return shown.machine && shown.run ? { run: shown.run, output: shown.output } : null
@@ -654,7 +657,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
-  const busy = (making || Boolean(view.queued) || view.asked !== undefined) && (asset?.kind !== "image" || pendingImage || !shown)
+  const busy = (making || Boolean(view.queued) || view.asked !== undefined) && (Boolean(watch && watch.number === undefined) || !shown)
   const run = busy ? makingRun(view) : undefined
   const here = shown && !shown.absent ? shown : null
   // A video whose file says `orbit` turns, not plays: open, a drag turns it from the file here.
@@ -708,7 +711,7 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
           <Icon name={glyph} />
         </span>
       )}
-      {view.glimpse && !(asset?.kind === "image" && shown) && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
+      {view.glimpse && !shown && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
       {busy && view.viewed === undefined && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}

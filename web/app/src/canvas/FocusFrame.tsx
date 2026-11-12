@@ -11,6 +11,7 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
   const [room, setRoom] = useState({ width: 0, height: 0 })
   const [camera, setCamera] = useState<Camera>({ scale: 1, x: 0, y: 0 })
   const dragging = useRef<{ id: number; x: number; y: number; from: Camera } | null>(null)
+  const moved = useRef(false)
   const width = fitted && room.width && room.height ? Math.min(room.width, room.height * aspect) : room.width
   const height = fitted && width ? width / aspect : room.height
   const geometry = useRef({ width, height, room })
@@ -23,7 +24,7 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
   }, [])
   const zoom = useCallback((value: number, relative = false, point = { x: 0, y: 0 }) => {
     setCamera((was) => {
-      const scale = Math.max(0.25, Math.min(8, relative ? was.scale * value : value))
+      const scale = Math.max(1, Math.min(8, relative ? was.scale * value : value))
       return bound({ scale, x: point.x - (point.x - was.x) * scale / was.scale, y: point.y - (point.y - was.y) * scale / was.scale })
     })
   }, [bound])
@@ -72,20 +73,25 @@ export function FocusFrame({ enabled, aspect, fitted = true, children }: { enabl
     dragging.current = null
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
   }
-  return <div ref={element} className="focus-viewer" onPointerDown={(event) => {
-    if (!fitted || event.button !== 0 || (event.target as Element).closest(UI)) return
+  return <div ref={element} className="focus-viewer" data-zoomed={camera.scale > 1 || undefined} onClickCapture={(event) => {
+    if (moved.current) { event.preventDefault(); event.stopPropagation(); moved.current = false }
+  }} onPointerDown={(event) => {
+    moved.current = false
+    if (!fitted || camera.scale <= 1 || event.button !== 0 || (event.target as Element).closest(UI) || !(event.target as Element).closest(".focus-image-transform")) return
     event.preventDefault()
     dragging.current = { id: event.pointerId, x: event.clientX, y: event.clientY, from: camera }
     event.currentTarget.setPointerCapture(event.pointerId)
   }} onPointerMove={(event) => {
     const start = dragging.current
-    if (start?.id === event.pointerId) setCamera(bound({ ...start.from, x: start.from.x + event.clientX - start.x, y: start.from.y + event.clientY - start.y }))
+    if (start?.id === event.pointerId) {
+      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) moved.current = true
+      setCamera(bound({ ...start.from, x: start.from.x + event.clientX - start.x, y: start.from.y + event.clientY - start.y }))
+    }
   }} onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
     <div className="focus-image-transform" style={{ width: width || "100%", height: height || "100%", transform: fitted ? `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})` : "none" }}>{children}</div>
     {fitted && <div className="focus-image-zoom" role="toolbar" aria-label="Image zoom">
-      <button type="button" className="tb" aria-label="Zoom out image" onClick={() => zoom(0.8, true)}>−</button>
-      <button type="button" className="tb" aria-label="Fit image" onClick={reset}>Fit</button>
-      <button type="button" className="tb" aria-label="Zoom in image" onClick={() => zoom(1.25, true)}>+</button>
+      <button type="button" className="tb" aria-label="Zoom out image" disabled={camera.scale <= 1} onClick={() => zoom(0.8, true)}>−</button>
+      <button type="button" className="tb" aria-label="Zoom in image" disabled={camera.scale >= 8} onClick={() => zoom(1.25, true)}>+</button>
     </div>}
   </div>
 }
