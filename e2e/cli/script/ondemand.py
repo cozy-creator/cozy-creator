@@ -34,11 +34,9 @@ class Held(msgspec.Struct):
     seconds: float
 
 
-@app.entrypoint(accelerator=False, defaults={"extra": "zhengpeng7/birefnet@0.1.0", "base": "lilylilith/fontbox@0.1.0"},
-               on_demand=("extra",))
-def hold(payload: Hold, extra: Extra, base: Extra, tel: Telemetry) -> Held:
-    """Says it holds and sleeps, then reads `extra` when asked to: its first read builds it (beside `base`, it's built
-    on first use, not with the call's load)."""
+@app.entrypoint(accelerator=False, defaults={"extra": "zhengpeng7/birefnet@0.1.0"}, on_demand=("extra",))
+def hold(payload: Hold, extra: Extra, tel: Telemetry) -> Held:
+    """Says it holds and sleeps, then reads `extra` when asked to: its first read builds it."""
     with tel.stage("holding"):
         time.sleep(payload.seconds)
     if payload.read:
