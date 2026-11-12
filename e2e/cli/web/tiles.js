@@ -6,7 +6,8 @@
 // An idle picture with Qwen's Image, an idle video with H3's Shot, a dropped picture with no tool, and a box rendering on this computer: their
 // rows and nothing else (no Edit, no Pick up from here, no chips), the render's lines under its picture with Cancel, at zoom 1 and 0.5, each
 // a screenshot. Labels at the page's body size and controls at least 28, on the tiles and in Focus, at 1440×900 and 1920×1080, light and
-// dark, each a screenshot (cl-963). Open, Edit and Pick up from here are still there. Cancel on the tile stops its render. A render's whole life, from Render to
+// dark, each a screenshot (cl-963). Two boxes stacked as close as side by side, nothing hanging on the lower, at 100% and 75%. Open, Edit
+// and Pick up from here are still there. Cancel on the tile stops its render. A render's whole life, from Render to
 // its take landing, leaves the tile's size as it was (cl-936).
 //   node tiles.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so
@@ -212,6 +213,8 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
       // Under its picture: its tool and shape first, then its render.
       ordered: (!line || r(line).top >= m.bottom - 1) && (!face || r(face).top >= (line ? r(line).bottom : m.bottom) - 1),
       chips: node.querySelectorAll('.add-on, .add-ons').length,
+      // How far what hangs under its picture reaches, from the picture's bottom.
+      hangs: Math.max(m.bottom, ...[line, face].filter(Boolean).map((el) => r(el).bottom)) - m.bottom,
       // What its tool is called, as many times as the tile says it; and no Models & LoRAs on it.
       text: node.innerText,
       stray: card.querySelectorAll(':scope > .ratio-rest, .head .node-tool').length,
@@ -235,6 +238,8 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
     await until('slow rendering, its lines under it', () => tile('slow'), (now) => now.lines?.length === 2 && /Frame \d+ \/ 30/.test(now.lines[1]), FIRST_RUN_MS);
   } else seen.rendering = 'no local machine: no rendering tile';
 
+  // How far a render's lines reach under a picture at 100%, seen on the box rendering here.
+  let rendering = null;
   for (const want of [1, 0.5]) {
     await zoomTo(want);
     const tiles = {};
@@ -244,6 +249,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
     }
     await shot(`tiles-zoom-${want}`);
     seen[`zoom_${want}`] = tiles;
+    if (want === 1 && tiles.slow?.lines?.length === 2) rendering = tiles.slow.hangs;
     const z = `at_${want}`;
     const { still, shot: film, plain, slow } = tiles;
     // Its head: its name, its version and its ×, nothing else.
@@ -378,6 +384,52 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
   check('open_video_picks_up', (await page.locator('.card.here[data-asset="shot"] button.pick-up').count()) >= 1);
   await shot('open-shot');
   await closeBox(page);
+
+  // Stacked as close as side by side (Paul, 11-12: "allow for tiles to get a little closer on the top and bottoms"): a picture dragged up
+  // under a tool's box lands clear's 16 under what it keeps, and what hangs under the upper one, a render's lines too (cl-936), never lies on
+  // the lower one. At 100% and 75%, each a screenshot.
+  await post(`${at}/assets`, { tool: image.id, kind: 'image', name: 'upper', exact: true, fields: { instructions: 'a lighthouse at dawn' }, at: { x: 0, y: 2400 } });
+  await post(`${at}/assets/upper/versions`, { source: await upload(held?.token, join(folder, 'take.png')) });
+  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png')), name: 'lower', exact: true, at: { x: 520, y: 2400 } });
+  for (const name of ['upper', 'lower']) await boxOf(page, name).waitFor();
+  await boxOf(page, 'upper').locator('.media').first().click();
+  if (!(await page.locator('.zoom-menu').count())) await page.click('.zoom-at');
+  await page.getByRole('menuitem', { name: /^Zoom to selection/ }).click();
+  await settled(page);
+  await zoomTo(1);
+  const stack = () => page.evaluate(() => {
+    const parts = (name) => {
+      const card = document.querySelector(`.react-flow__node .card[data-asset="${name}"]`);
+      const r = (el) => el.getBoundingClientRect();
+      const media = r(card.querySelector(':scope > .media'));
+      const under = [...card.querySelectorAll(':scope > .tile-under > *')].map(r).filter((b) => b.height > 0);
+      const head = [...card.querySelectorAll(':scope > .head > *')].map(r).filter((b) => b.height > 0);
+      return { left: media.left, right: media.right, top: media.top, bottom: media.bottom, under: Math.max(media.bottom, ...under.map((b) => b.bottom)), head: Math.min(media.top, ...head.map((b) => b.top)) };
+    };
+    return { upper: parts('upper'), lower: parts('lower'), zoom: new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a };
+  });
+  const apart = await stack();
+  const grab = { x: (apart.lower.left + apart.lower.right) / 2, y: (apart.lower.top + apart.lower.bottom) / 2 };
+  const to = { x: grab.x + apart.upper.left - apart.lower.left, y: grab.y + apart.upper.bottom + 8 - apart.lower.top };
+  await page.mouse.move(grab.x, grab.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 16 });
+  await page.mouse.up();
+  await settled(page);
+  await page.waitForTimeout(500);
+  const near = await stack();
+  const [above, below] = near.upper.top <= near.lower.top ? [near.upper, near.lower] : [near.lower, near.upper];
+  const at100 = { room: (below.head - above.bottom) / near.zoom, clear: (below.head - above.under) / near.zoom, above: near.upper.top <= near.lower.top ? 'upper' : 'lower', rendering };
+  seen.stacked = { near, ...at100 };
+  check('stacked_one_under_the_other', above.left < below.right && below.left < above.right && below.top > above.bottom, near);
+  check('stacked_nothing_under_it_lies_on_the_box_below', at100.clear >= 0, at100);
+  check('stacked_closer_than_before', at100.room < 180, at100);
+  if (rendering !== null && at100.above === 'upper') check('stacked_a_render_under_it_fits', at100.room - rendering >= 0, at100);
+  await shot('stacked-zoom-1');
+  await zoomTo(0.75);
+  const at75 = await stack();
+  seen.stacked_75 = at75;
+  await shot('stacked-zoom-0.75');
 
   // As a person sees it (cl-963, Paul 11-12: "things were just far too small or hard to see or read"), at 1440×900 and 1920×1080, light and
   // dark: the tiles at 100%, and a picture with two takes in Focus. Every label at least the page's body size; every control at least 28.

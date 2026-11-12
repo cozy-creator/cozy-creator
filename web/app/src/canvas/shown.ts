@@ -41,9 +41,11 @@ export const HEAD = 32
 
 /**
  * What hangs off a box at rest, its name over it and its tool, shape and render's lines under it (cl-932), is drawn at the canvas's scale
- * like the rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
+ * like the rest of it. A box keeps that room clear, once: its name never lies on the box above, nor what hangs under one on the box below,
+ * and boxes stacked are as close as boxes side by side, clear's gap apart (Paul, 11-12: "allow for tiles to get a little closer on the top
+ * and bottoms").
  */
-const HANG = 2
+const HANG = 1
 // As app.css draws them: tokens.css's title and body steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
 const BODY_LINE = 12.5 * 1.35 * 1.25
