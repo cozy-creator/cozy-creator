@@ -140,7 +140,7 @@ step "web-when: a field that applies only while another has a value (When): cozy
 web_proof when "$chrome" "$pw" ''
 step "web-kinds: a tool goes on a box of the kind it makes: a video tool refused on a picture; a video tool on a picture and an image tool on a video change nothing and say why at the bottom left; BiRefNet on it starts from <self.1>"
 web_proof kinds "$chrome" "$pw" ''
-step "web-refocus: leaving Focus by Esc, its close, Back, a click off, after zooming its picture and by way of a second box: the canvas exactly where it was"
+step "web-refocus: leaving Focus by Esc, its close, Back, a click off, after zooming its picture, by way of a second box, while a scroll or pinch glides, reloaded and by Forward: the canvas exactly where it was"
 web_proof refocus "$chrome" "$pw" ''
 step "web-aspect: a corner pulled to 1237:689 lands on 16:9, on the canvas and in Focus"
 web_proof aspect "$chrome" "$pw" ''
