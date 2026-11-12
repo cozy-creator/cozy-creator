@@ -136,6 +136,8 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
         lock.runs.retain(|row| !legacy(row));
         lock.files.retain(|sha256, _| !freed.contains(sha256));
     })?;
+    // What's made of them first, so once a file is gone, all of it is.
+    forget_derived(&folder.dir, &freed, caches);
     for path in &paths {
         if let Err(error) = std::fs::remove_file(path)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -148,7 +150,6 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
             let _ = std::fs::remove_file(film);
         }
     }
-    forget_derived(&folder.dir, &freed, caches);
     Ok(next_due(&folder.lock()?, window))
 }
 

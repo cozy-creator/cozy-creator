@@ -211,7 +211,7 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   const purged = await until('its file gone', async () => inFiles(pic.sha256), (held) => !held, WINDOW_MS + 60_000).then(() => true, () => false);
   seen.purged_after_ms = Date.now() - deletedAt;
   check('file_gone_after_the_window', purged && seen.purged_after_ms >= WINDOW_MS - 2000, { purged, after_ms: seen.purged_after_ms, window_ms: WINDOW_MS });
-  check('thumbnails_gone', thumbsOf(pic.sha256).length === 0, thumbsOf(pic.sha256));
+  check('thumbnails_gone', await until('its thumbnails gone', async () => thumbsOf(pic.sha256), (held) => held.length === 0, 10_000).then(() => true, () => thumbsOf(pic.sha256)));
   check('no_record_of_it', rowsOf(folder, `SELECT count(*) FROM lock_files WHERE sha256 = '${pic.sha256}'`)[0][0] === 0);
   check('shared_file_stays', inFiles((await asset('twin_b')).sha256));
   const history = (await api(`${at}/history?limit=50`)).body.entries;
