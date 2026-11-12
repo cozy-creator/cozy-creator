@@ -13,8 +13,8 @@ import "./ModelPicker.css"
 
 type Entry = Record<string, unknown>
 type Kind = "weights" | "lora"
-/** One choice the picker offers: `slot` is its first key in a box's `models`, `keys` every key it sets. */
-export type PickerSlot = ToolModel & { param: string; keys: string[] }
+/** One choice the picker offers: `slot` is its key in a box's `models`, `param` the parameter it fills. */
+export type PickerSlot = ToolModel & { param: string }
 type PickerModel = FoundModel & { strength?: number | null; description?: string | null }
 const entryOf = (value: unknown): Entry => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Entry : {}
 const adaptersOf = (value: unknown): unknown[] => Array.isArray(value) ? value : []
@@ -30,17 +30,17 @@ export const modelChoiceLabel = (ref: string) => {
 }
 const descriptionOf = (model: PickerModel) => (model.description ?? loraNote(model.model)?.description)?.trim().replace(/\s+/g, " ") || "No description provided."
 /** What a tool's models and LoRAs are set by, the one list every model control reads: each slot it declares, and its child calls'
- *  slots of one parameter and one default as one (H3's segments each take `base_model`: one Base Model). */
+ *  slots of one parameter and one default as one (H3's segments each take `base_model`: one Base Model). A parameter only one of them
+ *  fills is written by its name, which the binder takes to each call's slot of it (choices.rs `slots`); else by its path. */
 export function slotsOf(tool: Tool | undefined): PickerSlot[] {
   const declared = tool?.models?.length ? tool.models : tool?.model ? [{ ...tool.model, kind: tool.model.kind ?? "base" }] : []
   const merged = new Map<string, PickerSlot>()
   for (const slot of declared) {
     const param = slot.slot.split(".models.").at(-1) ?? slot.slot
-    const one = merged.get(`${param} ${slot.default ?? ""}`)
-    if (one) one.keys.push(slot.slot)
-    else merged.set(`${param} ${slot.default ?? ""}`, { ...slot, param, keys: [slot.slot] })
+    if (!merged.has(`${param} ${slot.default ?? ""}`)) merged.set(`${param} ${slot.default ?? ""}`, { ...slot, param })
   }
-  return [...merged.values()]
+  const slots = [...merged.values()]
+  return slots.map((slot) => slots.filter((other) => other.param === slot.param).length === 1 ? { ...slot, slot: slot.param } : slot)
 }
 const compatible = (model: FoundModel | ModelDetail | undefined, family: string | null | undefined, kind: Kind | undefined) => Boolean(kind && family && model?.family === family && model?.kind === kind)
 const adapterFits = (model: FoundModel | ModelDetail, slot: PickerSlot) => {
@@ -150,14 +150,11 @@ export function ModelPicker({ name, onClose }: { name: string; onClose(): void }
   )
 }
 
-/** A choice changed, written to every key it sets. */
 function changeSlot(store: ReturnType<typeof useCanvasStore>, name: string, slot: PickerSlot, change: (held: Entry) => Entry) {
   const models = { ...entryOf(store.valueOf(name, "models")) }
   const next = Object.fromEntries(Object.entries(change(entryOf(models[slot.slot]))).filter(([, value]) => value !== undefined && value !== null && !(Array.isArray(value) && !value.length)))
-  for (const key of slot.keys) {
-    if (Object.keys(next).length) models[key] = next
-    else delete models[key]
-  }
+  if (Object.keys(next).length) models[slot.slot] = next
+  else delete models[slot.slot]
   store.putOn(name, { models: Object.keys(models).length ? models : null })
 }
 

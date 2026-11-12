@@ -15,14 +15,14 @@ function rowsOf(value: unknown, slot: string, declared: PickerSlot | undefined):
   return [...primary, ...entries(held.lora).flatMap((adapter) => typeof adapter.ref === "string" ? [{ ref: adapter.ref, slot, lora: true, strength: adapter.strength }] : [])]
 }
 
-/** The effective overrides remain visible while the picker is closed: each choice once, however many keys it sets. */
+/** The effective overrides remain visible while the picker is closed. */
 export function ModelConfig({ name }: { name: string }) {
   const store = useCanvasStore()
   const view = useElement(name)
   const tools = useSignal(store.tools)
   const slots = slotsOf(tools.get(view?.asset?.tool ?? ""))
   const models = entryOf(store.valueOf(name, "models"))
-  const chosen = new Set(slots.flatMap((slot) => slot.keys))
+  const chosen = new Set(slots.map((slot) => slot.slot))
   const rows = [
     ...slots.flatMap((slot) => rowsOf(models[slot.slot], slot.slot, slot)),
     ...Object.entries(models).filter(([key]) => !chosen.has(key)).flatMap(([key, value]) => rowsOf(value, key, undefined)),

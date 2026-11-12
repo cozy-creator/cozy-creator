@@ -2,7 +2,7 @@
 // default ... We also don't need to display the fine-tune as its own section ... for images ... 'models and loras' at the bottom, next to the
 // tool ... I want this type of UX to be uniform"), in a real browser on a real Calcifer. H3's Shot in Focus: every field shown, no More, Less
 // or Advanced; no fine-tune or LoRA rows of its own; Models & LoRAs at the bottom of its fields, its picker listing H3's Base Model once
-// (its segments' slots as one), a LoRA picked there set on the box; its tool named once, "<Package> · <Tool>", under its media, nothing of it
+// (its segments' slots as one, written `base_model`), a LoRA picked there set on the box; its tool named once, "<Package> · <Tool>", under its media, nothing of it
 // beside the title. Qwen's Image's Models & LoRAs opens the same picker. Screenshots of each.
 // The isolated Hub holds H3's default model (a stand-in) and an H3 LoRA of its family (e2e/isolated.sh, `loras`).
 //   node models.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
@@ -78,7 +78,7 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   if (!bases.length) throw new Error(`H3's Shot declares no base_model slot: ${JSON.stringify(seen.slots)}`);
   const tune = 'someone/h3-tune@0.1.0';
   const made = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: shotTool.id, kind: 'video', name: 'scene', exact: true, at: { x: 80, y: 80 },
-    fields: { summary: 'A harbour at dusk.', beats: [{ description: 'Boats come in.', duration: 5 }], models: Object.fromEntries(bases.map((slot) => [slot.slot, { ref: tune }])) } }) });
+    fields: { summary: 'A harbour at dusk.', beats: [{ description: 'Boats come in.', duration: 5 }], models: { base_model: { ref: tune } } } }) });
   if (made.status >= 300) throw new Error(`the Shot box: ${JSON.stringify(made)}`);
   const still = await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: imageTool.id, kind: 'image', name: 'still', exact: true, fields: { instructions: 'A lighthouse.' }, at: { x: 700, y: 80 } }) });
   if (still.status >= 300) throw new Error(`the Image box: ${JSON.stringify(still)}`);
@@ -175,13 +175,13 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   await page.setViewportSize({ width: 1600, height: 1100 });
   await page.waitForTimeout(300);
   await option.click();
-  const keys = bases.map((slot) => slot.slot);
-  const after = await until('the LoRA on every segment', () => fieldsOf('scene'), (fields) => keys.every((key) => fields.models?.[key]?.lora?.length === 1)).catch(() => fieldsOf('scene'));
+  // One Base Model, written by its parameter, which the binder takes to every segment's slot (choices.rs `slots`).
+  const after = await until('the LoRA on its Base Model', () => fieldsOf('scene'), (fields) => fields.models?.base_model?.lora?.length === 1).catch(() => fieldsOf('scene'));
   seen.models = after.models;
   seen.refused = refused;
   seen.notes = await page.locator('.note').allInnerTexts().catch(() => []);
-  const lora = after.models?.[keys[0]]?.lora?.[0]?.ref;
-  check('a_lora_picked_is_on_the_box', Boolean(lora) && keys.every((key) => after.models?.[key]?.lora?.[0]?.ref === lora && after.models[key].ref === tune), after.models);
+  const lora = after.models?.base_model?.lora?.[0]?.ref;
+  check('a_lora_picked_is_on_the_box', Boolean(lora) && after.models.base_model.ref === tune && Object.keys(after.models).length === 1, after.models);
   await shot('h3-lora-picked');
   await picker.getByRole('button', { name: 'Close model picker', exact: true }).click();
   await picker.waitFor({ state: 'detached' });
