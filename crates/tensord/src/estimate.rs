@@ -48,6 +48,11 @@ struct Known {
 const KNOWN: &[Known] = &[
     // h3a-099, rc/0.24.0, 15 s Turbo over host memory: one GPU 300.4 s (45660/45667/45686), two 175.4 s (45740/45759/45779).
     Known { function: "minimax-h3/generate", card: "RTX 4090", nvlink: false, width: 2, speedup: 1.71 },
+    // cr-268, Runtime rc/0.25.0 b6633040, 15 s Turbo, copy-engine exchange: one GPU 168.3 s (46701), two 92.2 s (46708, 46713).
+    Known { function: "minimax-h3/generate", card: "H100", nvlink: true, width: 2, speedup: 1.83 },
+    // cr-268, estimated: the NVLink pair's split work (two GPUs 0.52 of one) plus rabou's exposed exchange over PCIe peers
+    // (14.2 s of a 249 s denoise, 46678): about 1.8x denoise, 1.7x whole. Replace with a measured PCIe pair.
+    Known { function: "minimax-h3/generate", card: "H100", nvlink: false, width: 2, speedup: 1.7 },
 ];
 
 /// The widths `KNOWN` proves for `function` on `card` (`nvlink`), with their speed-ups.
