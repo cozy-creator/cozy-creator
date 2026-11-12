@@ -3882,8 +3882,11 @@ input[type="checkbox"] {
 }
 
 /* Each machine, top right: what it's doing, its name, and how many things. */
+/* Every machine shows: past its width the chips wrap to another row. */
 .mtabs {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: stretch;
   gap: calc(2px * var(--ui));
   min-width: 0;
@@ -3979,7 +3982,7 @@ input[type="checkbox"] {
 }
 .activity header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   padding: 2px 4px 8px;
   border-bottom: 1px solid var(--line);
@@ -3991,7 +3994,8 @@ input[type="checkbox"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.activity .more {
+.activity .more,
+.activity .render-here {
   flex: none;
 }
 .activity ul {

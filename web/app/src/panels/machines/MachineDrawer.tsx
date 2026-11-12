@@ -173,7 +173,11 @@ export function MachineDrawer() {
         <span className="sp" />
         <small>{gpusWords(machine)}</small>
       </div>
-      {(!ended || here) && <RenderHere name={machine.name} />}
+      {(!ended || here) && (
+        <div className="row center">
+          <RenderHere name={machine.name} />
+        </div>
+      )}
       {ended && <p className="muted">Ended. Nothing of it bills now, and what landed here stays.</p>}
       {machine.state === "booting" && (
         <p className="muted">

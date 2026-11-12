@@ -737,7 +737,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
       className={`card ${focused ? "focus-card" : ""} ${view.here && !view.hereWords && view.asset?.pinned && shownOf(view)?.number === (view.asset.approved ?? view.asset.version) ? "showing-approved" : ""} ${here ? "here" : ""} ${view.landing ? "landing" : ""} ${view.hot ? "hot" : ""} ${asset?.timeline && face === "edit" ? "tl-rests" : ""}`}
       data-asset={view.name}
       data-kind={kindOf(view)}
-      style={(focused ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 210 : 52 : asset?.tool ? 220 : 0}px` } : { width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` }) as CSSProperties}
+      style={focused ? ({ width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 210 : 52 : asset?.tool ? 220 : 0}px` } as CSSProperties) : ({ width: here ? (store.surfaceOf(name)?.style.width ?? bodyWidth(view, width)) : bodyWidth(view, width), "--image-history-offset": `${widestImage / 2}px`, "--image-history-height": `${imageHeight}px` } as CSSProperties)}
       onClick={buttonsOnly}
       onAnimationEnd={(event) => {
         if (event.target === event.currentTarget && view.landing) store.patch(name, { landing: undefined })
