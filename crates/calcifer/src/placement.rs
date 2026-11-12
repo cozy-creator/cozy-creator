@@ -87,6 +87,12 @@ impl Offer {
         }
     }
 
+    /// It, for a job that can't begin before `at`, when what it waits for ends: its preparation goes on meanwhile.
+    pub(crate) fn from(&self, at: i64) -> Offer {
+        let late = (at - self.start_at_ms).max(0);
+        Offer { start_at_ms: self.start_at_ms + late, finish_at_ms: self.finish_at_ms + late, ..self.clone() }
+    }
+
     /// What eta's clock takes of it once its run is sent.
     pub(crate) fn quoted(&self) -> crate::eta::Quoted {
         crate::eta::Quoted { start_at: self.start_at_ms as f64, finish_at: self.finish_at_ms as f64, basis: self.basis }

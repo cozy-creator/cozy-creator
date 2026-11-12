@@ -1172,9 +1172,15 @@ pub struct Ahead {
     pub machine: String,
     /// Its run, kept out of the list people read.
     pub run: u64,
+    /// The boxes it prepares for: each shows it as its own preparation while it waits.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
     /// `installing it`, `downloading its weights`, …; none once it ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    /// What it waits for on its machine, as the machine says: its place in a line there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<String>,
     #[serde(default)]
     pub done: u64,
     #[serde(default)]
