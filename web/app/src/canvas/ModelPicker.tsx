@@ -242,6 +242,8 @@ function Slot({ name, slot, restricted, funAcc, showNsfw, legacy }: { name: stri
 
 function AdapterList({ name, slot, families, adapters }: { name: string; slot: string | null; families: string[]; adapters: unknown[] }) {
   const store = useCanvasStore()
+  const tool = store.tools.get().get(store.get(name)?.asset?.tool ?? "")
+  const spec = slotsOf(tool).find((held) => held.slot === slot)
   const change = (index: number, strength?: number) => {
     const edit = (items: unknown[]) => strength === undefined ? items.filter((_, at) => at !== index) : items.map((held, at) => at === index ? { ...entryOf(held), strength } : held)
     if (slot === null) {
@@ -250,10 +252,10 @@ function AdapterList({ name, slot, families, adapters }: { name: string; slot: s
     } else changeSlot(store, name, slot, (held) => ({ ...held, lora: edit(adaptersOf(held.lora)) }))
   }
   if (!adapters.length) return <p className="muted model-picker-empty">None added</p>
-  return <ul className="model-picker-adapters">{adapters.map((value, index) => <Adapter key={`${index}:${String(entryOf(value).ref ?? "")}`} value={value} families={families} onRemove={() => change(index)} onStrength={(value) => change(index, value)} />)}</ul>
+  return <ul className="model-picker-adapters">{adapters.map((value, index) => <Adapter key={`${index}:${String(entryOf(value).ref ?? "")}`} value={value} families={families} slot={spec} onRemove={() => change(index)} onStrength={(value) => change(index, value)} />)}</ul>
 }
 
-function Adapter({ value, families, onRemove, onStrength }: { value: unknown; families: string[]; onRemove(): void; onStrength(value: number): void }) {
+function Adapter({ value, families, slot, onRemove, onStrength }: { value: unknown; families: string[]; slot?: PickerSlot; onRemove(): void; onStrength(value: number): void }) {
   const { client } = useConnection()
   const [showNsfw] = useShowNsfw()
   const held = entryOf(value)
@@ -262,7 +264,7 @@ function Adapter({ value, families, onRemove, onStrength }: { value: unknown; fa
     queryKey: ["model", identityOf(ref)], queryFn: ({ signal }) => client.model(identityOf(ref), signal),
     enabled: Boolean(ref), staleTime: 60_000, retry: false,
   })
-  const valid = Boolean(data?.kind === "lora" && data.family && families.includes(data.family))
+  const valid = Boolean(data?.kind === "lora" && data.family && families.includes(data.family) && identityOf(ref) !== "alibaba-pai/qwen-image-2.1-fun-acc" && (!slot || adapterFits(data, slot)))
   const strength = held.strength == null ? 1 : typeof held.strength === "number" && Number.isFinite(held.strength) ? held.strength : null
   const [draft, setDraft] = useState<string | null>(null)
   const commit = () => {

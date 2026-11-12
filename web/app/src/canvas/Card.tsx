@@ -570,10 +570,11 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
-const CardBody = memo(function CardBody({ name, width, focused = false }: { name: string; width: number; focused?: boolean }) {
+const CardBody = memo(function CardBody({ name, width, focused = false, snapshot }: { name: string; width: number; focused?: boolean; snapshot?: ElementView }) {
   const store = useCanvasStore()
   const flow = useReactFlow<ElementNode>()
-  const view = useElement(name)
+  const live = useElement(name)
+  const view = snapshot ?? live
   const here = Boolean(view?.here)
   const owner = here ? store.inPlace : null
   // Far out, only what can be seen: its picture, its name and its state.
@@ -862,11 +863,14 @@ const CardBody = memo(function CardBody({ name, width, focused = false }: { name
 export function Card({ data }: NodeProps<ElementNode>) {
   const store = useCanvasStore()
   const focused = useSignal(store.focusedName)
+  const entering = useSignal(store.focusEntering)
   const view = useElement(data.name)
-  if (focused === data.name) return <div className="focus-placeholder" style={{ width: view ? bodyWidth(view, data.width) : data.width, height: view ? heightFor(view, data.width) : 1 }} />
+  const resting = useRef(view)
+  if (focused !== data.name) resting.current = view
+  if (focused === data.name && !entering) return <div className="focus-placeholder" style={{ width: view ? bodyWidth(view, data.width) : data.width, height: view ? heightFor(view, data.width) : 1 }} />
   return (
     <>
-      <CardBody name={data.name} width={data.width} />
+      <CardBody name={data.name} width={data.width} snapshot={focused === data.name && entering ? resting.current : undefined} />
       <AddOns name={data.name} />
     </>
   )

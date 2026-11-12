@@ -35,9 +35,10 @@ import { copyBoxes, ownCopy } from "./copy"
 import { EntityCard } from "./EntityCard"
 import { FocusedViewport } from "./FocusedViewport"
 import { HistoryControls } from "./HistoryControls"
+import type { Box } from "./graph"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
-import { HANG, madeHere, shownOf } from "./shown"
+import { aspectOf, bodyBox, HANG, HEAD, madeHere, shownOf } from "./shown"
 import { noHash } from "./text"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
@@ -59,7 +60,7 @@ const fitOver = () => {
 }
 
 const [MIN_ZOOM, MAX_ZOOM] = [ZOOMS[0], ZOOMS[ZOOMS.length - 1]]
-/** How long an explicit Wander camera action takes. */
+/** How long a canvas camera action, including entering or leaving Focus, takes. */
 const HERE_MS = 260
 
 type Pointing = ReactMouseEvent | MouseEvent | TouchEvent
@@ -292,8 +293,30 @@ function Canvas({
   const toolsBeforeFocus = useRef<boolean | null>(null)
   const shutNow = useRef(shut)
   shutNow.current = shut
-  // Focus fits its own viewport surface, never the canvas camera.
+  const focusTravel = useRef<{ owner: NonNullable<CanvasStore["inPlace"]>; body: Box; started?: boolean } | null>(null)
+  const transition = useRef(0)
+  const returning = useRef<{ view: Viewport; until: number } | null>(null)
+  // Once arrived, Focus fits and moves its own image camera.
   store.fitHere = () => {}
+  store.enterFocus = (room) => {
+    const travel = focusTravel.current
+    if (!travel || travel.started || store.inPlace !== travel.owner || !store.focusEntering.get() || room.width <= 0 || room.height <= 0) return
+    const pane = stage.current?.querySelector(".react-flow")?.getBoundingClientRect()
+    if (!pane) return
+    travel.started = true
+    const token = transition.current
+    const { body } = travel
+    const zoom = Math.min(room.width / body.w, room.height / body.h)
+    const viewport = {
+      x: room.x - pane.left + (room.width - body.w * zoom) / 2 - body.x * zoom,
+      y: room.y - pane.top + (room.height - body.h * zoom) / 2 - body.y * zoom,
+      zoom,
+    }
+    const arrived = () => {
+      if (transition.current === token && focusTravel.current === travel && store.inPlace === travel.owner) store.focusEntering.set(false)
+    }
+    void flow.setViewport(viewport, { duration: HERE_MS }).then(arrived, arrived)
+  }
   /** Focus one asset while preserving Wander's camera and palette state. */
   const writeHere = useCallback(
     (name: string) => {
@@ -301,13 +324,19 @@ function Canvas({
       if (store.inPlace?.name === name) return
       const view = store.get(name)
       if (!view) return
+      const pose = store.poseOf(name)
+      const frame = pose && bodyBox(view, pose)
+      const back = store.inPlace?.back ?? (returning.current && performance.now() < returning.current.until ? returning.current.view : flow.getViewport())
+      transition.current += 1
+      returning.current = null
       if (store.inPlace) {
         void store.save(store.inPlace.name)
         store.closeSurface()
         store.patch(store.inPlace.name, { here: undefined, hereWords: undefined })
       }
-      const owner = { name, back: store.inPlace?.back ?? flow.getViewport() }
+      const owner = { name, back }
       store.inPlace = owner
+      focusTravel.current = frame ? { owner, body: { x: frame.x, y: frame.y + HEAD, w: frame.w, h: frame.w / aspectOf(view) } } : null
       store.view(name)
       const words = !view.asset?.prefixes?.length && !view.asset?.sha256
       if (words) store.focusing = name
@@ -316,6 +345,7 @@ function Canvas({
       store.writeOnOpen = null
       if (toolsBeforeFocus.current === null) toolsBeforeFocus.current = shutNow.current
       setShut(true)
+      store.focusEntering.set(Boolean(focusTravel.current))
       store.focusedName.set(name)
     },
     [store, flow],
@@ -326,6 +356,10 @@ function Canvas({
   }
   const stopWriting = useCallback(() => {
     const held = store.inPlace
+    const back = held?.back ?? focusTravel.current?.owner.back
+    if (!held && !back && toolsBeforeFocus.current === null) return
+    const token = ++transition.current
+    focusTravel.current = null
     store.inPlace = null
     store.closeSurface()
     if (held) {
@@ -333,12 +367,23 @@ function Canvas({
       store.patch(held.name, { here: undefined, hereWords: undefined, pickingUp: undefined })
       store.view(held.name)
     }
+    store.focusEntering.set(false)
     store.focusedName.set(null)
     if (toolsBeforeFocus.current !== null) {
       setShut(toolsBeforeFocus.current)
       toolsBeforeFocus.current = null
     }
-  }, [store])
+    if (back) {
+      returning.current = { view: back, until: performance.now() + HERE_MS }
+      if (store.projectId) saveViewport(store.projectId, back)
+      const returned = () => {
+        if (transition.current !== token || store.inPlace) return
+        returning.current = null
+        if (store.projectId) saveViewport(store.projectId, flow.getViewport())
+      }
+      void flow.setViewport(back, { duration: HERE_MS }).then(returned, returned)
+    }
+  }, [store, flow])
   const leaveHere = useCallback(() => {
     if (!store.inPlace) return
     stopWriting()
@@ -536,7 +581,7 @@ function Canvas({
 
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
-      if (store.focusedName.get()) return
+      if (store.focusedName.get() || (returning.current && performance.now() < returning.current.until)) return
       if (store.projectId) saveViewport(store.projectId, viewport)
     },
     [store],

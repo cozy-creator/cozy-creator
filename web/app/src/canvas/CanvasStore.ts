@@ -286,8 +286,11 @@ export class CanvasStore {
   readonly menu = signal<{ name: string; x: number; y: number; number?: number } | null>(null)
   /** The box whose file is being looked at large, over everything. */
   readonly viewing = signal<string | null>(null)
-  /** The one asset shown in the viewport-sized Focus surface; the canvas camera stays in Wander. */
+  /** The one asset shown in the viewport-sized Focus surface. */
   readonly focusedName = signal<string | null>(null)
+  readonly focusEntering = signal(false)
+  /** Aligns the canvas media with the measured Focus viewer before revealing its controls. */
+  enterFocus: (room: { x: number; y: number; width: number; height: number }) => void = () => {}
   /** The focused viewer owns its image camera separately from the canvas. */
   focusZoomBy?: (direction: number) => void
   focusZoomTo?: (scale: number) => void
@@ -429,6 +432,7 @@ export class CanvasStore {
     this.flow = null
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
     this.inPlace = null
+    this.focusEntering.set(false)
     this.focusedName.set(null)
     this.dragging.clear()
     this.dragFrom.clear()
@@ -453,6 +457,7 @@ export class CanvasStore {
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
     this.inPlace = null
     this.closeSurface()
+    this.focusEntering.set(false)
     this.focusedName.set(null)
   }
 
