@@ -2305,9 +2305,13 @@ video.preview.on {
   white-space: normal;
   overflow-wrap: break-word;
   line-height: 1.1;
-  /* A word a little wider than its box runs into the gap beside it rather than splitting (brok/en). */
+  /* A word a little wider than its box runs into the gap beside it rather than splitting (brok/en); not past 20%, where the gap is
+     too narrow and two names ran together. */
   flex-shrink: 0;
   max-width: 130%;
+}
+.stage[data-lod="2"] .react-flow__node .card > .head .nm {
+  max-width: 100%;
 }
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
   display: none;
