@@ -135,6 +135,7 @@ pub(crate) fn descriptor_for_mounted(
     let storage = LocalPrivateStorage {
         project_id: project_id.to_owned(),
         generation,
+        ordinary: crate::project::vault::ordinary_storage(&view),
         view_root: view.clone(),
     };
     let mut bytes = [0u8; 32];

@@ -20,6 +20,10 @@ pub struct LocalPrivateStorage {
     pub project_id: String,
     pub generation: u64,
     pub view_root: std::path::PathBuf,
+    /// An unencrypted project's storage: its executors take the ordinary transport, as any
+    /// Runtime speaks it. Absent, an encrypted view's executors need the protected one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ordinary: bool,
 }
 
 pub const LOCAL_PRIVATE_PREFIX: &str = "/v1/local-private";

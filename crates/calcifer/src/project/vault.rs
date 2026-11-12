@@ -61,6 +61,11 @@ fn key(e: project_vault::Error) -> Error {
 }
 fn held(root: &FsPath) -> Option<Held> { SESSIONS.lock().expect("vault sessions").get(root).cloned() }
 pub(crate) fn mount_identity(root: &FsPath) -> Option<MountIdentity> { held(root).map(|session| session.lock().expect("vault session").identity.clone()) }
+/// Whether `view` is an unencrypted project's own folder: no keybag behind it and no mounted view's place.
+pub(crate) fn ordinary_storage(view: &FsPath) -> bool {
+    !encrypted(&logical(view)) && !view.components().any(|part| part.as_os_str() == RUNTIME_DIR)
+}
+
 pub(crate) fn encrypted(root: &FsPath) -> bool { root.join(KEYBAG_FILE).is_file() || SESSIONS.lock().expect("vault sessions").contains_key(root) }
 
 /// The canonical id is available without opening the project's content database.
