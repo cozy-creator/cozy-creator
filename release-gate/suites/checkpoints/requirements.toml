@@ -1,0 +1,310 @@
+# What each tool reads from a published checkpoint (tracker xs-170's standard, xs-183's audit tables). walk.py holds every
+# published lane to each entry that matches it; a package owner extends the entries for its tools.
+#
+# [[checkpoint]] matches a lane by `models` (org/name), else by `families` (what its header verifies as, or its owner's
+# label) and `kind` (weights, component or lora), else by `kind` alone. An entry naming the model replaces family entries.
+# `reads` says what reads it. [checkpoint.components.<name>]: the component exists, with
+#   config = true   a config (the default; false: none is read)    keys = [...]   config keys the tool reads
+#   files = [...]   run data under the component's folder, its config file included: "a|b" either, "a+b" both
+#   tensors = true  weights of its own
+# lora = true: each LoRA component is named in the header's `adapter` record, and every module states its α (`.alpha`, or
+# the component config's `lora_alpha`).
+
+[[checkpoint]]
+reads = "every LoRA (TensorD adapter.rs)"
+kind = "lora"
+lora = true
+
+[[checkpoint]]
+reads = "minimax-h3 base_model (generate, edit, upscale)"
+families = ["minimax-h3"]
+kind = "weights"
+[checkpoint.components]
+transformer = { keys = ["cozy_h3"], files = ["timestep-plan.json"] }
+transformer_ref = { keys = ["cozy_h3"], files = ["timestep-plan.json"] }
+vae = {}
+audio_vae = {}
+text_encoder = { files = [
+  "processor/tokenizer_config.json",
+  "processor/vocab.json+processor/merges.txt|processor/tokenizer.json",
+  "processor/preprocessor_config.json",
+  "processor/video_preprocessor_config.json",
+] }
+
+[[checkpoint]]
+reads = "minimax-h3 turbo_lora"
+models = ["alibaba-pai/minimax-h3-turbo-lora"]
+[checkpoint.components]
+fl2va_turbo = { files = ["timestep-plan.json"] }
+ref2va_turbo = { files = ["timestep-plan.json"] }
+
+[[checkpoint]]
+reads = "minimax-h3 regenerate_lora"
+models = ["efficient-large-model/open-h3-regenerate-2k"]
+[checkpoint.components]
+fl2va_regenerate = { files = ["timestep-plan.json"] }
+
+[[checkpoint]]
+reads = "minimax-h3 latent_upscaler"
+models = ["lbh-123-ai/h3-latent-upscaler"]
+[checkpoint.components]
+model = { keys = ["architecture", "latent_normalization"] }
+upscaler = { config = false, tensors = true }
+
+[[checkpoint]]
+reads = "p-h3-image model, upsampler"
+models = ["prunaai/p-h3-image"]
+[checkpoint.components]
+transformer = {}
+vae = {}
+text_encoder = {}
+text_connector = {}
+processor = { files = ["tokenizer_config.json", "tokenizer.json", "chat_template.jinja"] }
+prompt_upsampler = {}
+prompt_upsampler_processor = { files = ["tokenizer_config.json", "tokenizer.json", "chat_template.jinja"] }
+
+[[checkpoint]]
+reads = "sdxl model"
+families = ["sdxl"]
+kind = "weights"
+[checkpoint.components]
+unet = {}
+vae = {}
+text_encoder = {}
+text_encoder_2 = {}
+scheduler = {}
+tokenizer = { config = false, files = ["vocab.json", "merges.txt"] }
+tokenizer_2 = { config = false, files = ["vocab.json", "merges.txt"] }
+
+[[checkpoint]]
+reads = "anima model"
+families = ["anima"]
+kind = "weights"
+[checkpoint.components]
+transformer = {}
+text_encoder = {}
+text_conditioner = {}
+vae = {}
+scheduler = {}
+tokenizer = { files = ["tokenizer_config.json", "tokenizer.json"] }
+t5_tokenizer = { files = ["tokenizer_config.json", "tokenizer.json"] }
+
+[[checkpoint]]
+reads = "fibo-2 model, full (its caption fonts: the package's copy until --add puts them here)"
+families = ["fibo-2"]
+kind = "weights"
+[checkpoint.components]
+transformer = {}
+text_encoder = {}
+vae = {}
+scheduler = {}
+processor = { files = ["processor_config.json", "tokenizer_config.json", "tokenizer.json", "chat_template.jinja"] }
+fonts = { config = false, files = ["Aileron-Regular.otf", "DejaVuSans.ttf"] }
+
+[[checkpoint]]
+reads = "fibo-2 upsampler, edit_upsampler"
+models = ["briaai/fibo-vlm", "briaai/fibo-edit-vlm"]
+[checkpoint.components]
+model = { files = [
+  "tokenizer_config.json",
+  "tokenizer.json|vocab.json+merges.txt",
+  "chat_template.jinja|chat_template.json",
+  "preprocessor_config.json",
+  "video_preprocessor_config.json",
+] }
+
+[[checkpoint]]
+reads = "hidream-o1 model"
+families = ["hidream-o1"]
+kind = "weights"
+[checkpoint.components]
+model = { files = [
+  "tokenizer_config.json",
+  "tokenizer.json|vocab.json+merges.txt",
+  "chat_template.jinja|chat_template.json",
+  "preprocessor_config.json",
+  "video_preprocessor_config.json",
+] }
+
+[[checkpoint]]
+reads = "hunyuan-image-3 model"
+families = ["hunyuan-image-3"]
+kind = "weights"
+[checkpoint.components]
+model = { keys = ["vit_processor"], files = ["tokenizer_config.json", "tokenizer.json"] }
+
+[[checkpoint]]
+reads = "ideogram-4 model (its text encoder and upsampler are qwen3-vl-8b-instruct's)"
+families = ["ideogram-4"]
+kind = "weights"
+[checkpoint.components]
+transformer = {}
+unconditional_transformer = {}
+vae = {}
+scheduler = {}
+
+[[checkpoint]]
+reads = "moss-image model"
+families = ["moss"]
+kind = "weights"
+[checkpoint.components]
+transformer = {}
+text_encoder = {}
+vae = {}
+scheduler = {}
+tokenizer = { files = ["tokenizer_config.json", "tokenizer.json", "chat_template.jinja"] }
+
+[[checkpoint]]
+reads = "flux.3-klein model, full"
+families = ["flux-3-klein"]
+kind = "weights"
+[checkpoint.components]
+transformer = {}
+vae = {}
+text_encoder = { files = [
+  "tokenizer_config.json",
+  "tokenizer.json|vocab.json+merges.txt",
+  "chat_template.jinja|chat_template.json",
+  "preprocessor_config.json",
+] }
+
+[[checkpoint]]
+reads = "flux.3-klein upsampler"
+models = ["black-forest-labs/flux-3-klein-upsampler", "atomicchat/flux-3-klein-upsampler-abliterated"]
+[checkpoint.components]
+model = { files = [
+  "tokenizer_config.json",
+  "tokenizer.json",
+  "chat_template.jinja",
+  "processor_config.json|preprocessor_config.json",
+  "video_preprocessor_config.json",
+] }
+
+[[checkpoint]]
+reads = "flux.3-klein drafter"
+models = ["qwen/qwen3.5-9b-mtp"]
+[checkpoint.components]
+model = { tensors = true }
+
+[[checkpoint]]
+reads = "flux-2 model, upsampler"
+families = ["flux-2"]
+kind = "weights"
+[checkpoint.components]
+transformer = {}
+text_encoder = {}
+vae = {}
+tokenizer = { files = ["tokenizer_config.json", "tokenizer.json", "chat_template.jinja", "preprocessor_config.json", "processor_config.json"] }
+
+[[checkpoint]]
+reads = "flux-2 turbo_lora"
+models = ["fal/flux-2-dev-turbo"]
+lora = true
+[checkpoint.components]
+model = { keys = ["r", "lora_alpha", "target_modules"] }
+
+[[checkpoint]]
+reads = "krea-2 model"
+families = ["krea-2"]
+kind = "weights"
+[checkpoint.components]
+transformer = {}
+text_encoder = {}
+vae = {}
+scheduler = {}
+tokenizer = { files = ["tokenizer_config.json", "tokenizer.json"] }
+
+[[checkpoint]]
+reads = "qwen-image-2 model, text_encoder"
+families = ["qwen-image-2"]
+kind = "weights"
+[checkpoint.components]
+transformer = {}
+text_encoder = {}
+vae = {}
+scheduler = {}
+processor = { files = [
+  "tokenizer_config.json",
+  "tokenizer.json|vocab.json+merges.txt",
+  "chat_template.jinja|chat_template.json",
+  "processor_config.json|preprocessor_config.json",
+] }
+
+[[checkpoint]]
+reads = "qwen-image-2 expander, rewriter"
+models = [
+  "qwen/qwen-image-2.1-pe-t2i",
+  "qwen/qwen-image-2.1-pe-i2i",
+  "pottokao/qwen-image-2.1-pe-t2i-abliterated",
+  "darrellbest/qwen-image-2.1-pe-i2i-abliterated",
+]
+[checkpoint.components]
+model = { files = [
+  "tokenizer_config.json",
+  "tokenizer.json",
+  "chat_template.jinja",
+  "processor_config.json",
+  "generation_config.json",
+  "system_prompt.txt",
+] }
+
+[[checkpoint]]
+reads = "qwen-image-2 turbo_lora (Fun Acc's sigma grid: the package's copy until --add puts it here)"
+models = ["alibaba-pai/qwen-image-2.1-fun-acc"]
+lora = true
+[checkpoint.components]
+transformer = { keys = ["r", "lora_alpha"], files = ["pdd_config.json"] }
+
+[[checkpoint]]
+reads = "qwen-image model, edit_model"
+families = ["qwen-image"]
+models = ["qwen/qwen-image-2512", "qwen/qwen-image-edit-2511"]
+kind = "weights"
+[checkpoint.components]
+transformer = {}
+text_encoder = {}
+vae = {}
+scheduler = {}
+tokenizer = { files = ["tokenizer_config.json", "vocab.json", "merges.txt"] }
+
+[[checkpoint]]
+reads = "qwen3.5 and qwen3.6 model (Runtime VisionLM: ask, caption)"
+models = ["qwen/qwen3.5-9b", "qwen/qwen3.5-0.8b", "qwen/qwen3.6-35b-a3b", "qwen/qwen3.6-27b"]
+[checkpoint.components]
+model = { files = [
+  "tokenizer_config.json",
+  "tokenizer.json|vocab.json+merges.txt",
+  "chat_template.jinja|chat_template.json",
+  "processor_config.json|preprocessor_config.json",
+  "video_preprocessor_config.json",
+] }
+
+[[checkpoint]]
+reads = "ideogram-4 text_encoder, upsampler"
+models = ["qwen/qwen3-vl-8b-instruct"]
+[checkpoint.components]
+model = { files = ["tokenizer_config.json", "tokenizer.json", "chat_template.json"] }
+
+[[checkpoint]]
+reads = "birefnet remove_background"
+models = ["zhengpeng7/birefnet"]
+[checkpoint.components]
+model = { keys = ["bb_pretrained"] }
+
+[[checkpoint]]
+reads = "seedvr2 upscale, upscale_image (its DiT and VAE settings: the package's copy until --add puts them here)"
+families = ["seedvr2"]
+models = ["bytedance-seed/seedvr2-7b"]
+[checkpoint.components]
+model = { keys = ["architecture"] }
+dit = { config = false, tensors = true }
+vae = { config = false, tensors = true }
+conditioning = { config = false, tensors = true }
+
+[[checkpoint]]
+reads = "relayvsr upscale"
+models = ["kopper/relayvsr"]
+[checkpoint.components]
+model = { keys = ["architecture"] }
+wan = { config = false, tensors = true }
+flash = { config = false, tensors = true }

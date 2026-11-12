@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""Suite `checkpoints` (xs-183): every published checkpoint against what its tool reads, from headers alone.
+
+Walks every public model's and LoRA's newest release, and the release each package's model slot names by default (as a
+run takes it: its series' newest fix), reads each lane through `cozy model show --json`, and holds it to every entry of
+requirements.toml that matches it. Prints one line per gap (`GAP <model>@<release> <lane>: <item>  [<what reads it>]`)
+and exits 1 when there is any. No GPU, no rental, no weights:
+
+    release-gate/suites/checkpoints/walk.py [--cli cozy] [--out DIR] [--only org/name,...]
+"""
+import argparse
+import json
+import pathlib
+import subprocess
+import sys
+import tomllib
+from concurrent.futures import ThreadPoolExecutor
+
+HERE = pathlib.Path(__file__).resolve().parent
+
+
+class Refused(Exception):
+    pass
+
+
+def cozy(cli, *args):
+    """`cozy --json <args>`'s answer, or Refused with its message."""
+    done = subprocess.run([cli, "--json", *args], capture_output=True, text=True, timeout=900)
+    try:
+        answer = json.loads(done.stdout)
+    except ValueError:
+        answer = None
+    if done.returncode or answer is None or "error" in (answer if isinstance(answer, dict) else {}):
+        why = (answer or {}).get("error", {}).get("message") if isinstance(answer, dict) else None
+        raise Refused(why or f"exit {done.returncode}: {(done.stdout + done.stderr).strip()[-300:]}")
+    return answer
+
+
+def pages(cli, *args, key):
+    rows, offset = [], 0
+    while True:
+        page = cozy(cli, *args, "--limit", "100", "--offset", str(offset))
+        rows += page[key]
+        offset += len(page[key])
+        if not page[key] or offset >= page.get("total", 0):
+            return rows
+
+
+def defaults(cli, jobs):
+    """Each Hub reference a package's model slot loads by default: {ref: ["<package>@<release> <slot path>", ...]}."""
+    packages = [p for p in pages(cli, "package", "ls", key="packages") if p.get("latest_release")]
+
+    def slots(package):
+        named = f"{package['package']}@{package['latest_release']}"
+        interface = cozy(cli, "--full", "run", named, "--describe").get("interface") or {}
+        return [(slot["default"], f"{named} {slot.get('path', '')}") for callable in interface.get("callables", [])
+                for slot in callable.get("models") or [] if slot.get("default")]
+
+    found = {}
+    with ThreadPoolExecutor(jobs) as pool:
+        for held in pool.map(slots, packages):
+            for ref, where in held:
+                if "://" not in ref and not ref.startswith("local/"):
+                    found.setdefault(ref, []).append(where)
+    return found
+
+
+def files_of(component):
+    """Its run data, its config's file among them."""
+    held = set(component["assets"])
+    if component["config_keys"]:
+        held.add(component.get("config_file") or "config.json")
+    return held
+
+
+def component_gaps(name, spec, components):
+    held = components.get(name)
+    if held is None:
+        return [f"{name} (no such component)"]
+    gaps = []
+    keys = spec.get("keys", [])
+    if (spec.get("config", True) or keys) and not held["config_keys"]:
+        reads = f"; reads {', '.join(keys)}" if keys else ""
+        gaps.append(f"{name}/{held.get('config_file') or 'config.json'} (no config{reads})")
+    else:
+        gaps += [f"{name} config key {key}" for key in keys if key not in held["config_keys"]]
+    have = files_of(held)
+    for wanted in spec.get("files", []):
+        options = [option.split("+") for option in wanted.split("|")]
+        if any(all(path in have for path in option) for option in options):
+            continue
+        missing = "+".join(path for path in options[0] if path not in have)
+        others = " or ".join("+".join(option) for option in options[1:])
+        gaps.append(f"{name}/{missing}" + (f" (or {others})" if others else ""))
+    if spec.get("tensors") and not held["tensors"]:
+        gaps.append(f"{name} (no weights)")
+    return gaps
+
+
+def lora_gaps(lane):
+    adapters = lane["records"].get("adapter")
+    adapters = adapters if isinstance(adapters, dict) else {}
+    loras = [c for c in lane["components"] if c.get("lora")]
+    if not loras:
+        return ["no LoRA factors (A/B pairs)"]
+    gaps = []
+    for held in loras:
+        record = adapters.get(held["name"])
+        if not (isinstance(record, dict) and record.get("family") and record.get("component")):
+            gaps.append(f"{held['name']}: adapter record (its family and component)")
+        lora = held["lora"]
+        if lora.get("lora_alpha") is None and lora["alphas"] < lora["modules"]:
+            gaps.append(f"{held['name']}: α for {lora['modules'] - lora['alphas']} of {lora['modules']} modules")
+    return gaps
+
+
+def entries(requirements, model, label, lane):
+    """The entries that hold `lane`: those naming the model, else those of its families; and those of its kind alone."""
+    families = {lane.get("family"), label} - {None}
+    kind = lambda entry: "kind" not in entry or entry["kind"] == lane.get("kind")
+    named = [e for e in requirements if model in e.get("models", [])]
+    by_family = [e for e in requirements if not named and families & set(e.get("families", [])) and kind(e)]
+    by_kind = [e for e in requirements if not e.get("models") and not e.get("families") and kind(e)]
+    return named + by_family + by_kind
+
+
+def check(requirements, shown):
+    """(gaps, unchecked) of one release: gaps as (lane, item, reads)."""
+    gaps, unchecked = [], []
+    for lane in shown["lanes"]:
+        held = entries(requirements, shown["model"], shown.get("family"), lane)
+        if not held:
+            unchecked.append((lane["lane"], f"no entry for family {lane.get('family') or shown.get('family') or '-'}, kind {lane.get('kind') or '-'}"))
+        components = {c["name"]: c for c in lane["components"]}
+        seen = set()
+        for entry in held:
+            items = [g for name, spec in entry.get("components", {}).items() for g in component_gaps(name, spec, components)]
+            items += lora_gaps(lane) if entry.get("lora") else []
+            for item in items:
+                if (lane["lane"], item) not in seen:
+                    seen.add((lane["lane"], item))
+                    gaps.append((lane["lane"], item, entry.get("reads", "")))
+    return gaps, unchecked
+
+
+def main():
+    ask = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ask.add_argument("--cli", default="cozy")
+    ask.add_argument("--requirements", default=str(HERE / "requirements.toml"))
+    ask.add_argument("--out", help="a folder for findings.json")
+    ask.add_argument("--only", default="", help="org/name,... to walk alone (their newest releases)")
+    ask.add_argument("--jobs", type=int, default=4)
+    args = ask.parse_args()
+    requirements = tomllib.loads(pathlib.Path(args.requirements).read_text())["checkpoint"]
+    only = {name.strip() for name in args.only.split(",") if name.strip()}
+
+    named = {}  # "org/name@release" -> why it is walked
+    errors = []
+    for noun in ("model", "lora"):
+        for row in pages(args.cli, noun, "ls", key="models"):
+            if not row.get("private") and row.get("release") and (not only or row["model"] in only):
+                named.setdefault(f"{row['model']}@{row['release']}", []).append(f"newest {noun}")
+    slots = {} if only else defaults(args.cli, args.jobs)
+    for ref, where in slots.items():
+        named.setdefault(ref, []).extend(f"default of {w}" for w in where)
+
+    def show(ref):
+        try:
+            return ref, cozy(args.cli, "model", "show", ref), None
+        except Refused as why:
+            return ref, None, str(why)
+
+    shown = {}
+    with ThreadPoolExecutor(args.jobs) as pool:
+        todo = list(named)
+        while todo:
+            later = []
+            for ref, answer, why in pool.map(show, todo):
+                if why:
+                    errors.append((ref, why))
+                    continue
+                key = f"{answer['model']}@{answer['release']}"
+                shown.setdefault(key, answer)
+                named.setdefault(key, []).extend(w for w in named.get(ref, []) if ref != key)
+                # A run naming an older release takes its series' newest fix: that is what a default loads.
+                newer = f"{answer['model']}@{answer['resolves_to']}" if answer.get("resolves_to") else None
+                if newer and newer not in shown and newer not in named:
+                    named[newer] = [f"{w}, named @{answer['release']}" for w in named.get(ref, [])]
+                    later.append(newer)
+            todo = later
+
+    findings = {"releases": {}, "gaps": [], "unchecked": [], "errors": [{"ref": r, "error": e} for r, e in errors]}
+    for key in sorted(shown):
+        answer = shown[key]
+        gaps, unchecked = check(requirements, answer)
+        findings["releases"][key] = {"why": sorted(set(named.get(key, []))), "lanes": [lane["lane"] for lane in answer["lanes"]]}
+        findings["gaps"] += [{"release": key, "lane": lane, "item": item, "reads": reads} for lane, item, reads in gaps]
+        findings["unchecked"] += [{"release": key, "lane": lane, "why": why} for lane, why in unchecked]
+    for gap in findings["gaps"]:
+        print(f"GAP {gap['release']} {gap['lane']}: {gap['item']}  [{gap['reads']}]")
+    for ref, why in errors:
+        print(f"UNREAD {ref}: {why}")
+    for lane in findings["unchecked"]:
+        print(f"UNCHECKED {lane['release']} {lane['lane']}: {lane['why']}")
+    lanes = sum(len(r["lanes"]) for r in findings["releases"].values())
+    short = len({g["release"] for g in findings["gaps"]})
+    print(f"checkpoints: {len(shown)} releases, {lanes} lanes; {len(findings['gaps'])} gaps in {short} releases, "
+          f"{len(errors)} unread, {len(findings['unchecked'])} lanes no entry covers")
+    if args.out:
+        out = pathlib.Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "findings.json").write_text(json.dumps(findings, indent=1) + "\n")
+    return 1 if findings["gaps"] or errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
