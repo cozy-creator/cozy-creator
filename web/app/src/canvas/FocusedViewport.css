@@ -227,6 +227,20 @@ body:has(.focus-viewport) .zoom {
 .focus-card .authoring-ratio .ratio-rest {
   font-size: 18px;
 }
+.media > .ratio-rest {
+  position: absolute;
+  top: auto;
+  bottom: 12px;
+  right: 30px;
+  z-index: 8;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  pointer-events: auto;
+}
 .focus-card .ratio-clear {
   width: 26px;
   height: 26px;
