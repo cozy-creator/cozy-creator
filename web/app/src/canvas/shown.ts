@@ -44,9 +44,9 @@ export const HEAD = 32
  * like the rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
  */
 const HANG = 2
-// As app.css draws them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
+// As app.css draws them: tokens.css's title and body steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
-const SMALL_LINE = 10.5 * 1.35 * 1.25
+const BODY_LINE = 12.5 * 1.35 * 1.25
 const CLOSE = 30
 /** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
 const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
@@ -57,7 +57,7 @@ const RUN = 2 * 10.5 * 1.35 * 1.35 + 4
  *  below it rises into. */
 export function underOf(view: ElementView): number {
   const asset = view.asset
-  const line = asset && (asset.tool || asset.kind !== "text") ? SMALL_LINE + 2 : 0
+  const line = asset && (asset.tool || asset.kind !== "text") ? BODY_LINE + 2 : 0
   return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
 const ENTITY_DESC = 60

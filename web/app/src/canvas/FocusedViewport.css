@@ -71,6 +71,16 @@
   padding: 8px 14px;
   font-size: 19px;
 }
+/* Its × as tall as Back to canvas, its cross readable (cl-963). */
+.focus-heading > .iconb {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+}
+.focus-heading > .iconb .icon {
+  width: 24px;
+  height: 24px;
+}
 .focus-body {
   flex: 1;
   min-width: 0;

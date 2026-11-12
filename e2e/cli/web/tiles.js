@@ -5,7 +5,8 @@
 //     Run progress - cancel button
 // An idle picture with Qwen's Image, an idle video with H3's Shot, a dropped picture with no tool, and a box rendering on this computer: their
 // rows and nothing else (no Edit, no Pick up from here, no chips), the render's lines under its picture with Cancel, at zoom 1 and 0.5, each
-// a screenshot. Open, Edit and Pick up from here are still there. Cancel on the tile stops its render. A render's whole life, from Render to
+// a screenshot. Labels at the page's body size and controls at least 28, on the tiles and in Focus, at 1440×900 and 1920×1080, light and
+// dark, each a screenshot (cl-963). Open, Edit and Pick up from here are still there. Cancel on the tile stops its render. A render's whole life, from Render to
 // its take landing, leaves the tile's size as it was (cl-936).
 //   node tiles.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots; $ALONE: on a shared computer, so
@@ -377,6 +378,46 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto( · .+)?)$/;
   check('open_video_picks_up', (await page.locator('.card.here[data-asset="shot"] button.pick-up').count()) >= 1);
   await shot('open-shot');
   await closeBox(page);
+
+  // As a person sees it (cl-963, Paul 11-12: "things were just far too small or hard to see or read"), at 1440×900 and 1920×1080, light and
+  // dark: the tiles at 100%, and a picture with two takes in Focus. Every label at least the page's body size; every control at least 28.
+  await post(`${at}/assets/still/versions`, { source: await upload(held?.token, join(folder, 'plain.png')) });
+  const sizes = () => page.evaluate(() => {
+    const px = (el) => (el ? parseFloat(getComputedStyle(el).fontSize) : null);
+    const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; };
+    const labels = [...document.querySelectorAll('.react-flow .card .tile-line .ratio-rest, .react-flow .card .tile-line .node-tool, .react-flow .card .head .node-version-label')];
+    const view = document.querySelector('.focus-viewport');
+    return {
+      body: px(document.body),
+      labels: labels.map((el) => ({ text: el.textContent, px: px(el) })),
+      trash: box(document.querySelector('.react-flow .card[data-asset="plain"] .head button[aria-label="Delete"]')),
+      close: box(view?.querySelector('button[aria-label="Close focus"]')),
+      discard: box(view?.querySelector('.take-off[aria-label^="Discard"]')),
+      number: px(view?.querySelector('.variant-number')),
+    };
+  });
+  for (const [width, height] of [[1440, 900], [1920, 1080]]) for (const dark of [false, true]) {
+    const look = `${width}x${height}-${dark ? 'dark' : 'light'}`;
+    await page.setViewportSize({ width, height });
+    await page.evaluate((dark) => localStorage.setItem('cozy.theme', dark ? 'dark' : 'paper'), dark);
+    await page.reload();
+    await boxOf(page, 'still').waitFor();
+    await settled(page);
+    await zoomTo(1);
+    const tiled = await sizes();
+    await shot(`look-${look}-tiles`);
+    await openBox(page, 'still');
+    await page.locator('.focus-viewport .take-off[aria-label^="Discard"]').first().waitFor();
+    await page.waitForTimeout(400);
+    const focused = await sizes();
+    await shot(`look-${look}-focus`);
+    await closeBox(page);
+    seen[`look_${look}`] = { tiled, focused };
+    check(`look_${look}_tile_labels_at_body_size`, tiled.labels.length >= 3 && tiled.labels.every((one) => one.px >= tiled.body - 0.01), tiled);
+    check(`look_${look}_tile_trash_28`, tiled.trash?.w >= 28 && tiled.trash?.h >= 28, tiled.trash);
+    check(`look_${look}_focus_close_and_discard_28`, focused.close?.w >= 28 && focused.close?.h >= 28 && focused.discard?.w >= 28 && focused.discard?.h >= 28, focused);
+    check(`look_${look}_focus_take_number_at_body_size`, focused.number >= focused.body - 0.01, focused);
+  }
 
   check('no_page_errors', errors.length === 0, errors);
   await browser.close();
