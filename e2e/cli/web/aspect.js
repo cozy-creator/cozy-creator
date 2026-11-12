@@ -116,8 +116,17 @@ async function died(why) {
   const h3 = ((await api(`/v1/tools?project=${id}&q=minimax`)).body?.tools ?? []).find((tool) => tool.package === 'minimax-h3' && tool.makes === 'video' && tool.fields.some((field) => field.field === 'first_frame'));
   const h3Shape = h3?.fields.find((field) => field.type === 'shape');
   seen.h3 = h3 && { id: h3.id, release: h3.release, shape: h3Shape && { ratios: h3Shape.ratios, min: h3Shape.min, max: h3Shape.max, auto: h3Shape.auto } };
-  check('h3_takes_any_shape_within_4_1', Boolean(h3Shape?.auto && h3Shape.min <= 0.25 + 1e-6 && h3Shape.max >= 4 - 1e-6 && !(h3Shape.ratios ?? []).length), seen.h3);
-  if (h3Shape) {
+  // minimax-h3 0.12 takes any shape within 4:1; the Hub's final before it (0.11.1, until the 0.25.0 cut) only 16:9, and its box says so.
+  const bounded = Boolean(h3Shape?.auto && h3Shape.min <= 0.25 + 1e-6 && h3Shape.max >= 4 - 1e-6 && !(h3Shape.ratios ?? []).length);
+  const only169 = JSON.stringify(h3Shape?.ratios ?? []) === '["16:9"]';
+  check('h3_listed_with_its_shape', Boolean(h3Shape) && (bounded || only169), seen.h3);
+  if (h3Shape && only169) {
+    await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: h3.id, kind: 'video', name: 'shot', exact: true, fields: { beats: [{ duration: 5, description: 'A dancer on a rooftop.' }] }, at: { x: 200, y: 700 } }) });
+    await boxOf(page, 'shot').waitFor();
+    const said = await until('it says 16:9', () => boxOf(page, 'shot').locator('.ratio-rest').first().innerText().then((text) => text.trim(), () => null), (text) => text === '16:9').catch(() => null);
+    check('h3_before_0_12_says_16_9', said === '16:9', said);
+  }
+  if (h3Shape && bounded) {
     const folder = mkdtempSync(join(tmpdir(), 'web-aspect-'));
     for (const [name, width, height] of [['tall', 288, 512], ['face', 320, 400]]) {
       writeFileSync(join(folder, `${name}.png`), png(90, width, height));
