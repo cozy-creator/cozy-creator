@@ -218,9 +218,10 @@ const SEAM = 6;
   await redo.click();
   await leadIn.waitFor();
   await renderHere();
-  await until('the redone take', async () => (await row('shot'))?.versions, (n) => n >= 2, FIRST_RUN_MS);
-  const redid = await resultOf('shot', 2);
-  seen.redid = { pickup: redid.version?.pickup, seams: redid.result?.seams, warnings: redid.result?.warnings };
+  // The take it makes records the pickup; a render the cell held earlier may land beside it, plain.
+  const picked = await until('the redone take', async () => (await versionsOf('shot')).find((one) => one.pickup), Boolean, FIRST_RUN_MS);
+  const redid = await resultOf('shot', picked.number);
+  seen.redid = { versions: (await versionsOf('shot')).map((one) => ({ number: one.number, pickup: one.pickup })), pickup: redid.version?.pickup, seams: redid.result?.seams, warnings: redid.result?.warnings };
   check('a_redo_keeps_the_seam_it_starts_at', redid.version?.pickup?.take === '<shot.1>' && redid.version?.pickup?.out_frame === SEAM && redid.result?.seams?.[0] === SEAM && !redid.result?.warnings?.length, seen.redid);
   await closeBox(page);
 
