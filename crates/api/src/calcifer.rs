@@ -691,6 +691,10 @@ pub struct Progress {
     pub completed: u64,
     #[serde(default)]
     pub total: u64,
+    /// What `completed` counts: empty for steps, `tokens` for a decode's, whose `total` is only
+    /// its cap: a count, never a share of it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unit: String,
     #[serde(default)]
     pub bytes_done: u64,
     #[serde(default)]
@@ -726,6 +730,33 @@ pub struct Progress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<u64>,
 }
+
+impl Progress {
+    /// It counts a decode's tokens, whose total is only a cap.
+    pub fn tokens(&self) -> bool {
+        self.unit == TOKENS
+    }
+
+    /// The part of the whole it is in, as a scope of its stage's path names it up front (`Segment 2 of 3 / denoise`): its number, 1
+    /// first, and how many there are.
+    pub fn part(&self) -> Option<(u64, u64)> {
+        self.stage.split(" / ").find_map(|scope| {
+            let mut words = scope.rsplit(' ');
+            let of: u64 = words.next()?.parse().ok()?;
+            (words.next()? == "of").then_some(())?;
+            let at: u64 = words.next()?.parse().ok()?;
+            (at >= 1 && at <= of).then_some((at, of))
+        })
+    }
+
+    /// Its stage without the scopes it is in: `decode_video` of `Segment 2 of 3 / decode_video`.
+    pub fn own_stage(&self) -> &str {
+        self.stage.rsplit(" / ").next().unwrap_or(&self.stage)
+    }
+}
+
+/// The unit of a decode's count (`Progress::unit`).
+pub const TOKENS: &str = "tokens";
 
 /// What a time left stands on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -674,6 +674,12 @@ impl Machines {
                     Some(sku) if gpus > 0 => (sku, Some(gpus), None, vec![]),
                     sku => me.placed(&run, sku.as_deref()).await?,
                 };
+                // Until its machine is named, the run says what it rents.
+                let card = sku.replace(['-', '_'], " ").to_uppercase();
+                me.calcifer.waiting(&run.id, match gpus {
+                    Some(n) if n > 1 => format!("renting {n}× {card}"),
+                    _ => format!("renting {card}"),
+                });
                 let shape = Shape {
                     gpus,
                     disk_gb,

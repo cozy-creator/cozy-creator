@@ -2,15 +2,12 @@ import { useQuery } from "@tanstack/react-query"
 import { type CSSProperties, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseLink, Player as MachinePlayer } from "../../../player/cozy-webrtc.js"
 import type { Client } from "../api/client"
-import { runFullQuery, runQuery, runsQuery } from "../api/queries"
+import { runFullQuery } from "../api/queries"
 import { holdMedia, playingHere } from "../api/events"
 import type { Playback } from "../api/transport"
 import { useConnection } from "../app/Connection"
-import { leftWords } from "../panels/format"
-import { fractionOf, packageWords, useInstalling, useWaitsOn } from "../panels/machines/activity"
-import { long, workWords } from "../panels/runs/words"
-import type { MainFile, Run, Tool } from "../api/calcifer"
-import { useCanvasStore, useElement } from "./context"
+import type { MainFile } from "../api/calcifer"
+import { useCanvasStore } from "./context"
 import type { ElementView } from "./CanvasStore"
 import { fieldsOf } from "./controls"
 import { Icon, type IconName } from "../ui/Icon"
@@ -20,6 +17,7 @@ import { chipWords, clock, lineOf, mentionsIn, withMentions } from "./text"
 import { isSelf } from "./versions"
 import { OrbitView, orbitOf } from "./Orbit"
 import { BufferedImage } from "./BufferedImage"
+import { RunFace } from "./RunFace"
 
 const STAGE: Record<string, string> = { waiting: "Waiting", reading: "Reading", sending: "Sending", adding: "Adding" }
 const STRIP_FRAMES = 8
@@ -465,8 +463,7 @@ export function Player({ field, path, machine, seek, auto, onTime }: { field: st
 const GLYPHS: Record<string, IconName> = { image: "picture", video: "video", audio: "sound" }
 
 /** How far it's got, on the picture: a veil that moves and never reflows, and the one line it says. An Edit rendered here is a progress bar. */
-function Progress({ veil = true, fraction, says, phase, rendering, cancel }: Way) {
-  const store = useCanvasStore()
+function Progress({ veil = true, fraction, says, phase, rendering }: Way) {
   return (
     <div
       className={`prog ${fraction === undefined ? "unknown" : ""} ${phase ?? ""}`}
@@ -474,87 +471,17 @@ function Progress({ veil = true, fraction, says, phase, rendering, cancel }: Way
     >
       {veil && <i style={fraction === undefined ? undefined : { transform: `translateX(${Math.round(fraction * 100) - 100}%)` }} />}
       {says && <b>{says}</b>}
-      {cancel && (
-        <button
-          type="button"
-          className="prog-cancel nodrag"
-          aria-label={`Cancel ${cancel}'s render`}
-          onClick={(event) => {
-            // Its box isn't opened by it.
-            event.stopPropagation()
-            store.cancelRender(cancel)
-          }}
-        >
-          Cancel
-        </button>
-      )}
     </div>
   )
 }
 
-const installsOf = (tool?: Tool) => tool && (tool.installs ?? tool.package)
-const settingUp = (run: Run) => run.kind === "update" || run.target.startsWith("install ")
-const sentence = (said: string) => said.charAt(0).toUpperCase() + said.slice(1)
-
-/** How far a render on its way has got, and the one line it says. */
+/** How far it's got, in one line: an import placed, or an Edit rendered here. */
 interface Way {
   veil?: boolean
   fraction?: number
   phase?: string
   says?: string
   rendering?: boolean
-  /** The box whose render it cancels, by its Cancel beside it. */
-  cancel?: string
-}
-
-/** A render on its way, in one line, the most specific first: an Edit rendering here; what it reads and waits for, with that one's work; its
- *  package installing or its weights arriving, from what its machine lists, before its run is sent too; its counted steps; its place in a
- *  line; what it's doing; its machine getting ready; else queued. Its own work says so once it's worth it: `Denoise steps: 3/8, 25 s left`.
- *  The veil is its run's, while it's made. The take looked at may be one asked after the first going: it's that one's. */
-function OnItsWay({ view, name, number }: { view: ElementView; name: string; number?: number }) {
-  const { client } = useConnection()
-  const store = useCanvasStore()
-  const tools = useSignal(store.tools)
-  const asset = view.asset
-  const making = asset?.standing === "making"
-  const later = number !== undefined && number !== view.run?.number
-  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: later })
-  const run = later ? data : view.run
-  const on = useWaitsOn(run)
-  // Waiting for what it reads, it says that, and nothing of a machine's work for another box.
-  const waits = making ? null : store.waitsFor(name)
-  const installing = useInstalling(run || waits ? undefined : installsOf(asset?.tool ? tools.get(asset.tool) : undefined))
-  const read = useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
-  const going = useQuery({ ...runsQuery(client, { status: "in_progress" }, 100), enabled: !run })
-  const lined = useQuery({ ...runsQuery(client, { status: "queued" }, 100), enabled: !run })
-  if (asset?.rendering != null) return <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />
-  // Canceled from here: it says so until its run ends and nothing of it is queued (Paul, 11-12).
-  if (view.canceling || run?.cancel_requested) return <Progress veil={making} fraction={run?.progress?.done_fraction ?? undefined} says="Cancelling…" />
-  if (waits && !on) {
-    const theirs = read?.asset?.making?.length ? read.run : undefined
-    const words = theirs && theirs.status !== "completed" ? workWords(theirs) : ""
-    return <Progress fraction={theirs?.progress?.done_fraction ?? undefined} says={`Waits for <${waits}>${words ? `: ${words}` : ""}`} cancel={name} />
-  }
-  const before = on ?? installing
-  if (before?.kind === "install") return <Progress phase="install" says={`Installing ${packageWords(before.subject)}…`} cancel={name} />
-  if (before?.kind === "download") {
-    const fraction = fractionOf(before)
-    const left = before.eta_s == null ? "" : `, ${leftWords(before.eta_s)}`
-    return <Progress phase="download" fraction={fraction} says={`Waiting on download… ${fraction === undefined ? "" : `${Math.round(fraction * 100)}%`}${left}`} cancel={name} />
-  }
-  // A run that ended says no more of how far: it's all there, on its way here.
-  if (run?.status === "completed") return <Progress fraction={1} />
-  const work = run && long(run, Date.now()) ? workWords(run) : ""
-  const counted = Boolean(run?.progress?.total || run?.progress?.bytes_total)
-  const machine = !run && [...(going.data?.runs ?? []), ...(lined.data?.runs ?? [])].find(settingUp)?.machine
-  const says =
-    (counted && work) ||
-    (run?.queue_position !== undefined && `Queued, number ${run.queue_position} in line`) ||
-    (run?.waiting && sentence(run.waiting)) ||
-    work ||
-    (machine && `Getting ${machine} ready`) ||
-    ((!run || run.status === "queued") && "Queued")
-  return <Progress veil={making} fraction={run?.progress?.done_fraction ?? undefined} says={says || undefined} cancel={name} />
 }
 
 /** How often a rendering box asks its run's machine for a preview while none comes: the machine makes them only while asked. */
@@ -695,8 +622,8 @@ function askedIn(input: Record<string, unknown> | undefined, field: string): str
   return typeof text === "string" ? text : null
 }
 
-/** A take being made, with nothing of it yet: where its picture will be, the words its run was asked, read only, as they were written in its
- *  frame, over what they mention, until it lands. Asked and not sent yet, it has no run: the box's own words are what's sent. */
+/** A take being made, with nothing of it yet: behind its face (RunFace), what the words its run was asked mention, until it lands. Asked and
+ *  not sent yet, it has no run: the box's own words are what's sent. */
 function MadeFrom({ view, name, run, cardWidth }: { view: ElementView; name: string; run?: number; cardWidth: number }) {
   const { client } = useConnection()
   const store = useCanvasStore()
@@ -707,15 +634,7 @@ function MadeFrom({ view, name, run, cardWidth }: { view: ElementView; name: str
   const own = valueIn(view, control.field)
   const words = run === undefined || isError ? (typeof own === "string" ? own : null) : askedIn(data?.request?.input, control.field)
   if (!words?.trim()) return null
-  // What they mention under how far it's got, and the words over it.
-  return (
-    <>
-      <Ghosts name={name} view={view} mentions={mentionsIn(words)} cardWidth={cardWidth} />
-      <div className="made-from">
-        <Said words={words} view={view} name={name} />
-      </div>
-    </>
-  )
+  return <Ghosts name={name} view={view} mentions={mentionsIn(words)} cardWidth={cardWidth} />
 }
 
 export function Media({ view, name, cardWidth, restWidth = cardWidth, children }: { view: ElementView; name: string; cardWidth: number; restWidth?: number; children?: ReactNode }) {
@@ -731,8 +650,9 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
   const field = shown?.field ?? placing?.media ?? asset?.kind
   const source = sourceOf(view, shown)
   const making = asset?.standing === "making"
-  const busy = (making || Boolean(view.queued) || view.asked !== undefined) && (Boolean(watch && watch.number === undefined) || !shown)
-  const run = busy ? makingRun(view) : undefined
+  const onItsWay = making || Boolean(view.queued) || view.asked !== undefined
+  const busy = onItsWay && (Boolean(watch && watch.number === undefined) || !shown)
+  const run = onItsWay ? makingRun(view) : undefined
   const here = shown && !shown.absent ? shown : null
   // A video whose file says `orbit` turns, not plays: open, a drag turns it from the file here.
   const orbit = field === "video" ? orbitOf(shown) : null
@@ -755,9 +675,14 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
 
   const slid = view.slid !== undefined && view.slid === shown?.number
   const blank = !preview && !shown && !firstClip
-  // Its take being made, with nothing of it yet: its frame says what it's made from.
+  // Its take being made, with nothing of it yet: what its words mention is behind its face.
   const madeFrom = blank && busy && makes(view) && !asset?.timeline && !view.hereWords && view.viewed === undefined && !view.glimpse
   const glyph = blank && !words && !clips && faceOf(view) === "edit" && !making && field ? GLYPHS[field] : undefined
+  // On its way, its face says so whole, unless a take is looked at, a glimpse of what it's making shows or its words are being written:
+  // then along its bottom.
+  const full = busy && view.viewed === undefined && !view.glimpse && !(view.here && view.hereWords)
+  // What stopped its last try, in place: an approved box looked at shows nothing wrong (Card's dot).
+  const failed = !busy && !placing && Boolean(asset?.failure) && view.viewed === undefined && !(asset?.pinned && faceOf(view) === "media")
   return (
     <div className={`media ${asset?.kind === "image" ? "image-asset" : ""} ${pendingImage ? "pending-image" : ""} ${asset?.kind === "image" && view.hereWords ? "image-editing" : ""} ${shown?.alpha ? "alpha" : ""} ${slid ? "slid" : ""} ${blank ? "blank" : ""}`} style={{ aspectRatio: aspectOf(view) }} onAnimationEnd={() => slid && store.patch(name, { slid: undefined })} {...hover}>
       <div className="media-pixels" data-image-reference={asset?.kind === "image" && shown && !view.hereWords ? "" : undefined}>
@@ -787,11 +712,13 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
         </span>
       )}
       {view.glimpse && !shown && view.viewed === undefined && (making || asset?.failure) && <Glimpse glimpse={view.glimpse} failed={!making} />}
-      {busy && view.viewed === undefined && <div className="media-making" />}
+      {full && <div className="media-making" />}
       {madeFrom && <MadeFrom view={view} name={name} run={run} cardWidth={cardWidth} />}
       {busy && run !== undefined && view.viewed === undefined && !view.glimpse && <LatentPreview view={view} number={run} />}
       {placing && <Progress fraction={placing.done} says={stageLine(view) ?? undefined} />}
-      {busy && <OnItsWay view={view} name={name} number={run} />}
+      {busy && asset?.rendering != null && <Progress fraction={asset.rendering} says={`Rendering ${Math.round(asset.rendering * 100)}%`} rendering />}
+      {onItsWay && asset?.rendering == null && !view.here && <RunFace view={view} name={name} number={run} full={full} />}
+      {failed && <FailedHere message={asset!.failure!.message.replace(`${name}: `, "")} />}
       {asset?.kind === "image" && asset.tool && !view.hereWords && !pendingImage && shown && <button type="button" className="image-edit-action nodrag nopan" aria-label="Edit image" onClick={(event) => { event.stopPropagation(); store.beginImageEdit(name) }}>Edit</button>}
       {asset?.kind === "video" && tools.get(asset.tool ?? "")?.pickup && !view.hereWords && shown && <button type="button" className="image-edit-action video-pickup-action nodrag nopan" onClick={(event) => {
         event.stopPropagation()
@@ -815,6 +742,19 @@ export function Media({ view, name, cardWidth, restWidth = cardWidth, children }
         />
       )}
       {children}
+    </div>
+  )
+}
+
+/** Why its last render failed, along its bottom, until it's tried again. */
+function FailedHere({ message }: { message: string }) {
+  return (
+    <div className="run-face strip failed" data-phase="failed">
+      <div className="face">
+        <div className="face-state">
+          <b title={message}>Didn't render: {message}</b>
+        </div>
+      </div>
     </div>
   )
 }

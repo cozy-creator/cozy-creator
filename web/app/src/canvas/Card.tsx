@@ -20,7 +20,8 @@ import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames 
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, madeHere, makes, NARROWEST, paints, reshapes, shownOf, valuesOf, watched, widthFor } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, madeHere, makes, makingRun, NARROWEST, paints, reshapes, shownOf, valuesOf, watched, widthFor } from "./shown"
+import { RunFace } from "./RunFace"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -692,6 +693,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const firstImage = versions.find((version) => version.number === 1)?.main ?? versions[0]?.main
   const originalAspect = firstImage?.width && firstImage.height ? firstImage.width / firstImage.height : aspectOf(view)
   const imageHeight = width / originalAspect
+  // A render on its way: open, it says so above its picture.
+  const onItsWay = asset?.standing === "making" || Boolean(view.queued) || view.asked !== undefined
   const widestImage = Math.max(originalAspect, ...versions.map((version) => version.main?.width && version.main.height ? version.main.width / version.main.height : originalAspect)) * imageHeight
   const style: CSSProperties & Record<`--${string}`, string | number> = focused
     ? { width: "100%", "--focus-footer-room": `${asset?.kind === "image" ? editing ? 240 : 64 : asset?.kind === "video" && !editing ? 64 : asset?.tool ? 220 : 0}px` }
@@ -772,6 +775,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
         <span className={`dot ${dotOf(view)}`} />
       </div>
       )}
+      {/* Open, a render on its way says how between its name and its picture, large, and covers none of it. */}
+      {here && asset?.rendering == null && onItsWay && <RunFace view={view} name={name} number={makingRun(view)} full above />}
       <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text" && !(asset?.timeline && editing)}>{asset?.timeline && editing ? (
         <TimelineControl name={name} />
       ) : (

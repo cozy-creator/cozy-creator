@@ -1975,7 +1975,12 @@ export type Progress = { stage: string, fraction?: number | null,
 /**
  * How far this stage is, when it says.
  */
-stage_fraction?: number | null, completed: number, total: number, bytes_done: number, bytes_total: number, step_ms: number,
+stage_fraction?: number | null, completed: number, total: number,
+/**
+ * What `completed` counts: empty for steps, `tokens` for a decode's, whose `total` is only
+ * its cap: a count, never a share of it.
+ */
+unit?: string, bytes_done: number, bytes_total: number, step_ms: number,
 /**
  * The stage's steady step time: the median of its last five steps after the first; 0 before
  * its second.

@@ -450,7 +450,7 @@ impl Watch {
         }
     }
 
-    /// Owes `id` an update unless `event` is a log line or byte growth, or it is owed one already. A
+    /// Owes `id` an update unless `event` is a log line that warns of nothing or byte growth, or it is owed one already. A
     /// run's lifecycle also moves its machine's running and queued counts.
     fn owe(&mut self, id: RunId, event: &Event) {
         self.machines_stale |= self.machines_changed.is_some() && matches!(
@@ -462,7 +462,12 @@ impl Watch {
                 | Event::Failed { .. }
                 | Event::Canceled { .. }
         );
-        let shown = !matches!(event, Event::Log { .. } | Event::OutputDelta { checkpoint: None, .. });
+        // A warning in its log is said on its record (`Calcifer::record`): the rest of its log is not.
+        let shown = match event {
+            Event::Log { level, .. } => crate::warns(level),
+            Event::OutputDelta { checkpoint: None, .. } => false,
+            _ => true,
+        };
         if shown && !self.owed.contains(&id) {
             self.owed.push_back(id);
         }

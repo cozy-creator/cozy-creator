@@ -609,6 +609,8 @@ pub struct Frame {
     pub stage: String,
     pub position: Option<u64>,
     pub total: Option<u64>,
+    /// What `position` counts: empty for steps, `tokens` for a decode's, whose `total` is only its cap.
+    pub unit: String,
     pub stage_fraction: Option<f64>,
     pub step_ms: Option<f64>,
     pub advance: u64,

@@ -1081,6 +1081,7 @@ impl Log {
                     fraction: payload["overall_fraction"].as_f64().unwrap_or(-1.0),
                     completed: payload["position"].as_u64().unwrap_or(0),
                     total: payload["total"].as_u64().unwrap_or(0),
+                    unit: payload["unit"].as_str().unwrap_or_default().into(),
                     bytes_done: payload["bytes_done"].as_u64().unwrap_or(0),
                     bytes_total: payload["bytes_total"].as_u64().unwrap_or(0),
                     stage_fraction: payload["stage_fraction"].as_f64(),

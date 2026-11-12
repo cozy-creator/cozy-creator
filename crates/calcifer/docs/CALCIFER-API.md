@@ -237,7 +237,10 @@ a spec.
 - `GET /v1/runs` (`status`, `package`, `machine`, `project`, `before`, `limit`): `{runs, older, machine?, unreadable?}`. `project` is an id or name (`404 project_unknown`), or a folder of this computer's:
   that project's runs. Each run names its `project`, the project's name, and `project_id`.
 - `GET /v1/runs/{id}`: the run. While it waits, `queue_position` (1 is next); while it runs, `progress` with
-  `done_fraction`, `bytes_per_s`, `step_steady_ms`, and its time left: `eta_s`, `eta_confidence`, `eta_basis` ("Time left"). Each output, once it landed, has `url`, the API path that serves it, and `sha256`, and `width`, `height`, `duration_ms` as measured when it landed, where they apply and ffprobe is here. `?detail=full` adds `measurements`, `calls`, `report` (each
+  `done_fraction`, `bytes_per_s`, `step_steady_ms`, and its time left: `eta_s`, `eta_confidence`, `eta_basis` ("Time left").
+  `progress.unit` `tokens` is a decode's count: its `total` is only its cap, so it is no share of the run and times no step. A stage in
+  a part its scope counts up front (`Segment 2 of 3 / denoise`) is that part's share of the whole in `done_fraction`. While it goes, a
+  warning in its log is one of its `warnings` too (`code: log`), and `run.updated` says it. Each output, once it landed, has `url`, the API path that serves it, and `sha256`, and `width`, `height`, `duration_ms` as measured when it landed, where they apply and ffprobe is here. `?detail=full` adds `measurements`, `calls`, `report` (each
   executor's stages and unaccounted time, models, kernels, and each GPU's memory, with rates against its
   ceiling) and `request {target, input, seed?}`: what it was asked, read-only, each file by its `sha256:` and the models and LoRAs it chose as `models`. To ask it again, send `target` and `input` with a new key.
   A run settled over 30 days ago has dropped `measurements` and each call's, so its `report` is gone. Nothing else
@@ -269,6 +272,9 @@ machine), `gpu` (on other machines of its GPU, by the name each run's record kee
   pace: with no prior and under two steps, it says `first_run`. A phase that overruns counts as done until its next starts.
 - **Smooth.** It's said again each second as it counts down. A new estimate within 10% (or 2 s) of what was shown is shown as it is; a
   bigger one is eased to over about a second, never jumped to.
+- **Parts.** A run whose stages are in parts a scope counts (`Segment 2 of 3`): once a part has ended, each part left takes as long as
+  those that took, and the time left is the whole render's. In its first part with no prior, the parts after it take as long as this one
+  will by the end of its current stage.
 - **Quoted.** A run sent where its machine quoted it ("Placement") counts down to at least that quote's finish before it starts. With no
   prior, the quote's run time is one: `machine` when the machine measured it, `gpu` when it stood on Calcifer's `prior_ms`.
 
