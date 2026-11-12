@@ -73,10 +73,12 @@ async function died(why) {
   await until('Qwen on it', () => asset('busy'), (row) => row?.tool === qwen.id);
   await fitCanvas(page);
   await openBox(page, 'busy');
-  await box('busy').getByRole('button', { name: 'Edit image', exact: true }).click();
-  const prompt = box('busy').locator('.in-frame .mention-text').first();
+  // Open, a picture fills the page (Focus): the box is where it's worked on, on the canvas or over it.
+  const here = page.locator('.card.here[data-asset="busy"]').first();
+  await here.getByRole('button', { name: 'Edit image', exact: true }).click();
+  const prompt = here.locator('.in-frame .mention-text').first();
   await prompt.waitFor();
-  await until('the picture behind the prompt', () => box('busy').locator('[data-image-reference] img, img[data-image-reference]').first().evaluate((image) => image.complete && image.naturalWidth > 0).catch(() => false), Boolean);
+  await until('the picture behind the prompt', () => here.locator('[data-image-reference] img, img[data-image-reference]').first().evaluate((image) => image.complete && image.naturalWidth > 0).catch(() => false), Boolean);
   await prompt.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' a lighthouse at dusk, waves breaking white on black rocks, gulls over the lamp');
@@ -99,7 +101,7 @@ async function died(why) {
   await page.evaluate(() => delete document.documentElement.dataset.theme);
 
   // A prompt anywhere else is bold too: More's words, or what's under the frame.
-  const others = await box('busy').locator('.mention-text').evaluateAll((all) => all.filter((one) => !one.closest('.in-frame')).map((one) => ({ field: one.dataset.field, weight: Number(getComputedStyle(one).fontWeight) })));
+  const others = await here.locator('.mention-text').evaluateAll((all) => all.filter((one) => !one.closest('.in-frame')).map((one) => ({ field: one.dataset.field, weight: Number(getComputedStyle(one).fontWeight) })));
   seen.others = others;
   check('every_prompt_is_bold', others.every((one) => one.weight >= 700), others);
 
