@@ -35,25 +35,43 @@ impl Drop for Running {
 }
 fn error(why:impl std::fmt::Display)->io::Error { io::Error::new(io::ErrorKind::PermissionDenied,format!("project tool custody unavailable: {why}")) }
 
-/// Stable across provider remounts and folder moves, with no outside ledger.
+#[derive(serde::Serialize,serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcessNamespace {version:u8,namespace:String,root_id:[u64;2]}
+
+fn valid_namespace(value:&str)->bool {
+    value.len()==16&&value.bytes().all(|byte|byte.is_ascii_digit()||(b'a'..=b'f').contains(&byte))
+}
+fn new_namespace(root_id:[u64;2])->io::Result<ProcessNamespace> {
+    let mut random=[0;8];getrandom::fill(&mut random).map_err(error)?;
+    Ok(ProcessNamespace {version:1,namespace:hex::encode(random),root_id})
+}
+fn namespace_bytes(record:&ProcessNamespace)->io::Result<Vec<u8>> {
+    serde_json::to_vec(record).map_err(|_|error("cannot encode the process namespace"))
+}
+
+/// Stable across provider remounts and same-filesystem moves. A copied folder
+/// cannot retire its original's helpers: native root identity differs.
 fn namespace(root:&Path,create:bool)->io::Result<Option<String>> {
     let _serial=NAMESPACE_FILE.lock().expect("project tool namespace");
     let scratch=root.join(".vault-calcifer");
     let path=scratch.join("process-namespace");
+    let logical=crate::project::vault::logical(root);
+    let identity=platform::durable::FileId::at(&logical).map_err(error)?;
+    let root_id=[identity.dev,identity.ino];
     match fs::symlink_metadata(&path) {
         Ok(_)=>{},
         Err(why) if why.kind()==io::ErrorKind::NotFound && !create=>return Ok(None),
         Err(why) if why.kind()==io::ErrorKind::NotFound=>{
-            let mut random=[0;8];getrandom::fill(&mut random).map_err(error)?;
-            let value=format!("{}\n",hex::encode(random));
+            let value=namespace_bytes(&new_namespace(root_id)?)?;
             let mut file=platform::durable::create_private_new(&path).map_err(error)?;
-            file.write_all(value.as_bytes())?;file.sync_all()?;
+            file.write_all(&value)?;file.sync_all()?;
             platform::durable::sync_dir(&scratch).map_err(error)?;
         },
         Err(why)=>return Err(why),
     }
     let metadata=fs::symlink_metadata(&path)?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len()!=17 {
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len()>512 {
         return Err(error("the retained process namespace has an unknown format"));
     }
     #[cfg(unix)] {
@@ -66,11 +84,25 @@ fn namespace(root:&Path,create:bool)->io::Result<Option<String>> {
     if platform::durable::FileId::of(&file).map_err(error)?!=platform::durable::FileId::at(&path).map_err(error)? {
         return Err(error("the retained process namespace changed"));
     }
-    let mut value=String::new();file.take(18).read_to_string(&mut value)?;
-    let Some(value)=value.strip_suffix('\n').filter(|value|value.len()==16&&value.bytes().all(|byte|byte.is_ascii_digit()||(b'a'..=b'f').contains(&byte))) else {
-        return Err(error("the retained process namespace has an unknown format"));
+    let mut bytes=Vec::new();file.take(513).read_to_end(&mut bytes)?;
+    let prior=match serde_json::from_slice::<ProcessNamespace>(&bytes) {
+        Ok(record) if record.version==1&&valid_namespace(&record.namespace)=>{
+            if record.root_id==root_id {return Ok(Some(record.namespace));}
+            record.namespace
+        },
+        // A draft's text-only token has no native root binding. Never sweep it
+        // on behalf of a copy; renew only after a native zero-member census.
+        _=>match std::str::from_utf8(&bytes).ok().and_then(|value|value.strip_suffix('\n')).filter(|value|valid_namespace(value)) {
+            Some(value)=>value.to_owned(),
+            None=>return Err(error("the retained process namespace has an unknown format")),
+        },
     };
-    Ok(Some(value.to_owned()))
+    if platform::contain::Scope::namespace_processes(&prior).map_err(error)?!=0 {
+        return Err(error("the retained namespace has active helpers at another or unverified native root"));
+    }
+    let record=new_namespace(root_id)?;
+    platform::durable::replace(&path,&namespace_bytes(&record)?,0o600).map_err(error)?;
+    Ok(Some(record.namespace))
 }
 
 /// Root calls this under its exclusive transition while work_view still exists.
