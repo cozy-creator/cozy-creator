@@ -165,9 +165,6 @@ def main() -> int:
             imported = native.call("POST", base + "/imports", {"source": digest, "name": picture_asset, "exact": True, "at": {"x": 400, "y": 0, "w": 320}})
             projects.append({"folder": folder, "view": view, "id": opened["id"], "credential": credential, "marker": marker, "edit": edited, "asset": asset, "path": imported["path"], "digest": digest})
         a, b = projects
-        if ready.get("remote_cpu") is True:
-            phase = "remote_cpu"
-            qualify_remote(native, a, receipt, ready)
         if ready.get("native_execution") is True:
             phase = "managed_execution"
             qualify_native(native, scanner, a, receipt)
@@ -187,6 +184,9 @@ def main() -> int:
         require(not any(marker in b"\0".join(argv) for marker in scanner.markers), "private_browser_argv_canary")
         require(all(browser_birth != held[1] for held in foreign.held), "browser_ownership_distinct")
         receipt.add("shared_owned_browser", pages=2, volatile=True, unrelated=foreign.preserved(), birth_sha256=sha(json.dumps(browser_birth, sort_keys=True).encode()))
+        if ready.get("remote_cpu") is True:
+            phase = "remote_cpu"
+            qualify_remote(native, a, receipt, ready)
         for project in projects:
             phase = "headers"
             base = project_route(project["id"])
