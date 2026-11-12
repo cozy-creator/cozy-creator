@@ -421,7 +421,7 @@ impl Calcifer {
         match lock(&self.run_owners).get(id).cloned() {
             Some(Some(owner)) => owner.store().map(store::RunStore::Project),
             Some(None) => Ok(store::RunStore::Maintenance(&self.store)),
-            None => Err(StoreError::Protected("run_owner_required".into())),
+            None => Err(StoreError::Locked("run_owner_required".into())),
         }
     }
 
@@ -1920,6 +1920,9 @@ impl Calcifer {
 
     /// Deletes the staged inputs of a settled run that no unsettled run names.
     fn release_inputs(&self, run: &RunRow) {
+        // Project inputs are part of its retained execution/source closure.
+        // Their lifetime follows the project, including completed run history.
+        if matches!(self.run_store(run.id.as_str()),Ok(store::RunStore::Project(_))) { return; }
         // A locked private view defers cleanup, never redirects it to plaintext staging.
         let Ok(input_root) = self.run_input_root(run) else { return };
         let _staging = lock(&self.staging);
@@ -2031,6 +2034,7 @@ fn stage(
     given: &[StagedInput],
     held: &[Digest],
 ) -> Result<Vec<(Digest, u64)>, Error> {
+    let project=project::source_project(inputs).map_err(Error::Refused)?;
     let mut objects = vec![];
     for source in given {
         let target = inputs.join(hex::encode(source.digest.bytes()));
@@ -2040,6 +2044,7 @@ fn stage(
                 return false;
             };
             let same = std::fs::metadata(&file).is_ok_and(|m| m.len() == source.length);
+            if project.as_ref().is_some_and(|root|!project::vault::logical(&file).starts_with(root)) { return false; }
             same && std::fs::hard_link(&file, &target).is_ok()
         };
         if !std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_file()) {

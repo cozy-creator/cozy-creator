@@ -419,6 +419,17 @@ async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) ->
         let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
         return Refusal(error).into_response();
     }
+    let owned_media=media_secret(&request).is_some_and(|media|api.sessions.admits_owned_media(media));
+    let path=request.uri().path();
+    let project_protocol=path.starts_with("/v1/projects") || path.starts_with("/v1/project-")
+        || path.starts_with("/v1/run-") || matches!(path,"/v1/events"|"/v1/targets"|"/v1/plans");
+    // Native clients must opt into this storage contract before any project
+    // lookup/import/resume. Media elements use the owned session's RAM token.
+    if project_protocol && !owned_media
+        && request.headers().get(::api::calcifer::project::PROJECT_STORAGE_HEADER).and_then(|value|value.to_str().ok())!=Some(::api::calcifer::project::PROJECT_STORAGE_VERSION)
+    {
+        return refuse(Kind::Usage,"project_storage_protocol_required","update this client: project storage protocol 3 is required").into_response();
+    }
     // A read is answered while Calcifer stops: a HEAD's refusal would lose its body.
     if matches!(*request.method(), Method::GET | Method::HEAD) || request.uri().path() == "/v1/down" {
         return next.run(request).await;

@@ -95,7 +95,7 @@ impl Store {
     }
     fn migrate_into(&self, project: Destination<'_,'_>, inputs: &Path) -> Result<()> {
         let mut writer = self.writer.lock().unwrap_or_else(|error| error.into_inner());
-        if !table_exists(&writer,"legacy_project_runs")? { return Ok(()); }
+        if !table_exists(&writer,"legacy_project_runs")? { drop(writer); return self.migrate_legacy_files(&project); }
         let source = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut changed=false;
         let root = project.execution_scope().1;
@@ -115,7 +115,16 @@ impl Store {
             let mut asks=Rows::load(&source,"asks","run=?1",&id)?;
             let key=text(&runs.values[0][runs.column("idempotency_key")?])?.to_owned();
             let after=if table_exists(&source,"legacy_project_after_steps")? { Some(Rows::load(&source,"after_steps","key_sha256=?1",&key_digest(&key))?) } else { None };
-            let source_digest=key_digest(&[runs.fingerprint(),outputs.fingerprint(),logs.fingerprint(),asks.fingerprint(),after.as_ref().map_or(String::new(),Rows::fingerprint)].join(":"));
+            let after_name=format!("{}.json",key_digest(&key));
+            let after_file=match std::fs::read(self.legacy_home.join("after").join(&after_name)) {
+                Ok(bytes)=>{
+                    serde_json::from_slice::<crate::hub::after::After>(&bytes).map_err(|_|StoreError::Protected("project_after_migration_pending".into()))?;
+                    Some((String::from_utf8(bytes.clone()).map_err(|_|corrupt("legacy after step"))?,Digest::of(&bytes).to_string()))
+                },
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound=>None,
+                Err(_)=>return Err(StoreError::Protected("project_after_migration_pending".into())),
+            };
+            let source_digest=key_digest(&[runs.fingerprint(),outputs.fingerprint(),logs.fingerprint(),asks.fingerprint(),after.as_ref().map_or(String::new(),Rows::fingerprint),after_file.as_ref().map_or(String::new(),|(_,digest)|digest.clone())].join(":"));
             for field in ["spec","outcome","target","warnings","inputs","reason_code","reason","job"] {
                 runs.open(0,field,|_| Ok(run_context(&id,field)))?;
             }
@@ -146,7 +155,7 @@ impl Store {
             let objects: Vec<(Digest,u64)>=serde_json::from_str(text(&runs.values[0][input_column])?).map_err(|_| corrupt("legacy inputs"))?;
             let retained=project.input_root()?;
             let state=text(&runs.values[0][runs.column("state")?])?;
-            for (digest,length) in objects {
+            for (digest,length) in objects.clone() {
                 let name=hex::encode(digest.bytes());
                 let target=retained.join(&name);
                 if target.is_file() {
@@ -167,7 +176,15 @@ impl Store {
                 if prior.as_ref().is_some_and(|prior| prior!=&source_digest) { return Err(StoreError::Protected("project_migration_source_changed".into())); }
                 runs.insert_verified(tx,"runs")?; outputs.insert_verified(tx,"outputs")?; logs.insert_verified(tx,"run_logs")?; asks.insert_verified(tx,"asks")?;
                 if let Some(after)=&after { after.insert_verified(tx,"after_steps")?; }
-                tx.execute("INSERT OR IGNORE INTO journal_migrations(source,digest,record) VALUES(?1,?2,'complete_run_closure')",params![receipt,source_digest])?;
+                if let Some((step,_))=&after_file {
+                    let value:serde_json::Value=serde_json::from_str(step).map_err(|_|corrupt("legacy after step"))?;
+                    let step=value.to_string();
+                    tx.execute("INSERT OR IGNORE INTO after_steps(key_sha256,step) VALUES(?1,?2)",params![key_digest(&key),step])?;
+                    let found:String=tx.query_row("SELECT step FROM after_steps WHERE key_sha256=?1",[key_digest(&key)],|row|row.get(0))?;
+                    if serde_json::from_str::<serde_json::Value>(&found).ok()!=Some(value) { return Err(StoreError::Protected("project_after_migration_conflict".into())); }
+                }
+                let record=serde_json::json!({"inputs":objects,"after":after_file.as_ref().map(|(_,digest)|serde_json::json!({"name":after_name,"digest":digest}))}).to_string();
+                tx.execute("INSERT OR IGNORE INTO journal_migrations(source,digest,record) VALUES(?1,?2,?3)",params![receipt,source_digest,record])?;
                 Ok(())
             })?;
             // FULL-synchronous project commit has returned; verify its durable receipt before
@@ -218,6 +235,76 @@ impl Store {
         }
         source.commit()?;
         drop(writer);
+        self.migrate_legacy_files(&project)?;
         if changed { self.cleanup_private_journal() } else { Ok(()) }
     }
+
+    fn migrate_legacy_files(&self, project:&Destination<'_,'_>)->Result<()> {
+        // Keep each original JSON project record in its own durable project receipt.
+        // Other projects and malformed/unknown source files remain untouched.
+        let index_path=self.legacy_home.join("projects.json");
+        match std::fs::read(&index_path) {
+            Ok(bytes)=>{
+                let mut index:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|StoreError::Protected("project_index_migration_pending".into()))?;
+                let known_shape=index.as_object().is_some_and(|object|object.len()==1&&object.contains_key("projects"));
+                if !known_shape { return Err(StoreError::Protected("project_index_migration_pending".into())); }
+                let entries=index.get_mut("projects").and_then(serde_json::Value::as_object_mut).ok_or_else(||StoreError::Protected("project_index_migration_pending".into()))?;
+                if let Some(record)=entries.get(project.project_id()).cloned() {
+                    let encoded=record.to_string(); let digest=key_digest(&encoded);
+                    project.write(|tx| { tx.execute("INSERT OR REPLACE INTO journal_migrations(source,digest,record) VALUES('controller-json:index',?1,?2)",params![digest,encoded])?; Ok(()) })?;
+                    if std::fs::read(&index_path).map_err(|_|StoreError::Protected("project_index_migration_pending".into()))?!=bytes { return Err(StoreError::Protected("project_index_source_changed".into())); }
+                    entries.remove(project.project_id());
+                    if entries.is_empty() { std::fs::remove_file(&index_path).map_err(|_|StoreError::Protected("project_index_migration_pending".into()))?; platform::durable::sync_dir(&self.legacy_home).map_err(|_|StoreError::Protected("project_index_migration_pending".into()))?; }
+                    else { platform::durable::replace(&index_path,index.to_string().as_bytes(),0o600).map_err(|_|StoreError::Protected("project_index_migration_pending".into()))?; }
+                }
+            },
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+            Err(_)=>return Err(StoreError::Protected("project_index_migration_pending".into())),
+        }
+        let legacy_runs_empty=self.read(|conn| {
+            if !table_exists(conn,"legacy_project_runs")? { return Ok(true); }
+            Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_runs)",[],|row|row.get::<_,bool>(0))?)
+        })?;
+        let receipts=project.read(|conn| {
+            let mut stmt=conn.prepare("SELECT record FROM journal_migrations WHERE source LIKE 'controller-v7:run:%'")?;
+            Ok(stmt.query_map([],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        for receipt in receipts {
+            let Ok(record)=serde_json::from_str::<serde_json::Value>(&receipt) else { continue; };
+            if let Some(after)=record.get("after").filter(|value|!value.is_null()) {
+                let name=after.get("name").and_then(serde_json::Value::as_str).ok_or_else(||corrupt("after migration receipt"))?;
+                if name.len()!=69 || !name.ends_with(".json") || !name[..64].bytes().all(|byte|byte.is_ascii_hexdigit()) { return Err(corrupt("after migration receipt")); }
+                let digest=after.get("digest").and_then(serde_json::Value::as_str).ok_or_else(||corrupt("after migration receipt"))?;
+                let path=self.legacy_home.join("after").join(name);
+                match std::fs::read(&path) {
+                    Ok(bytes) if Digest::of(&bytes).to_string()==digest=>{ std::fs::remove_file(&path).map_err(|_|StoreError::Protected("project_after_migration_pending".into()))?; platform::durable::sync_dir(path.parent().expect("after folder")).map_err(|_|StoreError::Protected("project_after_migration_pending".into()))?; },
+                    Ok(_)=>return Err(StoreError::Protected("project_after_source_changed".into())),
+                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                    Err(_)=>return Err(StoreError::Protected("project_after_migration_pending".into())),
+                }
+            }
+            if legacy_runs_empty {
+                let objects:Vec<(Digest,u64)>=serde_json::from_value(record.get("inputs").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|_|corrupt("input migration receipt"))?;
+                for (digest,length) in objects {
+                    let name=hex::encode(digest.bytes());
+                    let path=self.legacy_home.join("inputs").join(&name);
+                    if !path.exists() { continue; }
+                    if self.input_in_use(&digest)? { continue; }
+                    let target=project.input_root()?.join(name);
+                    verify_file(&target,digest,length)?; verify_file(&path,digest,length)?;
+                    std::fs::remove_file(&path).map_err(|_|StoreError::Protected("project_input_retirement_pending".into()))?;
+                    platform::durable::sync_dir(path.parent().expect("input folder")).map_err(|_|StoreError::Protected("project_input_retirement_pending".into()))?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn verify_file(path:&Path,digest:Digest,length:u64)->Result<()> {
+    let mut file=std::fs::File::open(path).map_err(|_|StoreError::Protected("project_input_retirement_pending".into()))?;
+    let mut hash=Sha256::new();
+    let size=std::io::copy(&mut file,&mut hash).map_err(|_|StoreError::Protected("project_input_retirement_pending".into()))?;
+    if size!=length || Digest::from_bytes(hash.finalize().into())!=digest { return Err(StoreError::Protected("project_input_source_changed".into())); }
+    Ok(())
 }

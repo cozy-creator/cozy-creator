@@ -52,6 +52,11 @@ async fn project_of(api: &Arc<Api>, parts: &mut axum::http::request::Parts) -> R
 
 /// Around every project route: a write with an `Idempotency-Key` is answered once, and again as it was.
 pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
+    if !matches!(*request.method(),Method::GET|Method::HEAD|Method::OPTIONS)
+        && request.headers().get(api::calcifer::project::PROJECT_STORAGE_HEADER).and_then(|value|value.to_str().ok())!=Some(api::calcifer::project::PROJECT_STORAGE_VERSION)
+    {
+        return Refusal(Error::new(Kind::Usage,"project_storage_protocol_required","update this client: project storage protocol 3 is required")).into_response();
+    }
     // Opening a project attaches only its admitted journal, using a bounded lease.
     // The middleware releases it before a handler waits for a worker or a stream.
     if request.uri().path()!="/v1/projects" {
@@ -62,9 +67,6 @@ pub(super) async fn answered(State(api): State<Arc<Api>>, mut request: Request, 
     }
     if matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         return next.run(request).await;
-    }
-    if request.headers().get(api::calcifer::project::PROJECT_STORAGE_HEADER).and_then(|value| value.to_str().ok()) != Some(api::calcifer::project::PROJECT_STORAGE_VERSION) {
-        return Refusal(Error::new(Kind::Usage, "project_storage_protocol_required", "update this client: project storage protocol 3 is required")).into_response();
     }
     let key = request.headers().get("idempotency-key").and_then(|v| v.to_str().ok()).map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned);
     let Some(key) = key else { return next.run(request).await };
