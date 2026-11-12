@@ -74,12 +74,21 @@ impl OwnedBrowser {
         let program = ["google-chrome", "chromium", "chromium-browser"].into_iter().find_map(|name| platform::tools::on_path(name, &path)).ok_or_else(unavailable)?;
         let profile = VolatileProfileLease::create()?;
         let mut command = Command::new(program.path);
+        let original_home = std::env::home_dir().ok_or_else(unavailable)?;
         let original_runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
         let original_authority = std::env::var_os("XAUTHORITY").map(std::path::PathBuf::from)
             .or_else(|| std::env::home_dir().map(|home| home.join(".Xauthority")));
         for directory in ["tmp", "cache", "config", "data", "state", "runtime"] {
             std::fs::create_dir(profile.path().join(directory)).map_err(|_| unavailable())?;
         }
+        // A deliberate Save must choose an external destination, rather than silently landing
+        // in the volatile profile that a later project lock removes.
+        let defaults = profile.path().join("Default");
+        std::fs::create_dir(&defaults).map_err(|_| unavailable())?;
+        let preferences = serde_json::to_vec(&json!({ "download": {
+            "prompt_for_download": true, "default_directory": original_home.join("Downloads"), "directory_upgrade": true
+        }, "session": { "restore_on_startup": 5 } })).map_err(|_| unavailable())?;
+        platform::durable::replace(&defaults.join("Preferences"), &preferences, 0o600).map_err(|_| unavailable())?;
         if let Some(authority) = original_authority.filter(|path| path.is_absolute() && path.is_file()) { command.env("XAUTHORITY", authority); }
         if let (Some(runtime), Some(display)) = (original_runtime, std::env::var_os("WAYLAND_DISPLAY")) {
             let display = std::path::PathBuf::from(display);
