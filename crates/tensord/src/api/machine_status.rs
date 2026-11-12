@@ -162,8 +162,8 @@ struct Held {
     link: f64,
     serving: u32,
     nvlink: bool,
-    /// The caller's lists' runs (`ahead`), never listed, whose downloads its activity shows.
-    ahead: Vec<String>,
+    /// The caller's lists' runs (`ahead`), never among `runs`: their states, and their downloads in its activity.
+    ahead: Vec<v1::RunState>,
 }
 
 async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: VerifiedActor) -> Result<Held, Error> {
@@ -187,7 +187,7 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
             link: crate::estimate::link(service),
             serving: service.pool().map_or(0, |pool| pool.serving_width() as u32),
             nvlink: service.pool().is_some_and(|pool| pool.hardware_class().1),
-            ahead: runs.live_ids(actor)?.into_iter().filter(|id| crate::ahead::hidden(id)).collect(),
+            ahead: crate::ahead::listed(&reader).iter().filter_map(|id| runs.state(actor, id).ok()).collect(),
             runs: runs.live(actor)?,
             environments: runs.environments(actor)?,
             warm: runs.warm(actor)?,
@@ -230,7 +230,7 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
     let Held { runs, environments, warm, models, mut memory, lost, mut out, queue, times, link, serving, nvlink, ahead } = held;
     let (updates, lifecycle) = (&identity.updates, &identity.lifecycle);
     let software = updates.software();
-    let activity = crate::activity::listed(|id| runs.iter().any(|run| run.id == id) || ahead.iter().any(|own| own == id));
+    let activity = crate::activity::listed(|id| runs.iter().any(|run| run.id == id) || ahead.iter().any(|own| own.id == id));
     v1::StatusFrame {
         idle_deadline_unix_ms: lifecycle.deadline_ms(),
         runs,
@@ -311,6 +311,7 @@ fn picture(identity: &MachineIdentity, held: Held, resident: Vec<v1::Resident>) 
         link_bytes_per_s: link,
         serving_gpus: serving,
         nvlink,
+        ahead,
         ..identity_frame(identity)
     }
 }

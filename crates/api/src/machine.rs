@@ -1115,6 +1115,9 @@ pub struct StatusFrame {
     /// Its GPUs talk over NVLink.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub nvlink: bool,
+    /// The caller's lists' items (`PUT /v1/upcoming`, `/v1/prepare`), each as its run stands: ready once it succeeded.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ahead: Vec<RunState>,
 }
 
 /// A root not ended (`StatusFrame::queue`).

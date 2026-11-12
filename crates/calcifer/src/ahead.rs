@@ -47,8 +47,6 @@ pub(crate) struct Lists {
     planned: Mutex<HashMap<String, HashMap<String, Vec<Listed>>>>,
     /// By machine: what it was last sent, on which boot of it.
     sent: Mutex<HashMap<String, Sent>>,
-    /// The upcoming jobs whose downloads their machine has listed, by machine and key: once none is left, they're ready.
-    downloaded: Mutex<std::collections::HashSet<(String, String)>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -131,47 +129,35 @@ impl Lists {
         }
     }
 
-    /// `machine`'s Status: each upcoming job's row there moves with what it lists under it, and is ready once its code is installed
-    /// there and what it downloaded landed.
+    /// `machine`'s Status: each upcoming job's row there moves with its item's run and the downloads it lists under it, and is ready
+    /// once that run succeeded.
     pub(crate) fn observe(&self, machine: &str, frame: &v1::StatusFrame) {
         let planned = lock(&self.planned);
-        let mut downloaded = lock(&self.downloaded);
         for listed in planned.get(machine).into_iter().flat_map(|lists| lists.values().flatten()) {
             let id = format!("{UPCOMING}{}", listed.item.key);
+            let Some(run) = frame.ahead.iter().find(|run| run.id == id) else { continue };
             let ops: Vec<&v1::Operation> = frame.activity.iter().filter(|op| op.runs.contains(&id)).collect();
             let downloads: Vec<&&v1::Operation> = ops.iter().filter(|op| op.kind == "download").collect();
-            let at = (machine.to_owned(), listed.item.key.clone());
-            if !downloads.is_empty() {
-                downloaded.insert(at.clone());
-            }
-            let ready = ops.is_empty() && downloaded.contains(&at) && installed(frame, &listed.item);
+            let ended = matches!(run.state.as_str(), "succeeded" | "failed" | "canceled");
             let row = Row {
-                ready,
+                ready: run.state == "succeeded",
+                held_back: (run.state == "failed").then(|| format!("{machine} couldn't make it ready")),
+                waiting: (!run.waiting.is_empty() && !ended).then(|| run.waiting.clone()),
                 function: listed.function.clone(),
                 machine: machine.to_owned(),
                 run: 0,
                 names: vec![listed.asset.clone()],
-                stage: ops.first().map(|op| match op.kind.as_str() {
-                    "install" => "installing it".to_owned(),
-                    _ => format!("downloading {}", op.subject),
+                stage: (!ended).then(|| match ops.first() {
+                    Some(op) if op.kind == "install" => "installing it".to_owned(),
+                    Some(op) => format!("downloading {}", op.subject),
+                    None => "preparing it".to_owned(),
                 }),
                 done: downloads.iter().map(|op| op.bytes_done).sum(),
                 total: downloads.iter().map(|op| op.bytes_total).sum(),
-                ..Row::default()
             };
             listed.project.jobs.upcoming(&id, &listed.item.key, row);
         }
     }
-}
-
-/// Whether `frame`'s machine holds `item`'s code.
-fn installed(frame: &v1::StatusFrame, item: &v1::Ahead) -> bool {
-    frame.environments.iter().any(|environment| match &item.source {
-        Some(v1::Source::Release(release)) => environment.package == release.package && (release.release.is_empty() || environment.release == release.release),
-        Some(v1::Source::Local(local)) => environment.manifest == local.manifest,
-        Some(v1::Source::Installation(alias)) => environment.installation == *alias,
-        None => false,
-    })
 }
 
 /// What `machine` prepares with no job: nothing while it has upcoming jobs or a queue; else the published functions planned on other

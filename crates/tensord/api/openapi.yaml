@@ -1340,6 +1340,10 @@ components:
         link_bytes_per_s: {type: number, description: "Weights' arrival, bytes a second, once 1 GiB came; 0 before."}
         serving_gpus: {type: integer, format: int32, minimum: 0, description: The most GPUs side by side in service.}
         nvlink: {type: boolean, description: Its GPUs talk over NVLink.}
+        ahead:
+          type: array
+          items: {$ref: '#/components/schemas/RunState'}
+          description: "The caller's lists' items (PUT /v1/upcoming, /v1/prepare), each as its run stands: ready once it succeeded."
         started_at_unix_ms: {type: integer, format: int64}
         stuck:
           type: array
