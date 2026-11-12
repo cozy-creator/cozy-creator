@@ -10,27 +10,15 @@
 #   video     the video's tool (default minimax-h3/generate, its default lane and turbo), `seconds` long (default 15)
 . "$(dirname "$0")/lib.sh"
 PICTURE=$(param picture qwen-image-2/image) MP=$(param megapixels 1) VIDEO=$(param video minimax-h3/generate) SECONDS_LONG=$(param seconds 15)
-cat > "$OUT/project.yaml" <<YAML
-version: 4
-assets:
-  pier:
-    tool: $PICTURE
-    megapixels: $MP
-    aspect_ratio: "16:9"
-    instructions: A weathered wooden pier at dusk, warm lamps along its rail, gulls overhead and a calm grey sea. Photo.
-    description: A weathered wooden pier at dusk, warm lamps along its rail.
-  walk:
-    tool: $VIDEO
-    aspect_ratio: "16:9"
-    summary: |
-      A woman in a yellow raincoat walks the length of <pier>.
-    soundscape: Waves lapping at the posts, gulls, footsteps on wet wood.
-    beats:
-      - duration: $SECONDS_LONG
-        description: |
-          A tracking shot follows a woman in a yellow raincoat as she walks along <pier> toward the lamps at its far end, gulls circling overhead.
-YAML
-run_page yaml "$OUT/project.yaml" > "$OUT/yaml.txt" 2>&1 || fail "project.yaml: $(tail -3 "$OUT/yaml.txt")"
+jq -n --arg picture "$PICTURE" --argjson mp "$MP" --arg video "$VIDEO" --argjson seconds "$SECONDS_LONG" '[
+  {name: "pier", tool: $picture, kind: "image", fields: {megapixels: $mp, aspect_ratio: "16:9",
+    instructions: "A weathered wooden pier at dusk, warm lamps along its rail, gulls overhead and a calm grey sea. Photo.",
+    description: "A weathered wooden pier at dusk, warm lamps along its rail."}},
+  {name: "walk", tool: $video, kind: "video", fields: {aspect_ratio: "16:9",
+    summary: "A woman in a yellow raincoat walks the length of <pier>.",
+    soundscape: "Waves lapping at the posts, gulls, footsteps on wet wood.",
+    beats: [{duration: $seconds, description: "A tracking shot follows a woman in a yellow raincoat as she walks along <pier> toward the lamps at its far end, gulls circling overhead."}]}}]' > "$OUT/boxes.json"
+run_page boxes "$OUT/boxes.json" > "$OUT/boxes.txt" 2>&1 || fail "the project's boxes: $(tail -3 "$OUT/boxes.txt")"
 [ -n "${RUNTIME_WHEEL:-}" ] || say "no RUNTIME_WHEEL (dispatched from no rc/<x>): the pod keeps its image's Runtime"
 say "the session's cozy: $(cozy --version)"
 quote 2700

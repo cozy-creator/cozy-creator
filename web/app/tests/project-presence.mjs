@@ -57,7 +57,7 @@ function compile(filename, variant = "current") {
 Object.defineProperty(navigator, "locks", { value: locks })
 const { Client, ApiError } = await import(pathToFileURL(compile(path.join(app, "src/api/client.ts"))))
 const { EventStream, COORDINATION } = await import(pathToFileURL(compile(path.join(app, "src/api/events.ts"))))
-const { projectQuery, withAssets, yamlQuery } = await import(pathToFileURL(compile(path.join(app, "src/api/queries.ts"))))
+const { projectQuery, withAssets } = await import(pathToFileURL(compile(path.join(app, "src/api/queries.ts"))))
 const { Bridge } = await import(pathToFileURL(compile(path.join(app, "src/app/Connection.tsx"))))
 const { QueryClient, QueryObserver } = await import(pathToFileURL(require.resolve("@tanstack/react-query").replace(/\.cjs$/, ".js")))
 const base = process.env.COZY_PRESENCE_URL
@@ -137,12 +137,26 @@ function readsOf(bridge) {
   const wait = (test) => test() ? Promise.resolve() : new Promise((done) => waits.add({ test, done }))
   return { mark: () => records.length, entered: (mark) => wait(() => records.length > mark), done: (mark) => wait(() => records.slice(mark).some((record) => record.done)) }
 }
-async function writeYaml(id, count, label, changed = count, previous = label) {
-  let text = "version: 4\nassets:\n"
-  for (let i = 0; i < count; i++) text += `  w${i}: {text: "${i < changed ? label : previous} ${i}"}\n`
-  const response = await fetch(`${base}/v1/projects/${id}/yaml`, { method: "PUT", headers: { ...headers, "Content-Type": "application/yaml" }, body: text })
-  const result = await response.text()
-  assert.ok(response.ok, `${response.status} ${result}`)
+// Boxes w0… whose words mention a label box, so one rename, one commit, changes them all at once: `<every_n>` is in each,
+// `<few_n>` in the first 65. More than 256 changed at once is told as "read it whole".
+const labels = new Map()
+async function boxes(id, count) {
+  if (!labels.has(id)) {
+    labels.set(id, { every: "every_0", few: "few_0", count: 0 })
+    for (const name of ["every_0", "few_0"]) await api(`/v1/projects/${id}/assets`, { method: "POST", body: JSON.stringify({ name, exact: true, tool: "", fields: { text: name } }) })
+  }
+  const held = labels.get(id)
+  for (; held.count < count; held.count++) {
+    const i = held.count
+    const text = i < 65 ? `<${held.every}> <${held.few}> ${i}` : `<${held.every}> ${i}`
+    await api(`/v1/projects/${id}/assets`, { method: "POST", body: JSON.stringify({ name: `w${i}`, exact: true, tool: "", fields: { text } }) })
+  }
+}
+async function renamed(id, label) {
+  const held = labels.get(id)
+  const to = `${label}_${Number(held[label].split("_")[1]) + 1}`
+  await api(`/v1/projects/${id}/rename`, { method: "POST", body: JSON.stringify({ from: held[label], to }) })
+  held[label] = to
 }
 async function clear(...streams) {
   const before = showRequests.length
@@ -471,13 +485,14 @@ try {
     process.exit(0)
   }
 
-  // Delay a real whole-project frame across its full snapshot, keeping YAML invalidation.
+  // Delay a real whole-project frame across its full snapshot.
   const entered = deferred(), release = deferred()
   const late = await made("late-creation")
   owner.show(late.id)
   await query(client, owner, late.id)
   delayedWhole = { id: late.id, entered, release }
-  await writeYaml(late.id, 257, "before")
+  await boxes(late.id, 257)
+  await renamed(late.id, "every")
   const creation = await entered.promise
   const queries = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
   const vaultChanges = []
@@ -489,22 +504,16 @@ try {
   const stop = observer.subscribe(() => {})
   owner.show(late.id)
   await queries.fetchQuery(options)
-  const yOptions = yamlQuery(client, late.id)
-  const yObserver = new QueryObserver(queries, yOptions)
-  const yStop = yObserver.subscribe(() => {})
-  await queries.fetchQuery(yOptions)
   const loaded = getRequests.filter((route) => route === `/v1/projects/${late.id}`).length
-  const yamlReads = getRequests.filter((route) => route === `/v1/projects/${late.id}/yaml`).length
   const initialRead = reads.mark()
   release.done()
   await reads.done(initialRead)
   assert.equal(getRequests.filter((route) => route === `/v1/projects/${late.id}`).length, loaded, "covered pre-snapshot event reloaded the whole project")
-  assert.ok(getRequests.filter((route) => route === `/v1/projects/${late.id}/yaml`).length > yamlReads)
   const key = ["project", late.id]
   const firstSnapshot = queries.getQueryData(key)
   assert.equal(firstSnapshot.covered.generation, creation.cursor.generation)
   assert.ok(firstSnapshot.covered.sequence >= creation.cursor.sequence)
-  console.log(JSON.stringify({ delayed_native_whole_event: creation, snapshot_covered: firstSnapshot.covered, redundant_project_gets: 0, yaml_invalidation_preserved: true }))
+  console.log(JSON.stringify({ delayed_native_whole_event: creation, snapshot_covered: firstSnapshot.covered, redundant_project_gets: 0 }))
   // A real other writer still refreshes the asset instead of being suppressed as an own echo.
   unsubscribe()
   const eventFrom = events.length
@@ -531,7 +540,7 @@ try {
   const pendingSnapshot = queries.refetchQueries({ queryKey: key })
   const snapshotData = await snapshotGate.entered.promise
   const duringMark = reads.mark(), duringEvents = events.length
-  await writeYaml(late.id, 257, "during")
+  await renamed(late.id, "every")
   const during = await waitEvent((event) => event.type === "project.changed" && event.id === late.id && !event.assets, duringEvents)
   assert.equal(during.cursor.generation, snapshotData.covered.generation)
   assert.ok(during.cursor.sequence > snapshotData.covered.sequence, "snapshot claimed a later emission")
@@ -539,14 +548,16 @@ try {
   snapshotGate.release.done()
   await pendingSnapshot
   await reads.done(duringMark)
-  assert.equal(queries.getQueryData(key).assets.length, 257)
+  // 257 w boxes, two labels and outside.
+  assert.equal(queries.getQueryData(key).assets.length, 260)
   const beforeAfter = queries.getQueryData(key)
   const afterMark = reads.mark(), afterEvents = events.length
-  await writeYaml(late.id, 258, "after")
+  await boxes(late.id, 258)
+  await renamed(late.id, "every")
   const after = await waitEvent((event) => event.type === "project.changed" && event.id === late.id && !event.assets, afterEvents)
   assert.ok(after.cursor.sequence > beforeAfter.covered.sequence)
   await reads.done(afterMark)
-  assert.equal(queries.getQueryData(key).assets.length, 258)
+  assert.equal(queries.getQueryData(key).assets.length, 261)
   console.log(JSON.stringify({ newer_emission_while_snapshot_response_pending: during.cursor, captured_before_read: snapshotData.covered, after_cached_snapshot: after.cursor, genuine_whole_refreshes_preserved: true }))
 
   async function boundary(label, causes, expected, cache, handle = false) {
@@ -579,8 +590,9 @@ try {
   // Count fallback remains conservative even when a later full read covers all 65 names.
   unsubscribe()
   const manyEvents = events.length
-  await writeYaml(late.id, 258, "sixtyfive", 65, "after")
-  const many = await waitEvent((event) => event.type === "project.changed" && event.id === late.id && event.assets?.length === 65, manyEvents)
+  await renamed(late.id, "few")
+  // The 65 that mention it, named one by one.
+  const many = await waitEvent((event) => event.type === "project.changed" && event.id === late.id && event.assets?.length > 64, manyEvents)
   const newest = await api(`/v1/projects/${late.id}`)
   assert.ok(newest.covered.sequence >= many.cursor.sequence)
   await boundary("more than64 names", [many], 1, { ...newest, began: performance.now() })
@@ -609,7 +621,7 @@ try {
   await Promise.all(queries.getQueryCache().getAll().flatMap((query) => query.promise ? [query.promise] : []))
   assert.equal(queries.isFetching(), 0, "project refreshes are still active before hide")
   console.log(JSON.stringify({ reconnect_reads_completed_before_hide: true, fetching_queries: queries.isFetching() }))
-  stop(); yStop(); unsubscribe(); queries.clear()
+  stop(); unsubscribe(); queries.clear()
   await clear(owner, follower)
   for (const id of owned) assert.equal(await open(id), false, `Reader retained after hide: ${id}`)
   console.log(JSON.stringify({ genuine_external_refresh_and_new_hello_preserved: true, reconnect_recheck_callback: true, stale_stream_ack_rejected: true, readers_released: owned, source_hashes: sourceHashes }))

@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|slow|web|web-core|web-toasts|web-palette|web-trash|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|released|commands|follow|slow|web|web-core|web-toasts|web-palette|web-trash|web-models|web-frame|web-scrub|web-aspect|web-refocus|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code|coming]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -26,6 +26,7 @@ parse "$@"
 . "$(dirname "$0")/rental.sh"
 . "$(dirname "$0")/fallback.sh"
 . "$(dirname "$0")/previews.sh"
+. "$(dirname "$0")/released.sh"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
@@ -293,7 +294,9 @@ cozy --json package uninstall local/one_script --on local > /dev/null || check "
 case $SHARD in
   '') parts="uv_at_once entrypoints weightless script_package one_name_two_paths image_ratio describe first_run previews second_executor lifetime kept_preparing catalog basics yaml_requests run_flags run_follow time_left broken_answers run_filters run_playback hub_away lock_refresh bound_runs own_references no_descriptions orbit_angles old_runtime hostile_media unseen local_edits path_manifest rental_end machine_show_runs writes_once project_stream web_serves page_resend queued_download machines local_idle machine_set fall_back coming_machine slow_runs prepares completions calcifer_faults calcifer_restarts update remove" ;;
   runs) parts="weightless describe first_run previews run_flags run_playback hub_away lock_refresh logs" ;;
-  executors) parts="second_executor lifetime kept_preparing update remove" ;;
+  executors) parts="second_executor lifetime kept_preparing update released_project remove" ;;
+  # A project the newest release made, read by the candidate (cl-930).
+  released) parts="update released_project logs" ;;
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;

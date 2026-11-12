@@ -24,25 +24,25 @@ an `edited-*` side copy. The retained version's media and timeline stay in `file
 
 ## Schema
 
-| Table | Row | Was |
-|---|---|---|
-| `crdt_document(id, format, snapshot, heads)` | The complete native Automerge snapshot and causal heads; logical schema 1 | new canonical state |
-| `crdt_changes(hash, seq, actor, bytes)` | Original immutable native changes, keyed by native change hash | new canonical journal |
-| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on, and whose (a copy's or another Calcifer's isn't shown) | file stats, its path |
-| `head(key, value)` | A top-level section other than `assets` (`version`, `defaults`), as JSON | project.yaml |
-| `boxes(key, name, ord)` | One box: its name key, its name as written, its place in the list | project.yaml |
-| `fields(box, ord, field, value)` | One field of a box, as JSON (`tool`, `approved`, `description`, `models`, `lora`, every input) | project.yaml |
-| `canvas(key, name, x, y, w, seq, by)` | A box's row, and the transaction and client that last wrote it | project.canvas.yaml |
-| `lock_assets(key, name, kind, numbered, tried, failed)` | A box's record: the last number given, the last seed tried, its failure. `key#n` is an orphan set aside | project.lock |
-| `versions(key, number, discarded, record)` | One version or take, `record` its JSON (files, seed, run, key, pickup, clips, text) | project.lock |
-| `lock_files(sha256, record)` | A file's row where the file can't say it: where it stays, its parts, or the whole hash of one no version or run records, which a box names only the start of (`Lock::keeps_row`) | project.lock |
-| `run_files(run, function, output, sha256)` | What a `cozy run` left in the project | project.lock |
-| `facts(kind, name, value)` | A package's tags (`reserved`) and what a tool makes (`makes`), as last read | project.lock |
-| `walk(id, record)` | What the render owes: its asks, pending runs, renames, numbers, and the folder and Calcifer it is bound to | `.runs/walk.json` |
-| `asked(digest, text)` | The project as a render asked it (its export, by sha256), until the render ends | `.runs/asked/` |
-| `measured(sha256, record)` | What is measured of a file. Disposable | `.measured.json` |
-| `request_keys(key, digest, status, content_type, body, at_ms)` | One write's `Idempotency-Key`, its ask's digest and its answer, a day | `.keys.json`, `state.db` |
-| `ops(id, seq, at_ms, by, words, edits, changes, undone)` | One history entry: undo/redo | `.history.json` |
+| Table | Row |
+|---|---|
+| `crdt_document(id, format, snapshot, heads)` | The complete native Automerge snapshot and causal heads; logical schema 1 |
+| `crdt_changes(hash, seq, actor, bytes)` | Original immutable native changes, keyed by native change hash |
+| `meta(key, value)` | `seq`: the revision, one more per committed transaction; `format`: 1; `id` and `name`, the project's identity (cl-819); `board`: the board its last render ended on, and whose (a copy's or another Calcifer's isn't shown) |
+| `head(key, value)` | A top-level section other than `assets` (`defaults`), as JSON |
+| `boxes(key, name, ord)` | One box: its name key, its name as written, its place in the list |
+| `fields(box, ord, field, value)` | One field of a box, as JSON (`tool`, `approved`, `description`, `models`, `lora`, every input) |
+| `canvas(key, name, x, y, w, seq, by)` | A box's row, and the transaction and client that last wrote it |
+| `lock_assets(key, name, kind, numbered, tried, failed)` | A box's record: the last number given, the last seed tried, its failure. `key#n` is an orphan set aside |
+| `versions(key, number, discarded, record)` | One version or take, `record` its JSON (files, seed, run, key, pickup, clips, text) |
+| `lock_files(sha256, record)` | A file's row where the file can't say it: where it stays, its parts, or the whole hash of one no version or run records, which a box names only the start of (`Lock::keeps_row`) |
+| `run_files(run, function, output, sha256)` | What a `cozy run` left in the project |
+| `facts(kind, name, value)` | A package's tags (`reserved`) and what a tool makes (`makes`), as last read |
+| `walk(id, record)` | What the render owes: its asks, pending runs, renames, numbers, and the folder and Calcifer it is bound to |
+| `asked(digest, text)` | The project's boxes as a render asked them (its snapshot, JSON, by sha256), until the render ends |
+| `measured(sha256, record)` | What is measured of a file. Disposable |
+| `request_keys(key, digest, status, content_type, body, at_ms)` | One write's `Idempotency-Key`, its ask's digest and its answer, a day |
+| `ops(id, seq, at_ms, by, words, edits, changes, undone)` | One history entry: undo/redo |
 
 The relational `head`, `boxes`, `fields`, `canvas`, `lock_assets`, `versions`, `lock_files`, `run_files`, `facts` and `ops` rows are
 query projections. Logical reads, history reads and the next write derive from the native document, even if a projection was damaged.
@@ -79,7 +79,6 @@ applies its change to what is there when its turn comes.
 | `POST /approve`, `/unpin` | the field, the entry (a cut it settles is a render, after) |
 | `POST /rename` | the box key, every mention, its record, its row, the walk's rename, the entry |
 | `PATCH /canvas` | the rows, the entry (none when every row is `placed`) |
-| `PUT /yaml` (import) | every box, head and field that changed, the entry |
 | `POST /history/undo`, `/redo` | each change of the entry put back, and its `undone` |
 | `POST /runs` | the ask, its text, the key |
 | `POST /reclaim`, `/cancel` | their rows, no entry |
@@ -88,7 +87,7 @@ applies its change to what is there when its turn comes.
 
 An entry is a native history-map record with a permanent `uid`; `id` is a local display label. Its projection is
 `{id, at_ms, by: {via, client?}, words, edits, changes, undone?}`. A change is one of:
-- `asset {name, before?, after?}`: a box added, gone, or rewritten, each side its fields (JSON) where `.history.json` had its YAML lines;
+- `asset {name, before?, after?}`: a box added, gone, or rewritten, each side its fields (JSON);
 - `fields {name, fields: {field: [before, after]}}`;
 - `card {name, before?, after?}`;
 - `take {name, number, noun, before, after}` (`absent`, `listed`, `discarded`);
@@ -109,13 +108,12 @@ idempotency_conflict`. A row with no answer (Calcifer died between commit and ke
 words lost. `POST /v1/projects`, before there's a project, keeps its answer in `state.db` (cl-812). The page's key is its outbox action's
 id and the ask's hash; the CLI's one per call. The render's own `.keys.json`, `walk.asked` and in-memory maps go.
 
-## Boxes, the binder and format 4
+## Boxes and the binder
 
 `written::Written` is the project as rows: its head and its boxes in order, each box its fields in order. The reader (`format::Doc`)
-reads a `Written` exactly as it read project.yaml: the same `tool`, `approved`, `description`, `models`, `lora`, every other key a field
-the binder gives by type, `<name>` mentions, text boxes, names matched in any case, the name-blind key. Only the parse is gone. A render
-asks on a snapshot: the export of the boxes, kept in `asked` by its digest until it ends, as `.runs/asked/` was. Line surgery
-(`assetfile`) is gone: a write sets fields, so comments aren't kept, and an `etag` is a box's canonical JSON digest.
+reads a `Written` (`PROJECT.md`): `tool`, `approved`, `description`, `models`, `lora`, every other key a field the binder gives by type,
+`<name>` mentions, text boxes, names matched in any case, the name-blind key. A render asks on a snapshot: the `Written` as JSON, kept in
+`asked` by its digest until it ends. A write sets fields, and an `etag` is a box's canonical JSON digest.
 
 ## Canvas: a precondition, not `was`
 
@@ -124,16 +122,6 @@ box pushed aside), with the revision of what it was worked out from: it's set on
 stands, and is answered in `kept` as it is. This is checked in the transaction, so cl-800 holds with no value compare. A patch of only
 `placed` rows is the page arranging its own boxes: no entry. A push-aside drop sends its pushes with the box it makes (`moves` and
 `placed` on `POST /assets` and `/imports`): one request, one transaction, one entry. Reads and `canvas` events carry `seq`.
-
-## Export and import
-
-YAML is a view. `GET /v1/projects/{id}/yaml` writes the project as format-4 YAML, for reading, diffs or
-git. An export-only comment records the project's ID and canonical graph-body base hash. Importing an edited export into that same
-project refuses with `project_changed` if the graph changed since export, preserving intervening edits; canvas/runtime changes do not
-invalidate the base. Legacy/unstamped YAML and another project's exported YAML remain explicit imports. No file watcher treats YAML as
-another authority. `PUT /v1/projects/{id}/yaml` reads one back: each box, head and field that differs is written, in one
-transaction and one entry, and what it doesn't read is refused with the line, changing nothing. Media files use the separate
-asset import API. No `project.lock` is exported: versions, takes and files stay in the database.
 
 ## Current-format opening
 
@@ -151,14 +139,12 @@ including a zero-byte or interrupted `.new` file, is never removed/truncated by 
 A missing database is not recreated by opening a folder. Current append/CAS, transaction,
 corruption checks and relational query projections retain their ordinary roles.
 
-Physical `project.yaml`/lock folders and incomplete legacy stages are unsupported, rather than
-implicitly imported. Create a separate current-format project; explicit current authoring views
-remain separate from storage authority. Existing old files are preserved for their owner.
+A folder with no `project.db` is not a project, whatever else it holds: Calcifer never reads, imports,
+upgrades or backs up an old `project.yaml`, `project.lock` or `project.canvas.yaml`, and
+`cozy new --unencrypted` there makes a fresh project beside them.
 
 ## Open for Paul
 
-1. `PUT /v1/projects/{id}/yaml` imports project YAML; `POST /v1/projects/{id}/imports` imports media assets.
-2. Identity is canonical `identity.id` (also projected in `meta`, cl-819): 128 random bits for a new project, the path hash it had for one from before. Calcifer's index
+1. Identity is canonical `identity.id` (also projected in `meta`, cl-819): 128 random bits for a new project, the path hash it had for one from before. Calcifer's index
    (`state.db`) maps it to its name and where it last was; a moved folder is the same project, and a copy of one another folder still
    holds takes a new id when it opens, so its walk's paid work doesn't go on there.
-3. A hand-edited YAML imports without its comments: the database holds values, not text.

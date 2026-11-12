@@ -471,10 +471,6 @@ export class Client {
     return this.json(`${project(id)}?assets=false`)
   }
 
-  async yaml(id: string, signal?: AbortSignal): Promise<string> {
-    return (await this.send(`${project(id)}/yaml`, { signal })).text()
-  }
-
   import(id: string, key: string, body: Import, write: Write = {}): Promise<Imported> {
     return this.write("POST", `${project(id)}/imports`, body, key, write)
   }

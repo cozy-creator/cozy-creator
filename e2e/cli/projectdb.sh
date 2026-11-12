@@ -167,7 +167,7 @@ SQL
 }
 
 db_first_open() {
-step "project.db: current creation/reopen and stable undo identities; old physical formats are refused"
+step "project.db: current creation/reopen and stable undo identities; a folder of old files is no project"
 local F=$OUT/db-current before entry
 run_project "$F" || { check "current open: create"; return; }
 project_api "$F" /assets -X POST -H 'Content-Type: application/json' -d '{"tool":"","name":"sky","fields":{"text":"A blue sky."}}' > "$OUT/db-current-create.json" || check "current open: create text asset"
@@ -193,15 +193,23 @@ J '.assets | any(.name == "sky" and .fields.text == "An evening sky.")' <<< "$(s
 before=$(sql1 "$F" "SELECT value FROM meta WHERE key = 'seq'")
 project_api "$F" '' > /dev/null || check "current open: reopen"
 [ "$(sql1 "$F" "SELECT value FROM meta WHERE key = 'seq'")" = "$before" ] || check "current open: reopen wrote state"
+# A folder of old files and no project.db is no project (cl-930): nothing reads, imports, upgrades or backs them up, and
+# `cozy new` makes a project beside them. An interrupted creation's project.db.new is no project either.
 local old file digest
-for file in project.yaml project.lock project.db.new; do
-  old=$OUT/refused-${file//./-}
+for file in project.yaml project.lock project.canvas.yaml project.db.new; do
+  old=$OUT/not-a-project-${file//./-}
   mkdir -p "$old"
-  printf 'version: 4\nassets: {}\n' > "$old/$file"
+  printf 'old %s\n' "$file" > "$old/$file"
   digest=$(sha "$old/$file")
-  if (cd "$old" && cozy --json status) > "$old/refusal.json" 2> "$old/refusal.err"; then check "old format $file was accepted"; fi
-  grep -q project_format_unsupported "$old/refusal.json" "$old/refusal.err" || check "old format $file did not explain current-format requirement"
-  [ "$(sha "$old/$file")" = "$digest" ] && [ ! -e "$old/project.db" ] && [ ! -e "$old/.cozy-legacy-v1" ] && [ ! -e "$old/project.db.v1" ] || check "old format $file was changed/imported"
+  if (cd "$old" && cozy --json status) > "$old/status.json" 2> "$old/status.err"; then check "$file alone is a project"; fi
+  grep -q not_in_a_project "$old/status.json" "$old/status.err" || check "$file alone: status says $(tail -c 300 "$old/status.err"), not that it's no project"
+  if [ "$file" != project.db.new ]; then
+    (cd "$old" && cozy --json new --unencrypted) > "$old/new.json" 2> "$old/new.err" || check "$file beside: cozy new: $(tail -c 300 "$old/new.err")"
+    J '.created == true' "$old/new.json" || check "$file beside: cozy new made no project: $(cat "$old/new.json")"
+    (cd "$old" && cozy --json status) > /dev/null 2> "$old/status-new.err" || check "$file beside: the new project: $(tail -c 300 "$old/status-new.err")"
+  fi
+  [ "$(sha "$old/$file")" = "$digest" ] && [ ! -e "$old/.cozy-legacy-v1" ] && [ ! -e "$old/$file.v2" ] && [ ! -e "$old/$file.v3" ] && [ ! -e "$old/project.db.v1" ] \
+    || check "$file was changed, imported or backed up: $(ls -A "$old" | tr '\n' ' ')"
 done
 }
 

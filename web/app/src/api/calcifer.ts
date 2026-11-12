@@ -98,7 +98,7 @@ held_back?: string | null, };
 export type Alternative = { sku: string, gpus: number, label?: string, time: number, usd_micros_per_hour: number, };
 
 /**
- * `POST /v1/projects/{id}/approve`: `name` pinned in project.yaml to `version`: a short run of digits is its version (1 first),
+ * `POST /v1/projects/{id}/approve`: `name` approved at `version`: a short run of digits is its version (1 first),
  * anything else a hash prefix of any file in the project's `files/`.
  */
 export type Approve = { name: string, version: string, };
@@ -190,7 +190,7 @@ tool?: string | null,
  */
 versions: number,
 /**
- * Each one's hash prefix, to name it in project.yaml.
+ * Each one's hash prefix, what a box's `approved` names it by.
  */
 prefixes?: Array<VersionPrefix>,
 /**
@@ -202,7 +202,7 @@ version?: number | null,
  */
 approved?: number | null,
 /**
- * Its state is a file project.yaml names: nothing is made.
+ * Its state is a file its box approves: nothing is made.
  */
 pinned?: boolean,
 /**
@@ -411,11 +411,11 @@ tools: Array<string>, };
 export type BrowserSession = { token: string, media: string, };
 
 /**
- * Who made a change to a project: the page (`client` names its tab), the CLI, a hand in project.yaml, or another client of the API.
+ * Who made a change to a project: the page (`client` names its tab), the CLI, or another client of the API.
  */
 export type By = {
 /**
- * `page`, `cli`, `file` or `api`.
+ * `page`, `cli` or `api`.
  */
 via: string, client?: string | null, };
 
@@ -479,7 +479,7 @@ export type CanvasPatched = { seq: number,
 kept?: { [key in string]: Card | null }, };
 
 /**
- * Where a card sits on a project's canvas: one row of `project.canvas.yaml`.
+ * Where a card sits on a project's canvas: one row of its canvas.
  */
 export type Card = { x: number, y: number, w?: number | null, };
 
@@ -945,7 +945,7 @@ export type HubProblem = { hub: string, code: string, message: string, };
 
 /**
  * `POST /v1/projects/{id}/imports`, under an `Idempotency-Key`: the file at `source` kept in the project, as one constant more of
- * project.yaml, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), a file of the project's
+ * the project, with `at` a card on its canvas. `source` is a held file (`sha256:<hex>`, moved rather than copied), a file of the project's
  * by its hash or the start of it, or an `http(s)` URL.
  */
 export type Import = { source: string,
@@ -1919,9 +1919,9 @@ export type OrgClaim = { claimed: boolean, code: string | null, org: string, pro
 export type OrgProof = { checked: string, handle: string, where: string, };
 
 /**
- * An asset project.lock keeps versions of that project.yaml no longer names: the bytes `reclaim`
+ * An asset the project keeps versions of that it no longer names: the bytes `reclaim`
  * would free of it (none that anything else names, and each file once across the orphans), and,
- * when project.yaml has exactly one new asset of its kind with none, that asset: renamed, it would
+ * when the project has exactly one new asset of its kind with none, that asset: renamed, it would
  * be this (`POST /v1/projects/{id}/rename`).
  */
 export type Orphan = { name: string, kind: string, versions: number, bytes: number, renamed_to?: string | null, };
@@ -2025,7 +2025,7 @@ retained?: boolean,
 failed?: Array<string>, };
 
 /**
- * Pick up from here: a take, by mention, and the frame its new part starts at. Never written to project.yaml; the take it makes records it.
+ * Pick up from here: a take, by mention, and the frame its new part starts at. Never written to its box; the take it makes records it.
  */
 export type Pickup = {
 /**
@@ -2191,7 +2191,7 @@ missing?: Array<string>,
  */
 stale?: Array<Stale>,
 /**
- * Assets project.lock keeps versions of that project.yaml no longer names.
+ * Assets the project keeps versions of that it no longer names.
  */
 orphans?: Array<Orphan>,
 /**
@@ -2199,7 +2199,7 @@ orphans?: Array<Orphan>,
  */
 busy: boolean,
 /**
- * How many files project.lock names are not on this computer.
+ * How many files the project names are not on this computer.
  */
 absent: number,
 /**
@@ -2228,7 +2228,7 @@ unsent?: Array<ErrorBody>,
 machines?: Array<string>, covered?: ProjectEventCursor | null, };
 
 /**
- * What reading a project said: of the asset or entity `name`, or of the file as a whole.
+ * What reading a project said: of the asset or entity `name`, or of the project as a whole.
  */
 export type ProjectWarning = { name?: string | null, message: string, };
 
@@ -2315,7 +2315,7 @@ state: string,
 detail: string, };
 
 /**
- * A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the file names it.
+ * A `<mention>` an asset's text makes that names something: an asset, an entity, a sub-entity, or a link of one, as the project names it.
  */
 export type Read = { name: string,
 /**
@@ -2397,8 +2397,8 @@ export type RemovedRelease = { package: string, release: string,
 hub: string, };
 
 /**
- * `POST /v1/projects/{id}/rename`: what project.lock keeps of `from` kept as `to`, an asset project.yaml names now with no
- * versions. Nothing on disk moves; people rename the asset, and its `<mentions>`, in project.yaml.
+ * `POST /v1/projects/{id}/rename`: box `from` called `to`, with its versions, its canvas row and every `<from>` in the
+ * project's words. Nothing on disk moves.
  */
 export type Rename = { from: string, to: string, };
 
@@ -3518,7 +3518,7 @@ export type VersionPatch = { metadata: { [key in string]: JsonValue }, };
 export type VersionPatched = { name: string, number: number, metadata: { [key in string]: JsonValue }, };
 
 /**
- * A version's number and the hash prefix project.yaml can name its file by.
+ * A version's number and the hash prefix a box's `approved` names its file by.
  */
 export type VersionPrefix = { number: number,
 /**
