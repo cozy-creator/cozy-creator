@@ -27,12 +27,10 @@ impl Saving {
         let task = tokio::spawn(async move {
             let mut held = String::new();
             loop {
-                if let Ok(Some((tag, step, picture))) = calcifer.preview(&id, &held).await {
+                if let Ok(Some((tag, _step, picture))) = calcifer.preview(&id, &held).await {
                     let n = tag.trim_matches('"').trim_start_matches('p');
-                    let path = into.join(format!("{number}-preview-{n}.webp"));
-                    if std::fs::write(&path, &picture).is_ok() {
+                    if std::fs::write(into.join(format!("{number}-preview-{n}.webp")), &picture).is_ok() {
                         count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        tracing::debug!(step, path = %path.display(), "preview saved");
                     }
                     held = tag;
                 }
