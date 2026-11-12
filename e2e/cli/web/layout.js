@@ -305,6 +305,8 @@ function audit({ floor, fitted = true }) {
 /** Where nothing is drawn, the pointer finds the canvas: no box, column, panel or wrapper takes it unseen. Each point of `around` (else the
  *  window) `step` pixels apart. Self-contained: it runs in the page. */
 function emptyHits({ around, step }) {
+  // Focus covers the canvas, and a press on its background leaves it (cl-893): no point of it is the canvas's.
+  if (document.querySelector('[data-focused-asset]')) return [];
   const alpha = (color) => {
     const m = color.match(/rgba?\(([^)]+)\)/);
     const parts = m ? m[1].split(/[ ,/]+/).filter(Boolean) : [];
