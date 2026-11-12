@@ -2,8 +2,8 @@
 # 11-06: no row more than 5% worse) for a Runtime candidate against the Runtime the pod came with, on the same pod, as
 # tensorfs-ab.sh does for TensorFS. Each model runs alone on the card (a restart before it), cold then warm, on the release
 # (<cell>-released) and then on the candidate (<cell>): SDXL, Klein and Qwen-Image 4 MP with their prompt LMs on, H3 Turbo
-# 15 s, uncapped and under the development cap at 8 and 6 GiB; Ideogram 4 and P-H3-Image's edit with its upsampler,
-# uncapped. analyze.py notes each pair's execution, steady step and output.
+# 15 s, uncapped and under the development cap at 8 and 6 GiB (H3 not at 6: var-015); Ideogram 4 and P-H3-Image's edit
+# with its upsampler, uncapped. analyze.py notes each pair's execution, steady step and output.
 AB_RELEASED=$(awk '$1 == "runtime" {print $2}' machine-fresh.txt) AB_CANDIDATE=$rt
 if [ -z "$RWF" ] || [ -z "$AB_RELEASED" ] || [ "$AB_RELEASED" = "$AB_CANDIDATE" ]; then
   expect runtime-ab FAIL "needs a runtime_wheel other than the pod's own Runtime (${AB_RELEASED:-none}; candidate ${AB_CANDIDATE:-none})"
@@ -64,6 +64,7 @@ log "runtime-ab: release $AB_RELEASED against candidate $AB_CANDIDATE"
 for lvl in off 8 6; do
   for m in h3 qwen4mp sdxl klein ideogram ph3; do
     [ "$m" != ideogram ] && [ "$m" != ph3 ] || [ "$lvl" = off ] || continue
+    [ "$m" != h3 ] || [ "$lvl" != 6 ] || continue  # H3 15 s at 6 GiB fails on both arms (var-015, var-016)
     [ "$lvl" = 8 ] || ab_arm "$AB_RELEASED" "$AB_RELEASED" "$lvl" "$m" "ab-$m-$lvl" -released
     ab_arm "$RWF" "$AB_CANDIDATE" "$lvl" "$m" "ab-$m-$lvl" ''
     [ "$lvl" != 8 ] || ab_arm "$AB_RELEASED" "$AB_RELEASED" "$lvl" "$m" "ab-$m-$lvl" -released
