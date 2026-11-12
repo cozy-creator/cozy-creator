@@ -263,10 +263,13 @@ function check(name, ok, detail) {
   await says('approve_undone', approvedLine, (held) => held === first);
   await redo();
   await says('approve_redone', approvedLine, (held) => held === approved);
-  // Unapproved as the CLI does it: on a picture a double tap only approves (06718eb3a; whether it should toggle is Paul's,
-  // cl-908), and what's checked here is the undo of it.
-  await edit('unapprove', 'shot');
+  // A second double tap on the approved take unapproves it (Paul, 11-12: a double tap toggles, cl-969); it's still the one looked at.
+  await openBox(page, 'shot');
+  await page.locator(`.card.here .take[data-take="${other}"]`).dblclick();
   await says('unapprove_written', approvedLine, (held) => held === null);
+  const unapproved = await until('no take approved', () => page.locator('.card.here').evaluate((card) => ({ approved: card.querySelectorAll('.take.approved').length, on: card.querySelector('.take.on')?.dataset.take ?? null })), (held) => held.approved === 0).catch((why) => String(why));
+  check('unapproved_still_looked_at', typeof unapproved === 'object' && unapproved.on === String(other), unapproved);
+  await shot('unapproved');
   await undo();
   await says('unapprove_undone', approvedLine, (held) => held === approved);
 
