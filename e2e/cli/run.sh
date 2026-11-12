@@ -9,7 +9,7 @@
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-palette|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
+#   e2e/cli/run.sh --out DIR [--shard runs|executors|commands|follow|web|web-core|web-quiet|web-palette|web-empty|web-drawer|web-toolword|web-legible|web-beats|web-paste|web-dismiss|web-scale|web-canvas|web-dropped|web-layout-1280|web-layout-1600|web-layout-2560|project-stream|project-stream-web|projectdb|projectdb-latency|projectdb-existing|projectdb-web|projectvault|projectdb-cancel|projectdb-live|projectdb-scale|local-code]
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -149,6 +149,7 @@ if [ "$first" != none ]; then
   grep -Eq "\"number\": *$first([^0-9]|\$)" "$OUT/runs.json" || check "cozy run ls does not list run $first"
 fi
 phases first
+quiet first
 }
 
 # phases <cell>: every stage the cell's run went through is in the page's words (web/app/src/panels/runs/stages.json, which the
@@ -159,6 +160,18 @@ phases() {
 python3 "$E2E/cli/stages.py" "$OUT/$1.ndjson" "$E2E/../web/app/src/panels/runs/stages.json" > "$OUT/$1.phases" 2>&1 \
   || check "phases of $1: $(grep PROBLEM "$OUT/$1.phases" | head -5 | paste -sd';' -)$(tail -n 2 "$OUT/$1.phases" | grep -v PROBLEM)"
 cat "$OUT/$1.phases"
+}
+
+# quiet <cell>: a run whose fallbacks the Runtime caught and recovered from warns of nothing (cl-921, cozy-runtime #2145): no warning
+# line in its log, none on its record and no `warn` adjustment. BiRefNet's fp16 weights computed in float32 on the CPU was one (cr-247).
+quiet() {
+[ -s "$OUT/$1.ndjson" ] || return 0
+local said
+said=$(grep '^{' "$OUT/$1.ndjson" | jq -c 'select(.type == "run.log" and (.level == "warn" or .level == "warning" or .level == "error")) | .text' | head -3)
+[ -z "$said" ] || check "quiet $1: its log warned: $said"
+J '(.warnings // []) | length == 0' "$OUT/$1.json" || check "quiet $1: its record warns: $(jq -c .warnings "$OUT/$1.json")"
+J '[.adjustments[]? | select(.kind == "warn")] | length == 0' "$OUT/$1.json" \
+  || check "quiet $1: a warn adjustment: $(jq -c '[.adjustments[]? | select(.kind == "warn")]' "$OUT/$1.json")"
 }
 
 # The restarted machine runs a request with a file input in a new executor (weightless: the first run loads weights).
@@ -298,6 +311,8 @@ case $SHARD in
   web-dismiss) export DB_WEB=dismiss; parts="tools_read db_existing_web logs" ;;
   # Typed words over a picture (cl-901).
   web-legible) export DB_WEB=legible; parts="tools_read db_existing_web logs" ;;
+  # A run whose fallbacks the Runtime recovered from lands quietly on its box (cl-921, cozy-runtime #2145).
+  web-quiet) export DB_WEB=quiet; parts="tools_read db_existing_web logs" ;;
   # A Shot's beats laid out (cl-903).
   web-beats) export DB_WEB=beats; parts="tools_read db_existing_web logs" ;;
   # Pasted mentions (cl-902).

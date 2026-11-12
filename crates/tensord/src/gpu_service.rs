@@ -557,12 +557,15 @@ impl Postprocess {
             if let Err(error) = engine.append_log(id, "info", &text) { tracing::warn!("run {id}: {error}"); }
         };
         note("begin", None);
+        // Its outputs encoded, then saved: the end of a run says what it does too (cl-921).
+        say(engine, id, "encoding the outputs");
         let encoded = device_executor::postprocess(&self.codec, &self.spool.0, &self.reply);
         note("end", Some(encoded.is_ok()));
         let outcome = if engine.get(id)?.cancel_actor.is_some() {
             Outcome::Canceled
         } else {
             let result = encoded.and_then(|(value, bindings)| {
+                say(engine, id, "saving the outputs");
                 let adjusted = device_executor::adjustments(id, &self.reply);
                 engine.managed_result_record(id, &self.spool.0, value, output_bindings(bindings), adjusted)
             });
@@ -693,10 +696,12 @@ impl Zygote {
 /// A parent that died (killed, out of memory): the pool starts a new one.
 const ENDED: &str = "import-only executor ended";
 
-/// Run `id`'s stage while TensorD starts its executor and loads its models (cl-921): each phase in words, until the Runtime says its
-/// own (`loading <component>`, its stages).
+/// Run `id`'s stage while TensorD starts its executor, loads its models, and encodes and saves its outputs (cl-921): each phase in
+/// words, where the Runtime says none of its own.
 fn say(engine: &Engine, id: &str, stage: &str) {
-    let _ = engine.observe_progress(id, 0, serde_json::json!({"stage": stage, "step_ms": 0.0}).to_string());
+    // At the count it reached: a count never goes back, and a stage said at less is no news.
+    let units = engine.get(id).map_or(0, |record| record.completed_units);
+    let _ = engine.observe_progress(id, units, serde_json::json!({"stage": stage, "step_ms": 0.0}).to_string());
 }
 
 /// What one more import-only parent may hold of the host: torch, Diffusers and Transformers

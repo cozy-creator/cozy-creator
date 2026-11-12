@@ -411,8 +411,10 @@ impl Clock {
     /// A progress report its machine made at `at`, received here at `received`.
     pub(crate) fn observe(&mut self, progress: &Progress, at: f64, received: f64) {
         self.ahead = Some(self.ahead.map_or(received - at, |ahead| ahead.min(received - at)));
-        // A stage of its executor's says it began, if its machine never did. A stage within a part is its own stage there.
-        let own = progress.own_stage();
+        // A stage of its executor's says it began, if its machine never did. A stage within a part is its own stage there. A segment
+        // that passes inside a stage (a model paged in each step, a kernel compiling) is that stage still: it never starts it again.
+        let (stage, passing) = steady(&progress.stage);
+        let own = stage.rsplit(" / ").next().unwrap_or(stage);
         if self.started.is_none() && self.prior.as_ref().is_some_and(|prior| prior.stages.iter().any(|stage| stage.name == own)) {
             self.started = Some(at);
         }
@@ -433,17 +435,17 @@ impl Clock {
             }
             parts.of = parts.of.max(of);
         }
-        if self.stage.as_ref().is_none_or(|(name, ..)| *name != progress.stage) {
+        if self.stage.as_ref().is_none_or(|(name, ..)| name != stage) {
             let found = self.prior.as_ref().and_then(|prior| prior.stages.iter().position(|stage| stage.name == own));
             // A stage it enters again, or one the prior has before where it got, is where it is: it never goes back.
             let index = found.filter(|at| self.passed.is_none_or(|passed| *at >= passed));
             if index.is_some() {
                 self.passed = index;
             }
-            self.stage = Some((progress.stage.clone(), index, at));
+            self.stage = Some((stage.to_owned(), index, at));
         }
-        // A decode's tokens are no steps: its stage is timed whole, as one that counts nothing.
-        if progress.total == 0 || progress.tokens() {
+        // A decode's tokens are no steps: its stage is timed whole, as one that counts nothing; nor is what a passing segment counts.
+        if passing || progress.total == 0 || progress.tokens() {
             return;
         }
         let steps = self.steps.get_or_insert_with(Stepping::default);
@@ -577,6 +579,17 @@ impl Clock {
         };
         self.shown = Some((next, now));
         Some(((next / 1000.0).round() as i64, (estimate.confidence * 100.0).round() / 100.0, estimate.basis))
+    }
+}
+
+/// What the Runtime says inside a stage while it passes (cl-921, cozy-runtime #2144): `denoise / loading transformer`.
+const PASSING: [&str; 7] = ["loading ", "compiling ", "waiting for ", "capturing graphs", "checking ", "opening ", "constructing "];
+
+/// `stage` without a passing segment, and whether it had one: the stage it is in.
+fn steady(stage: &str) -> (&str, bool) {
+    match stage.rsplit_once(" / ") {
+        Some((within, last)) if PASSING.iter().any(|segment| last.starts_with(segment)) => (within, true),
+        _ => (stage, false),
     }
 }
 
