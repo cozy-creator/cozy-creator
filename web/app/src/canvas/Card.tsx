@@ -500,7 +500,7 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
       const size = pulled.current
       pulled.current = null
       setNearest(null)
-      if (size && control) store.setShape(name, control, focused ? start.w : size.w, size.shape ?? shapeFor(size.w, size.h))
+      if (size && control) store.setShape(name, control, focused ? undefined : size.w, size.shape ?? shapeFor(size.w, size.h))
       else if (size) store.setWidth(name, size.w)
       if (owner && store.inPlace === owner) owner.pulled = false
       if (focused) { focusResize?.end(); return }
