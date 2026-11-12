@@ -73,7 +73,8 @@
   height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) min(26vw, 280px);
-  grid-template-rows: minmax(0, 1fr) minmax(var(--focus-footer-room, 52px), auto);
+  /* The frame; its tool under it; Render and the fields (cl-938), the same for a picture and a video. */
+  grid-template-rows: minmax(0, 1fr) auto minmax(var(--focus-footer-room, 0px), auto);
   gap: 12px 20px;
   background: none;
   border: 0;
@@ -173,7 +174,7 @@ body:has(.focus-viewport) .zoom {
 .focus-card > .image-controls {
   grid-column: 1;
   grid-row: 2;
-  align-self: end;
+  align-self: start;
   justify-self: center;
   position: relative;
   left: auto;
@@ -187,13 +188,13 @@ body:has(.focus-viewport) .zoom {
   --tiny: 16px;
   --heading: 24px;
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 3;
   align-self: start;
   position: relative;
   left: auto;
   top: auto;
   width: 100% !important;
-  max-height: calc(var(--focus-footer-room, 200px) - 48px);
+  max-height: var(--focus-footer-room, 200px);
   transform: none;
 }
 .focus-card .here-all .slide,
@@ -227,8 +228,7 @@ body:has(.focus-viewport) .zoom {
   width: 24px;
   height: 24px;
 }
-.focus-card .media .ratio-rest,
-.focus-card .authoring-ratio .ratio-rest {
+.focus-card .media .ratio-rest {
   font-size: 18px;
 }
 .media > .ratio-rest {
@@ -248,41 +248,6 @@ body:has(.focus-viewport) .zoom {
 .focus-card .ratio-clear {
   width: 26px;
   height: 26px;
-}
-.authoring-ratio {
-  position: absolute;
-  right: 16px;
-  bottom: 82px;
-  z-index: 6;
-}
-.authoring-ratio .ratio-rest {
-  position: static;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video {
-  grid-template-columns: minmax(0, 1fr) min(22vw, 260px);
-  grid-template-rows: minmax(0, 1fr);
-}
-.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .focus-viewer {
-  display: none;
-}
-.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-under {
-  grid-column: 1;
-  grid-row: 1;
-  align-self: stretch;
-  height: 100%;
-  min-height: 0;
-  max-height: none;
-  overflow: hidden;
-}
-.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-side {
-  grid-column: 2;
-}
-.focus-viewport .card.focus-card.focus-parameter-tool.focus-new-video > .here-under > .here-all {
-  min-height: 0;
-  overflow-y: auto;
 }
 /* A video in Focus: its scrubber and Pick up from here, under it (cl-933). */
 .focus-viewport .video-scrub {
