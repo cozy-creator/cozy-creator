@@ -8,7 +8,7 @@ use crate::{
 };
 pub(crate) use executor_api::{
     Answer, Binding, ByteGrant, CallInterface, CallProgress, Cancel, CheckpointItem,
-    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke, Kind, Load, Map, MemoSettings, ModelPrefetch, Outcome,
+    Command, Construction, Event, Fork, Frame, Hello, HostFrame, InputFile, InputMetadata, Invoke, Kind, Load, Map, MemoSettings, ModelNeed, ModelPrefetch, Outcome,
     Output, PrepareRequest, Preview, Publish, Request, SavedFile,
     StageMemoStore, Start, RESULT_DOCUMENT,
 };
