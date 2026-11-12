@@ -321,12 +321,24 @@ in_project "$RUN_PROJECT" --json run "$here/project/angles.py/angles" 'pictures:
 
 # cl-854: a lock on Runtime 0.43 can't speak a 0.23 machine's executor protocol. One whose range takes the machine's
 # Runtime runs on it, its install saying to re-lock; one whose range refuses it installs nothing, refused in one line
-# naming the re-lock. Both locks are PyPI's 0.43.1 and TensorFS 0.22.1.
+# naming the re-lock. Both locks are PyPI's 0.43.1 and TensorFS 0.22.1. On the open RC's Runtime (a dev release) an RC build
+# meets any cap (cl-952): both run on the machine's pair, and nothing is said of their locks.
 old_runtime() {
 step "a lock on an older executor protocol: the machine's pair where its range takes it, else one line naming the re-lock"
-local code=0
+local code=0 runtime unspoken="can't speak this machine's executor protocol"
+runtime=$(cozy --json machine show local | jq -r '.status.runtime // empty')
+if [[ $runtime =~ ^[0-9]+(\.[0-9]+)*\.dev[0-9]+(\+.*)?$ ]]; then
+  if cell old-runtime "$here/old-runtime/takes/echo" text=old; then
+    J --arg r "$runtime" '.result.text == "old" and .measurements.software.runtime == $r' "$OUT/old-runtime.json" && ! grep -q "$unspoken" "$OUT/old-runtime.err" \
+      || check "old runtime: on the RC's Runtime $runtime its lock didn't run on the machine's pair, said nothing: $(jq -c '{result, runtime: .measurements.software.runtime}' "$OUT/old-runtime.json") $(grep -m1 "$unspoken" "$OUT/old-runtime.err" | head -c 300)"
+  fi
+  in_project "$RUN_PROJECT" --json run "$here/old-runtime/refuses/echo" text=old --on local > "$OUT/old-runtime-refused.json" 2>&1 || code=$?
+  [ "$code" = 0 ] && grep '"type":"run.completed"' "$OUT/old-runtime-refused.json" | J '.run.result.text == "old"' && ! grep -q "$unspoken" "$OUT/old-runtime-refused.json" \
+    || check "old runtime: on the RC's Runtime $runtime a range capped below it didn't run, said nothing (exit $code): $(tail -c 400 "$OUT/old-runtime-refused.json")"
+  return
+fi
 if cell old-runtime "$here/old-runtime/takes/echo" text=old; then
-  grep -q "can't speak this machine's executor protocol.*uv lock --upgrade-package cozy-runtime" "$OUT/old-runtime.err" \
+  grep -q "$unspoken.*uv lock --upgrade-package cozy-runtime" "$OUT/old-runtime.err" \
     || check "old runtime: its install doesn't say it runs on the machine's pair, or how to re-lock: $(grep -m1 warning "$OUT/old-runtime.err" | head -c 400)"
 fi
 in_project "$RUN_PROJECT" --json run "$here/old-runtime/refuses/echo" text=old --on local > "$OUT/old-runtime-refused.json" 2>&1 || code=$?
