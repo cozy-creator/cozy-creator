@@ -253,7 +253,7 @@ def check(gate: GateRuns) -> tuple[list[str], list[str]]:
         events, seen = read(path, stages)
         found = judge(name, events, seen, stages)
         fails += found
-        order = []
+        order: list[str] = []
         for s in seen:
             if not order or order[-1] != s.kind:
                 order.append(s.kind)
