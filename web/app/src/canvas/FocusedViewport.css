@@ -99,6 +99,13 @@
   flex: none;
   transform-origin: center;
 }
+.focus-viewer[data-zoomed] .focus-image-transform {
+  cursor: grab;
+  touch-action: none;
+}
+.focus-viewer[data-zoomed] .focus-image-transform:active {
+  cursor: grabbing;
+}
 .focus-image-transform > .media {
   flex: none;
   width: 100%;
