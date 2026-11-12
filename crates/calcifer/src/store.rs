@@ -265,7 +265,7 @@ pub(crate) struct Measured {
 pub(crate) enum StoreError {
     #[error("Calcifer's store: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    #[error("Calcifer's store is at version {0}: this cozy reads version {current}", current = VERSION)]
+    #[error("Calcifer's store is at version {0}, written by a newer cozy (this one reads {current}): run `cozy update` to go forward", current = VERSION)]
     Version(i64),
     #[error("idempotency key {0:?} already names another submission")]
     Conflict(String),

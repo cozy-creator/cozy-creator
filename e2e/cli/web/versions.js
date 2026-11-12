@@ -297,6 +297,11 @@ async function died(why) {
   await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
   await cdp.detach();
   check('right_previews_scroll_with_a_finger', byFinger > beforeFinger + 40, { beforeFinger, byFinger });
+  // And with the wheel, as ever (Paul): back up the column.
+  await page.mouse.move(across, sideBox.y + sideBox.height / 2);
+  await page.mouse.wheel(0, -240);
+  const byWheel = await until('the wheel scrolled it', scrolled, (top) => top < byFinger - 100, 5000).catch(() => scrolled());
+  check('right_previews_scroll_with_the_wheel', byWheel < byFinger - 100, { byFinger, byWheel });
   const unmarked = await until('scroll marker gone', () => page.locator('.scroll-marker.on').count(), (count) => count === 0, 4000).then(() => true, (why) => String(why));
   check('scroll_marker_does_not_carry_or_remove_a_state', scrolling.marked === 1 && scrolling.ghosts === 0 && unmarked === true && (await asset('many')).versions === MANY, { scrolling, unmarked });
   await approveVersion(page, 'many', 5);
