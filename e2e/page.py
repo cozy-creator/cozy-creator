@@ -98,10 +98,13 @@ def render(args: argparse.Namespace) -> int:
     left, quiet, failed, made = dict(before), time.monotonic(), False, dict[str, float]()
     while left:
         time.sleep(3)
+        # A box made here (an edit) has no run: its job on the board, and how far it's rendered, say it's going.
+        going = {cast(Json, job).get("asset") for job in cast(list[object], cast(Json, read(args.project).get("board") or {}).get("jobs", []))
+                 if cast(Json, job).get("state") in ("waiting", "running")}
         for name in list(left):
             state = asset(args.project, name)
             row, versions = cast(Json, state["asset"]), cast(list[Json], state["versions"])
-            if row.get("making"):
+            if row.get("making") or row.get("rendering") is not None or name in going:
                 quiet = time.monotonic()
             new, absent = versions[left[name]:], list[str]()
             if len(new) >= args.n:
