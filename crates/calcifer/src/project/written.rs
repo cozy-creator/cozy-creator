@@ -273,7 +273,10 @@ impl Written {
     }
 
     pub(crate) fn approved(&mut self, name: &str, sha256: &str) -> Result<(), Error> {
-        self.set(name, &Map::from_iter([("approved".to_owned(), json!(prefix_of(sha256)))])).map(drop)
+        self.set(name, &Map::from_iter([
+            ("approved".to_owned(), json!(prefix_of(sha256))),
+            (SELECTED_VERSION.to_owned(), Value::Null),
+        ])).map(drop)
     }
 
     /// Selecting a version retains its exact number even when another version has identical media.
@@ -285,7 +288,10 @@ impl Written {
     }
 
     pub(crate) fn unapproved(&mut self, name: &str) -> Result<(), Error> {
-        self.set(name, &Map::from_iter([("approved".to_owned(), Value::Null)])).map(drop)
+        self.set(name, &Map::from_iter([
+            ("approved".to_owned(), Value::Null),
+            (SELECTED_VERSION.to_owned(), Value::Null),
+        ])).map(drop)
     }
 
     /// Box `from` called `to`: its name, and every `<from>` and `<from.2>` in any box's words.

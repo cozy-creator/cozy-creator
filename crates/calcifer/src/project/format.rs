@@ -1132,6 +1132,12 @@ pub(super) fn approved_file(approved: Option<&Value>, lock: &Lock) -> Option<Str
     }
 }
 
+/// Only its first media may initialize an approval. An explicit unpin stays unpinned.
+pub(super) fn can_initialize_approval(folder: &Folder, name: &str) -> Result<bool, Error> {
+    let approved = folder.reading_boxes(|written| written.get(name).and_then(|held| held.get("approved")).cloned())?;
+    folder.reading_lock(|lock| approved_file(approved.as_ref(), lock).is_none() && lock.asset(name).is_none_or(|held| held.on_record().next().is_none()))
+}
+
 /// The sha256 a file pin's value names, or how it fails, to follow "{name}'s {field}".
 fn file_named(written: &str, lock: &Lock) -> Result<String, String> {
     if written.is_empty() || !written.bytes().all(|byte| byte.is_ascii_hexdigit()) {
