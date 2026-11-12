@@ -100,9 +100,9 @@ pub(crate) fn table(ctx: &Context, runs: &[&Run], projects: bool) -> output::Tab
 /// The runs `query` asks for, page by page.
 pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error> {
     let calcifer = ctx.calcifer().await?;
-    let projects = if let Some(project) = &query.project { vec![Some(project.clone())] } else {
-        let known: api::calcifer::project::Projects = calcifer.get_query("/v1/projects", &[("limit", "0")]).await?;
-        std::iter::once(None).chain(known.projects.into_iter().map(|project| Some(project.id))).collect::<Vec<_>>()
+    let projects = match &query.project {
+        Some(project) => vec![Some(project.clone())],
+        None => std::iter::once(None).chain(known_projects(&calcifer).await?.into_iter().map(Some)).collect(),
     };
     let mut out = RunList {
         runs: vec![],
@@ -148,6 +148,21 @@ pub(crate) async fn runs(ctx: &Context, query: &Query) -> Result<RunList, Error>
         out.runs.truncate(limit as usize);
     }
     Ok(out)
+}
+
+/// Every project Calcifer knows, page by page: its index answers at most 1000 at once.
+async fn known_projects(calcifer: &crate::calcifer_client::Client) -> Result<Vec<String>, Error> {
+    let mut ids: Vec<String> = vec![];
+    loop {
+        let mut page = vec![("limit", "1000".to_owned())];
+        page.extend(ids.last().map(|last| ("before", last.clone())));
+        let known: api::calcifer::project::Projects = calcifer.get_query("/v1/projects", &page).await?;
+        let more = known.older > 0 && !known.projects.is_empty();
+        ids.extend(known.projects.into_iter().map(|project| project.id));
+        if !more {
+            return Ok(ids);
+        }
+    }
 }
 
 /// A locked scope is reported transiently, without rebuilding an outside run mapping.
