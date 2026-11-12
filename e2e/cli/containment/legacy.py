@@ -387,7 +387,7 @@ def qualify(args, receipt: Receipt) -> None:
     # Keep a known real old HTTP request/key too, so a byte-identical retry after
     # move can establish old digest compatibility without reconstructing a CLI ask.
     retry_key = "legacy-retry-" + os.urandom(16).hex()
-    retry_ask = {"target": provenance["target"], "on": "local", "gpus": 0, "project": str(project),
+    retry_ask = {"target": provenance["target"], "on": "local", "project": str(project),
                  "input": {"source": "sha256:" + source_sha, "text": marker.decode() + "-retry"}}
     response = old.call("POST", "/v1/runs", retry_ask, preflight=False, extra={"Idempotency-Key": retry_key})
     require(not response.get("preparing"), "fixture_failure")

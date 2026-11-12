@@ -34,6 +34,7 @@ use crate::{api::Api, rentals::Hubs};
 mod private_process;
 pub(crate) use private_process::active as private_process_active;
 pub(crate) use private_process::cancel as cancel_private_processes;
+pub(crate) use private_process::retire as retire_private_processes;
 pub(crate) fn project_tool_output(command:&mut Command)->std::io::Result<std::process::Output> {private_process::output(command)}
 
 /// The uv index name a project's sources use for cozy packages on the Hub: its account's own, else the root's (`bindings`).
