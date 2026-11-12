@@ -60,8 +60,8 @@ pub(crate) async fn submit_request(ctx: &Context, ask: &RunRequest, key: &str) -
 
 /// Asks Calcifer's job `target` (`api::calcifer::hub::job`) with `input` as its fields, under a fresh key, quoted and agreed first
 /// when it rents: the run it became. Local code not yet ready on its machine is installed first, then asked again under that key.
-pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Serialize, on: Option<On>, code: Option<api::code::LocalCode>) -> Result<Run, Error> {
-    let ask = RunRequest::job(target, input, on, ctx.hub().to_string(), code);
+pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Serialize, on: Option<On>, code: Option<api::code::LocalCode>, project: Option<String>) -> Result<Run, Error> {
+    let ask = RunRequest { project, ..RunRequest::job(target, input, on, ctx.hub().to_string(), code) };
     let key = mint_key();
     loop {
         let submitted = submit_request(ctx, &ask, &key).await?;

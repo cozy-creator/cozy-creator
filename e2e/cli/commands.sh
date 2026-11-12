@@ -462,10 +462,12 @@ refused_inside quantize not_logged_in model quantize zhengpeng7/birefnet --lane 
 AFTER='grep -c "name = \"e2e-weightless\"" uv.lock' DIR=weightless LOCK_FIXTURE=1 inside lock && grep -qx 1 "$OUT/unseen-lock.err" \
   || check "unseen lock: no uv.lock written in /work: $(tail -c 300 "$OUT/unseen-lock.err")"
 # Locked in Calcifer's copy of the tree, which it holds by the tree's digest.
-ls -d "$HOME"/.cozy/calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package: $(ls "$HOME/.cozy/calcifer/code" 2> /dev/null | head -3)"
-DIR=weightless refused_inside publish not_logged_in package publish
-inside model --json model install ./tiny.safetensors local/e2e-unseen --source-format as-is --on local \
-  && cozy --json model ls --on local | grep -q e2e-unseen || check "unseen model: local/e2e-unseen is not on local"
+# Local code is project data: Calcifer's copy is the project's own (.vault-calcifer).
+ls -d "$seen"/project/.vault-calcifer/code/*/tree/e2e_weightless > /dev/null 2>&1 || check "unseen lock: Calcifer holds no copy of the package in the project: $(ls "$seen/project/.vault-calcifer/code" 2> /dev/null | head -3)"
+# A project's package source is project data: publishing it is refused until a separate copy is exported.
+DIR=weightless refused_inside publish project_source_scope package publish
+# A file in a project is project data: it is not staged as a machine-wide model.
+refused_inside model project_source_scope model install ./tiny.safetensors local/e2e-unseen --source-format as-is --on local
 if [ -f "${CAND_RT:-}" ]; then
   inside runtime --json machine update local --runtime "/wheels/$(basename "$CAND_RT")" -y || true
 fi
@@ -510,7 +512,7 @@ compgen -G "$fetched/*/uv" > /dev/null || check "uv at once: Calcifer never fetc
 local_edits() {
 step "local code edited between runs"
 [ -n "$LOCAL" ] || return 0
-local code=$OUT/edits/e2e-edits envs=$HOME/.cozy/machine/var/lib/cozy/tensord/editable
+local code=$OUT/edits/e2e-edits envs=$RUN_PROJECT/.vault-machine/editable  # a project's environments are its own
 local module=$code/e2e_weightless/__init__.py first now
 rm -rf "$code" && mkdir -p "$OUT/edits" && cp -r "$here/weightless" "$code"
 sed -i 's/^name = "e2e-weightless"/name = "e2e-edits"/' "$code/pyproject.toml"
@@ -597,7 +599,7 @@ grep -q '"text": *"from a published package"' "$OUT/hub-published.ndjson" && gre
   || check "hub published: the reply is not minimax-h3-tools 0.1.0's echo: $(tail -c 300 "$OUT/hub-published.ndjson")"
 local callee
 # A generation's record names its package by distribution, and each callee by the package it is.
-callee=$(find "$HOME/.cozy/machine" -name generation.json -path '*generations*' -exec jq -r \
+callee=$(find "$RUN_PROJECT/.vault-machine" "$HOME/.cozy/machine" -name generation.json -path '*generations*' -exec jq -r \
   'select(.package == "e2e-relay") | .callees[]? | select(.distribution | ascii_downcase | gsub("[-_.]+"; "-") == "minimax-h3-tools") | .package' \
   {} + 2> /dev/null | sort -u | paste -sd, -)
 echo "hub published: $E2E_RELAY's environment names its callee ${callee:-nothing}"
@@ -784,7 +786,7 @@ grep -q 'directory = "../maker"' "$dir/caller/uv.lock" 2> /dev/null \
 # What still has no lock, the caller's tree described without its uv.lock as TensorD describes in the environment its run built
 # (`ask_runtime`), is refused saying so (its exit is the refusal's), not "add it to [project].dependencies", which names it.
 local py stale=$OUT/child-latents-stale
-py=$(ls -d "$HOME"/.cozy/machine/var/lib/cozy/tensord/editable/*/e2e-latents-caller/env-*/bin/python 2> /dev/null | head -1) || true
+py=$(ls -d "$RUN_PROJECT"/.vault-machine/editable/*/e2e-latents-caller/env-*/bin/python 2> /dev/null | head -1) || true
 rm -rf "$stale" && cp -r "$dir" "$stale" && rm -f "$stale/caller/uv.lock"
 jq -n --arg project "$stale/caller" --arg python "$py" '{kind: "describe", project: $project, environment_python: $python}' \
   | "$py" -I -S -c "import pathlib,runpy,sys;root=pathlib.Path(sys.executable).absolute().parent.parent;\

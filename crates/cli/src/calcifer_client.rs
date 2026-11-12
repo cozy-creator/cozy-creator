@@ -991,9 +991,10 @@ impl Client {
             let probe = request.try_clone().ok_or_else(|| Error::new(Kind::Internal, "request_unrepeatable", "The request cannot be inspected before transmission"))?
                 .build().map_err(unreachable)?;
             if needs_project_storage(probe.url().path()) {
-                self.project_storage(&holder).await?;
-                // No old daemon can receive the project request after a restarted holder was probed.
-                if self.record().as_ref() != Some(&holder) || !self.holds(&holder) {
+                let birth = self.project_storage(&holder).await?;
+                // No old daemon can receive the project request after a restarted holder was probed. Never by
+                // taking the lock: a client whose home holds only a copy of the record would erase it.
+                if self.record().as_ref() != Some(&holder) || process::Birth::of(holder.pid).ok().as_ref() != Some(&birth) {
                     self.remember(None);
                     continue;
                 }
@@ -1050,7 +1051,7 @@ impl Client {
 
     /// A header alone is insufficient: old controllers ignore unknown headers. This response is
     /// bound to both this exact process birth and its current bearer before any project bytes go.
-    async fn project_storage(&self, holder: &Holder) -> Result<(), Error> {
+    async fn project_storage(&self, holder: &Holder) -> Result<process::Birth, Error> {
         #[derive(Deserialize)]
         struct Capability { version: u32, daemon_birth: String, principal: String }
         let refused = || Error::new(Kind::Unavailable, "project_storage_unsupported", "Calcifer cannot prove project storage protocol 3; no project request was sent").next("cozy update");
@@ -1063,7 +1064,7 @@ impl Client {
         if capability.version != 3 || capability.daemon_birth != expected_birth || capability.principal != hex::encode(Sha256::digest(&holder.token)) {
             return Err(refused());
         }
-        Ok(())
+        Ok(birth)
     }
 
     /// Samples `done` until it holds, saying what it waits for every few seconds.

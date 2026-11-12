@@ -27,6 +27,17 @@ pub(crate) async fn identity(ctx: &Context) -> Result<api::calcifer::project::Ad
     }
 }
 
+/// The current project's id, for local code and what it makes, which are project data: outside a
+/// project, a typed refusal naming where to go.
+pub(crate) async fn required(ctx: &Context) -> Result<String, Error> {
+    match identity(ctx).await {
+        Ok(project) => Ok(project.id),
+        Err(error) if error.code == "not_in_a_project" => Err(Error::new(Kind::Validation, "project_required", "local code is project data: run this from a project folder")
+            .remedy("cd into a project folder, or create one with cozy new").next("cozy new")),
+        Err(error) => Err(error),
+    }
+}
+
 /// The existing project containing the current directory.
 pub(crate) async fn current(ctx: &Context) -> Result<State, Error> {
     let project = directory()?;

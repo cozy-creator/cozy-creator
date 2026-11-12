@@ -28,7 +28,7 @@ pub(crate) fn written(dir: &std::path::Path, lock: &str) -> Result<std::path::Pa
 
 pub(crate) async fn publish(ctx: &Context, root: bool, yanked: bool) -> Result<ExitCode, Error> {
     let (dir, code) = sent(ctx).await?;
-    let going = run::job(ctx, job::PACKAGE_PUBLISH, &PackagePublish { root, yanked }, None, Some(code)).await?;
+    let going = run::job(ctx, job::PACKAGE_PUBLISH, &PackagePublish { root, yanked }, None, Some(code), None).await?;
     let result: Published = run::done(ctx, going).await?;
     // Locked first, it holds the lock it was published with.
     if let Some(lock) = &result.lock {
