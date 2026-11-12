@@ -13,7 +13,7 @@ for p in "${pairs[@]}"; do [[ $p == ?*=?* ]] || fail "not name=source: $p"; done
 for p in "${pairs[@]}"; do
   m=${p%%=*} n=${p%%=*}; n=${n//\//-}
   step "upload-$n" model upload "${p#*=}" "$m" --lane "$LANE" --on local || fail "upload $m"
-  c=$(awk '$1=="commit"{c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/upload-$n.txt")
+  c=$(made "upload-$n")
   [ -n "$c" ] || fail "upload $m named no commit"
   model_details "$m" > "$OUT/info-$n.txt" 2>&1
   say "COMMIT $m $LANE $c"

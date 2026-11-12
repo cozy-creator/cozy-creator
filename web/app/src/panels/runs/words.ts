@@ -127,12 +127,20 @@ export function countWords(progress: Progress): string {
 /** A stage with its count, as Paul wrote them: `Denoising image - Step 7 / 8`, `Rewriting prompt: 65 tokens`, `Segment 2 of 3: Decoding
  *  video - Frame 173 / 350`. */
 export function stageLine(progress: Progress): string {
+  const { words, count } = stageParts(progress)
+  return count ? `${words} ${count}` : words
+}
+
+/** `stageLine`'s two halves: its words, `Segment 2 of 2: Decoding video -`, which give way to a narrow box, and how far within it,
+ *  `Frame 3 / 12`, which never does (cl-953). */
+export function stageParts(progress: Progress): { words: string; count?: string } {
   const parts = progress.stage.trim().split(/\s+\/\s+/).filter(Boolean)
   const own = parts.length ? stageName(parts.at(-1)!) : "Working"
   const scope = parts.slice(0, -1).map((part) => stageName(part)).join(", ")
+  const words = scope ? `${scope}: ${own}` : own
   const count = countWords(progress)
-  const said = !count ? own : countsOf(progress) === "token" ? `${own}: ${count}` : `${own} - ${count}`
-  return scope ? `${scope}: ${said}` : said
+  if (!count) return { words }
+  return { words: countsOf(progress) === "token" ? `${words}:` : `${words} -`, count }
 }
 
 /** Its own work, as a person reads it: its stage and what it counts, `Generating the image · step 6 of 8, 3s left`,
