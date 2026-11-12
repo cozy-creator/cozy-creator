@@ -45,7 +45,8 @@ export const OWN = ["description", "models", "lora", "node_kind", "selected_vers
 /** What a box asks for: its tool's fields, or what its fields hold. Nothing here knows any function. */
 export function fieldsOf(asset: Asset, tools: Map<string, Tool>): ToolField[] {
   const tool = asset.tool ? tools.get(asset.tool) : undefined
-  return tool ? tool.fields : fromFields(asset.fields ?? {})
+  const visible = (fields: ToolField[]): ToolField[] => fields.filter((field) => field.type !== "seed" && field.field !== "seed").map((field) => field.members ? { ...field, members: visible(field.members) } : field)
+  return visible(tool ? tool.fields : fromFields(asset.fields ?? {}))
 }
 
 export const empty = (value: unknown) => value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length)
@@ -81,7 +82,7 @@ export const fieldWords = (field: string) => field[0].toUpperCase() + field.slic
 
 /** What it holds that no field declares, such as a hand-written key: it reaches a render all the same. Its description is its own line, and a LoRA or a fine-tune is an add-on. */
 export const heldBeyond = (fields: Record<string, unknown> | undefined, declared: ToolField[]) =>
-  Object.entries(fields ?? {}).filter(([field, value]) => !OWN.includes(field) && !empty(value) && !declared.some((held) => held.field === field))
+  Object.entries(fields ?? {}).filter(([field, value]) => field !== "seed" && !OWN.includes(field) && !empty(value) && !declared.some((held) => held.field === field))
 
 /** What a slot or a prompt's mention can hold, in words. */
 export const WANTED: Record<Media, string> = { image: "a picture", video: "a video", audio: "a sound" }
