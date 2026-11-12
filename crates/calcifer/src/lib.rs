@@ -501,9 +501,16 @@ impl Calcifer {
         let mut values = vec![read(&store::RunStore::Maintenance(self.maintenance_store()))?];
         let owners: Vec<_> = lock(&self.project_owners).values().cloned().collect();
         for owner in owners {
+            // A project whose folder is gone, deleted while open, has no journal to read: nothing of it counts, and it fails no one else's.
+            let gone = || !crate::project::vault::logical(owner.root()).exists();
             match owner.store() {
-                Ok(store) => values.push(read(&store::RunStore::Project(store))?),
+                Ok(store) => match read(&store::RunStore::Project(store)) {
+                    Ok(value) => values.push(value),
+                    Err(_) if gone() => {},
+                    Err(error) => return Err(error),
+                },
                 Err(StoreError::Locked(_)) => {},
+                Err(_) if gone() => {},
                 Err(error) => return Err(error),
             }
         }
