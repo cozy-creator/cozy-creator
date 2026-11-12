@@ -57,10 +57,11 @@ fi
 # inside it and says what it holds, and its boxes render on $M as the page renders them (e2e/page.py; no CLI verb renders a
 # box), pictures' cleans and the edit on this computer. Two entities that mention each other warn and both render.
 # `--approve` with -n 2 is refused before anything runs; a re-rolled character, as the newest, puts what reads it out of
-# date and nothing else; `--approve` approves its new version; a node renamed in project.yaml stands orphaned in status and
-# keeps its versions through the page's rename; a person's save during a render stands; the edit cuts by frame and writes
-# edit.otio beside edit.mp4. Gone by design with 0.24's verbs: naming a project from elsewhere (`-p`) and listing projects
-# (`project ls`): the folder you're in is the project.
+# date and nothing else (0.24: what reads it itself; `start` reads `one`, whose take hasn't changed); `--approve` approves its
+# new version; a node renamed in project.yaml keeps its versions and approval (0.24 adopts a rename itself: no orphan, no
+# rename step); a person's save during a render stands; the edit cuts by frame and writes edit.otio beside edit.mp4. Gone by
+# design with 0.24's verbs: naming a project from elsewhere (`-p`) and listing projects (`project ls`): the folder you're in
+# is the project. Edits go to the project's own export (`page.py yaml <folder>`), which holds its approvals.
 cli_page() { python3 "$RUN_PAGE" "$@"; }
 # cli_tool <package> <function>: its target as a project in another folder reads it (a checkout's ./pkg by its path).
 cli_tool() { local t; t=$(pkg "$1" "$2"); [[ $t != ./* ]] || t=$OUT/${t#./}; echo "$t"; }
@@ -131,26 +132,23 @@ YAML
     "$P/edit.otio" > /dev/null 2>&1 || cli_fail "edit.otio does not cut one's frames 0-96: $(head -c 300 "$P/edit.otio" 2>&1)"
   cli_page render "$P" --on "$M" lead > project-run.log 2>&1 || cli_fail "render lead: $(tail -c 400 project-run.log)"
   project_status "$P" project-newest.json
-  jq -e '[.project.stale[].name] | sort == ["one", "start", "two"]' project-newest.json > /dev/null \
-    || cli_fail "a new newest lead put out of date other than one, start, two: $(jq -c .project.stale project-newest.json)"
+  jq -e '[.project.stale[].name] | sort == ["one", "two"]' project-newest.json > /dev/null \
+    || cli_fail "a new newest lead put out of date other than one and two: $(jq -c .project.stale project-newest.json)"
   cli_page approve "$P" lead 2 > project-approve.log 2>&1 || cli_fail "approve lead 2: $(tail -c 300 project-approve.log)"
   cli_page render "$P" --on "$M" --approve place > project-approve-new.log 2>&1 || cli_fail "render place --approve: $(tail -c 400 project-approve-new.log)"
   project_status "$P" project-status-2.json
   jq -e '.project.assets[] | select(.name == "place") | .approved == 2' project-status-2.json > /dev/null \
     || cli_fail "render place --approve did not approve version 2: $(jq -c '.project.assets[] | select(.name == "place")' project-status-2.json)"
-  # place renamed yard in project.yaml (and its mentions): status names place an orphan; the page's rename keeps its versions.
-  sed -i 's/^  place: /  yard: /; s/<place>/<yard>/g' "$P.yaml"
+  # place renamed yard in project.yaml (and its mentions): yard keeps place's versions and its approval.
+  cli_page yaml "$P" | sed 's/^  place:/  yard:/; s/<place>/<yard>/g' > "$P.yaml"
   cli_page yaml "$P" "$P.yaml" > project-yaml-2.log 2>&1 || cli_fail "the renamed project.yaml: $(tail -c 300 project-yaml-2.log)"
-  project_status "$P" project-orphan.json
-  jq -e '[.project.orphans[]?.name] | index("place")' project-orphan.json > /dev/null || cli_fail "status does not name place an orphan: $(jq -c .project.orphans project-orphan.json)"
-  cli_page rename "$P" place yard > project-rename.log 2>&1 || cli_fail "rename: $(tail -c 300 project-rename.log)"
   project_status "$P" project-renamed.json
   jq -e '(.project.orphans // []) == [] and (.project.assets[] | select(.name == "yard") | .approved == 2 and .versions == 2)' project-renamed.json > /dev/null \
     || cli_fail "after rename, yard does not hold place's versions: $(jq -c '[.project.orphans, (.project.assets[] | select(.name == "yard"))]' project-renamed.json)"
   # A person's save while a render is under way stands.
   cli_page render "$P" --on "$M" --queue all > project-race.log 2>&1 || cli_fail "render all: $(tail -c 300 project-race.log)"
   for _ in $(seq 1 600); do cli_page board "$P" | jq -e '(.jobs // []) | length > 0' > /dev/null 2>&1 && break; sleep 1; done
-  sed -i 's/lead in the middle, facing the camera\./lead in the middle, facing the camera, hands in pockets./' "$P.yaml"
+  cli_page yaml "$P" | sed 's/lead in the middle, facing the camera\./lead in the middle, facing the camera, hands in pockets./' > "$P.yaml"
   cli_page yaml "$P" "$P.yaml" > project-save.log 2>&1 || cli_fail "a save during render all: $(tail -c 300 project-save.log)"
   for _ in $(seq 1 1800); do cli_page board "$P" | jq -e '[.jobs[]? | select(.state == "running" or .state == "waiting")] | length == 0' > /dev/null 2>&1 && break; sleep 2; done
   grep -q "hands in pockets" <<< "$(cli_page yaml "$P")" || cli_fail "a save made during render all was lost"
@@ -175,6 +173,9 @@ stall_cell() {
   for _ in $(seq 50); do [ -s "$stream" ] && break; sleep 0.2; done
   [ -s "$stream" ] || { cli_fail "stall: the page's stream said nothing: $(tail -c 200 stall-events.err)"; kill "$page" 2> /dev/null; return; }
   cli_page render "$S" --on "$M" --queue held > stall-render.log 2>&1 || cli_fail "stall: render --queue: $(tail -c 300 stall-render.log)"
+  # The run starts once held is running: two local codes made ready at once on a fresh computer refuse the second while the
+  # first fetches uv (`uv_unavailable`, cli gate 43133580881), which isn't what this cell is about.
+  for _ in $(seq 300); do [ "$(held_job | jq -r .state)" = running ] && break; sleep 2; done
   # Its exit kept whether or not the shell stops at a command that fails (`set -e`); nothing in the background reads stdin.
   ( code=0; cd "$S" && "$CLI" --json run "$e2e/weightless/silent" seconds:=1200 --on "$M" > "$OLDPWD/stall-run.ndjson" 2> "$OLDPWD/stall-run.err" || code=$?; echo "$code" > "$OLDPWD/stall-run.exit" ) < /dev/null & running=$!
   wait "$running"
