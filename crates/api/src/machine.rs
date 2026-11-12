@@ -81,6 +81,10 @@ pub mod path {
     pub const OBJECTS_HELD: &str = "/v1/objects/held";
     /// `POST` an [`super::EstimateRequest`]: when each job would finish here; a quote, not a reservation.
     pub const ESTIMATE: &str = "/v1/estimate";
+    /// `PUT` an [`super::Upcoming`]: the jobs the caller expects to send here, nearest first (cl-967).
+    pub const UPCOMING: &str = "/v1/upcoming";
+    /// `PUT` a [`super::Prepare`]: what the caller expects demand for here, with no job yet (cl-967).
+    pub const PREPARE: &str = "/v1/prepare";
     /// Remove one repository's locally cached model copies; never changes its origin.
     pub const MODELS_REMOVE: &str = "/v1/models/remove";
 }
@@ -823,6 +827,49 @@ pub struct Call {
     pub memo_basis: String,
 }
 
+// ---- Ahead ----------------------------------------------------------------------------------
+
+/// `PUT /v1/upcoming` (cl-967, Paul 11-12): the jobs the caller expects to send here, nearest first, its whole list, replacing its
+/// last. Each prepares behind every run, in its order, as a function's warm run does: its code installed, what its call reads up
+/// front, then its guesses, while they fit; one the list drops stops. A run later sent for it finds what it fetched.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Upcoming {
+    pub jobs: Vec<Ahead>,
+}
+
+/// `PUT /v1/prepare` (cl-967): what the caller expects demand for here with no job yet (many shots of one function queued
+/// elsewhere, and this machine new), its whole set, replacing its last; each behind every upcoming job.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prepare {
+    pub items: Vec<Ahead>,
+}
+
+/// One function to have ready: its code, its models in their lanes. Its downloads show in `StatusFrame::activity` with its id among
+/// their `runs`: `cozy:upcoming:<key>`, or `cozy:prepare:<key>`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ahead {
+    /// The caller's name for it: an upcoming job's key, the one its run is sent under.
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+    /// Empty: its code installed only.
+    pub entrypoint: String,
+    pub models: Vec<ModelChoice>,
+    pub lane: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hub: Option<HubAccess>,
+}
+
+/// What a list came to: each item as a run would be admitted, in its order.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AheadAnswer {
+    pub items: Vec<Admitted>,
+}
+
 // ---- Estimate -------------------------------------------------------------------------------
 
 /// `POST /v1/estimate` (cl-816): jobs a caller may send here, packed with this machine's queue as
@@ -1068,6 +1115,9 @@ pub struct StatusFrame {
     /// Its GPUs talk over NVLink.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub nvlink: bool,
+    /// The caller's lists' items (`PUT /v1/upcoming`, `/v1/prepare`), each as its run stands: ready once it succeeded.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ahead: Vec<RunState>,
 }
 
 /// A root not ended (`StatusFrame::queue`).

@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 mod access;
+mod ahead;
 mod api;
 mod authorized;
 mod coming;
@@ -689,7 +690,7 @@ impl Calcifer {
     }
 
     /// The machines and their Hubs, once they serve this core.
-    fn machines(&self) -> Option<Arc<machines::Machines>> {
+    pub(crate) fn machines(&self) -> Option<Arc<machines::Machines>> {
         self.granting.get().and_then(Weak::upgrade)
     }
 

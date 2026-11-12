@@ -113,7 +113,7 @@ struct Heard {
     package: Option<Arc<Package>>,
 }
 
-struct Project {
+pub(crate) struct Project {
     id: String,
     code: String,
     /// Immutable owner. A recycled physical mount path must never choose another project's root.
@@ -126,7 +126,7 @@ struct Project {
     /// What streams were last told of it.
     told: Mutex<Option<model::Told>>,
     /// What its render is doing, asset by asset.
-    jobs: Jobs,
+    pub(crate) jobs: Jobs,
     /// What its walker needn't read again: the jobs, and each text.
     walker: Mutex<Walker>,
     /// Whether its one walker is going. Admission and the terminal board share this lock.
@@ -959,6 +959,12 @@ struct Walker {
     placed: HashMap<String, Placed>,
     /// What each job not sent asks of a machine, by its key, once its package and its models' cards said.
     quotables: HashMap<String, placement::Job>,
+    /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
+    starts: HashMap<String, (i64, Vec<String>)>,
+    /// What each machine is told to have ready for each job, by machine and job key: its Hub, item and function; none: nothing.
+    items: HashMap<(String, String), Option<(String, v1::Ahead, String)>>,
+    /// Items being made.
+    making: HashSet<(String, String)>,
     /// The last turn held a job for a busy machine.
     held: bool,
     /// What the machine each job went to quoted, by its key.
@@ -2994,6 +3000,7 @@ enum Done {
 }
 
 /// What a queued job's machine can fetch before its turn: a function as its text names it, on the machine the plan placed it on.
+#[derive(Clone)]
 struct Wanted {
     machine: On,
     hub: String,
@@ -3350,6 +3357,8 @@ impl Walk {
         edits.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // A machine's Status moved (a run started or ended, bytes came, a machine came or went): a job held for a machine is placed again.
         let mut machines = self.host.api().calcifer.machines_changed();
+        // A machine became ready or ended: what isn't sent yet is placed again.
+        let mut arrivals = self.host.api().machines.arrivals.subscribe();
         // A walk before this one's versions whose files are on their way: it isn't over until they're here, or never come.
         let walk = self.folder().walk_now()?;
         for (number, coming) in walk.walk.runs {
@@ -3374,14 +3383,33 @@ impl Walk {
             if !self.project.walker.lock().expect("walker lock").graph.has_ready() {
                 self.plan(false).await;
             }
-            for wanted in self.wanted_ahead() {
-                work.push(async move {
-                    if let Err(error) = self.ask_ahead(wanted).await {
-                        warn!("fetching ahead in {}: {}", self.folder().dir.display(), error.message);
+            // What the jobs not sent will run with goes to the machines they're planned on, as each one's upcoming list (cl-967).
+            let ahead = self.ahead_jobs();
+            for (key, _, wanted) in &ahead {
+                let On::Machine(name) = &wanted.machine else { continue };
+                let at = (name.clone(), key.clone());
+                {
+                    let mut walker = self.project.walker.lock().expect("walker lock");
+                    if walker.items.contains_key(&at) || !walker.making.insert(at.clone()) {
+                        continue;
                     }
+                }
+                let (key, wanted) = (key.clone(), wanted.clone());
+                work.push(async move {
+                    let item = match self.item(&key, &wanted).await {
+                        Ok(item) => item,
+                        Err(error) => {
+                            warn!("{}: what {key} needs ahead on {}: {}", self.folder().dir.display(), wanted.machine, error.message);
+                            None
+                        }
+                    };
+                    let mut walker = self.project.walker.lock().expect("walker lock");
+                    walker.making.remove(&at);
+                    walker.items.insert(at, item.map(|(item, function)| (wanted.hub.clone(), item, function)));
                     Done::Ahead
                 }.boxed());
             }
+            self.list_ahead(&ahead);
             self.finish_asks().await?;
             self.sync();
             self.ahead_unneeded();
@@ -3423,6 +3451,7 @@ impl Walk {
                             break;
                         }
                     }
+                    Ok(()) = arrivals.changed() => break,
                     _ = edits.tick() => {
                         if self.deletions()? {
                             break;
@@ -3436,49 +3465,90 @@ impl Walk {
         }
     }
 
-    /// What jobs waiting for their turn will need that no machine was asked for, on the machine each will most likely go to: its one,
-    /// else where the last plan placed it. A machine whose software started again since (an update) is asked again. Each box waiting is
-    /// named on what's fetched for it.
-    fn wanted_ahead(&self) -> Vec<Wanted> {
+    /// Each job not sent, with the machine it will most likely go to: its one, else where the last plan placed it; by its key and box.
+    fn ahead_jobs(&self) -> Vec<(String, String, Wanted)> {
         let Ok(walk) = self.folder().walk_now() else { return vec![] };
+        let walker = self.project.walker.lock().expect("walker lock");
+        let Walker { graph, readings, placed, foreseen, .. } = &*walker;
+        let mut jobs = vec![];
+        for id in graph.open_jobs() {
+            let job = &graph.jobs[id];
+            if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) {
+                continue;
+            }
+            let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
+            let Some(reading) = readings.get(&ask.digest) else { continue };
+            let target = ask.takes.iter().find(|take| take.key == job.key).map_or(&ask.target, |take| &take.target);
+            let asset = &reading.doc.assets[job.node];
+            let machine = match target.on.as_slice() {
+                [only] => Some(only.clone()),
+                _ => placed.get(&job.key).map(|placed| placed.soonest.machine.clone()).or_else(|| foreseen.get(&job.key).cloned().flatten()),
+            };
+            // With `any`, or none placed yet, where isn't known.
+            let Some(machine @ On::Machine(_)) = machine else { continue };
+            let wanted = Wanted { machine, hub: target.hub.clone(), with: reading.doc.target(job.node), kind: asset.kind.clone(), made: asset.made.clone() };
+            jobs.push((job.key.clone(), job.asset.clone(), wanted));
+        }
+        jobs
+    }
+
+    /// Each machine's upcoming jobs of this walk, as far as their items are made, in the order they start (`ahead::Lists`); their rows
+    /// on the board, and only theirs.
+    fn list_ahead(&self, jobs: &[(String, String, Wanted)]) {
         let api = self.host.api();
-        let going = self.project.jobs.ahead_keys_going();
-        let mut named = vec![];
-        let mut wanted = vec![];
+        let mut by_machine: HashMap<String, Vec<crate::ahead::Listed>> = HashMap::new();
         {
-            let mut walker = self.project.walker.lock().expect("walker lock");
-            let Walker { graph, readings, asked_ahead, placed, foreseen, .. } = &mut *walker;
-            for id in graph.open_jobs() {
-                let job = &graph.jobs[id];
-                if job.node == usize::MAX || job.state != walker::State::Waiting || matches!(job.kind, JobKind::Free { .. }) {
-                    continue;
-                }
-                let Some(ask) = walk.walk.asks.iter().find(|ask| ask.id == job.ask) else { continue };
-                let Some(reading) = readings.get(&ask.digest) else { continue };
-                let target = ask.takes.iter().find(|take| take.key == job.key).map_or(&ask.target, |take| &take.target);
-                let asset = &reading.doc.assets[job.node];
-                let (with, kind, made) = (reading.doc.target(job.node), asset.kind.clone(), asset.made.clone());
-                let machine = match target.on.as_slice() {
-                    [only] => Some(only.clone()),
-                    _ => placed.get(&job.key).map(|placed| placed.soonest.machine.clone()).or_else(|| foreseen.get(&job.key).cloned().flatten()),
+            let walker = self.project.walker.lock().expect("walker lock");
+            for (key, asset, wanted) in jobs {
+                let On::Machine(name) = &wanted.machine else { continue };
+                let Some(Some((hub, item, function))) = walker.items.get(&(name.clone(), key.clone())) else { continue };
+                let (start_at_ms, fits) = walker.starts.get(key).cloned().unwrap_or((i64::MAX, vec![]));
+                let listed = crate::ahead::Listed {
+                    project: self.project.clone(),
+                    asset: asset.clone(),
+                    start_at_ms,
+                    hub: hub.clone(),
+                    item: item.clone(),
+                    function: function.clone(),
+                    fits,
                 };
-                // With `any`, or none placed yet, where isn't known.
-                let Some(machine) = machine else { continue };
-                let On::Machine(name) = &machine else { continue };
-                let key = ahead_key(name, &with, &made);
-                named.push((key.clone(), job.asset.clone()));
-                let boot = api.machines.frame(name).map(|frame| frame.started_at_unix_ms);
-                if asked_ahead.get(&key).is_some_and(|asked| *asked == boot || going.contains(&key)) {
-                    continue;
-                }
-                asked_ahead.insert(key, boot);
-                wanted.push(Wanted { machine, hub: target.hub.clone(), with, kind, made });
+                by_machine.entry(name.clone()).or_default().push(listed);
             }
         }
-        for (key, name) in named {
-            self.project.jobs.wants_ahead(&key, &name);
+        let keys: HashSet<String> = by_machine.values().flatten().map(|listed| listed.item.key.clone()).collect();
+        api.machines.lists.set(&api.machines, &self.folder().dir.to_string_lossy(), by_machine);
+        self.project.jobs.upcoming_kept(&keys);
+    }
+
+    /// What `wanted`'s machine has ready for job `key` (`PUT /v1/upcoming`): the function its text names, else the first of its package
+    /// that makes this kind, with its model choices; and the function, as its row says it. None: its package makes nothing of the kind.
+    /// Local code is installed there first, as a call's is.
+    async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
+        let Wanted { machine, hub, with, kind, made } = wanted;
+        let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine)).await?;
+        let Some(renderer) = package.first_making(kind) else { return Ok(None) };
+        let mut payload = Map::new();
+        for field in ["models", "lora"] {
+            if let Some(value) = made.get(field).filter(|value| !value.is_null()) {
+                payload.insert(field.into(), value.clone());
+            }
         }
-        wanted
+        let called = renderer.target();
+        let mut choices = Choices::new(&called, &renderer.function, &renderer.slots, renderer.call_slots());
+        choices.take(&mut payload)?;
+        let models = choices::wire(&choices.into_choices())?;
+        let source = match &renderer.local {
+            None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
+            Some(path) => {
+                // A private project's code goes with the run that calls it.
+                if crate::private_io::of_path(&self.folder().dir)?.is_some() {
+                    return Ok(None);
+                }
+                v1::Source::Local(self.host.ready(path, machine, hub).await?.source)
+            }
+        };
+        let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };
+        Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
     }
 
     /// Asks a machine for a function's code and weights, in the background: a warm run, which holds no GPU and starts no executor. The
@@ -3648,8 +3718,11 @@ impl Walk {
             let Some((_, chosen)) = placement.chosen else {
                 walker.placed.remove(&unsent.key);
                 walker.foreseen.remove(&unsent.key);
+                walker.starts.remove(&unsent.key);
                 continue;
             };
+            let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
+            walker.starts.insert(unsent.key.clone(), (chosen.start_at_ms, fits));
             if !unsent.ready {
                 walker.foreseen.insert(unsent.key.clone(), Some(chosen.machine.clone()));
                 continue;
@@ -3663,6 +3736,8 @@ impl Walk {
         }
         walker.placed.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.foreseen.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.starts.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.items.retain(|(_, key), _| unsent.iter().any(|unsent| unsent.key == *key));
     }
 
     /// Of `on`, where job `job` goes, as the last plan placed it (`pick`).

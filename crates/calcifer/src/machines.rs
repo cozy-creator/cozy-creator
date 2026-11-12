@@ -91,6 +91,10 @@ pub(crate) struct Machines {
     pub(crate) rc: crate::rc::Rc,
     /// Told when a rental becomes ready: a dev home's moves to the RC before its first run.
     pub(crate) rc_ready: Notify,
+    /// What each machine is told to have ready (cl-967).
+    pub(crate) lists: crate::ahead::Lists,
+    /// Moves when a machine becomes ready or ends: what plans re-plan on (cl-967).
+    pub(crate) arrivals: tokio::sync::watch::Sender<u64>,
 }
 
 /// What Calcifer last heard of a machine, never stored.
@@ -147,6 +151,8 @@ impl Machines {
             dev: config.dev,
             rc: crate::rc::Rc::default(),
             rc_ready: Notify::new(),
+            lists: crate::ahead::Lists::default(),
+            arrivals: tokio::sync::watch::channel(0).0,
             calcifer,
         });
         me.calcifer.serve_with(&me);
@@ -826,6 +832,7 @@ impl Machines {
         if let Some(seen) = lock(&self.seen).get_mut(name) {
             (seen.boot, seen.attempt) = (None, None);
         }
+        self.arrivals.send_modify(|n| *n += 1);
         self.calcifer.machine_changed();
     }
 
@@ -919,6 +926,7 @@ impl Machines {
     fn observe(&self, name: &str, mut frame: v1::StatusFrame) {
         self.calcifer.observe_warm(name, frame.warm.clone());
         self.calcifer.observe_downloads(name, &frame.activity);
+        self.lists.observe(name, &frame);
         let back = {
             let mut seen = lock(&self.seen);
             let seen = seen.entry(name.to_owned()).or_default();
@@ -935,6 +943,10 @@ impl Machines {
                 self.placing.notify_one();
                 self.rc_ready.notify_one();
             }
+            // Ready on a boot not seen ready before (it came up, or started again on new software): plans count it now.
+            if frame.phase == "ready" && seen.frame.as_ref().is_none_or(|f| f.phase != "ready" || f.boot_id != frame.boot_id) {
+                self.arrivals.send_modify(|n| *n += 1);
+            }
             seen.stopped &= frame.phase == "releasing";
             seen.frame = Some(frame);
             seen.since = None;
@@ -943,6 +955,10 @@ impl Machines {
         // Its runs and exports that wait on it try again now.
         if back {
             self.calcifer.touch(name);
+        }
+        // Its lists, unless this boot of it was sent them: it came up since they were set, or started again.
+        if let Some(machines) = self.calcifer.machines() {
+            self.lists.seen(&machines, name);
         }
         self.calcifer.machine_changed();
     }

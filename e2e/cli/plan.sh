@@ -79,3 +79,33 @@ coming_done near 900
 went=$(plan_machine near)
 [ "$went" = local ] || check "plan: near, whose weights only local holds, went to ${went:-nowhere}"
 }
+
+# prepare_ahead (phase c): BiRefNet, as its Hub publishes it, on a still that takes 4 min, can't start before it: unstarted work,
+# planned where BiRefNet's weights are. stand-v, a new stand-in that holds nothing, has nothing planned and runs nothing, is told to
+# prepare its function with no job (`PUT /v1/prepare`): it installs BiRefNet's environment and holds its weights while that box
+# still waits.
+prepare_ahead() {
+step "prepare (cl-967): a new idle machine downloads what work waiting elsewhere needs, with no job"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "prepare: its stand-in is another user of a fresh GitHub runner"; return; }
+local P=$OUT/plan wait=$here/project/waits.py/wait r=$RANDOM held='' state=''
+stand_in stand-v || return
+jq -n --arg w "$wait" --arg r "$r" '[
+  {name: "source", tool: $w, kind: "image", fields: {instructions: "A still that takes 4 min, \($r).", megapixels: 0.25, seconds: 240}},
+  {name: "after", tool: "birefnet/remove_background", kind: "image", fields: {image: "<source>"}}]' | boxes_in "$P" || return
+# The still on stand-w, so stand-v runs nothing; BiRefNet after it may go to any of the three.
+coming_go source '["stand-w"]'
+coming_go after '["local","stand-w","stand-v"]'
+for _ in $(seq 300); do
+  cozy --json machine show stand-v > "$OUT/stand-v.json" 2> /dev/null || true
+  held=$(jq -r '[.status.models[]? | select(.repository == "zhengpeng7/birefnet")] | length' "$OUT/stand-v.json" 2> /dev/null || echo 0)
+  state=$(status "$P" | jq -r '[.board.jobs[]? | select(.asset == "after") | .state] | last // empty')
+  [ "${held:-0}" -gt 0 ] && break
+  sleep 1
+done
+echo "prepare: stand-v holds BiRefNet: ${held:-0}; after was ${state:-unknown} then; stand-v's activity: $(jq -c '.status.activity' "$OUT/stand-v.json" 2> /dev/null)"
+[ "${held:-0}" -gt 0 ] || check "prepare: stand-v never downloaded BiRefNet's weights while after waited for source"
+case $state in waiting | ready | queued | '') ;; *) check "prepare: after was $state, not waiting, when stand-v had BiRefNet: no prepare was needed" ;; esac
+coming_done after 600
+timeout 60 "$COZY" --json machine end stand-v --force -y > "$OUT/stand-v-end.json" 2>&1 || true
+timeout 60 "$COZY" --json machine end stand-w --force -y > "$OUT/stand-w-end.json" 2>&1 || true
+}

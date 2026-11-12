@@ -231,6 +231,16 @@ impl Machine {
         json(send(self.request(Method::POST, path::ESTIMATE, &[]).json(jobs)).await?).await
     }
 
+    /// This key's upcoming jobs here, nearest first, replacing its last list (cl-967).
+    pub(crate) async fn upcoming(&self, list: &api::machine::Upcoming) -> Result<api::machine::AheadAnswer, Error> {
+        json(send(self.request(Method::PUT, path::UPCOMING, &[]).json(list)).await?).await
+    }
+
+    /// What this key expects demand for here with no job yet, replacing its last set (cl-967).
+    pub(crate) async fn prepare(&self, list: &api::machine::Prepare) -> Result<api::machine::AheadAnswer, Error> {
+        json(send(self.request(Method::PUT, path::PREPARE, &[]).json(list)).await?).await
+    }
+
     /// The runs this key reads, newest first, before the run numbered `before` (0: the newest).
     pub(crate) async fn runs(&self, before: u64, limit: u32) -> Result<RunList, Error> {
         let request = self.request(Method::GET, path::RUNS, &[]).query(&[("before", before), ("limit", u64::from(limit))]);
