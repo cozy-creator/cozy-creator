@@ -5,6 +5,7 @@ import { useSignal } from "../ui/signal"
 import { useCanvasStore } from "./context"
 import { modelLabel } from "./palette"
 import { ModelPicker } from "./ModelPicker"
+import { ModelConfig } from "./ModelConfig"
 
 /** One current image, its removable tool, and its retained numbered states. */
 export function ImageVersions({ name, view, width }: { name: string; view: ElementView; width: number }) {
@@ -24,6 +25,7 @@ export function ImageVersions({ name, view, width }: { name: string; view: Eleme
         </span>}
         {asset.tool && <button type="button" className="image-models" aria-label="Models and LoRAs" onClick={() => setModelsOpen(true)}>Models &amp; LoRAs</button>}
       </div>
+      <ModelConfig name={name} />
       {modelsOpen && <ModelPicker name={name} onClose={() => setModelsOpen(false)} />}
     </div>
   )

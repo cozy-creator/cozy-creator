@@ -90,6 +90,37 @@
   min-width: 0;
 }
 
+.active-models {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 140px;
+  overflow: auto;
+  text-align: left;
+  font-size: var(--small);
+}
+.active-models li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.active-model-slot {
+  color: var(--mute);
+  text-transform: capitalize;
+}
+.active-model-name {
+  overflow-wrap: anywhere;
+}
+.active-model-strength {
+  flex: none;
+  font-family: var(--mono);
+  color: var(--ember);
+}
+
 .checkpoints h4,
 .picks h4 {
   margin: 8px 0 2px;
