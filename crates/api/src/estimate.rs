@@ -446,15 +446,11 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob]) -> Vec<Quot
         };
         let (time, widths) = machine.timed(&function, &job.size, job.prior_ms as f64, widths);
         quote.basis = time.basis;
-        // GPUs out of service (cl-935) leave too few for it: another machine runs it.
+        // A machine with no GPU runs it on its CPU, as its run then says (clamp and warn): its time is its runs' there. GPUs out of
+        // service (cl-935) leave too few for it: another machine runs it.
         let wanted = (job.gpus as usize).max(usize::from(job.gpu));
         if lost && wanted > machine.gpus {
             quote.refusal = refused("gpu_lost", format!("of this machine's GPUs, {} side by side are in service, and it needs {wanted}", machine.gpus));
-            asked.push((None, quote));
-            continue;
-        }
-        if job.gpu && machine.gpus == 0 {
-            quote.refusal = refused("no_gpu", "this machine has no GPU it may use, and it builds a model on one".into());
             asked.push((None, quote));
             continue;
         }
