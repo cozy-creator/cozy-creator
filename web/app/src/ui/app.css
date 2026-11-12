@@ -988,15 +988,48 @@ code {
   font-size: 17px;
   text-shadow: none;
 }
-/* At rest, how far the whole job is (cl-928): a thin meter along its box's bottom edge, line 1's numbers, drawn only once there's an
-   estimate. Nothing pulses in it. */
+/* At rest, how far the whole job is (cl-928): a thin meter under its two lines, line 1's numbers, drawn only once there's an estimate.
+   Nothing pulses in it. */
 .run-face .face-meter {
+  position: relative;
+  display: block;
+  height: calc(3px * var(--ui));
+  margin-top: 3px;
+  background: color-mix(in srgb, var(--mak) 22%, transparent);
+}
+/* Under a box at rest, as Paul drew it (cl-932): its tool and its shape, then while it renders its two lines with Cancel and its meter, at
+   the box's small step, in the room it keeps clear (shown.ts underOf). Only Cancel takes the pointer: a drag there pans. */
+.tile-under {
   position: absolute;
+  top: calc(100% + 2px);
   left: 0;
   right: 0;
-  bottom: 0;
-  height: calc(3px * var(--ui));
-  background: color-mix(in srgb, var(--mak) 22%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+.tile-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s4);
+  min-width: 0;
+}
+.card .tile-line .node-tool {
+  flex: 0 1 auto;
+  font-size: calc(var(--t-small) * var(--ui));
+}
+.card .tile-line .ratio-rest {
+  position: static;
+  flex: none;
+}
+.tile-under .run-face {
+  position: relative;
+  padding: 0;
+  text-shadow: none;
+}
+.card .head .node-version-label {
+  font: calc(var(--t-body) * var(--ui)) / 1.25 var(--mono);
 }
 .run-face .face-meter i {
   position: absolute;

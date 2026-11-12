@@ -14,14 +14,14 @@ import { AssetEdit, InFrame, RenderButton, TextAsset } from "./AssetEdit"
 import type { CanvasStore, CarriedFile, ElementNode, ElementView } from "./CanvasStore"
 import { carryOnMove } from "./carry"
 import { useCanvasStore, useElement } from "./context"
-import { fieldsOf, shapesOf, snapped } from "./controls"
+import { fieldsOf, shapesOf, shapeWords, snapped } from "./controls"
 import { useDragScroll } from "./dragScroll"
 import { downloadable, Media, Preview, preload, Thumb, usePreview, WalkedFrames } from "./Media"
 import { NameField } from "./NameField"
 import { ORBIT, orbitOf } from "./Orbit"
 import { VideoScrub } from "./VideoScrub"
 import { FPS, framesIn, pickupAt as landsOn, timecode } from "./ranges"
-import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
+import { aspectOf, bodyBox, bodyWidth, faceOf, heightFor, isPicture, madeHere, makes, makingRun, NARROWEST, paints, ratioOf, reshapes, shownOf, toolName, valuesOf, watched, widthFor } from "./shown"
 import { chipWords, noHash, piecesOf, rowsIn, took } from "./text"
 import { TimelineControl } from "./timeline/TimelineControl"
 import { AddOns, Stack } from "./AddOns"
@@ -29,6 +29,7 @@ import { ImageVersions } from "./ImageVersions"
 import { FocusFrame, useFocusResize } from "./FocusFrame"
 import { Asking } from "./Asking"
 import { readableSurface } from "./readableSurface"
+import { RunFace, useArriving } from "./RunFace"
 import type { Box } from "./graph"
 
 const DOTS: Record<string, string> = { current: "s-current", out_of_date: "s-current", making: "s-making", missing: "s-current", failed: "s-failed" }
@@ -597,6 +598,51 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   )
 }
 
+/** The shape it makes as set, else its picture's, else what its tool makes unset (Auto): what a tile says under its picture (cl-932). */
+function useShapeSaid(view: ElementView, name: string): string | null {
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  if (!view.asset || view.shape) return null
+  const field = fieldsOf(view.asset, tools).find((held) => held.type === "shape")
+  const held = field ? store.valueOf(name, field.field) : undefined
+  if (typeof held === "string" && ratioOf(held)) return held
+  const shown = shownOf(view)
+  if (shown?.width && shown.height) return shapeWords(shown.width / shown.height)
+  if (!field) return null
+  const preset = typeof field.default === "string" && ratioOf(field.default) ? field.default : undefined
+  return field.auto ? "Auto" : String(preset ?? field.ratios?.[0] ?? "1:1")
+}
+
+/** Under a box at rest, as Paul drew it (cl-932, 11-12): its tool and its shape; then, while it renders, cl-898's two lines with Cancel and
+ *  the whole job's meter. Nothing else: what it can do is in Focus. It hangs under it, in the room it keeps clear (`underOf`). */
+function Under({ view, name, lite }: { view: ElementView; name: string; lite: boolean }) {
+  const store = useCanvasStore()
+  const tools = useSignal(store.tools)
+  const arriving = useArriving(view)
+  const shape = useShapeSaid(view, name)
+  const asset = view.asset
+  if (!asset || view.placing) return null
+  const tool = asset.tool ? tools.get(asset.tool) : undefined
+  // What makes it (Paul, 11-12: "I want to see what tools are attached").
+  const named = asset.tool ? (tool ? toolName(tool) : asset.tool) : null
+  const onItsWay = asset.standing === "making" || Boolean(view.queued) || view.asked !== undefined
+  const going = (onItsWay || arriving !== undefined) && asset.rendering == null
+  const line = !lite && (named || shape)
+  if (!line && !going) return null
+  return (
+    <div className="tile-under">
+      {line && (
+        <div className="tile-line">
+          {named && <span className="node-tool" title={asset.tool!}>{named}</span>}
+          <span className="sp" />
+          {shape && <span className="ratio-rest">{shape}</span>}
+        </div>
+      )}
+      {going && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} />}
+    </div>
+  )
+}
+
 const CardBody = memo(function CardBody({ name, width, focused = false, snapshot }: { name: string; width: number; focused?: boolean; snapshot?: ElementView }) {
   const store = useCanvasStore()
   const flow = useReactFlow<ElementNode>()
@@ -741,7 +787,6 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
   const asset = view.asset
   const versions = asset?.prefixes ?? []
   const shown = shownOf(view)
-  const tool = asset?.tool ? tools.get(asset.tool) : undefined
   const at = versions.findIndex((version) => version.number === shown?.number)
   const shownVersion = versions.find((version) => version.number === shown?.number)
   const face = faceOf(view)
@@ -795,9 +840,7 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
             {view.placing ? store.shownName(store.resolveName(name)) : view.name}
           </span>
         )}
-        {view.draft === undefined && (asset ? asset.kind === "image" && shown?.number !== undefined : isPicture(view)) && <span className="node-version-label">v{asset ? shown?.number : 1}</span>}
-        {/* What makes it, beside its name (Paul, 11-12: "I want to see what tools are attached"). */}
-        {view.draft === undefined && !lite && asset?.tool && <span className="node-tool" title={asset.tool}>{tool ? toolName(tool) : asset.tool}</span>}
+        {view.draft === undefined && (asset ? (here ? asset.kind === "image" : asset.kind !== "text") && shown?.number !== undefined : isPicture(view)) && <span className="node-version-label">v{asset ? shown?.number : 1}</span>}
         {view.draft === undefined && !lite && <span className="sp" />}
         {view.draft === undefined && here && asset?.kind !== "image" && versions.length > 1 && at >= 0 && (
           <span className="count">
@@ -837,7 +880,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
             </button>
           )
         )}
-        <span className={`dot ${dotOf(view)}`} />
+        {/* At rest its render breathes around it and says how it goes under it: the dot says only a failure. */}
+        {(here || dotOf(view) === "s-failed") && <span className={`dot ${dotOf(view)}`} />}
       </div>
       )}
       <FocusFrame enabled={focused} aspect={aspectOf(view)} fitted={asset?.kind !== "text" && !(asset?.timeline && editing)}>{asset?.timeline && editing ? (
@@ -860,7 +904,8 @@ const CardBody = memo(function CardBody({ name, width, focused = false, snapshot
       {rendering && <span className="render-wave" aria-hidden="true" />}
       {focused && asset?.kind === "video" && !asset.timeline && !editing && <VideoScrub name={name} view={view} />}
       {here && !lite && asset && (asset.kind === "image" || (asset.kind === "video" && !asset.timeline && !editing)) && !view.placing && <ImageVersions name={name} view={view} width={width} />}
-      {!lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
+      {here && !lite && asset && asset.kind !== "image" && !view.hereWords && !view.placing && !looking && <ShapeLine name={name} view={view} />}
+      {!here && !focused && <Under view={view} name={name} lite={lite} />}
       {view.refused && <div className="refused-line">{view.refused}</div>}
       {!here && view.asking && (
         <div className="rest-asking nodrag nopan nowheel">

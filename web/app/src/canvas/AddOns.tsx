@@ -12,8 +12,7 @@ import { ModelConfig } from "./ModelConfig"
 const said = (addOn: AddOn) => `${addOn.lora ? "LoRA" : "Fine-tune"} ${addOn.ref}`
 
 /** One thing on a box: its word, and an X when it can come off. */
-export function Chip({ word, title, kind, off, mark, pick }: { word: string; title: string; kind?: "tool" | "fine-tune"; off?: { label: string; take(): void }; mark?: boolean; pick?: () => void }) {
-  if (mark) return <li className={`add-on ${kind ?? ""}`} title={title} />
+export function Chip({ word, title, kind, off, pick }: { word: string; title: string; kind?: "tool" | "fine-tune"; off?: { label: string; take(): void }; pick?: () => void }) {
   return (
     <li className={`add-on ${kind ?? ""}`} title={title} onClick={(event) => event.stopPropagation()}>
       <span className="add-on-word">{word}</span>
@@ -35,13 +34,12 @@ function useAddOns(name: string) {
   return { held: addOnsOf(lora, models), lora, models, store }
 }
 
-/** What's on a box, its tool first, each with its X: as many as it holds. Far out, each is only a mark. */
+/** What makes an open box: its tool, with its X, and its models and LoRAs under it. */
 export function Stack({ name }: { name: string }) {
   const [modelsOpen, setModelsOpen] = useState(false)
-  const { held, lora, models, store } = useAddOns(name)
+  const { held, store } = useAddOns(name)
   const view = useElement(name)
   const tools = useSignal(store.tools)
-  const mark = useSignal(store.far) && !view?.here
   const tool = view?.asset?.tool
   const known = tool ? tools.get(tool) : undefined
   const made = tool === "cozy/edit" ? "Video Timeline" : tool && !madeHere(tool) ? (known ? modelLabel(known) : (tool.split("/").at(-2) ?? tool)) : null
@@ -49,17 +47,7 @@ export function Stack({ name }: { name: string }) {
   return (
     <>
     <ul className="add-ons nodrag nopan" aria-label={`What's on ${name}`}>
-      {made && <Chip word={made} title={made} kind="tool" mark={mark} pick={known?.models?.length || known?.model ? () => setModelsOpen(true) : undefined} off={{ label: `Take ${made} off ${name}`, take: () => store.takeToolOff(name) }} />}
-      {!view?.here && held.map((addOn) => (
-        <Chip
-          key={`${addOn.slot}:${addOn.ref}`}
-          word={wordOf(addOn.ref)}
-          title={said(addOn)}
-          kind={addOn.lora ? undefined : "fine-tune"}
-          mark={mark}
-          off={{ label: `Take ${wordOf(addOn.ref)} off ${name}`, take: () => store.putOn(name, takenOff(addOn, lora, models)) }}
-        />
-      ))}
+      {made && <Chip word={made} title={made} kind="tool" pick={known?.models?.length || known?.model ? () => setModelsOpen(true) : undefined} off={{ label: `Take ${made} off ${name}`, take: () => store.takeToolOff(name) }} />}
     </ul>
     {view?.here && <ModelConfig name={name} />}
     {modelsOpen && <ModelPicker name={name} onClose={() => setModelsOpen(false)} />}
@@ -67,7 +55,8 @@ export function Stack({ name }: { name: string }) {
   )
 }
 
-/** Under a box on the canvas, at its left: its stack, and while something's carried whether it would take it. It follows the box, and is no part of its size. Written in where it stands, the stack goes with what's under it. */
+/** On a box on the canvas, while something's carried: whether it would take it. Its stack is in Focus: at rest a box says only its tool and
+ *  shape under it (cl-932). */
 export function AddOns({ name }: { name: string }) {
   const store = useCanvasStore()
   const view = useElement(name)
@@ -77,7 +66,6 @@ export function AddOns({ name }: { name: string }) {
   return (
     <>
       {going && !going.whyNot(name, view, tools) && <span className="box-takes" />}
-      {!view.here && view.asset.kind !== "image" && <Stack name={name} />}
     </>
   )
 }

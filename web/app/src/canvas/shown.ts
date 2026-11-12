@@ -40,25 +40,25 @@ export const selectedOf = (view: ElementView): Shown | null => shownOf(view, tru
 export const HEAD = 32
 
 /**
- * What hangs off a box at rest, its name over it and its shape's word and add-ons under it, is drawn at the canvas's scale like the
- * rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
+ * What hangs off a box at rest, its name over it and its tool, shape and render's lines under it (cl-932), is drawn at the canvas's scale
+ * like the rest of it. A box keeps twice that room clear: its name never lies on the box above, nor what hangs under one on the box below.
  */
 const HANG = 2
-// As app.css and AddOns.css draw them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
+// As app.css draws them: tokens.css's title and small steps at the frame's --ui, on lines of 1.25, and its × 30 square.
 const TITLE_LINE = 15.5 * 1.35 * 1.25
 const SMALL_LINE = 10.5 * 1.35 * 1.25
 const CLOSE = 30
 /** How far its head rises over its box at most, its name or its × whichever is taller: HEAD tall, it keeps 24 of it under them, clear of the picture. */
 const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
-/** An add-on chip: a small line, 2 px over and under it, and its border; the gap under each; and how far under its box they start. */
-const CHIP = Math.ceil((SMALL_LINE + 4) * HANG + 2)
-const CHIP_GAP = Math.ceil(4 * HANG)
-const STACK_GAP = 4
+/** A render's two lines (RunFace, on lines of 1.35) and its meter, 3 px at the frame's --ui, with the gaps over them. */
+const RUN = 2 * 10.5 * 1.35 * 1.35 + 3 * 1.35 + 7
 
-/** The room a box keeps clear under it: its add-ons, else its shape's word, then the room the name of a box below it rises into. */
-export function underOf(view: ElementView, chips: number): number {
-  const hung = chips ? STACK_GAP + chips * CHIP + (chips - 1) * CHIP_GAP : view.asset?.tool ? Math.ceil(SMALL_LINE * HANG) : 0
-  return hung + RISE
+/** The room a box keeps clear under it (cl-932): its tool and shape, and if it renders, how its render goes, then the room the name of a box
+ *  below it rises into. */
+export function underOf(view: ElementView): number {
+  const asset = view.asset
+  const line = asset && (asset.tool || asset.kind !== "text") ? SMALL_LINE + 2 : 0
+  return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
 const ENTITY_DESC = 60
 const ENTITY_SLOTS = 72

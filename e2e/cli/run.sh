@@ -300,6 +300,8 @@ case $SHARD in
   web-scrub) export DB_WEB=scrub; parts="tools_read db_existing_web logs" ;;
   # The tool beside a box's name (cl-927).
   web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
+  # A box's models and LoRAs, open (web/addons.js; at rest it has no chips, cl-932).
+  web-addons) export DB_WEB=addons; parts="tools_read db_existing_web logs" ;;
   # The right-side panel closed by a click off it (cl-929).
   web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;
   # No New on an empty box (cl-925).
@@ -316,6 +318,8 @@ case $SHARD in
   web-donetoast) export DB_WEB=donetoast; parts="tools_read db_existing_web logs" ;;
   # A rendering box at rest, and new takes not looked at (cl-928).
   web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
+  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it.
+  web-tiles) export DB_WEB="tiles newtakes"; parts="tools_read db_existing_web logs" ;;
   web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
   web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
   # Files dropped: twenty pictures at once, each drawn once where and as it stays (cl-918), and Place's drop, chooser, rename and moves.
