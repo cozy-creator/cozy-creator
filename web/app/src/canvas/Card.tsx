@@ -6,7 +6,7 @@ import { flushSync } from "react-dom"
 import { machinesQuery } from "../api/queries"
 import { useConnection } from "../app/Connection"
 import { useWaitsOn } from "../panels/machines/activity"
-import type { MainFile } from "../api/calcifer"
+import type { MainFile, ToolField } from "../api/calcifer"
 import { Icon } from "../ui/Icon"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -576,6 +576,12 @@ function Corner({ name, view, width, focused = false }: { name: string; view: El
   )
 }
 
+/** What a shape field makes with none set, past Auto: its default, else its first ratio, else 1:1. */
+function shapeFallback(field: ToolField): string {
+  const fixedRatio = field.ratios?.find((ratio): ratio is string => typeof ratio === "string" && ratioOf(ratio) !== undefined)
+  return typeof field.default === "string" && ratioOf(field.default) ? field.default : fixedRatio ?? "1:1"
+}
+
 /** The shape a box makes, by its corner: the one set, else Auto. Open, the one set has an × that takes it back to Auto. Being pulled, the middle says it. */
 function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const store = useCanvasStore()
@@ -583,8 +589,7 @@ function ShapeLine({ name, view }: { name: string; view: ElementView }) {
   const field = view.asset && fieldsOf(view.asset, tools).find((held) => held.type === "shape")
   if (!field || view.shape) return null
   const held = store.valueOf(name, field.field)
-  const fixedRatio = field.ratios?.find((ratio): ratio is string => typeof ratio === "string" && ratioOf(ratio) !== undefined)
-  const fallback = typeof field.default === "string" && ratioOf(field.default) ? field.default : fixedRatio ?? "1:1"
+  const fallback = shapeFallback(field)
   if (typeof held !== "string" || !ratioOf(held)) return <span className="ratio-rest">{field.auto ? "Auto" : fallback}</span>
   return (
     <span className="ratio-rest">
@@ -609,8 +614,7 @@ function useShapeSaid(view: ElementView, name: string): string | null {
   const shown = shownOf(view)
   if (shown?.width && shown.height) return shapeWords(shown.width / shown.height)
   if (!field) return null
-  const preset = typeof field.default === "string" && ratioOf(field.default) ? field.default : undefined
-  return field.auto ? "Auto" : String(preset ?? field.ratios?.[0] ?? "1:1")
+  return field.auto ? "Auto" : shapeFallback(field)
 }
 
 /** Under a box at rest, as Paul drew it (cl-932, 11-12): its tool and its shape; then, while it renders, cl-898's two lines with Cancel and

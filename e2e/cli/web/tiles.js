@@ -14,7 +14,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
+const { projectFromPage, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, importYaml, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 // A still made in slow steps, so its tile is seen rendering at both zooms; it's canceled from its tile.
@@ -76,12 +76,18 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
 (async () => {
   const base = calcifer();
   const browser = await launch(playwright);
-  const page = await (await browser.newContext({ viewport: { width: 1600, height: 1000 } })).newPage();
+  const page = await (await browser.newContext({ viewport: { width: 1700, height: 1300 } })).newPage();
   lookAt(page);
   page.setDefaultTimeout(STEP_MS);
   const errors = [];
   page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
-  const shot = (name, clip) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png`, ...(clip ? { clip } : {}) }) : Promise.resolve());
+  // A tile's own shot, of what of it is on the screen.
+  const shot = (name, clip) => {
+    if (!process.env.SHOT) return Promise.resolve();
+    const seen = clip && { x: Math.max(0, clip.x), y: Math.max(0, clip.y), width: Math.min(1700, clip.x + clip.width) - Math.max(0, clip.x), height: Math.min(1300, clip.y + clip.height) - Math.max(0, clip.y) };
+    if (seen && (seen.width < 8 || seen.height < 8)) return Promise.resolve();
+    return page.screenshot({ path: `${process.env.SHOT}-${name}.png`, ...(seen ? { clip: seen } : {}) });
+  };
 
   await signIn(page);
   await page.waitForSelector('.top');
@@ -123,8 +129,11 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
   await post(`${at}/assets`, { tool: video.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 5 }] }, at: { x: 380, y: 0 } });
   await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
   await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png')), name: 'plain', exact: true, at: { x: 820, y: 0 } });
-  for (const name of ['still', 'shot', 'plain', 'slow']) await boxOf(page, name).waitFor();
-  await page.mouse.move(2, 998);
+  for (const name of ['still', 'shot', 'plain', 'slow', 'again']) await boxOf(page, name).waitFor();
+  // The two this computer renders, in a row under the others.
+  projectJson(project, 'PATCH', '/canvas', { cards: { slow: { x: 0, y: 560 }, again: { x: 380, y: 560 } } });
+  await until('the rows placed', () => boxOf(page, 'again').evaluate((node) => node.getBoundingClientRect().top > document.querySelector('.react-flow__node:has(.card[data-asset="still"])').getBoundingClientRect().bottom), Boolean).catch(() => {});
+  await page.mouse.move(2, 1298);
   await page.keyboard.press('f');
   await settled(page);
 
@@ -149,6 +158,8 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
       // Under its picture: its tool and shape first, then its render.
       ordered: (!line || r(line).top >= m.bottom - 1) && (!face || r(face).top >= (line ? r(line).bottom : m.bottom) - 1),
       chips: node.querySelectorAll('.add-on, .add-ons').length,
+      // What its tool is called, as many times as the tile says it; and no Models & LoRAs on it.
+      text: node.innerText,
       stray: card.querySelectorAll(':scope > .ratio-rest, .head .node-tool').length,
       wave: Boolean(card.querySelector(':scope > .render-wave')),
       rect: (() => { const all = [card, under].filter(Boolean).map(r); const top = Math.min(...all.map((b) => b.top)) - 40, bottom = Math.max(...all.map((b) => b.bottom)) + 8, left = Math.min(...all.map((b) => b.left)) - 8, right = Math.max(...all.map((b) => b.right)) + 8; return { x: Math.max(0, left), y: Math.max(0, top), width: right - Math.max(0, left), height: bottom - Math.max(0, top) }; })(),
@@ -191,7 +202,10 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
     check(`${z}_still_tool_and_shape`, still.tool === named(image) && SHAPE.test(still.shape ?? ''), still);
     check(`${z}_video_tool_and_shape`, film.tool === named(video) && SHAPE.test(film.shape ?? ''), film);
     check(`${z}_plain_shape_only`, plain.tool === null && SHAPE.test(plain.shape ?? ''), plain);
-    check(`${z}_nothing_else`, Object.values(tiles).every((one) => one.chips === 0 && one.stray === 0 && one.ordered), tiles);
+    check(`${z}_nothing_else`, Object.values(tiles).every((one) => one.chips === 0 && one.stray === 0 && one.ordered && !/Models\s*&\s*LoRAs/i.test(one.text)), tiles);
+    // Paul, 11-12: the tool once, beneath the picture, "MiniMax H3 · Shot".
+    const times = (text, word) => text.split(word).length - 1;
+    check(`${z}_tool_once_beneath`, times(still.text, named(image)) === 1 && times(film.text, named(video)) === 1 && times(still.text, image.package_title ?? named(image)) === 1 && times(film.text, video.package_title ?? named(video)) === 1, { still: still.text, shot: film.text });
     check(`${z}_idle_say_no_render`, [still, film, plain].every((one) => one.lines === null && !one.wave), tiles);
     if (slow) check(`${z}_rendering_lines_under_with_cancel`, slow.lines?.length === 2 && slow.cancel === 'Cancel' && slow.wave && slow.ordered && Boolean(slow.tool) && SHAPE.test(slow.shape ?? ''), slow);
   }
@@ -200,7 +214,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+|Auto)$/;
   // Cancel on the tile stops its render, and its lines go.
   if (local) {
     await zoomTo(1);
-    await boxOf(page, 'slow').locator('.tile-under .face-cancel').click();
+    await boxOf(page, 'slow').locator('.tile-under .face-cancel').evaluate((button) => button.click());
     const stopped = await until('slow stopped', async () => ({ asset: (await api(at)).body.assets.find((one) => one.name === 'slow'), lines: (await tile('slow')).lines }), (now) => !now.asset?.making?.length && now.lines === null, 60_000).catch((why) => ({ why: String(why) }));
     check('cancel_on_the_tile', !stopped.why && !stopped.asset?.versions, stopped);
   }
