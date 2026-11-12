@@ -79,6 +79,8 @@ pub(crate) fn join(device: i32, shared: bool) -> Result<()> {
         }
         last = recover(device, BRING_UP_BYTES, Instant::now() + PEER_WAIT) == Recovery::Final;
     }?;
+    // What other programs hold as this process begins: a wait is only ever for what they took since.
+    let _ = others_came(device);
     if let Some(serving) = serving {
         let mut donor = Native::new(device, shared, uuid)?;
         std::thread::Builder::new().name(format!("varena-owner-{device}")).spawn(move || {
@@ -126,6 +128,42 @@ fn nvml_device<'a>(nvml: &'a Nvml, b: &[u8; 16]) -> Option<nvml_wrapper::Device<
     let name = format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
     nvml.device_by_uuid(format!("GPU-{name}")).or_else(|_| nvml.device_by_uuid(format!("MIG-{name}"))).ok()
+}
+
+static NVML: std::sync::OnceLock<Option<Nvml>> = std::sync::OnceLock::new();
+/// Each device's least memory other programs held, NVML's, from this process's start.
+static OTHERS: Mutex<BTreeMap<i32, u64>> = Mutex::new(BTreeMap::new());
+
+/// The card's memory by process, NVML's: this process's and every other's. None unless NVML lists this
+/// process under its own pid (in its own PID namespace, as recent drivers translate a container's too).
+fn split(device: i32) -> Option<(u64, u64)> {
+    let uuid = cuda::device_uuid(device).ok()?;
+    let nvml = NVML.get_or_init(|| Nvml::init().ok()).as_ref()?;
+    let gpu = nvml_device(nvml, &uuid)?;
+    let mut rows = BTreeMap::<u32, u64>::new();
+    for process in gpu.running_compute_processes().ok()?.into_iter().chain(gpu.running_graphics_processes().ok()?) {
+        let UsedGpuMemory::Used(bytes) = process.used_gpu_memory else { return None };
+        let value = rows.entry(process.pid).or_default();
+        *value = (*value).max(bytes); // Compute and graphics can report the same process.
+    }
+    let me = std::process::id();
+    let ours = *rows.get(&me)?;
+    Some((ours, rows.iter().filter(|(pid, _)| **pid != me).map(|(_, bytes)| *bytes).sum()))
+}
+
+/// What other programs took on `device` since this process began, which a wait may get back. This
+/// process's own memory beyond its pages (its context, modules, libraries' workspaces) is outside
+/// them too and never comes back: NVML splits the card by process where it lists this one, else only
+/// peers' ledger rows are known to be another's (var-019: a capped executor waited 300 s for 155 MB
+/// that was its own, run 47309).
+pub(crate) fn others_came(device: i32) -> usize {
+    if let Some((_, others)) = split(device) {
+        let mut floors = OTHERS.lock().unwrap_or_else(|error| error.into_inner());
+        let floor = floors.entry(device).or_insert(others);
+        *floor = (*floor).min(others);
+        return others.saturating_sub(*floor) as usize;
+    }
+    service(device).map_or(0, |service| service.table.held_elsewhere_bytes(service.row) as usize)
 }
 
 /// What the driver keeps of this card: NVML counts it and CUDA's total leaves it out (378 MiB of a
