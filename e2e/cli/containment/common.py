@@ -126,7 +126,12 @@ class Receipt:
             if isinstance(value, dict):
                 return all(re.fullmatch(r"[a-z][a-z0-9_]*", key) and safe(item) for key, item in value.items())
             return False
-        require(re.fullmatch(r"[a-z][a-z0-9_]*", case) and safe(facts), "receipt_schema")
+        ordinary = dict(facts)
+        setup = ordinary.pop("browser_startup_diagnostic", None)
+        setup_safe = setup is None or (case == "cli_failure" and facts.get("action_open") is True
+            and isinstance(setup, str) and len(setup.encode()) <= 4096
+            and all(ord(ch) >= 32 or ch in "\n\t" for ch in setup))
+        require(re.fullmatch(r"[a-z][a-z0-9_]*", case) and safe(ordinary) and setup_safe, "receipt_schema")
         self.value["cases"][case] = facts
         self.save()
 

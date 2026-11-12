@@ -275,7 +275,7 @@ jobs:
             python3 -m py_compile .creator/e2e/capabilities/private_cache.py
           fi
           python3 - <<'PY'
-          import ast
+          import ast, sys, tempfile
           from pathlib import Path
           folder = Path('.creator/e2e/cli/containment')
           for path in folder.glob('*.py'):
@@ -290,6 +290,22 @@ jobs:
                                   compile(ast.literal_eval(node.value), f'{path}:{target.id}', 'exec')
                                   found.add(target.id)
                   assert found == expected
+          if folder.is_dir():
+              sys.path.insert(0, str(folder))
+              from common import Receipt, Failure
+              with tempfile.TemporaryDirectory() as directory:
+                  receipt = Receipt(Path(directory) / 'receipt.json', '0' * 64)
+                  receipt.add('cli_failure', action_open=True, browser_startup_diagnostic='FATAL: public pre-page setup')
+                  for case, facts in [('other', {'browser_startup_diagnostic': 'rejected'}),
+                                      ('cli_failure', {'action_open': False, 'browser_startup_diagnostic': 'rejected'}),
+                                      ('cli_failure', {'action_open': True, 'browser_startup_diagnostic': 'x' * 4097}),
+                                      ('cli_failure', {'action_open': True, 'raw_output': 'rejected'})]:
+                      try:
+                          receipt.add(case, **facts)
+                      except Failure:
+                          pass
+                      else:
+                          raise AssertionError('receipt accepted an unapproved diagnostic')
           PY
       # Each ref resolves once, here, to the commit every job checks out: a branch that moves mid-run never mixes two
       # commits in one run (one master's coverage.toml against another's candidate cozy, cozy-runtime 40887117045).

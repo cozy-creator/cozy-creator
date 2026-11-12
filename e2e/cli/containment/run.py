@@ -326,8 +326,16 @@ def main() -> int:
         return 0
     except BaseException as error:
         # Exception messages, response reprs, SQL values and command output can contain canaries.
+        receipt.value["failed_case"] = phase
+        receipt.value["error_class"] = type(error).__name__
+        if isinstance(error, Failure):
+            receipt.value["failed_check"] = error.code
+        receipt.save()
         if native.failure is not None:
-            receipt.add("cli_failure", **native.failure)
+            try:
+                receipt.add("cli_failure", **native.failure)
+            except Failure:
+                receipt.value["diagnostic_rejected"] = True
         if phase == "browser_open" and proof is not None and alive(proof.birth):
             try:
                 observed = proof.ask("snapshot")
@@ -336,10 +344,6 @@ def main() -> int:
                             caf_alive=alive(proof.birth), observed_processes=len(observed.get("processes", [])))
             except BaseException:
                 receipt.add("browser_open_failure", snapshot_unavailable=True, caf_alive=alive(proof.birth))
-        receipt.value["failed_case"] = phase
-        receipt.value["error_class"] = type(error).__name__
-        if isinstance(error, Failure):
-            receipt.value["failed_check"] = error.code
         receipt.save()
         return 1
     finally:
