@@ -274,6 +274,23 @@ jobs:
           if [ -f .creator/e2e/capabilities/private_cache.py ]; then
             python3 -m py_compile .creator/e2e/capabilities/private_cache.py
           fi
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+          folder = Path('.creator/e2e/cli/containment')
+          for path in folder.glob('*.py'):
+              tree = ast.parse(path.read_text(), filename=str(path))
+              if path.name == 'remote_cpu.py':
+                  expected = {'PROGRAM', 'CONFIGURE', 'JOURNAL', 'CLOSE'}
+                  found = set()
+                  for node in tree.body:
+                      if isinstance(node, ast.Assign):
+                          for target in node.targets:
+                              if isinstance(target, ast.Name) and target.id in expected:
+                                  compile(ast.literal_eval(node.value), f'{path}:{target.id}', 'exec')
+                                  found.add(target.id)
+                  assert found == expected
+          PY
       # Each ref resolves once, here, to the commit every job checks out: a branch that moves mid-run never mixes two
       # commits in one run (one master's coverage.toml against another's candidate cozy, cozy-runtime 40887117045).
       - id: pin
