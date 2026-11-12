@@ -559,8 +559,9 @@ export class CanvasStore {
     return null
   }
 
-  /** Writing its next take in its frame, the caret in its words, which takes them again when it's already there. Words that hold nothing but a take of its
-   * own begin from the one looked at, as `<self.N>`; `lead`: whatever they hold, that take is the first they mention. */
+  /** Writing its next take in its frame, the caret in its words, which takes them again when it's already there. The words are those last written, word
+   * for word (cl-909), from the take looked at: their first take of its own is that one, `<self.N>` (Paul 11-06). Words with none stay as they are; `lead`
+   * puts it first. */
   writeNext(name: string, lead = false) {
     const view = this.get(name)
     const asset = view?.asset
@@ -570,8 +571,7 @@ export class CanvasStore {
     const words = typeof said === "string" ? said : ""
     const number = shownOf(view)?.number
     const self = `<${SELF}.${number}>`
-    const first = mentionsIn(words)[0]
-    const next = asset.kind === "image" && number !== undefined ? `${self} ` : /^\s*(<self\.\d+>\s*)?$/i.test(words) ? `${self} ` : !lead ? words : first && isSelf(versionOf(first)?.name ?? "") ? words.replace(`<${first}>`, self) : `${self} ${words}`
+    const next = /^\s*(<self\.\d+>\s*)?$/i.test(words) ? `${self} ` : /<self\.\d+>/i.test(words) ? words.replace(/<self\.\d+>/i, self) : lead ? `${self} ${words}` : words
     if (number !== undefined && next !== words) this.setDraft(name, field, next)
     this.focusing = name
     this.patch(name, { hereWords: true })
