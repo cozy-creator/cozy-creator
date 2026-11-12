@@ -104,7 +104,7 @@ impl<'a> Sender<'a> {
     }
 
     fn memo(&self) -> PathBuf {
-        self.ctx.home.root().join("cache").join("digests")
+        self.ctx.home.root().join("cache").join("independent-digests-v3")
     }
 
     /// The file at `path`, held by Calcifer: its digest.
