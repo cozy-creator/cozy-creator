@@ -136,6 +136,7 @@ case $suite:$shard in
   cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
+  cli:idle) needs='packages downloads' ;;
   cli:web-palette) needs='packages catalog' ;;
   cli:web-models) needs='packages loras' ;;
   cli:) needs='packages birefnet downloads loras' ;;
