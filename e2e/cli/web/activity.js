@@ -138,19 +138,38 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   // each phase): `phases/<n>-<phase>.png` beside $SHOT, in the run's artifact.
   const phases = process.env.SHOT ? join(dirname(process.env.SHOT), 'phases') : null;
   if (phases) mkdirSync(phases, { recursive: true });
-  const pictured = { n: 0, last: '', done: !phases };
+  const pictured = { n: 0, last: '', done: false, hidden: [] };
   const picturing = (async () => {
-    const box = page.locator('.react-flow__node:has(.card[data-asset="waits"])').first();
     while (!pictured.done) {
+      // The box and what hangs under it (cl-932: its render's two lines and Cancel are under the picture), as one picture.
       const now = await page.evaluate(() => {
-        const face = document.querySelector('.card[data-asset="waits"] .run-face');
-        return face ? `${face.dataset.phase}|${face.querySelector('.face-state b')?.textContent ?? ''}` : '';
-      }).catch(() => '');
-      if (now && now !== pictured.last) {
+        const card = document.querySelector('.card[data-asset="waits"]');
+        const face = card?.querySelector('.run-face');
+        if (!face) return null;
+        const node = card.closest('.react-flow__node') ?? card;
+        const rects = [node, card, face, card.querySelector('.tile-under')].filter(Boolean).map((one) => one.getBoundingClientRect());
+        const [x, y] = [Math.min(...rects.map((r) => r.left)), Math.min(...rects.map((r) => r.top))];
+        const [right, bottom] = [Math.max(...rects.map((r) => r.right)), Math.max(...rects.map((r) => r.bottom))];
+        const said = `${face.dataset.phase}|${face.querySelector('.face-machine')?.textContent ?? ''}|${face.querySelector('.face-state b')?.textContent ?? ''}`;
+        // Its two lines are there to read: words, on screen, drawn, not clipped by what holds them.
+        const shown = (line) => {
+          if (!line?.textContent.trim()) return false;
+          const r = line.getBoundingClientRect();
+          const style = getComputedStyle(line);
+          const within = r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth;
+          const cut = [...(function* up(at) { for (let one = at.parentElement; one && one !== card.parentElement; one = one.parentElement) yield one; })(line)]
+            .some((one) => getComputedStyle(one).overflow !== 'visible' && (() => { const o = one.getBoundingClientRect(); return r.bottom > o.bottom + 1 || r.top < o.top - 1; })());
+          return within && !cut && style.visibility !== 'hidden' && Number(style.opacity) > 0;
+        };
+        const visible = shown(face.querySelector('.face-machine')) && shown(face.querySelector('.face-state b'));
+        return { said, visible, clip: { x: Math.max(0, x - 8), y: Math.max(0, y - 8), width: right - x + 16, height: bottom - y + 16 } };
+      }).catch(() => null);
+      if (now && now.said.split('|')[2] !== pictured.last.split('|')[2] || now && now.said.split('|')[0] !== pictured.last.split('|')[0]) {
         pictured.n += 1;
-        await box.screenshot({ path: join(phases, `${String(pictured.n).padStart(2, '0')}-${now.split('|')[0]}.png`) }).catch(() => {});
+        if (phases) await page.screenshot({ path: join(phases, `${String(pictured.n).padStart(2, '0')}-${now.said.split('|')[0]}.png`), clip: now.clip }).catch(() => {});
       }
-      pictured.last = now;
+      if (now && !now.visible) pictured.hidden.push(now.said);
+      pictured.last = now?.said ?? '';
       await page.waitForTimeout(100);
     }
   })();
@@ -166,6 +185,8 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   pictured.done = true;
   await picturing;
   seen.phase_pictures = pictured.n;
+  // Paul, 11-12: a box on its way says where, what it's doing with its numbers, and its time, in every phase, to be read.
+  check('face_lines_readable_in_every_phase', pictured.n > 0 && pictured.hidden.length === 0, [...new Set(pictured.hidden)].slice(0, 5));
   if (!first.version) throw new Error(`its render failed: ${first.failure.message}`);
   const said = await page.evaluate(() => window.said);
   seen.said = said;
