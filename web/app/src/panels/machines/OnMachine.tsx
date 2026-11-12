@@ -8,7 +8,7 @@ import type { Agreed, RunQuote } from "../../api/calcifer"
 import { Failure, useAsk, useSignedIn } from "../common"
 import { usd } from "../format"
 import { lost } from "./order"
-import { gpusWords } from "./words"
+import { called, gpusWords } from "./words"
 
 export interface Placed {
   /** Absent: Calcifer says where. */
@@ -105,7 +105,7 @@ export function OnMachine<Body extends object, Answer>({
               .filter((machine) => machine.kind !== "local")
               .map((machine) => (
                 <option key={machine.name} value={machine.name}>
-                  {[machine.name, gpusWords(machine), machine.rental && `${usd(machine.rental.usd_micros_per_hour)}/h`, machine.state === "booting" && "booting"].filter(Boolean).join(" · ")}
+                  {[called(machine), gpusWords(machine), machine.rental && `${usd(machine.rental.usd_micros_per_hour)}/h`, machine.state === "booting" && "booting"].filter(Boolean).join(" · ")}
                 </option>
               ))}
             {machines.length > 1 && <option value="any">any of these</option>}
