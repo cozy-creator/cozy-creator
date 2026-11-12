@@ -9,7 +9,7 @@
 // 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
-const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, carry, closeBox, fitCanvas, implementationRow, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
+const { projectFromPage, calcifer, signIn, STEP_MS, boxOf, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -70,6 +70,12 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   const asset = async (name) => (await state())?.assets?.find((row) => row.name === name);
   seen.project = { id, folder: (await state()).path };
   const box = (name) => boxOf(page, name);
+  // Nothing open: a box opened in Focus is there twice, on the canvas and in Focus.
+  const leave = async () => {
+    if (!(await page.locator('.card.here').count())) return;
+    await page.keyboard.press('Escape');
+    await until('nothing open', () => page.locator('.card.here').count(), (n) => n === 0);
+  };
 
   // The Hub's own word on what it holds, read by the CLI: each package with a release.
   const ls = JSON.parse(execFileSync(process.env.COZY, ['--json', 'package', 'ls', '--limit', '200'], { encoding: 'utf8' }));
@@ -127,12 +133,12 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   const made = await until('a box of it', async () => (await state()).assets.find((row) => !before.includes(row.name)), Boolean).catch(() => null);
   seen.image_box = made && { name: made.name, tool: made.tool, kind: made.kind };
   check('a_hub_image_tool_makes_its_box', made?.tool === image && made.kind === 'image', seen.image_box);
-  await closeBox(page);
+  await leave();
 
   // A video upscaler dropped on a video box goes on it.
   await carry(page, page.locator('.tools [data-palette="nodes"] li.tool[data-node="video"]'), await openCanvas(page));
   const video = await until('a video box', async () => (await state()).assets.find((row) => !before.includes(row.name) && row.kind === 'video'), Boolean);
-  await closeBox(page);
+  await leave();
   const upscaler = wanted.upscale_video.find((tool) => !tool.startsWith('minimax-h3/')) ?? wanted.upscale_video[0];
   await fitCanvas(page);
   await box(video.name).waitFor();
@@ -143,7 +149,7 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   const upscaled = await until('the upscaler on it', () => asset(video.name), (now) => now?.tool === upscaler).catch(() => null);
   seen.video_box = upscaled && { name: upscaled.name, tool: upscaled.tool, kind: upscaled.kind };
   check('a_hub_video_upscaler_goes_on_a_video_box', upscaled?.tool === upscaler && upscaled.kind === 'video', { upscaler, asset: await asset(video.name) });
-  await closeBox(page);
+  await leave();
   await shot('boxes');
 
   // Taken off, it's off the list at rest and the palette; its package added, it's back.
