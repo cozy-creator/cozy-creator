@@ -148,6 +148,8 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
     while (!pictured.done) {
       // The box and what hangs under it (cl-932: its render's two lines and Cancel are under the picture), as one picture.
       const now = await page.evaluate(() => {
+        // The box at rest: while Focus is over it (its Render pressed, then Esc), its face is Focus's and the box under it hidden.
+        if (document.querySelector('.focus-viewport')) return null;
         const card = document.querySelector('.card[data-asset="waits"]');
         const face = card?.querySelector('.run-face');
         if (!face) return null;
