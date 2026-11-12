@@ -365,7 +365,7 @@ impl Calcifer {
                             remove(&suffixed(&dest, HELD));
                             remove(&suffixed(&dest, ".manifest.part"));
                         }
-                        match (self.store).export_failed(id.as_str(), name, index, rev, &reason) {
+                        match self.with_run_store(id.as_str(), |store| store.export_failed(id.as_str(), name, index, rev, &reason)) {
                             Ok(events) => self.publish(id, events),
                             Err(e) => {
                                 warn!(run = %id, "{e}");
@@ -396,19 +396,24 @@ impl Calcifer {
     /// `export` takes, so an event after this starts another.
     fn next_exports(&self, id: &RunId) -> Result<Option<(RunRow, Vec<OutputRow>)>, StoreError> {
         let mut runs = lock(&self.exports.runs);
-        let next = match self.with_run_store(id.as_str(), |store| store.run(id.as_str()))? {
+        let next = self.with_run_store(id.as_str(), |store| match store.run(id.as_str())? {
             Some(run) => {
-                let mut items = self.with_run_store(id.as_str(), |store| store.outputs_to_export(id.as_str()))?;
+                let mut items = store.outputs_to_export(id.as_str())?;
                 items.truncate(LANES);
-                Some((run, items)).filter(|(_, items)| !items.is_empty())
+                Ok(Some((run, items)).filter(|(_, items)| !items.is_empty()))
             }
-            None => None,
-        };
-        if next.is_none() {
-            runs.remove(id);
-            lock(&self.exports.appended).retain(|(run, ..), _| run != id);
+            None => Ok(None),
+        });
+        match &next {
+            Ok(None) => {
+                runs.remove(id);
+                lock(&self.exports.appended).retain(|(run, ..), _| run != id);
+            }
+            // Its project closed: the exporter ends, and the project's next opening starts another.
+            Err(StoreError::Locked(code)) if code != "project_busy" => drop(runs.remove(id)),
+            _ => {}
         }
-        Ok(next)
+        next
     }
 
     /// The run's machine's connection, whose bulk lanes read; `changed` is told when the

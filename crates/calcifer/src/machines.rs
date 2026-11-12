@@ -672,7 +672,7 @@ impl Machines {
         }
         machine.alias = store.alias(&row.name).map_err(internal)?;
         machine.ordered = self.ordered(row);
-        let load = store.machine_load().map_err(internal)?;
+        let load = self.calcifer.machine_load().map_err(internal)?;
         (machine.running, machine.queued) = load.get(&row.name).copied().unwrap_or_default();
         if let Some(ask) = ending.filter(|_| row.state != MachineState::Ended) {
             machine.state = MachineState::Ending;
@@ -725,7 +725,7 @@ impl Machines {
                 let mut status = status(&visible, &self.hubs);
                 // An update says what it waits for by this controller's run numbers.
                 status.update = (frame.update.as_ref())
-                    .map(|u| self.calcifer.maintenance_waiting_for(&u.waiting_for).unwrap_or_else(|| Some(&u.waiting).filter(|w| !w.is_empty()).unwrap_or(&u.state).clone()))
+                    .map(|u| self.calcifer.machine_waiting_for(&u.waiting_for).unwrap_or_else(|| Some(&u.waiting).filter(|w| !w.is_empty()).unwrap_or(&u.state).clone()))
                     .unwrap_or_default();
                 status
             });
@@ -774,16 +774,16 @@ impl Machines {
         Some(wire::Ssh { args, line })
     }
 
-    /// A run the machine holds for this controller, with this controller's record of it.
+    /// A run the machine holds for this controller, with this controller's record of it: Calcifer's own or an open project's.
     fn held(&self, run:v1::RunState)->Option<wire::LiveRun> {
         // A run sent again (cl-935) is `<id>~<attempt>` there.
-        let row=self.calcifer.maintenance_store().run(crate::store::calcifer_id(&run.id)).ok()??;
+        let row=self.calcifer.active_run(crate::store::calcifer_id(&run.id))?;
         Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting:run.waiting})
     }
 
     fn operation(&self,operation:&v1::Operation)->Option<wire::Operation> {
         if operation.runs.is_empty() {return None;}
-        let runs=operation.runs.iter().map(|id|self.calcifer.maintenance_store().run(crate::store::calcifer_id(id)).ok().flatten().map(|row|row.number)).collect::<Option<Vec<_>>>()?;
+        let runs=operation.runs.iter().map(|id|self.calcifer.active_run(crate::store::calcifer_id(id)).map(|row|row.number)).collect::<Option<Vec<_>>>()?;
         let rate=Some(operation.bytes_per_s).filter(|rate|*rate>=1.0);
         let left=operation.bytes_total.saturating_sub(operation.bytes_done);
         Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs})
@@ -1174,7 +1174,7 @@ impl Machines {
     /// ready one before a booting one: runs wait for a rental on its way, never buy around it.
     fn fitting(&self, gpus: u32) -> Result<Option<String>, Error> {
         let store = self.store();
-        let load = store.machine_load().map_err(internal)?;
+        let load = self.calcifer.machine_load().map_err(internal)?;
         let ending: HashSet<String> = store
             .pending_asks()
             .map_err(internal)?
