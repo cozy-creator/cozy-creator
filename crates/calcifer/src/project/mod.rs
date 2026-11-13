@@ -1355,16 +1355,23 @@ fn refuse_encrypted_parent(dir: &FsPath) -> Result<(), Error> {
     Ok(())
 }
 
-/// The project folder holding `path`: the nearest, up from it, that is one.
+/// The project folder holding a source staged by path: the nearest, up from it, that is one. A retired or incomplete project's
+/// files there are never global maintenance data either.
 pub(crate) fn source_project(path: &FsPath) -> Result<Option<PathBuf>, Error> {
-    match holding(path) {
+    match owning(path, true) {
         Ok(project) => Ok(Some(project)),
         Err(error) if error.code == "project_not_found" => Ok(None),
         Err(error) => Err(error),
     }
 }
 
+/// The project folder a request names by a path: the nearest, up from it, that is one. A folder of old files (a
+/// `project.canvas.yaml`) or an interrupted creation's `project.db.new` is no project (cl-930).
 fn holding(path: &FsPath) -> Result<PathBuf, Error> {
+    owning(path, false)
+}
+
+fn owning(path: &FsPath, source: bool) -> Result<PathBuf, Error> {
     let unavailable = || Error::new(Kind::Unavailable, "project_ownership_unavailable", "the source's project ownership cannot be verified");
     // A client can name a path only it sees (its own copy under a project's folder here): the nearest
     // ancestor that exists here decides the owner, as for any path.
@@ -1378,13 +1385,17 @@ fn holding(path: &FsPath) -> Result<PathBuf, Error> {
         for marker in [project_vault::KEYBAG_FILE, db::DB, "project.canvas.yaml", "project.db.new"] {
             match std::fs::symlink_metadata(dir.join(marker)) {
                 Ok(_) if marker == project_vault::KEYBAG_FILE || marker == db::DB => return Ok(dir.to_owned()),
-                Ok(_) => return Err(Error::new(Kind::Validation, "project_format_unsupported", "the source belongs to a retired or incomplete project; do not treat it as global maintenance")),
+                Ok(_) if source => return Err(Error::new(Kind::Validation, "project_format_unsupported", "the source belongs to a retired or incomplete project; do not treat it as global maintenance")),
+                Ok(_) => {},
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
                 Err(_) => return Err(unavailable()),
             }
         }
     }
-    Err(Error::new(Kind::NotFound, "project_not_found", "the verified source is outside a project").next("cozy new"))
+    if source { return Err(Error::new(Kind::NotFound, "project_not_found", "the verified source is outside a project").next("cozy new")); }
+    Err(Error::new(Kind::NotFound, "project_not_found", format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB))
+        .remedy("run from an existing project directory, or create one with cozy new")
+        .next("cozy new"))
 }
 
 fn now_ms() -> i64 {
@@ -2579,19 +2590,24 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str, &s
     for pending in lock.pending.iter().filter(|(key, pending)| pending.run > 0 && wanted(&pending.asset, pending.job_of(key))).map(|(_, pending)| pending) {
         let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
         if row.state != crate::store::State::Settled {
-            if project.folder.in_act() {
-                // Its journal is this project.db, whose writer the act holds (a delete): canceled once the act ends.
-                let calcifer = api.calcifer.clone();
-                std::thread::spawn(move || {
-                    if let Err(e) = calcifer.cancel(&row.id) { warn!("canceling a deleted asset's run: {e}"); }
-                });
-            } else {
-                api.calcifer.cancel(&row.id).map_err(|e| Error::new(Kind::Internal, "run_cancel", e.to_string()))?;
-            }
+            // Inside a delete's act, `cancel` tells the machine now and keeps the request once the act lets the writer go.
+            api.calcifer.cancel(&row.id).map_err(|e| Error::new(Kind::Internal, "run_cancel", e.to_string()))?;
             canceled.push(pending.run);
         }
     }
     Ok((dropped.into_iter().map(|job| job.asset).collect(), canceled))
+}
+
+/// Box `name`'s runs not yet ended, each told to stop at its machine now: what deletes it waits for the project's writer, which a
+/// run's own progress or another program may hold, and a held commit never keeps a render going.
+fn stop_at_machines(api: &Arc<Api>, project: &Project, name: &str) {
+    let (Ok(lock), Ok(store)) = (project.folder.lock(), api.calcifer.project_store(&project.id)) else { return };
+    let key = name_key(name);
+    for pending in lock.pending.values().filter(|pending| pending.run > 0 && name_key(&pending.asset) == key) {
+        if let Ok(Some(row)) = store.run_by_number(pending.run) && row.state != crate::store::State::Settled {
+            api.calcifer.stop_at_machine(&row.id);
+        }
+    }
 }
 
 /// `source` kept as a file of the project, in the lock.

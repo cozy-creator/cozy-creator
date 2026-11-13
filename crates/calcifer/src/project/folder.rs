@@ -1242,12 +1242,6 @@ impl Folder {
         Arc::as_ptr(&self.shared) as usize
     }
 
-    /// Whether this thread is inside one of this project's acts, which holds its writer: the project's run journal,
-    /// kept in the same project.db, is written only once the act ends.
-    pub(crate) fn in_act(&self) -> bool {
-        acting(self.id()).is_some()
-    }
-
     /// Its history, as `read` first reads it, for as long as anything holds the project.
     pub(super) fn book(&self, read: impl FnOnce() -> super::history::Book) -> Arc<super::history::Book> {
         self.shared.book.lock().expect("history cache").get_or_insert_with(|| Arc::new(read())).clone()
@@ -1499,7 +1493,14 @@ impl Folder {
         self.reading_db(read).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?
     }
 
+    /// Whether this thread is inside one of this project's acts: its writer is this thread's until the act commits.
+    pub(crate) fn acting_here(&self) -> bool {
+        acting(self.id()).is_some()
+    }
+
     pub(crate) fn journal_write<T>(&self, write: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::Result<T>) -> crate::store::Result<T> {
+        // The act holds the writer on this thread: taking it again would never return.
+        if self.acting_here() { return Err(crate::store::StoreError::Locked("project_acting".into())); }
         let mut turn = self.shared.writing.lock().unwrap_or_else(|error| error.into_inner());
         let conn = self.writer(&mut turn).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

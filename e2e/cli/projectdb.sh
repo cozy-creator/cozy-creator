@@ -165,7 +165,7 @@ db_024_made() {
   [ "$(sql1 "$DB024" 'PRAGMA user_version')" = 2 ] || { check "0.24 deletes: 0.24.0 made schema $(sql1 "$DB024" 'PRAGMA user_version'), not 2"; return 1; }
 }
 # This cozy back in its place, as an update puts it, while no Calcifer runs (web_undo_window's restart).
-db_024_back() { cp "$OUT/cozy-now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY"; }
+db_024_back() { state_back && cp "$OUT/cozy-now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY"; }
 # cozy_0240: the path of 0.24.0's cozy, from its release archive, fetched once.
 cozy_0240() {
   local was=$OUT/cozy-0.24.0 arch old
@@ -733,12 +733,34 @@ migrate_facts "$F" | cmp -s - "$OUT/migrate-0240-facts" || check "migrate: let b
 echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.name): [.versions[].number]}) | add' "$OUT/migrate-now-facts")"
 }
 # in_cozy <file>: that cozy in this one's place, as an update puts it, and its Calcifer the one serving: the last stopped as a
-# service manager stops one, and started by the next verb.
+# service manager stops one, and started by the next verb. An older cozy refuses this one's newer state.db, as its release
+# would never meet it: it keeps one of its own while it serves, and this one's comes back with this cozy ($OUT/cozy-now).
 in_cozy() {
   local lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid
   pid=$(jq -r .pid < "$lock" 2> /dev/null) || pid=''
-  [ -z "$pid" ] || { kill -TERM "$pid" 2> /dev/null; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done; }
+  [ -z "$pid" ] || term_calcifer "$pid" || return
+  if [ "$1" -ef "$OUT/cozy-now" ]; then state_back; else state_aside; fi
   cp "$1" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer
+}
+# term_calcifer <pid>: stopped as a service manager stops it; one still running 120 s on is a failure, not a hang.
+term_calcifer() {
+  local waited=0
+  kill -TERM "$1" 2> /dev/null || return 0
+  while kill -0 "$1" 2> /dev/null; do
+    [ "$waited" -lt 1200 ] || { check "Calcifer $1 still runs 120 s after SIGTERM"; kill -9 "$1" 2> /dev/null; return 1; }
+    sleep 0.1; waited=$((waited + 1))
+  done
+}
+# This cozy's state.db set aside while an older cozy serves (once), and back with this cozy.
+state_aside() {
+  local aside=$OUT/state-aside
+  [ ! -d "$aside" ] || return 0
+  mkdir -p "$aside" && find "$HOME/.cozy/calcifer" -maxdepth 1 -name 'state.db*' -exec mv -t "$aside" {} +
+}
+state_back() {
+  local aside=$OUT/state-aside
+  [ -d "$aside" ] || return 0
+  rm -f "$HOME"/.cozy/calcifer/state.db* && find "$aside" -maxdepth 1 -name 'state.db*' -exec mv -t "$HOME/.cozy/calcifer" {} + && rmdir "$aside"
 }
 # migrate_facts <project>: each box's words, takes (number, approved, files by hash) and discarded, as the API reads them.
 migrate_facts() {

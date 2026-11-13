@@ -231,6 +231,9 @@ impl ProjectStore {
         self.project.folder.journal_write(write)
     }
 
+    /// Whether this thread is inside one of the project's own edits, which holds its writer until it commits.
+    pub(crate) fn acting(&self) -> bool { self.project.folder.acting_here() }
+
     pub(crate) fn answer(&self, key: &str) -> store::Result<Option<Answer>> {
         self.read(|conn| {
             Ok(conn.query_row("SELECT digest, status, content_type, body FROM request_keys WHERE key = ?1 AND status IS NOT NULL", [key], |row| {
