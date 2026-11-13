@@ -1,7 +1,7 @@
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query"
 import { type FormEvent, useEffect, useRef, useState } from "react"
 import QRCode from "react-qr-code"
-import type { Client, VaultAsk, VaultProgress } from "../api/client"
+import { ApiError, type Client, type VaultAsk, type VaultProgress } from "../api/client"
 import { useConnection } from "../app/Connection"
 import { useProjectId } from "../app/Shell"
 import { useSignal } from "../ui/signal"
@@ -10,12 +10,16 @@ import { Failure, useAsk } from "./common"
 import { bytes } from "./format"
 
 export const vaultKey = (id: string) => ["project-vault", id] as const
+/** Kept by the stream: `project.vault` says each change, and `hello` has it read again. A read Calcifer couldn't answer is asked again, later
+ *  each time; a refusal isn't. */
 export const vaultQuery = (client: Client, id: string) => queryOptions({
   queryKey: vaultKey(id),
   queryFn: ({ signal }) => client.vault(id, signal),
   staleTime: 0,
-  refetchInterval: 1000,
-  refetchIntervalInBackground: true,
+  refetchInterval: ({ state }) => {
+    const lost = state.status === "error" && state.error instanceof ApiError && (state.error.status === 0 || state.error.status >= 500)
+    return lost ? Math.min(30_000, 1000 * 2 ** state.fetchFailureCount) : false
+  },
 })
 
 type Pending = { action: string; event: VaultProgress | null }

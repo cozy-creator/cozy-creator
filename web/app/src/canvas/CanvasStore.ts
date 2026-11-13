@@ -1281,6 +1281,9 @@ export class CanvasStore {
     this.flow?.addNodes(nodes)
     this.followAll()
     this.reflowSoon()
+    // What watches a name hears it's here: one placed after its read (no row yet, `findHomes`) came after `names` last moved.
+    for (const { element } of items) this.notify(element.name)
+    this.names.set(this.names.get() + 1)
   }
 
   private node(name: string, row: Card, selected = false, id = `e${++this.nextId}`): ElementNode {

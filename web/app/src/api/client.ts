@@ -354,15 +354,18 @@ export class Client {
         const stop = new AbortController()
         const cancel = () => stop.abort(signal?.reason)
         signal?.addEventListener("abort", cancel, { once: true })
-        let heard = performance.now()
         let silent = false
+        let quiet: ReturnType<typeof setTimeout> | undefined
         // Same 45-second silence rule as the shared event stream. Comments are health, not progress.
-        const health = legacy ? undefined : setInterval(() => {
-          if (performance.now() - heard >= 45_000) {
+        const heard = () => {
+          if (legacy) return
+          clearTimeout(quiet)
+          quiet = setTimeout(() => {
             silent = true
             stop.abort()
-          }
-        }, 1000)
+          }, 45_000)
+        }
+        heard()
         try {
           const init: RequestInit = {
             headers: { "Content-Type": "application/json", Accept: "text/event-stream", "Cache-Control": "no-store" },
@@ -372,7 +375,7 @@ export class Client {
             ? await this.send(`${project(id)}/vault`, { ...init, method: "POST" }, { once: stop.signal })
             : await this.send(vaultOperation(id, operation), { ...init, method: "PUT" }, { once: stop.signal })
           this.hooks.attempt(0)
-          heard = performance.now()
+          heard()
           if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("text/event-stream")) {
             if (!legacy) throw invalid()
             let changed: VaultChanged
@@ -415,7 +418,7 @@ export class Client {
                     break
                   default: throw invalid()
                 }
-              }, () => { heard = performance.now() })
+              }, heard)
             } catch (error) {
               if (!terminal.changed && !terminal.failure) throw error
             }
@@ -436,7 +439,7 @@ export class Client {
           if (!lost) throw error
           if (legacy) throw incomplete()
         } finally {
-          if (health !== undefined) clearInterval(health)
+          clearTimeout(quiet)
           signal?.removeEventListener("abort", cancel)
           stop.abort()
         }
