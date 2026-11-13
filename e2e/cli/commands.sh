@@ -773,8 +773,13 @@ if [ -n "$td" ]; then
   cozy --json machine update local --tensord "$td" -y > "$OUT/floor-rc-pin.json" 2>&1 \
     || { check "runtime floor: local refused the RC's cozy $td: $(tail -c 300 "$OUT/floor-rc-pin.json")"; return; }
   machine_ready
+  # This computer's cozy is the RC's build now, Calcifer with it, and the RC's prerelease cozy is rebuilt only for TensorD's
+  # crates: a project the candidate opened may be a newer schema than it reads, which it refuses (rightly). The pin's run
+  # is in a project the RC's build makes.
+  run_project "$OUT/floor-rc-project" > "$OUT/floor-rc-project.log" 2>&1 \
+    || { check "runtime floor: the RC's cozy $td made no project: $(tail -c 300 "$OUT/floor-rc-project.log")"; return; }
   code=0
-  in_project "$RUN_PROJECT" --json run "$E2E_FLOOR/relay" text=rc-pin --on local > "$OUT/floor-rc-pin.ndjson" 2> "$OUT/floor-rc-pin.err" || code=$?
+  in_project "$OUT/floor-rc-project" --json run "$E2E_FLOOR/relay" text=rc-pin --on local > "$OUT/floor-rc-pin.ndjson" 2> "$OUT/floor-rc-pin.err" || code=$?
   [ "$code" != 0 ] && grep -q '"runtime_held"' "$OUT/floor-rc-pin.ndjson" "$OUT/floor-rc-pin.err" \
     || check "runtime floor: given the RC's cozy $td by hand, local wasn't held: exit $code $(tail -c 300 "$OUT/floor-rc-pin.ndjson") $(tail -c 300 "$OUT/floor-rc-pin.err")"
   # This computer's cozy back as it was, then let go (an update naming nothing; the Hub's target names no cozy).
