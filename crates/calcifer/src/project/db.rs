@@ -558,7 +558,8 @@ fn all_rows(tx: &Transaction, at: &Path, stored: &Stored) -> Result<Digest, Erro
     for (key, row) in stored.canvas.iter() {
         put(tx, &mut digest, CANVAS, CANVAS_IN, &canvas_row(key, row)).map_err(e)?;
     }
-    conflicts_row(tx, &mut digest, &stored.conflicts).map_err(e)?;
+    // Written whole: what the row said before was never in this digest.
+    conflicts_row(tx, &mut digest, &stored.conflicts, false).map_err(e)?;
     Ok(digest)
 }
 
@@ -569,9 +570,9 @@ fn canvas_row(key: &str, row: &CardRow) -> [Sql; 7] {
         Sql::Integer(row.seq as i64), Sql::Text(row.by.clone())]
 }
 
-/// The alternatives' row, written over what it was.
-fn conflicts_row(tx: &Transaction, digest: &mut Digest, conflicts: &[String]) -> rusqlite::Result<()> {
-    if let Some(was) = meta(tx, CONFLICTS) {
+/// The alternatives' row, written over what it was, which `counted` says `digest` holds.
+fn conflicts_row(tx: &Transaction, digest: &mut Digest, conflicts: &[String], counted: bool) -> rusqlite::Result<()> {
+    if let Some(was) = meta(tx, CONFLICTS).filter(|_| counted) {
         digest.flip(CONFLICTS, &[Sql::Text(was)]);
     }
     let now = json(&conflicts);
@@ -817,7 +818,7 @@ pub(crate) fn commit(conn: &mut Connection, at: &Path, before: &Stored, after: &
     let digest = match kept {
         Some(mut digest) => {
             if after.conflicts != before.conflicts {
-                conflicts_row(&tx, &mut digest, &after.conflicts).map_err(e)?;
+                conflicts_row(&tx, &mut digest, &after.conflicts, true).map_err(e)?;
             }
             digest.0.iter_mut().zip(moved.0).for_each(|(at, by)| *at ^= by);
             digest
