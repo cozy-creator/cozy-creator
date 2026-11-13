@@ -1892,6 +1892,14 @@ pub(crate) fn seal_payload(path: &FsPath, context: &str, value: &[u8]) -> Result
 
 pub(crate) fn payload_root(value: &[u8]) -> Result<Option<PathBuf>, Error> { Ok(payload(value)?.map(|record| current_root(&record))) }
 
+/// The project a sealed record names and the root it was sealed under, before a move this Calcifer saw (`payload_root`).
+pub(crate) fn payload_owner(value: &[u8]) -> Result<Option<(String, PathBuf)>, Error> { Ok(payload(value)?.map(|record| (record.project_id, record.root))) }
+
+/// The projects this Calcifer saw move to `root` or below it: their sealed records' roots now read there.
+pub(crate) fn projects_moved_under(root: &FsPath) -> Vec<String> {
+    KEY_ROOTS.lock().expect("vault project roots").iter().filter(|(_, at)| at.starts_with(root)).map(|(id, _)| id.clone()).collect()
+}
+
 pub(crate) fn payload_path(value: &[u8], decoded: &FsPath) -> Result<PathBuf, Error> {
     let Some(reference) = payload(value)? else { return Ok(decoded.to_owned()) };
     Ok(match decoded.strip_prefix(&reference.root) { Ok(relative) => current_root(&reference).join(relative), Err(_) => decoded.to_owned() })

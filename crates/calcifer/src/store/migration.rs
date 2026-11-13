@@ -160,6 +160,10 @@ impl Store {
     }
 
     fn migrate_into(&self, project: Destination<'_,'_>, inputs: &Path) -> Result<()> {
+        // Found by the owner index under a read: a project the legacy store holds nothing of never takes the writer for it.
+        if !self.project_migration_required(project.execution_scope().1, project.project_id())? {
+            return self.migrate_legacy_files(&project);
+        }
         let unseen_changed=self.migrate_legacy_unseen(&project)?;
         let mut writer = self.writer.lock().unwrap_or_else(|error| error.into_inner());
         if !table_exists(&writer,"legacy_project_runs")? {
@@ -171,10 +175,8 @@ impl Store {
         let root = project.execution_scope().1;
         let plain=plain_owner(&source,&self.legacy_home,project.project_id(),root)?;
         let landing = crate::project::landing(root);
-        let candidates: Vec<(String,String,Vec<u8>)> = {
-            let mut stmt=source.prepare("SELECT id,out_dir,spec FROM legacy_project_runs")?;
-            stmt.query_map([],|row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<rusqlite::Result<_>>()?
-        };
+        // Only what the owner index says may be this project's: each still decided below as a full read decided it.
+        let candidates = super::legacy_run_candidates(&source, root, project.project_id())?;
         for (id,out,spec) in candidates {
             let envelope_root=vault::payload_root(&spec).map_err(private_error)?;
             if envelope_root.as_deref()!=Some(root) && !(envelope_root.is_none()&&plain&&Path::new(&out)==landing) { continue; }
@@ -275,12 +277,16 @@ impl Store {
             for table in ["outputs","run_logs","asks"] { source.execute(&format!("DELETE FROM legacy_project_{table} WHERE run=?1"),[&id])?; }
             if after.is_some() { source.execute("DELETE FROM legacy_project_after_steps WHERE key_sha256=?1",[key_digest(&key)])?; }
             source.execute("DELETE FROM legacy_project_runs WHERE id=?1",[&id])?;
+            source.execute("DELETE FROM legacy_run_owners WHERE id=?1",[&id])?;
             changed=true;
         }
         // API mutation retry responses have their own explicit owner, never inferred from a
         // generic body without an absolute admitted project path or protected envelope.
         if table_exists(&source,"legacy_project_answers")? {
-            let mut answers=Rows::load(&source,"answers","?1=?1","")?;
+            // Only what the owner index says may be this project's, each decided below as before.
+            let keys: Vec<String> = super::legacy_answer_candidates(&source, root, project.project_id())?.into_iter().map(|(key, _)| key).collect();
+            let keys = serde_json::to_string(&keys).map_err(|_| corrupt("legacy answer keys"))?;
+            let mut answers=Rows::load(&source,"answers","key IN (SELECT value FROM json_each(?1))",&keys)?;
             for index in 0..answers.values.len() {
                 let (key,body)=(answers.column("key")?,answers.column("body")?);
                 let Value::Blob(bytes)=&answers.values[index][body] else { return Err(corrupt("legacy answer")) };
@@ -298,7 +304,8 @@ impl Store {
                     tx.execute("INSERT OR REPLACE INTO journal_migrations(source,digest,record) VALUES(?1,?2,'request_key')",params![format!("controller-v7:answer:{named}"),digest])?;
                     Ok(())
                 })?;
-                source.execute("DELETE FROM legacy_project_answers WHERE key=?1",[named])?;
+                source.execute("DELETE FROM legacy_project_answers WHERE key=?1",[&named])?;
+                if table_exists(&source,"legacy_answer_owners")? {source.execute("DELETE FROM legacy_answer_owners WHERE key=?1",[&named])?;}
                 changed=true;
             }
         }
@@ -315,6 +322,8 @@ impl Store {
         }
         source.commit()?;
         drop(writer);
+        // What another project's legacy files wait for (the last run imported) may have changed.
+        if changed { self.settled.lock().unwrap_or_else(|error|error.into_inner()).clear(); }
         self.migrate_legacy_files(&project)?;
         if changed {
             if self.migration_required()? {self.checkpoint_legacy_retirement()} else {self.cleanup_private_journal()}
@@ -322,6 +331,9 @@ impl Store {
     }
 
     fn migrate_legacy_files(&self, project:&Destination<'_,'_>)->Result<()> {
+        // Settled, and no old global file left to retire: nothing to do, and the writer stays free.
+        if self.settled.lock().unwrap_or_else(|error|error.into_inner()).contains(project.project_id())
+            && !["here.json","checkpoints.json","projects.json"].iter().any(|name| self.legacy_home.join(name).exists()) { return Ok(()); }
         let _source_files=self.writer.lock().unwrap_or_else(|error|error.into_inner());
         for name in ["here.json","checkpoints.json"] {
             let path=self.legacy_home.join(name);
@@ -360,6 +372,8 @@ impl Store {
             Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
             Err(_)=>return Err(StoreError::Protected("project_index_migration_pending".into())),
         }
+        if self.settled.lock().unwrap_or_else(|error|error.into_inner()).contains(project.project_id()) { return Ok(()); }
+        let mut left=false;
         let legacy_runs_empty=self.read(|conn| {
             if !table_exists(conn,"legacy_project_runs")? { return Ok(true); }
             Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_runs)",[],|row|row.get::<_,bool>(0))?)
@@ -371,7 +385,7 @@ impl Store {
         for (source,receipt) in receipts {
             let Some(id)=source.strip_prefix("controller-v7:run:") else {continue;};
             let retired=self.read(|conn| {if !table_exists(conn,"legacy_project_runs")? {return Ok(true);} Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_runs WHERE id=?1)",[id],|row|row.get::<_,bool>(0))?)})?;
-            if !retired {continue;}
+            if !retired {left=true; continue;}
             let Ok(record)=serde_json::from_str::<serde_json::Value>(&receipt) else { continue; };
             if let Some(after)=record.get("after").filter(|value|!value.is_null()) {
                 let name=after.get("name").and_then(serde_json::Value::as_str).ok_or_else(||corrupt("after migration receipt"))?;
@@ -379,7 +393,7 @@ impl Store {
                 let digest=after.get("digest").and_then(serde_json::Value::as_str).ok_or_else(||corrupt("after migration receipt"))?;
                 let path=self.legacy_home.join("after").join(name);
                 match std::fs::read(&path) {
-                    Ok(bytes) if Digest::of(&bytes).to_string()==digest=>{ std::fs::remove_file(&path).map_err(|_|StoreError::Protected("project_after_migration_pending".into()))?; platform::durable::sync_dir(path.parent().expect("after folder")).map_err(|_|StoreError::Protected("project_after_migration_pending".into()))?; },
+                    Ok(bytes) if Digest::of(&bytes).to_string()==digest=>{ left=true; std::fs::remove_file(&path).map_err(|_|StoreError::Protected("project_after_migration_pending".into()))?; platform::durable::sync_dir(path.parent().expect("after folder")).map_err(|_|StoreError::Protected("project_after_migration_pending".into()))?; },
                     Ok(_)=>return Err(StoreError::Protected("project_after_source_changed".into())),
                     Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
                     Err(_)=>return Err(StoreError::Protected("project_after_migration_pending".into())),
@@ -391,6 +405,7 @@ impl Store {
                     let name=hex::encode(digest.bytes());
                     let path=self.legacy_home.join("inputs").join(&name);
                     if !path.exists() { continue; }
+                    left=true;
                     if self.input_in_use(&digest)? { continue; }
                     let target=project.input_root()?.join(name);
                     verify_file(&target,digest,length)?; verify_file(&path,digest,length)?;
@@ -399,6 +414,8 @@ impl Store {
                 }
             }
         }
+        // Nothing of its runs' after steps and inputs was left: not looked at again until another import.
+        if !left { self.settled.lock().unwrap_or_else(|error|error.into_inner()).insert(project.project_id().to_owned()); }
         Ok(())
     }
 }
