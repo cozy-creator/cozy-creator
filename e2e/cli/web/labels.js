@@ -163,7 +163,8 @@ function audit() {
     projectJson(made.path, 'PATCH', '/canvas', { cards });
     const rows = () => Object.fromEntries(rowsOf(made.path, 'SELECT name, x, y FROM canvas').map(([name, x, y]) => [name, { x, y }]));
     await until('laid out close', () => Promise.resolve(rows()), (now) => ALL.every((name) => now[name]?.x === cards[name].x && now[name]?.y === cards[name].y));
-    const middle = { x: (3 * BESIDE - 16) / 2, y: Math.max(...Object.values(cards).map((card) => card.y)) / 2 + 100 };
+    // Each column's long name, its second box's, on screen at 100% under the top bar.
+    const middle = { x: (3 * BESIDE - 16) / 2, y: 400 };
 
     // From 100% by − to the farthest and back by +, then out and in by the wheel: where each box is never changes.
     tab = await open('paper', 1, middle);
