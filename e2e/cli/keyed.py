@@ -2,8 +2,8 @@
 held inside its transaction by another program's hold on project.db while its connection is closed, then let go and sent again. And a
 write's key is never in project.db without its answer, from the first moment it can be read: every keyed project write (a create, an
 import, an apply, a patch, a rename, a copy, a delete, an undo, a redo: the delete again, a helper's answer the step's own; an unpin, an
-approve, a canvas move, a version's metadata, seen, the machines, a fit and a fit here, a cancel, a reclaim, a version joined and
-discarded, and a render).
+approve, a canvas move, a version's metadata, seen, the machines, the view, a fit and a fit here, a cancel, a reclaim, a version
+joined and discarded, and a render).
     python3 keyed.py <project> <out>: $COZY the cozy under test. Prints what it saw as JSON and exits 1 if anything failed."""
 from __future__ import annotations
 
@@ -194,13 +194,14 @@ def main() -> int:
     kept_with("version_metadata", "PATCH", "/assets/keyed_still/versions/1", {"metadata": {"orbit": True}}, 200, "metadata", True)
     kept_with("seen", "POST", "/assets/keyed_still/versions/1/seen", None, 204, None, False)
     kept_with("machines", "PUT", "/machines", {"machines": []}, 200, None, True)
+    kept_with("view", "PATCH", "/view", {"viewport": {"x": 0, "y": 0, "zoom": 1}}, 200, None, True)
     kept_with("fit", "POST", "/fit", {"names": ["keyed_note"]}, 200, None, False)
     kept_with("fit_here", "POST", "/fit/here", {"names": ["keyed_note"]}, 200, None, False)
     kept_with("cancel", "POST", "/cancel", {"names": ["keyed_note"]}, 200, None, True)
     kept_with("reclaim", "POST", "/reclaim", {"yes": True}, 200, "deleted", True)
     # Another picture, a version of its own, then off it again.
     other = png((200, 60, 30))
-    status, _, said = ask("PUT", f"/v1/files/sha256:{hashlib.sha256(other).hexdigest()}", other, None, "image/png")
+    status, _, said = ask("PUT", f"/v1/project-files/sha256:{hashlib.sha256(other).hexdigest()}?project={quote(str(project.absolute()), safe='')}", other, None, "image/png")
     check("other_picture_held", status < 300, said[-300:].decode("utf-8", "replace"))
     joined = kept_with("version_join", "POST", "/assets/keyed_still/versions", {"source": f"sha256:{hashlib.sha256(other).hexdigest()}"}, 200, "number", False)
     number = joined.get("number") if isinstance(joined, dict) else None
