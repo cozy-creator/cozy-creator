@@ -4,7 +4,7 @@
 // applied again as no change; an edit of the page's (e2e/page.py) meanwhile, its words kept and a value both changed a conflict, kept by
 // --force-conflicts; words both edited merged by character; the agent's apply and delete each undone from the page. shots.py's Shot renders
 // here with no model.
-//   node agent.js: on the Calcifer whose lock record is $HOLDER; $COZY: the cozy under test; $ARGV_LOG: each cozy call, for coverage.
+//   node agent.js (commands.sh's agent_api): on the Calcifer whose lock record is $HOLDER; $COZY: the cozy under test; $ARGV_LOG: each cozy call, for coverage.
 // Prints what it saw as JSON and exits 1 if anything failed.
 const { execFileSync, spawnSync } = require('child_process');
 const { appendFileSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
@@ -19,12 +19,12 @@ function check(name, ok, detail) {
 }
 
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
-const PAGE = join(__dirname, '..', '..', 'page.py');
-const SHOTS = join(__dirname, '..', 'project', 'shots.py');
+const PAGE = join(__dirname, '..', 'page.py');
+const SHOTS = join(__dirname, 'project', 'shots.py');
 // The first render here installs its tool's environment.
 const RUN_MS = 10 * 60_000;
-const folder = join(homedir(), `web-agent-${Date.now()}`);
-const scratch = mkdtempSync(join(tmpdir(), 'web-agent-'));
+const folder = join(homedir(), `agent-${Date.now()}`);
+const scratch = mkdtempSync(join(tmpdir(), 'agent-'));
 seen.project = { folder };
 
 /** One call of the cozy under test from the project, logged for coverage: its exit, stdout and stderr. Never a terminal. */
@@ -156,7 +156,7 @@ function page(verb, ...words) {
   check('a_tool_block_schema', blockSchema.additionalProperties === false && blockSchema.properties?.beats?.items?.properties?.duration?.maximum === 15, blockSchema);
 
   // The design's session, in a project of its own.
-  const pier = join(homedir(), `web-agent-pier-${Date.now()}`);
+  const pier = join(homedir(), `agent-pier-${Date.now()}`);
   seen.pier = pier;
   check('a_second_project', cozyAt(homedir(), 'new', pier, '--unencrypted').code === 0);
   const at = (...words) => cozyAt(pier, ...words);
@@ -322,7 +322,7 @@ film:
 
   // Time downloading weights is no slowness: tool.py's `fetching`, its bar three quick runs, then a run 30 s slower drawing, which
   // warns, and one that spends 30 s in the stage a weight download is first, which doesn't.
-  const fetching = `${join(__dirname, '..', 'project', 'tool.py')}/fetching`;
+  const fetching = `${join(__dirname, 'project', 'tool.py')}/fetching`;
   const warned = (...words) => {
     const ran = at('--json', 'run', fetching, ...words, '--on', 'local');
     const runs = ran.out.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line)).filter((line) => line.run?.number);

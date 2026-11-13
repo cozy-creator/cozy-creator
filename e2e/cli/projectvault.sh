@@ -330,23 +330,6 @@ PY_LEFTOVER_SCAN
   jq -c '{interrupted: .interrupted, stages_at_kill: .stages}' "$work/interrupted.json" > "$work/receipt.json"
 )
 
-# Same installed candidate, normal browser, no mock HTTP or account service.
-vault_web() {
-  local chrome pw=$OUT/vault-playwright
-  chrome=$(web_chrome)
-  [ -n "$chrome" ] && [ -x "$chrome" ] || { check "project vault: native browser is unavailable"; return; }
-  mkdir -p "$pw"
-  printf '{"private":true}\n' > "$pw/package.json"
-  if command -v pnpm > /dev/null; then
-    pnpm --dir "$(web_path "$pw")" add --ignore-scripts playwright-core@1.55.0 > "$OUT/vault-playwright.log" 2>&1 || { check "project vault: browser driver install failed"; return; }
-  else
-    # The CLI runner does not inherit the separate candidate-build job's pnpm setup.
-    # Use its existing npm, as web_serves does, without changing the pinned driver.
-    npm install -s --ignore-scripts --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/vault-playwright.log" 2>&1 || { check "project vault: browser driver install failed"; return; }
-  fi
-  web_proof vault "$chrome" "$pw" ''
-}
-
 # cl-981: an update renames a new cozy over the one Calcifer runs, which goes on running a deleted file, whose `current_exe()` is
 # `<path> (deleted)`. An encrypted project then still unlocks: Calcifer starts its filesystem supervisor from the build it runs
 # (Linux's /proc/self/exe), never that path (ENOENT) and never the newer file. The new file here is a copy: the same bytes, another

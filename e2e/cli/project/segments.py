@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19", "numpy>=1.26"]
 # ///
-"""web/segments.js's stand-in for MiniMax H3's shot (cl-907), weightless: its segments in turn, each `seconds` of its own colour and tone,
+"""The web suite video cell's stand-in for MiniMax H3's shot (cl-907), weightless: its segments in turn, each `seconds` of its own colour and tone,
 and each after the first `wait` seconds in counted steps. Each shows as it lands joined after those before it, as minimax-h3 0.11.1 publishes
 them (`Segment 1 of 3`, `Segments 1-2 of 3`), and the last is the whole video, the take. Its take says where each segment after the first
 starts (`seams`, se-130), and it takes a pickup, as H3 does, so its segments offer Redo (web/video.spec.js); it renders every segment again."""
