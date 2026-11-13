@@ -8,7 +8,7 @@ use super::ServiceSpec;
 use crate::{
     Error, Result,
     paths::Home,
-    process::{self, Birth, Exact},
+    process::{self, Birth, Detached, Exact},
 };
 use std::{
     fs, io, iter,
@@ -51,12 +51,13 @@ pub(super) fn current(_: &Path, _: &ServiceSpec) -> bool {
     false
 }
 
-pub(super) fn start(dir: &Path, spec: &ServiceSpec) -> Result<()> {
+pub(super) fn start(dir: &Path, spec: &ServiceSpec) -> Result<Option<Detached>> {
     if running(dir, &spec.name)?.is_some() {
-        return Ok(());
+        return Ok(None);
     }
     let child = process::detach(&spec.program, &spec.args, spec.log.as_deref())?;
-    record(dir, &spec.name, &Birth::of(child.pid())?)
+    record(dir, &spec.name, &Birth::of(child.pid())?)?;
+    Ok(Some(child))
 }
 
 pub(super) fn clear(_: &Path, _: &ServiceSpec) -> Result<()> {
