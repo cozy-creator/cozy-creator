@@ -25,7 +25,7 @@ mod web_seed_tests;
 pub(crate) mod host;
 mod jobs;
 pub(crate) mod journal;
-pub(crate) use journal::{ProjectRef, ProjectStore, RunOwner};
+pub(crate) use journal::{OpenProject, ProjectRef, ProjectStore, RunOwner};
 mod keyed;
 pub(crate) mod legacy_worker;
 mod view;
@@ -353,6 +353,8 @@ impl Projects {
             }
         };
         drop(open);
+        // Calcifer finds its journal while anything holds it open.
+        api.calcifer.note_open(RunOwner::of(&project, &api.calcifer));
         // Its deleted boxes looked at as it opens: one set aside before cl-919 counts from now.
         purge::due(&project.id, now_ms());
         if let Some(said) = copy_told(&project.root) { project.said.lock().expect("said lock").push(said); }

@@ -194,6 +194,11 @@ impl Calcifer {
         tasks.spawn(task);
     }
 
+    /// Whether the run's exporter goes on.
+    pub(super) fn exporting(&self, id: &RunId) -> bool {
+        lock(&self.exports.runs).contains_key(id)
+    }
+
     /// Starts the run's exporter, or wakes it.
     pub(super) fn export(self: &Arc<Self>, id: &RunId) {
         let wake = {
@@ -312,7 +317,7 @@ impl Calcifer {
         loop {
             let (run, items) = match self.next_exports(id) {
                 Ok(Some(next)) => next,
-                Ok(None) => return,
+                Ok(None) => return self.release_run(id),
                 Err(StoreError::Locked(code)) if code!="project_busy" => return,
                 Err(e) => {
                     warn!(run = %id, "{e}");

@@ -28,7 +28,22 @@ pub(crate) struct RunOwner {
     project: Arc<Project>,
     controller: Weak<crate::Calcifer>,
 }
+/// A project as Calcifer's registry holds it, never what keeps it open: an unended run's route, a request or a view does.
+#[derive(Clone)]
+pub(crate) struct OpenProject {
+    project: Weak<Project>,
+    controller: Weak<crate::Calcifer>,
+    /// Attached (`Calcifer::attach_project`): its unended runs routed, driven and exported.
+    pub(crate) attached: bool,
+}
+impl OpenProject {
+    pub(crate) fn owner(&self) -> Option<RunOwner> { Some(RunOwner { project: self.project.upgrade()?, controller: self.controller.clone() }) }
+    pub(crate) fn is(&self, owner: &RunOwner) -> bool { std::ptr::eq(self.project.as_ptr(), Arc::as_ptr(&owner.project)) }
+}
+
 impl RunOwner {
+    pub(super) fn of(project: &Arc<Project>, calcifer: &Arc<crate::Calcifer>) -> Self { Self { project: project.clone(), controller: Arc::downgrade(calcifer) } }
+    pub(crate) fn open(&self, attached: bool) -> OpenProject { OpenProject { project: Arc::downgrade(&self.project), controller: self.controller.clone(), attached } }
     pub(crate) fn same_view(&self, other:&Self)->bool { Arc::ptr_eq(&self.project,&other.project) }
     pub(crate) fn project_id(&self) -> &str { &self.project.id }
     pub(crate) fn root(&self) -> &std::path::Path { &self.project.root }
