@@ -1,7 +1,7 @@
 """A command on a real terminal, its screen kept as text: what `cozy run ls` and `cozy machine ls` draw.
 
-terminal.py <screen file> <command…>: the screen goes to the file each time it changes. SIGTERM presses q, and this exits as the
-command did.
+terminal.py <screen file> <command…>: the screen goes to the file each time it changes. SIGTERM presses q, SIGUSR1 Enter, and this
+exits as the command did.
 """
 
 import codecs
@@ -74,6 +74,7 @@ def main() -> None:
         os.environ["TERM"] = "xterm-256color"
         os.execvp(command[0], command)
     signal.signal(signal.SIGTERM, lambda *_: os.write(terminal, b"q"))
+    signal.signal(signal.SIGUSR1, lambda *_: os.write(terminal, b"\r"))
     shown: str | None = None
     screen, decoder, held = Screen(), codecs.getincrementaldecoder("utf-8")("replace"), ""
     while True:
