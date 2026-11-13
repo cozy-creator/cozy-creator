@@ -332,7 +332,9 @@ impl Machines {
             });
             let mut held = HashMap::new();
             for entry in known {
-                // A locked project's view is none: it is never opened for this.
+                // Not a locked project, nor one whose storage is changing (locking, closing, converting): it is never opened for this,
+                // and none changes while it's read.
+                let Ok(_admitted) = crate::project::vault::try_admit_root(&entry.path) else { continue };
                 let Ok(view) = crate::project::vault::resolve_path(&entry.path) else { continue };
                 // Only a project that has run here has an engine of its own to ask: asking makes none.
                 if !view.join(".vault-machine").exists() { continue; }
