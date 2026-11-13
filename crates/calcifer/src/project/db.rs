@@ -492,7 +492,7 @@ const CONFLICTS: &str = "conflicts";
 
 /// Rows taken out by `statement` (a `DELETE … RETURNING` of every column), each flipped out of `digest` as it stood.
 fn gone(tx: &Transaction, digest: &mut Digest, table: &str, statement: &str, key: &[&dyn ToSql]) -> rusqlite::Result<()> {
-    let mut statement = tx.prepare_cached(statement)?;
+    let mut statement = tx.prepare(statement)?;
     let columns = statement.column_count();
     let mut rows = statement.query(key)?;
     while let Some(row) = rows.next()? {
@@ -503,7 +503,7 @@ fn gone(tx: &Transaction, digest: &mut Digest, table: &str, statement: &str, key
 
 /// A row put in by `statement`, flipped into `digest`.
 fn put(tx: &Transaction, digest: &mut Digest, table: &str, statement: &str, row: &[Sql]) -> rusqlite::Result<()> {
-    tx.prepare_cached(statement)?.execute(rusqlite::params_from_iter(row))?;
+    tx.prepare(statement)?.execute(rusqlite::params_from_iter(row))?;
     digest.flip(table, row);
     Ok(())
 }
