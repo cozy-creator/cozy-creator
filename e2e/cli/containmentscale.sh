@@ -46,6 +46,12 @@ db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 print(json.dumps({"maintenance": maintenance, "project": project, "dirs": dirs, "outcome": outcome,
                   "runs": db.execute("SELECT count(*) FROM runs").fetchone()[0], "logs": db.execute("SELECT count(*) FROM run_logs").fetchone()[0]}))
 PY
+# The encrypted project made and locked while this cozy's own store is in place: its lock seals through the local worker
+# this store knows. Its folder is named by its path once the grown store replaces that store.
+plain=$S/plain locked=$S/locked secret=$S/secret
+head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$secret"
+cozy --json new "$locked" --passphrase-file "$secret" > "$S/locked.json" 2> "$S/locked.err" || check "containment scale: an encrypted project: $(tail -c 300 "$S/locked.err")"
+cozy --json vault --directory "$locked" lock > "$S/lock.json" 2>&1 || check "containment scale: lock: $(jq -r '.error.code // empty' "$S/lock.json" 2> /dev/null)"
 # This cozy's Calcifer stopped, the grown store in its place, then its first start: the fence, then `cozy doctor`.
 local lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid
 pid=$(jq -r .pid < "$lock" 2> /dev/null) || pid=''
@@ -70,12 +76,12 @@ print(json.dumps({"version": db.execute("PRAGMA user_version").fetchone()[0], "r
                   "wal_bytes": os.path.getsize(sys.argv[1] + "-wal") if os.path.exists(sys.argv[1] + "-wal") else 0}))
 PY
 )
-# 100 reads of each: a plain project (its import checked on each), a locked encrypted one's vault status (as a page polls it), the list.
-plain=$S/plain locked=$S/locked secret=$S/secret
+# 100 reads of each: a plain project (its import checked on each), the locked encrypted one's vault status (as a page polls
+# it: a locked project's status asks the legacy store for its history), the list.
 cozy --json new --unencrypted "$plain" > "$S/plain.json" 2>&1 || check "containment scale: a plain project: $(tail -c 300 "$S/plain.json")"
-head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$secret"
-cozy --json new "$locked" --passphrase-file "$secret" > "$S/locked.json" 2> "$S/locked.err" || check "containment scale: an encrypted project: $(tail -c 300 "$S/locked.err")"
-cozy --json vault --directory "$locked" lock > /dev/null 2>&1 || check "containment scale: lock"
+local state
+state=$(project_api "$locked" /vault 2> /dev/null | jq -r '.state // empty') || state=''
+[ "$state" = locked ] || check "containment scale: the encrypted project reads ${state:-nothing}, not locked"
 local reads=() what
 for what in project vault list; do
   began=$EPOCHREALTIME
@@ -89,5 +95,5 @@ for what in project vault list; do
   reads+=("\"$what\": $(python3 -c "print(round($EPOCHREALTIME - $began, 2))")")
 done
 local IFS=,
-echo "containment scale: {\"cozy\": \"$(cozy --version)\", \"grown\": $(cat "$S/grown.json"), \"state_db_bytes\": $bytes, \"first_start_s\": $took, \"doctor_s\": $doctor, \"after\": $after, \"reads_100_s\": {${reads[*]}}}"
+echo "containment scale: {\"cozy\": \"$(cozy --version)\", \"grown\": $(cat "$S/grown.json"), \"state_db_bytes\": $bytes, \"first_start_s\": $took, \"doctor_s\": $doctor, \"after\": $after, \"vault_state\": \"${state:-none}\", \"reads_100_s\": {${reads[*]}}}"
 }
