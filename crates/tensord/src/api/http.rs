@@ -206,6 +206,7 @@ async fn legacy_custody(m: Machine, descriptor: v1::LocalPrivateStorage, migrate
     }
     if migrate {
         let adoption: v1::ProjectExecutionMigrationRequest = if bytes.is_empty() { Default::default() } else { match serde_json::from_slice(&bytes) { Ok(adoption) => adoption, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid verified legacy binding adoption.")).into_response() } };
+        let (logs, store_logs) = (m.identity.logs.clone(), m.identity.store_logs.clone());
         let retired = m.call(move |runs| {
             let engine = &runs.service.engine;
             let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
@@ -224,7 +225,7 @@ async fn legacy_custody(m: Machine, descriptor: v1::LocalPrivateStorage, migrate
             std::fs::write(&staged, serde_json::to_vec(&receipt).map_err(std::io::Error::other).map_err(conflict("project_storage_migration_pending"))?)
                 .and_then(|()| std::fs::rename(&staged, &path)).map_err(conflict("project_storage_migration_pending"))?;
             let numbers: Vec<u64> = receipt.iter().map(|kept| kept.source_number).collect();
-            engine.retire_legacy(&numbers).map_err(conflict("project_storage_migration_busy"))
+            engine.retire_legacy(&numbers, &logs, &store_logs).map_err(conflict("project_storage_migration_busy"))
         }).await;
         return match retired { Ok(()) => StatusCode::NO_CONTENT.into_response(), Err(error) => Refusal::from(error).into_response() };
     }

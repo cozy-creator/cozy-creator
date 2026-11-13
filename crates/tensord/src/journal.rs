@@ -855,6 +855,12 @@ impl Journal {
             }
             tx.execute("DELETE FROM executions WHERE id=?1", [id]).map_err(db_error)?;
         }
+        // Their objects' uses and uploads name them too.
+        for object in &objects {
+            for table in ["object_uses", "private_object_uses", "objects", "held_memo_objects"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE sha256=?1"), [&object.sha256]).map_err(db_error)?;
+            }
+        }
         tx.commit().map_err(db_error)?;
         // Their cells are zeroed (`secure_delete`); the WAL's older images of those pages go once a reader lets them.
         let _ = self.connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");

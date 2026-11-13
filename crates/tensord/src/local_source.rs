@@ -262,7 +262,6 @@ impl LocalSources {
             "own": manifest.project,
             "pair": self.publisher.pair_key(locked), "python": self.publisher.sdk.python,
             "torch": self.publisher.torch_pins(None),
-            "private_view": crate::private_io::current().map(|scope| scope.view_root),
         });
         sha256::hex_digest(key.to_string().as_bytes())
     }

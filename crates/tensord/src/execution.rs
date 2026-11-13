@@ -371,11 +371,48 @@ impl Engine {
         self.journal.lock().unwrap().legacy_bindings(actor, &scoped, scope, requests)
     }
     /// A project's legacy runs leave the machine once Calcifer holds their history in the project (cl-984): their journal
-    /// rows, result copies, spools, triage bundles and the objects only they named.
-    pub(crate) fn retire_legacy(&self, ids: &[u64]) -> io::Result<()> {
+    /// rows, result copies, spools, triage bundles and the objects only they named. The machine's diagnostics from before
+    /// (`logs` the daily logs, `store_logs`, start.log, each ended executor's output) may quote them and are emptied, as a
+    /// legacy migration always did.
+    pub(crate) fn retire_legacy(&self, ids: &[u64], logs: &Path, store_logs: &Path) -> io::Result<()> {
+        let retired = self.retire_rows(ids)?;
+        if !retired {
+            return Ok(());
+        }
+        let empty = |path: &Path| {
+            if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file()) {
+                let _ = fs::OpenOptions::new().write(true).open(path).and_then(|file| file.set_len(0));
+            }
+        };
+        for entry in fs::read_dir(logs).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "tensord.log" || (name.starts_with("tensord.") && name.ends_with(".log")) { empty(&entry.path()); }
+        }
+        if let Some(state) = logs.parent() { empty(&state.join("start.log")); }
+        for name in ["memory.log", "memory.log.1", "transport.log", "transport.log.1"] { empty(&store_logs.join(name)); }
+        let engine = self.root.parent().unwrap_or(&self.root);
+        for entry in fs::read_dir(engine.join("gpu")).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
+                for log in ["stdout.log", "stderr.log", "codec.stderr.log"] { empty(&entry.path().join(log)); }
+            }
+        }
+        for entry in fs::read_dir(engine.join("gpu").join("peaks")).into_iter().flatten().flatten() {
+            if entry.file_name().to_string_lossy().ends_with(".json") { let _ = fs::remove_file(entry.path()); }
+        }
+        Ok(())
+    }
+
+    /// `retire_legacy`'s rows, copies and objects; whether any execution was still journaled.
+    fn retire_rows(&self, ids: &[u64]) -> io::Result<bool> {
         if self.owned.lock().unwrap().iter().any(|id| ids.iter().any(|retired| retired.to_string() == *id)) {
             return Err(io::Error::new(io::ErrorKind::ResourceBusy, "a legacy run is still executing"));
         }
+        let held: Vec<u64> = ids.iter().copied().filter(|id| self.journal.lock().unwrap().holds_execution(*id).unwrap_or(false)).collect();
+        if held.is_empty() {
+            return Ok(false);
+        }
+        let ids = held.as_slice();
         let (objects, subjects) = self.journal.lock().unwrap().retire_executions(ids)?;
         for id in ids {
             for dir in ["results", "staging"] {
@@ -388,7 +425,7 @@ impl Engine {
         if !objects.is_empty() {
             self.store.retire_objects(&objects, &[], &[]).map_err(crate::storage::io_error)?;
         }
-        Ok(())
+        Ok(true)
     }
     pub(crate) fn with_journal<T>(&self, f: impl FnOnce(&mut Journal) -> io::Result<T>) -> io::Result<T> {
         f(&mut self.journal.lock().unwrap())
