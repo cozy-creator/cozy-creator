@@ -26,6 +26,7 @@ mod web_seed_tests;
 pub(crate) mod host;
 mod jobs;
 pub(crate) mod journal;
+pub(crate) mod key;
 pub(crate) use journal::{OpenProject, ProjectRef, ProjectStore, RunOwner};
 mod keyed;
 pub(crate) mod legacy_worker;
@@ -139,6 +140,8 @@ struct Heard {
 pub(crate) struct Project {
     id: String,
     code: String,
+    /// What its runs are named by, `KEY-N` (cl-987).
+    key: Mutex<String>,
     /// Immutable owner. A recycled physical mount path must never choose another project's root.
     root: PathBuf,
     /// Cache ownership follows the physical mount, not a replaceable viewer authorization.
@@ -244,6 +247,7 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}/vault", get(vault::read).post(vault::write))
         .route("/v1/projects/{id}/vault/operations/{operation}", axum::routing::put(vault_operation::write).delete(vault_operation::acknowledge))
         .route("/v1/projects/{id}/address", get(address))
+        .route("/v1/projects/{id}/key", get(key::read).put(key::change))
 }
 
 /// Watches the plain project `id`'s folder `dir`, for what changes with no write of Calcifer's: a file into or out of `files/` (one
@@ -327,33 +331,38 @@ impl Projects {
         let mount_id = vault::mount_identity(&root);
         let physical = current_view(&root)?;
         let dir = physical.as_path();
-        let (folder, (id, name, code)) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
-            let (id, name, code) = identify_loaded(api, dir, folder)?;
+        let (folder, Identified { id, name, code, key }) = tokio::task::block_in_place(|| Folder::open_with(dir, api.machines.hubs.home(), |folder| {
+            let identified = identify_loaded(api, dir, folder)?;
+            let id = &identified.id;
             // Validate a move before inherited local work can be unbound or resumed. A
             // rendering project keeps its original physical folder until its runs land.
-            let moved = self.open.lock().expect("projects lock").get(&id).and_then(Weak::upgrade)
+            let moved = self.open.lock().expect("projects lock").get(id).and_then(Weak::upgrade)
                 .filter(|open| open.root != root || open.mount_id != mount_id || open.folder.dir != dir);
             if let Some(open) = moved {
                 if *open.walking.lock().expect("walking lock") {
                     let said = format!("{id} moved from {} while it renders: move it back, or once its runs land", open.folder.dir.display());
                     return Err(Error::new(Kind::Conflict, "project_busy", said));
                 }
-                self.open.lock().expect("projects lock").remove(&id);
+                self.open.lock().expect("projects lock").remove(id);
             }
-            Ok((id, name, code))
+            Ok(identified)
         }))?;
         IDENTITIES.lock().expect("identities lock").insert(dir.to_owned(), (id.clone(), name));
         crate::events::project_opened(dir);
         let mut open = self.open.lock().expect("projects lock");
         let project = match open.get(&id).and_then(Weak::upgrade)
             .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir) {
-            Some(project) => project,
+            Some(project) => {
+                *project.key.lock().expect("key lock") = key;
+                project
+            }
             None => {
                 let unseen=unseen::read(&folder,&id)?;
                 let watch = (!vault::encrypted(&root)).then(|| watch(&id, dir)).flatten();
                 let project = Arc::new(Project {
                     id: id.clone(),
                     code,
+                    key: Mutex::new(key),
                     root,
                     mount_id,
                     folder,
@@ -748,7 +757,21 @@ fn folder_name(dir: &FsPath) -> String {
 
 /// The current native project in `dir`, its canonical identity recorded in the index. A copy
 /// another folder still holds takes a new id; a name another project has takes `_2`.
-fn identify(api: &Api, dir: &FsPath) -> Result<(String, String, String), Error> {
+/// A project's folder identified: its id, name, public code and key.
+struct Identified {
+    id: String,
+    name: String,
+    code: String,
+    key: String,
+}
+
+/// What identifying a folder keeps in its project.db: its identity, or its key (`fresh`: the keys it held go, a copy's original's).
+enum Keep<'a> {
+    Identity { id: &'a str, name: &'a str, code: &'a str },
+    Key { key: &'a str, fresh: bool },
+}
+
+fn identify(api: &Api, dir: &FsPath) -> Result<Identified, Error> {
     let path = dir.join(db::DB);
     if !path.is_file() {
         return Err(Folder::not_a_project(dir));
@@ -756,14 +779,21 @@ fn identify(api: &Api, dir: &FsPath) -> Result<(String, String, String), Error> 
     let mut conn = db::open(&path)?;
     let kept = db::identity(&conn);
     let code = db::meta(&conn, "code");
-    identify_with(api, dir, kept, code, |id, name, code| db::set_identity(&mut conn, &path, id, name, Some(code)))
+    let keys = db::keys(&conn);
+    identify_with(api, dir, kept, code, keys, |keep| match keep {
+        Keep::Identity { id, name, code } => db::set_identity(&mut conn, &path, id, name, Some(code)),
+        Keep::Key { key, fresh } => db::set_key(&conn, &path, key, fresh),
+    })
 }
 
-fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<(String, String, String), Error> {
-    identify_with(api, dir, folder.canonical_identity()?, folder.public_code()?, |id, name, code| folder.set_identity(id, name, code))
+fn identify_loaded(api: &Api, dir: &FsPath, folder: &Folder) -> Result<Identified, Error> {
+    identify_with(api, dir, folder.canonical_identity()?, folder.public_code()?, folder.keys()?, |keep| match keep {
+        Keep::Identity { id, name, code } => folder.set_identity(id, name, code),
+        Keep::Key { key, fresh } => folder.set_key(key, fresh),
+    })
 }
 
-fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_code: Option<String>, keep: impl FnOnce(&str, &str, &str) -> Result<(), Error>) -> Result<(String, String, String), Error> {
+fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_code: Option<String>, kept_keys: Vec<String>, mut keep: impl FnMut(Keep<'_>) -> Result<(), Error>) -> Result<Identified, Error> {
     let store = api.calcifer.store();
     let logical = vault::logical(dir);
     refuse_own_folder(&logical)?;
@@ -802,10 +832,16 @@ fn identify_with(api: &Api, dir: &FsPath, kept: Option<(String, String)>, kept_c
     let kept_code = kept.as_ref().filter(|(held, _)| held == &id).and(kept_code);
     let code = reserve_code(store, &id, &name, &logical, kept_code.as_deref())?;
     if kept.as_ref() != Some(&(id.clone(), name.clone())) || kept_code.as_deref() != Some(&code) {
-        keep(&id, &name, &code)?;
+        keep(Keep::Identity { id: &id, name: &name, code: &code })?;
+    }
+    // A copy's keys are its original's.
+    let kept_keys = if kept.as_ref().is_some_and(|(held, _)| held == &id) { kept_keys } else { vec![] };
+    let key = key::keyed(api, &id, &name, &kept_keys)?;
+    if kept_keys.last() != Some(&key) {
+        keep(Keep::Key { key: &key, fresh: kept_keys.is_empty() })?;
     }
     vault::register_plain_root(&logical, &id)?;
-    Ok((id, name, code))
+    Ok(Identified { id, name, code, key })
 }
 
 /// What the first open of a folder found to be a copy tells, once: its new identity, and the project it was a copy of.
@@ -1326,21 +1362,21 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
     // opened here.
     let unread = match dir.join(db::DB).is_file() {
         true => {
-            let (id, _, code) = tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?;
-            api.projects.open_now(&id).is_none().then_some((id, code))
+            let identified = tokio::task::block_in_place(|| identify(&api, &dir)).map_err(Refusal)?;
+            api.projects.open_now(&identified.id).is_none().then_some(identified)
         },
         false => None,
     };
-    let (id, code, said) = match unread {
-        Some((id, code)) => (id, code, copy_told(&dir).into_iter().collect()),
+    let (id, code, key, said) = match unread {
+        Some(Identified { id, code, key, .. }) => (id, code, key, copy_told(&dir).into_iter().collect()),
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
             copy_told(&project.root);
-            (project.id.clone(), project.code.clone(), said)
+            (project.id.clone(), project.code.clone(), project.key(), said)
         }
     };
-    let opened = opened(id, code, &dir);
+    let opened = opened(id, code, key, &dir);
     api.calcifer.store().project_opened(&opened.id, &opened.name, &dir, Some(now_ms()), Some(&opened.code))?;
     let next = vec!["cozy open".into()];
     let response = Json(Opened { next, said, recovery_secret, ..opened }).into_response();
@@ -1356,8 +1392,8 @@ fn unmakeable(path: &FsPath, e: std::io::Error) -> Error {
 }
 
 /// The project `id`, in `dir`, as an answer gives it.
-fn opened(id: String, code: String, dir: &FsPath) -> Opened {
-    Opened { id, code, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![], recovery_secret: None }
+fn opened(id: String, code: String, key: String, dir: &FsPath) -> Opened {
+    Opened { id, code, key, path: dir.to_owned(), name: identity(dir).1, next: vec![], said: vec![], recovery_secret: None }
 }
 
 /// A new project called `name` in `dir`, with a new id, holding the starter film or nothing: its `project.db`, made whole and then
@@ -1478,6 +1514,7 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
             used_at_ms: entry.used_at_ms,
             id: entry.id,
             code: entry.code,
+            key: entry.key,
         })
         .collect();
     Ok(Json(Listed { projects, older }))
@@ -1487,10 +1524,10 @@ async fn list(State(api): State<Arc<Api>>, Query(page): Query<Page>) -> Result<J
 async fn address(State(api): State<Arc<Api>>, Path(reference): Path<String>) -> Result<Json<api::calcifer::project::Address>, Refusal> {
     if api::target::written_as_path(reference.trim()) {
         let project = api.projects.get(&api, &reference)?;
-        return Ok(Json(api::calcifer::project::Address { id: project.id.clone(), code: project.code.clone() }));
+        return Ok(Json(api::calcifer::project::Address { id: project.id.clone(), code: project.code.clone(), key: project.key() }));
     }
     let entry = known(&api, &reference).map_err(Refusal)?;
-    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code }))
+    Ok(Json(api::calcifer::project::Address { id: entry.id, code: entry.code, key: entry.key }))
 }
 
 /// Where its rows differ from its document (cl-885): nowhere, always. What e2e checks after each write.
@@ -1517,7 +1554,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
             let queue = queue(&project, &folder.walk_now().map_err(Refusal)?);
             let busy = *project.walking.lock().expect("walking lock");
             let warning = format!("{}: a render going uses the text it was asked with, and a new one is refused until this reads", error.message);
-            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], notes: vec![], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder) }));
+            return Ok(Json(ProjectState { covered: None, id, code: project.code.clone(), key: project.key(), path: folder.dir.clone(), assets: vec![], heads: vec![], queue, missing: vec![], stale: vec![], orphans: vec![], busy, absent: 0, run_files: 0, cuts: vec![], warnings: vec![ProjectWarning { name: None, message: warning }], notes: vec![], next: vec![], board: board_of(&project), unsent: vec![], machines: chosen(&api, &project.folder) }));
         }
     };
     // What a reader now holds is what any change from here is told against.

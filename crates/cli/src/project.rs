@@ -55,6 +55,32 @@ fn not_in_a_project(directory: &str) -> Error {
         .next("cozy new")
 }
 
+/// Show or change the current project's key (cl-987): its runs are `KEY-N`, `SE-5`, named so from any folder.
+#[derive(clap::Args, Debug)]
+pub(crate) struct KeyArgs {
+    /// Its new key: 2 to 10 letters and digits, a letter first. The key it had still names its runs.
+    key: Option<String>,
+}
+
+pub(crate) async fn key(ctx: &Context, args: KeyArgs) -> Result<ExitCode, Error> {
+    let project = identity(ctx).await?.id;
+    let path = crate::calcifer_client::path(&["v1", "projects", &project, "key"]);
+    let client = ctx.calcifer().await?;
+    let answer: api::calcifer::project::Key = match args.key {
+        None => client.get(&path).await?,
+        Some(key) => client.put(&path, &api::calcifer::project::Key { key, former: vec![] }).await?,
+    };
+    if ctx.json {
+        output::json(&answer);
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("{}: its runs are {}-1, {}-2, …", answer.key, answer.key, answer.key);
+    if !answer.former.is_empty() {
+        println!("formerly {}, which name them still", answer.former.join(", "));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Create a project in the directory named, or in the current directory.
 #[derive(clap::Args, Debug)]
 pub(crate) struct New {
@@ -109,18 +135,18 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
     });
     let request = Open { path: directory.clone(), unencrypted: args.unencrypted, passphrase, ..Open::default() };
     let key = args.unencrypted.then(mint_key);
-    let (id, code, path, created, mut recovery_secret) = if let Some(address) = existing {
-        (address.id, address.code, directory.clone(), false, None)
+    let (id, code, key, path, created, mut recovery_secret) = if let Some(address) = existing {
+        (address.id, address.code, address.key, directory.clone(), false, None)
     } else { match if args.unencrypted {
         client.post::<_, Opened>("/v1/projects", &request, key.as_deref()).await
     } else {
         client.private_post::<_, Opened>("/v1/projects", &request).await
     } {
-        Ok(opened) => (opened.id, opened.code, opened.path, true, opened.recovery_secret),
+        Ok(opened) => (opened.id, opened.code, opened.key, opened.path, true, opened.recovery_secret),
         Err(error) if error.code == "project_exists" => {
             let path = crate::calcifer_client::path(&["v1", "projects", &directory.to_string_lossy()]);
             let state: State = client.get(&format!("{path}?assets=false")).await?;
-            (state.id, state.code, state.path, false, None)
+            (state.id, state.code, state.key, state.path, false, None)
         }
         Err(error) => return Err(error),
     } };
@@ -142,16 +168,16 @@ pub(crate) async fn create(ctx: &Context, args: New) -> Result<ExitCode, Error> 
     if let Some(meter) = &creating { meter.finish_and_clear(); }
     let label = if code.is_empty() { &id } else { &code };
     let message = if created {
-        format!("Created project {label} at {}.", path.display())
+        format!("Created project {label} at {}. Its runs are {key}-1, {key}-2, ….", path.display())
     } else {
-        format!("Project not created. {} already contains project {label}.", path.display())
+        format!("Project not created. {} already contains project {label}, whose runs are {key}-N.", path.display())
     };
     if let (Some(output), Some(secret)) = (&args.recovery_out, &recovery_secret) {
         vault::save_recovery(output, secret)?;
         recovery_secret = None;
         output::say(ctx, &format!("recovery secret saved to {}; keep a copy off this computer", output.display()));
     }
-    let mut document = serde_json::json!({ "id": id, "code": code, "path": path, "created": created, "message": message });
+    let mut document = serde_json::json!({ "id": id, "code": code, "key": key, "path": path, "created": created, "message": message });
     if let Some(view) = protection.and_then(|status| status.view) { document["view"] = serde_json::json!(view); }
     if ctx.json {
         if let Some(secret) = recovery_secret { document["recovery_secret"] = secret.into(); }

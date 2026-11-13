@@ -336,7 +336,7 @@ step "a run followed across a Calcifer restart"
 local code n
 (cd "$here" && in_project "$RUN_PROJECT" run "$here/weightless/wait" seconds:=15 --on local > "$OUT/across.txt" 2>&1; echo $? > "$OUT/across.code") &
 local follower=$!
-for _ in $(seq 120); do n=$(grep -oE '^run [0-9]+ ' "$OUT/across.txt" | head -1 | grep -oE '[0-9]+') && break; sleep 0.5; done
+for _ in $(seq 120); do n=$(grep -oE '^run [A-Z][A-Z0-9]*-[0-9]+ ' "$OUT/across.txt" | head -1 | cut -d' ' -f2) && [ -n "$n" ] && break; sleep 0.5; done
 [ -n "$n" ] || check "across: the run never began"
 systemctl --user restart cozy-calcifer || check "systemctl --user restart cozy-calcifer failed"
 wait "$follower" || true
@@ -439,6 +439,7 @@ case $SHARD in
     time_left
     broken_answers
     run_filters
+    project_keys
     run_playback
     hub_away
     lock_refresh
@@ -511,6 +512,7 @@ case $SHARD in
     component_models
     yaml_requests
     run_filters
+    project_keys
     bound_runs
     own_references
     lane_fit

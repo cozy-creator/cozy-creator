@@ -622,7 +622,24 @@ pub(crate) fn find_current(api:&Api,key:&str)->Result<RunRow,Refusal> {
     row.ok_or_else(||refuse(Kind::NotFound,"run_not_found","this project knows no such run"))
 }
 
+/// The run `KEY-N` names from any scope (cl-987): run N of the project that has or had the key, `COZY-N` Calcifer's own. None when
+/// `text` is no such name, or no project here has the key.
+async fn named_run(api: &Arc<Api>, text: &str) -> Result<Option<RunRow>, Refusal> {
+    let Some((key, number)) = ::api::calcifer::project::run_name(text) else { return Ok(None) };
+    let journal = match key.as_str() {
+        ::api::calcifer::project::MACHINE_KEY => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
+        _ => match api.calcifer.store().key_owner(&key).map_err(store_refusal)? {
+            Some(id) => crate::store::RunStore::Project(api.projects.store(api, &id).await.map_err(Refusal)?),
+            None => return Ok(None),
+        },
+    };
+    let row = journal.run_by_number(number)?.ok_or_else(|| Refusal(Error::new(Kind::NotFound, "run_not_found", format!("there is no run {key}-{number}")).next("cozy run ls --all")))?;
+    if matches!(journal, crate::store::RunStore::Maintenance(_)) { api.calcifer.remember_maintenance_run(row.id.as_str()); }
+    Ok(Some(row))
+}
+
 pub(crate) async fn find_scoped(api: &Arc<Api>, project: Option<&str>, key: &str) -> Result<RunRow, Refusal> {
+    if let Some(row) = named_run(api, key).await? { return Ok(row); }
     let journal = match project {
         Some(project) => crate::store::RunStore::Project(api.projects.store(api, project).await.map_err(Refusal)?),
         None => crate::store::RunStore::Maintenance(api.calcifer.maintenance_store()),
@@ -635,7 +652,10 @@ pub(crate) async fn find_scoped(api: &Arc<Api>, project: Option<&str>, key: &str
     let row = match row {
         None if project.is_some() => api.calcifer.maintenance_store().run(key)?.filter(|row| row.target == ::api::calcifer::hub::job::COZY_UPDATE),
         row => row,
-    }.ok_or_else(|| refuse(Kind::NotFound, "run_not_found", "this scope knows no such run"))?;
+    }.ok_or_else(|| match ::api::calcifer::project::run_name(key) {
+        Some((named, _)) => Refusal(Error::new(Kind::NotFound, "run_not_found", format!("no project on this computer has the key {named}")).next("cozy run ls --all")),
+        None => refuse(Kind::NotFound, "run_not_found", "this scope knows no such run"),
+    })?;
     if project.is_none() || row.target == ::api::calcifer::hub::job::COZY_UPDATE { api.calcifer.remember_maintenance_run(row.id.as_str()); }
     Ok(row)
 }
@@ -722,7 +742,7 @@ pub(crate) async fn show(
     let mut run = api.calcifer.row_store(&row)?.detail(&row)?;
     let record = api.calcifer.record(&row)?;
     (run.waiting, run.progress, run.queue_position) = (record.waiting, record.progress, record.queue_position);
-    (run.project, run.project_id, run.stalled) = (record.project, record.project_id, record.stalled);
+    (run.name, run.project, run.project_id, run.stalled) = (record.name, record.project, record.project_id, record.stalled);
     run.request = crate::runs::asked(&row);
     run.video_progress = crate::runs::video_progress::of(&run, &api.calcifer.row_store(&row)?.events_after(row.id.as_str(), 0)?);
     run.report = crate::runs::report::of(&run);

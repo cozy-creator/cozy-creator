@@ -354,7 +354,7 @@ async fn watch(
     let mut left = None;
     let watched = async {
         let run = ctx.calcifer().await?.run(id).await?;
-        output::say(ctx, &format!("cozy run watch {}  (Esc or q back)", run.number));
+        output::say(ctx, &format!("cozy run watch {}  (Esc or q back)", run::handle(&run)));
         let stop = async { left = Some(leave(&mut *keys, &mut *signals).await) };
         run::follow_until(ctx, run, stop).await
     };

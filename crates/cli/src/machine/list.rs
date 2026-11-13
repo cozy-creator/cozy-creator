@@ -279,7 +279,7 @@ fn live_run(held: &LiveRun) -> (String, String) {
     if run::settled(run) {
         cell += &format!("; {} here, left behind on the machine", run::list::status(run));
     }
-    (format!("run {}", run.number), cell)
+    (format!("run {}", run::handle(run)), cell)
 }
 
 /// What a machine reports of itself, one fact per line, GPUs by number.

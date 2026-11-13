@@ -23,6 +23,12 @@ pub(crate) const TABLES: &str = "
         path TEXT NOT NULL,
         code TEXT NOT NULL DEFAULT ''
     ) STRICT;
+    CREATE TABLE IF NOT EXISTS project_keys (
+        key TEXT PRIMARY KEY,
+        id TEXT NOT NULL,
+        current INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    CREATE UNIQUE INDEX IF NOT EXISTS project_keys_current ON project_keys (id) WHERE current = 1;
     CREATE TABLE IF NOT EXISTS projects_gone (
         id TEXT PRIMARY KEY,
         code TEXT NOT NULL,
@@ -69,6 +75,8 @@ pub(crate) const TABLES: &str = "
 pub(crate) struct KnownProject {
     pub id: String,
     pub code: String,
+    /// What its runs are named by here (cl-987); empty until it opens.
+    pub key: String,
     pub name: String,
     pub path: PathBuf,
     pub used_at_ms: i64,
@@ -88,7 +96,30 @@ fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
     let path = PathBuf::from(row.get::<_, String>(1)?);
     let name = Some(row.get::<_, String>(4)?).filter(|name| !name.is_empty());
     let name = name.unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
-    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)? })
+    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, key: row.get::<_, Option<String>>(6)?.unwrap_or_default(), name, path, used_at_ms: row.get(2)?, walking: row.get(3)? })
+}
+
+/// `known`'s columns, from `projects`.
+const KNOWN: &str = "SELECT id, path, 0, 0, '', code, (SELECT key FROM project_keys WHERE project_keys.id = projects.id AND current = 1) FROM projects";
+
+/// Whether project `id` may take `key` here: no reserved key, and none another project this index knows has, now or before (cl-987).
+/// A key of a project the index let go of is free.
+fn key_free(conn: &Connection, id: &str, key: &str) -> rusqlite::Result<bool> {
+    if api::calcifer::project::RESERVED_KEYS.contains(&key) { return Ok(false); }
+    let taken: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM project_keys JOIN projects ON projects.id = project_keys.id
+        WHERE key = ?1 AND project_keys.id <> ?2)", [key, id], |row| row.get(0))?;
+    Ok(!taken)
+}
+
+/// `key` project `id`'s here: its key now when `current`.
+fn key_kept(conn: &Connection, id: &str, key: &str, current: bool) -> rusqlite::Result<()> {
+    if current {
+        conn.execute("UPDATE project_keys SET current = 0 WHERE id = ?1 AND key <> ?2", [id, key])?;
+    }
+    conn.execute("INSERT INTO project_keys (key, id, current) VALUES (?1, ?2, ?3)
+        ON CONFLICT (key) DO UPDATE SET id = excluded.id, current = MAX(excluded.current, CASE WHEN project_keys.id = excluded.id THEN project_keys.current ELSE 0 END)",
+        params![key, id, current])?;
+    Ok(())
 }
 
 /// A store from before cl-819 names no project: its column, added.
@@ -186,13 +217,13 @@ fn digest(key: &str) -> String {
 
 impl Store {
     pub(crate) fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
-        self.read(|conn| Ok(conn.query_row("SELECT id, path, 0, 0, '', code FROM projects WHERE id = ?1", [id], known).optional()?))
+        self.read(|conn| Ok(conn.query_row(&format!("{KNOWN} WHERE id = ?1"), [id], known).optional()?))
     }
 
     /// Every project opened here, last used first.
     pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id, path, 0, 0, '', code FROM projects ORDER BY id")?;
+            let mut statement = conn.prepare(&format!("{KNOWN} ORDER BY id"))?;
             Ok(statement.query_map([], known)?.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -226,6 +257,59 @@ impl Store {
             let code = project_code(tx, id, preferred, crate::project::code::generate)?;
             tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code", params![id, path.to_string_lossy(), code])?;
             Ok(code)
+        })
+    }
+
+    /// The key project `id` goes by here (cl-987), given `held`, the keys its project.db keeps, its key now last: that one when no other
+    /// project here has it, else the one this index gave it, else the first free of `proposed`. Each other held key free here names it
+    /// too.
+    pub(crate) fn project_keyed(&self, id: &str, held: &[String], mut proposed: impl Iterator<Item = String>) -> Result<String> {
+        self.write(|tx| {
+            for key in held.iter().filter(|key| api::calcifer::project::key(key).as_ref() == Some(*key)) {
+                if key_free(tx, id, key)? { key_kept(tx, id, key, false)?; }
+            }
+            let mine = |key: &String| tx.query_row("SELECT EXISTS (SELECT 1 FROM project_keys WHERE key = ?1 AND id = ?2)", [key, id], |row| row.get::<_, bool>(0));
+            let wanted = match held.last() {
+                Some(key) if mine(key)? => Some(key.clone()),
+                _ => tx.query_row("SELECT key FROM project_keys WHERE id = ?1 AND current = 1", [id], |row| row.get(0)).optional()?
+                    .filter(|key: &String| key_free(tx, id, key).unwrap_or(false)),
+            };
+            let key = match wanted {
+                Some(key) => key,
+                None => loop {
+                    let key = proposed.next().ok_or_else(|| StoreError::ProjectKey("no free project key".into()))?;
+                    if key_free(tx, id, &key)? { break key; }
+                },
+            };
+            key_kept(tx, id, &key, true)?;
+            Ok(key)
+        })
+    }
+
+    /// Project `id`'s key is `key` now (cl-987); the one it had names it still. Refused when another project here has or had it.
+    pub(crate) fn project_key_changed(&self, id: &str, key: &str) -> Result<()> {
+        self.write(|tx| {
+            if api::calcifer::project::RESERVED_KEYS.contains(&key) {
+                return Err(StoreError::ProjectKey(format!("{key} is Calcifer's own: its runs are {key}-N")));
+            }
+            if !key_free(tx, id, key)? {
+                return Err(StoreError::ProjectKey(format!("another project on this computer has the key {key}")));
+            }
+            Ok(key_kept(tx, id, key, true)?)
+        })
+    }
+
+    /// The project `key` names here, now or before (cl-987).
+    pub(crate) fn key_owner(&self, key: &str) -> Result<Option<String>> {
+        self.read(|conn| Ok(conn.query_row("SELECT project_keys.id FROM project_keys JOIN projects ON projects.id = project_keys.id WHERE key = ?1",
+            [key], |row| row.get(0)).optional()?))
+    }
+
+    /// The keys project `id` had here, which name it still: oldest first.
+    pub(crate) fn former_keys(&self, id: &str) -> Result<Vec<String>> {
+        self.read(|conn| {
+            let mut statement = conn.prepare("SELECT key FROM project_keys WHERE id = ?1 AND current = 0 ORDER BY rowid")?;
+            Ok(statement.query_map([id], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
         })
     }
 

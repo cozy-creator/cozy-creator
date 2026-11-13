@@ -18,7 +18,7 @@ use crate::{
     Context, output,
     send::{Paths, Sender},
 };
-pub(crate) use follow::{done, exit_code, follow, follow_until, handle, in_folder, job, mint_key, note_folder, settled};
+pub(crate) use follow::{done, exit_code, follow, follow_until, handle, job, mint_key, settled};
 
 pub(crate) mod fetch;
 mod follow;
@@ -151,7 +151,7 @@ enum Verb {
     },
     /// Watch a run's progress, result, outputs and logs.
     Watch {
-        /// The run's number or id.
+        /// The run's name (`SE-5`, from any folder), its number in this project, or its id.
         run: String,
         /// Show the current state and exit.
         #[arg(long)]
@@ -165,7 +165,7 @@ enum Verb {
     },
     /// Cancel a queued or running run.
     Cancel {
-        /// The run's number or id.
+        /// The run's name (`SE-5`, from any folder), its number in this project, or its id.
         run: String,
     },
 }

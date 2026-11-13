@@ -434,7 +434,7 @@ impl Calcifer {
         self.waiting_named(ids,|id| match project {Some(project)=>self.project_store(project).and_then(|store|store.run(id)),None=>self.maintenance_store().run(id)})
     }
     fn waiting_named(&self,ids:&[String],run:impl Fn(&str)->store::Result<Option<RunRow>>)->Option<String> {
-        let name=|id:&String| run(store::calcifer_id(id)).ok().flatten().map(|row|format!("run {}",row.number)).unwrap_or_else(||"other work".into());
+        let name=|id:&String| run(store::calcifer_id(id)).ok().flatten().map(|row|format!("run {}",self.run_name(&row))).unwrap_or_else(||"other work".into());
         match ids {[]=>None,[one]=>Some(format!("waiting for {} to end",name(one))),many=>Some(format!("waiting for {} to end",many.iter().map(name).collect::<Vec<_>>().join(", ")))}
     }
 
@@ -563,6 +563,15 @@ impl Calcifer {
         let Some(root)=&row.project_root else { return Ok(None); };
         let open=self.live_owners().into_iter().find(|owner|owner.root()==root);
         open.or_else(||self.opened(&row.owner).filter(|owner|owner.root()==root)).map(Some).ok_or_else(||StoreError::Locked("project_not_open".into()))
+    }
+    /// What names `row` to a person (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's own; its
+    /// number alone while its project is locked.
+    pub(crate) fn run_name(&self,row:&RunRow)->String {
+        match self.row_owner(row) {
+            Ok(Some(owner)) => format!("{}-{}", owner.key(), row.number),
+            Ok(None) => format!("{}-{}", ::api::calcifer::project::MACHINE_KEY, row.number),
+            Err(_) => row.number.to_string(),
+        }
     }
     pub(crate) fn row_store(&self,row:&RunRow)->store::Result<store::RunStore<'_>> {
         match self.row_owner(row)? { Some(owner)=>owner.store().map(store::RunStore::Project),None=>Ok(store::RunStore::Maintenance(self.maintenance_store())) }
@@ -1039,7 +1048,7 @@ impl Calcifer {
                 code: "no_progress".into(),
                 message: format!(
                     "run {} has made no progress for {minutes} min on {}{rate}. It keeps running until you end it: cozy run cancel {}",
-                    run.number, stalled.machine, run.number
+                    run.name, stalled.machine, run.name
                 ),
             };
             warn!(run = %id, "{}", warning.message);
@@ -1203,7 +1212,7 @@ impl Calcifer {
                 continue;
             }
             let mut names: Vec<String> = (ahead.iter().flat_map(|op| &op.runs))
-                .map(|id| self.with_run_store(id, |store| store.run(id)).ok().flatten().map_or_else(|| "another run".to_owned(), |row| format!("run {}", row.number)))
+                .map(|id| self.with_run_store(id, |store| store.run(id)).ok().flatten().map_or_else(|| "another run".to_owned(), |row| format!("run {}", self.run_name(&row))))
                 .collect();
             names.sort();
             names.dedup();
@@ -1686,7 +1695,7 @@ impl Calcifer {
                 match machines.current(&name).await {
                     Ok(None) => {}
                     Ok(Some(update)) => {
-                        self.waiting(id, format!("updating {name} first (run {}: {})", update.number, update.target));
+                        self.waiting(id, format!("updating {name} first (run {}: {})", update.name, update.target));
                         tokio::select! {
                             _ = settled.changed() => {}
                             _ = wake.notified() => {}
@@ -2177,7 +2186,7 @@ impl Calcifer {
                         n => format!("{n} GPUs"),
                     };
                     let holder = match self.with_run_store(&gpu.behind, |store| store.run(&gpu.behind)) {
-                        Ok(Some(holder)) => format!("run {}", holder.number),
+                        Ok(Some(holder)) => format!("run {}", self.run_name(&holder)),
                         _ => "another run".to_owned(),
                     };
                     self.waiting(id, format!("waiting for {gpus}, held by {holder}"));

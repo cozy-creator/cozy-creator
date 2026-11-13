@@ -1124,6 +1124,10 @@ export type KnownProject = { id: string,
  */
 code: string,
 /**
+ * What its runs are named by: `KEY-N` (cl-987). Empty until it opens here.
+ */
+key: string,
+/**
  * Its name: what `-p` takes.
  */
 name: string, path: string, used_at_ms: number,
@@ -1877,6 +1881,10 @@ export type Opened = { id: string,
  */
 code: string,
 /**
+ * What its runs are named by: `KEY-N` (cl-987).
+ */
+key: string,
+/**
  * Where it lives on Calcifer's computer.
  */
 path: string,
@@ -2177,7 +2185,11 @@ preview?: number | null, };
 /**
  * `GET /v1/projects/{id}/address`: project identity without evaluating its assets; accepts a containing directory.
  */
-export type ProjectAddress = { id: string, code: string, };
+export type ProjectAddress = { id: string, code: string,
+/**
+ * What its runs are named by: `KEY-N` (cl-987).
+ */
+key: string, };
 
 /**
  * A project event's position in one controller process. Generations never compare across
@@ -2202,6 +2214,12 @@ machine?: string | null,
  * What a version's file says of itself beyond its type, as its function declared it or a person set it: `orbit` turns a video.
  */
 metadata?: { [key in string]: JsonValue }, };
+
+/**
+ * `GET|PUT /v1/projects/{id}/key` (cl-987): the key its runs are named by, `KEY-N`, and the keys it had here, which name them still.
+ * `PUT`'s body is one with only `key`.
+ */
+export type ProjectKey = { key: string, former?: Array<string>, };
 
 /**
  * `PUT /v1/projects/{id}/machines` (cl-873): the machines the project's runs and renders go to, each to the one of them that finishes
@@ -2229,7 +2247,11 @@ export type ProjectState = { id: string,
 /**
  * Its stable, nine-character public URL code.
  */
-code: string, path: string, assets: Array<Asset>,
+code: string,
+/**
+ * What its runs are named by: `KEY-N` (cl-987).
+ */
+key: string, path: string, assets: Array<Asset>,
 /**
  * The project document's heads its boxes were read at: what words typed on them were typed on (`AssetPatch.typed`).
  */
@@ -2710,6 +2732,11 @@ id: RunId,
  * This controller's number for it; 0 for one another client sent.
  */
 number: number,
+/**
+ * What names it to a person from any folder (cl-987): `KEY-N`, its project's key and its number there, `COZY-N` for Calcifer's
+ * own; its id for one another client sent.
+ */
+name: string,
 /**
  * One another client of this account sent, as the machine it runs on numbers it: read there,
  * never held here.

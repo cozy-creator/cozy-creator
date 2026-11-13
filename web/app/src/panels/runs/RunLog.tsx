@@ -5,6 +5,7 @@ import { LogView, plain, Section } from "../common"
 import { Failure } from "../common"
 import { follow, followingLine, type Following } from "../follow"
 import { span } from "../format"
+import { runName } from "./words"
 
 /** The most a drawer keeps: what scrolls past this is in `cozy run watch`. */
 const KEPT = 5000
@@ -58,7 +59,7 @@ export function RunLog({ run, project }: { run: Run; project: string | null }) {
     // A settled run replays its whole log in one go: the page redraws for it ten times a second, not once a line.
     const flush = () => {
       timer = undefined
-      setText((dropped ? [`(${dropped} earlier lines: cozy run watch ${run.number})`, ...lines] : lines).join("\n"))
+      setText((dropped ? [`(${dropped} earlier lines: cozy run watch ${runName(run)})`, ...lines] : lines).join("\n"))
     }
     setText("")
     void follow(
