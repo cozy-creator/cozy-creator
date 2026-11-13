@@ -88,7 +88,7 @@ echo -e "utc\tshow_ms\tshow_rc\tstate\trun\trunshow_ms\trunshow_rc\tstatus\tunre
     t=$(date +%s%3N); s=$(timeout 120 cozy machine show "$RID" --json 2>&1); src=$?; sm=$(( $(date +%s%3N) - t ))
     k=$(cat "$OUT/current" 2>/dev/null); N=''; [ -z "$k" ] || N=$(current "$k")
     rs='' rms='' rrc='' rst=''
-    if [ -n "$N" ]; then t=$(date +%s%3N); rs=$(cd "$(cat "$OUT/current.dir")" && timeout 120 cozy run watch "$N" --once --json --full 2>&1); rrc=$?; rms=$(( $(date +%s%3N) - t ))
+    if [ -n "$N" ]; then t=$(date +%s%3N); rs=$(cd "$RUN_PROJECT" && timeout 120 cozy run watch "$N" --once --json --full 2>&1); rrc=$?; rms=$(( $(date +%s%3N) - t ))
       rst=$(jq -r '.status // empty' <<<"$rs" 2>/dev/null | head -1); fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%T)" "$sm" "$src" "$(jq -r '.state // empty' <<<"$s" 2>/dev/null | head -1)" \
       "$N" "$rms" "$rrc" "$rst" "$(printf '%s\n%s' "$s" "$rs" | grep -ci unreachable)" >> "$OUT/probe.tsv"
@@ -173,10 +173,11 @@ for k in "${names[@]}"; do
   echo "$k" > "$OUT/current"
   tree=$(jq -r '.tree // empty' <<<"$c") target=$(jq -r .target <<<"$c")
   cd "$PACKAGES/$tree" || fail "no tree for $k"
-  pwd > "$OUT/current.dir"  # a run is known in the project it ran from: watch it there
   [ -z "$tree" ] || target=./$target
   step "$k" run "$target" "${args[@]}" --on "$NAME"; code=$?
   N=$(runno "$k"); [ -n "$N" ] || N=$(current "$k")  # a failed run's output names it only in its first line
+  # `step` runs every cell from the session's project (lib.sh RUN_PROJECT): its runs are known there alone.
+  cd "$RUN_PROJECT" || fail "no $RUN_PROJECT"
   if [ -n "$N" ]; then cozy run watch "$N" --once --json --full > "$OUT/$k.json" 2>/dev/null; cozy run watch "$N" --once -o "$OUT/$k.out" > /dev/null 2>&1; fi
   cd "$OUT" || fail "no $OUT"
   st=$(jq -r '.status // "none"' "$OUT/$k.json" 2>/dev/null); st=${st:-none}
@@ -194,7 +195,7 @@ for k in "${names[@]}"; do
   [ "$st" = "$want" ] || { [ "$want" = failed ] && [ "$st" = none ] && [ "$code" != 0 ]; } ||
     { fails=$((fails + 1)); [ "$fails" -lt 2 ] || fail "two cells failed"; }
 done
-rm -f "$OUT/current" "$OUT/current.dir"
+rm -f "$OUT/current"
 
 digests() { jq -r '[.result | .. | .digest? // empty] | join(",")' "$OUT/$1.json" 2>/dev/null; }
 file() { ls "$OUT/$1.out"/* 2> /dev/null | grep -E '\.(mp4|webm|png|webp|jpg|wav|flac)$' | head -1; }
