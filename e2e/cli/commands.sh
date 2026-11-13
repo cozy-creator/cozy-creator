@@ -181,7 +181,7 @@ second_project() {
 step "a second project's first run of a package and model this machine holds (cl-984)"
 [ -n "$LOCAL" ] || return 0
 local script=$here/script/parts.py other=$OUT/second-project before after
-envs_in() { find "$@" -maxdepth 10 \( -name 'env-*' -o -path '*/generations/*/env' \) 2> /dev/null | wc -l; }
+envs_in() { find "$@" -maxdepth 10 \( -name 'env-*' -type d -o -path '*/generations/*/env' \) 2> /dev/null | sort; }
 cozy --json new --unencrypted "$other" > "$OUT/second-new.json" 2>&1 || { check "second project: cozy new --unencrypted: $(tail -c 300 "$OUT/second-new.json")"; return; }
 in_project "$RUN_PROJECT" --json run ls --limit 0 > "$OUT/second-first-runs.json" || check "second project: run ls in the first project failed"
 before=$(envs_in "$HOME/.cozy")
@@ -192,7 +192,7 @@ grep '^{' "$OUT/second-parts.ndjson" | jq -e -s '[.[] | select(.type == "run.pro
     | select(((.stage | test("downloading")) and ((.stage | test("the result")) | not) and ((.bytes_done // 0) > 0))
       or (.stage | test("installing its dependencies|installing this machine")))] | length == 0' > /dev/null \
   || check "second project: its first run downloaded or installed: $(grep '^{' "$OUT/second-parts.ndjson" | jq -r 'select(.type == "run.progress") | .progress.stage' | sort -u | grep -E 'download|install' | head -3 | paste -sd';' -)"
-[ "$before" = "$after" ] || check "second project: the machine gained environments ($before, then $after)"
+[ "$before" = "$after" ] || check "second project: the machine gained environments: $(comm -13 <(echo "$before") <(echo "$after") | sed "s#$HOME/##" | paste -sd' ' - | cut -c1-400)"
 # Its own area holds no environment, PyTorch, uv cache, Python or weights: those are the machine's.
 local held
 held=$(find "$other/.vault-machine" -maxdepth 4 \( -name 'env-*' -type d -o -name 'torch-*' -o -name uv-cache -o -name python -type d \) 2> /dev/null | head -3)
@@ -205,7 +205,7 @@ in_project "$other" --json run ls --limit 0 > "$OUT/second-runs.json" \
   || check "second project: run ls holds more than its own run: $(jq -c '[.runs[]? | {number, target}]' "$OUT/second-runs.json" 2> /dev/null | head -c 300)"
 J '[.runs[]? | select(.target | test("parts") | not)] | length >= 1' "$OUT/second-first-runs.json" \
   || check "second project: the first project lists none of its other runs: $(jq -c '[.runs[]? | .target]' "$OUT/second-first-runs.json" 2> /dev/null | head -c 300)"
-echo "second project: machine environments $before then $after; its store $(du -sh "$other/.vault-machine/objects" 2> /dev/null | cut -f1)"
+echo "second project: machine environments $(echo "$before" | grep -c .) then $(echo "$after" | grep -c .); its store $(du -sh "$other/.vault-machine/objects" 2> /dev/null | cut -f1)"
 }
 
 # safetensors_file <file>: a 4×4 F16 .safetensors file.

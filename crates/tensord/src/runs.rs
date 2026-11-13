@@ -1659,6 +1659,11 @@ impl Runs {
         inputs: Vec<InputFile>,
         passed: Vec<stored::ModelChoice>,
     ) -> Result<Execution, Refused> {
+        // A project's run calls inside its project's scope, where its installations are (cl-984).
+        let scope = self.service.engine.private_storage(&parent.id)?;
+        if crate::private_io::current() != scope {
+            return crate::private_io::within(scope, || self.child(parent, request, intent, application, entrypoint, input, inputs, passed));
+        }
         let actor = parent.submission.as_ref().map(|s| s.actor.clone()).unwrap_or_default();
         // A call the same attempt made already is its run: nothing prepares.
         if let Some(existing) = self.existing(&actor, request, intent, None)? {
@@ -1796,6 +1801,10 @@ impl Runs {
         self: &Arc<Self>, parent: &Execution, application: &str, entrypoint: &str,
         passed: Vec<stored::ModelChoice>,
     ) -> Result<(), Refused> {
+        let scope = self.service.engine.private_storage(&parent.id)?;
+        if crate::private_io::current() != scope {
+            return crate::private_io::within(scope, || self.prefetch(parent, application, entrypoint, passed));
+        }
         let actor = parent.submission.as_ref().map(|s| s.actor.clone()).unwrap_or_default();
         let spec = self.child_spec(&actor, &parent.id, application, entrypoint,
             json!({}), vec![], "", &passed)?;

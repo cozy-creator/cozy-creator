@@ -172,7 +172,10 @@ fn spec_of(mut spec: v1::RunSpec) -> Result<(crate::runs::Spec, Option<v1::HubAc
     if remove && !matches!(source, crate::runs::Source::Release { .. } | crate::runs::Source::Installation(_)) {
         return Err(Error::validation("invalid_source", "a removal names a release or an installation"));
     }
-    if local_private.is_some() && (remove || set.is_some() || (warm && (spec.payload.is_some() || !models.is_empty() || !spec.entrypoint.is_empty()))) {
+    // A project's own local package may leave it (`cozy package uninstall local/x` in it); any other private removal or
+    // warm set stays unsupported.
+    let own_local = matches!(&source, crate::runs::Source::Release { package, .. } if package.starts_with("local/"));
+    if local_private.is_some() && ((remove && !own_local) || set.is_some() || (warm && (spec.payload.is_some() || !models.is_empty() || !spec.entrypoint.is_empty()))) {
         return Err(Error::validation("private_warm_unsupported", "private project warm sets and administrative removal are not supported; ordinary public model warming stays available"));
     }
     Ok((crate::runs::Spec {

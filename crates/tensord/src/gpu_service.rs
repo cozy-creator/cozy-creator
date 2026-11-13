@@ -2096,7 +2096,9 @@ impl Pool {
     }
     /// Keep an executor idle for its next call, noting what a loaded one holds for Status.
     /// Once the pool stopped, or a cancel killed it, it ends instead.
-    fn keep_idle(&self, engine: &Arc<Engine>, session: Session) -> io::Result<Disposition> {
+    fn keep_idle(&self, engine: &Arc<Engine>, mut session: Session) -> io::Result<Disposition> {
+        // Idle, a shared executor holds no project's memo (cl-984).
+        session.executor.keep_memo(self.memo.clone());
         let key = session_key(&session.env, session.start);
         let killed = !session.executor.idle() || session.executor.abandoned_lookahead();
         if session.degree == 0 {
