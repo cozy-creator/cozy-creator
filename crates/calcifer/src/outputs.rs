@@ -58,6 +58,8 @@ const RANGE: u64 = 8 << 20;
 const RANGES_PER_LANE: usize = 4;
 /// How many whole reads of one revision may fail its digest before it is given up.
 const WRONG_READS: u32 = 3;
+/// An output landing this long after its run ended is said (`calcifer.diagnostics`).
+const LATE_LANDING_MS: i64 = 500;
 
 /// An output Calcifer still owes this computer: its run's number, its name and index, its length
 /// and the bytes of it in place.
@@ -332,7 +334,12 @@ impl Calcifer {
                 continue;
             }
             let mut changed = None;
-            let exported = match self.reach(&run, &mut changed).await {
+            let reaching = Instant::now();
+            let reached = self.reach(&run, &mut changed).await;
+            if reaching.elapsed() > std::time::Duration::from_millis(200) {
+                warn!(run = %id, "its machine took {} ms to reach for its outputs", reaching.elapsed().as_millis());
+            }
+            let exported = match reached {
                 Ok(link) => {
                     let exports = (items.iter())
                         .map(|item| self.export_item(&run, item, &link, changed.clone()));
@@ -412,7 +419,10 @@ impl Calcifer {
                 lock(&self.exports.appended).retain(|(run, ..), _| run != id);
             }
             // Its project closed: the exporter ends, and the project's next opening starts another.
-            Err(StoreError::Locked(code)) if code != "project_busy" => drop(runs.remove(id)),
+            Err(StoreError::Locked(code)) if code != "project_busy" => {
+                warn!(run = %id, "its exporter ends with its outputs owed: {code}");
+                drop(runs.remove(id));
+            }
             _ => {}
         }
         next
@@ -554,6 +564,13 @@ impl Calcifer {
         if !private_run(run) { info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
             bytes = moved.load(Ordering::Relaxed), phase = "output_export", state = "end",
             ok = done.is_ok(), elapsed_ms = began.elapsed().as_secs_f64() * 1000.0); }
+        // A take is listed as its run ends and is here once this lands: one that lands late is said, with where its time went.
+        let settled = self.row_store(run).and_then(|store| store.run(run.id.as_str())).ok().flatten().and_then(|now| now.settled_at_ms);
+        let export_ms = began.elapsed().as_millis() as i64;
+        if done.is_ok() && !private_run(run) && let Some(settled) = settled && crate::store::now_ms() - settled > LATE_LANDING_MS {
+            warn!(run = %run.id, output = %item.name, "landed {} ms after its run ended: its export began {} ms after, and took {export_ms} ms",
+                crate::store::now_ms() - settled, crate::store::now_ms() - export_ms - settled);
+        }
         done
     }
 
