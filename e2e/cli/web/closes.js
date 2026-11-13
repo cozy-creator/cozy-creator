@@ -282,7 +282,8 @@ const held = (folder) => projectHeld(folder, HOLDER.pid);
       });
       update = started.run;
       if (!update?.id) throw new Error(`queue update was not accepted: ${JSON.stringify(started)}`);
-      const waitingFor = `waiting for run ${running.number} to end`;
+      // The machine names no project's run (TensorD says only "protected project execution"): a project run is other work, as lifetime.sh reads it.
+      const waitingFor = 'waiting for other work to end';
       const drain = await until('the update holding new runs', async () => {
         const [machine, updating, firstRun] = await Promise.all([
           api('/v1/machines/local'), api(`/v1/runs/${update.id}`), api(`/v1/projects/${made[0]}/runs/${running.id}`),
