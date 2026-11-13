@@ -72,7 +72,14 @@ pub(super) async fn http(api: &Arc<Api>, address: SocketAddr, request: Request, 
     Ok(response)
 }
 
-pub(super) async fn upgrade(State(api): State<Arc<Api>>, mut request: Request) -> Result<Response, Refusal> {
+pub(super) async fn upgrade(State(api): State<Arc<Api>>, axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<crate::api::Peer>, mut request: Request) -> Result<Response, Refusal> {
+    // A WebSocket is let in only from Calcifer's own page, as its user (cl-980): an `Origin` that is there and is this `Host`, and the
+    // peer's uid Calcifer's. A browser always sends `Origin` on an upgrade; a missing one is no page of Calcifer's.
+    let text = |name: header::HeaderName| request.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_owned);
+    let own_origin = text(header::HOST).map(|host| format!("http://{host}"));
+    if own_origin.is_none() || text(header::ORIGIN) != own_origin || peer.uid != Some(rustix::process::geteuid().as_raw()) {
+        return Err(api::refuse(::api::error::Kind::Forbidden, "not_own_page", "Calcifer's hot reload answers its own page only, as its user"));
+    }
     let address = api.development_web.get().ok_or_else(unavailable)?;
     let protocol = request.headers().get(header::SEC_WEBSOCKET_PROTOCOL).and_then(|value| value.to_str().ok()).filter(|value| matches!(*value, "vite-hmr" | "vite-ping")).ok_or_else(unavailable)?;
     if request.headers().get(header::UPGRADE).and_then(|value| value.to_str().ok()).is_none_or(|value| !value.eq_ignore_ascii_case("websocket")) { return Err(unavailable()); }

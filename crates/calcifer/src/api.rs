@@ -510,12 +510,13 @@ fn file_read(request: &Request) -> bool {
 
 /// Whether a browser sent this from Calcifer's own page, or a person opened its URL directly (cl-980): `Sec-Fetch-Site` says where
 /// a browser's request came from, and no other site's page can say `same-origin`. Another port of this computer is `same-site`,
-/// refused. With no `Sec-Fetch-Site`, it's no browser of today, and only `guard`'s `Origin` rule speaks for it.
-fn own_page(headers: &axum::http::HeaderMap) -> Option<bool> {
+/// refused. With no `Sec-Fetch-Site`, it's no browser of today: None.
+fn own_page(method: &Method, headers: &axum::http::HeaderMap) -> Option<bool> {
     let text = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
     Some(match text("sec-fetch-site")? {
         "same-origin" => true,
-        "none" => text("sec-fetch-mode") == Some("navigate"),
+        // A URL a person opened. Chromium also says `none` for an extension's fetches, which aren't navigations.
+        "none" => *method == Method::GET && text("sec-fetch-mode") == Some("navigate"),
         _ => false,
     })
 }
@@ -534,10 +535,13 @@ async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>
     }
     // A browser's request is let in when it comes from Calcifer's own page (or its URL, opened directly); anything else of the same
     // user that isn't a browser, this computer's cozy among them, by the user alone. A bearer it sends must be Calcifer's.
-    let page = own_page(request.headers());
+    // Anything that isn't a browser must show the bearer, so a request Calcifer is tricked into making for another (blind SSRF)
+    // isn't let in by the user alone.
+    let page = own_page(request.method(), request.headers());
     let refused = match (page, bearer(request.headers())) {
         (Some(false), _) => Some(("not_own_page", "Calcifer answers its own page only, not another site's or another port's")),
         (_, Some(token)) if !api.admits(token) => Some(("unauthenticated", "this isn't the bearer in Calcifer's lock record")),
+        (None, None) => Some(("unauthenticated", "Calcifer answers its own page, and this computer's cozy with the bearer in its lock record")),
         _ => None,
     };
     if let Some((code, said)) = refused {
