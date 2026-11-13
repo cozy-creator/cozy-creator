@@ -8,6 +8,12 @@ const { join } = require('path');
  *  models on its own machine (lib.sh's LOCAL): macOS and Windows warm nothing. */
 const WARM = process.platform === 'linux' ? [
   ['draw.py/draw', 'instructions=warm'],
+  ['tool.py/still', 'instructions=warm'],
+  // torch: a large install, never a cell's first render.
+  ['latents.py/latents', 'steps:=2', 'seconds:=0'],
+  // shots.py's environment, which its shot and crash share.
+  ['shots.py/echo', 'b=warm'],
+  ['../web/heavy.py/heavy', 'instructions=warm'],
 ] : [];
 /** What isolated.sh publishes at the root for every web job. */
 const SEED = ['qwen-image-2', 'minimax-h3', 'sdxl', 'birefnet', 'moss-image', 'e2e-boxed'];

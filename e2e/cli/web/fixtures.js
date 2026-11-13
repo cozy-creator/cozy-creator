@@ -5,8 +5,8 @@
 const { test: base, expect } = require('@playwright/test');
 const { execFile } = require('child_process');
 const { createHash, randomBytes } = require('crypto');
-const { appendFileSync, readFileSync, rmSync } = require('fs');
-const { loadavg } = require('os');
+const { appendFileSync, readFileSync, rmSync, writeFileSync } = require('fs');
+const { homedir, loadavg } = require('os');
 const { basename, join } = require('path');
 const { DARK_OPEN, MP4, photo, png, wav } = require('./media');
 
@@ -76,6 +76,97 @@ class Project {
   /** A file as a box called `name`, at `at` ({x, y}) when given. */
   async import(bytes, { name, at, ...rest }) {
     return this.api.post(this.at('/imports'), { source: await this.upload(bytes), name, exact: true, ...(at ? { at } : {}), ...rest });
+  }
+}
+
+/** Calcifer's lock record, or null while there's none to read: still opening its store, or being written. */
+function holderNow() {
+  try {
+    return JSON.parse(readFileSync(need('HOLDER'), 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT' || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+/** Whether `holder`'s Calcifer answers its status, as its bearer. */
+const answers = (holder) => fetch(`http://${holder.address}/v1/status`, { headers: { Authorization: `Bearer ${holder.token}`, ...STORAGE }, signal: AbortSignal.timeout(2_000) })
+  .then((answer) => answer.ok, () => false);
+/** Whether anything listens at `address`. */
+const listens = (address) => fetch(`http://${address}/v1/status`, { signal: AbortSignal.timeout(2_000) }).then(() => true, () => false);
+
+/** This job's Calcifer itself, for a solo cell: stopped as its service manager would leave it, started as the CLI starts it, killed, put
+ *  on another Hub. Each new one is read from its lock record into `calcifer` and `api`, in place, for every fixture holding them. */
+class CalciferControl {
+  constructor(calcifer, api) {
+    this.calcifer = calcifer;
+    this.api = api;
+    this.holder = holderNow();
+    this.config = join(homedir(), '.cozy', 'config.toml');
+    this.kept = readFileSync(this.config, 'utf8');
+    this.suite = need('COZY_HUB_URL');
+    this.on = this.suite;
+  }
+
+  /** SIGTERM, a clean exit, which systemd's on-failure and launchd's KeepAlive leave down: once it's gone and nothing listens. */
+  async stop() {
+    const { pid, address } = this.holder;
+    process.kill(pid, 'SIGTERM');
+    await expect.poll(async () => alive(pid) || listens(address), { message: `Calcifer ${pid} stopped`, timeout: 60_000 }).toBe(false);
+  }
+
+  /** `cozy machine ls`, on the Hub it's on now, starts it: once a new one answers. */
+  async start() {
+    const was = this.holder.pid;
+    if (process.env.ARGV_LOG) appendFileSync(process.env.ARGV_LOG, 'machine\x1fls\x1f\x1e');
+    const said = await new Promise((done) => execFile(need('COZY'), ['machine', 'ls'], { env: { ...process.env, COZY_HUB_URL: this.on }, timeout: 300_000 },
+      (error, stdout, stderr) => done(`exit ${error ? error.code ?? 1 : 0}: ${`${stdout}${stderr}`.slice(-400)}`)));
+    await this.back(was, `cozy machine ls started it (${said})`);
+  }
+
+  /** SIGKILL, sent as it's called: its service manager starts it again (Windows has none, so the CLI does). Once a new one answers. */
+  async kill() {
+    const was = this.holder.pid;
+    process.kill(was, 'SIGKILL');
+    if (process.platform !== 'win32') return this.back(was, 'its service manager started it again');
+    await expect.poll(() => alive(was), { message: `Calcifer ${was} killed`, timeout: 60_000 }).toBe(false);
+    return this.start();
+  }
+
+  /** On `url`'s Hub, else the suite's: config.toml's top-level `hub_url` (first, as after a [table] it would be that table's), restarted. */
+  async hub(url = this.suite) {
+    const rest = readFileSync(this.config, 'utf8').split('\n').filter((line) => !/^hub_url\s*=/.test(line));
+    writeFileSync(this.config, url === this.suite ? this.kept : [`hub_url = "${url}"`, ...rest].join('\n'));
+    this.on = url;
+    await this.stop();
+    await this.start();
+  }
+
+  /** A new Calcifer than `was`, answering: its lock record read into `calcifer` and `api`. */
+  async back(was, how) {
+    let now = null;
+    await expect.poll(async () => {
+      const read = holderNow();
+      now = read && read.pid !== was && alive(read.pid) && (await answers(read)) ? read : null;
+      return Boolean(now);
+    }, { message: `a new Calcifer after ${was} answering: ${how}`, timeout: 120_000 }).toBe(true);
+    this.holder = now;
+    Object.assign(this.calcifer, { origin: `http://${now.address}`, token: now.token, pid: now.pid });
+    Object.assign(this.api, { origin: this.calcifer.origin, token: now.token });
+  }
+
+  /** As it was: running, on the suite's Hub, config.toml as it was found. */
+  async restore() {
+    const moved = this.on !== this.suite || readFileSync(this.config, 'utf8') !== this.kept;
+    const read = holderNow();
+    const up = Boolean(read && alive(read.pid) && (await answers(read)));
+    if (read) this.holder = read;
+    if (moved) {
+      writeFileSync(this.config, this.kept);
+      this.on = this.suite;
+      if (up) await this.stop();
+    }
+    if (moved || !up) await this.start();
   }
 }
 
@@ -156,6 +247,15 @@ const test = base.extend({
   removeAfter: async ({ leftovers }, use) => use((folder) => { leftovers.push(folder); }),
 
   api: async ({ calcifer }, use) => use(new Api(calcifer.origin, calcifer.token)),
+
+  /** Calcifer stopped, started, killed or put on another Hub (CalciferControl): the solo project's alone, as every other cell shares this
+   *  Calcifer. Put back as it was after the cell, however it ended. */
+  calciferControl: async ({ calcifer, api }, use, testInfo) => {
+    if (testInfo.project.name !== 'solo') throw new Error(`calciferControl is the solo project's: ${testInfo.project.name}'s cells share this Calcifer`);
+    const control = new CalciferControl(calcifer, api);
+    await use(control);
+    await control.restore();
+  },
 
   /** `test.use({ projectOptions: { starter: true } })`: the starter film; `encrypted: true`: a vault, its passphrase on `project`. */
   projectOptions: [{ starter: false, encrypted: false }, { option: true }],

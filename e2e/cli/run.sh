@@ -417,7 +417,7 @@ code=0; (cd "$OUT/outside-projects" && cozy --json package uninstall local/one_s
 # measured time, longest first, one cell a line. A cell is web/<cell>.spec.js; its line is uncommented once it's written.
 WEB_1=(
   # video
-  # render
+  render
   # upload
   # mention
   # box-actions
@@ -428,7 +428,7 @@ WEB_2=(
   # fields
   # layout
   # type
-  # live
+  live
   # delete-undo
   # canvas-nav
 )
@@ -436,9 +436,9 @@ WEB_3=(
   # package-ui
   # focus
   # create
-  # takes
+  takes
   # no-overlap
-  # instant
+  instant
   select
   # move
 )
@@ -449,12 +449,12 @@ WEB_ENGINES=(
   # create
   # move
   open
-  # vault
+  vault
 )
 # What stops, restarts or re-points Calcifer (`@solo`), one at a time.
 WEB_SOLO=(
-  # account-rent
-  # offline
+  account-rent
+  offline
 )
 # macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout and offline.
 WEB_NATIVE=(
