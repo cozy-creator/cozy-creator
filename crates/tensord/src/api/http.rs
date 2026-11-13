@@ -437,12 +437,13 @@ async fn keepalive(State(m): State<Machine>, headers: HeaderMap) -> Answer {
     Ok(json(StatusCode::OK, &frame))
 }
 
-/// Removes a local cached repository without stopping any work or changing its origin.
+/// Removes a local cached repository without stopping any work or changing its origin: in a project's scope, from that project's
+/// own store.
 async fn remove_model(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
-    if !m.identity.lifecycle.is_local() || crate::private_io::current().is_some() {
-        return Err(Error::forbidden("model_remove_local_only", "Model removal is available only in this computer's ordinary local cache").into());
+    if !m.identity.lifecycle.is_local() {
+        return Err(Error::forbidden("model_remove_local_only", "Model removal is available only on this computer's local machine").into());
     }
     let asked: v1::RemoveModel = serde_json::from_slice(&body)
         .map_err(|e| Error::validation("invalid_request", format!("Cannot read model removal request: {e}")))?;

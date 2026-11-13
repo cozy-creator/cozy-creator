@@ -1622,18 +1622,35 @@ pub(crate) async fn models(
     Ok(Json(asked(&api, &name, query).await?.0.models()))
 }
 
-/// Removes cached releases and lanes only from this computer, never from a Hub or rental.
+#[derive(Deserialize)]
+pub(crate) struct InProject {
+    /// The project its client is in: its own copy goes, from its own engine.
+    project: Option<String>,
+}
+
+/// Removes cached releases and lanes only from this computer, never from a Hub or rental: in a project, that project's own copy;
+/// else the machine's.
 pub(crate) async fn remove_model(
     State(api): State<Arc<Api>>,
     UrlPath(name): UrlPath<String>,
+    query: Result<Query<InProject>, QueryRejection>,
     body: Result<Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Json<wire::RemovedModel>, Refusal> {
+    let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
     if !name.eq_ignore_ascii_case("local") {
         return Err(Refusal(Error::new(Kind::Usage, "model_remove_local_only", "Model removal is available only on local")));
     }
     let asked: wire::RemoveModel = crate::api::parse(&body?)?;
     api.machines.local_up().await.map_err(Refusal)?;
     let (row, link) = api.machines.linked("local").map_err(Refusal)?;
+    let link = match &query.project {
+        Some(project) => {
+            let store = api.projects.store(&api, project).await.map_err(Refusal)?;
+            let (id, root) = store.execution_scope();
+            link.with_private(crate::private_io::scope_for_project(id, root).map_err(Refusal)?)
+        }
+        None => link,
+    };
     let removed = link.remove_model(&asked).await.map_err(|error| Refusal(refusal(&row.name, error)))?;
     Ok(Json(removed))
 }

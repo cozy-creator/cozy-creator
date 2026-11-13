@@ -88,8 +88,13 @@ pub(super) async fn remove(ctx: &Context, model: &str) -> Result<ExitCode, Error
 pub(super) async fn remove_local(ctx: &Context, model: &str) -> Result<api::calcifer::RemovedModel, Error> {
     let model_id = api::model_ref::ModelId::parse(model)?;
     let key = crate::run::mint_key();
+    // Inside a project, its own copy: what its runs downloaded is in its own storage.
+    let path = match crate::project::identity(ctx).await {
+        Ok(project) => format!("/v1/machines/local/models/remove?project={}", project.id),
+        Err(_) => "/v1/machines/local/models/remove".to_owned(),
+    };
     let removed: api::calcifer::RemovedModel = ctx.calcifer().await?.post(
-        "/v1/machines/local/models/remove", &api::calcifer::RemoveModel { model: model_id.to_string() }, Some(&key),
+        &path, &api::calcifer::RemoveModel { model: model_id.to_string() }, Some(&key),
     ).await?;
     Ok(removed)
 }

@@ -15,7 +15,9 @@ run_cell "$OUT" line-first "$target" --file "image=$dog" --on local || { check "
 cozy --json machine show local > "$OUT/line-models.json" || { check "estimate line: machine show local"; return; }
 model=$(jq -r '[.status.models[]?.repository] | map(select(test("birefnet"; "i"))) | first // empty' "$OUT/line-models.json")
 [ -n "$model" ] || { check "estimate line: BiRefNet's weights aren't listed: $(jq -c '[.status.models[]?.repository]' "$OUT/line-models.json")"; echo "estimate line: where weights are: $(du -sm "$RUN_PROJECT"/.vault-machine/* "$HOME"/.cozy/machine/var/lib/cozy/* 2> /dev/null | sort -n | tail -6 | tr '\t\n' ' ')"; echo "estimate line: the project's store names: $(find "$RUN_PROJECT"/.vault-machine/objects/refs -type f 2> /dev/null | sed 's|.*/refs/||' | head -5 | tr '\n' ' ')"; diagnosed "estimate line"; return; }
-cozy --json model uninstall "$model" > "$OUT/line-uninstall.json" 2>&1 || { check "estimate line: model uninstall $model: $(tail -c 300 "$OUT/line-uninstall.json")"; return; }
+# Its weights went to the project's own storage, where its runs read them: uninstalled there.
+in_project "$RUN_PROJECT" --json model uninstall "$model" > "$OUT/line-uninstall.json" 2>&1 && J '.removed' "$OUT/line-uninstall.json" \
+  || { check "estimate line: model uninstall $model in its project: $(tail -c 300 "$OUT/line-uninstall.json")"; return; }
 machine_stop || { check "estimate line: the local machine did not stop"; return; }
 machine_ready
 run_submit "$OUT" line-link model install qwen/qwen3.5-0.8b --on local > /dev/null
