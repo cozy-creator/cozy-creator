@@ -1144,6 +1144,16 @@ fn current_view(root: &FsPath) -> Result<PathBuf, Error> {
 }
 
 impl Project {
+    /// Its opaque identity and its root: what its own execution scope on this computer's machine is made from.
+    pub(crate) fn scope_of(&self) -> (&str, &FsPath) {
+        (&self.id, &self.root)
+    }
+
+    /// How the machines' lists (`ahead::Lists`) key its walk's: its folder.
+    pub(crate) fn folder_key(&self) -> String {
+        self.folder.dir.to_string_lossy().into_owned()
+    }
+
     /// Old references are bound to their original physical view, never a recycled drive.
     fn require_view(&self) -> Result<(), Error> {
         if self.mount_id != vault::mount_identity(&self.root) || current_view(&self.root)? != self.folder.dir {
@@ -3646,10 +3656,6 @@ impl Walk {
     /// that makes this kind, with its model choices; and the function, as its row says it. None: its package makes nothing of the kind.
     /// Local code is installed there first, as a call's is.
     async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
-        // A machine-wide list is no project's: what a project's job will read comes with its own run, in its own storage.
-        if crate::private_io::of_path(&self.folder().dir)?.is_some() {
-            return Ok(None);
-        }
         let Wanted { machine, hub, with, kind, made } = wanted;
         let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
@@ -3666,11 +3672,9 @@ impl Walk {
         let source = match &renderer.local {
             None => v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }),
             Some(path) => {
-                // A private project's code goes with the run that calls it.
-                if crate::private_io::of_path(&self.folder().dir)?.is_some() {
-                    return Ok(None);
-                }
-                v1::Source::Local(self.host.ready(path, machine, hub).await?.source)
+                // Staged in its project's storage scope, as its call's code is: its list goes over that project's own link.
+                let scope = crate::private_io::of_path(&self.folder().dir)?;
+                v1::Source::Local(crate::private_io::context(scope, self.host.ready(path, machine, hub)).await?.source)
             }
         };
         let item = v1::Ahead { key: key.to_owned(), source: Some(source), entrypoint: renderer.function.clone(), models, ..Default::default() };

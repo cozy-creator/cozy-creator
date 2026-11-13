@@ -103,7 +103,7 @@ for _ in $(seq 300); do
   sleep 1
 done
 echo "prepare: stand-v holds BiRefNet: ${held:-0}; after was ${state:-unknown} then; stand-v's activity: $(jq -c '.status.activity' "$OUT/stand-v.json" 2> /dev/null)"
-[ "${held:-0}" -gt 0 ] || check "prepare: stand-v never downloaded BiRefNet's weights while after waited for source"
+[ "${held:-0}" -gt 0 ] || { check "prepare: stand-v never downloaded BiRefNet's weights while after waited for source"; diagnosed prepare; }
 case $state in waiting | ready | queued | '') ;; *) check "prepare: after was $state, not waiting, when stand-v had BiRefNet: no prepare was needed" ;; esac
 coming_done after 600
 timeout 60 "$COZY" --json machine end stand-v --force -y > "$OUT/stand-v-end.json" 2>&1 || true

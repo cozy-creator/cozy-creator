@@ -892,7 +892,8 @@ impl Machines {
     /// Whether it listed anything.
     async fn project_frames(&self, project: &str) -> bool {
         let mut listed = false;
-        let working = || self.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0);
+        // Its runs there, or its upcoming jobs prepared in its own engine (`ahead::Lists`), whose rows its own Status tells.
+        let working = || self.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0) || self.lists.listed_for("local", project);
         while working() {
             let scoped = (|| {
                 let store = self.calcifer.project_store(project).ok()?;
@@ -905,6 +906,7 @@ impl Machines {
                 while let Some(Ok(frame)) = frames.next().await {
                     let quiet = frame.activity.is_empty();
                     listed |= !quiet;
+                    self.lists.observe_in("local", Some(project), &frame);
                     if let Some(held) = lock(&self.project_activity).get_mut(project) { *held = frame.activity; }
                     self.calcifer.machine_changed();
                     if quiet && !working() { return listed; }

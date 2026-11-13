@@ -40,10 +40,14 @@ class Said:
         return json.dumps({"code": self.code, "out": self.out[-2000:], "err": self.err[-2000:]})
 
 
+# What the cell saw and what failed, kept outside `main` so a crash still prints them.
+SEEN: dict[str, object] = {}
+FAILURES: list[str] = []
+
+
 def main() -> int:
     project, out = Path(sys.argv[1]), Path(sys.argv[2])
-    failures: list[str] = []
-    seen: dict[str, object] = {}
+    failures, seen = FAILURES, SEEN
 
     def check(name: str, ok: bool, detail: object = None) -> None:
         seen[name] = True if ok else (detail if detail is not None else False)
@@ -221,4 +225,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:
+        print(json.dumps({"failures": [*FAILURES, "crashed"], "seen": SEEN}, indent=1, default=str))
+        raise

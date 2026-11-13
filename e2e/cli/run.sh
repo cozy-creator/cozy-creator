@@ -65,7 +65,14 @@ step status; fixture_calcifer | tee "$OUT/status.json"
 step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
-[ "$SHARD" != projectvault ] || calcifer_diagnostics
+case $SHARD in projectvault | projectdb | plan) calcifer_diagnostics ;; esac
+}
+
+# diagnosed <why>: a failed cell's causes, Calcifer's own warnings since the shard began (tests only, calcifer.diagnostics).
+diagnosed() {
+  [ -f "$HOME/.cozy/calcifer/diagnostics.log" ] || return 0
+  echo "$1: Calcifer's last warnings:"
+  grep -aE ' (WARN|ERROR) ' "$HOME/.cozy/calcifer/diagnostics.log" | tail -n 25 | cut -c1-400 | sed 's/^/  /'
 }
 
 # A vault failure names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings

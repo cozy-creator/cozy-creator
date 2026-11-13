@@ -190,6 +190,7 @@ stand_in stand-p || return
 chrome=$(web_chrome)
 if [ -n "$chrome" ] && [ -x "$chrome" ] && npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1; then
   STANDS=stand-p web_proof prepares "$chrome" "$pw" ''
+  jq -e '(.failures // []) == []' "$OUT/web-prepares.json" > /dev/null 2>&1 || diagnosed "web-prepares"
   jq -c '.seen.timeline // empty' "$OUT/web-prepares.json" 2> /dev/null || true
 else
   check "web-prepares: no Chrome or playwright here (${chrome:-none}): $(tail -c 300 "$OUT/web-npm.log" 2> /dev/null)"
