@@ -396,7 +396,7 @@ async function died(why) {
     const second = await until('first modification is v2', () => asset('other'), (row) => row.versions === 2 && !row.making?.length, 5 * STEP_MS);
     check('first_modification_is_v2_beside_the_approved', second.version === 1 && second.approved === 1 && second.pinned && shaOf(second, 1) === originalSha && shaOf(second, 2) !== originalSha, second);
     const made = second.prefixes.find((row) => row.number === 2).main;
-    check('new_output_has_requested_ratio', Math.abs(made.width / made.height - 1) < 0.02, { width: made.width, height: made.height, shapeSaid, aspect_ratio: second.fields?.aspect_ratio });
+    check('new_output_has_requested_ratio', Math.abs(made.width / made.height - 1) < 0.02, { width: made.width, height: made.height, shapeSaid, aspect_ratio: second.fields?.aspect_ratio, main: made });
     await open('other');
     await until('the new take has a retained preview', () => previews('other').count(), (count) => count === 2);
     check('new_output_adds_a_retained_preview', await selected('other') === '1');
