@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectUrl, removeGeneratedProject, rowsOf, settled, signIn, STEP_MS, until } = require('./page');
+const { addBoxes, calcifer, importFile, lastLook, launch, lookAt, noStall, png, projectFromPage, projectJson, projectUrl, rowsOf, settled, signIn, STEP_MS, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -93,19 +93,27 @@ function audit() {
   for (const theme of ['paper', 'dark']) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     await context.addInitScript((dark) => { try { localStorage.setItem('cozy.theme', dark ? 'dark' : 'paper'); } catch {} }, theme === 'dark');
-    const first = await context.newPage();
-    watch(first);
-    await signIn(first);
-    await first.waitForSelector('.top');
-    contexts[theme] = { context, first };
+    contexts[theme] = context;
   }
-  const paper = contexts.paper.first;
+  /** A tab signed in on its own: a session is the tab's. */
+  const signedIn = async (theme) => {
+    const tab = await contexts[theme].newPage();
+    watch(tab);
+    await signIn(tab);
+    await tab.waitForSelector('.top');
+    return tab;
+  };
+  const paper = await signedIn('paper');
   lookAt(paper);
-  const { token } = await paper.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
-  const api = async (path, init = {}) => (await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers } })).json();
 
   const scratch = mkdtempSync(join(tmpdir(), 'web-labels-'));
-  const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `labels-${Date.now()}` }, body: JSON.stringify({ name: `web-labels-${Date.now()}`, unencrypted: true }) });
+  // A project as a person makes one, on the page.
+  await paper.goto(`${base}/projects`);
+  await paper.fill('input[aria-label="New project\'s name"]', `web-labels-${Date.now()}`);
+  await paper.getByLabel('Create without encryption', { exact: true }).check();
+  await paper.click('form button[type=submit]');
+  await paper.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
+  const made = await projectFromPage(paper);
   try {
     // Each box apart first: a picture an import (no tool), a word box with none.
     let shade = 30;
@@ -119,12 +127,11 @@ function audit() {
         } else addBoxes(made.path, [{ name, kind: 'text', fields: { text: `The words of ${name}.` }, at }]);
       }
     }
-    await until('every box', async () => (await api(`/v1/projects/${made.id}`)).assets?.length, (n) => n === ALL.length);
+    await until('every box', () => Promise.resolve(projectJson(made.path).assets?.length), (n) => n === ALL.length);
 
     /** A tab on the project at `zoom`, with `at` (a canvas point) in the middle of what's visible. */
     const open = async (theme, zoom, at, size = { width: 1440, height: 900 }) => {
-      const tab = await contexts[theme].context.newPage();
-      watch(tab);
+      const tab = await signedIn(theme);
       await tab.setViewportSize(size);
       const view = { x: Math.round((size.width + 230) / 2 - at.x * zoom), y: Math.round(size.height / 2 - at.y * zoom), zoom };
       await tab.addInitScript(([id, view]) => localStorage.setItem(`cozy.view:${id}`, JSON.stringify(view)), [made.id, view]);
@@ -152,7 +159,7 @@ function audit() {
       }
     }
     seen.heights = tall;
-    await api(`/v1/projects/${made.id}/canvas`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cards }) });
+    projectJson(made.path, 'PATCH', '/canvas', { cards });
     const rows = () => Object.fromEntries(rowsOf(made.path, 'SELECT name, x, y FROM canvas').map(([name, x, y]) => [name, { x, y }]));
     await until('laid out close', () => Promise.resolve(rows()), (now) => ALL.every((name) => now[name]?.x === cards[name].x && now[name]?.y === cards[name].y));
     const middle = { x: (3 * BESIDE - 16) / 2, y: Math.max(...Object.values(cards).map((card) => card.y)) / 2 + 100 };
@@ -231,8 +238,7 @@ function audit() {
     await lastLook();
     throw error;
   } finally {
-    for (const { context } of Object.values(contexts)) await context.close();
-    await removeGeneratedProject(made.path, 'web-labels-');
+    for (const context of Object.values(contexts)) await context.close();
     rmSync(scratch, { recursive: true, force: true });
   }
 
