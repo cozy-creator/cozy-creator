@@ -253,10 +253,7 @@ impl Calcifer {
         let mut exporting = false;
         while (self.store.outputs_to_export(run.id.as_str()).map_err(|e| e.to_string())?.iter()).any(|owed| owed.name == item.name && owed.index == item.index) {
             exporting = true;
-            tokio::select! {
-                _ = events.recv() => {}
-                () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
-            }
+            Calcifer::moved(&mut events, &run.id).await;
         }
         if exporting {
             let now = self.store.output(run.id.as_str(), &item.name, item.index).map_err(|e| e.to_string())?;

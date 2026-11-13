@@ -9,12 +9,16 @@ use std::{
     time::Duration,
 };
 
-use crate::{durable::FileId, watch::DirWatch};
+use crate::{
+    durable::FileId,
+    watch::{DirWatch, Waker},
+};
 
 /// At most this much is read at once.
 const BATCH: usize = 64 << 10;
-/// How long a caught-up follower sleeps before it looks whether its reader left.
-const IDLE: Duration = Duration::from_secs(1);
+/// How long a caught-up follower waits before it reads again with no word of a write: Windows
+/// reports a write only once the cache flushes (`watch`). Elsewhere it waits for one, or a wake.
+const IDLE: Option<Duration> = if cfg!(windows) { Some(Duration::from_secs(1)) } else { None };
 
 /// A log's files in one directory, the newest the one written.
 #[derive(Clone, Debug)]
@@ -234,9 +238,22 @@ impl Log {
     }
 }
 
+/// Dropped as a follower's reader leaves: a caught-up `run` looks at `wanted` again.
+pub struct Leave(Waker);
+
+impl Drop for Leave {
+    fn drop(&mut self) {
+        self.0.wake();
+    }
+}
+
 impl Follow {
+    pub fn on_leave(&self) -> Leave {
+        Leave(self.watch.waker())
+    }
+
     /// Hands `send` the lines from its start, then each batch as it is appended, until `send`
-    /// says stop or, caught up, `wanted` says nobody reads any more.
+    /// says stop or, caught up and woken (`on_leave`), `wanted` says nobody reads any more.
     pub fn run(
         mut self,
         send: impl FnMut(Lines) -> bool,
@@ -244,7 +261,7 @@ impl Follow {
     ) -> io::Result<()> {
         let watch = &mut self.watch;
         self.log.lines(self.reader, send, || {
-            watch.wait(Some(IDLE))?;
+            watch.wait(IDLE)?;
             Ok(wanted())
         })
     }

@@ -715,18 +715,23 @@ async fn log(
         })
         .await?;
     let (sender, lines) = tokio::sync::mpsc::channel(16);
+    let leave = follow.on_leave();
     tokio::task::spawn_blocking(move || {
         let read = follow.run(|lines| sender.blocking_send(Ok(lines)).is_ok(), || !sender.is_closed());
         if let Err(e) = read {
             let _ = sender.blocking_send(Err(e));
         }
     });
-    let lines = received(lines).map(move |lines| match lines {
-        Ok(lines) => {
-            let after = lines.after.to_string();
-            Ok(event("lines", &v1::LogLines { after: after.clone(), text: lines.text })?.id(after))
+    // Held by the stream, after its receiver: dropped as its reader leaves, it wakes a caught-up follower.
+    let lines = received(lines).map(move |lines| {
+        let _reading = &leave;
+        match lines {
+            Ok(lines) => {
+                let after = lines.after.to_string();
+                Ok(event("lines", &v1::LogLines { after: after.clone(), text: lines.text })?.id(after))
+            }
+            Err(e) => Err(unreadable(e)),
         }
-        Err(e) => Err(unreadable(e)),
     });
     Ok(sse(m.authority(&caller), followed(&m.identity, lines)))
 }

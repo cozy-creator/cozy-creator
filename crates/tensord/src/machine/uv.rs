@@ -125,9 +125,12 @@ impl Uv {
 /// the file meanwhile fails "Text file busy" (ETXTBSY). Once it runs, no writer is left, so `uv`
 /// appears under its name only then and no later exec of it meets that.
 fn settle(path: &Path) -> io::Result<()> {
+    // A fork's descriptor lasts until its exec, a few milliseconds: past 5 s the writer is another program's.
+    let mut tries = 2_500;
     loop {
         match Command::new(path).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status() {
-            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) => {
+            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && tries > 0 => {
+                tries -= 1;
                 std::thread::sleep(std::time::Duration::from_millis(2))
             }
             Err(error) => return Err(error),
