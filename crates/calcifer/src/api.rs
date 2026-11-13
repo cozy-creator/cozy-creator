@@ -113,6 +113,7 @@ impl Api {
             stopping: Arc::new(RwLock::new(false)),
             stop: watch::channel(false).0,
         });
+        api.calcifer.serve_api(&api);
         crate::project::vault::start(&api);
         api
     }

@@ -374,6 +374,11 @@ pub(crate) fn landing(dir: &FsPath) -> PathBuf {
     vault::logical(dir).join(folder::RUNS)
 }
 
+/// Project `id` opened again for Calcifer's work on it, as any request opens it: none for a locked or unknown one.
+pub(crate) fn reopen(api: &Arc<Api>, id: &str) -> Option<RunOwner> {
+    api.projects.get(api, id).ok().map(|project| RunOwner::of(&project, &api.calcifer))
+}
+
 /// The project a run's landing folder is in, if it's one.
 pub(crate) fn of_landing(out_dir: &FsPath) -> Option<&FsPath> {
     out_dir.file_name().is_some_and(|name| name == folder::RUNS).then(|| out_dir.parent()).flatten()
