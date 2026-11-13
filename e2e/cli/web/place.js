@@ -418,8 +418,10 @@ async function placedInView(page, expected) {
       });
       await page.mouse.up();
       // It lands, and what it lies on goes aside, in one write.
-      await until(`${name} written`, () => Promise.resolve(rows(folder)[name]), (now) => now.x !== before[name].x || now.y !== before[name].y);
+      // A row not there (between writes, or gone: let go on a picture, a box joins it) is not yet its write.
+      await until(`${name} written`, () => Promise.resolve(rows(folder)[name]), (now) => Boolean(now) && (now.x !== before[name].x || now.y !== before[name].y)).catch(() => {});
       const after = await settledRows(name);
+      if (!after[name]) throw new Error(`${name} left the canvas when let go: no row for it (${Object.keys(after).length} rows), as when a box is let go on a picture and joins it`);
       return { dropped: { ...before[name], x: Math.round(held.e), y: Math.round(held.f) }, now: after[name], moved: movedSince(before, after, name), lying: await lying() };
     };
     const stays = (one) => apart(one.now, one.dropped);
