@@ -11,10 +11,9 @@ CREATE TABLE IF NOT EXISTS maintenance_source_objects(digest TEXT PRIMARY KEY) S
 static OWNERSHIP: std::sync::LazyLock<tokio::sync::RwLock<()>> = std::sync::LazyLock::new(||tokio::sync::RwLock::new(()));
 
 /// Creation changes an unknown folder into a project. Serialize that boundary
-/// against independent source capture before the first project marker is made:
-/// a creation waits for a capture under way, and for another creation.
-pub(crate) async fn begin_project_creation() -> tokio::sync::RwLockWriteGuard<'static,()> {
-    OWNERSHIP.write().await
+/// against independent source capture before the first project marker is made.
+pub(crate) fn begin_project_creation() -> Result<tokio::sync::RwLockWriteGuard<'static,()>,Error> {
+    OWNERSHIP.try_write().map_err(|_|Error::new(Kind::Conflict,"source_capture_busy","a source snapshot is being captured; retry project creation after it finishes"))
 }
 
 #[derive(serde::Deserialize)]
