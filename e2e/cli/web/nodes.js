@@ -745,9 +745,13 @@ function replaceFile(at, text) {
     const viewButton = box('Sheet').getByRole('button', { name: 'View image', exact: true });
     if (await viewButton.count()) await viewButton.click();
     check('image_has_an_explicit_edit_action', await box('Sheet').getByRole('button', { name: 'Edit image', exact: true }).count() === 1);
-    const selectedBefore = (await of('Sheet')).version;
+    const { version: selectedBefore, fields: { instructions: wordsBefore } } = await of('Sheet');
     await renderOf(page, 'Sheet');
     check('editing_keeps_current_selection', (await of('Sheet')).version === selectedBefore && await box('Sheet').locator('.in-frame').count() === 1);
+    // Edit leads its words with the take it's on (cl-909, `<self.1>`), a write of its own that leaves the approved take out of date: put back,
+    // as Undo would, so what's checked below is what a deleted input does to an approved box.
+    await api(`/v1/projects/${id}/assets/Sheet`, { method: 'PATCH', body: JSON.stringify({ fields: { instructions: wordsBefore } }) });
+    await until('its words as they were', () => of('Sheet'), (held) => held.fields.instructions === wordsBefore && held.standing === 'current');
     await previewVersion(page, 'Sheet', 1);
 
     // Stored version deletion and Undo remain available independently of the removed strip.
@@ -900,9 +904,10 @@ function replaceFile(at, text) {
     // Rendering it again fails, naming what's gone, and the rest goes on.
     await box('Sheet').locator('button[aria-label=Render]').click();
     const failed = await until('it says why', () => of('Sheet'), (held) => held.failure);
-    check('fails_naming_it', failed.failure.code === 'input_missing' && failed.failure.message.includes('<source-a> is no longer in the project'), failed.failure);
+    // Deleted, it's named as deleted until Undo brings it back (cl-919, 815b5e40c).
+    check('fails_naming_it', failed.failure.code === 'input_missing' && failed.failure.message.includes('<source-a> was deleted'), failed.failure);
     // The failure is a toast with its next steps, the box open and its picture standing, and no line on the box says it.
-    await until('a toast says why', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render") && line.includes('no longer in the project')));
+    await until('a toast says why', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes("Sheet didn't render") && line.includes('source-a') && line.includes('was deleted')));
     const toastSteps = page.locator('.note:has-text("Sheet didn\'t render")').first();
     check('its_next_steps_as_text', (await toastSteps.locator('.remedy, .copyable').count()) > 0, await toastSteps.innerText());
     check('render_keeps_it_open_saying_nothing', (await page.locator('.card.here[data-asset="Sheet"]').count()) === 1 && (await box('Sheet').locator('.status').count()) === 0, await box('Sheet').innerText());
