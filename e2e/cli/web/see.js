@@ -446,8 +446,12 @@ async function rest(page, handle) {
     await away(page);
     // project.db's revision, one more each commit: a read commits nothing.
     const revision = () => rowsOf(folder, "SELECT value FROM meta WHERE key = 'seq'")[0]?.[0];
-    await shell(process.env.NO_HUB).catch(() => {});
+    // A real restart onto no Hub: with the old Calcifer still answering, on its Hub, every check below would pass and prove nothing.
+    const pidOf = () => JSON.parse(require('fs').readFileSync(process.env.HOLDER, 'utf8')).pid;
+    const pidWithHub = pidOf();
+    const noHub = await shell(process.env.NO_HUB).then(() => true, (why) => String(why));
     await until('Calcifer back with no Hub', () => api('/v1/status').catch(() => null), Boolean);
+    check('restarted_with_no_hub', noHub === true && pidOf() !== pidWithHub, { noHub, before: pidWithHub, after: pidOf() });
     const revisionBefore = revision();
     const began = Date.now();
     const answered = await state();
@@ -458,8 +462,10 @@ async function rest(page, handle) {
     await until('the page with no Hub', () => element(page, 'shot').count(), (n) => n === 1);
     check('page_with_no_hub', true);
     check('read_writes_nothing', revision() === revisionBefore, { before: revisionBefore, after: revision() });
-    await shell(process.env.RESTART).catch(() => {});
+    // And back on its Hub, or every cell after this one runs with none.
+    const onHub = await shell(process.env.RESTART).then(() => true, (why) => String(why));
     await until('Calcifer back as it was', () => api('/v1/status').catch(() => null), Boolean);
+    check('restarted_on_its_hub', onHub === true, onHub);
   }
 
   // 300 elements, on React Flow, by project-web-ui §8's three cases. What's measured is reported; what's checked is that each case really happened.

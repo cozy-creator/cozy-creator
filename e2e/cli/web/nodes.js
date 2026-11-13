@@ -312,8 +312,8 @@ function replaceFile(at, text) {
   check('at_rest_delete_is_always_visible', await atRest.isVisible() && ((await atRest.boundingBox())?.width ?? 0) >= 24, await box('source-a').innerText());
   check('at_rest_image_has_no_linear_version_controls', await box('source-a').getByLabel('Current version', { exact: true }).count() === 0 && await box('source-a').getByRole('button', { name: /^(Previous|Next) version$/ }).count() === 0);
   check('at_rest_no_words', (await box('Sheet').locator('.status').count()) === 0 && (await box('source-a').locator('.status').count()) === 0);
+  // Open, its Render shows: open() itself waits for it (renderOf), so that's no check here.
   await open('Sheet');
-  check('hover_shows_render', (await box('Sheet').locator('button[aria-label=Render]').count()) === 1);
   await shot('box');
 
   // Typing: `<` offers names, a chip is plain text in what's stored, and nothing is written until it's let go.
@@ -403,9 +403,9 @@ function replaceFile(at, text) {
   // Another writer's `at`, on a box, settles the same way; so does a file that arrives with two on one spot, as a converted project does, with no input changing.
   const held = (await rows())['source-a'];
   projectJson(folder, 'PATCH', '/canvas', { cards: { 'source-b': { x: held.x, y: held.y } } });
-  await page.waitForTimeout(300);
-  await until('an `at` on a box comes off it', () => apart('source-a', 'source-b'), Boolean);
-  check('an_at_settles', true);
+  // Stored on top of the other now: apart again only once the page has heard it and given way (they were apart on screen before it did).
+  const settledAt = await until('the page gives way to their `at`', rows, (now) => now['source-b'].x !== now['source-a'].x || now['source-b'].y !== now['source-a'].y).then(() => true, () => false);
+  check('an_at_settles', settledAt && await until('an `at` on a box comes off it', () => apart('source-a', 'source-b'), Boolean).then(() => true, () => false), await rows());
   const asItStood = (await state()).assets.map(({ name, inputs, standing }) => [name, inputs, standing]);
   // Another writer's row, onto it: no window had it to settle.
   projectJson(folder, 'PATCH', '/canvas', { cards: { 'source-b': { x: held.x, y: held.y } } });
@@ -525,16 +525,18 @@ function replaceFile(at, text) {
 
   // Another's words in one beat while the page types in another, its write held until theirs is in: both stand, each merged by character
   // (cl-904: words anywhere in a box are Automerge text).
-  let rowsIn;
+  let rowsIn, rowsHeld;
   const rowsGoing = new Promise((done) => (rowsIn = done));
-  const rowsLate = (call) => (call.request().method() === 'PATCH' ? rowsGoing.then(() => call.fallback().catch(() => {})) : call.fallback());
+  // Resolved once the page's write is out and held: theirs goes in only then, so the two cross every time.
+  const rowsOut = new Promise((done) => (rowsHeld = done));
+  const rowsLate = (call) => (call.request().method() === 'PATCH' ? (rowsHeld(), rowsGoing.then(() => call.fallback().catch(() => {}))) : call.fallback());
   await page.route('**/v1/projects/*/assets/knobs', rowsLate);
   await page.locator('.card.here[data-asset="knobs"] .beat .mention-text').nth(0).click();
   await page.keyboard.press('End');
   await page.keyboard.type(' Page.');
+  check('the_pages_beat_write_went_out', await Promise.race([rowsOut.then(() => true), new Promise((done) => setTimeout(() => done(false), 20_000))]));
   const theirBeats = (await of('knobs')).fields.beats.map((beat, i) => (i === 1 ? { ...beat, description: 'Second, theirs.' } : beat));
   await api(`/v1/projects/${id}/assets/knobs`, { method: 'PATCH', body: JSON.stringify({ fields: { beats: theirBeats } }) });
-  await page.waitForTimeout(800);
   rowsIn();
   await page.unroute('**/v1/projects/*/assets/knobs', rowsLate);
   const merged = await until('both beats merged', async () => (await of('knobs')).fields.beats, (held) => held?.[0]?.description?.includes('First. Page.') && held?.[1]?.description === 'Second, theirs.').catch(async () => (await of('knobs')).fields.beats);
@@ -557,22 +559,27 @@ function replaceFile(at, text) {
   await until('its etag read again', async () => (await of('kept_words'))?.fields?.description ?? '', (text) => text.includes('Rewritten'));
   await until('another\'s edit is no conflict', () => Promise.resolve(storedBox('Sheet')?.instructions), (words) => words?.includes('mine'));
   // Its write waits until theirs is in, as a slower network's would.
-  let theirsIn;
+  let theirsIn, mineHeld;
   const going = new Promise((done) => (theirsIn = done));
-  const late = (call) => (call.request().method() === 'PATCH' ? going.then(() => call.fallback().catch(() => {})) : call.fallback());
+  const mineOut = new Promise((done) => (mineHeld = done));
+  const late = (call) => (call.request().method() === 'PATCH' ? (mineHeld(), going.then(() => call.fallback().catch(() => {}))) : call.fallback());
   await page.route('**/v1/projects/*/assets/Sheet', late);
   await sheetText.click();
   await page.keyboard.press('End');
   await page.keyboard.type(' again');
+  // Mine out and held, theirs in, and the page's read of theirs: what its unsent words must stand against.
+  check('the_pages_write_went_out', await Promise.race([mineOut.then(() => true), new Promise((done) => setTimeout(() => done(false), 20_000))]));
+  const theirsRead = page.waitForResponse((answer) => answer.request().method() === 'GET' && new URL(answer.url()).pathname.endsWith('/assets/Sheet'), { timeout: 20_000 }).then(() => true, () => false);
   projectJson(folder, 'PATCH', '/assets/Sheet', { fields: { instructions: storedBox('Sheet').instructions.replace(' mine', ' theirs') } });
   check('theirs_in_the_file', storedBox('Sheet').instructions.includes(' theirs'), storedBox('Sheet'));
-  await page.waitForTimeout(1000);
+  check('the_page_read_theirs', await theirsRead);
   await shot('unsent-words-stand');
   check('typed_words_kept', (await sheetText.innerText()).includes(' again'), await sheetText.innerText());
   theirsIn();
   await page.unroute('**/v1/projects/*/assets/Sheet', late);
   await until('theirs and mine merged', () => Promise.resolve(storedBox('Sheet')?.instructions), (words) => words?.includes(' theirs') && words.includes(' again') && !words.includes(' mine'));
-  check('nothing_asked', (await box('Sheet').locator('button:has-text("Keep mine")').count()) === 0);
+  // Nothing asked of the person (cl-904), whatever it would be called.
+  check('nothing_asked', (await page.getByRole('alertdialog').count()) + (await box('Sheet').getByRole('button', { name: /keep mine|keep theirs|take the file/i }).count()) === 0);
 
   // A caret never rests in a name, where what's typed goes nowhere: a click on one puts it just after, and what's typed there is saved there.
   await open('Sheet');
@@ -699,11 +706,17 @@ function replaceFile(at, text) {
   // Only where this computer runs models: real renders.
   if (local) {
     const versions = async (name) => (await of(name))?.prefixes?.length ?? 0;
+    // A take from Render's own press, one more than it had, which is `count`: its POST is asked by the press (Enter in the < names once
+    // rendered by accident, and a count to reach let that pass), and no other take lands meanwhile.
     const render = async (name, count) => {
       await open(name);
+      const before = await versions(name);
+      const asked = page.waitForRequest((request) => request.method() === 'POST' && /^\/v1\/projects\/[^/]+\/runs$/.test(new URL(request.url()).pathname), { timeout: STEP_MS }).then(() => true, () => false);
       // Render is with its words: on a take, its + goes to them.
       await (await renderOf(page, name)).click();
-      await until(`${name}'s ${count}`, () => versions(name), (n) => n === count, FIRST_RUN_MS);
+      check(`${name}_take_${count}_asked_by_render`, await asked);
+      const now = await until(`${name}'s next take`, () => versions(name), (n) => n > before, FIRST_RUN_MS);
+      check(`${name}_take_${count}_is_one_more`, now === before + 1 && now === count, { before, now, count });
     };
     await render('Sheet', 1);
     await open('Sheet');
