@@ -92,7 +92,8 @@ cozy --json machine show local > "$OUT/source-machine.json" && echo "from source
 if cell source-callee e2e-source-relay/relay "text=called from the checkout"; then
   said_by source-callee
   grep -q '"release": *"source"' "$OUT/source-callee.ndjson" || check "from source: the caller's minimax-h3-tools isn't the checkout's: $(tail -c 300 "$OUT/source-callee.ndjson")"
-  callee=$(find "$HOME/.cozy/machine" -name generation.json -path '*generations*' -exec jq -r \
+  # A project's local code is installed in the project (.vault-machine).
+  callee=$(find "$RUN_PROJECT/.vault-machine" "$HOME/.cozy/machine" -name generation.json -path '*generations*' -exec jq -r \
     'select(.package == "e2e-source-relay") | .callees[]? | select(.distribution | ascii_downcase | gsub("[-_.]+"; "-") == "minimax-h3-tools") | .package' \
     {} + 2> /dev/null | sort -u | paste -sd, -)
   echo "from source: e2e-source-relay's environment names its callee ${callee:-nothing}"
