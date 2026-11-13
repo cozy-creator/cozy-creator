@@ -46,6 +46,8 @@ class Bridge {
   private flushing = false
   private privateBlocked = new Set<string>()
   private privacyEpoch = new Map<string, number>()
+  /** The boxes the stream has said are gone from each project, until it says they're back: no read asks for one, which could only 404. */
+  private gone = new Map<string, Set<string>>()
 
   allowProject(id: string) { this.privateBlocked.delete(id); this.client.allowProject(id) }
 
@@ -57,6 +59,7 @@ class Bridge {
     if (held?.timer) clearTimeout(held.timer)
     this.owed.delete(id)
     this.revs.delete(id)
+    this.gone.delete(id)
     for (const [number, run] of this.runs) if (run.project_id === id) this.runs.delete(number)
   }
 
@@ -79,8 +82,19 @@ class Bridge {
     if (this.privateBlocked.has(id)) return
     let slot = this.owed.get(id)
     if (!slot) this.owed.set(id, (slot = { read: 0, flying: false, names: new Set(), gone: new Set(), head: false, whole: false, wholeCursor: null }))
-    for (const name of change.assets ?? []) slot.names.add(name)
-    for (const name of change.gone ?? []) slot.gone.add(name)
+    // What's said last of a box is what's read: changed, then gone, it's gone, and no read asks for it; gone, then back, it's read.
+    let gone = this.gone.get(id)
+    if (!gone) this.gone.set(id, (gone = new Set()))
+    for (const name of change.assets ?? []) {
+      slot.names.add(name)
+      slot.gone.delete(name)
+      gone.delete(name)
+    }
+    for (const name of change.gone ?? []) {
+      slot.gone.add(name)
+      slot.names.delete(name)
+      gone.add(name)
+    }
     slot.head ||= Boolean(change.head)
     if (!change.assets) {
       const cursor = change.cursor ?? null
@@ -90,6 +104,12 @@ class Bridge {
       slot.whole = true
     }
     this.go(id, slot)
+  }
+
+  /** What this page wants read again of a project, as the stream would say it changed: never a box the stream has said is gone. */
+  readAgain(id: string, names: string[]) {
+    const gone = this.gone.get(id)
+    this.changed(id, { assets: names.filter((name) => !gone?.has(name)), head: true })
   }
 
   private go(id: string, held: Owed) {
