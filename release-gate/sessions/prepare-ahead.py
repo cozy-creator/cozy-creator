@@ -2,11 +2,14 @@
 seconds from the ask. From the runs' records (runs.json, run-<n>.json), the board every 5 s (board.ndjson) and the pod's TensorD log:
 each install turn (`install line: …`, by package), and each object's start and landing (`fetching`, `landed`) with its order, whose
 class says whose it is: a run's own (`next`, the picture's the first), a fetch ahead's (`ahead`), a guess (`guess`), or a started run's
-call (the video's segment); at order 0, a started call's emergency (cl-966: a read of a model not here, `emergency: …`). The picture's
-stages are its run's own measures. Prints the timeline as JSON, end to end against the longest single chain; each check that failed on
-stderr, and exit 1 when one did.
+call (the video's segment); at order 0, a started call's emergency (cl-966: a read of a model not here, `emergency: …`). A project's
+run says nothing in TensorD's log (#2858): its install turns are the board's stages, and its emergencies the downloader's floor
+(`floor moved`, which also says each install's hold). The picture's stages are its run's own measures. Prints the timeline as JSON,
+end to end against the longest single chain; each check that failed on stderr, and exit 1 when one did. `--compare` prints arms'
+timelines side by side.
 
     prepare-ahead.py <out> <ask unix ms> <picture's package> <video's package>
+    prepare-ahead.py --compare <arm dir>…
 """
 
 import json
@@ -22,11 +25,41 @@ Row: TypeAlias = dict[str, Json]
 # An order's class (TensorD's `origin::priority`) and job: ("run", n), ("ahead", n), ("guess", n), or ("call", 0) for a started run's.
 Key: TypeAlias = tuple[str, int]
 
+
+
+def compare(dirs: list[Path]) -> None:
+    """Each arm's headline numbers in one table: the same row from every arm's timeline.json."""
+    def at(t: Json, *path: str) -> Json:
+        for key in path:
+            t = t.get(key) if isinstance(t, dict) else None
+        return t
+    rows = {
+        "end to end": ("seconds", "end_to_end"), "picture chain": ("seconds", "picture_chain"), "video run": ("seconds", "video_run"),
+        "video sent to first call": ("seconds", "video_sent_to_first_call"),
+        "picture first weight byte": ("seconds_from_ask", "picture", "download", "start"),
+        "picture download end": ("seconds_from_ask", "picture", "download", "end"),
+        "picture download MB/s": ("seconds_from_ask", "picture", "download", "mb_s"),
+        "picture install": ("seconds_from_ask", "picture", "install"), "picture on the GPU": ("seconds_from_ask", "picture", "gpu"),
+        "rewriter load (upsampling prompt / loading model)": ("picture_stages", "upsampling prompt / loading model"),
+        "expander load (loading expander)": ("picture_stages", "loading expander"), "upsampling prompt": ("picture_stages", "upsampling prompt"),
+        "video fetch ahead": ("seconds_from_ask", "video_ahead", "download"), "guesses": ("seconds_from_ask", "video_ahead", "guesses"),
+        "emergencies": ("emergencies",), "floors": ("floors",),
+    }
+    arms = {d.name.removeprefix("arm-"): cast(Json, json.loads((d / "timeline.json").read_text())) if (d / "timeline.json").exists() else None
+            for d in dirs}
+    print(json.dumps({name: {arm: at(t, *path) for arm, t in arms.items()} for name, path in rows.items()}, indent=1))
+
+
+if sys.argv[1] == "--compare":
+    compare([Path(d) for d in sys.argv[2:]])
+    sys.exit(0)
 out, ask, picture_tool, video_tool = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4]
 LOGGED = re.compile(r"^(\S+)\s+INFO\s+\S+: (fetching|landed) (.*)$")
 TURNS = re.compile(r"^(\S+)\s+INFO\s+\S+: install line: (.*?)\s+run=\"?([^\s\"]+)\"?(.*)$")
 CLASSES = ("run", "ahead", "guess")
 EMERGENCY = re.compile(r"^(\S+)\s+INFO\s+\S+: emergency: (.+?) is (read now|here)\b(.*)$")
+FLOOR = re.compile(r"^(\S+)\s+INFO\s+\S+: floor moved (.*)$")
+INSTALLING = re.compile(r"installing (\S+) \S+ on this machine")
 EARLY = 60_000  # what the log says from before the ask: the update's own
 
 
@@ -95,7 +128,7 @@ class Download(Span):
     objects: int = 0
 
     def seconds(self) -> dict[str, Json]:
-        return {**super().seconds(), "bytes": self.bytes, "objects": self.objects}
+        return {**super().seconds(), "bytes": self.bytes, "objects": self.objects, "mb_s": round(self.bytes / self.took() / 1e6, 1) if self.took() else None}
 
 
 objects: dict[Key, Objects] = {}
@@ -103,6 +136,9 @@ turns: dict[str, Turn] = {}
 # Each emergency (its model, when asked, when here, its rate) and the objects fetched at its order.
 emergencies: list[Row] = []
 urgent: list[tuple[int, str, int]] = []
+# Each stand of a downloader's floor (cl-966): its order, from and to (ms), and what came meanwhile.
+floors: list[Row] = []
+standing: dict[str, tuple[int, int]] = {}
 log = out / "tensord.log"
 # The headers and trees resolutions pulled (`pull … header= tree=`, the store's transport log): a job's order since #3115, but
 # no job's download.
@@ -122,6 +158,16 @@ for line in log.read_text(errors="replace").splitlines() if log.exists() else []
             seen.fetching.append(at)
         else:
             seen.landed.append((at, int(fields.get("bytes", "0"))))
+    elif found := FLOOR.match(line):
+        fields = dict(re.findall(r"(\w+)=(\S+)", found[2]))
+        at, downloader = int(fields.get("at_ms", "0")), fields.get("downloader", "")
+        if fields.get("from", "none") != "none" and downloader in standing:
+            order, began = standing.pop(downloader)
+            if began >= ask:
+                floors.append({"order": order, "from_ms": began, "to_ms": at, "bytes": int(fields.get("bytes", "0")),
+                               "mb_s": round(float(fields.get("mb_s", "0")), 1)})
+        if fields.get("to", "none") != "none":
+            standing[downloader] = (int(fields["to"]), at)
     elif found := EMERGENCY.match(line):
         at, fields = ms(found[1]), dict(re.findall(r"(\w+)=(\S+)", found[4]))
         if at < ask:
@@ -145,14 +191,37 @@ for line in log.read_text(errors="replace").splitlines() if log.exists() else []
             turn.said.append(said)
 
 
+# A project's emergencies, when TensorD's log has none: the downloader's floor at 0 (its model unnamed, the project's own).
+if not emergencies:
+    emergencies = [{"model": "", "asked_ms": f["from_ms"], "here_ms": f["to_ms"], "bytes": f["bytes"], "mb_s": f["mb_s"]} for f in floors if f["order"] == 0]
+
+
 def download(keys: list[Key]) -> Download:
     fetching = [at for k in keys if k in objects for at in objects[k].fetching]
     landed = [seen for k in keys if k in objects for seen in objects[k].landed]
     return Download(min(fetching, default=None), max((at for at, _ in landed), default=None), sum(size for _, size in landed), len(landed))
 
 
+# A project's install turns, from the board's stages (every 5 s) when TensorD's log has none: each job's or fetch ahead's
+# `installing <org>/<package> <release> on this machine (…)`, from the first board that says it to the first that doesn't.
+if not turns:
+    boards = [cast(Row, json.loads(b)) for b in (out / "board.ndjson").read_text().splitlines() if b.strip()] if (out / "board.ndjson").exists() else []
+    for b in boards:
+        at, board = num(b.get("at_ms")) or 0, row(b.get("board"))
+        now = {f"{kind}:{text(row(e).get('asset')) or text(row(e).get('function'))}": INSTALLING.search(text(row(e).get("stage")))
+               for kind in ("jobs", "ahead") for e in items(board.get(kind))}
+        for key, said in now.items():
+            if said:
+                turn = turns.setdefault(f"{key}:{said[1]}", Turn(what=said[1]))
+                turn.start = turn.start or at
+                turn.end = None
+        for key, turn in turns.items():
+            if turn.end is None and not now.get(key.rsplit(":", 1)[0]):
+                turn.end = at
+
+
 def install(package: str) -> tuple[Span, list[str]]:
-    held = [t for t in turns.values() if t.what.startswith(package)]
+    held = [t for t in turns.values() if re.search(rf"(^|/){re.escape(package)}\b", t.what)]
     starts, ends = [t.start for t in held if t.start], [t.end for t in held if t.end]
     return Span(min(starts, default=None), max(ends, default=None)), [w for t in held for w in t.said]
 
@@ -228,6 +297,11 @@ timeline: dict[str, Json] = {
     },
     "install_turns": {run: {"what": t.what, "start": since(t.start), "end": since(t.end), "said": cast(Json, t.said)} for run, t in turns.items()},
     "picture_stages": cast(Json, stages(picture)),
+    # Each stand of a downloader's floor: at 0 an emergency, at a job's order its install's build, while the rest waited.
+    "floors": [{"order": cast(int, f["order"]), "class": "emergency" if f["order"] == 0 else "install", "from": since(num(f["from_ms"])),
+                "to": since(num(f["to_ms"])), "seconds": round((cast(int, f["to_ms"]) - cast(int, f["from_ms"])) / 1000, 1), "bytes": f["bytes"],
+                "mb_s": f["mb_s"], "others_started_during": sum(1 for seen in objects.values() for at in seen.fetching
+                                                                 if cast(int, f["from_ms"]) < at < cast(int, f["to_ms"]))} for f in floors],
     # Each emergency: while it came, how many other objects started (none: the link was its) and whether the rest went on after.
     "emergencies": [{"model": e["model"], "asked": since(num(e["asked_ms"])), "here": since(num(e.get("here_ms"))), "bytes": e["bytes"],
                      "mb_s": e.get("mb_s"), "others_started_during": sum(1 for seen in objects.values() for at in seen.fetching
