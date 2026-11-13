@@ -279,6 +279,8 @@ function Canvas({
     if (!id) return
     outbox.add({
       project: id,
+      // Each field of it replaces what's saved: only the latest of a field goes.
+      view: `${id} ${Object.keys(patch).sort().join(",")}`,
       send: (once, action) => client.patchProjectView(id, patch, { once, action }),
       refused: (error) => {
         if (!(error instanceof ApiError && error.body.code === "project_locked")) say("Couldn't save the canvas view", error)
