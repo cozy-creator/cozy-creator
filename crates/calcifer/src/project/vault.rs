@@ -35,6 +35,8 @@ static CONVERTING: LazyLock<Mutex<BTreeSet<PathBuf>>> = LazyLock::new(Mutex::def
 static CLOCK: LazyLock<Option<platform::alarm::Alarm>> = LazyLock::new(|| {
     platform::alarm::Alarm::new().inspect_err(|e| tracing::warn!("vaults have no clock, so none locks itself: {e}")).ok()
 });
+/// A session closed: a shutdown waiting on the views to close tries again.
+pub(crate) static CLOSED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// While a session is closing, how soon its close is tried again: programs may hold its view.
 const CLOSE_AGAIN: Duration = Duration::from_secs(1);
 
@@ -400,6 +402,7 @@ fn close(api: &Arc<Api>, root: &FsPath) -> Result<(), Error> {
         retire_runtime(&session.runtime);
         drop(session);
         SESSIONS.lock().expect("vault sessions").remove(root);
+        CLOSED.notify_waiters();
         ROOTS.lock().expect("vault roots").retain(|_, logical| logical != root);
         if let Ok(keybag) = Keybag::load(&root.join(KEYBAG_FILE)) { crate::events::project_vault(&keybag.info().project_id, "locked"); }
     }

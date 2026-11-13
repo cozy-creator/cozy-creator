@@ -356,6 +356,9 @@ async fn shutdown_after_signal(api: Arc<Api>) {
     let began = Instant::now();
     let mut reported: Option<(String, Instant)> = None;
     loop {
+        // Listening before it asks: a view that closes meanwhile isn't missed. The vault clock tries each close again.
+        let mut closed = std::pin::pin!(crate::project::vault::CLOSED.notified());
+        closed.as_mut().enable();
         let error = match api.shutdown().await {
             Ok(_) => return,
             Err(error) => error,
@@ -371,7 +374,7 @@ async fn shutdown_after_signal(api: Arc<Api>) {
         }
         tokio::select! {
             () = api.stopped() => return,
-            () = tokio::time::sleep(Duration::from_millis(250)) => {},
+            () = closed => {},
         }
     }
 }
