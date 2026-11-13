@@ -109,8 +109,9 @@ test('mention', async ({ page, project, api, cli }) => {
   await test.step('a selection of three let go on it appends three', async () => {
     await leave(page);
     const row = await Promise.all(['ann', 'walk', 'bea'].map((name) => box(page, name).boundingBox()));
-    const from = { x: row[0].x - 16, y: Math.min(...row.map((at) => at.y)) - 16 };
-    const to = { x: row[2].x + row[2].width + 16, y: Math.max(...row.map((at) => at.y + at.height)) + 16 };
+    // From open canvas under the row's left end to past its top right: the rectangle touches the three and not the box under them.
+    const from = { x: row[0].x - 16, y: Math.max(...row.map((at) => at.y + at.height)) + 16 };
+    const to = { x: row[2].x + row[2].width + 16, y: Math.min(...row.map((at) => at.y)) - 16 };
     expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), from), 'the rectangle starts on open canvas').toBe(true);
     await page.keyboard.down('Shift');
     await page.mouse.move(from.x, from.y);

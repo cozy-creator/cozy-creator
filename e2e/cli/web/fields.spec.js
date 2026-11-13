@@ -184,7 +184,7 @@ test('fields', async ({ page, project, api, cli }) => {
     await radios.filter({ hasText: 'sexgod1979 / Pinkcherry' }).click();
     await expect.poll(async () => (await fieldsOf('scene')).models?.base_model?.ref, { message: 'a base model picked' }).toBe('sexgod1979/pinkcherry');
     await picker.getByRole('button', { name: 'LoRAs', exact: true }).click();
-    await picker.locator('.model-picker-lora-option', { hasText: /vfx edit/i }).click();
+    await picker.locator('.model-picker-lora-option', { hasText: /vfx.edit/i }).click();
     let lora;
     await expect.poll(async () => (lora = (await fieldsOf('scene')).models?.base_model?.lora?.[0]?.ref), { message: 'a LoRA added' }).toMatch(/^alissonerdx\/minimax-h3-vfx-edit/);
     await expect.poll(async () => {

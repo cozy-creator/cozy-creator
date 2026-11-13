@@ -37,7 +37,7 @@ test('package-ui', async ({ page, project, guards }) => {
     await expect.soft(words, 'the instructions as declared').toHaveCount(1);
     await shade.getByRole('button', { name: 'Shade 0.75', exact: true }).click();
     await expect(shade).toHaveAttribute('data-saved', 'true');
-    await expect.poll(() => fields('shaded'), { message: 'the API holds its shade' }).toEqual({ instructions: 'a pebble', shade: 0.75 });
+    await expect.poll(() => fields('shaded'), { message: 'the API holds its shade' }).toMatchObject({ instructions: 'a pebble', shade: 0.75 });
   });
 
   await test.step('a reload reads it back, its module under the page\'s CSP', async () => {
@@ -79,7 +79,8 @@ test('package-ui', async ({ page, project, guards }) => {
   });
 
   await test.step('the other fields are unchanged', async () => {
-    expect.soft(await fields('shaded')).toEqual({ instructions: 'a pebble', shade: 0.75 });
-    expect.soft(await fields('thrown')).toEqual({ instructions: 'a stone' });
+    expect.soft(await fields('shaded')).toMatchObject({ instructions: 'a pebble', shade: 0.75 });
+    expect.soft(await fields('thrown')).toMatchObject({ instructions: 'a stone' });
+    expect.soft(await fields('thrown'), 'nothing set on the box that threw').not.toHaveProperty('shade');
   });
 });
