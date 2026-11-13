@@ -70,19 +70,21 @@ for p in $cands; do
   want=$(final "$p")
   (cd "$RUN_PROJECT" && cozy --json package install "$p@$want" --on local -y) > "install-$p.json" 2>&1; code=$?
   if [ "$code" != 0 ]; then expect "publish-install-$p" FAIL "package install $p@$want exit $code: $(tail -c 300 "install-$p.json")"; continue; fi
-  mod=$(sed -n '/cozy\.application/,/^\[/s/^default = "\([A-Za-z0-9_]*\)[.:].*/\1/p' "$PKGS/$p/pyproject.toml")
-  triton=none
-  if grep -rqs --include='*.py' 'TritonKernels(' "$PKGS/$p"; then
-    triton=missing
-    for g in $(generations); do
-      m=$(find "$(dirname "$g")/env/" -path "*/site-packages/$mod/_triton/manifest.json" 2>/dev/null | head -1)
-      [ -n "$m" ] && triton="$(jq '.kernels | length' "$m") kernels" && break
+  # Its Triton sets, and those of the in-repo packages it takes, in its own generation's environment.
+  env=''
+  for g in $(generations); do [ "$(jq -r '.package // empty' "$g")" != "$p" ] || env=$(dirname "$g")/env; done
+  triton='' lacks=''
+  for q in $p $(deps "$p"); do
+    [ -d "$PKGS/$q" ] || continue
+    for m in $(grep -rl --include='*.py' 'TritonKernels(' "$PKGS/$q" 2>/dev/null | sed "s|^$PKGS/$q/||" | cut -d/ -f1 | sort -u); do
+      f=$(find "$env/" -path "*/site-packages/$m/_triton/manifest.json" 2>/dev/null | head -1)
+      if [ -n "$f" ]; then triton="$triton $m: $(jq '.kernels | length' "$f") kernels"; else lacks="$lacks $m/_triton"; fi
     done
-  fi
+  done
   bound=''
   [ -z "$(deps "$p")" ] || bound=" (takes $(deps "$p" | paste -sd' ') from this Hub's index)"
-  if [ "$triton" = missing ]; then expect "publish-install-$p" FAIL "$p@$want installed$bound, but its environment holds no $mod/_triton"
-  else expect "publish-install-$p" PASS "$p@$want installed from the Hub's index$bound; _triton: $triton"; fi
+  if [ -n "$lacks" ]; then expect "publish-install-$p" FAIL "$p@$want installed$bound, but its environment ${env:-(none found)} lacks$lacks"
+  else expect "publish-install-$p" PASS "$p@$want installed from the Hub's index$bound; _triton:${triton:- none declared}"; fi
 done
 
 # One function run from the Hub: BiRefNet, its weights mirrored here first.
