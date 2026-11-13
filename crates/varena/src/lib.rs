@@ -87,6 +87,9 @@ pub enum Error {
 /// Private admission cause: another process cannot repair a local cap or VA refusal.
 pub(crate) enum AllocationFailure {
     DriverOutOfMemory(usize),
+    /// The pages fit, not beside the driver's reserve: `reclaim::acquire` gives what is idle and
+    /// done for it, never a wait, and short of that takes the reserve.
+    ReserveShort(usize),
     Other(Error),
 }
 
@@ -95,13 +98,13 @@ pub(crate) type AllocationResult<T> = std::result::Result<T, AllocationFailure>;
 impl AllocationFailure {
     fn physical_bytes(&self) -> Option<usize> {
         match self {
-            Self::DriverOutOfMemory(bytes) => Some(*bytes),
+            Self::DriverOutOfMemory(bytes) | Self::ReserveShort(bytes) => Some(*bytes),
             Self::Other(_) => None,
         }
     }
 
     fn is_oom(&self) -> bool {
-        matches!(self, Self::DriverOutOfMemory(_)
+        matches!(self, Self::DriverOutOfMemory(_) | Self::ReserveShort(_)
             | Self::Other(Error::OutOfMemory { .. } | Error::Exhausted { .. }))
     }
 }
@@ -113,7 +116,9 @@ impl From<Error> for AllocationFailure {
 impl From<AllocationFailure> for Error {
     fn from(failure: AllocationFailure) -> Self {
         match failure {
-            AllocationFailure::DriverOutOfMemory(requested_bytes) => Self::OutOfMemory { requested_bytes },
+            AllocationFailure::DriverOutOfMemory(requested_bytes) | AllocationFailure::ReserveShort(requested_bytes) => {
+                Self::OutOfMemory { requested_bytes }
+            }
             AllocationFailure::Other(error) => error,
         }
     }
@@ -733,15 +738,15 @@ impl Device {
     }
 
     /// Room for `bytes` of new pages: within our limit, and beside the driver's reserve of what the
-    /// card has free now. Short of the reserve reads as the driver's refusal, which another
-    /// process's memory can lift.
+    /// card has free now. More than the card has free is the driver's to refuse; less, but not
+    /// beside the reserve, is `ReserveShort`.
     fn admit(&self, bytes: usize) -> AllocationResult<()> {
         let free = self.sample()?;
         if self.over(bytes) != 0 {
             return Err(Error::OutOfMemory { requested_bytes: bytes }.into());
         }
-        if bytes > self.spare(free) {
-            return Err(AllocationFailure::DriverOutOfMemory(bytes));
+        if bytes <= free && bytes > self.spare(free) {
+            return Err(AllocationFailure::ReserveShort(bytes));
         }
         Ok(())
     }

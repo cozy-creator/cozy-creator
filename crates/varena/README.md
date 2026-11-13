@@ -47,11 +47,12 @@ unplanned, and other phases' loops go after every single pass's.
 ## The driver's reserve
 
 The driver allocates on its own: a kernel's code at its first launch, local memory, a library's handle.
-Its refusal fails that launch, not an allocation of ours, so no reclaim can answer it. Every map leaves
-512 MiB of the card free for it, checked against the driver's free bytes at the map; a demand with every
-other lever gone takes the reserve before it fails. `driver_short` (Python `vt.driver_short`), after such
-a refusal, doubles the reserve (to at most an eighth of the card) and gives up what this process can
-until the card has it free; the Runtime then runs the forward that failed again.
+Its refusal fails that launch, not an allocation of ours, so no reclaim can answer it. Every map tries
+to leave 512 MiB of the card free for it, read from the driver at the map: pages that fit, but not beside
+the reserve, take only what is idle and done for it (no wait, no owner, no peer), and short of that take
+the reserve. The reserve never makes a demand wait or fail. `driver_short` (Python `vt.driver_short`),
+after such a refusal, doubles the reserve (to at most an eighth of the card) and gives up what this
+process can until the card has it free; the Runtime then runs the forward that failed again.
 
 ## Fills
 

@@ -370,6 +370,17 @@ pub(crate) fn acquire<T>(
     loop {
         let failure = match try_map() {
             Ok(value) => return Ok(value),
+            Err(AllocationFailure::ReserveShort(_)) => {
+                // The pages fit, not beside the driver's reserve: what is idle and done goes for it,
+                // with no wait, no owner and no peer; short of that, the demand takes the reserve.
+                let reserve = sequence.gpu.driver_reserve.load(Ordering::Acquire);
+                let mut released = 0;
+                release(device, reserve, usize::MAX, Wait::No, protect, ReclaimReason::Allocator, &mut released)?;
+                if released == 0 {
+                    return crate::waived(&mut try_map).map_err(Into::into);
+                }
+                continue;
+            }
             Err(failure) if failure.is_oom() => failure,
             Err(failure) => return Err(failure.into()),
         };
@@ -408,12 +419,7 @@ pub(crate) fn acquire<T>(
                     );
                 }
             }
-            // Every lever is gone: what is left of the driver's reserve goes before the demand fails.
-            return match crate::waived(&mut try_map) {
-                Ok(value) => Ok(value),
-                Err(again) if again.is_oom() => Err(failure.into()),
-                Err(again) => Err(again.into()),
-            };
+            return Err(failure.into());
         }
         // Gave what the arithmetic said and still short: the driver's free reading is only
         // approximate. A wait that released nothing asks for no more: that overshoot evicted GBs.
@@ -434,7 +440,7 @@ fn shortfall(need: usize, failure: &AllocationFailure, gpu: &Device) -> Result<u
     let gate = crate::gate(gpu.ordinal)?;
     gate.not_capturing()?;
     let _context = gpu.driver().enter()?;
-    Ok(need.saturating_sub(gpu.spare(gpu.driver().memory_info()?.0)))
+    Ok(need.saturating_sub(gpu.driver().memory_info()?.0))
 }
 
 /// No allocation to retry: give up `want` bytes in the same order. Returns regions evicted.
