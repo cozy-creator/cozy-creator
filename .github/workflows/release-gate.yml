@@ -2,9 +2,9 @@ name: release-gate
 # CI v2 release gate (tracker design ci-v2 §3): every selected first-party model runs for real on fresh rentals and is
 # held against the SKU's last PASS (release-gate/gate.sh, analyze.py). Release testing is manual (Paul 10-24): only the
 # release agent dispatches it, with the suites it chose for the candidate set, and its passing run id is what a
-# promotion requires (cozy-promote.yaml, tensorfs-publish.yaml, cozy-runtime runtime-publish.yaml, packages
-# `task promote`). No workflow calls it.
-#   gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f hub=prod -f suites=runtime,packages -f cozy=v0.12.0 -f runtime_wheel=https://…#sha256=… -f pins=…
+# promotion requires (release-gate/promote.sh). No workflow calls it. Packages run from source at `packages_ref`: nothing
+# untested is published (Paul 11-13); suite `publish` puts them through the Hub-publish path on a throwaway Hub.
+#   gh workflow run release-gate.yml -R cozy-creator/cozy-creator -f hub=prod -f suites=runtime,packages,publish -f cozy=v0.12.0 -f runtime_wheel=https://…#sha256=… -f packages_ref=<packages commit>
 # Every dispatch names its Hub (`hub`): `prod`, where real pods rent (Paul, 11-11: two Hubs, production and the laptop's), signed in
 # with the CI device key (environment release-gate, which only master, rc/*, tensorfs-v* and release/* may use), or `isolated`,
 # a verified test Hub (vars.COZY_TEST_HUB_URL). Synthetic publication always runs on its own disposable Hub (hub-fixture).
@@ -37,11 +37,11 @@ on:
         type: string
         default: ''
       packages_ref:
-        description: "A cozy-creator/packages commit whose package directories run in place of the published packages"
+        description: "A cozy-creator/packages commit whose packages run from source, with their Triton sets, in place of the published ones"
         type: string
         default: ''
-      pins:
-        description: "Exact package releases the cells run, name@release,… (a candidate is published and yanked)"
+      models:
+        description: "Held private model releases the set uses, org/name@version,…: the promotion makes them public"
         type: string
         default: ''
       skus:
@@ -96,7 +96,7 @@ on:
         description: "Caller's id, shown in the run name"
         type: string
         default: ''
-run-name: release-gate ${{ inputs.hub }} ${{ inputs.cozy }} ${{ inputs.runtime_wheel }} ${{ inputs.tensorfs_wheel }} ${{ inputs.packages_ref }} ${{ inputs.pins }} ${{ inputs.nonce }}
+run-name: release-gate ${{ inputs.hub }} ${{ inputs.cozy }} ${{ inputs.runtime_wheel }} ${{ inputs.tensorfs_wheel }} ${{ inputs.packages_ref }} ${{ inputs.nonce }}
 
 # Only the baseline job writes (contents: write).
 jobs:
@@ -107,6 +107,7 @@ jobs:
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
       hub_fixture: ${{ steps.select.outputs.hub_fixture }}
+      publish: ${{ steps.select.outputs.publish }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -120,6 +121,7 @@ jobs:
           GPUS: ${{ inputs.gpus }}
           DISK: ${{ inputs.disk }}
           CELLS: ${{ inputs.cells }}
+          PACKAGES_REF: ${{ inputs.packages_ref }}
         run: |
           # One job per SKU, running every chosen suite whose `skus` (`<sku> [disk GB] [gpus]` per line) names it;
           # `skus` gives every chosen suite those SKUs instead. key names the job's baseline, gate-<sku>-<key>.json.
@@ -149,13 +151,19 @@ jobs:
           [ -z "$DISK" ] || matrix=$(jq -c --argjson disk "$DISK" 'map(.disk = $disk)' <<< "$matrix")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           if jq -e 'any(.[]; (.suite | split(",") | index("hub")) != null)' <<< "$matrix" > /dev/null; then echo "hub_fixture=true" >> "$GITHUB_OUTPUT"; else echo "hub_fixture=false" >> "$GITHUB_OUTPUT"; fi
+          if [[ ,$SUITES, == *,publish,* ]]; then
+            [ -n "$PACKAGES_REF" ] || { echo "::error::suite publish publishes packages_ref's candidates: give packages_ref"; exit 1; }
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else echo "publish=false" >> "$GITHUB_OUTPUT"; fi
           echo "gates: $(jq -r 'map(.sku + " (" + .suite + ")") | join(", ")' <<< "$matrix")"
 
   # Publication tests have their own database, object store and development account.
   # This job receives no production device key and creates no production repositories.
+  # Suite publish (xs-194): packages_ref's candidates published to a throwaway Hub as the promotion publishes them, then
+  # installed and one function run from it (release-gate/suites/publish/run.sh).
   hub-fixture:
     needs: select
-    if: needs.select.outputs.hub_fixture == 'true'
+    if: needs.select.outputs.hub_fixture == 'true' || needs.select.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -179,11 +187,22 @@ jobs:
           go-version-file: tensorhub/go.mod
           cache-dependency-path: tensorhub/go.sum
       - uses: astral-sh/setup-uv@v7
+      - if: needs.select.outputs.publish == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/packages
+          ref: ${{ inputs.packages_ref }}
+          path: packages
+      - if: needs.select.outputs.publish == 'true'
+        uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ github.token }}
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/skew-tools
           key: skew-minio-RELEASE.2025-09-07T16-13-09Z
       - name: Prepare candidate CLI
+        id: prep
         env:
           GH_TOKEN: ${{ github.token }}
           COZY: ${{ inputs.cozy }}
@@ -219,6 +238,7 @@ jobs:
             printf '%s\n' "--$flag" "$value" >> "$RUNNER_TEMP/hub-fixture-args.txt"
           done
       - name: Isolated Hub publication checks
+        if: needs.select.outputs.hub_fixture == 'true'
         env:
           SKEW_TOOLS: ${{ runner.temp }}/skew-tools
         run: |
@@ -229,11 +249,31 @@ jobs:
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
           mapfile -t args < "$RUNNER_TEMP/hub-fixture-args.txt"
           bash creator/e2e/skew/run.sh --hub-src tensorhub --cozy-bin "$RUNNER_TEMP/cozy-candidate" --out "$RUNNER_TEMP/hub-fixture" "${args[@]}"
+      - name: Candidate packages through a throwaway Hub
+        if: ${{ !cancelled() && steps.prep.outcome == 'success' && needs.select.outputs.publish == 'true' }}
+        env:
+          SKEW_TOOLS: ${{ runner.temp }}/skew-tools
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$(id -un)"
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
+          export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          mapfile -t args < "$RUNNER_TEMP/hub-fixture-args.txt"
+          bash creator/e2e/skew/run.sh --hub-src tensorhub --cozy-bin "$RUNNER_TEMP/cozy-candidate" --admin --out "$RUNNER_TEMP/publish" "${args[@]}" \
+            --command creator/release-gate/suites/publish/run.sh -- "$GITHUB_WORKSPACE/packages" "$ONLY"
       - if: always()
         uses: ./creator/e2e/publish
         with:
           name: hub-fixture
           path: ${{ runner.temp }}/hub-fixture
+          retention-days: 14
+      - if: always() && needs.select.outputs.publish == 'true'
+        uses: ./creator/e2e/publish
+        with:
+          name: publish
+          path: ${{ runner.temp }}/publish
           retention-days: 14
 
   # Suite checkpoints (xs-183): every published checkpoint's headers against what its tool reads. No rental, signed out.
@@ -416,7 +456,7 @@ jobs:
           BENCHMARKS_DIR: ${{ github.workspace }}/benchmarks
           ESTABLISH: ${{ inputs.establish }}
           PACKAGES: ${{ inputs.packages_ref != '' && 'packages' || '' }}
-          PINS: ${{ inputs.pins }}
+          MODELS: ${{ inputs.models }}
           DISK: ${{ matrix.disk }}
           GPUS: ${{ matrix.gpus }}
           SEEDS: ${{ inputs.seeds }}
@@ -428,7 +468,7 @@ jobs:
           [ -z "$CELLS" ] || args+=(--cells "$PWD/creator/$CELLS")
           [ -z "$GROUP" ] || args+=(--group "$GROUP")
           [ -z "$CORPUS" ] || args+=(--corpus "$CORPUS")
-          [ -z "$PINS" ] || args+=(--pins "$PINS")
+          [ -z "$MODELS" ] || args+=(--models "$MODELS")
           [ -z "$PACKAGES" ] || args+=(--packages "$PACKAGES")
           [ "$ESTABLISH" != true ] || args+=(--establish)
           [ "$DISK" = 0 ] || args+=(--disk "$DISK")
