@@ -61,7 +61,8 @@ impl fmt::Display for User {
 /// The account whose TCP socket is `peer`, connected to `local` on this computer: a loopback connection's other end, by the
 /// kernel's word for it. Linux reads `/proc/net/tcp{,6}`, whose rows name each socket's owner; macOS asks libproc for the sockets
 /// of this account's processes, and Windows for the connection's owning process, then its token. None when nothing matches: the
-/// connection is gone, it's in another network namespace, or (macOS, Windows) its process is one this account may not inspect.
+/// connection is gone or closing (only an established socket counts: a closed one's row names root), it's in another network
+/// namespace, or (macOS, Windows) its process is one this account may not inspect.
 pub fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Option<User> {
     let (peer, local) = (canonical(peer), canonical(local));
     sys::tcp_peer_user(peer, local)
@@ -85,8 +86,9 @@ mod sys {
         for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
             let Ok(text) = std::fs::read_to_string(table) else { continue };
             for row in text.lines().skip(1) {
+                // sl local rem st queues timer retransmits uid timeout inode: established (01), with a live socket's inode.
                 let fields: Vec<&str> = row.split_whitespace().collect();
-                if fields.len() > 7 && address(fields[1]) == Some(peer) && address(fields[2]) == Some(local) {
+                if fields.len() > 9 && fields[3] == "01" && fields[9] != "0" && address(fields[1]) == Some(peer) && address(fields[2]) == Some(local) {
                     return fields[7].parse::<u32>().ok().map(|uid| User(uid.to_string()));
                 }
             }
@@ -128,6 +130,7 @@ mod sys {
     const PROC_UID_ONLY: u32 = 4;
     const PROC_PIDFDSOCKETINFO: c_int = 3;
     const SOCKINFO_TCP: c_int = 2;
+    const TSI_S_ESTABLISHED: c_int = 4;
     const INI_IPV4: u8 = 0x1;
     const INI_IPV6: u8 = 0x2;
 
@@ -287,8 +290,9 @@ mod sys {
                     continue;
                 }
                 // SAFETY: `soi_kind` says the union holds a `tcp_sockinfo`.
-                let ini = unsafe { info.psi.proto.tcp }.ini;
-                if address(ini.vflag, ini.laddr, ini.lport) == Some(peer) && address(ini.vflag, ini.faddr, ini.fport) == Some(local) {
+                let tcp = unsafe { info.psi.proto.tcp };
+                let ini = tcp.ini;
+                if tcp.state == TSI_S_ESTABLISHED && address(ini.vflag, ini.laddr, ini.lport) == Some(peer) && address(ini.vflag, ini.faddr, ini.fport) == Some(local) {
                     return Some(User(info.psi.stat.vst_uid.to_string()));
                 }
             }
@@ -317,6 +321,8 @@ mod sys {
 
     const AF_INET: u32 = 2;
     const AF_INET6: u32 = 23;
+    /// `MIB_TCP_STATE_ESTAB`.
+    const ESTABLISHED: u32 = 5;
 
     /// A port as the table holds it: network order, in a DWORD's low 16 bits.
     fn port(value: u32) -> u16 {
@@ -351,7 +357,7 @@ mod sys {
                     std::slice::from_raw_parts(ptr::addr_of!((*table).table).cast::<MIB_TCPROW_OWNER_PID>(), (*table).dwNumEntries as usize)
                 };
                 let v4 = |address: u32, at: u32| SocketAddr::from((Ipv4Addr::from(address.to_ne_bytes()), port(at)));
-                rows.iter().find(|row| v4(row.dwLocalAddr, row.dwLocalPort) == peer && v4(row.dwRemoteAddr, row.dwRemotePort) == local).map(|row| row.dwOwningPid)
+                rows.iter().find(|row| row.dwState == ESTABLISHED && v4(row.dwLocalAddr, row.dwLocalPort) == peer && v4(row.dwRemoteAddr, row.dwRemotePort) == local).map(|row| row.dwOwningPid)
             }
             (IpAddr::V6(_), IpAddr::V6(_)) => {
                 let buffer = table(AF_INET6)?;
@@ -361,16 +367,20 @@ mod sys {
                     std::slice::from_raw_parts(ptr::addr_of!((*table).table).cast::<MIB_TCP6ROW_OWNER_PID>(), (*table).dwNumEntries as usize)
                 };
                 let v6 = |address: [u8; 16], at: u32| SocketAddr::from((Ipv6Addr::from(address), port(at)));
-                rows.iter().find(|row| v6(row.ucLocalAddr, row.dwLocalPort) == peer && v6(row.ucRemoteAddr, row.dwRemotePort) == local).map(|row| row.dwOwningPid)
+                rows.iter().find(|row| row.dwState == ESTABLISHED && v6(row.ucLocalAddr, row.dwLocalPort) == peer && v6(row.ucRemoteAddr, row.dwRemotePort) == local).map(|row| row.dwOwningPid)
             }
             _ => None,
         }
     }
 
-    /// The owning process's token's user. Another account's process or token is closed to this one: none.
+    /// The owning process's token's user. Another account's process or token is closed to this one: none. The row is read again
+    /// once the process is open, whose handle holds its pid: a pid freed and reused between the two reads isn't this socket's.
     pub(super) fn tcp_peer_user(peer: SocketAddr, local: SocketAddr) -> Option<User> {
         let pid = owning_pid(peer, local)?;
         let process = crate::ipc::open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?;
+        if owning_pid(peer, local)? != pid {
+            return None;
+        }
         crate::ipc::token_user(std::os::windows::io::AsRawHandle::as_raw_handle(&process)).ok().map(User)
     }
 }

@@ -21,6 +21,8 @@ function check(name, ok, detail) {
 }
 
 const OTHER = 'cozy-access-other';
+const HMR = '/__cozy_hmr';
+const UPGRADE = { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Protocol': 'vite-hmr' };
 const REPO = resolve(__dirname, '../../..');
 const WEB = join(REPO, 'web/app');
 const CONFIG = join(homedir(), '.cozy/config.toml');
@@ -30,7 +32,7 @@ const restart = () => execFileSync('bash', ['-c', process.env.RESTART], { stdio:
 /** `curl` as `user` (this account when none): its status and error code. Headers come on stdin, so the bearer is in no argv. */
 function curl(path, headers = {}, user) {
   const lines = Object.entries(headers).map(([name, value]) => `${name}: ${value}`).join('\n');
-  const words = ['curl', '-sS', '-o', '-', '-w', '\n%{http_code}', '-H', '@-', `${calcifer()}${path}`];
+  const words = ['curl', '-sS', '--max-time', '5', '-o', '-', '-w', '\n%{http_code}', '-H', '@-', `${calcifer()}${path}`];
   const ran = user ? spawnSync('sudo', ['-n', '-u', user, '-H', ...words], { input: lines, encoding: 'utf8' }) : spawnSync(words[0], words.slice(1), { input: lines, encoding: 'utf8' });
   const text = ran.stdout ?? '';
   const status = Number(text.slice(text.lastIndexOf('\n') + 1));
@@ -241,6 +243,13 @@ async function devMode(context, base, project, token) {
     const api = await fetch('http://127.0.0.1:5173/v1/status').then(async (r) => ({ status: r.status, body: await r.text() }));
     check('dev_vite_answers_no_api', api.status === 404 && api.body.includes('development_api_in_calcifer'), api);
     mkdirSync(dirname(CONFIG), { recursive: true });
+    // `development_web` alone, with no `dev = true`, is ignored: the embedded page, and no hot reload socket.
+    writeFileSync(CONFIG, devConfig(original ?? '').replace(/^dev = true\n/, ''));
+    restart();
+    await until('Calcifer is back without dev mode', async () => curl('/v1/status', { Authorization: `Bearer ${holderToken()}` }).status, (status) => status === 200);
+    const embedded = curl('/');
+    const socket = curl(HMR, { ...UPGRADE, Origin: calcifer() });
+    check('dev_web_ignored_without_dev', embedded.status === 200 && !embedded.body.includes('/@vite/client') && socket.status !== 101, { page: embedded.status, vite: embedded.body.includes('/@vite/client'), socket: socket.status });
     writeFileSync(CONFIG, devConfig(original ?? ''));
     restart();
     await until('Calcifer is back in dev mode', async () => curl('/v1/status', { Authorization: `Bearer ${holderToken()}` }).status, (status) => status === 200);
@@ -266,6 +275,11 @@ async function devMode(context, base, project, token) {
         const got = curl(path, {}, OTHER);
         check(`dev_other_account_refused_${path}`, got.status === 403 && got.code === 'other_user', got);
       }
+      // The hot reload socket as another account, with Calcifer's own Origin: refused; as this one, it opens.
+      const theirs = curl(HMR, { ...UPGRADE, Origin: calcifer() }, OTHER);
+      check('dev_other_account_hmr_refused', theirs.status === 403 && theirs.code === 'other_user', theirs);
+      const ours = curl(HMR, { ...UPGRADE, Origin: calcifer() });
+      check('dev_own_hmr_upgrades', ours.status === 101, ours.status);
     }
     const lock = curl(`/@fs${homedir()}/.cozy/calcifer/calcifer.lock.holder`, { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'no-cors' });
     check('dev_lock_record_not_served', !lock.body.includes(token) && !lock.body.includes(holderToken()), lock.status);

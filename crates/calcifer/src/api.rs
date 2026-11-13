@@ -395,6 +395,7 @@ async fn guard(
     next: Next,
 ) -> Response {
     let refused = crate::loopback::refusal(&peer, request.headers());
+    let api_route = request.uri().path().starts_with("/v1/");
     let mut response = match refused {
         Some(refusal) => {
             warn!(
@@ -416,6 +417,18 @@ async fn guard(
         }
     };
     let headers = response.headers_mut();
+    // Nothing under /v1 is a page: whatever it holds (a package's preview, a file of a project) can run no script on this origin,
+    // even opened as a URL.
+    if api_route {
+        let policy = match headers.get(header::CONTENT_SECURITY_POLICY).and_then(|policy| policy.to_str().ok()) {
+            Some(policy) if !policy.split(';').any(|directive| directive.trim() == "sandbox") => HeaderValue::from_str(&format!("{policy}; sandbox")).ok(),
+            Some(_) => None,
+            None => Some(HeaderValue::from_static("sandbox")),
+        };
+        if let Some(policy) = policy {
+            headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+        }
+    }
     headers.entry(header::CACHE_CONTROL).or_insert(HeaderValue::from_static("no-store"));
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -445,8 +458,8 @@ pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
 
 async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>, mut request: Request, next: Next) -> Response {
     // Calcifer's own account, then its own page or this computer's cozy (`loopback::admitted`).
-    let (method, headers) = (request.method(), request.headers());
-    let (principal, client) = match crate::loopback::admitted(&api, &peer, method, headers).await {
+    let (method, path, headers) = (request.method(), request.uri().path(), request.headers());
+    let (principal, client) = match crate::loopback::admitted(&api, &peer, method, path, headers).await {
         Ok(admitted) => admitted,
         Err(refusal) => {
             warn!(code = refusal.0.code, "refused {} {}", request.method(), request.uri().path());

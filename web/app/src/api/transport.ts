@@ -32,6 +32,10 @@ class Refused extends Error {
   }
 }
 
+/** An answer as Calcifer gives a refusal, made here. */
+const refusal = (status: number, kind: string, code: string, message: string) =>
+  new Response(JSON.stringify({ error: { kind, code, message, next: ["reload"] } }), { status, headers: { "Content-Type": "application/json" } })
+
 export function sameOrigin(): Transport {
   const resolve = (path: string) => {
     const url = new URL(path, location.origin)
@@ -63,6 +67,11 @@ export function sameOrigin(): Transport {
   // written as the page goes leaves at once (`keepalive`). An unreachable Calcifer is asked again.
   let proven = false
   const unproven = () => !proven
+  // The Calcifer this page first proved: its account and its process. Another account answering is refused; another process (a
+  // restart, or a program that took the port while Calcifer was down) keeps the tab working, but gets no passphrase until the page
+  // is reloaded (design/calcifer-access.md).
+  let pinned: { principal: string; birth: string } | null = null
+  let restarted = false
   const storage = async (signal?: AbortSignal | null) => {
     if (proven) return
     const response = await fetch(resolve("/v1/project-storage"), { signal, cache: "no-store", headers: { [PROJECT_STORAGE_HEADER]: PROJECT_STORAGE_VERSION } })
@@ -71,8 +80,13 @@ export function sameOrigin(): Transport {
     if (capability?.version !== 3 || typeof capability?.daemon_birth !== "string" || !String(capability?.principal ?? "").startsWith("user:")) {
       throw new Error("Calcifer cannot prove project storage protocol 3 for this page")
     }
+    pinned ??= { principal: capability.principal, birth: capability.daemon_birth }
+    if (capability.principal !== pinned.principal) throw new Refused(refusal(403, "forbidden", "other_user", "Another account answers at this page's address"))
+    if (capability.daemon_birth !== pinned.birth) restarted = true
     proven = true
   }
+  // What carries a passphrase or a recovery secret: an encrypted project's creation, a vault unlock or recovery.
+  const secret = (body: RequestInit["body"]) => typeof body === "string" && /"(passphrase|recovery_secret)"\s*:\s*"/.test(body)
   const needsStorage = (path: string) => ["/v1/projects", "/v1/project-", "/v1/runs", "/v1/run-", "/v1/plans", "/v1/tools", "/v1/events"].some((prefix) => path.startsWith(prefix))
   return {
     channel: false,
@@ -90,6 +104,9 @@ export function sameOrigin(): Transport {
       const signal = project ? (init.signal ? AbortSignal.any([init.signal, project.signal]) : project.signal) : init.signal
       if (needsStorage(path) && unproven()) {
         try { await storage(signal) } catch (error) { if (error instanceof Refused) return error.response; throw error }
+      }
+      if (restarted && secret(init.body)) {
+        return refusal(409, "conflict", "calcifer_restarted", "Calcifer restarted since this page opened: reload the page before entering a passphrase")
       }
       project?.check()
       const headers = new Headers(init.headers)

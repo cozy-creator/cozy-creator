@@ -1,6 +1,7 @@
 //! The app's page (`web/app`), embedded by `build.rs`, on Calcifer's own port. It holds no secret, so it's below the
 //! guard and outside `admit`. Client routes serve the same page so direct navigation and reload work.
 mod development;
+pub(crate) use development::HMR_PATH;
 use std::sync::Arc;
 
 use axum::{

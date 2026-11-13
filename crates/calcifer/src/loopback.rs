@@ -4,7 +4,11 @@
 //! `/v1` then needs a browser's word that the request is Calcifer's own page's (`Sec-Fetch-Site: same-origin`, or `none` on a
 //! navigation) or, from anything that isn't a browser, the bearer in the 0600 lock record. GETs change nothing, so a navigation can
 //! only read. The page's own files need only the Host: they hold no secret, and go out with `frame-ancestors 'none'`.
-use std::{fmt, net::SocketAddr, sync::Arc};
+use std::{
+    fmt,
+    net::SocketAddr,
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
+};
 
 use axum::{
     extract::connect_info::Connected,
@@ -17,8 +21,8 @@ use tokio::{net::TcpListener, sync::OnceCell};
 
 use crate::api::{Api, Refusal, bearer, refuse};
 
-/// Who's at the other end of a connection: its address, the listener it reached, and its OS account, asked of the kernel once, when
-/// a request first needs it.
+/// Who's at the other end of a connection: its address, the listener it reached, and its OS account, asked of the kernel as the
+/// connection is accepted (off the accept loop) and kept for its life.
 #[derive(Clone, Debug)]
 pub(crate) struct Peer {
     pub(crate) addr: SocketAddr,
@@ -28,7 +32,10 @@ pub(crate) struct Peer {
 
 impl Connected<IncomingStream<'_, TcpListener>> for Peer {
     fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
-        Peer { addr: *stream.remote_addr(), local: stream.io().local_addr().ok(), user: Arc::default() }
+        let peer = Peer { addr: *stream.remote_addr(), local: stream.io().local_addr().ok(), user: Arc::default() };
+        let asking = peer.clone();
+        tokio::spawn(async move { asking.user().await; });
+        peer
     }
 }
 
@@ -42,6 +49,10 @@ impl Peer {
         found.await.as_ref()
     }
 }
+
+/// Whether `localhost` is Calcifer's: it holds `[::1]` on its port as well as 127.0.0.1, so no other account can take ::1 there
+/// and answer `localhost` (browsers try ::1 first). Where ::1 can't be had, only `127.0.0.1` names Calcifer.
+pub(crate) static LOCALHOST: AtomicBool = AtomicBool::new(false);
 
 /// Who a request acts as: the OS account Calcifer runs as, verified for its connection. A public key, for remote access (cl-986).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,12 +91,13 @@ fn websocket(headers: &HeaderMap) -> bool {
     text(headers, header::UPGRADE).is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
 }
 
-/// The listener's own names, `127.0.0.1:<port>` and `localhost:<port>` (`[::1]:<port>` on IPv6): the only `Host` a request may name.
-/// A rebinding page's `Host` is its own name, and one that names another port isn't this Calcifer.
+/// The listener's own names, `127.0.0.1:<port>` (`[::1]:<port>` on IPv6) and, where Calcifer holds both, `localhost:<port>`: the only
+/// `Host` a request may name. A rebinding page's `Host` is its own name, and one that names another port isn't this Calcifer.
 fn own_host(host: &str, local: Option<SocketAddr>) -> bool {
     let Some(local) = local else { return false };
-    let names: &[&str] = if local.is_ipv6() { &["[::1]", "localhost"] } else { &["127.0.0.1", "localhost"] };
-    names.iter().any(|name| host == format!("{name}:{}", local.port()))
+    let address = if local.is_ipv6() { "[::1]" } else { "127.0.0.1" };
+    let port = local.port();
+    host == format!("{address}:{port}") || (LOCALHOST.load(Ordering::Relaxed) && host == format!("localhost:{port}"))
 }
 
 /// Every request's checks: a loopback peer, this listener's `Host`, and an `Origin` that is that Host's (required on a WebSocket).
@@ -120,10 +132,11 @@ pub(crate) async fn own_user(peer: &Peer) -> Result<Principal, Refusal> {
 
 /// What a browser says of where its request came from (`Sec-Fetch-Site`): no other site's page can say `same-origin`. Another port
 /// of this computer is `same-site`, refused; `none` counts only on a GET navigation, as extensions say it too. With no
-/// `Sec-Fetch-Site`, it's no browser: None. A WebSocket's exact `Origin` (`refusal`) is a browser's word too, for one that sends no
-/// `Sec-Fetch-Site` on an upgrade.
-fn browser(method: &Method, headers: &HeaderMap) -> Option<Option<Client>> {
-    let Some(site) = text(headers, "sec-fetch-site") else { return websocket(headers).then_some(Some(Client::Page)) };
+/// `Sec-Fetch-Site`, it's no browser: None. The hot reload socket's exact `Origin` (`refusal`) is a browser's word too, for one that
+/// sends no `Sec-Fetch-Site` on an upgrade: a GET of that one path alone.
+fn browser(method: &Method, path: &str, headers: &HeaderMap) -> Option<Option<Client>> {
+    let hot_reload = *method == Method::GET && path == crate::page::HMR_PATH && websocket(headers);
+    let Some(site) = text(headers, "sec-fetch-site") else { return hot_reload.then_some(Some(Client::Page)) };
     Some(match site {
         "same-origin" => Some(Client::Page),
         "none" if *method == Method::GET && text(headers, "sec-fetch-mode") == Some("navigate") => Some(Client::Navigation),
@@ -132,9 +145,9 @@ fn browser(method: &Method, headers: &HeaderMap) -> Option<Option<Client>> {
 }
 
 /// `/v1`'s rule: Calcifer's account, then its own page (or a URL opened) or this computer's cozy with the bearer.
-pub(crate) async fn admitted(api: &Api, peer: &Peer, method: &Method, headers: &HeaderMap) -> Result<(Principal, Client), Refusal> {
+pub(crate) async fn admitted(api: &Api, peer: &Peer, method: &Method, path: &str, headers: &HeaderMap) -> Result<(Principal, Client), Refusal> {
     let principal = own_user(peer).await?;
-    let (code, said) = match (browser(method, headers), bearer(headers)) {
+    let (code, said) = match (browser(method, path, headers), bearer(headers)) {
         (Some(None), _) => ("not_own_page", "Calcifer answers its own page only, not another site's, another port's or an extension's"),
         (_, Some(token)) if !api.admits(token) => ("unauthenticated", "this isn't the bearer in Calcifer's lock record"),
         (Some(Some(client)), _) => return Ok((principal, client)),
