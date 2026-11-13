@@ -4,7 +4,7 @@
 // drawn at the canvas's scale, cl-890); a prompt over a picture is bold, 4.5:1 or more against its surface (cl-901). A render's Cancel shows at
 // 1 and at 0.5, and the Focus frame fits the window. Each finding names its rule, where, and what (layout.js's rules, measured).
 const { randomUUID } = require('crypto');
-const { test, expect, box, canvasIdle, focus, fixtureTool, MP4, png } = require('./fixtures');
+const { test, expect, box, canvasIdle, focus, fixtureTool, observeStill, MP4, png } = require('./fixtures');
 
 test.use({
   launchOptions: {
@@ -208,6 +208,8 @@ test('layout', async ({ page, project, api }) => {
       await region.getByRole('button', { name: 'Edit image', exact: true }).click();
       const prompt = region.locator('.in-frame .mention-text').first();
       await expect(prompt).toBeVisible();
+      // Edit fits the frame again as it opens its words: looked at once they're at rest.
+      await expect.poll(() => observeStill(page, 300, '.focus-viewport .in-frame .mention-text'), { message: 'the words at rest' }).toEqual([]);
       await page.mouse.move(2, 500);
       await looked('busy in Focus, written over its picture', true);
       const drawn = await prompt.evaluate(legibility);
