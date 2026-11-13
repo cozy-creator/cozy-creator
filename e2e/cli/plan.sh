@@ -80,6 +80,37 @@ went=$(plan_machine near)
 [ "$went" = local ] || check "plan: near, whose weights only local holds, went to ${went:-nowhere}"
 }
 
+# plan_published (phase b2): each job of a published tool is planned, and its line says where it goes (GPU session 43352204256: the
+# second and third shots of one weren't, and went to the first of their machines saying nothing). BiRefNet, as its isolated Hub
+# publishes it, cuts out three stills: twice on stand-w, then on local or stand-w. Each cut's job has a `<key> goes to <machine>:` line
+# in Calcifer's log, and none a line saying it `isn't planned`.
+plan_published() {
+step "plan (cl-967): each job of a published tool is planned, and says where it goes"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
+local P=$OUT/plan tool=$here/project/weighted.py/weighted r=$RANDOM at on key keys=()
+jq -n --arg t "$tool" --arg r "$r" '[range(1; 4) as $i | (
+  {name: "still_\($i)", tool: $t, kind: "image", fields: {instructions: "Still \($i), \($r).", seconds: 0}},
+  {name: "cut_\($i)", tool: "birefnet/remove_background", kind: "image", fields: {image: "<still_\($i)>"}})]' | boxes_in "$P" || return
+for at in 1 2 3; do
+  on='["stand-w"]'; [ "$at" != 3 ] || on='["local","stand-w"]'
+  coming_go "cut_$at" "$on"
+  coming_done "cut_$at" 900
+  key=$(status "$P" | jq -r --arg a "cut_$at" '[.board.jobs[]? | select(.asset == $a) | .id // empty] | last // empty')
+  [ -n "$key" ] || { check "plan: cut_$at has no job on the board"; return; }
+  keys+=("$key")
+done
+cozy machine logs local calcifer --lines 20000 > "$OUT/plan-published.log" 2>&1 || { check "plan: machine logs local calcifer"; return; }
+grep -E "goes to [a-z0-9-]+: |isn't planned: " "$OUT/plan-published.log" | sed 's/^/plan: /'
+for at in 1 2 3; do
+  key=${keys[$((at - 1))]}
+  ! grep -qF "$key isn't planned: " "$OUT/plan-published.log" || check "plan: cut_$at wasn't planned: $(grep -F "$key isn't planned: " "$OUT/plan-published.log" | head -1)"
+  case $at in
+    3) grep -qF "$key goes to " "$OUT/plan-published.log" || check "plan: cut_$at ($key) has no line saying where its plan sent it" ;;
+    *) grep -qF "$key goes to stand-w: " "$OUT/plan-published.log" || check "plan: cut_$at ($key), on stand-w alone, has no line planning it there" ;;
+  esac
+done
+}
+
 # prepare_ahead (phase c): BiRefNet, as its Hub publishes it, on a still that takes 4 min, can't start before it: unstarted work,
 # planned where BiRefNet's weights are. stand-v, a new stand-in that holds nothing, has nothing planned and runs nothing, is told to
 # prepare its function with no job (`PUT /v1/prepare`): it installs BiRefNet's environment and holds its weights while that box

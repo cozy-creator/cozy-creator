@@ -972,6 +972,8 @@ struct Walker {
     foreseen: HashMap<String, Option<On>>,
     /// Where each job whose turn is next goes, by its key, as the last plan placed it (cl-967), with its other machines' offers.
     placed: HashMap<String, Placed>,
+    /// Why the last plan placed no machine for each job whose turn is next, by its key, as its line said.
+    unplanned: HashMap<String, String>,
     /// What each job not sent asks of a machine, by its key, once its package and its models' cards said.
     quotables: HashMap<String, placement::Job>,
     /// Each job's planned start and the machines that can run it, by its key, as the last plan said.
@@ -3033,6 +3035,14 @@ const PLACED_AGAIN: u32 = 3;
 /// How long a job's package may take to say what it calls, and its models' cards what they weigh, before its machines are asked without.
 const QUOTE_LATE: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Why the plan placed no machine for ready job `key`, said when that changes: it goes to the first of its machines that takes it.
+fn unplanned(walker: &mut Walker, dir: &str, key: &str, why: String) {
+    if walker.unplanned.get(key) != Some(&why) {
+        warn!("{dir}: {key} isn't planned: {why}; it goes to the first of its machines that takes it");
+        walker.unplanned.insert(key.to_owned(), why);
+    }
+}
+
 /// Something a walker started came to its end.
 enum Done {
     Sent { id: usize, key: String, ask: Arc<Ask>, name: String, kind: String, inputs: Option<String>, result: Result<(), Error> },
@@ -3588,26 +3598,34 @@ impl Walk {
         Ok(Some((item, package.name.clone() + "/" + &renderer.function)))
     }
 
-    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices. None when its package doesn't say in
-    /// time what it calls.
-    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Option<placement::Job> {
+    /// Job `key` as its machines quote it: the function its tool names, with `made`'s choices; else why not. `late`: how long its package
+    /// may take to say what it calls, and its models' cards what they weigh (none: as long as they take).
+    async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Result<placement::Job, String> {
         let api = self.host.api();
-        let late = late.unwrap_or(std::time::Duration::MAX);
-        let found = tokio::time::timeout(late, self.host.package(hub, with, &self.folder().dir, &on)).await;
-        let package = found.ok()?.ok()?;
-        let renderer = package.maker().ok()??;
-        let models = tokio::time::timeout(late, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
+        let limit = late.unwrap_or(std::time::Duration::MAX);
+        let package = match tokio::time::timeout(limit, self.host.package(hub, with, &self.folder().dir, &on)).await {
+            Err(_) => return Err(format!("{with} didn't say within {} s what it calls", limit.as_secs())),
+            Ok(Err(e)) => return Err(format!("{with}: {}", e.message)),
+            Ok(Ok(package)) => package,
+        };
+        let renderer = match package.maker() {
+            Ok(Some(renderer)) => renderer,
+            Ok(None) => return Err(format!("{with} names no function")),
+            Err(e) => return Err(format!("{with}: {}", e.message)),
+        };
+        let models = tokio::time::timeout(limit, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
         let size = v1::JobSize::of(&Value::Object(made));
         let gpu = api::interface::Interface::parse(package.document()).ok().is_some_and(|interface| {
             interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
         });
-        Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
+        Ok(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
     }
 
     /// Places the jobs not sent yet, the nearest `plan::PLANNED` of them (cl-967): every machine pictured from the Status it pushed, each
     /// job beginning once what it reads ends, ahead of it on each machine the runs sent there that it hasn't accepted yet. A ready job's
-    /// place is where it goes at its turn; one waiting for another's output, where its weights are fetched ahead. A job whose package
-    /// doesn't say in time what it calls isn't placed: it goes to the first of its machines. `update`: as `placement::pictures`.
+    /// place is where it goes at its turn; one waiting for another's output, where its weights are fetched ahead. A ready job waits for its
+    /// package to say what it calls (its send would anyway); one waiting, `QUOTE_LATE` at most. Each ready job's line says where it goes
+    /// and why, or why no machine was planned: then it goes to the first of its machines that takes it. `update`: as `placement::pictures`.
     async fn plan(&self, update: bool) {
         let Ok(walk) = self.folder().walk_now() else { return };
         let dir = self.folder().dir.display().to_string();
@@ -3642,13 +3660,20 @@ impl Walk {
         }
         // What each asks of a machine, read once.
         let known: HashSet<String> = self.project.walker.lock().expect("walker lock").quotables.keys().cloned().collect();
-        let read = unsent.iter().filter(|unsent| !known.contains(&unsent.key)).map(|unsent| {
-            self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), Some(QUOTE_LATE))
+        let read = unsent.iter().filter(|unsent| !known.contains(&unsent.key)).map(|unsent| async move {
+            let late = (!unsent.ready).then_some(QUOTE_LATE);
+            (unsent.key.clone(), self.quotable(unsent.key.clone(), vec![], &unsent.target.hub, &unsent.with, unsent.made.clone(), late).await)
         });
-        let read: Vec<placement::Job> = futures_util::future::join_all(read).await.into_iter().flatten().collect();
+        let mut unread: HashMap<String, String> = HashMap::new();
         let quotables = {
+            let read = futures_util::future::join_all(read).await;
             let mut walker = self.project.walker.lock().expect("walker lock");
-            read.into_iter().for_each(|job| drop(walker.quotables.insert(job.key.clone(), job)));
+            for (key, quotable) in read {
+                match quotable {
+                    Ok(job) => drop(walker.quotables.insert(key, job)),
+                    Err(why) => drop(unread.insert(key, why)),
+                }
+            }
             let pending: HashSet<&str> = walk.pending.iter().map(|(key, pending)| pending.job_of(key)).collect();
             walker.quotables.retain(|key, _| pending.contains(key.as_str()) || unsent.iter().any(|unsent| unsent.key == *key));
             walker.quotables.clone()
@@ -3718,6 +3743,13 @@ impl Walk {
                 walker.placed.remove(&unsent.key);
                 walker.foreseen.remove(&unsent.key);
                 walker.starts.remove(&unsent.key);
+                if unsent.ready {
+                    let why = match placement.offers.is_empty() {
+                        true => "none of its machines answered".to_owned(),
+                        false => placement.offers.iter().map(|offer| placement::said(offer, now)).collect::<Vec<_>>().join("; "),
+                    };
+                    unplanned(&mut walker, &dir, &unsent.key, why);
+                }
                 continue;
             };
             let fits = placement.offers.iter().filter(|offer| offer.fits).map(|offer| offer.machine.to_string()).collect();
@@ -3731,9 +3763,17 @@ impl Walk {
                 let quoted: Vec<String> = placement.offers.iter().map(|offer| placement::said(offer, now)).collect();
                 info!("{dir}: {} goes to {}: {}", unsent.key, chosen.machine, quoted.join("; "));
             }
+            walker.unplanned.remove(&unsent.key);
             walker.placed.insert(unsent.key.clone(), Placed { offers: placement.offers, soonest: chosen });
         }
+        for unsent in unsent.iter().filter(|unsent| unsent.ready) {
+            if let Some(why) = unread.remove(&unsent.key) {
+                walker.placed.remove(&unsent.key);
+                unplanned(&mut walker, &dir, &unsent.key, why);
+            }
+        }
         walker.placed.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
+        walker.unplanned.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.foreseen.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.starts.retain(|key, _| unsent.iter().any(|unsent| unsent.key == *key));
         walker.items.retain(|(_, key), _| unsent.iter().any(|unsent| unsent.key == *key));
