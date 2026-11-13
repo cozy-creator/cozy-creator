@@ -273,25 +273,21 @@ const test = base.extend({
   guards: async ({}, use) => {
     const said = [];
     const allowed = [];
-    // A HEAD answered 404 is the API's "not held" (an upload asking whether its file is there), which Chrome logs as a failed load.
-    const unheld = new Set();
-    const say = (line, url) => { if (!allowed.some((re) => re.test(line))) said.push({ line, url }); };
+    const say = (line) => { if (!allowed.some((re) => re.test(line))) said.push(line); };
     await use({
       allow: (...patterns) => { allowed.push(...patterns); },
       async watch(context) {
         await context.exposeBinding('__cozyGuard', (_, line) => say(line));
         await context.addInitScript(guardPage);
-        context.on('response', (answer) => { if (answer.status() === 404 && answer.request().method() === 'HEAD') unheld.add(answer.url()); });
         const watch = (page) => {
           page.on('pageerror', (error) => say(`page error: ${error.message}`));
-          page.on('console', (message) => { if (message.type() === 'error') say(`console error: ${message.text()} ${message.location().url}`, message.location().url); });
+          page.on('console', (message) => { if (message.type() === 'error') say(`console error: ${message.text()} ${message.location().url}`); });
         };
         context.pages().forEach(watch);
         context.on('page', watch);
       },
     });
-    const errors = said.filter(({ line, url }) => !(unheld.has(url) && /status of 404\b/.test(line))).map(({ line }) => line);
-    expect(errors, 'page errors, console errors, CSP violations and modals').toEqual([]);
+    expect(said, 'page errors, console errors, CSP violations and modals').toEqual([]);
   },
 
   context: async ({ context, guards }, use) => {
