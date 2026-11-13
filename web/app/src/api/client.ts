@@ -198,6 +198,8 @@ export class Client {
   allowProject(id: string) { this.transport.allowProject(id) }
   freezeWrites() { this.frozen = true }
   resumeWrites() { this.frozen = false }
+  /** Writes sent and not yet answered. */
+  unsentWrites() { return this.writes }
   async savedWrites() {
     while (this.writes) await new Promise<void>((done) => this.settledWrites.add(done))
   }

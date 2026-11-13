@@ -83,7 +83,12 @@ async fn held(ctx: &Context, on: Option<&On>) -> Result<Vec<HeldPackage>, Error>
         };
     }
     let path = format!("{}/packages", route(&machine.name.to_ascii_lowercase())?);
-    let held: MachinePackages = calcifer.get_query(&path, &[("fresh", "true"), ("hub", ctx.hub().as_str())]).await?;
+    let mut query = vec![("fresh", "true".to_owned()), ("hub", ctx.hub().to_string())];
+    // Inside a project, what its own runs installed there too (a project's local code is its own).
+    if let Ok(project) = crate::project::identity(ctx).await {
+        query.push(("project", project.id));
+    }
+    let held: MachinePackages = calcifer.get_query(&path, &query).await?;
     Ok(held.packages)
 }
 

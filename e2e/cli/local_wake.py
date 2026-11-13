@@ -168,16 +168,17 @@ class Proof:
         if reply.status not in (200, 202):
             return "refused", reply.error(), 0, None
         run = row(row(reply.body).get("run"))
-        number = run.get("number")
-        if not isinstance(number, int) or number == 0:
+        number, identity = run.get("number"), run.get("id")
+        if not isinstance(number, int) or number == 0 or not isinstance(identity, str):
             raise ValueError("the File software update did not create a real run")
-        watched = self.command(label, ["--json", "--full", "run", "watch", str(number)])
+        # Calcifer's own run, watched by its id: a number in this project's folder names the project's own run.
+        watched = self.command(label, ["--json", "--full", "run", "watch", identity])
         for line in watched.stdout.splitlines():
             if not line.startswith("{"):
                 continue
             event = row(cast(Json, json.loads(line)))
             candidate = event.get("run", event)
-            if isinstance(candidate, dict) and candidate.get("number") == number:
+            if isinstance(candidate, dict) and candidate.get("id") == identity:
                 run = candidate
         if run.get("kind") != "update":
             raise ValueError("the followed request was not a software update")

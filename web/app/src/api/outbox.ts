@@ -107,6 +107,8 @@ export class Outbox {
   }
 
   freeze() { this.frozen = true; this.closeRefused = false }
+  /** Edits not yet sent: queued, and files on their way. */
+  unsent() { return this.queue.length + this.outside }
   resume() { this.frozen = false }
   async saved(): Promise<void> {
     while (this.owed.get().count) {

@@ -371,6 +371,21 @@ impl OwnedBrowser {
         Ok(PreparedBrowserClose { owner: self.live.clone(), live: Some(held), pages })
     }
 
+    /// Best effort, for a lock that cannot wait: how many edits the owned browser's pages have not sent (none without one).
+    pub(crate) async fn unsent(&self) -> Option<u64> {
+        let mut held = self.live.clone().try_lock_owned().ok()?;
+        let Some(live) = held.as_mut() else { return Some(0) };
+        let targets = live.pipe.call("Target.getTargets", json!({}), None).await.ok()?;
+        let mut count = 0;
+        for target in targets["targetInfos"].as_array()? {
+            if target["type"] != "page" || target["url"] == "about:blank" { continue; }
+            let attached = live.pipe.call("Target.attachToTarget", json!({ "targetId": target["targetId"].as_str()?, "flatten": true }), None).await.ok()?;
+            let answer = live.pipe.call("Runtime.evaluate", json!({ "expression": "globalThis.__cozyUnsent?.() ?? 0", "returnByValue": true }), attached["sessionId"].as_str()).await.ok()?;
+            count += answer["result"]["value"].as_u64()?;
+        }
+        Some(count)
+    }
+
     async fn evaluate(live: &mut Live, page: &str, expression: &str) -> Result<(), Refusal> {
         let result = live.pipe.call("Runtime.evaluate", json!({ "expression": expression, "awaitPromise": true, "returnByValue": true }), Some(page)).await.map_err(|_| busy())?;
         if result.get("exceptionDetails").is_some() || result["result"]["value"] != true { return Err(busy()); }
