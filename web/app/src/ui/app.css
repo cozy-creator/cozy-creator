@@ -683,6 +683,15 @@ code {
   outline-offset: calc(-6px * var(--unzoom, 1));
   box-shadow: 0 0 calc(24px * var(--unzoom, 1)) calc(10px * var(--unzoom, 1)) var(--select-glow);
 }
+/* A picture's pixels are drawn over its outline: the ring is drawn again over them. */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node.selected .media::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  border: calc(6px * var(--unzoom, 1)) solid var(--select);
+  pointer-events: none;
+}
 .media.alpha {
   background-color: var(--check);
   background-image: conic-gradient(var(--check2) 25%, transparent 25% 50%, var(--check2) 50% 75%, transparent 75%);
