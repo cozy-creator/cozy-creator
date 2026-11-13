@@ -217,8 +217,16 @@ impl Time {
 }
 
 /// From its newest runs' compute on the machine (`runs`, newest first) at `size`, else the caller's `prior_ms`; and the median load
-/// of those that loaded. Until two widths ran there it scales as `known` says (a `KNOWN` speed-up), else as `Scaling::PRIOR`.
-pub fn time(runs: &[TimedRun], size: &JobSize, prior_ms: f64, known: Option<Scaling>) -> Time {
+/// of those that loaded. Until two widths ran there it scales as `known` says (a `KNOWN` speed-up), else as `Scaling::PRIOR`. `warm`:
+/// the machine holds its model with its plan compiled, so its warm runs time it; else its cold one (its first call there, its plan
+/// compiling). With only one kind, that one: a cold time alone is the conservative quote.
+pub fn time(runs: &[TimedRun], size: &JobSize, prior_ms: f64, known: Option<Scaling>, warm: bool) -> Time {
+    let (cold, hot): (Vec<TimedRun>, Vec<TimedRun>) = runs.iter().cloned().partition(|run| run.cold);
+    let runs: &[TimedRun] = match (warm, hot.is_empty(), cold.is_empty()) {
+        (true, false, _) => &hot,
+        (false, _, false) => &cold,
+        _ => runs,
+    };
     let prior = known.unwrap_or(Scaling::PRIOR);
     if runs.is_empty() {
         return match prior_ms > 0.0 {
@@ -319,11 +327,11 @@ impl Machine {
     /// `function` timed here, scaling as `KNOWN` says for this card and link until two widths ran here; and of `widths`, those it
     /// may run at: one GPU, and a wider one only once timed faster than one GPU here or known faster here (cr-268: never wider than
     /// proven). A count asked for (one width) passes as it is.
-    pub fn timed(&self, function: &str, size: &JobSize, prior_ms: f64, widths: Vec<u32>) -> (Time, Vec<u32>) {
+    pub fn timed(&self, function: &str, size: &JobSize, prior_ms: f64, widths: Vec<u32>, warm: bool) -> (Time, Vec<u32>) {
         let known = known(function, &self.card, self.nvlink);
         let scaling = known.iter().max_by_key(|(width, _)| *width).map(|(width, speedup)| Scaling::of((1, *speedup), (*width, 1.0)));
         let runs = self.times.get(function).map_or(&[][..], Vec::as_slice);
-        let time = time(runs, size, prior_ms, scaling);
+        let time = time(runs, size, prior_ms, scaling, warm);
         let widths = match widths.len() {
             0 | 1 => widths,
             _ => widths.into_iter().filter(|width| *width == 1 || time.faster.contains(width) || known.iter().any(|(w, _)| w == width)).collect(),
@@ -335,9 +343,12 @@ impl Machine {
     /// roots ahead of it.
     pub fn queue(&self, queue: &[Queued]) -> (Vec<Job>, Line) {
         let mut line = Line::default();
+        // A root after another of its function here runs warm.
+        let mut seen: HashSet<&str> = HashSet::new();
         let jobs = (queue.iter())
             .map(|root| {
-                let (time, widths) = self.timed(&root.function, &root.size, 0.0, root.widths.clone());
+                let warm = !root.function.is_empty() && !seen.insert(&root.function);
+                let (time, widths) = self.timed(&root.function, &root.size, 0.0, root.widths.clone(), warm);
                 let mut job = Job { widths, one_ms: time.one_ms, scaling: time.scaling, ready_ms: 0.0, running: None };
                 match (root.running, root.width) {
                     (false, _) => job.ready_ms = line.fetch(&root.models, root.bytes_left, self.link, 0.0),
@@ -399,6 +410,16 @@ fn absent(frame: &StatusFrame, model: &v1::ModelRef) -> u64 {
     }
 }
 
+/// Whether an idle executor of `frame` holds any of `models` loaded: their function's plan compiled there, its model warm.
+fn warm_there(frame: &StatusFrame, models: &[v1::ModelRef]) -> bool {
+    let header = |model: &v1::ModelRef| {
+        let held = frame.models.iter().flat_map(|m| &m.checkpoints).find(|c| c.tree == model.checkpoint || c.manifest == model.checkpoint);
+        held.map_or(model.checkpoint.clone(), |c| c.manifest.clone())
+    };
+    let loaded: HashSet<&String> = frame.resident.iter().flat_map(|r| &r.checkpoints).collect();
+    models.iter().any(|model| loaded.contains(&header(model)))
+}
+
 /// Whether an idle executor of `frame` holds every one of `models` loaded: a job of them loads nothing.
 fn resident(frame: &StatusFrame, models: &[v1::ModelRef]) -> bool {
     let header = |model: &v1::ModelRef| {
@@ -445,8 +466,11 @@ pub fn quote(frame: &StatusFrame, now_ms: i64, jobs: &[EstimateJob]) -> Vec<Quot
             (0, Some(held)) => held.widths.iter().map(|width| (*width).min(machine.gpus as u32)).filter(|width| *width > 0).collect(),
             _ => unheld_widths(machine.gpus, job.gpus),
         };
-        let (time, widths) = machine.timed(&function, &job.size, job.prior_ms as f64, widths);
+        // Warm: a job of its function goes before it here, or an idle executor holds its model; else its first call's cold time.
+        let hot = !function.is_empty() && (warm.contains(&function) || warm_there(frame, &job.models));
+        let (time, widths) = machine.timed(&function, &job.size, job.prior_ms as f64, widths, hot);
         quote.basis = time.basis;
+        quote.warm = hot && machine.times.get(&function).is_some_and(|runs| runs.iter().any(|run| !run.cold));
         // A machine with no GPU runs it on its CPU, as its run then says (clamp and warn): its time is its runs' there. GPUs out of
         // service (cl-935) leave too few for it: another machine runs it.
         let wanted = (job.gpus as usize).max(usize::from(job.gpu));

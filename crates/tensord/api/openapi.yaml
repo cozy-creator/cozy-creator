@@ -1057,6 +1057,7 @@ components:
         prepare_ms: {type: integer, format: int64, minimum: 0, description: 'Its install and weights'' fetch, part of `start_ms`.'}
         queue_position: {type: integer, format: int32, minimum: 0}
         basis: {$ref: '#/components/schemas/Basis'}
+        warm: {type: boolean, description: "Its time is the function's warm one there: the model held, its plan compiled."}
     RunBatch:
       type: object
       properties:
@@ -1221,6 +1222,7 @@ components:
         size: {$ref: '#/components/schemas/JobSize'}
         ms: {type: number}
         load_ms: {type: number}
+        cold: {type: boolean, description: "The function's first call on the machine: its plan compiled as it ran (its cold time)."}
     Resident:
       type: object
       properties:

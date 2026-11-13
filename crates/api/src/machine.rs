@@ -972,6 +972,9 @@ pub struct Quote {
     /// How many runs and jobs start here before it.
     pub queue_position: u32,
     pub basis: Basis,
+    /// Its time is the function's warm one there: the model held, its plan compiled.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub warm: bool,
 }
 
 /// What a quote's run time stands on.
@@ -1148,6 +1151,9 @@ pub struct TimedRun {
     pub size: JobSize,
     pub ms: f64,
     pub load_ms: f64,
+    /// The function's first call on the machine: its plan compiled as it ran (its cold time).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cold: bool,
 }
 
 /// An idle executor's loaded models (`StatusFrame::resident`).
