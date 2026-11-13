@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { type IncomingMessage, request, type ServerResponse } from "node:http"
-import { homedir } from "node:os"
+import { endianness, homedir, platform } from "node:os"
 import { join } from "node:path"
 import react from "@vitejs/plugin-react"
 import { defineConfig, type Plugin } from "vite"
@@ -50,6 +50,41 @@ function ownNames(port: number | undefined): Set<string> {
   return new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`])
 }
 
+/** An address as `/proc/net/tcp*` prints it: each 32-bit word in hex as the host holds it, then the port. As `platform::net` reads it. */
+function procAddress(text: string): string | null {
+  const [address, port] = text.split(":")
+  if (!address || !port) return null
+  const bytes = Buffer.alloc(address.length / 2)
+  for (let at = 0; at < address.length; at += 8) {
+    const word = Number.parseInt(address.slice(at, at + 8), 16)
+    if (endianness() === "LE") bytes.writeUInt32LE(word, at / 2)
+    else bytes.writeUInt32BE(word, at / 2)
+  }
+  const v6 = bytes.length === 16
+  const mapped = v6 && bytes.subarray(0, 12).equals(Buffer.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff]))
+  const ip = !v6 || mapped ? [...bytes.subarray(v6 ? 12 : 0)].join(".") : [...Array(8).keys()].map((at) => bytes.readUInt16BE(at * 2).toString(16)).join(":")
+  return `${ip}:${Number.parseInt(port, 16)}`
+}
+
+/** Whether the other end of this connection is this server's own user (cl-980): Calcifer lets in only the user it runs as, and this
+ *  proxy passes requests on as that user's, so it asks first, as Calcifer does, from the kernel's socket table. Linux only for now:
+ *  elsewhere it lets in no one. */
+function sameUser(socket: { remoteAddress?: string; remotePort?: number; localAddress?: string; localPort?: number }): boolean {
+  if (platform() !== "linux" || typeof process.getuid !== "function") return false
+  const plain = (address?: string) => (address ?? "").replace(/^::ffff:/, "")
+  const peer = `${plain(socket.remoteAddress)}:${socket.remotePort}`
+  const local = `${plain(socket.localAddress)}:${socket.localPort}`
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let text = ""
+    try { text = readFileSync(table, "utf8") } catch { continue }
+    for (const row of text.split("\n").slice(1)) {
+      const fields = row.trim().split(/\s+/)
+      if (fields.length > 7 && procAddress(fields[1]) === peer && procAddress(fields[2]) === local) return Number(fields[7]) === process.getuid()
+    }
+  }
+  return false
+}
+
 /** A page on any other site must not reach Calcifer through this server: a foreign `Host`, `Origin` or `Sec-Fetch-Site` goes first. */
 function foreign(req: IncomingMessage): string | null {
   const own = ownNames(req.socket.localPort)
@@ -61,8 +96,9 @@ function foreign(req: IncomingMessage): string | null {
   return null
 }
 
-/** Passes the page's own request to Calcifer: its session (or `?media=`) is its only authority; this server adds none. */
+/** Passes the page's own request to Calcifer, which checks it as its own page's: this server adds no authority. */
 function forward(req: IncomingMessage, res: ServerResponse) {
+  if (!sameUser(req.socket)) return refuse(res, 403, "other_user", "The dev proxy answers only the user it runs as on this computer")
   const refused = foreign(req)
   if (refused) return refuse(res, 403, "origin_not_allowed", `The dev proxy serves its own page only, not ${refused}`)
   const calcifer = holder()
@@ -71,7 +107,8 @@ function forward(req: IncomingMessage, res: ServerResponse) {
   const headers: Record<string, string | string[] | undefined> = { ...req.headers, host: calcifer.address }
   if (headers.origin) headers.origin = `http://${calcifer.address}`
   delete headers.cookie
-  for (const name of Object.keys(headers)) if (name.startsWith("sec-fetch-")) delete headers[name]
+  // Calcifer reads Sec-Fetch-Site as this proxy checked it, of this server's own page (cl-980); the rest of what it said goes.
+  for (const name of Object.keys(headers)) if (name.startsWith("sec-fetch-") && name !== "sec-fetch-site" && name !== "sec-fetch-mode") delete headers[name]
   const upstream = request(
     { host: calcifer.address.slice(0, split), port: calcifer.address.slice(split + 1), method: req.method, path: req.url, headers },
     (answer) => {
@@ -91,17 +128,7 @@ function forward(req: IncomingMessage, res: ServerResponse) {
   req.pipe(upstream)
 }
 
-/** A one-use sign-in link to this server, as `cozy open` gives one for Calcifer's own origin. */
-async function signInLink(port: number): Promise<string> {
-  const calcifer = holder()
-  if (!calcifer) return "Calcifer isn't running: run any cozy command, then restart this server for a sign-in link"
-  const answer = await fetch(`http://${calcifer.address}/v1/session-codes`, { method: "POST", headers: { Authorization: `Bearer ${calcifer.token}`, "Content-Type": "application/json" }, body: "{}" })
-  if (!answer.ok) return `no sign-in link: Calcifer answered ${answer.status}`
-  const { code } = await answer.json()
-  return `sign in (15 min, once): http://localhost:${port}/#code=${encodeURIComponent(code)}`
-}
-
-/** `vite dev` against this computer's Calcifer, for any browser signed in by a link. */
+/** `vite dev` against this computer's Calcifer: its page's requests go through this proxy, as Calcifer's own page's (cl-980). */
 function calcifer(): Plugin {
   const route = (server: { middlewares: { use(handler: (req: IncomingMessage, res: ServerResponse, next: () => void) => void): unknown } }) => {
     server.middlewares.use((req, res, next) => {
@@ -114,9 +141,9 @@ function calcifer(): Plugin {
     name: "calcifer",
     configureServer(server) {
       route(server)
-      if (servedByCalcifer()) return
-      server.httpServer?.once("listening", () => {
-        void signInLink(server.config.server.port ?? 5173).then((said) => server.config.logger.info(`  ➜  ${said}`), () => {})
+      // Hot reload's WebSocket too: another user's upgrade is closed before Vite sees it.
+      server.httpServer?.prependListener("upgrade", (req: IncomingMessage) => {
+        if (!sameUser(req.socket)) req.socket.destroy()
       })
     },
     configurePreviewServer: route,

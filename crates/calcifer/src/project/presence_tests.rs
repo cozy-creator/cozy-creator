@@ -139,7 +139,7 @@ async fn native_presence_fixture() {
             }
             next.run(request).await
         }
-    })).into_make_service_with_connect_info::<std::net::SocketAddr>();
+    })).into_make_service_with_connect_info::<crate::api::Peer>();
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = tensorfs::fetch::http(&[]).unwrap().no_proxy().build().unwrap();
     let base = format!("http://{address}");

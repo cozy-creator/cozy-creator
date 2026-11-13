@@ -9,7 +9,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { writeFileSync } = require('fs');
 const { join } = require('path');
-const { projectFolder, addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, STEP_MS } = require('./page');
+const { holderToken, projectFolder, addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, until, STEP_MS } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const TOOL = `# /// script
@@ -81,7 +81,7 @@ async function died(why) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const { id, path: folder } = await projectFromPage(page);
   seen.project = { id, folder };
-  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const session = { token: holderToken() };
   const api = async (path) => {
     const answer = await fetch(base + path, { headers: { Authorization: `Bearer ${session.token}`, 'cozy-project-storage': '3' } });
     const value = await answer.json().catch(() => null);

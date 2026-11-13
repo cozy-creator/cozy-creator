@@ -5,7 +5,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
+const { holderToken, projectFolder, boxOf, calcifer, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, MP4, noStall, openBox, openCanvas, png, projectFromPage, renderOf, settled, signIn, STEP_MS, until, upload } = require('./page');
 
 const NAME = 'focus_image';
 // web/app/src/canvas/ratios.ts's: a pull within about 2% of one is it, and past that free (Paul, 11-13).
@@ -53,7 +53,7 @@ async function died(error) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const project = await projectFromPage(page);
   const id = project.id;
-  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const session = { token: holderToken() };
   const api = async (path, method = 'GET', body) => {
     const answer = await fetch(base + path, {
       method,

@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, openBox, closeBox, settled, until, addBoxes, upload, rowsOf } = require('./page');
+const { holderToken, projectFolder, projectFromPage, calcifer, signIn, MP4, STEP_MS, boxOf, lastLook, launch, lookAt, noStall, openBox, closeBox, settled, until, addBoxes, upload, rowsOf } = require('./page');
 
 const fixture = join(__dirname, '..', 'project', 'orbit.py');
 const FRAMES = 48;
@@ -45,7 +45,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const held = { token: holderToken() };
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
     const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };

@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, BARS, DARK_OPEN, MP4, STEP_MS, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload } = require('./page');
+const { holderToken, projectFolder, BARS, DARK_OPEN, MP4, STEP_MS, boxOf, calcifer, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, openCanvas, png, projectFromPage, settled, signIn, until, upload } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const SIZES = [[1440, 900], [1920, 1080]];
@@ -159,7 +159,7 @@ async function died(why) {
   await shoot('drawer-projects', { open: (page) => goto(page, '/projects') });
 
   const paper = pages.paper;
-  const held = await paper.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const held = { token: holderToken() };
   const api = (path, init = {}) => paper.evaluate(async ({ path, init, token }) => {
     const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `look-${Date.now()}-${Math.random()}` } : {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };

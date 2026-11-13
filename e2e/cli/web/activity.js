@@ -10,7 +10,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { spawn } = require('child_process');
 const { mkdirSync, writeFileSync } = require('fs');
 const { dirname, join } = require('path');
-const { projectFolder, projectFromPage, projectAction, addBoxes, calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, settled, until } = require('./page');
+const { holderToken, projectFolder, projectFromPage, projectAction, addBoxes, calcifer, signIn, STEP_MS, lastLook, launch, lookAt, noStall, openBox, renderOf, settled, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -85,7 +85,7 @@ def draw(ctx: Context, payload: Drawing, adj: Adjustments, out: Outputs, tel: Te
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png` }) : Promise.resolve());
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const token = holderToken();
   const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
 
   // `local` is a machine at the top right, whatever it's doing, where this computer runs models: macOS and Windows list none.

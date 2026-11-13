@@ -10,7 +10,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
 const { readFileSync } = require('fs');
-const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
+const { holderToken, projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -57,7 +57,7 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const held = { token: holderToken() };
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
     const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };

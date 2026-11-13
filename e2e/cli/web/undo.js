@@ -12,7 +12,7 @@ const { execSync } = require('child_process');
 const { existsSync, mkdtempSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, projectAction, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, storedOf, until, rowsOf, upload, integrity } = require('./page');
+const { holderToken, projectFolder, projectFromPage, projectAction, calcifer, signIn, STEP_MS, boxOf, closeBox, launch, lastLook, lookAt, noStall, openBox, png, pointAt, settled, storedOf, until, rowsOf, upload, integrity } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -39,7 +39,7 @@ function check(name, ok, detail) {
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
-  const token = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token);
+  const token = holderToken();
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
     const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };

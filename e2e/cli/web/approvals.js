@@ -6,7 +6,7 @@
 // no run. Prints what it saw as JSON and exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { join } = require('path');
-const { projectFolder, addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, storedOf, until, STEP_MS } = require('./page');
+const { holderToken, projectFolder, addBoxes, calcifer, lastLook, launch, lookAt, noStall, openBox, projectFromPage, renderOf, signIn, storedOf, until, STEP_MS } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 const failures = [];
@@ -44,7 +44,7 @@ async function died(why) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const { id, path: folder } = await projectFromPage(page);
   seen.project = { id, folder };
-  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const session = { token: holderToken() };
   const api = async (path, method = 'GET', body) => {
     const answer = await fetch(base + path, {
       method,

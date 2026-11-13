@@ -9,36 +9,27 @@ import { QueryClientProvider } from "@tanstack/react-query"
 import { StrictMode, useEffect, useState } from "react"
 import { createRoot } from "react-dom/client"
 import { RouterProvider } from "react-router-dom"
-import { Client } from "./api/client"
-import { sameOrigin } from "./api/transport"
 import { type Boot, type Connection, ConnectionProvider, connect } from "./app/Connection"
 import { theRouter } from "./app/routes"
-import { saveSession, takeCode } from "./app/session"
+import { takeHashRoute } from "./app/session"
 import { Copyable } from "./ui/Copyable"
 import { tabShown, useSignal } from "./ui/signal"
 
-/** Consumes a link's code, then asks Calcifer who it is. Runs once, outside React. */
-async function boot(): Promise<Boot> {
-  const code = takeCode()
-  if (code) {
-    const client = new Client(sameOrigin(() => null), { signedOut() {}, attempt() {} })
-    try {
-      saveSession(await client.redeem(code))
-    } catch {
-      // A used or expired link: a session this browser already holds still stands.
-    }
-  }
+/** Asks Calcifer who it is. Runs once, outside React. */
+function boot(): Promise<Boot> {
+  takeHashRoute()
   return connect()
 }
 
 const booted = boot()
 
-/** No session, however the page found out: one state, drawn where the page was, and nothing of a project in it (cl-980). */
+/** Calcifer won't answer this page: it isn't Calcifer's own, or not its user's. One state, drawn where the page was, and nothing of a
+ *  project in it (cl-980). */
 function NoSession() {
   return (
     <main className="gate">
       <h1>No project open here</h1>
-      <p>In a terminal, run <code>cozy open</code> in a project folder, or <code>cozy new &lt;folder&gt;</code> to start one.</p>
+      <p>Open Cozy at its own address, as the user it runs as: in a terminal, run <code>cozy open</code> in a project folder, or <code>cozy new &lt;folder&gt;</code> to start one.</p>
     </main>
   )
 }

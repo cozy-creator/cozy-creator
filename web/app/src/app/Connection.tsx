@@ -12,7 +12,6 @@ import type { Project } from "../types"
 import { revokeProjectMedia } from "../canvas/Media"
 import type { CanvasStore } from "../canvas/CanvasStore"
 import { signal } from "../ui/signal"
-import { readSession } from "./session"
 import { forgetProjectView, protectProjectView } from "./view"
 import { notes } from "../ui/notes"
 
@@ -280,7 +279,7 @@ export type Boot = { connection: Connection } | { failed: "signed_out" | "unreac
 export async function connect(): Promise<Boot> {
   const attempt = signal(0)
   const signedOut = signal(false)
-  const client = new Client(sameOrigin(readSession), { signedOut: () => signedOut.set(true), attempt: (n: number) => attempt.set(n) })
+  const client = new Client(sameOrigin(), { signedOut: () => signedOut.set(true), attempt: (n: number) => attempt.set(n) })
   let status: CalciferStatus
   try {
     status = await client.status()

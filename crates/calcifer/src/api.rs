@@ -1,8 +1,8 @@
 //! Calcifer's loopback API (`docs/CALCIFER-API.md`): HTTP/1.1, JSON and SSE for the CLI and a
-//! browser. Every request passes the guard chain in order: a loopback peer, a loopback `Host`, an
-//! `Origin`, if any, that matches it, then (on the routes Calcifer serves) the bearer or a browser
-//! session (`sessions.rs`), and the admission gate a stopping Calcifer closes. Refusals are
-//! `api::error::Envelope`s. No CORS header is ever sent.
+//! browser. Every request passes the guard chain in order: a loopback peer, this listener's own `Host`,
+//! an `Origin`, if any, that matches it, then (on the routes Calcifer serves) the peer's user, which must
+//! be Calcifer's own, and a browser's word that it's Calcifer's own page (cl-980: no session, no token),
+//! and the admission gate a stopping Calcifer closes. Refusals are `api::error::Envelope`s. No CORS header is ever sent.
 use std::{
     collections::{HashMap, VecDeque},
     convert::Infallible,
@@ -26,7 +26,7 @@ use axum::{
         IntoResponse, Response,
         sse::{self, KeepAlive, KeepAliveStream, Sse},
     },
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
 };
 use api::{
     calcifer::{CalciferActivity, CalciferStatus, Down, Event, PROCESS_HEADER, Run, RunList, Status},
@@ -79,7 +79,6 @@ pub(crate) struct Api {
     pub(crate) listing: crate::toolbox::Listing,
     /// Emailed codes waiting for what arrived (`POST /v1/account/codes`).
     pub(crate) codes: crate::hub::Codes,
-    pub(crate) sessions: crate::sessions::Sessions,
     pub(crate) browser: crate::browser::OwnedBrowser,
     pub(crate) browser_address: std::sync::OnceLock<std::net::SocketAddr>,
     pub(crate) development_web: std::sync::OnceLock<std::net::SocketAddr>,
@@ -112,7 +111,6 @@ impl Api {
         token: &str,
     ) -> Arc<Self> {
         let api = Arc::new(Self {
-            sessions: crate::sessions::Sessions::open(calcifer.maintenance_store()),
             browser: crate::browser::OwnedBrowser::new(),
             browser_address: std::sync::OnceLock::new(),
             development_web: std::sync::OnceLock::new(),
@@ -291,13 +289,10 @@ pub(crate) fn router(api: Arc<Api>) -> Router {
                 .head(crate::runs::files::head)
                 .layer(DefaultBodyLimit::disable()),
         )
-        .route("/v1/session-codes", post(crate::sessions::code))
-        .route("/v1/session", delete(crate::sessions::end))
         .merge(crate::project::routes(&api))
         .merge(crate::hub::routes())
         // Routes go above this line: the bearer and the admission gate guard only those.
         .route_layer(middleware::from_fn_with_state(api.clone(), admit))
-        .route("/v1/session", post(crate::sessions::start))
         .route("/v1/tools/{id}/ui/{*path}", get(crate::tool_ui::file))
         .merge(crate::page::routes())
         .fallback(crate::page::fallback)
@@ -393,10 +388,33 @@ impl From<BytesRejection> for Refusal {
     }
 }
 
+/// Who's at the other end of a connection: its address, the listener it reached, and its user, read once as it's accepted
+/// (cl-980). The user is the kernel's word for the socket (`platform::net::tcp_peer_uid`): none where it can't be read.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Peer {
+    pub(crate) addr: SocketAddr,
+    pub(crate) local: Option<SocketAddr>,
+    pub(crate) uid: Option<u32>,
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>> for Peer {
+    fn connect_info(stream: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Self {
+        let addr = *stream.remote_addr();
+        let local = stream.io().local_addr().ok();
+        Peer { addr, local, uid: local.and_then(|local| platform::net::tcp_peer_uid(addr, local)) }
+    }
+}
+
+/// Who a request acts as: this computer's user Calcifer runs as, by its uid (cl-980). A public key's, for remote access, later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Principal {
+    User(u32),
+}
+
 /// Loopback peer, `Host`, then `Origin`, on every request. A rebinding page is turned away before
 /// anything asks whether it holds a credential.
 async fn guard(
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -430,36 +448,36 @@ async fn guard(
     response
 }
 
-/// A loopback name on any port: an SSH `-L` chooses its own. A rebinding page's `Host` is its own name.
-fn on_loopback(host: &str) -> bool {
-    ["127.0.0.1", "localhost", "[::1]"].iter().any(|name| {
-        host.strip_prefix(name).is_some_and(|rest| {
-            rest.is_empty() || rest.strip_prefix(':').is_some_and(|port| port.parse::<u16>().is_ok())
-        })
-    })
+/// This listener's own names, `127.0.0.1:<port>` and `localhost:<port>` (and `[::1]:<port>` on IPv6): the only `Host` a request may
+/// name (cl-980). A rebinding page's `Host` is its own name, and a page that reached another port isn't this Calcifer's.
+fn own_host(host: &str, local: Option<SocketAddr>) -> bool {
+    let Some(local) = local else { return false };
+    let port = local.port();
+    let names: &[&str] = if local.is_ipv6() { &["[::1]", "localhost"] } else { &["127.0.0.1", "localhost"] };
+    names.iter().any(|name| host == format!("{name}:{port}"))
 }
 
-fn refusal(peer: &SocketAddr, request: &Request) -> Option<Refusal> {
+fn refusal(peer: &Peer, request: &Request) -> Option<Refusal> {
     let header = |name| {
         request
             .headers()
             .get(name)
             .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
     };
-    if !peer.ip().is_loopback() {
+    if !peer.addr.ip().is_loopback() {
         Some(refuse(
             Kind::Forbidden,
             "not_loopback",
             "Calcifer serves the loopback interface only",
         ))
-    } else if !header(header::HOST).is_some_and(|host| on_loopback(&host)) {
+    } else if !header(header::HOST).is_some_and(|host| own_host(&host, peer.local)) {
         Some(
             refuse(
                 Kind::Forbidden,
                 "host_not_allowed",
                 format!("Host {:?} is not this Calcifer", header(header::HOST)),
             )
-            .remedy("reach it as 127.0.0.1, localhost or [::1]"),
+            .remedy("reach it at its own address, as `cozy open` gives it"),
         )
     // Checked on every request, mutations and stream opens included; an absent Origin passes.
     } else if let Some(origin) = header(header::ORIGIN)
@@ -480,46 +498,61 @@ pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
 }
 
-/// The `?media=` secret of a read of a file: what `<img>` and `<video>` can't put in a header, so it
-/// opens nothing else.
-fn media_secret(request: &Request) -> Option<&str> {
+/// A read of a file, as `<img>` and `<video>` make one: no header of the page's own, the project storage's among them.
+fn file_read(request: &Request) -> bool {
     let reads = matches!(*request.method(), Method::GET | Method::HEAD);
     let path: Vec<&str> = request.uri().path().split('/').collect();
-    let file = matches!(
+    reads && matches!(
         path[..],
         ["", "v1", "runs", _, "outputs", _] | ["", "v1", "projects", _, "runs", _, "outputs", _] | ["", "v1", "projects", _, "files" | "cuts" | "thumbs", _]
-    );
-    if !reads || !file {
-        return None;
-    }
-    request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix("media="))
+    )
 }
 
-/// The bearer or a session, then the admission gate for every mutation but `down`, held while it runs.
-/// Detached request work retains this existing admission lease until its mutation is finished.
+/// Whether a browser sent this from Calcifer's own page, or a person opened its URL directly (cl-980): `Sec-Fetch-Site` says where
+/// a browser's request came from, and no other site's page can say `same-origin`. Another port of this computer is `same-site`,
+/// refused. With no `Sec-Fetch-Site`, it's no browser of today, and only `guard`'s `Origin` rule speaks for it.
+fn own_page(headers: &axum::http::HeaderMap) -> Option<bool> {
+    let text = |name: &str| headers.get(name).and_then(|value| value.to_str().ok());
+    Some(match text("sec-fetch-site")? {
+        "same-origin" => true,
+        "none" => text("sec-fetch-mode") == Some("navigate"),
+        _ => false,
+    })
+}
+
+/// This computer's own user, then a client of its: Calcifer's own page, or this computer's cozy. Then the admission gate for every
+/// mutation but `down`, held while it runs. Detached request work retains this existing admission lease until its mutation is finished.
 pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
 
-async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) -> Response {
-    // Any browser's session: Cozy's owned one (memory-only) or one a sign-in link started (state.db).
-    let store = api.calcifer.store();
-    let session_media = media_secret(&request).is_some_and(|media| api.sessions.admits_media(store, media));
-    let (admitted, page) = match bearer(request.headers()) {
-        Some(token) if api.admits(token) => (true, false),
-        Some(token) => (api.sessions.admits_token(store, token), true),
-        None => (session_media, true),
-    };
-    if !admitted {
-        let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
-        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a page opens from the link `cozy open` gives").next("cozy open");
-        return Refusal(error).into_response();
+async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>, mut request: Request, next: Next) -> Response {
+    // Only the user Calcifer runs as (cl-980): another account on this computer reads no project through it, an unlocked encrypted
+    // one included. The kernel says whose socket the peer is; where it can't, nothing is let in.
+    let own = rustix::process::geteuid().as_raw();
+    if peer.uid != Some(own) {
+        let said = "Calcifer answers only the user it runs as on this computer";
+        return Refusal(Error::new(Kind::Forbidden, "other_user", said)).into_response();
     }
+    // A browser's request is let in when it comes from Calcifer's own page (or its URL, opened directly); anything else of the same
+    // user that isn't a browser, this computer's cozy among them, by the user alone. A bearer it sends must be Calcifer's.
+    let page = own_page(request.headers());
+    let refused = match (page, bearer(request.headers())) {
+        (Some(false), _) => Some(("not_own_page", "Calcifer answers its own page only, not another site's or another port's")),
+        (_, Some(token)) if !api.admits(token) => Some(("unauthenticated", "this isn't the bearer in Calcifer's lock record")),
+        _ => None,
+    };
+    if let Some((code, said)) = refused {
+        let kind = if code == "unauthenticated" { Kind::Credential } else { Kind::Forbidden };
+        return Refusal(Error::new(kind, code, said).next("cozy open")).into_response();
+    }
+    let page = page == Some(true);
+    request.extensions_mut().insert(Principal::User(own));
     let path=request.uri().path();
     // The capability probe is how a client learns protocol 3 before opting in; it is no project request.
     let project_protocol=path != "/v1/project-storage" && (path.starts_with("/v1/projects") || path.starts_with("/v1/project-")
         || path.starts_with("/v1/run-") || matches!(path,"/v1/events"|"/v1/targets"|"/v1/plans"));
     // Native clients must opt into this storage contract before any project
-    // lookup/import/resume. Media elements use their session's media secret.
-    if project_protocol && !session_media && !speaks_project_storage(request.headers()) {
+    // lookup/import/resume. A page's media elements send no header of its own.
+    if project_protocol && !(page && file_read(&request)) && !speaks_project_storage(request.headers()) {
         return project_storage_protocol_required().into_response();
     }
     let process = request.headers().get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();

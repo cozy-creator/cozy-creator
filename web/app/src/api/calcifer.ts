@@ -418,11 +418,6 @@ summary?: string,
 tools: Array<string>, };
 
 /**
- * `POST /v1/session`: `token` for `Authorization`, `media` for the `?media=` of a file's URL.
- */
-export type BrowserSession = { token: string, media: string, };
-
-/**
  * Who made a change to a project: the page (`client` names its tab), the CLI, or another client of the API.
  */
 export type By = {

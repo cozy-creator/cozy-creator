@@ -360,24 +360,15 @@ async function upload(token, path, project) {
   return digest;
 }
 
-/** Sign this tab in with a fresh session code, opening `to` (a URL on this Calcifer), else its home. The session is the tab's (sessionStorage):
- *  a reload or another page in the tab keeps it, and another tab or context signs in again. The code lives 15 minutes. */
+/** Open the page at `to` (a URL on this Calcifer), else its home. The page holds no session (cl-980): Calcifer answers it as its own
+ *  page, for the user it runs as, which this runner's is. */
 async function signIn(page, to, options) {
   if (typeof to === 'object') [to, options] = [undefined, to];
-  const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
-  const response = await fetch(`http://${holder.address}/v1/session-codes`, {
-    method: 'POST', headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' }, body: '{}',
-  });
-  if (!response.ok) throw new Error(`session code: ${response.status} ${await response.text()}`);
-  const code = await response.json();
-  const link = to ? `${to.replace(/#.*$/, '')}#code=${encodeURIComponent(code.code)}`
-    : process.env.PAGE_ORIGIN ? code.url.replace(/^http:\/\/[^/]+/, process.env.PAGE_ORIGIN) : code.url;
-  const redeemed = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/session', { timeout: STEP_MS });
-  const went = await page.goto(link, options);
-  const answer = await redeemed;
-  if (!answer.ok()) throw new Error(`sign in: POST /v1/session ${answer.status()}`);
-  return went;
+  return page.goto(to ? to.replace(/#.*$/, '') : `${calcifer()}/`, options);
 }
+
+/** The bearer in Calcifer's lock record: what this computer's cozy, and a cell's own calls from outside the page, send. */
+const holderToken = () => JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token;
 
 /** Chrome with its scrollbars shown, as on a person's screen, not hidden as headless has them. */
 const BARS = { ignoreDefaultArgs: ['--hide-scrollbars'] };
@@ -716,4 +707,4 @@ async function chooseModel(page, name, id, operation) {
 /** Python as this OS names it: Windows has no python3 of its own. */
 const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
-module.exports = { projectFolder, addBoxes, assetsOf, storedOf, integrity, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };
+module.exports = { holderToken, projectFolder, addBoxes, assetsOf, storedOf, integrity, implementationRow, previewVersion, approveVersion, chooseModel, projectUrl, projectFromPage, projectJson, importFile, projectAction, cozyIn, newProject, BARS, DARK_OPEN, GPU, MP4, PYTHON, STEP_MS, boxLog, boxOf, calcifer, carry, closeBox, openBox, openCanvas, drop, lastLook, launch, lookAt, noStall, panning, png, pointAt, removeGeneratedProject, renderOf, rowsOf, settled, fitCanvas, projectHeld, observeResizes, photo, signIn, summary, until, upload, watchBoxes, wav };
