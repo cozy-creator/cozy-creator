@@ -23,7 +23,7 @@ export const bodyText = (body: ErrorBody, run?: number | string, machine?: strin
 
 /** A run's failure, from its record. */
 export const runText = (run: Run, reason: Reason) =>
-  errorText({ message: reason.message, code: reason.code, run: run.number || run.id, machine: run.machine, next: reason.next, detail: reason.detail })
+  errorText({ message: reason.message, code: reason.code, run: run.name || run.number || run.id, machine: run.machine, next: reason.next, detail: reason.detail })
 
 /** Copy: the error, whole, on the clipboard as plain text (Paul, 11-12: "so I can post them here to you"). Its click selects, opens and
  *  drags nothing. */

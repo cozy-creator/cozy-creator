@@ -8,7 +8,7 @@ import type { Run } from "../../api/calcifer"
 import type { Project } from "../../types"
 import { Bar, Failure, useNow } from "../common"
 import { DrawerFrame } from "../Drawer"
-import { progressWords, runTime, settled, stalledWords, statusClass, statusWord, target } from "./words"
+import { progressWords, runName, runTime, settled, stalledWords, statusClass, statusWord, target } from "./words"
 
 const STATUSES = ["queued", "in_progress", "completed", "failed", "canceled"]
 const PAGE = 50
@@ -33,7 +33,7 @@ function RunRow({ run, now, box }: { run: Run; now: number; box?: string }) {
       <Link to={to(`runs/${run.number}`)}>
         <span className="line">
           <span className={`dot ${statusClass(run)}`} />
-          <b>#{run.number}</b>
+          <b>{runName(run)}</b>
           {/* Its box, the function under it (cl-958); a run of no box here, its function. */}
           {box ? <span className="nm">{box}</span> : <span className="nm">{target(run)}</span>}
           <span className="sp" />
@@ -100,7 +100,7 @@ export function Runs() {
       <Failure error={error} lead="Couldn't list the runs" />
       <ul className="rows">
         {runs.map((run) => (
-          <RunRow key={run.number} run={run} now={now} box={run.project_id === id ? boxes.get(run.number) : undefined} />
+          <RunRow key={run.id} run={run} now={now} box={run.project_id === id ? boxes.get(run.number) : undefined} />
         ))}
       </ul>
       {data && !runs.length && (

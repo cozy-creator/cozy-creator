@@ -14,6 +14,7 @@ import { End } from "./End"
 import { Installed } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
 import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
+import { runName } from "../runs/words"
 import { called, endsWords, kindWords, named, slowWords, spentWords } from "./words"
 
 /** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
@@ -147,7 +148,7 @@ function Details({ machine, now }: { machine: Machine; now: number }) {
               <li className="heldrow" key={held.id}>
                 {held.run ? (
                   <Link className="more" to={to(`runs/${held.run.number}`)}>
-                    #{held.run.number} {shown(held.run.target)}
+                    {runName(held.run)} {shown(held.run.target)}
                   </Link>
                 ) : (
                   <span className="nm">No record of it here</span>
