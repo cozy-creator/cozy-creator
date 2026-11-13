@@ -16,7 +16,7 @@ import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
 import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, projectViewQuery, toolsQuery } from "../api/queries"
-import { Unopened, useTo } from "../app/project"
+import { Unopened, useGone, useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Opened, ProjectViewPatch } from "../api/calcifer"
@@ -97,8 +97,10 @@ const words = (target: EventTarget | null) =>
 function ProjectSync({ id }: { id: string }) {
   const { client, stream, bridge } = useConnection()
   const store = useCanvasStore()
-  const { data: state, error: stateError } = useQuery(projectQuery(client, stream, id))
-  const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, stream, id))
+  // Its folder gone, nothing of it is read again (cl-980).
+  const gone = useGone(id)
+  const { data: state, error: stateError } = useQuery({ ...projectQuery(client, stream, id), enabled: !gone })
+  const { data: canvas, error: canvasError } = useQuery({ ...canvasQuery(client, stream, id), enabled: !gone })
   const asked = useRef(new Set<string>())
   const queries = useQueryClient()
 
@@ -201,10 +203,10 @@ function RenderAll({ id }: { id: string }) {
 }
 
 /** A project this Calcifer can't read: why, and what to do, where its boxes would be. */
-function Unread({ error }: { error: unknown }) {
+function Unread({ error, gone }: { error?: unknown; gone?: string }) {
   return (
     <div className="unread" role="alert">
-      <Unopened error={error} />
+      <Unopened error={error} gone={gone} />
     </div>
   )
 }
@@ -479,11 +481,12 @@ function Canvas({
   const settling = useRef<ReturnType<typeof setTimeout>>(undefined)
   const pointer = useRef<{ x: number; y: number } | null>(null)
   // What can't be read says so on the canvas, and everything around it still works. One already read stays while Calcifer's away.
-  const { data: read, error } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) })
+  const gone = useGone(projectId)
+  const { data: read, error } = useQuery({ ...projectQuery(client, stream, projectId ?? ""), enabled: Boolean(projectId) && !gone })
   // Which machine's packages a list leads with. The list waits to know, or it would be asked for twice, each a wait on the Hub.
   const machines = useMachines(store, read?.machines ?? [])
   const machine = machines?.at(-1) ?? null
-  const unread = error && !(read && lost(error)) ? error : null
+  const unread = gone ? { gone } : error && !(read && lost(error)) ? { error } : null
   const readable = unread ? null : projectId
   const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
 
@@ -1043,7 +1046,7 @@ function Canvas({
           onSelectionDragStop={selectionDragStop}
         >
           <Dots />
-          {unread ? <Unread error={unread} /> : active && <Empty choose={choose} />}
+          {unread ? <Unread {...unread} /> : active && <Empty choose={choose} />}
         </ReactFlow>
         <Zoom zoomBy={zoomBy} items={zoomItems} />
         {veil && <div className="dropveil" />}
