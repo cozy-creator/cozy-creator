@@ -34,6 +34,20 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
     })
     return () => cancelAnimationFrame(frame)
   }, [entering, shown, name, store])
+  // While it's open the canvas stops below its title row (app.css): no box or name of it beside Back to canvas, Render or ×.
+  useLayoutEffect(() => {
+    const heading = element.current?.querySelector<HTMLElement>(".focus-heading")
+    if (!heading) return
+    const root = document.documentElement
+    const place = () => root.style.setProperty("--canvas-top", `${Math.ceil(heading.getBoundingClientRect().bottom)}px`)
+    place()
+    const watch = new ResizeObserver(place)
+    watch.observe(heading)
+    return () => {
+      watch.disconnect()
+      root.style.removeProperty("--canvas-top")
+    }
+  }, [shown])
   // Hidden while it enters, nothing in it can take the caret: once shown, its words do, typing going on from what they say (a prompt is
   // MentionText's `plaintext-only`).
   useEffect(() => {
