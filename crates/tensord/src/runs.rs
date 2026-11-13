@@ -1865,12 +1865,12 @@ impl Runs {
         let machine = self.publisher.machine();
         let Some(remote) = crate::access::remote(machine, &hub, checkpoint.id())? else { return Ok(()) };
         let model = crate::held_models::Pulled::of(store, checkpoint.id())?.map_or_else(|| manifest.to_string(), |pulled| pulled.model);
-        let (run, bytes, began) = (self.service.engine.caller_id(id), absent.iter().map(|object| object.length).sum::<u64>(), std::time::Instant::now());
-        tracing::info!(run, bytes, "emergency: {model} is read now, before every other download");
+        let (engine, bytes, began) = (&self.service.engine, absent.iter().map(|object| object.length).sum::<u64>(), std::time::Instant::now());
+        crate::private_io::info(engine, id, format_args!("emergency: {model} is read now, before every other download: {bytes} bytes"));
         machine.objects(&remote, &absent, crate::origin::priority::EMERGENCY, &Stop::default())
             .map_err(|refusal| refused("model_fetch_failed", format!("{model}: {refusal}")))?;
         let seconds = began.elapsed().as_secs_f64();
-        tracing::info!(run, bytes, seconds, mb_s = bytes as f64 / seconds.max(1e-3) / 1e6, "emergency: {model} is here");
+        crate::private_io::info(engine, id, format_args!("emergency: {model} is here: {bytes} bytes in {seconds:.1} s"));
         Ok(())
     }
 
