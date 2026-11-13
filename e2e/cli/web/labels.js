@@ -146,10 +146,18 @@ function audit() {
     // Each box's height as the page draws it, then all laid out as close as the layout keeps them.
     let tab = await open('paper', 0.1, { x: 4000, y: 0 });
     await until('every box on the page', () => tab.evaluate(() => document.querySelectorAll('.react-flow__node').length), (n) => n === ALL.length);
-    const tall = await tab.evaluate(() => {
+    const heights = () => tab.evaluate(() => {
       const zoom = new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform).a;
-      return Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.card')?.dataset.asset, node.getBoundingClientRect().height / zoom]));
+      return Object.fromEntries([...document.querySelectorAll('.react-flow__node')].map((node) => [node.querySelector('.card')?.dataset.asset, Math.round((node.getBoundingClientRect().height / zoom) * 10) / 10]));
     });
+    // Each picture at its own shape (a box is 16:9 until its picture's size arrives, then pushes aside what it lies on): the tall one
+    // tall, and nothing changing.
+    const tall = await until('every picture its shape', async () => {
+      const before = await heights();
+      await tab.waitForTimeout(1000);
+      const after = await heights();
+      return after.kyogre_art_1 > 300 && JSON.stringify(before) === JSON.stringify(after) ? after : null;
+    }, Boolean);
     await tab.close();
     const cards = {};
     for (const [c, column] of COLUMNS.entries()) {
