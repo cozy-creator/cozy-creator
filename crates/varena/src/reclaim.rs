@@ -370,6 +370,16 @@ pub(crate) fn acquire<T>(
     loop {
         let failure = match try_map() {
             Ok(value) => return Ok(value),
+            Err(AllocationFailure::ReserveShort(_)) => {
+                // The pages fit, not beside the driver's reserve: what is idle and done goes for it,
+                // with no wait, no owner and no peer; short of that, the demand takes the reserve.
+                let mut released = 0;
+                release(device, crate::DRIVER_RESERVE, usize::MAX, Wait::No, protect, ReclaimReason::Allocator, &mut released)?;
+                if released == 0 {
+                    return crate::waived(&mut try_map).map_err(Into::into);
+                }
+                continue;
+            }
             Err(failure) if failure.is_oom() => failure,
             Err(failure) => return Err(failure.into()),
         };
@@ -490,7 +500,7 @@ pub(crate) fn prefetch_room(device: i32, bytes: usize, group: &BTreeSet<u64>, fr
             return Ok(false);
         }
         let _context = gpu.driver().enter()?;
-        let room = gpu.driver().memory_info()?.0.min(gpu.headroom());
+        let room = gpu.spare(gpu.driver().memory_info()?.0).min(gpu.headroom());
         let state = gpu.lock()?;
         let prefix = state.prefix(&order);
         let idle = state.entries.iter()
