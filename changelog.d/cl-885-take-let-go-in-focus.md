@@ -1,0 +1,1 @@
+A take dragged in Focus and let go back on its column, its picture or the title row is put back: Focus stays open and nothing is copied onto the canvas. Only a take let go over the canvas around Focus is copied there.
