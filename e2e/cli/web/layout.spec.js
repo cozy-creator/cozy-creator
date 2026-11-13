@@ -156,16 +156,20 @@ test('layout', async ({ page, project, api }) => {
   for (const name of names) await expect(box(page, name)).toBeVisible();
 
   // A render that fails (the crash fixture), then one being made all through the looking: local renders one at a time. Both ended after.
+  // Only where this computer runs models, as Calcifer says (Linux's runners; macOS and Windows runners don't): elsewhere both stay unrendered.
+  const { local_usable: renders } = await api.get('/v1/status');
   const render = (name) => api.call('POST', project.at('/runs'), { names: [name], on: ['local'] }, { headers: { 'Idempotency-Key': randomUUID() } });
+  const face = page.getByRole('status', { name: "making's render" });
   try {
-    await render('failed');
-    await expect.poll(async () => {
-      const held = await project.asset('failed');
-      return Boolean(held?.failure || held?.takes?.some((take) => take.failure));
-    }, { message: 'failed fails', timeout: 60_000 }).toBe(true);
-    await render('making');
-    const face = page.getByRole('status', { name: "making's render" });
-    await expect(face, 'making is being made').toBeVisible({ timeout: 60_000 });
+    if (renders) {
+      await render('failed');
+      await expect.poll(async () => {
+        const held = await project.asset('failed');
+        return Boolean(held?.failure || held?.takes?.some((take) => take.failure));
+      }, { message: 'failed fails', timeout: 60_000 }).toBe(true);
+      await render('making');
+      await expect(face, 'making is being made').toBeVisible({ timeout: 60_000 });
+    }
     const zoomButton = page.getByRole('button', { name: /more zoom options$/ });
     const zoomMenu = async (item) => {
       await zoomButton.click();
@@ -178,6 +182,7 @@ test('layout', async ({ page, project, api }) => {
       expect.soft(await page.evaluate(audit, { floor: FLOOR, focused }), `${what}: laid out`).toEqual([]);
     };
     const cancelShows = async (zoom) => {
+      if (!renders) return;
       const cancel = face.getByRole('button', { name: "Cancel making's render" });
       await expect.soft(cancel, `Cancel shows on the rendering face at ${zoom}`).toBeVisible();
       const r = await cancel.boundingBox();
@@ -220,6 +225,6 @@ test('layout', async ({ page, project, api }) => {
     });
   } finally {
     // Ended once looked at: by then either may have ended itself.
-    await api.raw('POST', project.at('/cancel'), { body: { names: ['failed', 'making'] } });
+    if (renders) await api.raw('POST', project.at('/cancel'), { body: { names: ['failed', 'making'] } });
   }
 });
