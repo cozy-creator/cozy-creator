@@ -419,6 +419,11 @@ impl Host {
     }
 
     /// What run `id`'s machine quoted as it was sent: its time left waits at least until then.
+    /// Where the plan sent project `project`'s run `id`, and its offer there, on its record (cl-967).
+    pub(crate) fn placed(&self, project: &str, id: &RunId, placed: &api::calcifer::Placed) {
+        self.api.calcifer.placed(project, id, placed);
+    }
+
     pub(crate) fn quoted(&self, id: &RunId, quoted: crate::eta::Quoted) {
         self.api.calcifer.quoted(id, quoted);
     }

@@ -805,6 +805,11 @@ macro_rules! journal_methods {
         })
     }
 
+    /// Where the plan sent run `id`, and its offer there (cl-967): the first said stands.
+    pub(crate) fn record_placement(&self, id: &RunId, placed: &::api::calcifer::Placed) -> Result<()> {
+        let record = serde_json::to_string(placed).expect("a placement serializes");
+        self.write(|tx| { tx.execute("INSERT OR IGNORE INTO run_placements(run,placed) VALUES(?1,?2)", params![id.as_str(), record])?; Ok(()) })
+    }
     pub(crate) fn plan_after(&self, key: &str, step: &str) -> Result<()> {
         self.write(|tx| { tx.execute("INSERT OR REPLACE INTO after_steps(key_sha256,step) VALUES(?1,?2)", params![key_digest(key),step])?; Ok(()) })
     }
@@ -1867,6 +1872,7 @@ impl Store {
         fence_legacy_unseen(&mut writer)?;
         run_list_indexes(&writer)?;
         writer.execute_batch(ANSWERS)?;
+        writer.execute_batch(crate::project::journal::PLACEMENTS)?;
         writer.execute_batch(crate::maintenance_source::TABLES)?;
         writer.execute_batch(crate::project::vault_operation::TABLES)?;
         writer.execute_batch(crate::state::TABLES)?;
@@ -3322,7 +3328,12 @@ fn record(conn: &Connection, row: &RunRow) -> Result<Run> {
             stays: r.get(11)?,
         })
     })?;
+    let placed = (conn.query_row("SELECT placed FROM run_placements WHERE run = ?1", [row.id.as_str()], |r| r.get::<_, String>(0)).optional())
+        .ok()
+        .flatten()
+        .and_then(|placed| serde_json::from_str(&placed).ok());
     Ok(Run {
+        placed,
         id: row.id.clone(),
         number: row.number,
         machine_number: None,

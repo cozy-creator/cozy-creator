@@ -57,6 +57,8 @@ pub(crate) struct Offer {
     pub warm: bool,
     /// Its weights' bytes it downloads there first (cl-967).
     pub fetch_bytes: u64,
+    /// When it was quoted.
+    pub quoted_at_ms: i64,
     /// When its machine should serve, for one on its way (cl-915); none for one that serves.
     pub ready_at_ms: Option<i64>,
 }
@@ -92,6 +94,19 @@ impl Offer {
     }
 
     /// What eta's clock takes of it once its run is sent.
+    /// It as its run's record keeps it (`Run::placed`).
+    pub(crate) fn placed(&self) -> api::calcifer::Placed {
+        api::calcifer::Placed {
+            machine: self.machine.to_string(),
+            quoted_at_ms: self.quoted_at_ms,
+            finish_at_ms: self.finish_at_ms,
+            basis: self.basis,
+            warm: self.warm,
+            prepare_ms: self.prepare_ms,
+            fetch_bytes: self.fetch_bytes,
+        }
+    }
+
     pub(crate) fn quoted(&self) -> crate::eta::Quoted {
         crate::eta::Quoted { start_at: self.start_at_ms as f64, finish_at: self.finish_at_ms as f64, basis: self.basis }
     }
@@ -184,6 +199,7 @@ pub(crate) fn quote(picture: &Picture, jobs: &[v1::EstimateJob], now: i64) -> Ve
             basis: quote.basis,
             warm: quote.warm,
             fetch_bytes: quote.fetch_bytes,
+            quoted_at_ms: now,
             ready_at_ms: picture.ready_at_ms,
         })
         .collect()

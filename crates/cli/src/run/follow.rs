@@ -449,6 +449,22 @@ pub(super) fn keyed(basis: &str) -> &'static str {
     }
 }
 
+/// Where the plan sent it and what it quoted there: `enishi, to finish in 20 s (measured, warm; 9 s preparing, 0.3 GiB to fetch)`.
+fn placed_words(placed: &api::calcifer::Placed) -> String {
+    let basis = serde_json::to_value(placed.basis).ok().and_then(|basis| basis.as_str().map(str::to_owned)).unwrap_or_default();
+    let warm = if placed.warm { ", warm" } else { "" };
+    let fetch = match placed.fetch_bytes {
+        0 => String::new(),
+        bytes => format!(", {:.1} GiB to fetch", bytes as f64 / (1u64 << 30) as f64),
+    };
+    let preparing = match placed.prepare_ms / 1000 {
+        0 => String::new(),
+        s => format!("; {s} s preparing{fetch}"),
+    };
+    let finish = (placed.finish_at_ms - placed.quoted_at_ms).max(0) / 1000;
+    format!("{}, to finish in {finish} s ({basis}{warm}{preparing})", placed.machine)
+}
+
 /// The record's fields, for a person.
 pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
     let mut record = output::Record::new()
@@ -456,6 +472,9 @@ pub(super) fn fields(ctx: &Context, run: &Run) -> output::Record {
         .field("target", &run.target)
         .field("status", status(run))
         .field("machine", run.machine.as_deref().unwrap_or("—"));
+    if let Some(placed) = &run.placed {
+        record = record.field("placed", placed_words(placed));
+    }
     if let Some(gpu) = &run.gpu {
         record = record.field("gpu", gpu);
     }

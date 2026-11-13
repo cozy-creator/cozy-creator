@@ -4922,6 +4922,7 @@ impl Walk {
             walk.walk.runs.insert(run.number, None);
         })?;
         if let Some(offer) = offer {
+            self.host.placed(&self.project.id, &run.id, &offer.placed());
             self.host.quoted(&run.id, offer.quoted());
             self.project.walker.lock().expect("walker lock").sent.insert(job, offer);
         }

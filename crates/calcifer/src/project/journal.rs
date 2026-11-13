@@ -307,6 +307,9 @@ fn keep_worker_receipt(tx:&Transaction<'_>,project:&str,machine:&str,receipt:&ap
     Ok(covered)
 }
 
+/// Where the plan sent each run, and its offer there (cl-967): beside `runs`, so a journal of any version takes it.
+pub(crate) const PLACEMENTS: &str = "CREATE TABLE IF NOT EXISTS run_placements (run TEXT PRIMARY KEY, placed TEXT NOT NULL) STRICT, WITHOUT ROWID;";
+
 pub(super) const UNSEEN_SCHEMA:&str="CREATE TABLE IF NOT EXISTS project_unseen (
     project TEXT NOT NULL, box TEXT NOT NULL, number INTEGER NOT NULL,
     PRIMARY KEY(project,box,number)
