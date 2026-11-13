@@ -94,7 +94,27 @@ def at(line):
         return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
     except ValueError:
         return 0
-urgent, queued = [], []
+# The downloader's floor (cl-966): each move is a line, with when it moved and what came while it stood where it was.
+def floors(path):
+    moves = []
+    for line in path.read_text(errors="replace").splitlines():
+        if "floor moved" in line:
+            f = dict(re.findall(r"(\w+)=(\S+)", line))
+            moves.append({"downloader": f["downloader"], "from": f["from"], "to": f["to"], "at": int(f["at_ms"]), "bytes": int(f["bytes"]),
+                          "seconds": float(f["seconds"]), "mb_s": float(f["mb_s"])})
+    return moves
+# Each stand of the floor at an order named by `at`: (from, to, bytes, seconds, mb_s), in order.
+def stands(moves, began, at):
+    out, open_ = [], {}
+    for m in moves:
+        if m["at"] < began:
+            continue
+        if m["from"] != "none" and at(int(m["from"])) and m["downloader"] in open_:
+            out.append((open_.pop(m["downloader"]), m["at"], m["bytes"], m["seconds"], m["mb_s"]))
+        if m["to"] != "none" and at(int(m["to"])):
+            open_[m["downloader"]] = m["at"]
+    return out
+urgent, queued, resumed = [], [], []
 # A project's run says nothing in TensorD's log (#2858): its downloader's lines, which name objects and orders, are the record.
 for line in (out / "ondemand-need.tensord.log").read_text(errors="replace").splitlines():
     t = at(line)
@@ -105,19 +125,34 @@ for line in (out / "ondemand-need.tensord.log").read_text(errors="replace").spli
         order, kind = int(found[3]), found[1]
         if order == 0:
             urgent.append((t, kind, int(found[2])))
-        elif 2 <= order < 1 << 62 and kind == "fetching":
-            queued.append(t)
+        elif 2 <= order < 1 << 62:
+            (queued if kind == "fetching" else resumed).append(t)
 # A line names the order an object started at: BiRefNet's chunks already started as its guess land at that order.
 landed = sum(b for _, kind, b in urgent if kind == "landed")
+emergencies = stands(floors(out / "ondemand-need.tensord.log"), began, lambda order: order == 0)
+s, e, came, seconds, rate = emergencies[0] if emergencies else (0, 0, 0, 0.0, 0.0)
+during = [t for t in queued if s < t < e]
 record = json.loads((out / "ondemand-need.json").read_text())
-print(json.dumps({"run": {k: record.get(k) for k in ("number", "status")}, "first_at_order_0_ms": min((t for t, _, _ in urgent), default=None),
-                  "last_at_order_0_ms": max((t for t, _, _ in urgent), default=None), "landed_at_order_0": landed,
-                  "queued_objects_started": len(queued)}, indent=1))
+print(json.dumps({"run": {k: record.get(k) for k in ("number", "status")}, "emergency_ms": [s - began, e - began] if emergencies else None,
+                  "emergency_bytes": came, "emergency_seconds": seconds, "emergency_mb_s": rate, "landed_at_order_0": landed,
+                  "queued_objects_started": len(queued), "queued_objects_started_during": len(during)}, indent=1))
 fail = lambda why: print(why, file=sys.stderr)
 if landed < 100 << 20:
     fail(f"{landed} bytes of BiRefNet came at order 0: the call's read of it wasn't fetched first")
 if not queued:
     fail("the queued install started nothing: there was no other download")
+if not emergencies:
+    fail("the downloader's floor never stood at 0: nothing else waited for the emergency")
+else:
+    if came < 100 << 20:
+        fail(f"{came} bytes came while the floor stood at 0: the emergency wasn't BiRefNet's read")
+    if during:
+        fail(f"{len(during)} of the queued install's objects started during the emergency")
+    # The link is 30 MB/s: with every other request given way, the emergency has nearly all of it.
+    if rate < 24:
+        fail(f"the emergency moved {rate:.1f} MB/s of the 30 MB/s link: the install didn't give way")
+    if not any(t > e for t in resumed):
+        fail("the install landed nothing after the emergency: it didn't resume")
 JUDGE
 cat "$OUT/ondemand-need.timeline.json"
 while read -r why; do check "ondemand-need: $why"; done < "$OUT/ondemand-need.failed"
@@ -177,36 +212,53 @@ def at(line):
         return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
     except ValueError:
         return 0
-opened, windows, fetching, landed = {}, [], [], []
+# The downloader's floor (cl-966): each move is a line, with when it moved and what came while it stood where it was.
+def floors(path):
+    moves = []
+    for line in path.read_text(errors="replace").splitlines():
+        if "floor moved" in line:
+            f = dict(re.findall(r"(\w+)=(\S+)", line))
+            moves.append({"downloader": f["downloader"], "from": f["from"], "to": f["to"], "at": int(f["at_ms"]), "bytes": int(f["bytes"]),
+                          "seconds": float(f["seconds"]), "mb_s": float(f["mb_s"])})
+    return moves
+# Each stand of the floor at an order named by `at`: (from, to, bytes, seconds, mb_s), in order.
+def stands(moves, began, at):
+    out, open_ = [], {}
+    for m in moves:
+        if m["at"] < began:
+            continue
+        if m["from"] != "none" and at(int(m["from"])) and m["downloader"] in open_:
+            out.append((open_.pop(m["downloader"]), m["at"], m["bytes"], m["seconds"], m["mb_s"]))
+        if m["to"] != "none" and at(int(m["to"])):
+            open_[m["downloader"]] = m["at"]
+    return out
+fetching, landed = [], []
 for line in (out / "ondemand-install.tensord.log").read_text(errors="replace").splitlines():
     t = at(line)
     if t < began:
         continue
-    held = re.search(r"(giving way|given way):.*order=(\d+)", line)
-    if held and held[1] == "giving way":
-        opened[int(held[2])] = t
-    elif held and int(held[2]) in opened:
-        windows.append((opened.pop(int(held[2])), t, int(held[2])))
     found = re.search(r": (fetching|landed) .*bytes=(\d+).*priority=(\d+)", line)
     # A guess's order: class 2 of the line's (`priority::guess`).
     if found and (int(found[3]) - 2) >> 62 == 2:
         (fetching if found[1] == "fetching" else landed).append((t, int(found[2])))
-build = max(windows, key=lambda w: w[1] - w[0], default=None)
-s, e = (build[0], build[1]) if build else (0, 0)
-print(json.dumps({"windows_ms": [[a - began, b - began] for a, b, _ in windows], "guess_objects": len(landed),
+# A run's install holds the floor at its job's order (class 0).
+builds = stands(floors(out / "ondemand-install.tensord.log"), began, lambda order: 2 <= order < 1 << 62)
+build = max(builds, key=lambda w: w[1] - w[0], default=None)
+s, e, came = (build[0], build[1], build[2]) if build else (0, 0, 0)
+print(json.dumps({"builds_ms": [[a - began, b - began, n] for a, b, n, _, _ in builds], "guess_objects": len(landed),
                   "guess_bytes_before": sum(b for t, b in landed if t < s), "guess_bytes_after": sum(b for t, b in landed if t > e),
-                  "started_during": sum(1 for t, _ in fetching if s < t < e), "landed_during": sum(1 for t, _ in landed if s + 1500 < t < e)}, indent=1))
+                  "bytes_during": came, "started_during": sum(1 for t, _ in fetching if s < t < e)}, indent=1))
 fail = lambda why: print(why, file=sys.stderr)
 if not build or e - s < 3000:
-    fail(f"no install held the line for its build of seconds: {windows}")
+    fail(f"no install held the floor for its build of seconds: {builds}")
 elif not any(t < s for t, _ in fetching) or not any(t > e for t, _ in landed):
     fail("pagebox's guess wasn't in flight across the install's build: nothing was there to give way")
 else:
     if any(s < t < e for t, _ in fetching):
         fail(f"{sum(1 for t, _ in fetching if s < t < e)} of pagebox's objects started while the install built")
-    # A request in flight gives way at its next bytes: past a second and a half, nothing of the guess lands until the build ends.
-    if any(s + 1500 < t < e for t, _ in landed):
-        fail(f"{sum(1 for t, _ in landed if s + 1500 < t < e)} of pagebox's objects landed while the install built: they didn't give way")
+    # A request in flight gives way at its next bytes: while the install builds, the downloader receives next to nothing.
+    if came > 8 << 20:
+        fail(f"the downloader received {came} bytes while the install built: its requests in flight didn't give way")
 JUDGE
 cat "$OUT/ondemand-install.timeline.json"
 while read -r why; do check "ondemand-install: $why"; done < "$OUT/ondemand-install.failed"
