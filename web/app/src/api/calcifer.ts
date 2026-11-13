@@ -353,6 +353,11 @@ export type Attempt = { number: number, state: string, started_at_ms?: number | 
 replaced?: Replaced | null, };
 
 /**
+ * What a quote's run time stands on.
+ */
+export type Basis = "measured" | "prior" | "none";
+
+/**
  * A render as a view draws it: everything it covers, what has ended first, then what is going, then what waits. It is
  * the whole of what a client needs to show how a render goes, so a client follows no run of its own.
  */
@@ -2060,6 +2065,27 @@ take: string, out_frame: number,
 beats_from?: number | null, };
 
 /**
+ * Where the plan sent a run, and what that machine's offer quoted when it went (cl-967): `cozy run show`'s `placed`.
+ */
+export type Placed = { machine: string,
+/**
+ * When it was quoted, and the finish the quote said, on this computer's clock.
+ */
+quoted_at_ms: number, finish_at_ms: number, basis: Basis,
+/**
+ * Its time is the function's warm one there.
+ */
+warm?: boolean,
+/**
+ * Its install, download and load there, part of its finish.
+ */
+prepare_ms: number,
+/**
+ * Its weights' bytes it downloads there first.
+ */
+fetch_bytes: number, };
+
+/**
  * `GET /v1/runs/{id}/play?output=<name[/i]>&expires_s=N`: how a browser plays one run output
  * straight from its machine over WebRTC.
  */
@@ -2758,7 +2784,11 @@ request?: RunAsked | null,
 /**
  * The GPU it ran on, by name, once settled.
  */
-gpu?: string | null, };
+gpu?: string | null,
+/**
+ * Where the plan sent it, and what it quoted there (cl-967); none for a run no plan placed.
+ */
+placed?: Placed | null, };
 
 /**
  * What a run was asked, as it was bound. Read-only: asking it again is a new `POST /v1/runs`.

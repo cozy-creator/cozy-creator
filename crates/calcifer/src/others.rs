@@ -99,6 +99,7 @@ async fn opened(api: &Api, machine: &str, number: u64, after: u64) -> Result<(Ru
 /// `state`, which the machine `row` reports, as a run.
 fn of(row: &MachineRow, state: &v1::RunState) -> Run {
     let mut run = Run {
+        placed: None,
         id: RunId::try_from(format!("{}/{}", row.name, state.number)).expect("a machine name and a number"),
         number: 0,
         machine_number: Some(state.number),

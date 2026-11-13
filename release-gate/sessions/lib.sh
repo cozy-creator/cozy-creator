@@ -148,7 +148,13 @@ quote() {
   say "cozy $(cozy --version); $(cozy whoami 2>&1 | grep -E '^account')"
   ! listed pr-pod-session-probe || fail "gone-check: a rental that never existed reads live (no machine listing answers?)"
   for s in "${skus[@]}"; do
-    cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$OUT/quote-$s.json" 2>&1
+    # A SKU no provider has is often offered again within minutes: asked again, six times over about 6 min, as `order` does.
+    local try=1 pause=15
+    while cozy machine rent "$s" --disk-gb "$DISK" $RENT_ARGS --json < /dev/null > "$OUT/quote-$s.json" 2>&1 || true
+      grep -q sku_out_of_stock "$OUT/quote-$s.json" && [ "$try" -lt 6 ]; do
+      say "no provider has $s now (attempt $try/6): asking again in ${pause}s"
+      sleep "$pause"; try=$((try + 1)); pause=$((pause * 2 > 120 ? 120 : pause * 2))
+    done
     grep -q quote_unagreed "$OUT/quote-$s.json" || fail "a quote without --yes did not refuse: $(tail -c 300 "$OUT/quote-$s.json")"
     price=$(jq -r 'select(.quote) | .quote.usd_micros_per_hour' "$OUT/quote-$s.json" 2>/dev/null | head -1)
     [ -n "$price" ] || fail "no quote for $s: $(tail -c 300 "$OUT/quote-$s.json")"

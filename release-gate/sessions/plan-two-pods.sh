@@ -2,8 +2,8 @@
 # use that to find the fastest path in its planner"): two rentals of one SKU, both on the session's TensorD. `warm` renders two H3
 # shots: the first, its first call there, records H3's cold time (its plan compiling); the second its warm time, and leaves H3 held.
 # `cold`, rented after them, holds nothing. A third shot, rendered through this computer's Calcifer on both, is planned from what they
-# push: it goes to warm, quoted from its warm time (Calcifer's log: `goes to <warm>: <warm> finishes in N s (Measured, warm)`), and
-# ends within 20% (or 30 s) of that. Each shot is planned (its `goes to` line; none `isn't planned`). Both pods end and are seen gone.
+# push: it goes to warm, quoted from its warm time (its run's `placed`: warm, `measured`, `warm: true`), and ends within 20% (or
+# 30 s) of that. Each shot's run says where the plan placed it, on warm. Both pods end and are seen gone.
 # params:
 #   seconds  each H3 shot's length (default 15)
 #   tool     the shots' tool (default minimax-h3/generate); another is an image box with a prompt, e.g. qwen-image-2/generate_turbo
@@ -54,24 +54,27 @@ step tensord machine update "$COLD" --tensord "$(command -v cozy)" -y || fail "$
 ASK=$(date +%s%3N)
 say "step third: on $WARM and $COLD, where it finishes soonest"
 timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$WARM,$COLD" third > "$OUT/third.txt" 2>&1 || fail "the third shot: $(tail -c 400 "$OUT/third.txt")"
-tail -n 20000 "$HOME/.cozy/calcifer/calcifer.log" > "$OUT/calcifer.log" 2> /dev/null || true
+# Each shot's run, and where the plan sent it: its record's `placed`, as `cozy run watch --once` reads it from the project.
 (cd "$RUN_PROJECT" && cozy --json run ls --all --limit 20) > "$OUT/runs.json" 2>&1
-run=$(jq -c --argjson a "$ASK" '[.runs[]? | select(.kind == "call" and .created_at_ms >= $a)] | first // empty' "$OUT/runs.json")
-[ -n "$run" ] || fail "no run of the third shot: $(head -c 400 "$OUT/runs.json")"
+jq -c '[.runs[]? | select(.kind == "call")] | sort_by(.created_at_ms) | .[-3:] | .[]' "$OUT/runs.json" > "$OUT/shots.ndjson" 2> /dev/null || true
+[ "$(wc -l < "$OUT/shots.ndjson")" -eq 3 ] || fail "not three runs of the shots: $(head -c 400 "$OUT/runs.json")"
+while read -r shot; do
+  n=$(jq -r .number <<< "$shot")
+  (cd "$RUN_PROJECT" && cozy --json --full run watch "$n" --once) > "$OUT/run-$n.json" 2>&1 || true
+  placed=$(jq -c '.placed // empty' "$OUT/run-$n.json" 2> /dev/null)
+  say "run $n ran on $(jq -r .machine <<< "$shot"); placed: ${placed:-nowhere}"
+  [ -n "$placed" ] || fail "run $n has no placement on its record: the plan didn't place it"
+  [ "$(jq -r .machine <<< "$placed")" = "$WARM" ] || fail "run $n was placed on $(jq -r .machine <<< "$placed"), not $WARM"
+done < "$OUT/shots.ndjson"
+run=$(tail -1 "$OUT/shots.ndjson")
+placed=$(jq -c .placed "$OUT/run-$(jq -r .number <<< "$run").json")
 went=$(jq -r .machine <<< "$run")
-# Each shot's plan, as Calcifer's log says it: the third's is the line at or after its ask.
-grep -E "goes to [a-z0-9-]+: |isn't planned: " "$OUT/calcifer.log" > "$OUT/planned.log" || true
-sed 's/^/planned: /' "$OUT/planned.log" | tee -a "$R"
-! grep -q "isn't planned: " "$OUT/planned.log" || fail "a shot wasn't planned: $(grep "isn't planned: " "$OUT/planned.log" | head -1)"
-[ "$(grep -c "goes to $WARM: " "$OUT/planned.log")" -ge 3 ] || fail "not each of the three shots has a plan line going to $WARM"
-since=$(date -u -d "@$((ASK / 1000))" +%Y-%m-%dT%H:%M:%S)
-said=$(awk -v t="$since" 'substr($1, 1, 19) >= t' "$OUT/planned.log" | grep -E "goes to $went: " | tail -1)
-say "planned: ${said:-no placement line}"
 [ "$went" = "$WARM" ] || fail "the third shot went to $went, not $WARM, which holds its model"
-grep -qE "$went finishes in [0-9]+ s \(Measured, warm[;)]" <<< "$said" || fail "the third shot's quote isn't its warm time: ${said:-no placement line}"
-quoted=$(grep -oE "$went finishes in [0-9]+ s" <<< "$said" | grep -oE '[0-9]+' | head -1)
+[ "$(jq -r '.created_at_ms >= '"$ASK" <<< "$run")" = true ] || fail "the newest shot run is older than the third shot's ask: $run"
+jq -e '.basis == "measured" and .warm == true' <<< "$placed" > /dev/null || fail "the third shot's quote isn't its warm time: $placed"
+quoted=$(jq -r '(.finish_at_ms - .quoted_at_ms) / 1000 | floor' <<< "$placed")
 actual=$(( ($(jq -r .settled_at_ms <<< "$run") - ASK) / 1000 ))
 bound=$(( actual / 5 > 30 ? actual / 5 : 30 ))
-say "quoted ${quoted:-?} s, finished in $actual s (bound $bound s)"
-[ -n "$quoted" ] && [ $(( quoted > actual ? quoted - actual : actual - quoted )) -le "$bound" ] || fail "its quote ${quoted:-none} s is off its $actual s by more than $bound s"
-say "PASS: the plan sent the shot to the pod holding H3, and its quote held"
+say "quoted $quoted s ($(jq -r '"\(.prepare_ms / 1000 | floor) s preparing, \(.fetch_bytes) bytes to fetch"' <<< "$placed")), finished in $actual s (bound $bound s)"
+[ $(( quoted > actual ? quoted - actual : actual - quoted )) -le "$bound" ] || fail "its quote $quoted s is off its $actual s by more than $bound s"
+say "PASS: the plan sent the shot to the pod holding its model, and its quote held"

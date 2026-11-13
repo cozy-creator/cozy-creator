@@ -1087,6 +1087,7 @@ pub struct Quote {
 
 /// What a quote's run time stands on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Basis {
     /// Runs of the function on this machine.
