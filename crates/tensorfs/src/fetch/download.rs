@@ -17,9 +17,9 @@
 //! - **Giving way.** Places go to the most urgent waiting range first. Every place taken, a range in flight gives
 //!   its place up at its next bytes to one waiting at an earlier job's order, and asks again from the byte it reached.
 //!   While an object at order 0 is under way (an emergency: what a running call reads now), every other request gives
-//!   way at its next bytes and nothing else starts, so it has the whole link; then the rest go on (cl-966). A transfer
-//!   outside the downloader at an order (an install's packages, from their own index) holds what comes after it the
-//!   same way while it lasts ([`Shared::give_way`]).
+//!   way at its next bytes and nothing else starts, in every downloader of the process (`LINK`), so it has the whole
+//!   link; then the rest go on (cl-966). A transfer outside the downloader at an order (an install's packages, from
+//!   their own index) holds what comes after it in that downloader the same way while it lasts ([`Shared::give_way`]).
 //! - **Tiers.** The local store, then the volume (when one is bound), then the origin. Every byte
 //!   enters the store's admission, which hashes it: wrong bytes are never admitted. A process sharing
 //!   the store that is fetching an object is waited for, not raced (tfs-142).
@@ -198,6 +198,36 @@ pub struct Fetching {
 /// Downloaders made in this process, for their lines.
 static DOWNLOADERS: AtomicU64 = AtomicU64::new(0);
 
+/// The one link every downloader of this process shares, whichever store each fills (TensorD's: one per project's
+/// store): how many have an emergency under way, and each of them, woken when the last one ends. While any has
+/// one, every other downloader's requests wait as its own do.
+struct Link {
+    urgent: AtomicUsize,
+    sharers: Mutex<Vec<std::sync::Weak<Shared>>>,
+}
+
+static LINK: Link = Link { urgent: AtomicUsize::new(0), sharers: Mutex::new(Vec::new()) };
+
+impl Link {
+    /// A downloader's emergencies ended; the last on the link, what waits in every downloader asks again.
+    fn left(&self) {
+        if self.urgent.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.calmed();
+        }
+    }
+
+    fn calmed(&self) {
+        lock(&self.sharers).retain(|sharer| match sharer.upgrade() {
+            Some(shared) => {
+                shared.moved.notify_waiters();
+                shared.queued.notify_waiters();
+                true
+            }
+            None => false,
+        });
+    }
+}
+
 fn unix_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
@@ -218,6 +248,15 @@ impl Waiter {
         match answer.as_deref() {
             Ok(Some(answer)) => answer.clone(),
             _ => refuse(Code::TRANSFER_FAILED, format!("{}: the fetcher closed", self.task.object.sha256)),
+        }
+    }
+}
+
+impl Drop for Shared {
+    /// Gone with an emergency still counted, it leaves the link.
+    fn drop(&mut self) {
+        if self.on_link.swap(false, Ordering::AcqRel) {
+            LINK.left();
         }
     }
 }
@@ -307,6 +346,8 @@ pub(crate) struct Shared {
     runtime: tokio::runtime::Handle,
     /// Which downloader it is, of the process's: each project has its own.
     id: u64,
+    /// Whether it counts in `LINK.urgent`: an emergency of its own is under way.
+    on_link: AtomicBool,
     closed: AtomicBool,
     closing: Notify,
     /// Requests in flight, across every object, as many as the ramp allows (`Pace`).
@@ -709,6 +750,7 @@ impl Shared {
             floor_since: Mutex::new((Instant::now(), 0)),
             runtime: tokio::runtime::Handle::current(),
             id: DOWNLOADERS.fetch_add(1, Ordering::Relaxed),
+            on_link: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             closing: Notify::new(),
             slots: Slots::new(START.min(requests.max(1))),
@@ -1040,6 +1082,15 @@ impl Shared {
     fn calmed(&self, queue: &Queue) {
         let floor = queue.floor();
         let was = self.floor.swap(floor, Ordering::AcqRel);
+        // Its emergency is the link's too: counted before its line's time, so another downloader's start after it holds.
+        let urgent = queue.urgent > 0;
+        if urgent != self.on_link.swap(urgent, Ordering::AcqRel) {
+            if urgent {
+                LINK.urgent.fetch_add(1, Ordering::AcqRel);
+            } else {
+                LINK.left();
+            }
+        }
         if was != floor {
             self.floor_moved(was, floor);
         }
@@ -1067,9 +1118,15 @@ impl Shared {
         });
     }
 
-    /// Whether a request at `order` waits: an emergency (order 0) or a transfer outside comes before it.
+    /// Whether a request at `order` waits: an emergency (order 0, this downloader's or another's on the link) or a
+    /// transfer outside comes before it.
     fn held(&self, order: u64) -> bool {
-        order > self.floor.load(Ordering::Acquire)
+        order > self.floor.load(Ordering::Acquire) || order != 0 && LINK.urgent.load(Ordering::Acquire) > 0
+    }
+
+    /// It shares the process's link (`LINK`): another downloader's last emergency ending wakes what waits here.
+    pub(crate) fn join_link(self: &Arc<Self>) {
+        lock(&LINK.sharers).push(Arc::downgrade(self));
     }
 
     /// Until the guard drops, what comes after `order` waits as during an emergency: a transfer outside the
@@ -1100,7 +1157,7 @@ impl Shared {
                 queue.heap.pop();
                 continue;
             }
-            if priority > queue.floor() {
+            if priority > queue.floor() || priority != 0 && LINK.urgent.load(Ordering::Acquire) > 0 {
                 break;
             }
             queue.heap.pop();
