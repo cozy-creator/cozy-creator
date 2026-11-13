@@ -144,7 +144,8 @@ def main() -> int:
     had = len(versions("shot_2"))
     new = cozy("--json", "render", "shot_2", "--new", "-n", "2", "--on", "local")
     events = [cast(Json, json.loads(line)) for line in new.lines() if line.startswith("{")]
-    numbers = sorted(cast(int, cast(Json, event["take"])["number"]) for event in events if event.get("type") == "take")
+    # A take that landed no number (a stopped one) is said as None, not a crash that hides it.
+    numbers = sorted((cast("int | None", cast(Json, event["take"]).get("number")) for event in events if event.get("type") == "take"), key=lambda number: -1 if number is None else number)
     seen["new"] = {"said": repr(new), "numbers": numbers}
     check("new_with_n", new.code == 0 and numbers == [had + 1, had + 2] and len(versions("shot_2")) == had + 2, seen["new"])
     check("json_ends_rendered", bool(events) and events[-1].get("type") == "rendered", events[-1:])
