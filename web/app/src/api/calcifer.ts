@@ -58,8 +58,8 @@ source: string, };
 export type Agreed = { usd_micros_per_hour: number, };
 
 /**
- * One function's code and weights a machine is fetching ahead of jobs that will need them. It is no job of anyone's: wrong, it costs
- * bytes, and its job's run fetches what it needs.
+ * One upcoming job's code and weights its machine has ready ahead of it (cl-967): no job's run; wrong, it costs bytes, and the job's
+ * run fetches what it needs.
  */
 export type Ahead = {
 /**

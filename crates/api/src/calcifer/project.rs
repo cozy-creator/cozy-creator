@@ -1250,11 +1250,8 @@ pub struct Ended {
     pub asks: Vec<String>,
 }
 
-/// How the target of a run fetching ahead starts.
-pub const AHEAD: &str = "ahead ";
-
-/// One function's code and weights a machine is fetching ahead of jobs that will need them. It is no job of anyone's: wrong, it costs
-/// bytes, and its job's run fetches what it needs.
+/// One upcoming job's code and weights its machine has ready ahead of it (cl-967): no job's run; wrong, it costs bytes, and the job's
+/// run fetches what it needs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Ahead {

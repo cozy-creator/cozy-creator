@@ -293,20 +293,21 @@ keeps its machine's GPU in `gpu` from the moment it has a machine.
 The machine owns its GPU width (cl-816): a lone job runs wide, several queued jobs one GPU each; Calcifer never picks a width and sends
 `gpus` only when a person asked for a count. It sends each job where it finishes soonest:
 
-- Each machine a job may go to is asked once per batch (a render's turn, or one `cozy run`), through TensorD's `POST /v1/estimate`
-  (capability `estimate/1`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's
-  lane commit and bytes, from its Hub card), `size` (`JobSize::of` its payload), `gpu` (it or a call it makes builds a model on a GPU) and `prior_ms`
-  (eta's time for it on one GPU of that kind, from runs at one width). Its quote is packed with that machine's queue as if the whole batch
-  went there; its relative ms are added to the time the answer came.
+- Calcifer quotes each machine a job may go to itself (cl-967), from the Status it pushes, with the estimator TensorD packs its queue by
+  (`api::estimate::quote`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's
+  lane commit, bytes and repository, from its Hub card), `size` (`JobSize::of` its payload), `gpu` and `prior_ms` (eta's time for it on one
+  GPU of that kind, from runs at one width). A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
+  finishes soonest after those placed before it, then single moves while the whole ends sooner. A ready job goes when its planned machine
+  has a GPU for it (one machine: at once); each machine is told its upcoming jobs (`PUT /v1/upcoming`) and, idle with nothing planned
+  while others hold unstarted work it can run, what to prepare (`PUT /v1/prepare`).
 - A rental on its way (booting, or ordered) is quoted here as it will quote once it serves (cl-915): when it should serve (its Hub's
   `boot.expected_ready_at`, from its provider and card's recent boots and the phase it's in; else 4 min from its attempt's start; not before
   its image's pull can end; once overdue, as long again as it's late, at least 30 s; an order its Hub has had no pod for a minute isn't
-  quoted), then each job's preparation on a machine that holds nothing (TensorD's install, and its weights at the default link:
-  `api::estimate::prepare_ms`), then the runs already sent to it and the batch, packed on its GPUs as TensorD packs (`api::estimate::pack`),
-  each timed by this computer's runs on its card, else its Hub's (`GET /v1/run-times`), else a minute. Its quote's `ready_ms` says when.
+  quoted), then quoted as a machine that holds nothing (`placement::Picture`), the runs already sent to it ahead of the jobs asked, each
+  timed by this computer's runs on its card, else its Hub's (`GET /v1/run-times`), else a minute. Its quote's `ready_ms` says when.
   A job held for one says so on the board: `why` `waits for pluto, ready in about 2 min`, `machine` pluto. A run on a rental that
   completes tells its Hub what it took (`POST /v1/rentals/{id}/run-times`), so the next machine of that card is quoted before it runs.
-- A machine that can't run it at all (`fits: false`: no GPU for a function that builds a model on one, its weights too big for the disk) has no finish
+- A machine that can't run it at all (`fits: false`: its weights too big for the disk, its GPUs out of service) has no finish
   and is never chosen. Of the rest the soonest finish wins; within 2% (or 1 s), a machine that serves before one on its way, one whose
   quote stands on its own measured runs before one that doesn't, then a rental before `local`. `local` takes nothing it would do poorly (as `fit` judges) while another can, unless its
   quote stands on its own measured runs.

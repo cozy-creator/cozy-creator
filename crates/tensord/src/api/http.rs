@@ -76,7 +76,6 @@ fn routes() -> Router<Machine> {
         .route(path::LOG, get(log))
         .route(path::OBJECT, put(put_object).get(follow_object))
         .route(path::OBJECTS_HELD, post(held_objects).layer(DefaultBodyLimit::max(16 << 20)))
-        .route(path::ESTIMATE, post(estimate))
         .route(path::UPCOMING, put(upcoming))
         .route(path::PREPARE, put(prepare))
         .route(path::MODELS_REMOVE, post(remove_model))
@@ -424,17 +423,6 @@ async fn listed(m: Machine, headers: HeaderMap, prefix: &'static str, items: Vec
     Ok(json(StatusCode::OK, &answer))
 }
 
-/// `POST /v1/estimate`: when each job would run here, quoted from this machine's Status as Calcifer quotes it
-/// (`api::estimate::quote`). It reserves nothing.
-async fn estimate(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
-    let caller = m.caller(&headers)?;
-    caller.machine()?;
-    let request: v1::EstimateRequest = serde_json::from_slice(&body)
-        .map_err(|e| Error::validation("invalid_request", format!("the estimate request is not JSON: {e}")))?;
-    let frame = super::machine_status::frame(&m.identity, &m.runs, caller.actor).await?;
-    let jobs = api::estimate::quote(&frame, crate::machine::lifecycle::now_ms(), &request.jobs);
-    Ok(json(StatusCode::OK, &v1::EstimateAnswer { jobs }))
-}
 
 #[derive(Deserialize)]
 struct Page {

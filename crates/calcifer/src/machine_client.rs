@@ -26,7 +26,7 @@ use url::Url;
 use api::{
     error::{Envelope, Kind},
     machine::{
-        EstimateAnswer, EstimateRequest, Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
+        Event, HELD, HeldAnswer, HeldBytes, HeldObject, HeldRequest, LogLines, OutputTarget, Ranges,
         PREVIEW_STEP, RunBatch, RunBatchAnswer, RunEvent, RunList, RunRequest, RunState, SERVER_NAME, StatusFrame, capability, parse_held,
         path,
     },
@@ -224,11 +224,6 @@ impl Machine {
                 (None, None) => Err(Error::Answer("the machine answered a run with neither its state nor a refusal".into())),
             })
             .collect())
-    }
-
-    /// When each of `jobs` would finish here, packed with the machine's queue.
-    pub(crate) async fn estimate(&self, jobs: &EstimateRequest) -> Result<EstimateAnswer, Error> {
-        json(send(self.request(Method::POST, path::ESTIMATE, &[]).json(jobs)).await?).await
     }
 
     /// This key's upcoming jobs here, nearest first, replacing its last list (cl-967).
