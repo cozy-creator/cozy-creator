@@ -159,6 +159,9 @@ Without `rent=true` it stops after the $0 pre-flight. Dispatched from `rc/<x>`, 
 mirrors (xs-185: converted on the pod, composed on a base, run, tagged, published or held). The `CIVITAI_TOKEN` secret, when set, signs
 the session's Calcifer in to Civitai;
 `ab` runs cells from `packages_refs` checkouts on one pod and compares their outputs (a refactor's same-bytes proof).
+A package a session runs or installs from a `packages_refs` checkout carries its Triton sets, built into the checkout first by its
+`scripts/triton.sh` as a release ships them (`lib.sh` `kernels`). `parity` (xs-194) runs a package from source and its Hub release on one
+pod, each cold then warm on the same seed: the environments' distributions, their `_triton` kernels, cold execution and the output bytes must match.
 `tool-functions` (cl-774) takes `qwen-image-2/image`, `birefnet/remove_background`, `minimax-h3/generate`, `upscale` and `edit` from dropping the tool to accepting its output on one 4090, as the page does (`e2e/page.py`), a shape like `lab`'s beside them, from a `packages_refs` checkout `pk`, keeping frames to judge.
 `h3-later-segments` (se-130) is a 26 s H3 shot of two segments whose summary names segment 1's event, then a redo from its seam, as the
 page does it (`e2e/page.py`), from a `packages_refs` checkout `pk`: segment 2's summary and the redo's say only that they continue,
