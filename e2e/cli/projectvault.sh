@@ -354,7 +354,7 @@ vault_web() {
 vault_swapped() (
   step "an encrypted project unlocks after Calcifer's binary is replaced on disk (cl-981)"
   [ "${RUNNER_OS:-Linux}" = Linux ] || { echo "vault swapped: Linux runners only"; return 0; }
-  local work secrets S pid exe sup='' p
+  local work secrets S pid exe ran sup='' p a b
   work=$(mktemp -d "$OUT/vault-swapped.XXXXXX")
   secrets=$(mktemp -d "$OUT/vault-swapped-credentials.XXXXXX")
   S=$work/swapped
@@ -364,24 +364,29 @@ vault_swapped() (
   cozy --json new "$S" --passphrase-file "$secrets/pass" --recovery-out "$secrets/recovery" > "$work/created.json" 2> "$work/created.err" \
     || fail "vault swapped: new encrypted project: $(tail -c 300 "$work/created.err")"
   in_project "$S" --json vault lock > "$work/locked.json" || fail "vault swapped: lock: $(head -c 300 "$work/locked.json")"
-  pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
-  exe=$(readlink "/proc/$pid/exe")
+  # Calcifer and its supervisor are nondumpable (#2858): their /proc links read as root only.
+  pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder") || fail "vault swapped: no Calcifer lock record"
+  exe=$(sudo -n readlink "/proc/$pid/exe") || fail "vault swapped: Calcifer ($pid)'s program can't be read"
   [ -f "$exe" ] || fail "vault swapped: Calcifer ($pid) runs $exe, not a file"
   # The update: a new file renamed over Calcifer's while it runs.
   cp -p "$exe" "$exe.cl981" && mv -f "$exe.cl981" "$exe" || fail "vault swapped: $exe could not be replaced"
-  [ "$(readlink "/proc/$pid/exe")" = "$exe (deleted)" ] || fail "vault swapped: Calcifer runs $(readlink "/proc/$pid/exe") after the swap, not $exe (deleted)"
+  ran=$(sudo -n readlink "/proc/$pid/exe") || fail "vault swapped: Calcifer ($pid) is gone after the swap"
+  [ "$ran" = "$exe (deleted)" ] || fail "vault swapped: Calcifer runs $ran after the swap, not $exe (deleted)"
   in_project "$S" --json vault unlock --passphrase-file "$secrets/pass" --idle 0 > "$work/unlocked.json" 2> "$work/unlocked.err" \
     || check "vault swapped: unlock after Calcifer's binary was replaced: $(head -c 400 "$work/unlocked.json") $(tail -c 200 "$work/unlocked.err")"
   J '.vault.state == "unlocked"' "$work/unlocked.json" || check "vault swapped: not unlocked: $(head -c 300 "$work/unlocked.json")"
   [ "$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")" = "$pid" ] || check "vault swapped: Calcifer restarted, so the swap went unseen"
   # Its supervisor runs Calcifer's own build: the deleted file, not the new one.
   for p in $(pgrep -f __cozy_vault_provider || true); do
-    tr '\0' '\n' < "/proc/$p/cmdline" 2> /dev/null | grep -qF "$S/" && sup=$p
+    if sudo -n cat "/proc/$p/cmdline" 2> /dev/null | tr '\0' '\n' | grep -qF "$S/"; then sup=$p; fi
   done
   if [ -z "$sup" ]; then
-    J '.vault.state == "unlocked"' "$work/unlocked.json" && check "vault swapped: unlocked with no supervisor of $S"
-  elif [ "$(stat -L -c %d:%i "/proc/$sup/exe")" != "$(stat -L -c %d:%i "/proc/$pid/exe")" ]; then
-    check "vault swapped: the supervisor runs $(readlink "/proc/$sup/exe"), not Calcifer's build"
+    if J '.vault.state == "unlocked"' "$work/unlocked.json"; then check "vault swapped: unlocked with no supervisor of $S"; fi
+  else
+    a=$(sudo -n stat -L -c %d:%i "/proc/$sup/exe") || a="unreadable"
+    b=$(sudo -n stat -L -c %d:%i "/proc/$pid/exe") || b="unreadable"
+    [ "$a" = "$b" ] && [ "$a" != unreadable ] \
+      || check "vault swapped: the supervisor runs $a ($(sudo -n readlink "/proc/$sup/exe" 2>&1)), not Calcifer's build $b"
   fi
   in_project "$S" --json vault lock > "$work/relocked.json" || check "vault swapped: lock after unlock: $(head -c 300 "$work/relocked.json")"
   # Calcifer onto the installed file again, for what follows.
