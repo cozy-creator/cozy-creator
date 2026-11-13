@@ -2,7 +2,7 @@
 // browser's Back) puts the canvas back exactly where it was, and Forward and a reload come back to Focus on the same box. A press that began
 // inside Focus, the Files drawer or a box's menu and was let go outside keeps it open; one that began outside closes it (Paul, 11-12). In
 // Focus the wheel zooms the picture, never the canvas, and a sharper one loads with no blank frame.
-const { test, expect, box, canvasIdle, focus, middle, openPoint, png } = require('./fixtures');
+const { test, expect, box, canvasIdle, focus, middle, observeStill, openPoint, png } = require('./fixtures');
 const { camera, drag, sameCamera } = require('./geometry');
 
 // A tall picture, so its fitted size in Focus asks for a small thumbnail, and a zoom for a larger one; and Qwen's Image with a take beside it.
@@ -110,6 +110,8 @@ test('focus', async ({ page, project, api }) => {
     await region.getByRole('button', { name: 'Edit image', exact: true }).click();
     const prompt = region.locator('.in-frame .mention-text').first();
     await expect(prompt).toBeVisible();
+    // Edit fits the frame again as it opens its words: pressed once they've stopped moving, the press is on them.
+    await expect.poll(() => observeStill(page, 300, '.focus-viewport .in-frame .mention-text'), { message: 'the words at rest' }).toEqual([]);
     const away = await background(page);
     await drag(page, await inWords(prompt), away);
     await expect.soft(region, 'a press from the prompt let go outside keeps Focus').toBeVisible();
