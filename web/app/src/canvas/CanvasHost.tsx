@@ -37,7 +37,7 @@ import { HistoryControls } from "./HistoryControls"
 import type { Box } from "./graph"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
-import { aspectOf, bandOf, bodyBox, HEAD, madeHere, nameZoomOf, shownOf } from "./shown"
+import { aspectOf, bandOf, bodyBox, HEAD, madeHere, nameZoomOf, RING_MOST, shownOf } from "./shown"
 import { pressBeganOutside } from "../ui/press"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
@@ -1003,7 +1003,7 @@ function Canvas({
       >
         <Sheet />
         <ReactFlow<ElementNode, Edge>
-          style={{ "--name-zoom": String(nameZoom) } as CSSProperties}
+          style={{ "--name-zoom": String(nameZoom), "--ring-most": `${RING_MOST}px` } as CSSProperties}
           defaultNodes={[]}
           nodeTypes={nodeTypes}
           defaultViewport={saved ?? undefined}

@@ -531,6 +531,44 @@ async function placedInView(page, expected) {
     const undone = await until('all back', () => Promise.resolve(rows(folder)), (now) => CHAIN.every((name) => now[name].x === before[name].x && now[name].y === before[name].y && now[name].w === before[name].w)).catch(() => rows(folder));
     check('one_undo_puts_the_pull_back', CHAIN.every((name) => undone[name].x === before[name].x && undone[name].w === before[name].w), Object.fromEntries(CHAIN.map((name) => [name, undone[name]])));
     if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-given-way.png` });
+
+    // A name takes no drop (Paul, 11-13: "what would you drop into a label?"): far out, where a name is drawn large, a picture held over
+    // another's name is offered nothing, and let go there it lands there; nothing joins anything. On the picture itself it joins (web-undo).
+    for (let i = 0; i < 10 && (await zoomNow()) > 0.34; i++) {
+      await page.click('button[aria-label="Zoom out"]');
+      await settled(page);
+    }
+    const [over, carriedName] = ['grid_0_0', 'free'];
+    const beforeLabel = rows(folder);
+    const label = await element(page, over).locator('.head .nm').boundingBox();
+    const media = await element(page, carriedName).locator('.media').first().boundingBox();
+    const grab = { x: media.x + media.width / 2, y: media.y + media.height / 2 };
+    const onLabel = { x: label.x + Math.min(label.width / 2, 12), y: label.y + label.height / 2 };
+    await page.mouse.move(grab.x, grab.y);
+    await page.mouse.down();
+    await page.mouse.move(grab.x, grab.y - 3);
+    await page.mouse.move(onLabel.x, onLabel.y, { steps: 12 });
+    const offered = await page.evaluate(({ x, y, over }) => ({
+      under: document.elementsFromPoint(x, y).map((el) => el.className?.baseVal ?? el.className).filter(Boolean).slice(0, 4),
+      on_its_name: Boolean(document.elementsFromPoint(x, y).find((el) => el.matches?.(`.card[data-asset="${over}"] > .head .nm`))),
+      offering: document.querySelector('.stage')?.hasAttribute('data-offering'),
+      hot: [...document.querySelectorAll('.card.hot')].map((card) => card.dataset.asset),
+    }), { ...onLabel, over });
+    const heldAt = await element(page, carriedName).evaluate((node) => {
+      const { e, f } = new DOMMatrix(getComputedStyle(node).transform);
+      return { x: Math.round(e), y: Math.round(f) };
+    });
+    if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-held-over-a-name.png` });
+    await page.mouse.up();
+    const afterLabel = await until(`${carriedName} let go over ${over}'s name`, () => Promise.resolve(rows(folder)), (now) => !now[carriedName] || now[carriedName].x !== beforeLabel[carriedName].x || now[carriedName].y !== beforeLabel[carriedName].y).catch(() => rows(folder));
+    await settled(page);
+    const stillThere = assetsOf(folder).some((asset) => asset.name === carriedName);
+    seen.over_a_name = { zoom: await zoomNow(), label, offered, heldAt, before: beforeLabel[carriedName], after: afterLabel[carriedName] ?? null, still_there: stillThere };
+    check('held_over_a_name_it_is_on_the_name', offered.on_its_name && label.height >= 8, seen.over_a_name);
+    check('a_name_offers_nothing', !offered.offering && !offered.hot.includes(over), seen.over_a_name);
+    check('let_go_over_a_name_nothing_joins', stillThere && Boolean(afterLabel[carriedName]), seen.over_a_name);
+    check('let_go_over_a_name_it_lands_there', Boolean(afterLabel[carriedName]) && Math.abs(afterLabel[carriedName].x - heldAt.x) <= 3 && Math.abs(afterLabel[carriedName].y - heldAt.y) <= 3, seen.over_a_name);
+    if (process.env.SHOT) await page.screenshot({ path: `${process.env.SHOT}-let-go-over-a-name.png` });
   }
 
   // A box the page places as it arrives, and the CLI's `at` for it written between the page's read of where things sit and its write of

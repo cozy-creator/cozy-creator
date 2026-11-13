@@ -35,7 +35,7 @@ import type { ReadableProjection } from "./readableSurface"
 import { fieldsOf, fullRows, heldTo, mainText } from "./controls"
 import { angleOf, baseOf, FPS, framesIn, pickupAt } from "./ranges"
 import { asName, freeName, nameKey } from "./names"
-import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, paints, ratioOf, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
+import { bodyBox, bodyWidth, canvasBox, faceOf, heightFor, hexOf, madeHere, makes, NARROWEST, onPicture, paints, ratioOf, reshapes, selectedOf, sentShape, type Shown, shownOf, toolName, newTakeId, type Taking, takingOf, underOf, valueIn, valuesOf, watched, widthFor } from "./shown"
 import { mentionsIn, rowsIn, textsIn } from "./text"
 import { clipOf, wire } from "./timeline/model"
 import { PageHistory, type Target } from "./history"
@@ -2456,7 +2456,8 @@ export class CanvasStore {
 
   // A drag
 
-  /** Whatever box is under the pointer, with `dragged` taken away. One being worked on takes a drop in the part it's let go on. */
+  /** Whatever box's picture is under the pointer, with `dragged` taken away. One being worked on takes a drop in the part it's let go on.
+   *  A box's name, and the lines under it, take nothing (Paul, 11-13: "what would you drop into a label?"): let go there, it lands there. */
   dropTargetAt(x: number, y: number, dragged: Element[]): DropTarget | null {
     for (const el of document.elementsFromPoint(x, y)) {
       if (dragged.some((held) => held.contains(el))) continue
@@ -2464,6 +2465,7 @@ export class CanvasStore {
       if (!card) continue
       const name = this.resolveName(card.dataset.asset ?? "")
       const view = this.views.get(name)
+      if (!view?.here && !onPicture(el)) continue
       // A part of an open box takes what it says it takes (`whyNot`).
       const at = view?.here && el.closest("[data-drop-target]")
       const part = at && this.dropTargets.get(at)
