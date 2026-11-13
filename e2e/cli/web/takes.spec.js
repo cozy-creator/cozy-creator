@@ -120,13 +120,16 @@ test('takes', async ({ page, project, api }) => {
     let region = await focus(page, 'a');
     await region.getByRole('button', { name: 'Render', exact: true }).click();
     await expect(region.locator('.here-side .take.making'), 'its take on its way').toHaveCount(1);
-    // Looked away from, at what's approved: its take lands not looked at.
+    // Looked away from, at what's approved, before it's sent (43405964751: its fit took 1.3 s) or after: that's what stays looked at, and
+    // its take lands not looked at.
     await tile(region, 'version', 3).click();
     await expect.poll(async () => (await project.asset('a'))?.versions, { message: "a's new take", timeout: 120_000 }).toBe(4);
+    // Its mark first: the page has read it, so what Calcifer keeps of it is settled.
+    await expect.soft(tile(region, 'version', 4).getByRole('img', { name: 'Not looked at yet', exact: true })).toBeVisible();
     const a = await project.asset('a');
     expect.soft(approval(a), 'a new take leaves the approval alone').toEqual({ pinned: true, approved: 3 });
     expect.soft(a.unseen ?? [], 'not looked at yet').toContain(4);
-    await expect.soft(tile(region, 'version', 4).getByRole('img', { name: 'Not looked at yet', exact: true })).toBeVisible();
+    await expect.soft(region.getByLabel('Take', { exact: true }), 'still the one looked at').toHaveText('v3');
     await expect.soft(tile(region, 'version', 3)).toHaveAttribute('aria-current', 'true');
     await tile(region, 'version', 4).click();
     await softly.poll(async () => (await project.asset('a'))?.unseen ?? [], { message: 'seen' }).not.toContain(4);

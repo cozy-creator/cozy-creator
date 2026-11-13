@@ -6,7 +6,7 @@
 const { spawn } = require('child_process');
 const { join } = require('path');
 const { createInterface } = require('readline');
-const { test, expect, box, canvasIdle, focus, middle } = require('./fixtures');
+const { test, expect, box, canvasIdle, focus, middle, zoomOf } = require('./fixtures');
 
 /** Polls whose miss leaves the cell going, as `expect.soft` does. */
 const softly = expect.configure({ soft: true });
@@ -167,19 +167,27 @@ test('instant', async ({ page, project, api, guards }) => {
     await region.getByRole('button', { name: 'Back to canvas' }).click();
     await canvasIdle(page);
 
-    const was = await box(page, first).boundingBox();
-    const head = await middle(box(page, first).locator('.head'));
-    await page.mouse.move(head.x, head.y);
+    // Carried by its name, as a hand moves a box: a drag where it draws nothing (its name row past its name) pans the canvas (Paul, 11-06).
+    const zoom = await zoomOf(page);
+    const was = await placeOf(page, first);
+    const grip = await middle(box(page, first).locator('.nm'));
+    // The drag begins past the px that tell it from a click; from there the box goes with the pointer.
+    const began = { x: grip.x + 4, y: grip.y + 2 };
+    const to = { x: grip.x + 120, y: grip.y + 80 };
+    await page.mouse.move(grip.x, grip.y);
     await page.mouse.down();
-    await page.mouse.move(head.x + 4, head.y + 2);
-    await page.mouse.move(head.x + 120, head.y + 80, { steps: 6 });
+    await page.mouse.move(began.x, began.y);
+    await page.mouse.move(to.x, to.y, { steps: 6 });
     await page.mouse.up();
+    // On the canvas, not only on screen, where a pan would move it too.
     await softly.poll(async () => {
-      const now = await box(page, first).boundingBox();
-      return Math.round(Math.max(Math.abs(now.x - was.x - 120), Math.abs(now.y - was.y - 80)));
-    }, { message: 'the move shows at once, where it was let go: px off', timeout: 1000 }).toBeLessThanOrEqual(2);
+      const now = await placeOf(page, first);
+      return Math.round(Math.max(Math.abs(now.x - was.x - (to.x - began.x) / zoom), Math.abs(now.y - was.y - (to.y - began.y) / zoom)));
+    }, { message: 'the move shows at once, on the canvas where it was let go: px off', timeout: 1000 }).toBeLessThanOrEqual(2);
     const place = await placeOf(page, first);
     expect.soft(posts.calls.length, 'still the one POST, held').toBe(1);
+    const going = writes.slice(writes.indexOf('POST /assets')).filter((write) => write === `PATCH /assets/${encodeURIComponent(first)}` || write === 'PATCH /canvas');
+    expect.soft(going, 'its words and its move wait behind its POST').toEqual([]);
     expect.soft(await project.asset(first), 'still nothing saved').toBeUndefined();
 
     await posts.release();
@@ -252,7 +260,7 @@ test('instant', async ({ page, project, api, guards }) => {
     await softly.poll(async () => Boolean(await project.asset(second)), { message: 'saved once let go', timeout: 60_000 }).toBe(false);
     await expect.soft(page.locator('.pill.warn').filter({ hasText: 'project.db is open in another program' }), 'the top bar clears').toHaveCount(0, { timeout: 30_000 });
     await expect.soft(box(page, second)).toHaveCount(0);
-    expect.soft(Boolean(await project.asset('taken')), 'what else is there stays').toBe(true);
+    expect.soft((await project.assets()).map((asset) => asset.name).sort(), 'what else is there stays').toEqual([first, 'taken'].sort());
     expect.soft((await lines()).filter((line) => /Couldn't delete/.test(line)), 'nothing refused').toEqual([]);
   });
 });

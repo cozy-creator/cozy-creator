@@ -47,6 +47,22 @@ async function timed(page, label, spec, act) {
   expect.soft(when === null ? Infinity : when - returned, `${label}: ms from its command returning to the canvas showing it`).toBeLessThanOrEqual(LIVE_MS);
 }
 
+/** Each `method` call to `path` waits here, unsent, until `release`: as a slow network holds it. */
+async function hold(page, method, path) {
+  const calls = [];
+  let open;
+  const held = new Promise((done) => (open = done));
+  const matches = (url) => url.pathname === path;
+  const handler = async (route) => {
+    if (route.request().method() !== method) return route.fallback();
+    calls.push(route.request());
+    await held;
+    await route.fallback();
+  };
+  await page.route(matches, handler);
+  return { calls, release: async () => { open(); await page.unroute(matches, handler); } };
+}
+
 /** `cozy apply -f` of `nodes`, written as a file of the cell's own. */
 async function apply(cli, file, nodes) {
   writeFileSync(file, JSON.stringify(nodes));
@@ -70,7 +86,7 @@ async function newRun(api, project, before) {
   return run;
 }
 
-test('live', async ({ page, context, project, api, cli, signIn }, testInfo) => {
+test('live', async ({ page, context, project, api, cli, signIn, guards }, testInfo) => {
   mkdirSync(testInfo.outputDir, { recursive: true });
   const file = (name) => testInfo.outputPath(name);
   await page.evaluate(watchCanvas);
@@ -110,21 +126,37 @@ test('live', async ({ page, context, project, api, cli, signIn }, testInfo) => {
     const to = { x: Math.round(right + 160), y: Math.round(cards.api_b.y + 40) };
     await timed(page, 'API: a move', { name: 'api_b', at: to }, () => api.patch(project.at('/canvas'), { cards: { api_b: to } }));
 
-    // Words being typed in cli_a meanwhile: the CLI sets its description and the API renames it, and every typed character stays.
+    // Words being typed in cli_a meanwhile, at a person's pace: the CLI sets its description, and the API renames the box while the page's
+    // read of that is still on its way, so the read finds nothing by the old name (the 404 is this cell's doing). The page follows the
+    // rename: Focus stays on the box under its new name, and every typed character stays and is saved there beside the CLI's description.
+    guards.allow(/status of 404\b.*\/v1\/projects\/[^/ ]+\/assets\/cli_a$/);
+    const notFound = [];
+    page.on('response', (answer) => {
+      if (answer.status() === 404 && new URL(answer.url()).pathname === project.at('/assets/cli_a')) notFound.push(answer.request().method());
+    });
     const region = await focus(page, 'cli_a');
     const words = region.getByRole('textbox', { name: 'Text', exact: true });
     await words.click();
     await page.keyboard.press('ControlOrMeta+End');
-    await page.keyboard.type(' TYPED-MEANWHILE');
+    const typing = page.keyboard.type(' TYPED-MEANWHILE', { delay: 150 });
+    const reads = await hold(page, 'GET', project.at('/assets/cli_a'));
     rev = await revOf(cli, 'cli_a');
     await apply(cli, nodes, { cli_a: { rev, description: 'Said by the CLI meanwhile' } });
-    await timed(page, 'API: a rename of the box being typed in', { focused: 'cli_typed' }, () => api.post(project.at('/rename'), { from: 'cli_a', to: 'cli_typed' }));
+    await softly.poll(() => reads.calls.length, { message: "the page reads the CLI's description" }).toBeGreaterThan(0);
+    await timed(page, 'API: a rename of the box being typed in, its read on the way', { focused: 'cli_typed' }, async () => {
+      await api.post(project.at('/rename'), { from: 'cli_a', to: 'cli_typed' });
+      await reads.release();
+    });
+    await typing;
     const open = page.getByRole('region', { name: 'Focused asset' });
     await expect.soft(open.getByRole('textbox', { name: 'Text', exact: true }), 'what was typed, kept through both').toHaveText('Second CLI words TYPED-MEANWHILE');
-    await open.getByRole('button', { name: 'Back to canvas' }).click();
+    // Back to the canvas from the keyboard, where the hands are.
+    await page.keyboard.press('Escape');
     await canvasIdle(page);
     await softly.poll(async () => (await project.asset('cli_typed'))?.fields, { message: "the typed words saved beside the CLI's description" })
       .toMatchObject({ text: 'Second CLI words TYPED-MEANWHILE', description: 'Said by the CLI meanwhile' });
+    expect.soft(notFound.filter((method) => method === 'GET').length, 'the reads held past its rename found nothing by its old name').toBeGreaterThanOrEqual(reads.calls.length);
+    expect.soft(notFound.filter((method) => method !== 'GET'), 'no write went under its old name').toEqual([]);
     expect.soft(await page.evaluate(() => window.notReloaded), 'the canvas was never reloaded').toBe(true);
   });
 

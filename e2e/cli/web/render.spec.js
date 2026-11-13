@@ -278,8 +278,8 @@ test('render', async ({ page, project, api, cli }) => {
     await expect.poll(() => settled(project, 'after'), { message: 'after canceled, its take gone' }).toEqual({ takes: 0, making: 0, versions: 0 });
     await expect.soft(face(page, 'after')).toHaveCount(0);
     await expect(face(page, 'slow').locator('.face-state b'), 'slow renders').toHaveText(/^Drawing/, { timeout: 90_000 });
-    // The whole job's meter, at rest, rises as it goes. Nothing like slow ran here, so its estimate is its own steps': latents.py's is
-    // setup's 0 s steps (43401337115: 99 on every frame of latent's 8 s), and the meter never goes back within a run.
+    // The whole job's meter, at rest, rises as it goes and never goes back. Nothing like slow ran here, so its estimate is its own steps',
+    // and those say no time left until its second (43405964751: 99 from then on, "6s / 6s" then "7s / 21s"): the meter isn't pinned by it.
     const rising = async () => {
       const meter = (await said(page, 'slow')).map((look) => look.meter).filter((value) => value !== null);
       return meter.length > 1 && meter.every((value, i) => i === 0 || value >= meter[i - 1]) && meter.at(-1) > meter[0] ? 'rising' : `not rising: ${meter.join(' ') || 'no meter'}`;
@@ -359,7 +359,8 @@ test('render', async ({ page, project, api, cli }) => {
       .toContain(WARNED);
     const warnings = region.getByRole('button', { name: 'Warnings', exact: true });
     await expect.soft(warnings).toHaveAttribute('title', new RegExp(WARNED));
-    const meanwhile = await notesOver(page, 2000);
+    // Waited out past when a note would come; with every note since the reload, one up before the window is seen too.
+    const meanwhile = (await notesOver(page, 2000)).concat(await page.evaluate(() => window.__notes));
     expect.soft(meanwhile.filter((text) => text.includes('warned')), 'a take landing where it is looked at says nothing').toEqual([]);
 
     await pull();

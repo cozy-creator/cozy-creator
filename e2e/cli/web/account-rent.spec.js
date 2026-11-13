@@ -250,13 +250,17 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       expect.soft(sent.postDataJSON().on, 'Run here anyway renders here').toEqual(['local']);
       expect((await sent.response())?.ok(), 'its render asked').toBe(true);
       // Cancel as a person presses it, as soon as its face offers it. Run 43401337115: pressed 80 ms after its 202, Calcifer answered
-      // {"dropped":["heavy"]}, and the run went on to complete with its take.
+      // {"dropped":["heavy"]}, and the run went on to complete with its take. Since #3259 a job dropped as it's sent is never sent (no
+      // run), and a run it was making is canceled at its machine: settled once nothing is asked, queued or running.
       await region.getByRole('status', { name: "heavy's render" }).getByRole('button', { name: "Cancel heavy's render", exact: true }).click();
       const ended = ['completed', 'failed', 'canceled'];
-      await expect.poll(async () => (await runsOf(project, 'heavy')).map((one) => ended.includes(one.status)), { message: "heavy's run ended", timeout: 60_000 }).toEqual([true]);
-      const [canceled] = await runsOf(project, 'heavy');
+      await expect.poll(async () => {
+        const { busy, queue } = await project.state();
+        return !busy && !queue?.length && (await runsOf(project, 'heavy')).every((one) => ended.includes(one.status));
+      }, { message: "heavy's render settled", timeout: 60_000 }).toBe(true);
+      const canceled = await runsOf(project, 'heavy');
       const takes = (await project.asset('heavy')).versions ?? 0;
-      expect.soft({ status: canceled.status, takes }, 'Cancel stops its render: no take').toEqual({ status: 'canceled', takes: 0 });
+      expect.soft({ runs: canceled.filter((one) => one.status !== 'canceled').map((one) => `#${one.number} ${one.status}`), takes }, 'Cancel stops its render: no run of it but canceled, no take').toEqual({ runs: [], takes: 0 });
       expect.soft((await api.post(project.at('/fit'), { names: ['heavy'] })).tools, 'Run here anyway, kept by Calcifer').toMatchObject([{ here: true }]);
 
       /** Render, asking nothing: sent to this computer, and one more take lands. */
@@ -274,7 +278,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await expect(region).toHaveAttribute('data-focused-asset', 'heavy');
       await canvasIdle(page);
       await again('Render after a reload');
-      const later = (await runsOf(project, 'heavy')).filter((one) => one.number !== canceled.number);
+      const later = (await runsOf(project, 'heavy')).filter((one) => !canceled.some((was) => was.number === one.number));
       expect.soft(later.map((one) => `${one.status} on ${one.machine}`), 'the later renders, each on this computer').toEqual(['completed on local', 'completed on local']);
     });
 
@@ -308,8 +312,9 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       expect(cpu, "the docker provider's cpu, listed").toBeDefined();
       const [width] = cpu.widths;
       const row = rent.getByRole('listitem').filter({ has: page.getByText('cpu', { exact: true }) });
-      expect.soft(width.vcpu_count, 'its vCPUs, as the Hub lists them').toBeGreaterThan(0);
-      await expect.soft(row.locator('small'), 'its vCPUs').toHaveText(`${width.vcpu_count} vCPU, no GPU`);
+      // Its vCPUs as its width lists them, "?" for none. The isolated Hub lists none: tensorhub's docker provider sizes its container by
+      // the CPU worker image's shape but leaves the shape off the offer it lists (internal/provider/docker.go, Inventory).
+      await expect.soft(row.locator('small'), 'its vCPUs, as the Hub lists them').toHaveText(`${width.vcpu_count ?? '?'} vCPU, no GPU`);
       await expect.soft(row.locator('.price'), 'its price').toHaveText(`$${(width.price_usd_micros_per_hour / 1e6).toFixed(2)}/h`);
       await row.getByRole('button', { name: 'Rent', exact: true }).click();
       await expect.soft(rent.getByText('It bills until you end it, or after 15 minutes idle.', { exact: true }), 'what the quote bills').toBeVisible();
@@ -338,6 +343,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
     await test.step('Render here checked, then End › End it', async () => {
       const here = drawer.getByRole('checkbox', { name: /^Render on / });
       await expect(here).toBeEnabled();
+      // The press shows with the click itself (run 43405964751: its box sprang back until the project's cache told its readers).
       await here.check();
       await expect.soft(here).toBeChecked();
       await expect.poll(async () => {
