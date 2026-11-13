@@ -338,7 +338,7 @@ pub(crate) fn project_storage_protocol_required() -> Refusal {
 }
 
 impl Refusal {
-    fn remedy(self, remedy: &str) -> Self {
+    pub(crate) fn remedy(self, remedy: &str) -> Self {
         Refusal(self.0.remedy(remedy))
     }
 }
@@ -445,7 +445,8 @@ pub(crate) type MutationLease = Arc<tokio::sync::OwnedRwLockReadGuard<bool>>;
 
 async fn admit(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>, mut request: Request, next: Next) -> Response {
     // Calcifer's own account, then its own page or this computer's cozy (`loopback::admitted`).
-    let (principal, client) = match crate::loopback::admitted(&api, &peer, request.method(), request.headers()).await {
+    let (method, headers) = (request.method(), request.headers());
+    let (principal, client) = match crate::loopback::admitted(&api, &peer, method, headers).await {
         Ok(admitted) => admitted,
         Err(refusal) => {
             warn!(code = refusal.0.code, "refused {} {}", request.method(), request.uri().path());

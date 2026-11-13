@@ -78,7 +78,8 @@ pub(super) async fn http(api: &Arc<Api>, address: SocketAddr, request: Request, 
 
 /// The hot reload socket, by `/v1`'s rule: Calcifer's account and its own page, whose exact `Origin` the guard required.
 pub(super) async fn upgrade(State(api): State<Arc<Api>>, ConnectInfo(peer): ConnectInfo<Peer>, mut request: Request) -> Result<Response, Refusal> {
-    crate::loopback::admitted(&api, &peer, request.method(), request.headers()).await?;
+    let (method, headers) = (request.method(), request.headers());
+    crate::loopback::admitted(&api, &peer, method, headers).await?;
     let address = api.development_web.get().ok_or_else(unavailable)?;
     let protocol = request.headers().get(header::SEC_WEBSOCKET_PROTOCOL).and_then(|value| value.to_str().ok()).filter(|value| matches!(*value, "vite-hmr" | "vite-ping")).ok_or_else(unavailable)?;
     if request.headers().get(header::UPGRADE).and_then(|value| value.to_str().ok()).is_none_or(|value| !value.eq_ignore_ascii_case("websocket")) { return Err(unavailable()); }

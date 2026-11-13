@@ -1,7 +1,7 @@
-# e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. `cozy open
-#`; Chrome redeems its code (web/serves.js), the page loads under its CSP with no violation, an event arrives on
-# GET /v1/events; and what must be refused is: a foreign Host and Origin, a used or expired code, ?media= past a file route, a
-# call with no holder or session. Then the page as a person uses it: Place (web/place.js), twenty pictures dropped at once (web/dropped.js), one stream across tabs and a
+# e2e/cli/web.sh: the `web-serves` cell, the part cli/run.sh calls `web_serves`, on every OS, with no machine or model. Chrome opens
+# Calcifer's page with nothing minted or kept (web/serves.js), it loads under its CSP with no violation, an event arrives on
+# GET /v1/events; and what must be refused is: a rebinding or foreign Host and Origin, another site's or port's request, an
+# extension's, a WebSocket with no Origin, and a call with neither a label nor the bearer (design/calcifer-access.md). Then the page as a person uses it: Place (web/place.js), twenty pictures dropped at once (web/dropped.js), one stream across tabs and a
 # `kill -9` of Calcifer (web/reconnect.js), edits with Calcifer stopped that land when it's back (web/offline.js), undo and redo of the project's history from the page and the CLI (web/undo.js), the Runs and Machines drawers with a real run from the CLI where this computer runs
 # models (web/drawers.js), what each machine is doing (web/activity.js), sign-in through AuthKit's form (web/signin.js), any project as live boxes (web/see.js), zoom from the canvas's corner (web/zoom.js), the background and dots at every zoom (web/canvas.js), how every box and what's around the canvas are laid out (web/layout.js), assets as a person works them (web/nodes.js), a render this computer would do poorly asked first (web/localfit.js), one Models & LoRAs picker for every tool (web/models.js), a box at rest as Paul drew it (web/tiles.js), versions by name and a tool on a box (web/versions.js), right click Download (web/download.js), a starred asset first in Files (web/star.js), boxes copied, pasted and duplicated (web/copy.js), a click selects and a double click opens, Delete deletes (web/select.js), a box from its tool's fields (web/tools.js), a field that applies only while another has a value (web/when.js), a shot's segments played as they land (web/segments.js), a tool on a box of the kind it makes (web/kinds.js), deleting by a trash can (web/trash.js), a take's segments redone and another box's take continued (web/scrub.js), a pulled shape snapping to a ratio its tool makes (web/aspect.js), the canvas where it was after Focus (web/refocus.js), no New on an empty box (web/empty.js), the right-side panel closed by a click off it (web/drawer.js), the tool under a box (web/toolword.js), a mention its tool can't use crossed out (web/unused.js), typed words that read over a picture (web/legible.js), a Shot's beats laid out (web/beats.js), pasted mentions marked as typed and loaded (web/paste.js), a press from inside never dismissing (web/dismiss.js), every tool the Hub lists in the palette (web/palette.js), an orbit video turned (web/orbit.js), the video editor: a full-size player over a timeline, joined into versions as the cut changes (web/timeline.js),
 # the CLI and the open canvas as one project (web/live.js), 5,000 assets (web/scale.js), projects closed once nothing reads them (web/closes.js), a package's own UI (web/package_ui.js), the
@@ -29,16 +29,13 @@ answers() {
     || check "web-serves: $what: $got, not $want ${code/#-/}: $(head -c 300 "$OUT/web-reply.json")"
 }
 
-# redeem <what> <status> <error code, or -> <code>
-redeem() { answers "$1" "$2" "$3" -X POST -H 'Content-Type: application/json' -d "{\"code\":\"$4\"}" "$base/v1/session"; }
-
 # The merge check keeps functional journeys here; layout runs in parallel and scale is an explicit benchmark.
 web_core() { web_serves core; }
 web_native() { web_serves native; }
 web_firefox() { web_serves firefox; }
 
 web_serves() {
-step "web-serves: sign in, the page under its CSP, an event, and what is refused"
+step "web-serves: the page as its own, under its CSP, an event, and what is refused"
 local scope=${1:-full} lock=$HOME/.cozy/calcifer/calcifer.lock.holder P=$OUT/web-project pic=$OUT/web-picture.png pw=$OUT/playwright
 local addr token base chrome id
 chrome=$(web_chrome)
@@ -287,7 +284,7 @@ web_engines() {
   for cell in ${3:-place see nodes}; do web_proof "$cell" "$chrome" "$pw" ''; done
 }
 
-# A command that kills this Calcifer and brings it back, as the page finds it: at its own port, its sessions kept. `cozy status` only
+# A command that kills this Calcifer and brings it back, as the page finds it: at its own port, with nothing to sign in again. `cozy status` only
 # reads, and Windows has no service manager to restart it, so this is a verb that needs Calcifer. It comes back on the Hub $2, else on this
 # suite's: config.toml's, since a service hears nothing of a caller's environment, and it starts before that verb asks.
 # The Hub goes in config.toml before the kill: a service manager starts a Calcifer killed so at once, reading it then.
@@ -330,16 +327,15 @@ web_proof() {
   case $folder in */web-*) rm -rf "$folder" 2> /dev/null || { sleep 5; rm -rf "$folder"; } || true ;; esac
 }
 
-# web_serves's own, on its project.
+# web_serves's own, on its project: the page with nothing minted or kept, and each request the access rule refuses
+# (design/calcifer-access.md). The second OS account, a browser's cross-site requests, framing, restarts and dev mode are web/access.js's.
 web_signed_in() {
-local code=0 wait expires
+local code=0 port=${addr##*:} file mode
 HOLDER=$(web_path "$lock") ARGV_LOG=$(web_path "$OUT/argv.log") CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
   node "$(web_path "$here/web/serves.js")" "$id" "$(web_path "$P")" "$(web_path "$pic")" > "$OUT/web.json" 2> "$OUT/web.err" || code=$?
 [ "$code" = 0 ] || check "web-serves: the browser failed: $(tail -c 500 "$OUT/web.err")"
-J '.session.status == 200 and (.session.token | length > 0) and (.session.media | length > 0)' "$OUT/web.json" \
-  || { check "web-serves: the page did not redeem its code: $(jq -c '{session, signed_in}' "$OUT/web.json")"; return; }
-local session media
-session=$(jq -r .session.token "$OUT/web.json") media=$(jq -r .session.media "$OUT/web.json")
+J '(.minted | length) == 0 and (.authorization | length) == 0 and .gate == 0' "$OUT/web.json" \
+  || check "web-serves: the page asked for or sent a credential, or wasn't answered: $(jq -c '{minted, authorization, gate}' "$OUT/web.json")"
 
 J '.document.status == 200 and .document.referrer_policy == "no-referrer"' "$OUT/web.json" || check "web-serves: GET /: $(jq -c .document "$OUT/web.json")"
 for directive in "default-src 'none'" "script-src 'self' 'wasm-unsafe-eval'" "style-src 'self'" "img-src 'self' blob: data:" "media-src 'self' blob:" "font-src 'self'" "connect-src 'self'" "base-uri 'none'" "form-action 'none'" "frame-ancestors 'none'"; do
@@ -348,61 +344,72 @@ done
 J ".document.csp // \"\" | contains(\"'unsafe-eval'\") | not" "$OUT/web.json" || check "web-serves: the page's CSP allows eval: $(jq -c .document.csp "$OUT/web.json")"
 J '(.violations | length) == 0 and (.page_errors | length) == 0' "$OUT/web.json" || check "web-serves: the page broke under its CSP: $(jq -c '{violations, page_errors}' "$OUT/web.json")"
 J '.console_errors | length == 0' "$OUT/web.json" || check "web-serves: the page's console has errors, such as a route Calcifer lacks: $(jq -c .console_errors "$OUT/web.json")"
-J '[.document.set_cookie, .session.set_cookie] == [null, null] and (.cookies | length) == 0' "$OUT/web.json" || check "web-serves: a cookie was set: $(jq -c '{document, session, cookies}' "$OUT/web.json")"
+J '.document.set_cookie == null and (.cookies | length) == 0 and (.stored | length) == 0' "$OUT/web.json" || check "web-serves: the browser keeps something of Calcifer's: $(jq -c '{document, cookies, stored}' "$OUT/web.json")"
 J '(.assets | length) > 0 and (.assets | all(.status == 200 and (.cache_control // "" | contains("no-store"))))' "$OUT/web.json" || check "web-serves: /assets/* is not 200 and no-store: $(jq -c .assets "$OUT/web.json")"
-J --arg b "Bearer $session" '.page_stream.status == 200 and (.page_stream.content_type // "" | startswith("text/event-stream")) and .page_stream.authorization == $b' "$OUT/web.json" \
-  || check "web-serves: the page did not open GET /v1/events on its session: status $(jq -c .page_stream.status "$OUT/web.json")"
+J '.page_stream.status == 200 and (.page_stream.content_type // "" | startswith("text/event-stream")) and .page_stream.authorization == null and .page_stream.site == "same-origin"' "$OUT/web.json" \
+  || check "web-serves: the page did not open GET /v1/events as its own page: $(jq -c .page_stream "$OUT/web.json")"
 J --arg id "$id" '.stream_status == 200 and .streamed[0].type == "hello" and (.streamed | any(.type == "project.changed" and .id == $id))' "$OUT/web.json" \
   || check "web-serves: no hello then project.changed on GET /v1/events: $(jq -c '{stream_status, streamed}' "$OUT/web.json")"
+if [ "${RUNNER_OS:-}" = Windows ]; then
+  J '.storage.version == 3 and (.storage.principal | startswith("user:S-1-"))' "$OUT/web.json" || check "web-serves: project storage isn't this account's: $(jq -c .storage "$OUT/web.json")"
+else
+  J --arg p "user:$(id -u)" '.storage.version == 3 and .storage.principal == $p' "$OUT/web.json" || check "web-serves: project storage isn't this account's: $(jq -c .storage "$OUT/web.json")"
+fi
+J '.typed.status == 200 and .typed.site == "none"' "$OUT/web.json" || check "web-serves: a /v1 URL opened in the address bar: $(jq -c .typed "$OUT/web.json")"
 
-# The Host a person's SSH tunnel sends passes, a foreign one and a foreign Origin do not.
-local port=${addr##*:} file
-answers "the session on GET /v1/status" 200 - -H "Authorization: Bearer $session" "$base/v1/status"
-answers "a loopback Host on another port" 200 - -H "Authorization: Bearer $session" -H 'Host: localhost:1' "$base/v1/status"
-answers "a foreign Host on the page" 403 host_not_allowed -H "Host: rebind.example:$port" "$base/"
-answers "a foreign Host with the holder's bearer" 403 host_not_allowed -H "Authorization: Bearer $token" -H "Host: rebind.example:$port" "$base/v1/status"
-answers "a foreign Origin" 403 origin_not_allowed -H "Authorization: Bearer $token" -H 'Origin: http://evil.example' "$base/v1/status"
-answers "another port's Origin" 403 origin_not_allowed -H "Authorization: Bearer $token" -H 'Origin: http://127.0.0.1:1' "$base/v1/status"
-answers "the page's own Origin" 200 - -H "Authorization: Bearer $session" -H "Origin: $base" "$base/v1/status"
+# What isn't Calcifer's own page, or this computer's cozy with its bearer, is refused in one line.
+local B=(-H "Authorization: Bearer $token") page=(-H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors') ws=(-H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==')
+answers "the CLI's bearer" 200 - "${B[@]}" "$base/v1/status"
+answers "the listener's other name, localhost" 200 - "${B[@]}" -H "Host: localhost:$port" "$base/v1/status"
+answers "a loopback Host on another port" 403 host_not_allowed "${B[@]}" -H 'Host: localhost:1' "$base/v1/status"
+answers "a rebinding Host on the page" 403 host_not_allowed -H "Host: 127.0.0.1.nip.io:$port" "$base/"
+answers "a rebinding Host on /v1, with the bearer" 403 host_not_allowed "${B[@]}" -H "Host: 127.0.0.1.nip.io:$port" "$base/v1/status"
+answers "a rebinding page's own request" 403 host_not_allowed "${page[@]}" -H "Host: 127.0.0.1.nip.io:$port" -H "Origin: http://127.0.0.1.nip.io:$port" "$base/v1/status"
+answers "a foreign Origin" 403 origin_not_allowed "${B[@]}" -H 'Origin: http://evil.example' "$base/v1/status"
+answers "another port's Origin" 403 origin_not_allowed "${B[@]}" -H 'Origin: http://127.0.0.1:1' "$base/v1/status"
+answers "the page's own request" 200 - "${page[@]}" -H "Origin: $base" "$base/v1/status"
+answers "another site's request" 403 not_own_page -H 'Sec-Fetch-Site: cross-site' -H 'Sec-Fetch-Mode: no-cors' "$base/v1/status"
+answers "another site's request, with the bearer" 403 not_own_page "${B[@]}" -H 'Sec-Fetch-Site: cross-site' -H 'Sec-Fetch-Mode: cors' "$base/v1/status"
+answers "another port's page (same-site)" 403 not_own_page -H 'Sec-Fetch-Site: same-site' -H 'Sec-Fetch-Mode: cors' "$base/v1/status"
+answers "an extension's fetch (none, not a navigation)" 403 not_own_page -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: cors' "$base/v1/status"
+answers "a URL opened (none, a navigation)" 200 - -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: navigate' "$base/v1/status"
+answers "a navigation that writes" 403 not_own_page -X POST -H 'Sec-Fetch-Site: none' -H 'Sec-Fetch-Mode: navigate' -H 'Content-Type: application/json' -d '{}' "$base/v1/run-estimates"
+answers "neither a label nor the bearer" 401 unauthenticated "$base/v1/machines"
+answers "a wrong bearer" 401 unauthenticated -H 'Authorization: Bearer 00' "$base/v1/machines"
+answers "a wrong bearer from the page" 401 unauthenticated "${page[@]}" -H 'Authorization: Bearer 00' "$base/v1/machines"
+answers "a WebSocket with no Origin" 403 origin_not_allowed "${ws[@]}" "$base/__cozy_hmr"
+answers "a WebSocket from another site" 403 origin_not_allowed "${ws[@]}" -H 'Origin: http://localhost:1' "$base/__cozy_hmr"
 
-# A code works once, and a fresh one only until it expires (below).
-local once other fresh
-answers "the holder asks for a code" 200 - -X POST -H "Authorization: Bearer $token" "$base/v1/session-codes"
-once=$(jq -r '.code // empty' "$OUT/web-reply.json")
-redeem "a code" 200 - "$once"
-other=$(jq -r '.token // empty' "$OUT/web-reply.json")
-redeem "a used code" 400 session_code_invalid "$once"
-redeem "an unknown code" 400 session_code_invalid 00
-answers "ending that session" 204 - -X DELETE -H "Authorization: Bearer $other" "$base/v1/session"
-
-answers "no credential" 401 unauthenticated "$base/v1/machines"
-answers "a code asked for with no credential" 401 unauthenticated -X POST "$base/v1/session-codes"
-answers "a code asked for by a session, not the holder" 403 session_code_needs_bearer -X POST -H "Authorization: Bearer $session" "$base/v1/session-codes"
-issued_before=$(date +%s)
-answers "the holder asks for another code" 200 - -X POST -H "Authorization: Bearer $token" "$base/v1/session-codes"
-issued_after=$(date +%s)
-fresh=$(jq -r '.code // empty' "$OUT/web-reply.json") expires=$(jq -r '.expires_ms // 0' "$OUT/web-reply.json")
-issued_at=$(( expires / 1000 - 900 ))
-[ "$issued_at" -ge "$issued_before" ] && [ "$issued_at" -le "$issued_after" ] && [ -n "$fresh" ] || check "web-serves: sign-in code lifetime is not 15 minutes"
-
+# Media as the page's <img> asks for it: no header of its own, no secret in the URL.
 file=$(jq -r '.imported.path // empty' "$OUT/web.json"); file=${file##*/}
 if [ -n "$file" ]; then
-  answers "?media= on GET of a file" 200 - "$base/v1/projects/$id/files/$file?media=$media"
-  answers "?media= on HEAD of a file" 200 - -I "$base/v1/projects/$id/files/$file?media=$media"
-  answers "?media= on a write to a file route" 401 unauthenticated -X PUT --data-binary "@$pic" "$base/v1/files/sha256:$(jq -r .imported.sha256 "$OUT/web.json")?media=$media"
+  local img=(-H 'Sec-Fetch-Mode: no-cors' -H 'Sec-Fetch-Dest: image')
+  answers "the page's <img> of a file" 200 - -H 'Sec-Fetch-Site: same-origin' "${img[@]}" "$base/v1/projects/$id/files/$file"
+  answers "the page's HEAD of a file" 200 - -I -H 'Sec-Fetch-Site: same-origin' "${img[@]}" "$base/v1/projects/$id/files/$file"
+  answers "another site's <img> of a file" 403 not_own_page -H 'Sec-Fetch-Site: cross-site' "${img[@]}" "$base/v1/projects/$id/files/$file"
+  answers "another port's <img> of a file" 403 not_own_page -H 'Sec-Fetch-Site: same-site' "${img[@]}" "$base/v1/projects/$id/files/$file"
+  answers "the CLI's read of a file" 200 - "${B[@]}" -H 'cozy-project-storage: 3' "$base/v1/projects/$id/files/$file"
+  answers "a file read with neither" 401 unauthenticated "$base/v1/projects/$id/files/$file"
 else
   check "web-serves: the import named no file: $(jq -c .imported "$OUT/web.json")"
 fi
-answers "?media= past a file route" 401 unauthenticated "$base/v1/machines?media=$media"
-answers "?media= on a write" 401 unauthenticated -X POST -H 'Content-Type: application/json' -d '{"path":"/nowhere"}' "$base/v1/projects?media=$media"
-answers "?media= as a bearer" 401 unauthenticated -H "Authorization: Bearer $media" "$base/v1/machines"
 
-answers "ending the session" 204 - -X DELETE -H "Authorization: Bearer $session" "$base/v1/session"
-answers "an ended session" 401 unauthenticated -H "Authorization: Bearer $session" "$base/v1/machines"
-answers "an ended session's ?media=" 401 unauthenticated "$base/v1/projects/$id/files/$file?media=$media"
-
-# Expiry boundaries and restart durability are checked without sleeping in sessions::tests.
-
+# The bearer lives in the 0600 lock record alone: no file route serves it, and it's in neither Calcifer's argv nor its environment.
+local route
+for route in "/assets/..%2F..%2Fcalcifer.lock.holder" "/v1/projects/$id/files/..%2F..%2F..%2F.cozy%2Fcalcifer%2Fcalcifer.lock.holder" "/@fs$HOME/.cozy/calcifer/calcifer.lock.holder"; do
+  curl -sS -o "$OUT/web-reply.json" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: no-cors' "$base$route" || true
+  ! grep -qF "$token" "$OUT/web-reply.json" || check "web-serves: $route served the bearer"
+done
+case ${RUNNER_OS:-$(uname -s)} in
+  Linux) mode=$(stat -c %a "$lock") ;;
+  macOS | Darwin) mode=$(stat -f %Lp "$lock") ;;
+  *) mode=600 ;;
+esac
+[ "$mode" = 600 ] || check "web-serves: the lock record is mode $mode, not 600"
+if [ -r "/proc/$(jq -r .pid < "$lock")/environ" ]; then
+  ! tr '\0' '\n' < "/proc/$(jq -r .pid < "$lock")/cmdline" | grep -qF "$token" || check "web-serves: the bearer is in Calcifer's argv"
+  ! tr '\0' '\n' < "/proc/$(jq -r .pid < "$lock")/environ" | grep -qF "$token" || check "web-serves: the bearer is in Calcifer's environment"
+fi
 }
 
 # Alone: this computer's cozy, as it is, in the default home.
