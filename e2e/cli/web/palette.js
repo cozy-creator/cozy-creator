@@ -9,7 +9,6 @@
 // 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
-const { readFileSync } = require('fs');
 const { holderToken, projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, carry, fitCanvas, implementationRow, lastLook, launch, lookAt, noStall, openCanvas, until } = require('./page');
 
 const failures = [];
@@ -57,11 +56,10 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = { token: holderToken() };
-  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
+  const api = (path, init = {}) => page.evaluate(async ({ path, init }) => {
+    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, init, token: held?.token });
+  }, { path, init });
 
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-palette-${Date.now()}`));
@@ -157,7 +155,7 @@ const OPERATIONS = ['image', 'edit_image', 'upscale_image', 'video', 'edit_video
   await shot('boxes');
 
   // Taken off, it's off the list at rest and the palette; its package added, it's back.
-  putBack = () => fetch(`${calcifer()}/v1/tools/list`, { method: 'POST', headers: { Authorization: `Bearer ${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ add: image.split('/')[0] }) });
+  putBack = () => fetch(`${calcifer()}/v1/tools/list`, { method: 'POST', headers: { Authorization: `Bearer ${holderToken()}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ add: image.split('/')[0] }) });
   const off = await api('/v1/tools/list', { method: 'POST', body: JSON.stringify({ remove: [image] }) });
   check('taken_off', off.status === 200 && off.body?.without?.includes(image), off);
   await page.reload();

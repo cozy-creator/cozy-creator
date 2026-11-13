@@ -96,7 +96,7 @@ function audit() {
     await context.addInitScript((dark) => { try { localStorage.setItem('cozy.theme', dark ? 'dark' : 'paper'); } catch {} }, theme === 'dark');
     contexts[theme] = context;
   }
-  /** A tab signed in on its own: a session is the tab's. */
+  /** A tab that opens the page on its own. */
   const signedIn = async (theme) => {
     const tab = await contexts[theme].newPage();
     watch(tab);

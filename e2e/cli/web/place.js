@@ -129,10 +129,11 @@ async function placedInView(page, expected) {
     document.addEventListener('securitypolicyviolation', (e) => window.violations.push(`${e.violatedDirective}: ${e.blockedURI} ${e.sourceFile}:${e.lineNumber} ${e.sample}`));
   });
 
-  // The page, as Calcifer's own (cl-980): no code, no session, nothing kept in the browser.
+  // The page, as Calcifer's own (cl-985): nothing to sign in with, and no credential kept in the browser, the lock record's bearer least of all.
   await signIn(page);
   await page.waitForSelector('.top');
-  check('no_session_kept', await page.evaluate(() => localStorage.getItem('cozy.session') === null && sessionStorage.getItem('cozy.session') === null));
+  const kept = await page.evaluate(() => [localStorage, sessionStorage].flatMap((store) => Object.keys(store).map((key) => `${key}=${store.getItem(key)}`)));
+  check('no_credential_kept', !kept.some((entry) => entry.includes(holderToken())) && (await context.cookies()).length === 0, { kept, cookies: (await context.cookies()).length });
 
   // A project of its own, by name, from the Projects drawer.
   const projectName = `web-place-${Date.now()}`;
@@ -542,7 +543,7 @@ async function placedInView(page, expected) {
     await page.route(canvasRead, async (route) => {
       if (route.request().method() !== 'GET' || read) return route.fallback();
       read = true;
-      const answer = await route.fetch();
+      const answer = await route.fetch({ headers: { ...route.request().headers(), authorization: `Bearer ${holderToken()}` } });
       await held;
       await route.fulfill({ response: answer }).catch(() => {});
     });

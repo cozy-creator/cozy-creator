@@ -615,8 +615,8 @@ def crash_before_controller_receipt(native: Native, project: Path, bindings: lis
     check(replacement != exact and alive(replacement), "calcifer_replacement_birth",
           different=replacement != exact, live=alive(replacement))
     CONTEXT["crash_stage"] = "replacement_capability"
-    # Native.raw positively binds version, token and actual daemon Birth on this
-    # global status read; it does not read/acknowledge the project receipt.
+    # Native.raw positively binds version, this account and actual daemon Birth on this
+    # global status read (its 200 proves the bearer); it does not read/acknowledge the project receipt.
     response = native.raw("GET", "/v1/status")
     check(response.status == 200, "calcifer_replacement_status", status=response.status)
 

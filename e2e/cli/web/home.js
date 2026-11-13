@@ -2,8 +2,9 @@
 // recently opened first, each opening its own; an empty canvas that says, in a line, to pick one or press +; and the + makes a project in
 // place, through the one create `cozy new` uses (`POST /v1/projects {path}`): its folder suggested as `<last project's parent>/untitled-N`
 // and edited where it is, encrypted unless asked not to, its recovery secret shown once, then opened. A folder with anything in it is said
-// in one line beside the field. A page with no session says what to run, and lists nothing. Going from one project to another never blanks
-// the screen: the frame stays, and some canvas is drawn in every frame. Screenshots at 1280, 1600 and 2560 wide, paper and dark.
+// in one line beside the field. Going from one project to another never blanks the screen: the frame stays, and some canvas is drawn in
+// every frame. Screenshots at 1280, 1600 and 2560 wide, paper and dark. The gate a page Calcifer refuses draws is access.js's, with a real
+// second OS account: a browser of this one is always Calcifer's own page (cl-985).
 //   node home.js: opened by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $COZY: the CLI; $SHOT: where its screenshots go. Needs the project
 // encryption driver (e2e/cli/install-vault-driver.sh). Prints what it saw as JSON and exits 1 if anything failed.
@@ -20,7 +21,6 @@ function check(name, ok, detail) {
   seen[name] = ok === true ? true : (detail ?? false);
   if (ok !== true) failures.push(name);
 }
-const NO_SESSION = 'No project open here';
 const HOME_LINE = 'No project open. Pick one above, or press +.';
 const PASSPHRASE = 'synthetic home passphrase';
 const holder = () => JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
@@ -68,16 +68,6 @@ const CODE = /\/p\/([0-9A-HJKMNP-TV-Z]{9})$/;
     }
     await panel(page).getByRole('button', { name: 'Create project', exact: true }).click();
   };
-
-  // No session: what to run, in place, and no project listed.
-  const stranger = await open(1600, 1000);
-  await stranger.goto(`${base}/`);
-  await stranger.getByRole('heading', { name: NO_SESSION }).waitFor();
-  const strangerText = await stranger.locator('main.gate').innerText();
-  check('no_session_says_what_to_run', strangerText.includes('cozy open') && strangerText.includes('cozy new'), strangerText);
-  check('no_session_lists_nothing', (await stranger.locator('.ptab').count()) === 0 && !(await stranger.content()).includes(a.path));
-  await shot(stranger, 'no-session');
-  await stranger.context().close();
 
   // `/`: the strip of every project, most recently opened first, over an empty canvas that says what to do.
   const page = await open(1600, 1000);

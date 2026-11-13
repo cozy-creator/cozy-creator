@@ -1,7 +1,7 @@
 // See it, in a real browser on a real Calcifer (project-web-ui §4, §8; web-ui.md §2): a project as a live graph. Files from `cozy
 // import` and boxes another writer makes through the project API show with no reload: elements of every kind, with no edges, each placed once, left
 // to right of what it reads, its row written. What `GET /v1/projects/{id}` says for it. A video's poster isn't its black first frame; a rest
-// on its box, or on a take, plays its preview, made as it landed, which leaving or a pan stops; playing is Range with ?media=, at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
+// on its box, or on a take, plays its preview, made as it landed, which leaving or a pan stops; playing is Range, with no secret in its URL, at most two. A take landing shows with no reload, a failure stays across a reload and is gone when its text changes, a file that
 // leaves is "On another computer" and comes back. Where this computer runs models: versions, looking at one, pin and unpin, on a real
 // run. With the Hub unreachable it still answers. 300 elements, measured, and panned under a resting pointer: seen.scale. The project
 // tabs: as many as fit, still while the window resizes, "N more" opening All projects with the rest first, a search there, and + ready
@@ -27,8 +27,6 @@ function check(name, ok, detail) {
   during = name;
   if (!ok) failures.push(name);
 }
-// A session's media token stays out of what this prints.
-const shownUrl = (url) => url.replace(/([?&]media=)[^&]+/, '$1…');
 
 const FIRST_RUN_MS = 300_000;
 const COZY = process.env.COZY;
@@ -115,12 +113,12 @@ async function rest(page, handle) {
   const watch = (tab) => {
     tab.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
     // A connection a restart cut isn't a fault of the page. Anything Calcifer answered is: a route it lacks shows only here.
-    tab.on('console', (m) => { if (m.type() === 'error' && !/net::ERR_/.test(m.text())) errors.push(`console: ${m.text()} ${shownUrl(m.location().url)}`); });
+    tab.on('console', (m) => { if (m.type() === 'error' && !/net::ERR_/.test(m.text())) errors.push(`console: ${m.text()} ${m.location().url}`); });
     tab.on('response', (answer) => {
       const url = new URL(answer.url());
       // Whatever Calcifer refused, and in its words: its console line says only the status. HEAD asks whether a file is held, and no is an answer.
       if (answer.status() >= 400 && answer.request().method() !== 'HEAD') {
-        const refusal = { status: answer.status(), url: shownUrl(url.pathname + url.search), during };
+        const refusal = { status: answer.status(), url: url.pathname + url.search, during };
         refused.push(refusal);
         answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
       }
@@ -137,9 +135,8 @@ async function rest(page, handle) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const token = holderToken();
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${holderToken()}`, 'cozy-project-storage': '3', ...init.headers } });
     return answer.json();
   };
 
@@ -311,7 +308,7 @@ async function rest(page, handle) {
   check('wire_version_main', landedVersion?.main?.field === 'image' && /^files\//.test(landedVersion?.main?.path ?? '') && landedVersion?.main?.sha256?.startsWith('sha256:'), landedVersion);
   await shot('landed');
 
-  // Playing: a file here over Range with ?media=. One box is open at a time, and what it plays goes with it.
+  // Playing: a file here over Range. One box is open at a time, and what it plays goes with it.
   await open(page, 'clip');
   // A clip lasts a second, and one that ends lets go: paused, each keeps its place in the count.
   const held = () => page.evaluate(() => document.querySelectorAll('video').forEach((video) => video.pause()));

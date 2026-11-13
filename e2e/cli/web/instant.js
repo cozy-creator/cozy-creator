@@ -52,7 +52,7 @@ async function loseAnswers(page, method, path, times) {
     keys.push(lost.request().headers()['idempotency-key']);
     if (left <= 0) return lost.fallback();
     left -= 1;
-    await lost.fetch();
+    await lost.fetch({ headers: { ...lost.request().headers(), authorization: `Bearer ${holderToken()}` } });
     await lost.abort('connectionreset');
   };
   await page.route(path, route);
@@ -83,8 +83,7 @@ async function loseAnswers(page, method, path, times) {
   const folder = (await api(`/v1/projects/${id}`)).body.path;
   seen.project = { id, folder };
   // The project and its canvas as Calcifer answers them (cl-803: both are project.db's), asked from here: what the page reads is counted.
-  const token = holderToken();
-  const cards = async () => (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).cards ?? {};
+  const cards = async () => (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${holderToken()}`, 'cozy-project-storage': '3' } })).json()).cards ?? {};
   const status = () => projectJson(folder).assets;
   const names = () => status().map((asset) => asset.name);
   const hasAsset = (name) => names().includes(name);
@@ -228,7 +227,7 @@ async function loseAnswers(page, method, path, times) {
   const order = { ours_recorded: false, outside_committed_before_reply: false };
   const delayReply = async (route) => {
     if (route.request().method() !== 'PATCH' || route.request().postDataJSON()?.fields?.text !== 'ours') return route.fallback();
-    const response = await route.fetch();
+    const response = await route.fetch({ headers: { ...route.request().headers(), authorization: `Bearer ${holderToken()}` } });
     try {
       oursHeld = canonicalWords();
       order.ours_recorded = oursHeld?.fields?.text === 'ours' && words() === 'ours';

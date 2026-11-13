@@ -46,10 +46,10 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   await signIn(page);
   await page.waitForSelector('.top');
   const held = { token: holderToken() };
-  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
+  const api = (path, init = {}) => page.evaluate(async ({ path, init }) => {
+    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, init, token: held?.token });
+  }, { path, init });
 
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-orbit-${Date.now()}`));

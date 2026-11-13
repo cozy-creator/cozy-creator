@@ -182,7 +182,7 @@ const AUTOMATIC = /Nothing checked: this project's renders are placed automatica
   // rental's in the panel and in its chip's flyout. No such pod runs here: the list's answer carries one more, stand-a's record as a pod
   // reports its GPUs and the Hub its price.
   await page.route(/\/v1\/machines(\?[^/]*)?$/, async (route) => {
-    const answer = await route.fetch();
+    const answer = await route.fetch({ headers: { ...route.request().headers(), authorization: `Bearer ${holderToken()}` } });
     const body = await answer.json();
     const real = body.machines?.find((one) => one.name === IN);
     if (real) {

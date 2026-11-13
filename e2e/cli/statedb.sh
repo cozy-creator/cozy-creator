@@ -1,7 +1,9 @@
 # e2e/cli/statedb.sh: Calcifer's own state is in state.db (cl-818), each cell through the CLI and Calcifer's HTTP, no machine or model.
-#   state_crash    Calcifer killed (kill -9) amid project opens, tool-list edits and sign-ins: each whole or absent, each one answered kept
-#   state_files    nothing in ~/.cozy/calcifer is a JSON store (blobs by hash stay files), and state.db is its owner's alone
-#   state_import   OLD=<dir>, an earlier Calcifer's files as its build wrote them: imported at the next start, then gone
+#   state_crash    Calcifer killed (kill -9) amid project opens and tool-list edits: each whole or absent, each one answered kept
+#   state_files    nothing in ~/.cozy/calcifer is a JSON store (blobs by hash stay files), state.db is its owner's alone, and it keeps no
+#                  browser session (cl-985)
+#   state_import   OLD=<dir>, an earlier Calcifer's files as its build wrote them: imported at the next start, then gone; its sessions
+#                  deleted unread
 # Uses project.sh's `api` and projectdb.sh's `kill9` and `db_calcifer`.
 
 # state <query>: what state.db holds, read only, one JSON row a line.
@@ -14,7 +16,6 @@ for row in conn.execute(sys.argv[2]):
 PY
 }
 state1() { state "$1" | head -1 | jq -r '.[0] // empty'; }
-digest() { printf %s "$1" | sha256sum | cut -c1-64; }
 
 statedb() {
 state_crash
@@ -22,30 +23,23 @@ state_files
 }
 
 state_crash() {
-step "state.db: Calcifer killed amid project opens, tool-list edits and sign-ins: each whole or absent, each one answered kept"
-local S=$OUT/state-crash n=60 many=3000 i w1 w2 w3 opened edited signed id path token
+step "state.db: Calcifer killed amid project opens and tool-list edits: each whole or absent, each one answered kept"
+local S=$OUT/state-crash n=60 many=3000 i w1 w2 opened edited id path
 mkdir -p "$S"
 db_calcifer
-# Each its own transaction: a project made and known; a tool off your list; a session from a code.
+# Each its own transaction: a project made and known; a tool off your list.
 open_one() { api -sS -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: state-open-$1" -d "{\"path\": \"$S/p$1\", \"unencrypted\": true}" "http://$ADDR/v1/projects"; }
 edit_one() { api -sS -X POST -H 'Content-Type: application/json' -d "{\"remove\": [\"qwen-image-2/crash_$1\"]}" "http://$ADDR/v1/tools/list"; }
-sign_one() {
-  local code
-  code=$(api -sS -X POST "http://$ADDR/v1/session-codes" | jq -r '.code // empty') && [ -n "$code" ] || return 1
-  curl -sS -X POST -H 'Content-Type: application/json' -d "{\"code\": \"$code\"}" "http://$ADDR/v1/session"
-}
-: > "$S/opened" && : > "$S/edited" && : > "$S/signed"
+: > "$S/opened" && : > "$S/edited"
 (for ((i = 1; i <= n; i++)); do open_one "$i" 2> /dev/null | jq -ce 'select(.id) | {id, path}' >> "$S/opened" || true; done) & w1=$!
 (for ((i = 1; i <= many; i++)); do edit_one "$i" 2> /dev/null | jq -ce --arg t "qwen-image-2/crash_$i" 'select(.without | index($t)) | $t' >> "$S/edited" || true; done) & w2=$!
-(for ((i = 1; i <= many; i++)); do sign_one "$i" 2> /dev/null | jq -ce 'select(.token)' >> "$S/signed" || true; done) & w3=$!
-until { [ "$(wc -l < "$S/opened")" -ge 15 ] && [ "$(wc -l < "$S/edited")" -ge 15 ] && [ "$(wc -l < "$S/signed")" -ge 15 ]; } \
-  || ! kill -0 "$w1" 2> /dev/null || ! kill -0 "$w2" 2> /dev/null || ! kill -0 "$w3" 2> /dev/null; do sleep 0.05; done
+until { [ "$(wc -l < "$S/opened")" -ge 15 ] && [ "$(wc -l < "$S/edited")" -ge 15 ]; } || ! kill -0 "$w1" 2> /dev/null || ! kill -0 "$w2" 2> /dev/null; do sleep 0.05; done
 kill9
-kill "$w1" "$w2" "$w3" 2> /dev/null || true
-wait "$w1" "$w2" "$w3" 2> /dev/null || true
-opened=$(wc -l < "$S/opened") edited=$(wc -l < "$S/edited") signed=$(wc -l < "$S/signed")
-echo "state crash: killed with $opened of $n opens, $edited of $many tool edits and $signed of $many sign-ins answered"
-{ [ "$opened" -lt "$n" ] && [ "$edited" -lt "$many" ] && [ "$signed" -lt "$many" ]; } || check "state crash: Calcifer was killed after one kind was all answered: not amid all three"
+kill "$w1" "$w2" 2> /dev/null || true
+wait "$w1" "$w2" 2> /dev/null || true
+opened=$(wc -l < "$S/opened") edited=$(wc -l < "$S/edited")
+echo "state crash: killed with $opened of $n opens and $edited of $many tool edits answered"
+{ [ "$opened" -lt "$n" ] && [ "$edited" -lt "$many" ]; } || check "state crash: Calcifer was killed after one kind was all answered: not amid both"
 # As the kill left it, before any Calcifer opens it again.
 [ "$(state1 'PRAGMA integrity_check')" = ok ] || check "state crash: integrity: $(state 'PRAGMA integrity_check')"
 local torn=() lost=() rows
@@ -62,12 +56,9 @@ rows=$(state 'SELECT package FROM tool_list ORDER BY ord' | jq -sc 'map(.[0])')
 while read -r tool; do
   [ "$(state1 "SELECT count(*) FROM tools_off WHERE tool = '$tool'")" = 1 ] || lost+=("tool $tool")
 done < <(jq -r . "$S/edited")
-while read -r token; do
-  [ "$(state1 "SELECT count(*) FROM sessions WHERE token_sha256 = '$(digest "$token")'")" = 1 ] || lost+=("session ${token:0:8}")
-done < <(jq -r .token "$S/signed")
 [ ${#torn[@]} = 0 ] || check "state crash: torn: ${torn[*]:0:5}"
 [ ${#lost[@]} = 0 ] || check "state crash: answered, then lost: ${lost[*]:0:5}"
-echo "state crash: in state.db $(state1 "SELECT count(*) FROM projects WHERE path LIKE '$S/%'") projects, $(state1 "SELECT count(*) FROM tools_off WHERE tool LIKE 'qwen-image-2/crash_%'") tools off, $(state1 'SELECT count(*) FROM sessions') sessions"
+echo "state crash: in state.db $(state1 "SELECT count(*) FROM projects WHERE path LIKE '$S/%'") projects, $(state1 "SELECT count(*) FROM tools_off WHERE tool LIKE 'qwen-image-2/crash_%'") tools off"
 # The Calcifer the next command starts answers each as it was kept.
 cozy --json machine ls > /dev/null 2> "$S/ls.err" || check "state crash: no Calcifer after the kill: $(tail -c 300 "$S/ls.err")"
 db_calcifer
@@ -78,26 +69,26 @@ while read -r id path; do
 done < <(jq -r '"\(.id) \(.path)"' "$S/opened")
 api -sS -X POST -H 'Content-Type: application/json' -d '{}' "http://$ADDR/v1/tools/list" > "$S/list.json"
 while read -r tool; do J --arg t "$tool" '.without | index($t)' "$S/list.json" || lost+=("tool $tool"); done < <(jq -r . "$S/edited")
-while read -r token; do
-  [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://$ADDR/v1/status")" = 200 ] || lost+=("session ${token:0:8}")
-done < <(jq -r .token "$S/signed")
 [ ${#lost[@]} = 0 ] || check "state crash: after the restart, not answered as kept: ${lost[*]:0:5}"
-[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(printf '0%.0s' {1..64})" "http://$ADDR/v1/status")" = 401 ] || check "state crash: a token never given admits"
-# As it was: the tools back on, the sessions ended.
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $(printf '0%.0s' {1..64})" "http://$ADDR/v1/status")" = 401 ] || check "state crash: a bearer not the lock record's admits"
+# As it was: the tools back on.
 api -sS -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"add": "qwen-image-2"}' "http://$ADDR/v1/tools/list" || true
-while read -r token; do curl -sS -o /dev/null -X DELETE -H "Authorization: Bearer $token" "http://$ADDR/v1/session" || true; done < <(jq -r .token "$S/signed")
 }
 
 state_files() {
-step "state.db: no JSON store in ~/.cozy/calcifer, and state.db its owner's alone"
+step "state.db: no JSON store in ~/.cozy/calcifer, state.db its owner's alone, and no browser session kept"
 local dir=$HOME/.cozy/calcifer stores table
 # Blobs stay files, each named by its sha256 (`files/`, `local/`'s manifests): a store is a file of what changes.
 stores=$(cd "$dir" && find . -maxdepth 1 -name '*.json' ! -name refused.json | sort | paste -sd' ')
 [ -z "$stores" ] || check "state: JSON stores in $dir: $stores"
 [ ! -e "$dir/after" ] || check "state: $dir/after is still there: $(ls -A "$dir/after" | head -5 | paste -sd' ')"
 [ "$(stat -c %a "$dir/state.db")" = 600 ] || check "state: state.db is $(stat -c %a "$dir/state.db"), not 600"
-for table in projects sessions tool_list tools_off rendered_here headers after_steps; do
+for table in projects tool_list tools_off rendered_here headers after_steps; do
   [ "$(state1 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '$table'")" = 1 ] || check "state: state.db has no $table"
+done
+# Nothing signs a page in (cl-985): a Calcifer that kept sessions has them dropped at its next start.
+for table in sessions session_codes; do
+  [ "$(state1 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '$table'")" = 0 ] || check "state: state.db still has $table"
 done
 # What a project's page has not seen is the project's own, in its project.db: state.db holds none.
 [ "$(state1 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'unseen'")" = 0 ] || check "state: state.db holds a global unseen table"
@@ -105,7 +96,7 @@ echo "state: $dir holds $(cd "$dir" && ls -A | paste -sd' ')"
 }
 
 # OLD=<dir>: copies of an earlier Calcifer's projects.json, sessions.json, tools.json, here.json, checkpoints.json and after/, as its build
-# wrote them. With Calcifer stopped they go where it kept them; its next start imports each and deletes it.
+# wrote them. With Calcifer stopped they go where it kept them; its next start imports each and deletes it, sessions.json unread.
 state_import() {
 step "state.db: an earlier Calcifer's files imported at the first start, then gone"
 local dir=$HOME/.cozy/calcifer lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid name
@@ -140,14 +131,17 @@ if [ -f "$OLD/tools.json" ]; then
   echo "state import: your list $got"
 fi
 if [ -f "$OLD/sessions.json" ]; then
-  want=$(jq -c '[.[] | [.token, .media]] | sort' "$OLD/sessions.json")
-  got=$(state 'SELECT token_sha256, media_sha256 FROM sessions' | jq -sc sort)
-  [ "$want" = "$got" ] || check "state import: sessions $got, not $want"
-  echo "state import: $(jq length <<< "$got") sessions"
-  # A token signed in before the cut still admits, if the run that made OLD kept it.
+  # Nothing of it kept (state_files: no sessions table): none of its digests is in state.db, and a token signed in before the cut, if
+  # the run that made OLD kept them, is refused.
+  local kept=0 digest token
+  while read -r digest; do
+    ! grep -qsaF "$digest" "$dir/state.db" "$dir/state.db-wal" || kept=$((kept + 1))
+  done < <(jq -r '.[] | (.token, .media) | strings' "$OLD/sessions.json")
+  [ "$kept" = 0 ] || check "state import: $kept of sessions.json's digests are in state.db"
   [ ! -f "$OLD/tokens" ] || while read -r token; do
-    [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://$ADDR/v1/status")" = 200 ] || check "state import: a session from before the cut doesn't admit"
+    [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://$ADDR/v1/status")" = 401 ] || check "state import: a session from before the cut admits"
   done < "$OLD/tokens"
+  echo "state import: sessions.json's $(jq length "$OLD/sessions.json") sessions deleted, none kept"
 fi
 if [ -f "$OLD/here.json" ]; then
   want=$(jq -c '[.here[] | [.tool, .machine, (.bytes // 0)]] | sort' "$OLD/here.json")

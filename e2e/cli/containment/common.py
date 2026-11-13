@@ -73,7 +73,10 @@ class Observed(TypedDict, total=False):
     cards: int
     typed: bool
     visible: bool
-    authenticated: bool
+    owned_injected: bool
+    admitted: bool
+    principal: str
+    daemon_birth: str
     status: int
     no_store: bool
     range: bool
@@ -175,8 +178,9 @@ _FAILURE_CODES = frozenset({
     'native_auth_required', 'native_capability', 'native_core_file_created',
     'native_core_protection_failed', 'native_file_not_retained_after_restart', 'native_history_not_retained_after_restart',
     'native_http_status', 'native_outside_file_created', 'native_private_run_identity_missing',
-    'native_project_write_failed', 'native_terminal_result_missing', 'old_holder_authority_survived',
-    'outside_baseline_replaced', 'outside_project_canary', 'owned_browser_tree_not_retired',
+    'native_project_write_failed', 'native_terminal_result_missing', 'not_own_page_refusal', 'old_holder_authority_survived',
+    'other_user_refusal', 'outside_baseline_replaced', 'outside_project_canary', 'owned_browser_tree_not_retired',
+    'owned_media_capability', 'owned_page_injected',
     'owned_hmr_csp_header', 'owned_hmr_initial_module', 'owned_hmr_nonce_missing',
     'owned_hmr_reloaded_document', 'owned_hmr_update', 'owned_host_core_control_required',
     'owned_host_core_control_unavailable', 'owned_no_store_200', 'owned_no_store_206',
@@ -208,6 +212,16 @@ def sha(data: bytes) -> str:
 def birth(pid: int) -> Birth:
     fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
     return {"pid": pid, "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(), "start_ticks": int(fields[19])}
+
+
+def daemon_birth(pid: int) -> str:
+    """`GET /v1/project-storage`'s `daemon_birth` for the Calcifer at `pid`."""
+    return sha(json.dumps(birth(pid), separators=(",", ":")).encode())
+
+
+def principal() -> str:
+    """Whom Calcifer binds project storage to: its own account (loopback.rs `Principal`)."""
+    return f"user:{os.geteuid()}"
 
 
 def alive(expected: Birth) -> bool:
@@ -274,6 +288,14 @@ class Reply:
         require(isinstance(value, dict), "response_object")
         return cast(dict[str, object], value)  # cast: the response's JSON object, checked above
 
+    def refused(self, status: int, code: str) -> bool:
+        """Exactly this refusal, kept no-store; the body never leaves RAM."""
+        try:
+            error = json.loads(self.body).get("error")
+        except (ValueError, AttributeError):
+            return False
+        return self.status == status and isinstance(error, dict) and error.get("code") == code and "no-store" in self.headers.get("cache-control", "")
+
 
 class Native:
     def __init__(self, cli: Path):
@@ -317,7 +339,7 @@ class Native:
                      "project_required", "project_storage_unsupported", "calcifer_unreachable", "unauthenticated"},
             "cause": {"browser_executable", "browser_home", "browser_profile_setup", "browser_capture", "browser_seal", "browser_pipe", "browser_spawn",
                       "browser_birth", "browser_ownership", "browser_context", "browser_target", "browser_attach",
-                      "browser_inject", "browser_navigate", "browser_activate"},
+                      "browser_navigate", "browser_activate"},
             "kind": {"usage", "validation", "not_found", "credential", "forbidden", "conflict", "capacity", "unavailable", "internal"},
         }
         for field, values in allowed.items():
@@ -382,8 +404,7 @@ class Native:
             raise Failure("holder_loopback")
         if preflight and path != "/v1/project-storage":
             cap = self.raw("GET", "/v1/project-storage", preflight=False).json()
-            expected = sha(json.dumps(birth(holder["pid"]), separators=(",", ":")).encode())
-            require(cap.get("version") == 3 and cap.get("principal") == sha(holder["token"].encode()) and cap.get("daemon_birth") == expected and self.holder() == holder, "native_capability")
+            require(cap.get("version") == 3 and cap.get("principal") == principal() and cap.get("daemon_birth") == daemon_birth(holder["pid"]) and self.holder() == holder, "native_capability")
         headers = {"cozy-project-storage": "3", "Cozy-Client": "cli"}
         if auth:
             headers["Authorization"] = "Bearer " + holder["token"]

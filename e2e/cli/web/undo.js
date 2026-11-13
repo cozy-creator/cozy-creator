@@ -40,10 +40,10 @@ function check(name, ok, detail) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
   const token = holderToken();
-  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...init.headers } });
+  const api = (path, init = {}) => page.evaluate(async ({ path, init }) => {
+    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, init, token });
+  }, { path, init });
   const at = `/v1/projects/${id}`;
   const asset = async (name) => (await api(at)).body.assets.find((row) => row.name === name);
   const folder = (await api(at)).body.path;

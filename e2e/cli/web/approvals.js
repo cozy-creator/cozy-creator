@@ -44,11 +44,10 @@ async function died(why) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const { id, path: folder } = await projectFromPage(page);
   seen.project = { id, folder };
-  const session = { token: holderToken() };
   const api = async (path, method = 'GET', body) => {
     const answer = await fetch(base + path, {
       method,
-      headers: { Authorization: `Bearer ${session.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...(method === 'POST' ? { 'Idempotency-Key': `approvals-${Date.now()}-${Math.random()}` } : {}) },
+      headers: { Authorization: `Bearer ${holderToken()}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...(method === 'POST' ? { 'Idempotency-Key': `approvals-${Date.now()}-${Math.random()}` } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const value = await answer.json().catch(() => null);

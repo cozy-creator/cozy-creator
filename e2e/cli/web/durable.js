@@ -11,7 +11,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { exec } = require('child_process');
 const { readFileSync } = require('fs');
-const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, launch, lookAt, noStall, openBox, rowsOf, until } = require('./page');
+const { holderToken, projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, launch, lookAt, noStall, openBox, rowsOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -69,7 +69,7 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
       if (call.request().method() !== 'PATCH') return call.fallback();
       asked.push(call.request().postDataJSON());
       await landing;
-      const response = await call.fetch();
+      const response = await call.fetch({ headers: { ...call.request().headers(), authorization: `Bearer ${holderToken()}` } });
       await answering;
       await call.fulfill({ response }).catch(() => {});
     };

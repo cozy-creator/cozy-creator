@@ -8,7 +8,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1 if
 // anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { holderToken, projectFolder, projectFromPage, calcifer, signIn, STEP_MS, drop, lastLook, launch, lookAt, noStall, photo, png, settled, until } = require('./page');
+const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, drop, lastLook, launch, lookAt, noStall, photo, png, settled, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -57,11 +57,10 @@ const PICTURES = [
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = { token: holderToken() };
-  const api = (path) => page.evaluate(async ({ path, token }) => {
-    const answer = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {} });
+  const api = (path) => page.evaluate(async ({ path }) => {
+    const answer = await fetch(path, { headers: { 'cozy-project-storage': '3' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, token: held?.token });
+  }, { path });
 
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s folder"]', projectFolder(`web-dropped-${Date.now()}`));

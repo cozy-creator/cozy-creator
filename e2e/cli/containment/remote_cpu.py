@@ -125,6 +125,23 @@ deadline=time.monotonic()+60
 while any(map(live,owned.values())) and time.monotonic()<deadline: time.sleep(.1)
 print(json.dumps({"gone":not any(map(live,owned.values())),"processes":len(owned),"worker_observed":seen["worker"],"caf_observed":seen["caf"]}))
 '''
+# This account asks the primary's Calcifer with its exact Host and even its bearer, read from stdin: closed facts out, never a body.
+ASK = '''import http.client,json,sys
+from urllib.parse import urlsplit
+ask=json.load(sys.stdin)
+at=urlsplit("http://"+ask["address"])
+found=[]
+for path in ask["paths"]:
+    connection=http.client.HTTPConnection(at.hostname,at.port,timeout=30)
+    try:
+        connection.request("GET",path,headers={"Authorization":"Bearer "+ask["token"],"cozy-project-storage":"3","Cozy-Client":"cli"})
+        response=connection.getresponse()
+        try: code=json.loads(response.read()).get("error",{}).get("code")
+        except (ValueError,AttributeError): code=None
+        found.append({"status":response.status,"other_user":code=="other_user","no_store":"no-store" in (response.getheader("Cache-Control") or "")})
+    finally: connection.close()
+print(json.dumps(found))
+'''
 
 
 class Worker:
@@ -280,7 +297,18 @@ def history(view: Path, identifier: str) -> History:
     return {"row": row, "logs": logs, "outputs": outputs}
 
 
-def qualify(native: Native, project: Project, receipt: Receipt, ready: Ready) -> None:
+def other_account(user: str, address: str, token: str, paths: list[str]) -> list[dict[str, object]]:
+    """GETs of `paths` as `user`, the fresh account `qualify` made; the bearer goes by stdin, never argv or environment."""
+    ask = json.dumps({"address": address, "token": token, "paths": paths}).encode()
+    completed = subprocess.run(["sudo", "-n", "-u", user, "-H", "python3", "-c", ASK], input=ask, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd="/")
+    require(completed.returncode == 0, "other_user_refusal")
+    found = json.loads(completed.stdout)
+    require(isinstance(found, list) and len(found) == len(paths) and all(isinstance(item, dict) for item in found), "other_user_refusal")
+    return cast(list[dict[str, object]], found)  # cast: ASK's JSON list, checked above
+
+
+def qualify(native: Native, project: Project, receipt: Receipt, ready: Ready) -> str:
+    """The fresh Unix account it made: it outlives its worker, for `other_account`."""
     require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "hosted_linux_only")
     worker = Worker(native, receipt)
     primary_failed = False
@@ -339,6 +367,7 @@ def qualify(native: Native, project: Project, receipt: Receipt, ready: Ready) ->
         receipt.add("remote_cpu_execution", explicit_remote=True, actual_cli=True, input_in_project=True, output_matches=True,
                     local_history_retained=True, remote_invocation_unscoped=True, local_view_absent=True, local_proof_absent=True,
                     input_sha256=sha(SOURCE), output_sha256=sha(expected), runs=1, outputs=len(items), logs=len(before["logs"]))
+        return worker.user
     except BaseException as error:
         primary_failed = True
         if not worker.cleanup_failed:

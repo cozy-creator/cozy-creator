@@ -1,6 +1,7 @@
 """Opt-in hosted Vite process and independent source-only HMR probe; never laptop config."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -30,13 +31,16 @@ class Development:
         require(shutil.which("pnpm"), "development_pnpm_missing")
         text = (self.original or b"").decode()
         parsed = tomllib.loads(text)
-        lines, result, section, inserted = text.splitlines(keepends=True), [], "", False
+        # Dev mode needs both a top-level `dev = true` (first, before any table) and `[calcifer] development_web`.
+        lines, result, section, inserted = text.splitlines(keepends=True), ["dev = true\n"], "", False
         for line in lines:
             clean = line.split("#", 1)[0].strip()
             if clean.startswith("["):
                 if section == "[calcifer]" and not inserted:
                     result.append('development_web = "127.0.0.1:5173"\n'); inserted = True
                 section = clean
+            if section == "" and clean.partition("=")[0].strip() == "dev":
+                continue
             if section == "[calcifer]" and clean.partition("=")[0].strip() == "development_web":
                 continue
             result.append(line)
@@ -46,7 +50,9 @@ class Development:
             require("calcifer" not in parsed, "development_config_shape")
             result.append('\n[calcifer]\ndevelopment_web = "127.0.0.1:5173"\n')
         self.written = "".join(result).encode()
-        tomllib.loads(self.written.decode())
+        written = tomllib.loads(self.written.decode())
+        require(written.get("dev") is True and written.get("calcifer", {}).get("development_web") == "127.0.0.1:5173", "development_config_shape")
+        # close() restores the original bytes exactly, which takes `dev` and `development_web` out again.
         self.config.write_bytes(self.written)
         with self.module.open("x") as target:
             target.write(self.code(1))
@@ -77,14 +83,19 @@ if (import.meta.hot) import.meta.hot.accept((updated) => {{ if (updated) proof._
 '''
 
     def no_api_bridge(self) -> None:
+        # Vite answers no API, and forwards none: every /v1 path is its fixed 404 (web/app/vite.config.ts).
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
             with opener.open("http://127.0.0.1:5173/v1/project-storage", timeout=5) as response:
-                status = response.status
+                status, body = response.status, response.read()
         except urllib.error.HTTPError as error:
-            status = error.code
+            status, body = error.code, error.read()
             error.close()
-        require(status == 403, "development_native_bearer_bridge_present")
+        try:
+            code = json.loads(body).get("error", {}).get("code")
+        except (ValueError, AttributeError):
+            code = None
+        require(status == 404 and code == "development_api_in_calcifer", "development_native_bearer_bridge_present")
 
     def update(self) -> None:
         metadata = self.module.lstat()

@@ -91,9 +91,8 @@ function provider(upstream) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const token = holderToken();
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${holderToken()}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   // Only where this computer runs models and has no GPU: anywhere else there's nothing it would do poorly to ask about.

@@ -134,10 +134,10 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
   await signIn(page);
   await page.waitForSelector('.top');
   const held = { token: holderToken() };
-  const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `tiles-${Date.now()}-${Math.random()}` } : {}) } });
+  const api = (path, init = {}) => page.evaluate(async ({ path, init }) => {
+    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `tiles-${Date.now()}-${Math.random()}` } : {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
-  }, { path, init, token: held?.token });
+  }, { path, init });
   const post = async (path, body) => {
     const answer = await api(path, { method: 'POST', body: JSON.stringify(body) });
     if (answer.status >= 300) throw new Error(`${path}: ${JSON.stringify(answer)}`);

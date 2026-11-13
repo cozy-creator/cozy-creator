@@ -1,7 +1,7 @@
 // One stream across tabs, and across a restart of Calcifer (web-ui.md §3): tabs share one `GET /v1/events`, closing the tab that holds
 // it hands it on, and `kill -9` on Calcifer says it's offline and recovers with no reload. A reload after the
 // restart must not hang, which it did in the shelved build.
-//   node reconnect.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER
+//   node reconnect.js: opened by page.js's signIn, on the Calcifer whose lock record is $HOLDER
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $RESTART: a shell command that kills this Calcifer with -9 and
 // brings it back. Prints what it saw as JSON and exits 1 if anything failed.
 const { chromium } = require(process.env.PLAYWRIGHT);
@@ -61,10 +61,10 @@ async function drag(page, name, dx, dy) {
   await first.waitForSelector('.nm-field');
   await first.keyboard.press('Enter');
   seen.project = { id, folder };
-  // Its row as Calcifer answers it (cl-803: the canvas is project.db's), asked from here.
-  const token = holderToken();
+  // Its row as Calcifer answers it (cl-803: the canvas is project.db's), asked from here, with the lock record's bearer, read again after the
+  // restart: the new Calcifer's.
   const row = async (name) => {
-    const card = (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { 'cozy-project-storage': '3' } })).json()).cards?.[name];
+    const card = (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${holderToken()}`, 'cozy-project-storage': '3' } })).json()).cards?.[name];
     return card ? `${card.x},${card.y}` : null;
   };
   await until('the element landed', () => first.locator('.nm:text-is("here")').count().then(async (n) => n === 1 && (await first.locator('.card .status.mak').count()) === 0), Boolean);
@@ -95,7 +95,7 @@ async function drag(page, name, dx, dy) {
     await restarted;
     await until('back', () => third.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('offline')));
     seen.said_during_restart = said;
-    // Nothing to sign in again to: the page holds no session (cl-980).
+    // Nothing to sign in again to: Calcifer keeps no session, and the page holds no credential (cl-985).
     check('nothing_to_open_again', (await third.locator('.gate').count()) === 0);
     check('still_on_canvas', (await third.locator('.nm:text-is("here")').count()) === 1);
     const wasRow = await row('here');

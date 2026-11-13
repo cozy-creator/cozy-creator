@@ -4,7 +4,8 @@ async function containmentProof(input) {
   const card = () => document.querySelector(`.card.here[data-asset="${CSS.escape(input.asset)}"]`) ?? document.querySelector(`.react-flow__node .card[data-asset="${CSS.escape(input.asset)}"]`);
   switch (input.kind) {
     case 'ready':
-      return { page_ready: typeof globalThis.__cozyFreeze === 'function' && typeof globalThis.__cozyPrepareClose === 'function', cards: document.querySelectorAll('.card[data-asset]').length };
+      // Nothing is injected into the owned page: it works with no credential of its own.
+      return { page_ready: typeof globalThis.__cozyFreeze === 'function' && typeof globalThis.__cozyPrepareClose === 'function', cards: document.querySelectorAll('.card[data-asset]').length, owned_injected: '__cozyOwned' in globalThis };
     case 'diagnose': {
       // Closed booleans and counts only: no URL, resource name or page text leaves the page.
       const gate = document.querySelector('main.gate')?.textContent ?? '';
@@ -14,7 +15,7 @@ async function containmentProof(input) {
       return {
         blank: location.href === 'about:blank', error_page: location.protocol === 'chrome-error:',
         loopback: location.protocol === 'http:' && location.hostname === '127.0.0.1', reloaded: navigation?.type === 'reload',
-        navigation_status: navigation?.responseStatus ?? -1, owned_injected: typeof globalThis.__cozyOwned === 'object' && globalThis.__cozyOwned !== null,
+        navigation_status: navigation?.responseStatus ?? -1, owned_injected: '__cozyOwned' in globalThis,
         vite_client: [...document.scripts].some((script) => script.src && new URL(script.src).pathname === '/@vite/client'),
         refresh_preamble: typeof globalThis.$RefreshReg$ === 'function', app_mounted: (document.getElementById('root')?.childElementCount ?? 0) > 0,
         gate_connecting: gate.startsWith('Connecting'), gate_signed_out: gate.includes("isn't signed in"), gate_unreachable: gate.includes("isn't answering"),
@@ -86,24 +87,24 @@ async function containmentProof(input) {
     case 'storage': {
       const keys = Object.keys(localStorage);
       const databases = indexedDB.databases ? await indexedDB.databases() : null;
-      return { project_preferences: keys.filter((key) => /^cozy\.(view|selection|more):/.test(key)).length, durable_session: localStorage.getItem('cozy.session') !== null, indexed_databases: databases?.length ?? -1, cache_stores: 'caches' in globalThis ? (await caches.keys()).length : -1, cookies: document.cookie.length };
+      const stored = [...keys, ...Object.keys(sessionStorage)];
+      return { project_preferences: keys.filter((key) => /^cozy\.(view|selection|more):/.test(key)).length, stored_credential: stored.some((key) => /session|token|bearer|credential|auth/i.test(key)), indexed_databases: databases?.length ?? -1, cache_stores: 'caches' in globalThis ? (await caches.keys()).length : -1, cookies: document.cookie.length };
     }
     case 'media': {
-      const owned = globalThis.__cozyOwned;
-      if (!owned || typeof owned.session?.token !== 'string') return { authenticated: false };
-      const authority = { Authorization: `Bearer ${owned.session.token}` };
-      const probe = await fetch('/v1/project-storage', { headers: authority, cache: 'no-store' });
+      // Same-origin reads with no Authorization or header of the page's own, as its <img> and <video> make them. The fixture
+      // checks the capability's principal and daemon birth; the page cannot know them.
+      const probe = await fetch('/v1/project-storage', { cache: 'no-store' });
       const cap = probe.ok ? await probe.json() : null;
-      if (cap?.version !== 3 || cap.daemon_birth !== owned.birth || cap.principal !== await hash(new TextEncoder().encode(owned.session.token))) return { authenticated: false };
+      if (cap?.version !== 3 || typeof cap.principal !== 'string' || typeof cap.daemon_birth !== 'string') return { admitted: false, status: probe.status };
       const path = new URL(input.path, location.origin);
       const prefix = `/v1/projects/${encodeURIComponent(input.project)}/`;
-      if (path.origin !== location.origin || !path.pathname.startsWith(prefix)) return { authenticated: false };
-      const headers = { ...authority, 'cozy-project-storage': '3' };
+      if (path.origin !== location.origin || !path.pathname.startsWith(prefix)) return { admitted: false };
+      const headers = {};
       if (input.range) headers.Range = 'bytes=0-31';
       if (input.conditional) headers['If-Modified-Since'] = 'Wed, 01 Jan 2100 00:00:00 GMT';
       const response = await fetch(path, { headers, cache: 'no-store' });
       const bytes = await response.arrayBuffer();
-      return { authenticated: true, status: response.status, no_store: /(?:^|,)\s*(?:private,\s*)?no-store(?:\s*,|$)/i.test(response.headers.get('Cache-Control') ?? ''), range: response.headers.has('Content-Range'), body_sha256: await hash(bytes), bytes: bytes.byteLength };
+      return { admitted: true, principal: cap.principal, daemon_birth: cap.daemon_birth, status: response.status, no_store: /(?:^|,)\s*(?:private,\s*)?no-store(?:\s*,|$)/i.test(response.headers.get('Cache-Control') ?? ''), range: response.headers.has('Content-Range'), body_sha256: await hash(bytes), bytes: bytes.byteLength };
     }
     default:
       throw new Error('unsupported fixed proof action');

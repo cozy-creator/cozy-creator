@@ -74,7 +74,7 @@ function replaceFile(at, text) {
   const lateList = new Promise((done) => { letGo = done; });
   const listRead = /\/v1\/tools\?.*project=/;
   await page.route(listRead, async (route) => {
-    const answer = await route.fetch();
+    const answer = await route.fetch({ headers: { ...route.request().headers(), authorization: `Bearer ${holderToken()}` } });
     await lateList;
     await route.fulfill({ response: answer }).catch(() => {});
   });

@@ -36,8 +36,10 @@ const cozyHere = (args, options) => new Promise((done, fail) => {
 });
 const element = (page, name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
 
-/** A GET as a browser's script loader sends one: no credential, the path as it's written. */
-function raw(base, path, headers = {}) {
+/** What a browser's script loader says of an import from Calcifer's own page (cl-985): it carries no credential. */
+const PAGE_IMPORT = { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'script' };
+/** A GET as a browser's script loader sends one, unless `headers` says otherwise: the path as it's written. */
+function raw(base, path, headers = PAGE_IMPORT) {
   const { hostname, port } = new URL(base);
   return new Promise((done, failed) => {
     const asked = http.request({ hostname, port, path, headers }, (answer) => {
@@ -135,9 +137,8 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const documentAnswer = await signIn(page);
   const pagePolicy = documentAnswer.headers()['content-security-policy'];
   await page.waitForSelector('.top');
-  const token = holderToken();
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${holderToken()}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;
@@ -281,7 +282,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     const module_ = found.body.module;
     const [, hash] = module_.match(/\/ui\/([0-9a-f]{64})\//);
     const served = await raw(base, module_);
-    check('served_with_no_session', served.status === 200 && served.body.includes('data-boxed'), served.status);
+    check('served_to_the_page_with_no_credential', served.status === 200 && served.body.includes('data-boxed'), served.status);
     check('served_as_javascript', served.headers['content-type'] === 'application/javascript', served.headers);
     check('served_under_the_page_csp', served.headers['content-security-policy'] === pagePolicy, served.headers);
     // A project's code, as every project response, is never kept by the browser.
@@ -298,10 +299,14 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
     await nothing('climb_gets_nothing', module_.replace('ui/shade.js', '../__init__.py'));
     await nothing('escaped_climb_gets_nothing', module_.replace('ui/shade.js', '%2e%2e%2f__init__.py'));
     const { host } = new URL(base);
-    check('foreign_origin_refused', (await raw(base, module_, { Origin: 'http://evil.example' })).status === 403);
-    check('foreign_host_refused', (await raw(base, module_, { Host: `rebind.example:${host.split(':')[1]}` })).status === 403);
-    const noSession = await raw(base, `/v1/tools/${encodeURIComponent('./boxed/one_field')}/ui?project=${id}`);
-    check('finding_one_needs_a_session', noSession.status === 401, noSession.status);
+    check('foreign_origin_refused', (await raw(base, module_, { ...PAGE_IMPORT, 'Sec-Fetch-Site': 'cross-site', Origin: 'http://evil.example' })).status === 403);
+    check('foreign_host_refused', (await raw(base, module_, { ...PAGE_IMPORT, Host: `rebind.example:${host.split(':')[1]}` })).status === 403);
+    // Finding one names local code: a program without the lock record's bearer, and another site's <script> (no-cors, so no Origin), get nothing.
+    const find = `/v1/tools/${encodeURIComponent('./boxed/one_field')}/ui?project=${id}`;
+    const bare = await raw(base, find, {});
+    check('finding_one_needs_the_page_or_the_bearer', bare.status === 401, bare.status);
+    const elsewhere = await raw(base, find, { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script' });
+    check('finding_one_from_another_site_refused', elsewhere.status === 403 && elsewhere.body.includes('not_own_page'), { status: elsewhere.status, body: elsewhere.body.slice(0, 200) });
     const notNamed = await toolUi('./boxed/one_field', '');
     check('local_code_needs_its_project', notNamed.status === 404 && notNamed.body.error.code === 'tool_ui_not_installed', notNamed);
 
