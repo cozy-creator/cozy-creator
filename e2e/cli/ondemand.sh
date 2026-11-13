@@ -89,15 +89,12 @@ def at(line):
         return int(datetime.fromisoformat(line.split(" ", 1)[0].replace("Z", "+00:00")).timestamp() * 1000)
     except ValueError:
         return 0
-need, here, urgent, queued = [], [], [], []
+urgent, queued = [], []
+# A project's run says nothing in TensorD's log (#2858): its downloader's lines, which name objects and orders, are the record.
 for line in (out / "ondemand-need.tensord.log").read_text(errors="replace").splitlines():
     t = at(line)
     if t < began:
         continue
-    if "emergency: zhengpeng7/birefnet is read now" in line:
-        need.append((t, int(dict(re.findall(r"(\w+)=(\S+)", line)).get("bytes", "0"))))
-    if "emergency: zhengpeng7/birefnet is here" in line:
-        here.append((t, dict(re.findall(r"(\w+)=(\S+)", line))))
     found = re.search(r": (fetching|landed) .*bytes=(\d+).*priority=(\d+)", line)
     if found:
         order, kind = int(found[3]), found[1]
@@ -105,24 +102,15 @@ for line in (out / "ondemand-need.tensord.log").read_text(errors="replace").spli
             urgent.append((t, kind, int(found[2])))
         elif 2 <= order < 1 << 62 and kind == "fetching":
             queued.append(t)
-began_ms, ended_ms = (need[0][0], here[0][0]) if need and here else (None, None)
-absent = need[0][1] if need else 0
-during = [t for t in queued if began_ms and began_ms < t < ended_ms]
+# A line names the order an object started at: BiRefNet's chunks already started as its guess land at that order.
 landed = sum(b for _, kind, b in urgent if kind == "landed")
 record = json.loads((out / "ondemand-need.json").read_text())
-print(json.dumps({"run": {k: record.get(k) for k in ("number", "status")}, "asked_ms": began_ms, "here_ms": ended_ms,
-                  "emergency": here[0][1] if here else None, "absent_at_read": absent, "landed_at_order_0": landed,
-                  "queued_objects_started": len(queued), "queued_objects_started_during": len(during)}, indent=1))
+print(json.dumps({"run": {k: record.get(k) for k in ("number", "status")}, "first_at_order_0_ms": min((t for t, _, _ in urgent), default=None),
+                  "last_at_order_0_ms": max((t for t, _, _ in urgent), default=None), "landed_at_order_0": landed,
+                  "queued_objects_started": len(queued)}, indent=1))
 fail = lambda why: print(why, file=sys.stderr)
-if not need or not here:
-    fail("TensorD never said it fetched the call's on-demand BiRefNet as an emergency")
-# What TensorD found absent at the read, and that it all came: its chunks may have started as the call's guesses (a log line
-# names the order an object started at), so its own `is here` says what landed.
-came = int(here[0][1].get("bytes", "0")) if here else 0
-if absent < 100 << 20:
-    fail(f"only {absent} bytes of BiRefNet were absent at its read: its guess had come, so nothing was an emergency")
-elif came < absent:
-    fail(f"{came} bytes of BiRefNet came of the {absent} absent at its read")
+if landed < 100 << 20:
+    fail(f"{landed} bytes of BiRefNet came at order 0: the call's read of it wasn't fetched first")
 if not queued:
     fail("the queued install started nothing: there was no other download")
 JUDGE
