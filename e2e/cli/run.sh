@@ -656,6 +656,7 @@ case $SHARD in
   projectdb-focus) parts="tools_read db_existing_web logs"; DB_WEB=focused ;;
   projectdb-select) parts="tools_read db_existing_web logs"; DB_WEB=select ;;
   projectdb-cancel) parts="db_cancel_undo logs" ;;
+  projectdb-cancelrace) parts="db_cancel_race logs" ;;
   projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
   projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
   projectdb-versions) parts="tools_read db_existing_web logs"; DB_WEB=versions ;;
