@@ -871,9 +871,12 @@ function replaceFile(at, text) {
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
     const [heldFile, heldTakes] = [(await of('Sheet')).sha256, await versions('Sheet')];
     const filesThen = readdirSync(join(folder, 'files')).length;
-    const deleting = page.waitForResponse((answer) => answer.request().method() === 'DELETE' && answer.url().endsWith('/assets/source-a'));
+    // Held until the press: if the press can't be made, that's what's said, not this wait's own timeout.
+    const deleting = page.waitForResponse((answer) => answer.request().method() === 'DELETE' && answer.url().endsWith('/assets/source-a')).catch((error) => error);
     await deleteBox('source-a');
-    const edit = (await deleting).request().headers()['cozy-edit'];
+    const deleted = await deleting;
+    if (deleted instanceof Error) throw deleted;
+    const edit = deleted.request().headers()['cozy-edit'];
     await until('gone at once', () => box('source-a').count(), (n) => n === 0);
     check('no_dialog', (await page.locator('dialog, [role=dialog]').count()) === 0);
     const noted = await until('its note', () => page.locator('.note .line').allTextContents(), (lines) => lines.some((line) => line.includes('source-a')));
