@@ -125,7 +125,7 @@ test('focus', async ({ page, project, api }) => {
     await expect(drawer).toBeVisible();
     await expect(page).toHaveURL(project.url('files'));
     // Slid in to where it stays.
-    await expect.poll(() => drawer.evaluate((aside) => aside.getAnimations({ subtree: true }).filter((one) => one.playState === 'running').length)).toBe(0);
+    await expect.poll(() => drawer.evaluate((aside) => aside.getAnimations({ subtree: true }).filter((one) => one.playState === 'running' && one.effect?.getComputedTiming().iterations !== Infinity).length), { message: 'the drawer slid in' }).toBe(0);
     let away = await openPoint(page);
     await drag(page, await inside(drawer.locator('.drawer-head b').first()), away);
     await expect.soft(drawer, 'a press from the drawer let go on the canvas keeps it').toBeVisible();

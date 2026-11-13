@@ -87,7 +87,8 @@ async function removeFolder(folder) {
       rmSync(folder, { recursive: true, force: true });
       return 'removed';
     } catch (error) {
-      if (error.code !== 'EPERM' && error.code !== 'EBUSY') throw error;
+      // ENOTEMPTY: Calcifer still finishing a write in it (a run just canceled).
+      if (error.code !== 'EPERM' && error.code !== 'EBUSY' && error.code !== 'ENOTEMPTY') throw error;
       return error.code;
     }
   }, { message: `${folder} removed`, timeout: 60_000 }).toBe('removed');

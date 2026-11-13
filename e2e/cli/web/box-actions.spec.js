@@ -164,6 +164,10 @@ test('box-actions', async ({ page, project, api }) => {
 
   await test.step('menu › Download on a box showing take 2, then on take 1', async () => {
     expect((await project.asset('two')).approved, 'two shows its take 2').toBe(2);
+    // The copies made above pushed two along: all of it in view again.
+    await page.getByRole('button', { name: /more zoom options$/ }).click();
+    await page.getByRole('menuitem', { name: /^Zoom to fit/ }).click();
+    await canvasIdle(page);
     let saved = page.waitForEvent('download');
     await menuItem('two', 'Download');
     let file = await saved;

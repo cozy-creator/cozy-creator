@@ -141,9 +141,7 @@ test('layout', async ({ page, project, api }) => {
   // Three rows 440 apart, columns 420 apart, and a stack of two at the right.
   await project.add({ name: 'blank', kind: 'image', fields: { node_kind: 'image' }, at: at(0, 0) });
   await project.import(png(90), { name: LONG, at: at(420, 0) });
-  await project.add({ name: 'gone', kind: 'text', fields: { text: 'here a moment' }, at: at(3000, 3000) });
-  await project.add({ name: 'failed', tool: fixtureTool('draw.py/draw'), kind: 'image', fields: { instructions: 'a hat on <gone>' }, at: at(840, 0) });
-  await api.delete(project.at('/assets/gone'));
+  await project.add({ name: 'failed', tool: fixtureTool('shots.py/crash'), kind: 'video', fields: { crash: "the fixture's own failure, said in full so it wraps" }, at: at(840, 0) });
   await project.import(png(130), { name: 'stacked_1', at: at(1260, 0) });
   await project.import(png(170), { name: 'stacked_2', at: at(1260, 260) });
   await project.import(MP4, { name: 'clip', at: at(0, 440) });
@@ -157,11 +155,15 @@ test('layout', async ({ page, project, api }) => {
   const names = ['blank', LONG, 'failed', 'stacked_1', 'stacked_2', 'clip', 'making', 'shot', 'cut', 'words', 'busy'];
   for (const name of names) await expect(box(page, name)).toBeVisible();
 
-  // A failed render (of a deleted box's mention, refused before it runs) and one being made all through the looking, ended after.
-  await api.raw('POST', project.at('/runs'), { body: { names: ['failed'], on: ['local'] }, headers: { 'Idempotency-Key': randomUUID() } });
-  await expect.poll(async () => Boolean((await project.asset('failed'))?.failure), { message: 'failed fails' }).toBe(true);
-  await api.call('POST', project.at('/runs'), { names: ['making'], on: ['local'] }, { headers: { 'Idempotency-Key': randomUUID() } });
+  // A render that fails (the crash fixture), then one being made all through the looking: local renders one at a time. Both ended after.
+  const render = (name) => api.call('POST', project.at('/runs'), { names: [name], on: ['local'] }, { headers: { 'Idempotency-Key': randomUUID() } });
   try {
+    await render('failed');
+    await expect.poll(async () => {
+      const held = await project.asset('failed');
+      return Boolean(held?.failure || held?.takes?.some((take) => take.failure));
+    }, { message: 'failed fails', timeout: 60_000 }).toBe(true);
+    await render('making');
     const face = page.getByRole('status', { name: "making's render" });
     await expect(face, 'making is being made').toBeVisible({ timeout: 60_000 });
     const zoomButton = page.getByRole('button', { name: /more zoom options$/ });
@@ -215,7 +217,7 @@ test('layout', async ({ page, project, api }) => {
       await expect(region).toHaveCount(0);
     });
   } finally {
-    // Ended once looked at: by then it may have ended itself.
-    await api.raw('POST', project.at('/cancel'), { body: { names: ['making'] } });
+    // Ended once looked at: by then either may have ended itself.
+    await api.raw('POST', project.at('/cancel'), { body: { names: ['failed', 'making'] } });
   }
 });
