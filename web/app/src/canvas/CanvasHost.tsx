@@ -1,8 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   type Edge,
-  type FitViewOptions,
-  getViewportForBounds,
   type OnSelectionChangeParams,
   ReactFlow,
   ReactFlowProvider,
@@ -39,7 +37,7 @@ import { HistoryControls } from "./HistoryControls"
 import type { Box } from "./graph"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
-import { aspectOf, bandOf, bodyBox, HEAD, madeHere, nameZoomOf, sameStep, shownOf, stepOf } from "./shown"
+import { aspectOf, bandOf, bodyBox, HEAD, madeHere, nameZoomOf, shownOf } from "./shown"
 import { pressBeganOutside } from "../ui/press"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
@@ -394,7 +392,7 @@ function Canvas({
       }
       const owner = { name }
       store.inPlace = owner
-      focusTravel.current = frame ? { owner, body: { x: frame.x, y: frame.y + HEAD + store.liftOf(name), w: frame.w, h: frame.w / aspectOf(view) } } : null
+      focusTravel.current = frame ? { owner, body: { x: frame.x, y: frame.y + HEAD, w: frame.w, h: frame.w / aspectOf(view) } } : null
       store.view(name)
       const words = !view.asset?.prefixes?.length && !view.asset?.sha256
       if (words) store.focusing = name
@@ -484,26 +482,6 @@ function Canvas({
   const readable = unread ? null : projectId
   const { data: listed } = useQuery({ ...toolsQuery(client, "", machine, readable), enabled: machines !== null })
 
-  /** A fit laid out first for the zoom it lands at (cl-885): far out a name takes more of the canvas, and what's fitted is what's drawn there. */
-  const fitLaidOut = useCallback(
-    (options: FitViewOptions<ElementNode>) => {
-      const { width, height, minZoom, maxZoom } = flowStore.getState()
-      const ids = options.nodes && new Set(options.nodes.map((node) => node.id))
-      let zoom = flow.getViewport().zoom
-      for (let tries = 0; tries < 4; tries++) {
-        const bounds = store.boundsAt(zoom, ids)
-        if (!bounds) break
-        const next = getViewportForBounds({ x: bounds.x, y: bounds.y, width: bounds.w, height: bounds.h }, width, height, options.minZoom ?? minZoom, options.maxZoom ?? maxZoom, options.padding ?? 0.1).zoom
-        const same = sameStep(stepOf(next), stepOf(zoom))
-        zoom = next
-        if (same) break
-      }
-      store.settleZoom(zoom)
-      return flow.fitView(options)
-    },
-    [flow, flowStore, store],
-  )
-
   useEffect(() => {
     // A project opened here for the first time is fitted, once. Either way the viewport is kept, so a reload finds it.
     // A project with no rows has nothing to fit at its first read: its first placing is what to look at.
@@ -511,7 +489,7 @@ function Canvas({
     const fitOnce = async () => {
       if (fitted || !store.projectId || store.focusedName.get() || openedNow.current) return
       fitted = true
-      if (openedOn) await fitLaidOut(fitOver())
+      if (openedOn) await flow.fitView(fitOver())
       keepViewport(store.projectId, flow.getViewport())
     }
     store.onFirstRead = async () => {
@@ -528,7 +506,7 @@ function Canvas({
     }
     store.attach(flow)
     return () => store.detach()
-  }, [store, flow, saved, openedOn, bridge, navigate, to, keepView, keepViewport, fitLaidOut])
+  }, [store, flow, saved, openedOn, bridge, navigate, to, keepView, keepViewport])
 
   /** Where the last zoom of the buttons or keys is going, so a second press steps on from there, not from part of the way. */
   const aim = useRef<{ view: Viewport; until: number } | null>(null)
@@ -550,7 +528,6 @@ function Canvas({
       const view = { x: x - ((x - from.x) * to) / from.zoom, y: y - ((y - from.y) * to) / from.zoom, zoom: to }
       aim.current = { view, until: performance.now() + HERE_MS }
       if (store.inPlace) store.inPlace.moved = true
-      store.settleZoom(to)
       void flow.setViewport(view, { duration: HERE_MS })
     },
     [flow, store, aimed],
@@ -569,8 +546,8 @@ function Canvas({
       return
     }
     aim.current = null
-    void fitLaidOut({ ...fitOver(), duration: HERE_MS })
-  }, [store, fitLaidOut])
+    void flow.fitView({ ...fitOver(), duration: HERE_MS })
+  }, [flow, store])
   /** What's selected, else the box worked on. */
   const fitSelected = useCallback(() => {
     if (store.focusedName.get()) {
@@ -580,8 +557,8 @@ function Canvas({
     const nodes = flow.getNodes().filter((node) => node.selected)
     if (!nodes.length) return fit()
     aim.current = null
-    void fitLaidOut({ ...fitOver(), maxZoom: MOST_HERE, nodes, duration: HERE_MS })
-  }, [flow, store, fit, fitLaidOut])
+    void flow.fitView({ ...fitOver(), maxZoom: MOST_HERE, nodes, duration: HERE_MS })
+  }, [flow, store, fit])
   const zoomItems = useCallback(
     (): ZoomItem[] => [
       { label: "Zoom in", keys: keys("Mod", "+"), run: () => zoomBy(1) },
@@ -678,8 +655,6 @@ function Canvas({
     (_: unknown, viewport: Viewport) => {
       if (store.focusedName.get() || visit.current) return
       if (store.projectId) keepViewport(store.projectId, viewport)
-      // At rest on another step, its far names laid out again (cl-885): never on the way there.
-      store.settleZoom(viewport.zoom)
     },
     [store, keepViewport],
   )
@@ -943,8 +918,9 @@ function Canvas({
   // A selected box's ring keeps its width on screen: the zoom in steps of two, so a zoom sets it only as it crosses one.
   const unzoom = useStore((state) => 2 ** -Math.ceil(Math.log2(state.transform[2] || 1)))
   useLayoutEffect(() => stage.current?.style.setProperty("--unzoom", String(unzoom)), [unzoom])
-  // Far out a box's name keeps its size on screen (cl-958): the zoom's inverse in quarter steps, so it's set only as a zoom crosses one. On
-  // the boxes' layer, not the stage: a custom property changed over the sheet restyles it whole, and it's painted again (cl-895).
+  // A box's name keeps the body size on screen as the canvas zooms out (cl-958), as far as the room above a box allows (shown.ts nameZoomOf):
+  // the zoom's inverse in quarter steps, so it's set only as a zoom crosses one. On the boxes' layer, not the stage: a custom property changed
+  // over the sheet restyles it whole, and it's painted again (cl-895).
   const nameZoom = useStore((state) => nameZoomOf(state.transform[2]))
   // A zoom draws the boxes and the dots each frame at their size, and two frames after it they go back on their layers, drawn at the new one.
   useLayoutEffect(() => {

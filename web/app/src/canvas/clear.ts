@@ -1,8 +1,6 @@
 import type { Box } from "./graph"
-import { NARROWEST } from "./shown"
+import { GAP, NARROWEST } from "./shown"
 
-/** What a box placed or pushed is left of the rest. */
-const GAP = 16
 const CELL = 512
 export const GLIDE_MS = 180
 

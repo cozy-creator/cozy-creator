@@ -673,9 +673,24 @@ code {
     0 0 0 calc(3px * var(--unzoom, 1)) var(--select-gap),
     0 0 calc(24px * var(--unzoom, 1)) calc(10px * var(--unzoom, 1)) var(--select-glow);
 }
-/* Far out the ring outgrows the 12px under its name: the name row rises clear of it, never under it. */
-.react-flow__node.selected .card:not(.entity) > .head {
+/* At 45-50% the ring outgrows the 12px under its name: the name row rises clear of it, never under it. */
+.stage[data-lod="0"] .react-flow__node.selected .card:not(.entity) > .head {
   translate: 0 min(0px, calc(9px - 9px * var(--unzoom, 1)));
+}
+/* Further out it would outgrow the room above a box, where its name is (cl-885): it's drawn just inside the picture's edge, as wide on
+   screen, and its name stays where it is. */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node.selected :is(.media, .tl) {
+  outline-offset: calc(-6px * var(--unzoom, 1));
+  box-shadow: 0 0 calc(24px * var(--unzoom, 1)) calc(10px * var(--unzoom, 1)) var(--select-glow);
+}
+/* A picture's pixels are drawn over its outline: the ring is drawn again over them. */
+.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node.selected .media::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  border: calc(6px * var(--unzoom, 1)) solid var(--select);
+  pointer-events: none;
 }
 .media.alpha {
   background-color: var(--check);
@@ -1116,9 +1131,13 @@ code {
   flex: 0 1 auto;
   font-size: calc(var(--t-body) * var(--ui));
 }
+/* Its shape, cut with an ellipsis where its box ends as a name is: "Auto · 1.6:1 from <hero_art>" is wider than a box 240 wide (cl-885). */
 .card .tile-line .ratio-rest {
   position: static;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: calc(var(--t-body) * var(--ui));
 }
 /* A render's lines at the body step, as the line over them (cl-958): read at the canvas's 100%, and its Cancel 28px. */
@@ -2297,37 +2316,18 @@ video.preview.on {
   width: 18px;
   height: 18px;
 }
-/* Far out a box is its picture and its name (web-ui.md §2), the name and its dot at the body step on screen, held there by --name-zoom
-   (CanvasHost.tsx); its version and trash can, too small there to read or hit, go (cl-958). */
-.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.nm, .state-dot) {
-  font-size: calc(var(--t-body) * var(--ui) * var(--name-zoom, 1));
+/* A box's name and its dot: at the title step on the canvas, and as the canvas zooms out at the body step on screen, held there by
+   --name-zoom up to what fits the room above a box (shown.ts nameZoomOf), then smaller with the canvas. One line, cut with an ellipsis
+   where its box ends, its whole name on hover (Paul, 11-13: "rather than just truncating"). */
+.react-flow__node .card:not(.here) > .head :is(.nm, .state-dot) {
+  font-size: max(calc(var(--t-title) * var(--ui)), calc(var(--t-body) * var(--ui) * var(--name-zoom, 1)));
 }
-/* A name longer than its box goes on to a second line, rising over it, rather than being cut to a few letters. */
-.stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head .nm {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  white-space: normal;
-  overflow-wrap: break-word;
-  line-height: 1.1;
-  /* A word a little wider than its box runs into the gap beside it rather than splitting (brok/en); not past 20%, where the gap is
-     too narrow and two names ran together. Where that gap isn't free, it keeps to its box (--name-room, CanvasStore's layoutAt, cl-885). */
-  flex-shrink: 0;
-  max-width: var(--name-room, 130%);
-}
-.stage[data-lod="2"] .react-flow__node .card > .head .nm {
-  max-width: var(--name-room, 100%);
-}
-/* Past 20% a box is 60px or so on screen: its name at the small step (14px), so a short word fits it whole. */
-.stage[data-lod="2"] .react-flow__node .card > .head :is(.nm, .state-dot) {
-  font-size: calc(var(--t-small) * var(--ui) * var(--name-zoom, 1));
-}
+/* Far out a box is its picture and its name (web-ui.md §2): its version and trash can, too small there to read or hit, go (cl-958). */
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card > .head :is(.node-version-label, .iconb, .count) {
   display: none;
 }
-/* And what hangs under it, its tool, shape and a render's lines, drawn at the canvas's scale (7px on screen at 33%): its dot says it renders.
-   The room rows keep for them is the room its name rises into far out (CanvasStore's lifts, cl-885). */
+/* And what hangs under it, its tool, shape and a render's lines, drawn at the canvas's scale (7px on screen at 33%), set lower as a selected
+   ring grows: its dot says it renders. Its name rises into the room they keep. */
 .stage:is([data-lod="1"], [data-lod="2"]) .react-flow__node .card:not(.here) > .tile-under {
   display: none;
 }
