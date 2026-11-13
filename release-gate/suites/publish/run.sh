@@ -8,7 +8,7 @@
 # Face revision production's are, runs once on this CPU. Nothing reaches tensorhub.com.
 set -uo pipefail
 OUT=$1 COZY_BIN=$2 RT=$3 TF=$4 PKGS=$(cd "$5" && pwd) ONLY=${6:-}
-HERE=$(cd "$(dirname "$0")/../.." && pwd)
+HERE=$(cd "$(dirname "$0")/../../.." && pwd)  # the checkout
 mkdir -p "$OUT" && cd "$OUT" || exit 2
 : > expect.tsv
 log() { echo "$(date -u +%H:%M:%SZ) $*" | tee -a gate.log; }
@@ -22,7 +22,7 @@ verdict() {
 }
 export PATH=$(dirname "$COZY_BIN"):$PATH
 . "$HERE/e2e/test-hub.sh"
-require_test_hub "${COZY_HUB_URL:-}" || { expect publish-hub FAIL "not the throwaway Hub: ${COZY_HUB_URL:-unset}"; verdict; }
+require_test_hub "${COZY_HUB_URL:-}" 2> hub-check.err || { expect publish-hub FAIL "not the throwaway Hub ${COZY_HUB_URL:-unset}: $(cat hub-check.err)"; verdict; }
 J() { jq -e "$@" > /dev/null; }
 ver() { grep -m1 '^version = ' "$PKGS/$1/pyproject.toml" | cut -d'"' -f2; }
 final() { ver "$1" | sed -E 's/(a|b|rc)[0-9]+$//; s/\.dev[0-9]+$//'; }
