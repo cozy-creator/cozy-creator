@@ -142,6 +142,11 @@ impl Machine {
         Self { private: Some(scope), ..self.clone() }
     }
 
+    /// Which worker this is: its address and certificate pin.
+    pub(crate) fn identity(&self) -> String {
+        format!("{}#{}", self.origin, hex::encode(self.pin))
+    }
+
     /// Feature/authentication probe before any private file bytes cross the wire.
     pub(crate) async fn probe_private(&self) -> Result<(), Error> {
         self.migrate_private().await?;
