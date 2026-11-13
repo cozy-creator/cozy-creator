@@ -16,7 +16,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, addBoxes } = require('./page');
+const { holderToken, projectFolder, projectFromPage, projectUrl, signIn,importFile, projectAction, projectJson, BARS, GPU, calcifer, MP4, boxOf, closeBox, openBox, STEP_MS, lastLook, launch, lookAt, png, noStall, renderOf, settled, until, wav, addBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -615,7 +615,7 @@ async function edgesOf({ shown, bare, black, white, clip, frame }) {
   const signedIn = async (page) => {
     await signIn(page);
     await page.waitForSelector('.top');
-    return page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')).token);
+    return holderToken();
   };
   const errors = [];
   const watch = (page) => {

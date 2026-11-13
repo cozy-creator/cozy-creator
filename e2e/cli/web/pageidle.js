@@ -9,7 +9,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, readdirSync, readFileSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { basename, join } = require('path');
-const { projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, signIn, STEP_MS, until, upload } = require('./page');
+const { holderToken, projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, png, projectFromPage, signIn, STEP_MS, until, upload } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -123,7 +123,7 @@ function calciferUse() {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = { token: holderToken() };
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
     const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };

@@ -66,8 +66,7 @@ function plate(path, color, seconds, hz) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
   const call = (method, path, body) => page.evaluate(async ({ method, path, body }) => {
-    const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
-    const response = await fetch(path, { method, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    const response = await fetch(path, { method, headers: { 'cozy-project-storage': '3', ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
     return { status: response.status, body: await response.json().catch(() => null) };
   }, { method, path, body });
   const read = async () => (await call('GET', `/v1/projects/${id}`)).body;

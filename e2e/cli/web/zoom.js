@@ -7,7 +7,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectUrl, importFile, projectJson, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { holderToken, projectFolder, projectUrl, importFile, projectJson, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -47,7 +47,7 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
   lookAt(page);
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const token = holderToken();
   const api = async (path, init = {}) => (await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', ...init.headers } })).json();
 
   const scratch = mkdtempSync(join(tmpdir(), 'web-zoom-'));

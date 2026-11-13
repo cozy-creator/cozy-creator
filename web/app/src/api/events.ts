@@ -301,7 +301,7 @@ export class EventStream {
     let live = false
     try {
       const response = await this.client.events(connection.signal).catch(() => null)
-      if (response?.status === 401) throw new Error("signed out")
+      if (response?.status === 403 && /"(not_own_page|other_user)"/.test(await response.clone().text().catch(() => ""))) throw new Error("not answered")
       if (!response?.ok || !response.body) return false
       await readEvents(
         response.body,

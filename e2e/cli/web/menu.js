@@ -4,7 +4,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, projectFromPage, signIn, STEP_MS, until } = require('./page');
+const { holderToken, projectFolder, boxOf, calcifer, fitCanvas, lastLook, launch, lookAt, noStall, projectFromPage, signIn, STEP_MS, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -41,7 +41,7 @@ async function died(why) {
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const { id } = await projectFromPage(page);
-  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const session = { token: holderToken() };
   const api = async (path, method = 'GET', body) => {
     const answer = await fetch(base + path, {
       method,

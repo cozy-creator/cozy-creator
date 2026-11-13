@@ -15,7 +15,7 @@ const { exec } = require('child_process');
 const { existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { basename, join } = require('path');
-const { projectFolder, projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, addBoxes, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, storedOf, summary, until, watchBoxes, wav } = require('./page');
+const { holderToken, projectFolder, projectFromPage, projectUrl, importFile, projectJson, newProject, calcifer, signIn, DARK_OPEN, MP4, boxLog, boxOf, closeBox, openBox, STEP_MS, addBoxes, lastLook, launch, lookAt, png, noStall, panning, removeGeneratedProject, renderOf, rowsOf, storedOf, summary, until, watchBoxes, wav } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -125,7 +125,7 @@ async function rest(page, handle) {
         answer.json().then(({ error }) => Object.assign(refusal, { code: error?.code, message: error?.message })).catch(() => {});
       }
       if (url.pathname.includes('/thumbs/')) thumbs.push({ strip: url.searchParams.get('strip'), preview: url.searchParams.has('preview'), status: answer.status() });
-      if (url.pathname.includes('/files/') && answer.request().resourceType() === 'media') fileAnswers.push({ status: answer.status(), media: url.searchParams.has('media') });
+      if (url.pathname.includes('/files/') && answer.request().resourceType() === 'media') fileAnswers.push({ status: answer.status(), secret: url.searchParams.has('media') });
     });
   };
   watch(page);
@@ -137,7 +137,7 @@ async function rest(page, handle) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const token = holderToken();
   const api = async (path, init = {}) => {
     const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', ...init.headers } });
     return answer.json();
@@ -319,12 +319,13 @@ async function rest(page, handle) {
   await until('one video', () => page.locator('video').count(), (n) => n === 1);
   await until('it has its metadata', () => page.locator('video').first().evaluate((video) => video.readyState), (ready) => ready >= 1);
   await held();
-  // WebKit on a Mac loads a video through AVFoundation, where Playwright hears nothing: that it's loaded, off ?media=, is what shows there.
+  // A video plays by Range as one of the page's own requests, with no secret in its URL (cl-980). WebKit on a Mac loads it through
+  // AVFoundation, where Playwright hears nothing: that it's loaded, with no secret, is what shows there.
   if (process.env.ENGINE === 'webkit') {
-    check('plays_by_range_and_media', (await page.locator('video').first().evaluate((video) => video.currentSrc)).includes('media='));
+    check('plays_by_range', !(await page.locator('video').first().evaluate((video) => video.currentSrc)).includes('media='));
   } else {
-    await until('over Range with ?media=', () => Promise.resolve(fileAnswers), (all) => all.some((answer) => answer.status === 206 && answer.media));
-    check('plays_by_range_and_media', true);
+    await until('over Range', () => Promise.resolve(fileAnswers), (all) => all.some((answer) => answer.status === 206 && !answer.secret));
+    check('plays_by_range', true);
   }
   await open(page, 'clip_b');
   await until('what was playing went with its box', () => page.locator('video').count(), (n) => n === 0);

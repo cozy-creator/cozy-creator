@@ -6,7 +6,7 @@
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its screenshots. Prints what it saw as JSON and exits 1
 // if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
-const { projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
+const { holderToken, projectFolder, projectFromPage, calcifer, signIn, STEP_MS, boxOf, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -38,7 +38,7 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const held = { token: holderToken() };
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
     const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };

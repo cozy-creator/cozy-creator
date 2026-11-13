@@ -9,7 +9,6 @@ import type {
   AssetPatched,
   AssetVersions,
   Browsed,
-  BrowserSession,
   CalciferStatus,
   Canvas,
   CanvasPatched,
@@ -110,8 +109,9 @@ const failureStatus: Record<ErrorBody["kind"], number> = {
 const unreachable = () =>
   new ApiError(0, { kind: "unavailable", code: "calcifer_unreachable", message: "Calcifer isn't answering", next: ["cozy open"] })
 
-/** The page's own session is gone. Any other 401 is a Hub's word on a code or a key, which belongs where it happened. */
-export const sessionLost = (error: ApiError) => error.status === 401 && error.body.code === "unauthenticated"
+/** Calcifer won't answer this page (cl-980): it isn't Calcifer's own page, or not its user's. Any other 401 or 403 is a Hub's word on
+ *  a code or a key, which belongs where it happened. */
+export const sessionLost = (error: ApiError) => error.status === 403 && ["not_own_page", "other_user"].includes(error.body.code)
 
 async function refusal(response: Response): Promise<ApiError> {
   const body = await response.json().catch(() => null)
@@ -279,16 +279,6 @@ export class Client {
     const asked = keyOf(method, path, text, key, options?.action)
     if (asked) headers["Idempotency-Key"] = asked
     return this.json(path, { method, headers, body: text }, options)
-  }
-
-  // Session
-
-  redeem(code: string): Promise<BrowserSession> {
-    return this.write("POST", "/v1/session", { code })
-  }
-
-  async endSession(): Promise<void> {
-    await this.send("/v1/session", { method: "DELETE" })
   }
 
   status(): Promise<CalciferStatus> {

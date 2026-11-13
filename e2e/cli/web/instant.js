@@ -12,7 +12,7 @@ const { chromium } = require(process.env.PLAYWRIGHT);
 const { exec, execFileSync } = require('child_process');
 const { rmSync } = require('fs');
 const { join } = require('path');
-const { projectFolder, implementationRow, projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, lookAt, openBox, renderOf, settled, storedOf, until } = require('./page');
+const { holderToken, projectFolder, implementationRow, projectFromPage, projectJson, PYTHON, calcifer, carry, signIn, STEP_MS, boxOf, closeBox, addBoxes, lastLook, lookAt, openBox, renderOf, settled, storedOf, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -77,14 +77,13 @@ async function loseAnswers(page, method, path, times) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
   const api = (path, init = {}) => page.evaluate(async ([path, init]) => {
-    const token = JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token;
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), ...init.headers } });
+    const answer = await fetch(path, { ...init, headers: { 'cozy-project-storage': '3', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, [path, init]);
   const folder = (await api(`/v1/projects/${id}`)).body.path;
   seen.project = { id, folder };
   // The project and its canvas as Calcifer answers them (cl-803: both are project.db's), asked from here: what the page reads is counted.
-  const token = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token);
+  const token = holderToken();
   const cards = async () => (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).cards ?? {};
   const status = () => projectJson(folder).assets;
   const names = () => status().map((asset) => asset.name);

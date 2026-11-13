@@ -15,7 +15,7 @@ const { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } = requir
 const http = require('http');
 const { homedir, tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, implementationRow, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, storedOf, watchBoxes } = require('./page');
+const { holderToken, projectFolder, projectFromPage, projectJson, calcifer, signIn, STEP_MS, boxOf, closeBox, implementationRow, noStall, openBox, renderOf, until, boxLog, lastLook, lookAt, storedOf, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -135,7 +135,7 @@ function standIn(name, release, wheelName, wheel, pyproject, lock, describedInte
   const documentAnswer = await signIn(page);
   const pagePolicy = documentAnswer.headers()['content-security-policy'];
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const token = holderToken();
   const api = async (path, init = {}) => {
     const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };

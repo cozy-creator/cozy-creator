@@ -10,7 +10,7 @@ const { exec } = require('child_process');
 const { rmSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { calcifer, signIn, STEP_MS, launch, lastLook, lookAt, newProject, noStall, removeGeneratedProject, until } = require('./page');
+const { holderToken, calcifer, signIn, STEP_MS, launch, lastLook, lookAt, newProject, noStall, removeGeneratedProject, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -123,7 +123,7 @@ function watch() {
   // The session ended (as a Calcifer that keeps none would), then a restart: one plain state, in place, and the page stays.
   await page.goto(`${base}/p/${kept.code}`);
   await page.locator('.react-flow__node').first().waitFor();
-  const { token } = JSON.parse(await page.evaluate(() => sessionStorage.getItem('cozy.session')));
+  const token = holderToken();
   const ended = await fetch(`${base}/v1/session`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
   check('session_ended', ended.status === 204, ended.status);
   if (process.env.RESTART) await restart();

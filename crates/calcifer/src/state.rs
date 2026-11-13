@@ -1,4 +1,4 @@
-//! Calcifer's own state beside its runs, as tables of `state.db` (cl-818): the project folders it opened, browser sessions, your tool
+//! Calcifer's own state beside its runs, as tables of `state.db` (cl-818): the project folders it opened, your tool
 //! list, Render here, model header caches and independent asks. Project activity belongs to project.db. Each change is one
 //! transaction; nothing is rewritten whole. The JSON files an earlier Calcifer kept these in are imported once, at open, and deleted ([`import`]).
 use std::{
@@ -28,15 +28,8 @@ pub(crate) const TABLES: &str = "
         code TEXT NOT NULL,
         path TEXT NOT NULL
     ) STRICT;
-    CREATE TABLE IF NOT EXISTS sessions (
-        token_sha256 TEXT PRIMARY KEY,
-        media_sha256 TEXT NOT NULL UNIQUE,
-        used_at_ms INTEGER NOT NULL
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS session_codes (
-        code_sha256 TEXT PRIMARY KEY,
-        expires_ms INTEGER NOT NULL
-    ) STRICT;
+    DROP TABLE IF EXISTS sessions;
+    DROP TABLE IF EXISTS session_codes;
     CREATE TABLE IF NOT EXISTS tool_list (
         ord INTEGER PRIMARY KEY,
         package TEXT NOT NULL UNIQUE
@@ -74,14 +67,6 @@ pub(crate) struct KnownProject {
     pub used_at_ms: i64,
     /// Its walk was going: the next start walks it again.
     pub walking: bool,
-}
-
-/// A browser session, by its secrets' digests.
-#[derive(Clone, Debug)]
-pub(crate) struct SessionRow {
-    pub token: String,
-    pub media: String,
-    pub used_at_ms: i64,
 }
 
 fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
@@ -232,55 +217,6 @@ impl Store {
     /// Whether each project is being walked, which the next start walks again.
     pub(crate) fn projects_walking(&self, _walking: &[(String, bool)]) -> Result<()> { Ok(()) }
 
-    /// The sessions used after `since_ms`; the rest have ended, and go.
-    pub(crate) fn sessions(&self, since_ms: i64) -> Result<Vec<SessionRow>> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM sessions WHERE used_at_ms <= ?1", [since_ms])?;
-            let mut statement = tx.prepare("SELECT token_sha256, media_sha256, used_at_ms FROM sessions")?;
-            let rows = statement.query_map([], |r| Ok(SessionRow { token: r.get(0)?, media: r.get(1)?, used_at_ms: r.get(2)? }))?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
-    /// Keep only the digest of an unredeemed link code.
-    pub(crate) fn session_code(&self, code: &str, now: i64, expires_ms: i64) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM session_codes WHERE expires_ms <= ?1", [now])?;
-            tx.execute("INSERT INTO session_codes (code_sha256, expires_ms) VALUES (?1, ?2)", params![code, expires_ms])?;
-            Ok(())
-        })
-    }
-
-    /// Redeem a valid code and save its session in the same transaction.
-    pub(crate) fn session_started(&self, code: &str, session: &SessionRow, now: i64, since_ms: i64) -> Result<bool> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM session_codes WHERE expires_ms <= ?1", [now])?;
-            if tx.execute("DELETE FROM session_codes WHERE code_sha256 = ?1", [code])? == 0 {
-                return Ok(false);
-            }
-            tx.execute("DELETE FROM sessions WHERE used_at_ms <= ?1", [since_ms])?;
-            tx.execute(
-                "INSERT INTO sessions (token_sha256, media_sha256, used_at_ms) VALUES (?1, ?2, ?3)",
-                params![session.token, session.media, session.used_at_ms],
-            )?;
-            Ok(true)
-        })
-    }
-
-    pub(crate) fn session_used(&self, token: &str, at_ms: i64) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("UPDATE sessions SET used_at_ms = ?2 WHERE token_sha256 = ?1", params![token, at_ms])?;
-            Ok(())
-        })
-    }
-
-    pub(crate) fn session_ended(&self, token: &str) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM sessions WHERE token_sha256 = ?1", [token])?;
-            Ok(())
-        })
-    }
-
     /// Your tool list.
     pub(crate) fn tool_list(&self) -> Result<ToolList> {
         self.read(tool_list_in)
@@ -342,13 +278,6 @@ struct OldProject {
 }
 
 #[derive(Deserialize)]
-struct OldSession {
-    token: String,
-    media: String,
-    used_at_ms: i64,
-}
-
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OldHere {
     #[serde(default)]
@@ -396,7 +325,8 @@ fn old<T: DeserializeOwned>(path: &Path) -> Option<Option<T>> {
 pub(crate) fn import(store: &Store, dir: &Path) {
     let file = |name: &str| dir.join(name);
     let index = old::<OldIndex>(&file("projects.json"));
-    let sessions = old::<Vec<OldSession>>(&file("sessions.json"));
+    // An earlier Calcifer's browser sessions: there are none now (cl-980), so the file only goes.
+    let sessions = old::<serde_json::Value>(&file("sessions.json"));
     let tools = old::<ToolList>(&file("tools.json"));
     let here = old::<OldHere>(&file("here.json"));
     let headers = old::<OldHeaders>(&file("checkpoints.json"));
@@ -420,10 +350,6 @@ pub(crate) fn import(store: &Store, dir: &Path) {
         for (id, project) in index.iter().flatten().flat_map(|index| &index.projects) {
             let sql = "INSERT OR IGNORE INTO projects (id, path, code) VALUES (?1, ?2, '')";
             *counts.entry("projects").or_insert(0) += tx.execute(sql, params![id, project.path.to_string_lossy()])?;
-        }
-        for session in sessions.iter().flatten().flatten() {
-            let sql = "INSERT OR IGNORE INTO sessions (token_sha256, media_sha256, used_at_ms) VALUES (?1, ?2, ?3)";
-            *counts.entry("sessions").or_insert(0) += tx.execute(sql, params![session.token, session.media, session.used_at_ms])?;
         }
         if let Some(Some(list)) = &tools
             && tool_list_in(tx)? == ToolList::default()

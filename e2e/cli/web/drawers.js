@@ -68,8 +68,7 @@ async function runs(page, base, id, folder) {
   await until('the count goes', () => page.textContent('.top a[href*="runs"]'), (text) => !/\d/.test(text)).catch(async (error) => {
     // Whose it is: the page's, or a run Calcifer says is going.
     seen.count_held = await page.evaluate(async (id) => {
-      const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
-      const going = async (status) => (await (await fetch(`/v1/projects/${id}/runs?status=${status}&limit=5`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).runs.map((run) => [run.number, run.status]);
+      const going = async (status) => (await (await fetch(`/v1/projects/${id}/runs?status=${status}&limit=5`, { headers: { 'cozy-project-storage': '3' } })).json()).runs.map((run) => [run.number, run.status]);
       return { in_progress: await going('in_progress'), queued: await going('queued') };
     }, id);
     throw error;
@@ -132,8 +131,7 @@ async function runs(page, base, id, folder) {
   const id = (await projectFromPage(page)).id;
   const read = (path) =>
     page.evaluate(async (path) => {
-      const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
-      return (await fetch(path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
+      return (await fetch(path, { headers: { 'cozy-project-storage': '3' } })).json();
     }, path);
   const folder = (await read(`/v1/projects/${id}`)).path;
   seen.project = { id, folder };

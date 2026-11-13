@@ -15,7 +15,7 @@ use axum::{Json, extract::State, http::HeaderMap};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tokio::{io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader}, sync::{Mutex, OwnedMutexGuard}};
-use crate::{api::{self, Api, Refusal}, sessions::{OwnedSessionLease, Sessions}};
+use crate::api::{self, Api, Principal, Refusal};
 use profile::{BrowserRetired, VolatileProfileLease};
 
 pub(crate) fn daemon_birth() -> Result<String, Refusal> {
@@ -23,24 +23,26 @@ pub(crate) fn daemon_birth() -> Result<String, Refusal> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(&birth).map_err(|_| unavailable())?)))
 }
 
-pub(crate) async fn project_storage(State(api): State<Arc<Api>>, headers: HeaderMap) -> Result<Json<Value>, Refusal> {
-    let token = api::bearer(&headers).filter(|token| api.admits(token) || api.sessions.admits_token(api.calcifer.store(), token))
-        .ok_or_else(|| api::refuse(Kind::Forbidden, "private_browser_required", "Open project data in a signed-in browser or the native CLI"))?;
-    Ok(Json(json!({ "version": 3, "daemon_birth": daemon_birth()?, "principal": hex::encode(Sha256::digest(token)) })))
+/// The project storage protocol this Calcifer speaks, and who's asking: the user `admit` verified (cl-980), whom project storage binds to.
+pub(crate) async fn project_storage(principal: Option<axum::Extension<Principal>>) -> Result<Json<Value>, Refusal> {
+    let Some(axum::Extension(Principal::User(uid))) = principal else {
+        return Err(api::refuse(Kind::Forbidden, "private_browser_required", "Open project data in Calcifer's page or the native CLI"));
+    };
+    Ok(Json(json!({ "version": 3, "daemon_birth": daemon_birth()?, "principal": format!("user:{uid}") })))
 }
 
 fn unavailable() -> Refusal { api::refuse(Kind::Unavailable, "private_browser_unavailable", "Cozy could not establish its owned private browser; no default browser was opened") }
 fn busy() -> Refusal { api::refuse(Kind::Conflict, "project_busy", "The Cozy browser has not confirmed that all edits are saved; keep it open and finish saving before locking") }
 
 #[derive(Clone, Copy)]
-enum Step { Executable, Home, ProfileSetup, Capture, Pipe, Spawn, Birth, Ownership, Context, Target, Attach, Seal, Inject, Navigate, Activate }
+enum Step { Executable, Home, ProfileSetup, Capture, Pipe, Spawn, Birth, Ownership, Context, Target, Attach, Seal, Navigate, Activate }
 impl Step {
     fn code(self) -> &'static str {
         match self {
             Self::Executable => "browser_executable", Self::Home => "browser_home", Self::ProfileSetup => "browser_profile_setup",
             Self::Capture => "browser_capture", Self::Pipe => "browser_pipe", Self::Spawn => "browser_spawn", Self::Birth => "browser_birth",
             Self::Ownership => "browser_ownership", Self::Context => "browser_context", Self::Target => "browser_target",
-            Self::Attach => "browser_attach", Self::Seal => "browser_seal", Self::Inject => "browser_inject",
+            Self::Attach => "browser_attach", Self::Seal => "browser_seal",
             Self::Navigate => "browser_navigate", Self::Activate => "browser_activate",
         }
     }
@@ -92,8 +94,8 @@ struct Live {
     tree: platform::process::Tree,
     birth: platform::process::Birth,
     profile: VolatileProfileLease,
-    authority: OwnedSessionLease,
-    credential: ::api::calcifer::BrowserSession,
+    /// This incarnation, as a prepared close names it.
+    id: String,
     address: SocketAddr,
     pipe: Pipe,
     context: String,
@@ -136,14 +138,14 @@ pub(crate) struct PreparedBrowserClose {
 impl Drop for PreparedBrowserClose {
     fn drop(&mut self) {
         let Some(held) = self.live.take() else { return };
-        let exact = held.as_ref().map(|live| (live.birth.clone(), live.authority.id().to_owned(), live.profile.identity()));
+        let exact = held.as_ref().map(|live| (live.birth.clone(), live.id.clone(), live.profile.identity()));
         drop(held);
         let Some((birth, session, profile)) = exact else { return };
         let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
         let (owner, pages) = (self.owner.clone(), std::mem::take(&mut self.pages));
         runtime.spawn(async move {
             let mut held = owner.lock().await;
-            let Some(live) = held.as_mut().filter(|live| live.birth == birth && live.authority.id() == session && live.profile.identity() == profile) else { return };
+            let Some(live) = held.as_mut().filter(|live| live.birth == birth && live.id == session && live.profile.identity() == profile) else { return };
             // A later vault/run drain may refuse after browser preparation. Abandoning that
             // one-use receipt restores only this exact saved session, never a replacement.
             for page in pages {
@@ -157,7 +159,7 @@ impl OwnedBrowser {
     pub(crate) fn new() -> Self { Self { live: Arc::default(), retirement_incomplete: Arc::new(AtomicBool::new(false)) } }
 
     #[cfg(target_os = "linux")]
-    async fn launch(sessions: &Sessions, address: SocketAddr) -> Result<Live, Refusal> {
+    async fn launch(address: SocketAddr) -> Result<Live, Refusal> {
         use std::process::{Command, Stdio};
         let path = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect::<Vec<_>>();
         let program = ["google-chrome", "chromium", "chromium-browser"].into_iter().find_map(|name| platform::tools::on_path(name, &path)).ok_or_else(|| Step::Executable.unavailable())?;
@@ -197,8 +199,8 @@ impl OwnedBrowser {
         let (send, receive) = platform::process::private_browser_pipe(&mut command).map_err(|_| Step::Pipe.unavailable())?;
         let tree = platform::process::spawn(command).map_err(|_| Step::Spawn.unavailable())?;
         let birth = platform::process::Birth::of(tree.pid()).map_err(|_| Step::Birth.unavailable())?;
-        let (authority, credential) = sessions.begin_owned();
-        let mut live = Live { tree, birth: birth.clone(), profile, authority, credential, address,
+        let id = profile.nonce().to_owned();
+        let mut live = Live { tree, birth: birth.clone(), profile, id, address,
             pipe: Pipe { birth, send: tokio::fs::File::from_std(send), receive: BufReader::new(tokio::fs::File::from_std(receive)), next: 0 },
             context: String::new(), targets: HashMap::new(), startup: Some(capture) };
         if let Err(error) = live.profile.observe(&live.birth) { return Err(Self::launch_failed(live, error, Step::Ownership).await); }
@@ -233,7 +235,6 @@ impl OwnedBrowser {
             }
             let retired = if ended {
                 let proof = BrowserRetired { profile: live.profile.identity(), birth: live.birth.clone(), session: live.profile.nonce().to_owned() };
-                drop(live.authority);
                 live.profile.retire(proof).is_ok()
             } else { false };
             facts.insert("browser_startup_retired".into(), json!(retired));
@@ -242,17 +243,17 @@ impl OwnedBrowser {
         }).await.unwrap_or_else(|_| step.unavailable())
     }
     #[cfg(not(target_os = "linux"))]
-    async fn launch(_sessions: &Sessions, _address: SocketAddr) -> Result<Live, Refusal> { Err(unavailable()) }
+    async fn launch(_address: SocketAddr) -> Result<Live, Refusal> { Err(unavailable()) }
 
     /// `project_ref` is an index reference, resolved by the native-only route without opening project.db.
-    pub(crate) async fn open(&self, sessions: &Sessions, address: SocketAddr, project_ref: &str) -> Result<(), Refusal> {
+    pub(crate) async fn open(&self, address: SocketAddr, project_ref: &str) -> Result<(), Refusal> {
         // A prepared close owns this mutex while shutdown drains mutation leases.
         // Never wait here while a browser-open request itself owns such a lease.
         let mut held = self.live.try_lock().map_err(|_| busy())?;
         if self.retirement_incomplete.load(Ordering::Acquire) { return Err(unavailable()); }
         if held.is_none() {
             self.retirement_incomplete.store(true, Ordering::Release);
-            match Self::launch(sessions, address).await {
+            match Self::launch(address).await {
                 Ok(live) => *held = Some(live),
                 Err(error) => {
                     if error.0.metadata.as_ref().is_some_and(|facts| facts["browser_startup_retired"] == true) { self.retirement_incomplete.store(false, Ordering::Release); }
@@ -276,12 +277,7 @@ impl OwnedBrowser {
         let session = attached["sessionId"].as_str().ok_or_else(unavailable)?;
         live.profile.observe(&live.birth)?;
         live.seal_startup()?;
-        let owned = json!({ "session": live.credential, "birth": daemon_birth()? });
-        let origin = serde_json::to_string(&format!("http://{address}")).map_err(|_| unavailable())?;
-        let source = format!("if(location.origin==={origin})Object.defineProperty(globalThis,'__cozyOwned',{{value:{owned},writable:false,configurable:false}});");
-        // Blink runs new-document scripts only from an enabled Page agent; keep it enabled so reloads are injected too.
-        live.pipe.call("Page.enable", json!({}), Some(session)).await.map_err(|error| live.failed(error, Step::Inject))?;
-        live.pipe.call("Page.addScriptToEvaluateOnNewDocument", json!({ "source": source }), Some(session)).await.map_err(|error| live.failed(error, Step::Inject))?;
+        // Nothing is injected (cl-980): the page is Calcifer's own, as in any browser, and needs no credential.
         let mut url = url::Url::parse(&format!("http://{address}/")).map_err(|_| unavailable())?;
         url.path_segments_mut().map_err(|_| unavailable())?.extend(["projects", project_ref]);
         live.pipe.call("Page.navigate", json!({ "url": url.as_str() }), Some(session)).await.map_err(|error| live.failed(error, Step::Navigate))?;
@@ -337,7 +333,6 @@ impl OwnedBrowser {
             live.tree.wait().map_err(|_| unavailable())?;
             if platform::process::group_members(&live.birth).iter().any(|birth| !birth.ended().unwrap_or(false)) { return Err(unavailable()); }
             let proof = BrowserRetired { profile: live.profile.identity(), birth: live.birth.clone(), session: live.profile.nonce().to_owned() };
-            drop(live.authority);
             live.profile.retire(proof)
         }).await.map_err(|_| unavailable())?
     }
@@ -416,7 +411,6 @@ impl OwnedBrowser {
             return Err(error);
         }
         let proof = BrowserRetired { profile: live.profile.identity(), birth: live.birth.clone(), session: live.profile.nonce().to_owned() };
-        drop(live.authority);
         live.profile.retire(proof)?;
         self.retirement_incomplete.store(false, Ordering::Release);
         Ok(())
@@ -433,7 +427,7 @@ pub(crate) async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, Json(a
     }
     let reference = api.projects.reference(&api, &ask.project).map_err(Refusal)?;
     let address = *api.browser_address.get().ok_or_else(unavailable)?;
-    api.browser.open(&api.sessions, address, &reference.id).await?;
+    api.browser.open(address, &reference.id).await?;
     let mut url = url::Url::parse(&format!("http://{address}/")).map_err(|_| unavailable())?;
     url.path_segments_mut().map_err(|_| unavailable())?.extend(["projects", &reference.id]);
     Ok(Json(json!({ "url": url.as_str() })))

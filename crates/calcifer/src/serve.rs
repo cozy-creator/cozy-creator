@@ -6,7 +6,7 @@
 //! step is logged with its time, so a slow start names itself.
 use std::{
     io::ErrorKind,
-    net::{Ipv4Addr, SocketAddr},
+    net::Ipv4Addr,
     process::ExitCode,
     sync::Arc,
     time::{Duration, Instant},
@@ -360,7 +360,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     }
     let _ = std::fs::remove_file(home.calcifer().join(REFUSED));
     steps.done("record");
-    let app = api::router(api.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    let app = api::router(api.clone()).into_make_service_with_connect_info::<api::Peer>();
     let server = tokio::spawn(
         axum::serve(listener, app)
             .with_graceful_shutdown(api.stopped())

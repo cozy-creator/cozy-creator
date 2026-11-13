@@ -9,7 +9,7 @@
 // it saw as JSON, exits 1 if anything failed.
 const playwright = require(process.env.PLAYWRIGHT);
 const { join } = require('path');
-const { projectFolder, calcifer, cozyIn, lastLook, launch, lookAt, noStall, projectAction, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
+const { holderToken, projectFolder, calcifer, cozyIn, lastLook, launch, lookAt, noStall, projectAction, projectFromPage, signIn, STEP_MS, until, watchBoxes } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -46,7 +46,7 @@ const AUTOMATIC = /Nothing checked: this project's renders are placed automatica
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const token = holderToken();
   const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
 
   await page.goto(`${base}/projects`);

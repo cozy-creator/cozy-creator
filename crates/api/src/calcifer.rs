@@ -2290,29 +2290,6 @@ pub struct CalciferActivity {
     pub now_ms: i64,
 }
 
-/// `POST /v1/session-codes`: a code a browser trades once for a session.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionCode {
-    pub code: String,
-    /// Calcifer's page, the code in its fragment.
-    pub url: String,
-    pub expires_ms: i64,
-}
-
-/// `POST /v1/session`'s body.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RedeemCode {
-    pub code: String,
-}
-
-/// `POST /v1/session`: `token` for `Authorization`, `media` for the `?media=` of a file's URL.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-pub struct BrowserSession {
-    pub token: String,
-    pub media: String,
-}
-
 /// The file in Calcifer's directory (`~/.cozy/calcifer`) that says, as an `error::Envelope`, why
 /// the last start failed; a successful start deletes it.
 pub const REFUSED: &str = "refused.json";

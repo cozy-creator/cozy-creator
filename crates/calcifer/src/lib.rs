@@ -46,7 +46,6 @@ mod project;
 mod rentals;
 mod runs;
 pub mod serve;
-mod sessions;
 mod slow;
 mod state;
 mod store;

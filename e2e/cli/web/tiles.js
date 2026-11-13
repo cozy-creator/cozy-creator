@@ -16,7 +16,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, projectFromPage, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, addBoxes, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
+const { holderToken, projectFolder, projectFromPage, projectJson, calcifer, signIn, MP4, STEP_MS, boxOf, closeBox, addBoxes, fitCanvas, lastLook, launch, lookAt, noStall, openBox, png, settled, until, upload } = require('./page');
 
 const FIRST_RUN_MS = 300_000;
 // A still made in slow steps, so its tile is seen rendering at both zooms; it's canceled from its tile.
@@ -133,7 +133,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const held = { token: holderToken() };
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
     const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `tiles-${Date.now()}-${Math.random()}` } : {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };

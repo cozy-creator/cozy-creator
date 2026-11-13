@@ -11,7 +11,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { execFileSync } = require('child_process');
 const { existsSync, readFileSync, renameSync, writeFileSync } = require('fs');
 const { join } = require('path');
-const { projectFolder, implementationRow, projectFromPage, MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav, addBoxes, storedOf } = require('./page');
+const { holderToken, projectFolder, implementationRow, projectFromPage, MP4, boxOf, calcifer, closeBox, openBox, signIn, STEP_MS, drop, lastLook, launch, lookAt, png, noStall, until, watchBoxes, wav, addBoxes, storedOf } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -58,7 +58,7 @@ function replaceFile(at, text) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const token = holderToken();
   const api = async (path, init = {}) => {
     const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };

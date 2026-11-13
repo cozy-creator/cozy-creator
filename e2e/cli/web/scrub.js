@@ -13,7 +13,7 @@ const { execFileSync } = require('child_process');
 const { mkdtempSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectFolder, addBoxes, importFile, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
+const { holderToken, projectFolder, addBoxes, importFile, projectFromPage, calcifer, signIn, STEP_MS, boxOf, closeBox, fitCanvas, lastLook, launch, lookAt, noStall, openBox, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -66,7 +66,7 @@ const SEAM = 6;
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
+  const held = { token: holderToken() };
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
     const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
