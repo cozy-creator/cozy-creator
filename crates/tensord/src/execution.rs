@@ -428,6 +428,8 @@ impl Engine {
             let _ = fs::remove_file(self.root.join("triage").join(format!("{subject}.json")));
         }
         if !objects.is_empty() {
+            // The machine's soft roots go too (they judge again at the next sweep): they would hold the retired objects.
+            *self.roots.lock().unwrap() = crate::storage::Roots::default();
             // Their own uses go with them: a use naming only their objects is theirs.
             let uses: Vec<String> = objects.iter().map(|object| object.sha256.clone()).collect();
             self.store.retire_objects(&objects, &uses, &[]).map_err(crate::storage::io_error)?;
