@@ -15,6 +15,7 @@ import "./FocusedViewport.css"
 
 /** What's on a focused item rather than its background. */
 const OWN = ".media, .tl, .tl-player, .tl-transport, .focus-heading, .focus-warnings, .run-face, .here-side, .here-under, .image-controls, .focus-image-zoom, button, input, textarea, select, [contenteditable]"
+const own = (element: Element) => Boolean(element.closest(OWN))
 
 /** A workspace for one item. The Wander camera stays behind it, unchanged. */
 export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string; onClose(): void; onCopyVersion(file: CarriedFile, x: number, y: number): void }) {
@@ -67,6 +68,9 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
       const target = store.get(name)?.asset
       if (onAsset && target?.kind === "image" && target.tool && load.name) { event.stopPropagation(); store.takeInto(name, [load.name]) }
       else if (onAsset && target?.kind === "image" && target.tool && load.take) { event.stopPropagation(); store.takePicture(name, load.take) }
+      // Let go on what's Focus's own, as on the column it came from, it's put back: a drag begun in Focus and ended in it never leaves it
+      // (Paul, 11-12). Over its background, Wander behind, it's copied there.
+      else if (load.take && own(event.target as Element)) event.stopPropagation()
       else if (load.take) { event.stopPropagation(); onCopyVersion(load.take, x, y) }
       else if (load.tool) { event.stopPropagation(); store.putTool(name, load.tool, load.operation) }
     }
@@ -93,7 +97,6 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
     <section ref={element} className="focus-viewport" aria-label="Focused asset" data-focused-asset={name} data-entering={entering || undefined}
       onClick={(event) => {
         // Its background closes it: pressed and let go there, never a selection or a drag from what's on it.
-        const own = (element: Element) => Boolean(element.closest(OWN))
         if (!own(event.target as Element) && pressBeganOutside(own)) onClose()
       }}
       onContextMenu={(event) => {
