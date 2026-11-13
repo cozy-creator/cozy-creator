@@ -559,6 +559,9 @@ const newPage = async () => {
   };
   const covered = () => page.evaluate(() => Boolean(document.querySelector('.gate')) && !document.querySelector('.react-flow') && !/private_vault_picture|private_after_encryption/.test(document.body.innerText));
   await page.route(statusPath, statusRoute);
+  // Nothing polls the status (xs-189): the drawer opened again reads it, as a person coming back to it does, and that read is the old one.
+  await navigate(href);
+  await navigate(`${href}/vault`);
   await until('actual old unlocked status held', () => {
     if (statusTransportError) throw statusTransportError;
     return oldStatus?.state;
