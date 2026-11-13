@@ -331,6 +331,11 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
   const opening = async (label, page, wire, one, { cold, reload = false, others = [], go = true, bars = true } = {}) => {
     const before = go ? thumbnails(stores(one)) : new Set();
     const from = wire.now;
+    // Probe (cl-973 opens stutter): a CPU profile of each open, sampled every 100 µs.
+    const profiler = await page.context().newCDPSession(page);
+    await profiler.send('Profiler.enable');
+    await profiler.send('Profiler.setSamplingInterval', { interval: 100 });
+    await profiler.send('Profiler.start');
     if (reload) await page.reload();
     else if (go) await page.goto(one.url);
     const read = () => page.evaluate(({ id, pictures }) => {
@@ -364,6 +369,10 @@ test('opens', { tag: '@solo' }, async ({ project, sealed, api, newContext, signI
       now = await read();
       return now.previews.length >= PICTURES || (now.on_screen > 0 && now.on_screen_previews.length >= now.on_screen);
     }, { message: `${label}: every preview on screen drawn`, timeout: WAIT_MS, intervals: [100] }).toBe(true);
+    const { profile } = await profiler.send('Profiler.stop');
+    const origin = await page.evaluate(() => performance.timeOrigin);
+    await testInfo.attach(`profile-${label}`, { body: JSON.stringify({ origin, read: now, profile }), contentType: 'application/json' });
+    await profiler.detach();
     const made = [...thumbnails(stores(one))].filter((file) => !before.has(file)).length;
     const state = now.state;
     // From its first state, or, when that came during a long frame of no script of the page's (its first paint: ~150 ms of style and
