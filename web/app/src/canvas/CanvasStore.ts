@@ -3260,7 +3260,7 @@ export class CanvasStore {
     dropped: Card,
     ask: (at: Card, write: Write, pushes: Pushes) => Promise<T>,
     refused: (error: unknown) => void,
-    done?: (name: string, answer: T, edit: string) => void,
+    done?: (name: string, answer: Partial<T>, edit: string) => void,
     edit?: string,
   ): string {
     const one = async ([at]: Card[], write: Write, pushes: Pushes) => {
@@ -3275,7 +3275,7 @@ export class CanvasStore {
     boxes: { wanted: string; view: Omit<ElementView, "name">; dropped: Card }[],
     ask: (at: Card[], write: Write, pushes: Pushes) => Promise<{ made: T[]; kept?: Record<string, Card | null> }>,
     refused: (error: unknown) => void,
-    done?: (name: string, answer: T, edit: string) => void,
+    done?: (name: string, answer: Partial<T>, edit: string) => void,
     edit?: string,
   ): string[] {
     const by = edit ?? this.step(`Added ${this.nameFor(boxes[0].wanted)}`, [])
@@ -3306,11 +3306,15 @@ export class CanvasStore {
       done: (answer) => {
         if (pushes) this.pushesSent(pushes, answer.kept)
         placed.forEach(({ name, at, node }, i) => {
-          const made = answer.made[i]
+          // Sent again after Calcifer stopped between doing it and answering, it's answered only that it was done (`{}`): the box keeps
+          // the name it asked for, and the read after it says the rest.
+          const made: Partial<T> | undefined = answer.made ? answer.made[i] : {}
           if (!made) return
-          this.served.set(node.id, made.name)
-          // Another writer took the name, unless a rename has moved it on since.
-          if (made.name !== name && this.namesById.get(node.id) === name) this.moveName(name, made.name)
+          if (made.name) {
+            this.served.set(node.id, made.name)
+            // Another writer took the name, unless a rename has moved it on since.
+            if (made.name !== name && this.namesById.get(node.id) === name) this.moveName(name, made.name)
+          }
           const now = this.namesById.get(node.id)
           if (!now) return
           const row = this.views.get(now)?.asset
