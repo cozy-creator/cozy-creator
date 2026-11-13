@@ -134,8 +134,8 @@ function audit() {
     const open = async (theme, zoom, at, size = { width: 1440, height: 900 }) => {
       const tab = await signedIn(theme);
       await tab.setViewportSize(size);
-      const view = { x: Math.round((size.width + 230) / 2 - at.x * zoom), y: Math.round(size.height / 2 - at.y * zoom), zoom };
-      await tab.addInitScript(([id, view]) => localStorage.setItem(`cozy.view:${id}`, JSON.stringify(view)), [made.id, view]);
+      // Where it opens: the project's own view (project.db), as see.js and zoom.js set it.
+      projectJson(made.id, 'PATCH', '/view', { viewport: { x: Math.round((size.width + 230) / 2 - at.x * zoom), y: Math.round(size.height / 2 - at.y * zoom), zoom } });
       await tab.goto(await projectUrl(made.id));
       await tab.waitForSelector('.react-flow__node');
       await until('every picture drawn', () => tab.evaluate(() => [...document.querySelectorAll('.react-flow__node .media img')].every((image) => image.complete)), Boolean);
