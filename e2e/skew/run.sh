@@ -59,6 +59,11 @@ if [ -n "$RELEASE" ]; then
   BIN=$(find "$client_dir" -type f -name cozy -print -quit) && [ -n "$BIN" ] && chmod +x "$BIN" || { echo "the candidate archive has no cozy" >&2; exit 2; }
   CLIENT=
 fi
+# cl-989 diag: a released client under --command on Windows is its release's own Windows zip.
+if [ -n "$CLIENT" ] && [ -z "$BIN" ] && [ -n "$COMMAND" ] && [ "${RUNNER_OS:-}" = Windows ]; then
+  rel=$(mktemp -d) && curl -LsSf --retry 3 "https://github.com/cozy-creator/cozy-creator/releases/download/v$CLIENT/cozy-x86_64-pc-windows-msvc.zip" -o "$rel/cozy.zip" &&
+    python3 -m zipfile -e "$rel/cozy.zip" "$rel/x" && BIN=$(find "$rel/x" -name cozy.exe -print -quit) && [ -n "$BIN" ] && CLIENT= || { echo "cozy $CLIENT's Windows zip" >&2; exit 2; }
+fi
 { [ -n "$SRC" ] || [ -n "$HUB_BIN" ]; } && [ -n "$OUT" ] && { [ -n "$CLIENT" ] || [ -n "$BIN" ]; } \
   || { echo "usage: run.sh (--hub-src DIR | --hub-bin DIR) (--client VERSION | --cozy-bin FILE | --candidates SET) --out DIR [--checks FILE | --command FILE [-- ARGS...]] [--admin] [--cozy-min X.Y.Z]" >&2; exit 2; }
 [ -z "$CLIENT" ] || [ -z "$BIN" ] || { echo "choose --client or --cozy-bin" >&2; exit 2; }
