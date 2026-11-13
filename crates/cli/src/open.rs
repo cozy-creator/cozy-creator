@@ -1,4 +1,4 @@
-//! Open the current project in a browser and print its local URL.
+//! Open the current project in a browser and print its local URL. A `--json` caller is a program: it gets the link, and no browser starts.
 use std::{
     io::{self, Write},
     net::{Ipv4Addr, TcpListener},
@@ -20,7 +20,7 @@ use crate::{
 };
 
 #[derive(clap::Args, Debug)]
-#[command(after_help = "Examples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
+#[command(after_help = "With --json it prints the link and opens no browser.\n\nExamples:\n  cd my-project && cozy open\n  cozy open --port 8818")]
 pub(crate) struct Args {
     /// Use this loopback port for Calcifer, and keep it for later commands.
     #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1..))]
@@ -48,7 +48,7 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
     link.set_fragment(Some(&format!("code={}", code.code)));
     let name = project.path.file_name().map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| project.code.clone());
-    if let Err(error) = browse(ctx, link.as_str()) {
+    if !ctx.json && let Err(error) = browse(ctx, link.as_str()) {
         output::warn(&format!("could not open the browser: {error}; use the URL below"));
     }
     output::document(ctx, &json!({ "project": name, "url": link.as_str() }));
@@ -66,7 +66,7 @@ async fn current_or_unlock(ctx: &Context) -> Result<State, Error> {
     }
 }
 
-/// Keep the one-use sign-in code out of the browser process's command line.
+/// Keep the link's one-use code out of the browser process's command line.
 fn browse(ctx: &Context, url: &str) -> io::Result<()> {
     let cache = ctx.home.root().join("cache");
     std::fs::create_dir_all(&cache)?;

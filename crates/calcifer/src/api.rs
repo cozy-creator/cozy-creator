@@ -476,7 +476,7 @@ async fn admit(State(api): State<Arc<Api>>, mut request: Request, next: Next) ->
     };
     if !admitted {
         let said = "Calcifer's API needs the bearer from its lock record, or a browser session";
-        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a browser signs in from a link").next("cozy open");
+        let error = Error::new(Kind::Credential, "unauthenticated", said).remedy("a page opens from the link `cozy open` gives").next("cozy open");
         return Refusal(error).into_response();
     }
     let process = request.headers().get(PROCESS_HEADER).and_then(|value| value.to_str().ok()).unwrap_or_default();

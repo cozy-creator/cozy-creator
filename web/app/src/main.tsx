@@ -17,7 +17,7 @@ import { saveSession, takeCode } from "./app/session"
 import { Copyable } from "./ui/Copyable"
 import { tabShown, useSignal } from "./ui/signal"
 
-/** Consumes a sign-in link, then asks Calcifer who it is. Runs once, outside React. */
+/** Consumes a link's code, then asks Calcifer who it is. Runs once, outside React. */
 async function boot(): Promise<Boot> {
   const code = takeCode()
   if (code) {
@@ -33,12 +33,12 @@ async function boot(): Promise<Boot> {
 
 const booted = boot()
 
-function SignedOut() {
+/** No session, however the page found out: one state, drawn where the page was, and nothing of a project in it (cl-980). */
+function NoSession() {
   return (
     <main className="gate">
-      <h1>This page isn't signed in</h1>
-      <p>Run this in a terminal to open it signed in:</p>
-      <Copyable text="cozy open" />
+      <h1>No project open here</h1>
+      <p>In a terminal, run <code>cozy open</code> in a project folder, or <code>cozy new &lt;folder&gt;</code> to start one.</p>
     </main>
   )
 }
@@ -57,7 +57,7 @@ function Unreachable() {
 function Connected({ connection }: { connection: Connection }) {
   const signedOut = useSignal(connection.signedOut)
   const health = useSignal(connection.stream.health)
-  if (signedOut || health.state === "signed_out") return <SignedOut />
+  if (signedOut || health.state === "signed_out") return <NoSession />
   return (
     <ConnectionProvider value={connection}>
       <QueryClientProvider client={connection.queries}>
@@ -82,7 +82,7 @@ function App() {
   }, [state, inView])
   if (!state) return <main className="gate">Connecting…</main>
   if ("connection" in state) return <Connected connection={state.connection} />
-  return state.failed === "signed_out" ? <SignedOut /> : <Unreachable />
+  return state.failed === "signed_out" ? <NoSession /> : <Unreachable />
 }
 
 createRoot(document.getElementById("root")!).render(

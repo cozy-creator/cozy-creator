@@ -72,7 +72,7 @@ impl Sessions {
         let (token, media) = (secret(), secret());
         let session = SessionRow { token: digest(&token), media: digest(&media), used_at_ms: now };
         if !store.session_started(&digest(code), &session, now, now - UNUSED_MS).map_err(unwritable)? {
-            let said = "this sign-in code is unknown, used or expired";
+            let said = "this link's code is unknown, used or expired";
             return Err(Refusal(Error::new(Kind::Validation, "session_code_invalid", said).next("cozy open")));
         }
         let mut live = self.live.lock().expect("sessions");
@@ -126,10 +126,10 @@ fn unwritable(e: StoreError) -> Refusal {
     api::refuse(Kind::Internal, "session_unwritable", e.to_string())
 }
 
-/// `POST /v1/session-codes`: the holder's bearer only, so a page can't sign in another.
+/// `POST /v1/session-codes`: the holder's bearer only, so a page can't open another.
 pub(crate) async fn code(State(api): State<Arc<Api>>, headers: HeaderMap) -> Result<Json<SessionCode>, Refusal> {
     if !api::bearer(&headers).is_some_and(|token| api.admits(token)) {
-        let said = "a sign-in code comes from the bearer in Calcifer's lock record, not a session";
+        let said = "a link's code comes from the bearer in Calcifer's lock record, not a page's session";
         return Err(Refusal(Error::new(Kind::Forbidden, "session_code_needs_bearer", said).next("cozy open")));
     }
     let host = headers.get(header::HOST).and_then(|host| host.to_str().ok()).unwrap_or_default();
