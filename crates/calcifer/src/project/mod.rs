@@ -3789,6 +3789,11 @@ impl Walk {
                 stay: foreseen.get(&unsent.key).cloned().flatten().and_then(|on| plan::index(&pictures, &on)),
             });
         }
+        // What each job's function read of its models on any machine: what it fetches on one that holds none of them (cl-967).
+        let frames: Vec<&api::machine::StatusFrame> = pictures.iter().map(|picture| &picture.frame).collect();
+        for job in &mut planned {
+            api::estimate::learn_reads(&frames, &mut job.ask);
+        }
         let placed = plan::plan(&pictures, &planned, now);
         let mut walker = self.project.walker.lock().expect("walker lock");
         for ((at, _), placement) in jobs.iter().zip(placed) {
