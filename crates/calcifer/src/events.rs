@@ -357,7 +357,7 @@ pub(crate) async fn show(
                 reply.held.push(id.clone());
             }
             Err(crate::api::Refusal(error)) => {
-                reply.refused.insert(id.clone(), ProjectShowRefusal { status: error.kind.http_status(), error });
+                reply.refused.insert(id.clone(), ProjectShowRefusal { status: error.http_status(), error });
             }
         }
     }
