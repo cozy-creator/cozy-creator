@@ -5,6 +5,7 @@ import { EventStream } from "../api/events"
 import { Outbox } from "../api/outbox"
 import { nextProjectOrder } from "../api/projectOrder"
 import { runsAfter, withAssets } from "../api/queries"
+import { heardThumb } from "../api/thumbs"
 import { sameOrigin } from "../api/transport"
 import type { Machine, MachineList, Run, RunList, StreamEvent, CalciferStatus, ProjectEventCursor } from "../api/calcifer"
 import type { Project } from "../types"
@@ -347,6 +348,7 @@ export async function connect(): Promise<Boot> {
   }
   bridge.setVersion(status.version)
   stream.subscribe(bridge.handle)
+  stream.subscribe(heardThumb)
   stream.subscribe((event) => {
     if (event.type === "hello") outbox.back()
   })

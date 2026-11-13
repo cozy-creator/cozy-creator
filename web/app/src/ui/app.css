@@ -638,6 +638,33 @@ code {
   border-radius: inherit;
   pointer-events: none;
 }
+/* A picture on its way here: its well pulses, faintly, until it's drawn (cl-982), as a render breathes at rest. */
+.thumb-wait {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.buffered-image[data-loading]::after,
+.thumb-wait::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--ink);
+  opacity: 0;
+  animation: loading-pulse 1.4s ease-in-out infinite alternate;
+}
+@keyframes loading-pulse {
+  to {
+    opacity: 0.08;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .buffered-image[data-loading]::after,
+  .thumb-wait::after {
+    animation: none;
+    opacity: 0.04;
+  }
+}
 .card.here > .media > .media-pixels {
   left: 50%;
   right: auto;
