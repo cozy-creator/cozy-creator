@@ -25,7 +25,7 @@ function ToolGroup({ entry, open, toggle }: { entry: PaletteEntry; open: boolean
         <b>{entry.label}</b><span aria-hidden="true">{open ? "⌄" : "›"}</span>
       </button>
       {open && <ul className="tool-implementations">
-        {entry.variants.map((tool) => <li key={tool.id} className="tool tool-implementation" data-implementation="" data-tool={tool.id} data-tool-operation={entry.key} data-kind={tool.makes} title={[tool.description || modelLabel(tool), tool.source && `From source: ${tool.source}`].filter(Boolean).join("\n")}><b>{modelLabel(tool)}</b>{tool.source && <small className="tool-source">from source</small>}</li>)}
+        {entry.variants.map((tool) => <li key={tool.id} className="tool tool-implementation" data-implementation="" data-tool={tool.id} data-tool-operation={entry.key} data-kind={tool.makes} title={[tool.description || modelLabel(tool), tool.source && `From source: ${tool.source}`].filter(Boolean).join("\n")}><b>{modelLabel(tool)}</b>{tool.source && <span className="tool-source">from source</span>}</li>)}
       </ul>}
     </li>
   )
