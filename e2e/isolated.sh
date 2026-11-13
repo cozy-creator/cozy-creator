@@ -163,8 +163,9 @@ case $suite:$shard in
   # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a
   # model of one component with another's (xs-190).
   cli:commands) needs='packages birefnet loras fits parts' ;;
-  # web-localfit's heavy tool paints its edit base with BiRefNet (a take is one since cl-909); only Linux's web-core runs it.
-  cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet' ;;
+  # web-localfit's heavy tool paints its edit base with BiRefNet (a take is one since cl-909); web-models lists H3's LoRAs and Qwen's VAEs
+  # (stand-ins, `loras` and `vaes`). Only Linux's web-core runs them.
+  cli:web-core) needs='packages'; [ "${RUNNER_OS:-Linux}" != Linux ] || needs='packages birefnet loras vaes' ;;
   cli:web-localfit) needs='packages birefnet' ;;
   cli:follow) needs='packages downloads' ;;
   cli:lines) needs='packages birefnet downloads' ;;
