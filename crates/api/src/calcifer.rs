@@ -1110,6 +1110,10 @@ pub enum StreamEvent {
     /// Public protection metadata reaches every tab, including tabs showing another project.
     #[serde(rename = "project.vault")]
     ProjectVault { id: String, state: String },
+    /// Its folder is gone (deleted, moved away, on a drive that isn't there): where it was. Nothing of it reads, so a stream showing it
+    /// is told this in place of `project.changed`, and asks it nothing more (cl-980).
+    #[serde(rename = "project.gone")]
+    ProjectGone { id: String, path: String },
     /// The rows of a project's canvas that changed, at revision `seq`; none is a row gone.
     #[serde(rename = "canvas")]
     Canvas { id: String, seq: u64, cards: BTreeMap<String, Option<crate::calcifer::project::Card>> },
