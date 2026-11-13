@@ -289,7 +289,7 @@ Hub's record of the rental (`released` or `failed`, with an end time, only once 
     the one place in release-gate that speaks HTTP to the Hub by hand: it is the contract test.
   - In the isolated fixture only, through `cozy`, on a throwaway `<account>/ci-hub-<R>`: whoami (balance, buy page), the rental catalog; a package
     locked, published twice, run, yanked (the simple index marks it `data-yanked`), resolved past, run by exact pin,
-    un-yanked, and a yanked candidate never named newest; a model commit uploaded in a lane by the machine, published
+    un-yanked; a model commit uploaded in a lane by the machine, published
     (listed), downloaded, downloaded by pin and lane, deleted (gone).
   - Real pods, one fresh `cpu` rental on each provider (`machine rent --provider runpod|vast`: dev-only, so the suite
     writes `dev = true` into the home's config; never a `--help` probe): a local weightless package sent by content,

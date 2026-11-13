@@ -835,9 +835,6 @@ pub struct PackageLock {
 pub struct PackagePublish {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub root: bool,
-    /// Published yanked: a gated candidate, never the package's newest release.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub yanked: bool,
 }
 
 /// `cozy/package_lock`'s result: the new `uv.lock` and whether it changed.
@@ -855,7 +852,7 @@ pub struct Locked {
 pub struct Published {
     pub package: String,
     pub release: String,
-    /// `published`, `published yanked`, or `already published`.
+    /// `published` or `already published`.
     pub status: String,
     pub changed: bool,
     pub uploaded_bytes: u64,

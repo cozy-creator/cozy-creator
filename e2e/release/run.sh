@@ -12,7 +12,7 @@
 # checked gone, and the ended rental in `machine ls --history`. The rental is ended in an EXIT
 # trap whatever fails; this script never creates a test repository on the live Hub. --quote stops at the rental's quote and rents nothing: the $0 pre-flight of every step before it.
 #   e2e/release/run.sh --out DIR [--key FILE | --installed] [--sku SKU] [--max-hourly USD] [--max-usd USD] [--quote] [--rent-wait S]
-#                      [--rent-lock FILE] [--release DIR] [--pins N@R,...] [--publication-log FILE]
+#                      [--rent-lock FILE] [--release DIR] [--publication-log FILE]
 #                      [--tensord F|V] [--pod-tensord F|V] [--tensorfs F|V] [--runtime F|V]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -171,23 +171,23 @@ fi
 # Synthetic publication checks run against the isolated Hub in cli-publication.
 
 step "BiRefNet on $M"
-watched install-birefnet package install "$(pinned birefnet)" --on "$M" \
-  || check "package install $(pinned birefnet) --on $M failed: $(run_get "$OUT" install-birefnet '.reason.message' | head -c 300)"
+watched install-birefnet package install birefnet --on "$M" \
+  || check "package install birefnet --on $M failed: $(run_get "$OUT" install-birefnet '.reason.message' | head -c 300)"
 cozy --json package ls --on "$M" > "$OUT/packages-rental.json" && grep -q birefnet "$OUT/packages-rental.json" || check "package ls --on $M: no birefnet"
 # A request file beside its image, in a folder named with spaces and non-ASCII; its output lands in a project in another such folder.
 far="$OUT/in dir é ü" landing="$OUT/out dir é ü"
 mkdir -p "$far" && cp "$(picture dog1.jpg)" "$far/chien é.jpg" && printf 'image: chien é.jpg\n' > "$far/request é.yaml"
 mkdir -p "$landing" && (cd "$landing" && cozy --json status > /dev/null) || check "project initialization '$landing' failed"
-if RUN_PROJECT=$landing watched birefnet-yaml run "$(pinned birefnet remove_background)" --input "$far/request é.yaml" --on "$M"; then
+if RUN_PROJECT=$landing watched birefnet-yaml run birefnet/remove_background --input "$far/request é.yaml" --on "$M"; then
   # Downloaded by its digest (cl-819), it is the file the project holds under that digest.
   out=$(run_output "$OUT" birefnet-yaml webp) sha=''
   [ ! -s "$out" ] || sha=$(sha256sum "$out" | cut -c1-64)
   [ -n "$sha" ] && ls "$landing/files/$sha".* > /dev/null 2>&1 \
     || check "birefnet-yaml: its output did not land in '$landing' (${out:-none}, sha256:${sha:-none}; $(ls "$landing/files" 2> /dev/null | tr '\n' ' '))"
   white_background "$out" "$far/chien é.jpg" || check "birefnet-yaml: not a background removal"
-else check "birefnet-yaml: cozy run $(pinned birefnet remove_background) --input --on $M did not complete: $(run_get "$OUT" birefnet-yaml '.reason.message' | head -c 300)"; fi
+else check "birefnet-yaml: cozy run birefnet/remove_background --input --on $M did not complete: $(run_get "$OUT" birefnet-yaml '.reason.message' | head -c 300)"; fi
 dog=$(picture dog2.jpg)
-if run_cell "$OUT" birefnet-asset "$(pinned birefnet remove_background)" --file "image=$dog" --on "$M"; then
+if run_cell "$OUT" birefnet-asset birefnet/remove_background --file "image=$dog" --on "$M"; then
   white_background "$(run_output "$OUT" birefnet-asset webp)" "$dog" || check "birefnet-asset: not a background removal"
   # Downloaded from the rental, its bytes are what the run's record says it made.
   got=$(sha256sum "$(run_output "$OUT" birefnet-asset webp)" | cut -c1-64) made=$(run_get "$OUT" birefnet-asset '[.output[].sha256] | join(" ")')
@@ -201,17 +201,17 @@ step "SDXL on $M: a LoRA, then the package's other function"
 # The executor protocol (xs-081): a LoRA reaches the executor as an adapter view; a second function is served by the same release.
 # Given without a strength, a LoRA runs at its recommended one, its Hub card's (0.9 here): `cozy run --lora` as a box's LoRA does.
 lora=proomptengineer/balloon-lora-sdxl
-if run_cell "$OUT" sdxl-lora "$(pinned sdxl generate)" prompt="PEBalloonStyle, a red armchair made of balloons, catalog photo" seed:=$RANDOM \
+if run_cell "$OUT" sdxl-lora sdxl/generate prompt="PEBalloonStyle, a red armchair made of balloons, catalog photo" seed:=$RANDOM \
     --lora "$lora" --on "$M"; then
   [ -s "$(run_output "$OUT" sdxl-lora 'png|webp|jpg')" ] || check "sdxl-lora: no image came down"
   grep -q 'balloon-lora-sdxl' "$OUT/sdxl-lora.json" || check "sdxl-lora: its record names no LoRA"
   want=$(cozy --json lora ls "$lora" | jq --arg m "$lora" '[.models[] | select(.model == $m) | .strength][0]')
   got=$(cozy --json --full run watch "$(cat "$OUT/sdxl-lora.number")" --once | jq '[.request.input.models[]?.lora[]?.strength][0]')
   [[ $want =~ ^[0-9.]+$ && $got == "$want" ]] || check "sdxl-lora: --lora $lora ran at strength $got; its card recommends $want"
-else check "sdxl-lora: cozy run $(pinned sdxl generate) --lora --on $M did not complete: $(run_get "$OUT" sdxl-lora '.reason.message' | head -c 300)"; fi
-if run_cell "$OUT" sdxl-image "$(pinned sdxl image)" instructions="a lighthouse at dusk, oil painting" seed:=$RANDOM --on "$M"; then
+else check "sdxl-lora: cozy run sdxl/generate --lora --on $M did not complete: $(run_get "$OUT" sdxl-lora '.reason.message' | head -c 300)"; fi
+if run_cell "$OUT" sdxl-image sdxl/image instructions="a lighthouse at dusk, oil painting" seed:=$RANDOM --on "$M"; then
   [ -s "$(run_output "$OUT" sdxl-image 'png|webp|jpg')" ] || check "sdxl-image: no image came down"
-else check "sdxl-image: cozy run $(pinned sdxl image) --on $M did not complete: $(run_get "$OUT" sdxl-image '.reason.message' | head -c 300)"; fi
+else check "sdxl-image: cozy run sdxl/image --on $M did not complete: $(run_get "$OUT" sdxl-image '.reason.message' | head -c 300)"; fi
 
 step "a run on $M followed, then canceled"
 deadline=$(jq '.idle_deadline_ms // 0' "$OUT/rental.json") || true

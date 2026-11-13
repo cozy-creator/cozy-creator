@@ -2,7 +2,7 @@
 # The temporary database and object store are destroyed afterward; no production credentials are used.
 #   paths     hub_contract against the candidate (paths-empty: it holds the laptop's data, not production's)
 #   account   whoami, balance, the rental catalog
-#   package   lock, publish 0.1.0 and 0.1.1, then install, run, yank, un-yank and a yanked candidate on $M (hub_packages)
+#   package   lock, publish 0.1.0 and 0.1.1, then install, run, yank and un-yank on $M (hub_packages)
 #   model     hub_models on $M: the machine uploads under its run capability (the workload writer, as pods do), then
 #             publish, download, the exact pin and lane, delete → gone
 # Any 5xx fails the cell. Real provider checks remain in the production `hub` suite.

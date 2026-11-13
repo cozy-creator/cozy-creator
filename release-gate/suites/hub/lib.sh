@@ -65,21 +65,6 @@ hub_release() {
   sed -i "s/^RELEASE = \"0.1.0\"/RELEASE = \"$1\"/" "$dir/ci_hub_pkg/__init__.py"
   (cd "$dir" && hub_do "package-publish-$1" ok package publish -y "${@:2}" && test -s uv.lock)
 }
-# hub_candidate <version>: published yanked while the Hub's newest is read throughout: no read names it (cl-732).
-hub_candidate() {
-  hub_test_target || return 2
-  local seen=$HB/package-candidate-newest.txt poller
-  : >"$seen"
-  ( while :; do package_details "$WHO/$HUB_PKG" 2>/dev/null |
-      python3 -I -c 'import json,sys; print(json.load(sys.stdin)["latest_release"])' >>"$seen" 2>/dev/null; sleep 0.2; done ) &
-  poller=$!
-  hub_release "$1" --yanked && HUB_LIVE="$HUB_LIVE $1"
-  kill "$poller" 2>/dev/null; wait "$poller" 2>/dev/null
-  local reads named
-  reads=$(wc -l <"$seen") named=$(grep -cxF "$1" "$seen")
-  [ "$reads" -gt 0 ] && [ "$named" = 0 ] && expect "hub package-candidate-never-newest" PASS "$reads reads of the Hub's newest during the publish, none named $1" ||
-    expect "hub package-candidate-never-newest" FAIL "$reads reads of the Hub's newest during the publish, $named named $1"
-}
 # hub_listed <check> <model>: the model metadata API lists the model's release 0.1.0 with its one lane, f16.
 hub_listed() {
   model_details "$2" >"$HB/$1.out" 2>&1
@@ -182,8 +167,7 @@ hub_account() {
 }
 
 # hub_packages: lock and publish 0.1.0 and 0.1.1; the unversioned run takes 0.1.1; yank 0.1.1 → the simple index marks it
-# data-yanked, a fresh install takes 0.1.0, its exact pin still installs; un-yank → 0.1.1 again; publish 0.1.2 --yanked →
-# the Hub's newest never names it, read throughout, the publisher's next unversioned run keeps 0.1.1, and its pin installs.
+# data-yanked, a fresh install takes 0.1.0, its exact pin still installs; un-yank → 0.1.1 again.
 hub_publish() {
   hub_test_target || return 2
   hub_release 0.1.0 && HUB_LIVE="0.1.0"
@@ -203,9 +187,6 @@ hub_packages() {
   hub_do package-unyank ok package yank --undo "$WHO/$HUB_PKG@0.1.1"
   hub_uninstall package-remove-again "$WHO/$HUB_PKG" --on "$M"
   hub_runs package-unyanked 0.1.1 "$WHO/$HUB_PKG"
-  hub_candidate 0.1.2
-  hub_runs package-candidate-skipped 0.1.1 "$WHO/$HUB_PKG"
-  hub_runs package-candidate-pinned 0.1.2 "$WHO/$HUB_PKG" 0.1.2
 }
 
 # hub_model_upload <check> <machine> <model>: new weights uploaded by that machine (its run capability: the workload
