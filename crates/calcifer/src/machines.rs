@@ -77,9 +77,9 @@ pub(crate) struct Machines {
     /// Each Hub catalog model's public releases, as the default Hub last said, by version and by each lane's checkpoint and header:
     /// what machine views list of the models a machine holds.
     public: Mutex<HashMap<String, HashSet<String>>>,
-    /// What each open project's own engine on this computer's machine holds, as its own Status last said: listed with local's models
-    /// where public, never as whose.
-    project_models: Mutex<HashMap<String, Vec<v1::Model>>>,
+    /// What each unlocked project's own engine on this computer's machine holds, by its root, as its own Status last said: listed with
+    /// local's models where public, never as whose.
+    project_models: Mutex<HashMap<PathBuf, Vec<v1::Model>>>,
     /// Rentals whose boot is followed, by rental id.
     pub(crate) booting: Mutex<HashSet<String>>,
     /// Runs a rental is being asked for.
@@ -321,24 +321,29 @@ impl Machines {
         })
     }
 
-    /// What `machine` (its frame) and, on this computer's machine, each open project's own engine hold, read now: each project's own
-    /// Status asked, and the default Hub asked once which of their models' releases are public (`public_release`).
+    /// What `machine` (its frame) and, on this computer's machine, each known unlocked project's own engine hold, read now: each
+    /// project's own Status asked, and the default Hub asked once which of their models' releases are public (`public_release`).
     pub(crate) async fn learn_holdings(&self, machine: &str) {
         let mut models: Vec<String> = self.frame(machine).map(|frame| frame.models.iter().map(|m| m.model.clone()).collect()).unwrap_or_default();
         if machine == "local" && let Some(link) = self.calcifer.link("local").ok().flatten() {
-            let open = self.calcifer.open_projects();
+            let known = self.calcifer.store().known_projects().unwrap_or_else(|error| {
+                warn!("which projects this computer knows is unread: {error}");
+                vec![]
+            });
             let mut held = HashMap::new();
-            for (id, root) in open {
-                let Ok(scope) = crate::private_io::scope_for_project(&id, &root) else { continue };
+            for entry in known {
+                // A locked project's view is none: it is never opened for this.
+                let Ok(view) = crate::project::vault::resolve_path(&entry.path) else { continue };
                 // Only a project that has run here has an engine of its own to ask: asking makes none.
-                if !scope.storage.view_root.join(".vault-machine").exists() { continue; }
+                if !view.join(".vault-machine").exists() { continue; }
+                let Ok(scope) = crate::private_io::scope_for_project(&entry.id, &entry.path) else { continue };
                 match link.with_private(scope).status().await {
                     Ok(frame) => {
                         models.extend(frame.models.iter().map(|m| m.model.clone()));
                         if frame.models.is_empty() && frame.models_bytes > 0 {
                             warn!("a project's own engine on local holds {} bytes of models but lists none", frame.models_bytes);
                         }
-                        held.insert(id, frame.models);
+                        held.insert(entry.path, frame.models);
                     }
                     Err(error) => warn!("what a project's own engine on local holds is unread: {error}"),
                 }
@@ -374,7 +379,7 @@ impl Machines {
         self.unmatched(machine);
     }
 
-    /// Each model `machine` holds (with what open projects' own engines hold there) whose Hub has public releases, none of which
+    /// Each model `machine` holds (with what unlocked projects' own engines hold there) whose Hub has public releases, none of which
     /// its checkpoints are: said, as a view leaves it out.
     fn unmatched(&self, machine: &str) {
         let mut held: Vec<v1::Model> = self.frame(machine).map(|frame| frame.models).unwrap_or_default();
@@ -858,9 +863,8 @@ impl Machines {
                 // Public Hub catalog models are no project's data, for whatever work they came: what a project's own engine on this
                 // computer's machine holds beside them, never as whose. A local alias, a private or an uploaded release isn't listed.
                 if row.kind == MachineKind::Local {
-                    let open: HashSet<String> = self.calcifer.open_projects().into_iter().map(|(id, _)| id).collect();
                     let held = lock(&self.project_models);
-                    for model in held.iter().filter(|(id, _)| open.contains(*id)).flat_map(|(_, models)| models) {
+                    for model in held.iter().filter(|(root, _)| crate::project::vault::require_path(root).is_ok()).flat_map(|(_, models)| models) {
                         match visible.models.iter_mut().find(|seen| seen.model == model.model) {
                             Some(seen) => {
                                 let new: Vec<v1::Checkpoint> = model.checkpoints.iter().filter(|c| !seen.checkpoints.iter().any(|held| held.manifest == c.manifest)).cloned().collect();

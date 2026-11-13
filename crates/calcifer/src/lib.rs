@@ -469,11 +469,6 @@ impl Calcifer {
         Ok(fresh)
     }
 
-    /// Each open project: its identity and root.
-    pub(crate) fn open_projects(&self) -> Vec<(String, PathBuf)> {
-        lock(&self.project_owners).values().filter_map(|open| open.owner()).map(|owner| (owner.project_id().to_owned(), owner.root().to_owned())).collect()
-    }
-
     pub(crate) fn project_store(&self, id: &str) -> store::Result<project::ProjectStore> {
         self.opened(id).ok_or_else(|| StoreError::Locked("project_not_open".into()))?.store()
     }
