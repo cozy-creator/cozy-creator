@@ -52,6 +52,7 @@ def main() -> int:
 
     def settled() -> ProjectState:
         deadline = time.monotonic() + SETTLE_S
+        state: ProjectState | None = None
         while time.monotonic() < deadline:
             state = status()
             if not state["busy"] and not state.get("queue"):
@@ -76,7 +77,7 @@ def main() -> int:
         time.sleep(delay)
         answer = json.loads(edit("/cancel", "POST", {"names": ["shot"]}))
         state = settled()
-        runs = sorted({job["run"] for job in state.get("board", {}).get("jobs", []) if job["asset"] == "shot" and job.get("run")})
+        runs = sorted({run for job in state.get("board", {}).get("jobs", []) if job["asset"] == "shot" and (run := job.get("run"))})
         ended = {number: run_status(number) for number in runs}
         rounds.append({"round": at, "delay_ms": round(delay * 1000), "added": asked.get("added"), "cancel": answer,
                        "versions": versions(state), "runs": ended})
