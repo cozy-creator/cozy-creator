@@ -121,8 +121,8 @@ function hubTokens() {
     .filter(Boolean);
 }
 
-/** This project's runs of function `fn`, as `GET …/runs` lists them. */
-const runsOf = async (project, fn) => ((await project.api.get(project.at('/runs?limit=100'))).runs ?? []).filter((one) => new RegExp(`/${fn}(@\\S+)?$`).test(one.target ?? ''));
+/** This project's calls of function `fn`, as `GET …/runs` lists them: not the warm run that installs its local code (`install local/heavy`). */
+const runsOf = async (project, fn) => ((await project.api.get(project.at('/runs?limit=100'))).runs ?? []).filter((one) => one.kind === 'call' && new RegExp(`/${fn}(@\\S+)?$`).test(one.target ?? ''));
 
 async function zoomToFit(page) {
   await page.getByRole('button', { name: /more zoom options$/ }).click();
