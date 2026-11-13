@@ -306,8 +306,9 @@ log "package publish, then install on the machine (its first environment: slow o
 hub_do package-install ok package install "$WHO/$HUB_PKG" --on local
 if ! older "$CLIENT" 0.24.0; then hub_packages; fi
 # skew_newer (cl-978): a release whose cozy-runtime floor only a newer cozy's line runs (NEXT: the next line's Runtime, on
-# PyPI). A client before cozy's self-update (0.26) is refused, typed, naming `cozy update`, at its run and its install; never
-# a 5xx. A newer client updates itself (e2e/cli/selfupdate.sh).
+# PyPI). A client before cozy's self-update (0.26) is refused, typed, naming `cozy update`, at its run and its install, and so
+# is its machine's move to the Hub's software (`cozy machine update local`, what its machine's refusals name), which it
+# can't run; never a 5xx. A newer client updates itself (e2e/cli/selfupdate.sh).
 skew_newer() {
   local next dir=$HB/pkg-newer name=ci-next-$R code
   case $CLIENT in
@@ -317,10 +318,11 @@ skew_newer() {
   rm -rf "$dir" && cp -r "$HERE/suites/hub/pkg" "$dir" &&
     sed -i "s/^name = \"ci-hub-pkg\"/name = \"$name\"/; s/\"cozy-runtime>=0.30\"/\"cozy-runtime>=$next\"/" "$dir/pyproject.toml" || return 1
   (cd "$dir" && hub_do newer-publish ok package publish -y) || return 0
-  for verb in run install; do
+  for verb in run install software; do
     case $verb in
       run) (cd "$RUN_PROJECT" && timeout 1200 "$COZY_BIN" --json run "$WHO/$name/echo" text=newer --on "$M") > "$HB/newer-$verb.out" 2>&1 < /dev/null; code=$? ;;
       install) timeout 1200 "$COZY_BIN" --json package install "$WHO/$name" --on "$M" > "$HB/newer-$verb.out" 2>&1 < /dev/null; code=$? ;;
+      software) timeout 1200 "$COZY_BIN" --json machine update "$M" -y > "$HB/newer-$verb.out" 2>&1 < /dev/null; code=$? ;;
     esac
     log "skew newer $verb (cozy $CLIENT, $name needs cozy-runtime>=$next): exit $code: $(grep -o '"code": *"[^"]*"\|"message": *"[^"]*"\|"next": *\[[^]]*\]' "$HB/newer-$verb.out" | head -6 | tr '\n' ' ')"
     if hub_5xx "$HB/newer-$verb.out"; then

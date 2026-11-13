@@ -2,8 +2,8 @@
 
 # self_update: this computer's cozy becomes the change built as a release of the line before the Latest (E2E_COZY_BEFORE, 0.24.99:
 # build.sh cozy-before), which runs no Runtime from 0.46. Its Hub (e2e.yaml) first pins 0.24's software (Runtime 0.45.2, TensorFS
-# 0.24.2), so `cozy machine update local` naming nothing puts local there, held by nothing; then (rehub.sh) 0.25.0's: Runtime 0.46.0,
-# TensorFS 0.25.1, cozy 0.25.0. isolated.sh's E2E_NEXT needs cozy-runtime>=0.46.0, which only a cozy of 0.25's line runs.
+# 0.24.2), so `cozy machine update local` naming nothing puts local there, held by nothing; then (rehub.sh) the Latest's: Runtime
+# 0.46.0, TensorFS 0.25.1, its cozy. isolated.sh's E2E_NEXT needs cozy-runtime>=0.46.0, which only a cozy of 0.25's line or later runs.
 #  - held by hand: its install is refused runtime_held naming `cozy machine update local`, and cozy moves nothing.
 #  - its install folder read-only: refused once, naming `sudo cozy update`, and cozy moves nothing.
 #  - then its install says "updating cozy 0.24.99 → <Latest> for …" once, cozy and Calcifer become the Latest, and the install goes
@@ -16,10 +16,11 @@ step "cozy updates itself for a package that needs a newer cozy (cl-978)"
 [ "${RUNNER_OS:-}" = Linux ] && [ -n "${COZY_TEST_HUB_PID_FILE:-}" ] || { echo "self update: Linux, on an isolated Hub it restarts"; return; }
 [ -n "${E2E_COZY_BEFORE:-}" ] && [ -f "$E2E_COZY_BEFORE" ] && [ -n "${E2E_NEXT:-}" ] \
   || { check "self update: no cozy-before (${E2E_COZY_BEFORE:-unset}) or e2e-next (${E2E_NEXT:-unset}: ${E2E_NEXT_REFUSED:-})"; return; }
-local latest before code=0 rehub=$here/../skew/rehub.sh old=(--set software.runtime=0.45.2 --set software.tensorfs=0.24.2 --set software.cozy=)
-local new=(--set software.runtime=0.46.0 --set software.tensorfs=0.25.1 --set software.cozy=0.25.0)
+local latest before code=0 old=(--set software.runtime=0.45.2 --set software.tensorfs=0.24.2 --set software.cozy=) new
 latest=$(curl -fsSL --retry 3 https://github.com/cozy-creator/cozy-creator/releases/latest/download/dist-manifest.json | jq -r '.releases[] | select(.app_name == "cozy") | .app_version')
 [ -n "$latest" ] || { check "self update: GitHub names no Latest cozy"; return; }
+# The Hub's software the Latest's: its cozy, and a Runtime and TensorFS of its line.
+new=(--set software.runtime=0.46.0 --set software.tensorfs=0.25.1 --set "software.cozy=$latest")
 install -m 755 "$E2E_COZY_BEFORE" "$COZY.new" && mv -f "$COZY.new" "$COZY" || { check "self update: cozy-before not installed"; return; }
 before=$(cozy --version | awk '{print $2}')
 [ "$before" = 0.24.99 ] || { check "self update: cozy-before says $before"; return; }

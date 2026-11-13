@@ -264,8 +264,8 @@ impl Host {
             if ended.status != RunStatus::Completed {
                 return Err(crate::cozy::update(&self.api, wanted).await.err().unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", note.message)));
             }
-            self.api.stopped().await;
-            return Err(Error::new(Kind::Unavailable, api::error::STOPPING, "Calcifer restarts on the updated cozy"));
+            // Its walk ends with this Calcifer, which restarts on the updated cozy; the next takes the render up where it stands.
+            return std::future::pending().await;
         }
         // Its machine's Runtime moves first to one that runs the release (cl-952): the render waits behind that update.
         if let Some(upgrade) = &upgrade
