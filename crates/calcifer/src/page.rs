@@ -26,7 +26,7 @@ pub(crate) const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-uns
 pub(crate) fn routes() -> Router<Arc<Api>> {
     Router::new()
         .route("/", get(index))
-        .route(development::HMR_PATH, get(development::upgrade))
+        .route("/__cozy_hmr", get(development::upgrade))
         .route("/assets/{file}", get(asset))
         .route("/p/{code}", get(index))
         .route("/p/{code}/{*rest}", get(index))

@@ -18,6 +18,7 @@ crates/platform/src/lock.rs
 crates/platform/src/mounts/macos.rs
 crates/platform/src/net.rs
 crates/platform/src/paths.rs
+crates/platform/src/private_exec.rs
 crates/platform/src/process/linux.rs
 crates/platform/src/process/macos.rs
 crates/platform/src/process/mod.rs

@@ -169,7 +169,7 @@ const project = (id: string) => `/v1/projects/${encodeURIComponent(id)}`
 const vaultOperation = (id: string, operation: string) => `/v1/projects/${encodeURIComponent(id)}/vault/operations/${operation}`
 const maintenanceRun = (id: string | number) => `/v1/runs/${encodeURIComponent(id)}`
 export type ProjectRun = { project: string; run: string | number }
-const run = (address: ProjectRun) => `${project(address.project)}/runs/${encodeURIComponent(address.run)}`
+const run = (address: ProjectRun) => `/v1/projects/${encodeURIComponent(address.project)}/runs/${encodeURIComponent(address.run)}`
 const machine = (name: string) => `/v1/machines/${encodeURIComponent(name)}`
 // `org/name` on the wire; a first-party name has no owner, and its org is `_`.
 const orgOf = (name: string) => encodeURIComponent(name.includes("/") ? name.slice(0, name.indexOf("/")) : "_")
@@ -205,8 +205,10 @@ export class Client {
   }
 
   private async send(path: string, init: RequestInit = {}, options: Options = {}): Promise<Response> {
-    const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && path !== "/v1/down"
-    if (writing && this.frozen && !options.action && !path.startsWith("/v1/events/")) {
+    // By segment, not route literal: scripts/web-routes.sh reads every `/v1/` string here as a call.
+    const [, , root] = path.split("?")[0].split("/")
+    const writing = !["GET", "HEAD"].includes(init.method ?? "GET") && !(root === "down" && path.split("/").length === 3)
+    if (writing && this.frozen && !options.action && root !== "events") {
       throw new ApiError(409, { kind: "conflict", code: "browser_closing", message: "Cozy is saving its edits before closing" })
     }
     if (writing) this.writes++

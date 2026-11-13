@@ -60,6 +60,8 @@ pub(super) struct Machine {
 pub(super) fn router(identity: Arc<MachineIdentity>, runs: Arc<Runs>) -> Router {
     routes()
         .route(path::PRIVATE_CLOSE, post(private_close_request))
+        .route(path::PROJECT_MIGRATE, get(project_migrate_request).post(project_migrate_request))
+        .route(path::PROJECT_LEGACY_BINDINGS, post(project_bindings_request))
         .route(path::PROJECT_EXECUTION, get(project_request).post(project_request).put(project_request))
         .route(path::LOCAL_PRIVATE, get(legacy_private_request).post(legacy_private_request).put(legacy_private_request))
         .with_state(Machine { identity, runs })
@@ -108,6 +110,14 @@ async fn project_request(State(m): State<Machine>, Path((project, rest)): Path<(
         return Refusal::from(Error::conflict("project_execution_unavailable", error.to_string())).into_response();
     }
     private_request(State(m), Path((project, rest)), request).await
+}
+
+async fn project_migrate_request(m: State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
+    project_request(m, Path((project, "migrate".into())), request).await
+}
+
+async fn project_bindings_request(m: State<Machine>, Path(project): Path<String>, request: Request<Body>) -> Response {
+    project_request(m, Path((project, "migration-bindings".into())), request).await
 }
 
 fn project_migration_error(error: std::io::Error) -> Error {
