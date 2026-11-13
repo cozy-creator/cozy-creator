@@ -3412,7 +3412,9 @@ impl Pool {
             environment.insert("TEMP".into(), tmp.clone());
             environment.insert("TMP".into(), tmp);
             let private_root = private_root.as_ref().expect("verified private root");
-            for (name, relative) in [("XDG_CACHE_HOME", "cache"), ("MPLCONFIGDIR", "matplotlib"), ("UV_CACHE_DIR", "uv-cache"), ("UV_TOOL_DIR", "uv-tools")] {
+            // Every writable place a library reaches by default is the project's: an encrypted project's executor writes nothing outside its view.
+            for (name, relative) in [("HOME", "home"), ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"), ("XDG_STATE_HOME", "state"), ("XDG_CACHE_HOME", "cache"),
+                ("MPLCONFIGDIR", "matplotlib"), ("UV_CACHE_DIR", "uv-cache"), ("UV_TOOL_DIR", "uv-tools")] {
                 let path = private_root.join(relative);
                 fs::create_dir_all(&path)?;
                 environment.insert(name.into(), path.to_string_lossy().into_owned());
