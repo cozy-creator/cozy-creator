@@ -141,7 +141,7 @@ PY_BACKING_SCAN
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery1" --idle 0 > "$work/recovered.json"
   in_project "$P" --json vault passphrase --passphrase-file "$secrets/changed" > "$work/passphrase.json"
   in_project "$P" --json vault recovery --recovery-out "$secrets/recovery2" > "$work/replacement-recovery.json"
-  in_project "$P" --json vault lock > /dev/null
+  in_project "$P" --json vault lock > "$work/replaced-lock.json" || fail "the project doesn't lock after its credentials change: $(jq -c '.error | {code, message}' "$work/replaced-lock.json" 2> /dev/null)"
   if in_project "$P" --json vault unlock --passphrase-file "$secrets/initial" > "$work/old-pass.json" 2> "$work/old-pass.err"; then fail "old live passphrase slot remained active"; fi
   if in_project "$P" --json vault unlock --recovery-file "$secrets/recovery1" > "$work/old-recovery.json" 2> "$work/old-recovery.err"; then fail "old live recovery slot remained active"; fi
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery2" --idle 0 > "$work/new-recovery.json"
@@ -164,7 +164,7 @@ PY_BACKING_SCAN
   boxes_of "$P" > "$work/after-rekey.json"
   cmp "$work/before-rekey.json" "$work/after-rekey.json" || fail "rekey changed logical project history"
   step "status polling cannot defeat the absolute unlock deadline"
-  in_project "$P" --json vault lock > /dev/null
+  in_project "$P" --json vault lock > "$work/deadline-lock.json" || fail "the rotated project doesn't lock: $(jq -c '.error | {code, message}' "$work/deadline-lock.json" 2> /dev/null)"
   in_project "$P" --json vault unlock --passphrase-file "$secrets/rekey" --idle 0 --max-duration 2 > "$work/timed-unlock.json"
   code=unlocked
   for _ in $(seq 1 80); do

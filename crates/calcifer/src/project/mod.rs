@@ -377,7 +377,11 @@ impl Projects {
         api.calcifer.note_open(RunOwner::of(&project, &api.calcifer));
         // Its deleted boxes looked at as it opens: one set aside before cl-919 counts from now.
         purge::due(&project.id, now_ms());
-        if let Some(said) = copy_told(&project.root) { project.said.lock().expect("said lock").push(said); }
+        // Told until a reader hears it: a project closes when nothing holds it, so this open may not be the one read.
+        if let Some(said) = copy_note(&project.root) {
+            let mut told = project.said.lock().expect("said lock");
+            if !told.contains(&said) { told.push(said); }
+        }
         project.require_view()?;
         Ok(project)
     }
@@ -780,6 +784,11 @@ static COPIES: std::sync::LazyLock<Mutex<HashMap<PathBuf, String>>> = std::sync:
 
 fn copy_told(dir: &FsPath) -> Option<String> {
     COPIES.lock().expect("copies lock").remove(&vault::logical(dir))
+}
+
+/// What a copy has to tell, still untold.
+fn copy_note(dir: &FsPath) -> Option<String> {
+    COPIES.lock().expect("copies lock").get(&vault::logical(dir)).cloned()
 }
 
 /// Calcifer's own folders beside a project, a conversion's stage and the original it moves aside, are never projects.
@@ -1326,6 +1335,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
+            copy_told(&project.root);
             (project.id.clone(), project.code.clone(), said)
         }
     };
@@ -1532,6 +1542,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
     state.covered = covered;
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_project));
+    copy_told(&project.root);
     Ok(Json(state))
 }
 
