@@ -295,11 +295,13 @@ fi
 # cl-885: `cozy run watch` of a run going on outlives Calcifer restarts, the first by a Calcifer whose lock record lands 5 s late (a busy
 # disk, slow-record.c): it reconnects on the new record and reaches the run's end. A Calcifer that answered before its record landed refused
 # the watch's last bearer while there was no record to find, and the watch ended ("Calcifer's API needs the bearer from its lock record").
+# Each run record the watch was sent names the run's project as GET's does, and `cozy run ls`, open on a terminal through the restarts,
+# lists the run and opens it by its project's route (cl-885: the stream's records named none, so a read built from them asked /v1/runs).
 watch_restart() {
 [ "$RUNNER_OS" = Linux ] || return 0
 step "a run watched across Calcifer restarts, one whose lock record lands 5 s late (cl-885)"
 local holder=$HOME/.cozy/calcifer/calcifer.lock.holder dropin=$HOME/.config/systemd/user/cozy-calcifer.service.d/cl885-slow-record.conf
-local n pid submitter watcher code=0 slowed
+local n pid submitter watcher lister code=0 slowed once
 cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC -o "$OUT/slow-record.so" "$here/slow-record.c" -ldl || { check "watch restart: slow-record.c didn't build"; return; }
 (cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/wait" seconds:=45 --on local > "$OUT/watched-run.ndjson" 2> "$OUT/watched-run.err") & submitter=$!
 for _ in $(seq 240); do n=$(grep -m1 -oE '"number": *[0-9]+' "$OUT/watched-run.ndjson" | grep -oE '[0-9]+$') && break; sleep 0.5; done
@@ -307,6 +309,8 @@ for _ in $(seq 240); do n=$(grep -m1 -oE '"number": *[0-9]+' "$OUT/watched-run.n
 # Its number names a run of its project: watched from there.
 (cd "$RUN_PROJECT" && timeout 600 cozy --json run watch "$n") > "$OUT/watch.ndjson" 2> "$OUT/watch.err" & watcher=$!
 for _ in $(seq 60); do [ -s "$OUT/watch.ndjson" ] && break; sleep 0.5; done
+(cd "$RUN_PROJECT" && exec python3 "$here/project/terminal.py" "$OUT/watch-ls.screen" "$COZY" run ls) > /dev/null 2>&1 & lister=$!
+soon screen_says "$OUT/watch-ls.screen" 'TARGET' || check "watch restart: cozy run ls drew nothing"
 for slow in yes no; do
   pid=$(jq -r .pid "$holder")
   if [ "$slow" = yes ]; then
@@ -324,7 +328,21 @@ slowed=$(grep -a 'started step="record"' "$HOME/.cozy/calcifer/health.log" 2> /d
 wait "$watcher" || code=$?
 [ "$code" = 0 ] && J -s 'any(.[]; .type == "run.completed" and .run.status == "completed")' "$OUT/watch.ndjson" \
   || check "watch restart: the watch of run $n didn't reach its end (exit $code): $(tail -c 300 "$OUT/watch.ndjson") $(tail -c 300 "$OUT/watch.err")"
-in_project "$RUN_PROJECT" --json run watch "$n" --once | J '.status == "completed"' || check "watch restart: run $n did not complete"
+once=$(in_project "$RUN_PROJECT" --json run watch "$n" --once) && J '.status == "completed"' <<< "$once" || check "watch restart: run $n did not complete"
+jq -se --argjson got "${once:-null}" 'map(select(.run)) | length > 0 and all(.run.project_id == $got.project_id and .run.project == $got.project)' \
+  "$OUT/watch.ndjson" > /dev/null && J '.project_id' <<< "$once" \
+  || check "watch restart: the stream's run records don't name run $n's project as GET does ($(jq -c '{project_id, project}' <<< "${once:-null}")): $(jq -sc 'map(select(.run) | .run | {project_id, project}) | unique' "$OUT/watch.ndjson")"
+# Enter on the newest row, run $n, opens it as `cozy run watch` does; q goes back, and q again quits.
+soon screen_says "$OUT/watch-ls.screen" "^ *$n .* completed" || check "watch restart: cozy run ls past the restarts doesn't list run $n completed: $(head -5 "$OUT/watch-ls.screen")"
+kill -USR1 "$lister" 2> /dev/null || true
+soon screen_says "$OUT/watch-ls.screen" "cozy run watch $n " && soon screen_says "$OUT/watch-ls.screen" 'completed' \
+  && ! screen_says "$OUT/watch-ls.screen" 'no such run|run_not_found' \
+  || check "watch restart: cozy run ls didn't open run $n: $(head -8 "$OUT/watch-ls.screen")"
+kill "$lister" 2> /dev/null || true
+soon screen_says "$OUT/watch-ls.screen" 'TARGET' || true
+kill "$lister" 2> /dev/null || true
+code=0; wait "$lister" || code=$?
+[ "$code" = 0 ] || check "watch restart: cozy run ls exited $code on q"
 wait "$submitter" || true
 }
 
