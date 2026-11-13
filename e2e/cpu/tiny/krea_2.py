@@ -7,12 +7,14 @@ Its five community adapters (0.9.0, se-126) are laid out as their mirrors are (T
 `transformer` component of PEFT factors under Diffusers' names, `adapter_config.json` stating `r`, `lora_alpha` and
 `target_modules`; Identity Edit's own alphas as F32 scalars, Patil's depth factors and its widened `img_in` (kept
 whole as `img_in.modules_to_save`) in F32. `adapters.AdapterGraph` finds its linears on `Krea2Transformer2DModel()`
-at the class defaults, Krea 2's geometry: the executor's defaults are the tiny DiT's (PATCH)."""
+at the class defaults, Krea 2's geometry: the executor's defaults are the tiny DiT's (PATCH). Parts of the same checkpoint,
+each a model of its own (xs-192): its transformer with its scheduler, its text encoder with its tokenizer, its VAE."""
 
 from __future__ import annotations
 
 import inspect
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +31,8 @@ RAW, TURBO = "krea/krea-2@0.1.0", "krea/krea-2-turbo@0.1.0"
 EDIT, DEPTH, POSE = "conradlocke/identity-edit@0.1.0", "patil/depth-control@0.1.0", "thedeoxen/pose-control@0.1.0"
 LINEART, INPAINT = "cierpliwy/lineart-edit@0.1.0", "cierpliwy/inpaint-edit@0.1.0"
 TEXT_WIDTH, Z = 32, 16
+#: The checkpoint's parts, each a model of that part alone (xs-192).
+DIT, ENCODER, VAE = "aimeasop/redcraft-krea@0.2.0", "quiho/qwen3-vl-4b-abliterated@0.2.0", "e2e/krea-2-vae@0.1.0"
 GEOMETRY: dict[str, object] = {
     "in_channels": 4 * Z, "num_layers": 2, "attention_head_dim": 16, "num_attention_heads": 2, "num_key_value_heads": 1,
     "intermediate_size": 64, "timestep_embed_dim": 32, "text_hidden_dim": TEXT_WIDTH, "num_text_layers": 12,
@@ -103,6 +107,14 @@ def _adapter(store: Path, seed: int, rank: int, blocks: tuple[str, ...], dtype: 
     return writer.commit().id
 
 
+def _part(pipeline: Path, out: Path, names: tuple[str, ...]) -> None:
+    """Some of `pipeline`'s components, as a pipeline of only those: the same files, so the same weights."""
+    index = json.loads((pipeline / "model_index.json").read_text())
+    for name in names:
+        shutil.copytree(pipeline / name, out / name)
+    (out / "model_index.json").write_text(json.dumps({key: index[key] for key in ("_class_name", "_diffusers_version", *names)}))
+
+
 def models(root: Path, store: Path) -> dict[str, Path | str]:
     out = root / "krea-2"
     torch.manual_seed(0)
@@ -117,7 +129,11 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         "text_encoder": ["transformers", "Qwen3VLModel"], "tokenizer": ["transformers", "Qwen2TokenizerFast"],
         "transformer": ["diffusers", "Krea2Transformer2DModel"], "vae": ["diffusers", "AutoencoderKLQwenImage"]}))
     # Each mirror's rank over 32 (256, 64, 32, 64, 64).
-    return {RAW: out, TURBO: out, EDIT: _adapter(store, 1, 8, _TEXT + _DIT, alphas=True),
+    _part(out, root / "dit", ("transformer", "scheduler"))
+    _part(out, root / "text-encoder", ("text_encoder", "tokenizer"))
+    _part(out, root / "vae", ("vae",))
+    return {RAW: out, TURBO: out, DIT: root / "dit", ENCODER: root / "text-encoder", VAE: root / "vae",
+            EDIT: _adapter(store, 1, 8, _TEXT + _DIT, alphas=True),
             DEPTH: _adapter(store, 2, 2, _DIT, torch.float32, projection=True), POSE: _adapter(store, 3, 1, _TEXT + _DIT),
             LINEART: _adapter(store, 4, 2, _TEXT + _DIT), INPAINT: _adapter(store, 5, 2, _TEXT + _DIT)}
 
@@ -154,6 +170,10 @@ CELLS: list[Cell] = [
      "check": size(1024, 1024)},
     {"entry": "image", "name": "raw", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1,
                                                   "turbo": False}, "check": size(1024, 1024)},
+    # Each slot bound to a model of its part alone: the same weights as `image/turbo`'s, composed at run time (xs-192).
+    {"entry": "image", "name": "parts", "payload": {"instructions": _prompt("a red fox in fresh snow"), "seed": 7, "megapixels": 1},
+     "models": {"image.models.model": DIT, "image.models.text_encoder": ENCODER, "image.models.vae": VAE},
+     "check": size(1024, 1024)},
     # Identity Edit on Raw with CFG: the picture's tokens before the target on both branches, Qwen3-VL reading it.
     {"entry": "generate", "name": "edit", "payload": {**_SMALL, "prompt": _prompt("the fox in <fox> wears a hat", "fox")},
      "files": {"prompt.references.0.file": _FOX}, "check": size(576, 464)},
