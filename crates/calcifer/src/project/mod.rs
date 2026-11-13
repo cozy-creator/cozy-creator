@@ -2689,7 +2689,7 @@ fn cancelled(api: &Arc<Api>, project: &Arc<Project>, names: &[String], takes: &[
     // A box's work, or one take of it by its id (cl-945).
     let wanted = |name: &str, take: &str| all || keys.contains(&name_key(name)) || takes.iter().any(|id| id == take);
     project.join(&lock);
-    let (dropped, canceled) = stop_jobs(api, project, &lock, &wanted, all, why).map_err(Refusal)?;
+    let (dropped, canceled) = stop_jobs(api, project, &wanted, all, why).map_err(Refusal)?;
     // A take that failed, named: dismissed (cl-954).
     if !takes.is_empty() && lock.assets.values().any(|held| held.ended.iter().any(|ended| takes.contains(&ended.id))) {
         folder.update_lock(|lock| lock.assets.values_mut().for_each(|held| held.ended.retain(|ended| !takes.contains(&ended.id)))).map_err(Refusal)?;
@@ -2708,38 +2708,49 @@ fn deleted_why(name: &str) -> String {
     format!("{name} was deleted, so it isn't made")
 }
 
-/// Stops what `wanted` names of a project's jobs: what waits leaves, with a row saying `why`; what is being sent isn't sent; a run is canceled. None of it
-/// is asked again, a restart too. Answers what left and the runs canceled.
-fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str, &str) -> bool, all: bool, why: &dyn Fn(&str) -> String) -> Result<(Vec<String>, Vec<u64>), Error> {
-    let sent: HashSet<&str> = lock.pending.iter().map(|(key, pending)| pending.job_of(key)).collect();
-    let (dropped, unsent) = {
+/// Stops what `wanted` names of a project's jobs: what waits leaves, with a row saying `why`; what is being sent isn't sent, and a run
+/// it is making the sender cancels as it has it (`Walk::submit`); a run is canceled. None of it is asked again, a restart too. Answers
+/// what left and the runs canceled.
+fn stop_jobs(api: &Api, project: &Project, wanted: &dyn Fn(&str, &str) -> bool, all: bool, why: &dyn Fn(&str) -> String) -> Result<(Vec<String>, Vec<u64>), Error> {
+    let (waiting, going) = {
         let mut walker = project.walker.lock().expect("walker lock");
         let (dropped, going) = walker.graph.cancel(wanted);
-        let rows: Vec<walker::Job> = dropped.iter().map(|&id| walker.graph.jobs[id].clone()).collect();
-        // What is being sent, and has no run yet, isn't sent.
-        let unsent: Vec<String> = going.iter().map(|&id| &walker.graph.jobs[id]).filter(|job| !sent.contains(job.key.as_str())).map(|job| name_key(&job.asset)).collect();
-        (rows, unsent)
+        let rows = |ids: &[usize]| ids.iter().map(|&id| walker.graph.jobs[id].clone()).collect::<Vec<walker::Job>>();
+        (rows(&dropped), rows(&going))
     };
-    for job in &dropped {
-        project.jobs.ended(Job { id: job.key.clone(), asset: job.asset.clone(), state: JobState::Canceled, why: Some(why(&job.asset)), ..Job::default() });
-    }
-    let owed: Vec<String> = dropped.iter().map(|job| name_key(&job.asset)).chain(unsent).collect();
+    // In the walk's own write, so a send can't come between: one being sent that has no run yet sends nothing, its run being made is
+    // the sender's to cancel, and what has a run is canceled here.
+    let (mut dropped, mut running) = (waiting, vec![]);
     project.folder.update_walk(|walk| {
+        for job in going {
+            let on_its_way = walk.pending.iter().find(|(key, pending)| pending.job_of(key) == job.key).map(|(key, pending)| (key.clone(), pending.run));
+            match on_its_way {
+                Some((_, run)) if run > 0 => continue,
+                Some((key, _)) => drop(walk.pending.remove(&key)),
+                None => {}
+            }
+            dropped.push(job);
+        }
+        let owed: Vec<String> = dropped.iter().map(|job| name_key(&job.asset)).collect();
         for ask in &mut walk.walk.asks {
             ask.takes.retain(|take| !wanted(&take.asset, &take.key));
             ask.all &= !all;
             ask.outdated &= !all;
             ask.sent.extend(owed.iter().cloned());
         }
+        running = walk.pending.iter().filter(|(key, pending)| pending.run > 0 && wanted(&pending.asset, pending.job_of(key))).map(|(_, pending)| pending.run).collect();
     })?;
+    for job in &dropped {
+        project.jobs.ended(Job { id: job.key.clone(), asset: job.asset.clone(), state: JobState::Canceled, why: Some(why(&job.asset)), ..Job::default() });
+    }
     let store = api.calcifer.project_store(&project.id).map_err(|error|Error::new(Kind::Conflict,"project_journal",error.to_string()))?;
     let mut canceled = vec![];
-    for pending in lock.pending.iter().filter(|(key, pending)| pending.run > 0 && wanted(&pending.asset, pending.job_of(key))).map(|(_, pending)| pending) {
-        let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
+    for run in running {
+        let Ok(Some(row)) = store.run_by_number(run) else { continue };
         if row.state != crate::store::State::Settled {
             // Inside a delete's act, `cancel` tells the machine now and keeps the request once the act lets the writer go.
             api.calcifer.cancel(&row.id).map_err(|e| Error::new(Kind::Internal, "run_cancel", e.to_string()))?;
-            canceled.push(pending.run);
+            canceled.push(run);
         }
     }
     Ok((dropped.into_iter().map(|job| job.asset).collect(), canceled))
@@ -4022,7 +4033,7 @@ impl Walk {
         if gone.is_empty() {
             return Ok(false);
         }
-        let (dropped, _) = stop_jobs(&self.host.api(), &self.project, &lock, &|name, _| gone.contains(&name_key(name)), false, &deleted_why)?;
+        let (dropped, _) = stop_jobs(&self.host.api(), &self.project, &|name, _| gone.contains(&name_key(name)), false, &deleted_why)?;
         for name in &dropped {
             self.say(Told::Said { message: deleted_why(name), name: Some(name.clone()) });
         }
@@ -4618,14 +4629,14 @@ impl Walk {
                     }
                 })?;
             }
-            // Canceled meanwhile: not sent.
-            let now = self.folder().lock()?;
-            let mine = now.walk.asks.iter().find(|mine| mine.id == ask.id);
-            let stands = mine.is_some_and(|mine| match &next.take {
+            // Canceled meanwhile: not sent. `submit` asks again as it records its run on its way, in the same write a cancel makes.
+            let stands = |owed: &folder::Owed| owed.asks.iter().find(|mine| mine.id == ask.id).is_some_and(|mine| match &next.take {
                 Some(take) => mine.takes.iter().any(|still| still.key == take.key),
                 None => !mine.sent.contains(&name_key(&name)),
             });
-            if !stands {
+            let now = self.folder().lock()?;
+            let mine = now.walk.asks.iter().find(|mine| mine.id == ask.id);
+            if !stands(&now.walk) {
                 return Ok(());
             }
             // Renamed meanwhile: what this read says what was, so its turn comes again.
@@ -4640,7 +4651,7 @@ impl Walk {
                 self.not_sent(&name);
                 return self.folder().update_walk(|walk| settle(&mut walk.walk));
             }
-            self.submit(&key, input, &package, asset, pending, &settling, member, &unused).await
+            self.submit(&key, input, &package, asset, pending, &settling, &stands, member, &unused).await
         };
         let sent = sent.await;
         if sent.is_err() {
@@ -4731,7 +4742,7 @@ impl Walk {
     /// `cozy run --input` takes them, go on top.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
-    async fn submit(&self, key: &str, mut payload: Map<String, Value>, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut folder::WalkFile), member: host::Member, unused: &[Unused]) -> Result<(), Error> {
+    async fn submit(&self, key: &str, mut payload: Map<String, Value>, package: &Package, asset: &format::Asset, mut pending: Pending, settle: &impl Fn(&mut folder::WalkFile), stands: &impl Fn(&folder::Owed) -> bool, member: host::Member, unused: &[Unused]) -> Result<(), Error> {
         let renderer = package.maker()?.ok_or_else(|| cannot(&asset.name, "its tool names no function".into()))?;
         let (on, hub) = (pending.target.on.clone(), pending.target.hub.clone());
         let name = asset.name.clone();
@@ -4859,10 +4870,18 @@ impl Walk {
             stays: package.callable(&renderer.function).map(|callable| api::calcifer::tool::stays(&callable)).unwrap_or_default(),
         };
         let _on_the_way = OnTheWay::new(&self.on_the_way, key);
-        self.folder().update_walk(|walk| {
-            walk.pending.insert(key.into(), pending.clone());
-            settle(walk);
+        // Canceled while it was made ready: nothing is sent.
+        let mut stopped = false;
+        self.folder().update_walk(|walk| match stands(&walk.walk) {
+            true => {
+                walk.pending.insert(key.into(), pending.clone());
+                settle(walk);
+            }
+            false => stopped = true,
         })?;
+        if stopped {
+            return Ok(());
+        }
         let sent = match member.on() == Some(&submit.on) {
             true => match member.submit(key, submit.clone()).await {
                 Err(_) => self.send_run(key, submit).await,
@@ -4882,12 +4901,18 @@ impl Walk {
                 return Err(error);
             }
         };
-        self.folder().update_walk(|walk| {
-            if let Some(pending) = walk.pending.get_mut(key) {
+        self.folder().update_walk(|walk| match walk.pending.get_mut(key) {
+            Some(pending) => {
                 pending.run = run.number;
+                walk.walk.runs.insert(run.number, None);
             }
-            walk.walk.runs.insert(run.number, None);
+            // Canceled while its run was being made (`stop_jobs`): it ends at its machine, and nothing of it lands.
+            None => stopped = true,
         })?;
+        if stopped {
+            self.host.api().calcifer.cancel(&run.id).map_err(|e| Error::new(Kind::Internal, "run_cancel", e.to_string()))?;
+            return Ok(());
+        }
         if let Some(offer) = offer {
             self.host.placed(&self.project.id, &run.id, &offer.placed());
             self.host.quoted(&run.id, offer.quoted());

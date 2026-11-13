@@ -104,10 +104,23 @@ python3 "$here/cancel_undo.py" "$P" "$OUT" "$tool" > "$OUT/cancel-undo-proof.jso
 cat "$OUT/cancel-undo-proof.json"
 }
 
+# A render canceled within 150 ms of Render, 32 times (web-account-rent, run 43401337115: one answered `dropped`, and its run still
+# started, completed and landed). Nothing of a canceled render lands: a dropped job is never sent, a sent one ends canceled.
+db_cancel_race() {
+[ -n "$LOCAL" ] || return
+step "project: a render canceled as it is sent never lands"
+local P=$OUT/cancel-race tool=$here/project/tool.py/slow
+cozy --json new --unencrypted "$P" > "$OUT/cancel-race-new.json" 2> "$OUT/cancel-race-new.err" || { check "cancel race: new"; return; }
+python3 "$here/cancel_race.py" "$P" "$OUT" "$tool" > "$OUT/cancel-race.json" 2> "$OUT/cancel-race.err" \
+  || check "cancel race: $(head -c 1500 "$OUT/cancel-race.json") $(tail -c 500 "$OUT/cancel-race.err")"
+cat "$OUT/cancel-race.json"
+}
+
 # project.db's cells, through the project API and on its storage directly.
 projectdb() {
 db_crdt
 db_cancel_undo
+db_cancel_race
 db_first_open
 db_deleted_024
 db_crash
