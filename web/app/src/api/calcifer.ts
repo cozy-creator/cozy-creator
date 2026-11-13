@@ -58,8 +58,8 @@ source: string, };
 export type Agreed = { usd_micros_per_hour: number, };
 
 /**
- * One function's code and weights a machine is fetching ahead of jobs that will need them. It is no job of anyone's: wrong, it costs
- * bytes, and its job's run fetches what it needs.
+ * One upcoming job's code and weights its machine has ready ahead of it (cl-967): no job's run; wrong, it costs bytes, and the job's
+ * run fetches what it needs.
  */
 export type Ahead = {
 /**
@@ -644,7 +644,7 @@ export type Digest = string;
  * A model's display metadata as set at the Hub: shown in the model browser; a LoRA given without a
  * strength runs at its recommended one.
  */
-export type Displayed = { model: string, trigger: string | null, strength: number | null,
+export type Displayed = { model: string, triggers?: Array<string>, strength: number | null,
 /**
  * Why the Hub did not take them; the upload stands.
  */
@@ -935,7 +935,11 @@ export type HistoryStepped = { entries: Array<HistoryEntry>, already?: boolean,
 /**
  * What refused the next of a `to`, short of it.
  */
-stopped?: ErrorBody | null, undo?: number | null, redo?: number | null, };
+stopped?: ErrorBody | null,
+/**
+ * What came back without its files, as a person says it: a box whose undo window ended (cl-919).
+ */
+lost?: Array<string>, undo?: number | null, redo?: number | null, };
 
 /**
  * When a Hub last answered a machine listing.
@@ -1564,9 +1568,10 @@ model_kind?: ModelKind | null, created_at: string,
  */
 source: string | null, author: ModelAuthor | null,
 /**
- * Words a LoRA's prompt uses, and its recommended strength: what it runs at when given without one.
+ * What a LoRA's prompt uses, each entry one trigger kept whole, and its recommended strength: what it runs at
+ * when given without one.
  */
-trigger: string | null, strength: number | null,
+triggers?: Array<string>, strength: number | null,
 /**
  * Its labels, sorted: filled once from its source, then its owner's.
  */
@@ -1608,10 +1613,10 @@ source_format?: string | null, };
 
 /**
  * `PATCH /v1/models/{org}/{name}`: the fields its owner sets, each absent one kept. An empty or `none` family
- * clears the label (its weights' family shows then), an empty trigger clears it, a null strength clears it. `add_tags`
+ * clears the label (its weights' family shows then), no triggers clears them, a null strength clears it. `add_tags`
  * are added and `remove_tags` removed.
  */
-export type ModelEdit = { hub?: string | null, family?: string | null, trigger?: string | null, strength?: number | null | null, add_tags?: Array<string>, remove_tags?: Array<string>, };
+export type ModelEdit = { hub?: string | null, family?: string | null, triggers?: Array<string> | null, strength?: number | null | null, add_tags?: Array<string>, remove_tags?: Array<string>, };
 
 /**
  * What `PATCH /v1/models/{org}/{name}` leaves: the model as `GET` reads it, and what the Hub clamped.
@@ -1725,13 +1730,19 @@ export type ModelUpload = {
 /**
  * A provider source, `local/<alias>`, a Hub model, a held file's `sha256:<hex>` (`PUT /v1/files`): a `.safetensors` file, or a
  * CozyTensors folder's tree document, its files held too, or `run:N[#output]`: a run's weights output, uploaded from the
- * machine that holds it. A Hub checkpoint uploads only on a `base`; else it is recorded, and no machine runs.
+ * machine that holds it. A Hub checkpoint uploads only on a `base` or cut to `components`; else it is recorded, and no
+ * machine runs.
  */
 source: string,
 /**
  * A held source's name where its client has it.
  */
 name?: string | null,
+/**
+ * `SOURCE:COMPONENT,…`: the checkpoint holds only these of the source's components, a source of one taking the one name
+ * (a VAE file is `vae`). None: all of them.
+ */
+components?: Array<string>,
 /**
  * `org/name`.
  */
@@ -1744,7 +1755,7 @@ mirror?: string | null,
 /**
  * The base component a LoRA was trained on, when its file does not declare it.
  */
-trained_on?: string | null, trigger?: string | null, strength?: number | null,
+trained_on?: string | null, triggers?: Array<string> | null, strength?: number | null,
 /**
  * `MODEL[:COMPONENT,…]`: start from this model, the source's components in place of its own.
  */
@@ -2899,12 +2910,13 @@ hub?: string,
  */
 approve?: boolean,
 /**
- * Make only what has no state, rather than a new version.
+ * Bring them up to date (`cozy render`), rather than a new version of each: `n` of each named that has no state, none of one
+ * being made (it's joined), and what they read with no state first, a cut's too.
  */
 missing?: boolean,
 /**
- * With `all`: also make a new version of each pin that is out of date when its turn comes in reading order, which goes when that
- * lands. The version it held stays, to be approved again.
+ * Also make a new version of each pin out of date, when its turn comes in reading order: with `all`, every one; else those named
+ * and what they read. What reads it in this render reads that; the version it held stays approved.
  */
 outdated?: boolean,
 /**

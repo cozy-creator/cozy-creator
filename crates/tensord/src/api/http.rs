@@ -76,7 +76,8 @@ fn routes() -> Router<Machine> {
         .route(path::LOG, get(log))
         .route(path::OBJECT, put(put_object).get(follow_object))
         .route(path::OBJECTS_HELD, post(held_objects).layer(DefaultBodyLimit::max(16 << 20)))
-        .route(path::ESTIMATE, post(estimate))
+        .route(path::UPCOMING, put(upcoming))
+        .route(path::PREPARE, put(prepare))
         .route(path::MODELS_REMOVE, post(remove_model))
         .route(path::HEALTH, get(health))
         .fallback(|| async { Refusal::from(Error::not_found("route_not_found", "this machine serves no such path")) })
@@ -395,17 +396,33 @@ async fn submit(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> An
     Ok(json(StatusCode::OK, &v1::RunBatchAnswer { runs }))
 }
 
-/// `POST /v1/estimate`: when each job would run here, packed with the machine's queue by the
-/// model its scheduler gives each run its width by (`estimate`). It reserves nothing.
-async fn estimate(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+/// `PUT /v1/upcoming` (cl-967): the caller's upcoming jobs here, nearest first, each prepared behind every run (`ahead`).
+async fn upcoming(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+    let list: v1::Upcoming = serde_json::from_slice(&body)
+        .map_err(|e| Error::validation("invalid_request", format!("the upcoming list is not JSON: {e}")))?;
+    listed(m, headers, crate::ahead::UPCOMING, list.jobs).await
+}
+
+/// `PUT /v1/prepare` (cl-967): what the caller expects demand for here, with no job yet, behind every upcoming job (`ahead`).
+async fn prepare(State(m): State<Machine>, headers: HeaderMap, body: Bytes) -> Answer {
+    let list: v1::Prepare = serde_json::from_slice(&body)
+        .map_err(|e| Error::validation("invalid_request", format!("the prepare list is not JSON: {e}")))?;
+    listed(m, headers, crate::ahead::PREPARE, list.items).await
+}
+
+async fn listed(m: Machine, headers: HeaderMap, prefix: &'static str, items: Vec<v1::Ahead>) -> Answer {
     let caller = m.caller(&headers)?;
     caller.machine()?;
-    let request: v1::EstimateRequest = serde_json::from_slice(&body)
-        .map_err(|e| Error::validation("invalid_request", format!("the estimate request is not JSON: {e}")))?;
-    let actor = actor_id(caller.actor);
-    let answer = m.call(move |runs| crate::estimate::quote(runs, &actor, request)).await?;
+    for item in &items {
+        run_id(&format!("{prefix}{}", item.key))?;
+    }
+    let admitted = m.admit()?;
+    let actor = caller.actor;
+    let answer = m.call(move |runs| crate::ahead::put(runs, actor, prefix, items)).await?;
+    drop(admitted);
     Ok(json(StatusCode::OK, &answer))
 }
+
 
 #[derive(Deserialize)]
 struct Page {

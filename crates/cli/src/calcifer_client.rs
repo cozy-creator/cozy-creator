@@ -335,6 +335,12 @@ impl Client {
         self.exchange(Ask::Write, |c, base| c.delete(format!("{base}{path}")).header(KEY, &key)).await
     }
 
+    /// A DELETE that is part of `edit`, as a project's history names it (`Cozy-Edit`): deletes sharing one are one entry, one Undo.
+    pub(crate) async fn delete_edit<T: DeserializeOwned>(&self, path: &str, edit: &str) -> Result<T, Error> {
+        let key = write_key();
+        self.exchange(Ask::Write, |c, base| c.delete(format!("{base}{path}")).header(KEY, &key).header("cozy-edit", edit)).await
+    }
+
     pub(crate) async fn delete_query<Q, T>(&self, path: &str, query: &Q) -> Result<T, Error>
     where
         Q: Serialize + ?Sized,
@@ -561,7 +567,7 @@ impl Client {
 
     /// Whether the Calcifer this talks to runs another cozy version than this one.
     fn other_version(&self) -> bool {
-        self.holder().is_some_and(|h| h.version != env!("CARGO_PKG_VERSION"))
+        self.holder().is_some_and(|h| h.version != ::api::VERSION)
     }
 
     /// "Calcifer runs cozy X, which <lacks>".
@@ -647,7 +653,7 @@ impl Client {
         Error::new(
             Kind::Unavailable,
             "calcifer_outdated",
-            format!("{}; this is cozy {}", self.lacking(lacks), env!("CARGO_PKG_VERSION")),
+            format!("{}; this is cozy {}", self.lacking(lacks), ::api::VERSION),
         )
         .next("cozy update")
     }
@@ -786,7 +792,7 @@ impl Client {
     /// Whether the Calcifer `holder` names runs another cozy than this one, which is the installed
     /// one: something replaced the binary under it (`cozy machine update` on a pod, an installer).
     fn replaced(&self, holder: &Holder) -> bool {
-        holder.version != env!("CARGO_PKG_VERSION") && self.is_installed()
+        holder.version != ::api::VERSION && self.is_installed()
     }
 
     /// Reaches Calcifer, starting it if none runs.
@@ -806,7 +812,7 @@ impl Client {
                     self.say(&format!(
                         "Calcifer here is {}, this cozy is {}: it keeps running ({why}); `cozy restart` switches it",
                         holder.version,
-                        env!("CARGO_PKG_VERSION")
+                        ::api::VERSION
                     ));
                     holder
                 }
@@ -821,7 +827,7 @@ impl Client {
 
     /// Stops `holder`'s Calcifer and starts the installed cozy's in its place.
     async fn replace(&self, holder: Holder) -> Result<Holder, Error> {
-        self.say(&format!("Calcifer runs cozy {}; restarting it on {}", holder.version, env!("CARGO_PKG_VERSION")));
+        self.say(&format!("Calcifer runs cozy {}; restarting it on {}", holder.version, ::api::VERSION));
         if let Err(e) = self.down(&holder).await {
             self.say(&format!("Calcifer did not stop cleanly ({}); starting the installed one", e.message));
         }
@@ -1409,7 +1415,7 @@ fn other_version(holder: &Holder, lacks: &str, why: &str) -> Error {
         format!(
             "Calcifer here is {}, this cozy is {}; run the matching cozy, or `cozy restart` to switch",
             holder.version,
-            env!("CARGO_PKG_VERSION")
+            ::api::VERSION
         ),
     )
     .remedy(format!("It {lacks}; it keeps running: {why}"))

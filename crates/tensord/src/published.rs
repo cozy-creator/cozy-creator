@@ -701,7 +701,12 @@ impl Publisher {
         } else {
             let origin = hub::origin_key(&source.origin).unwrap_or_default();
             // v4 could hold a private version under a public key. Only anonymous reads fill v5.
-            let name = json!(["resolve-v5", origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain]).to_string();
+            // A slot that reads only some components has an answer of its own (xs-191); one that reads all keeps its key.
+            let mut key = json!(["resolve-v5", origin, named.model, named.release, named.lane, hardware.gpus, hardware.plain]);
+            if !hardware.components.is_empty() {
+                key.as_array_mut().expect("an array").push(json!(hardware.components));
+            }
+            let name = key.to_string();
             let held = service.engine.with_journal(|j| j.named(&name)).map_err(io_failure)?;
             match held.and_then(|(answer, read)| Some((serde_json::from_str::<Answer>(&answer).ok()?, read))) {
                 Some((answer, read)) => {
@@ -1126,6 +1131,7 @@ impl Publisher {
                 interface: serde_json::to_vec(&held.record.interface)
                     .map_err(|e| io_failure(io::Error::other(e)))?,
                 hub: request.origin(),
+                manifest: String::new(),
             })
             .map_err(io_failure)?;
         // It replaces this release's installations by another Runtime pair or PyTorch: they go,
@@ -1388,9 +1394,10 @@ impl Publisher {
             if Some(slot) == main && !request.lane.is_empty() {
                 named.lane = request.lane.clone();
             }
-            // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only.
+            // A class that takes no encoded leaves, or raw weights read as data, takes plain lanes only; a lane fits on the
+            // components the slot reads (xs-191: a `vae` slot sized as its whole checkpoint).
             let plain = slot["encoded_leaves"] != "accept" || slot["weights"] == true;
-            let hardware = tensorfs::fetch::Hardware { plain, ..hardware.clone() };
+            let hardware = tensorfs::fetch::Hardware { plain, components: slot_components(slot), ..hardware.clone() };
             let named = self.resolve(service, request.hub(&format!("the model for {path}"))?, named, &hardware, job.order)?;
             let warnings = named.reasons.iter().map(|why| format!("{}: {why}", named.model)).collect();
             let grant = ModelGrant {
@@ -1421,9 +1428,7 @@ impl Publisher {
                 // An adapter resolves for the run's hardware: `--lane` is the main model's.
                 let resolve = |source: &hub::Source, named| self.resolve(service, source, named, &hardware, job.order);
                 // It adapts a component this call runs (`components=`; none declared: any).
-                let runs: Vec<String> = (slot["components"].as_array())
-                    .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
-                    .unwrap_or_default();
+                let runs = slot_components(slot);
                 opens_views(service, installation, choice)?;
                 warnings.extend(apply_adapters(self, request.source.as_ref(), &resolve, choice, &mut grant, &runs, &request.providers, job)?);
             }
@@ -1521,6 +1526,13 @@ fn forward(source: &hub::Source, named: Named) -> (Named, Option<String>) {
 /// their own choice's lane, else the Hub's pick.
 fn main_model(slots: &[Value]) -> Option<&Value> {
     slots.iter().find(|slot| crate::gpu_service::constructed(slot) && slot["on_demand"] != true)
+}
+
+/// The components a slot reads (`components=`); none declared: all of them.
+fn slot_components(slot: &Value) -> Vec<String> {
+    (slot["components"].as_array())
+        .map(|names| names.iter().filter_map(|n| n.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
 }
 
 /// Whether a held answer read at `read_ms` is older than `FRESH`.

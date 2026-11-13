@@ -16,6 +16,7 @@ parse "$@"
 . "$(dirname "$0")/commands.sh"
 . "$(dirname "$0")/lifetime.sh"
 . "$(dirname "$0")/lines.sh"
+. "$(dirname "$0")/ondemand.sh"
 . "$(dirname "$0")/control.sh"
 . "$(dirname "$0")/project.sh"
 . "$(dirname "$0")/web.sh"
@@ -31,6 +32,8 @@ parse "$@"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
 . "$(dirname "$0")/idle.sh"
+. "$(dirname "$0")/plan.sh"
+. "$(dirname "$0")/render.sh"
 
 start() {
 step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
@@ -359,6 +362,7 @@ case $SHARD in
     kept_preparing
     catalog
     basics
+    component_models
     yaml_requests
     run_flags
     run_follow
@@ -370,6 +374,7 @@ case $SHARD in
     lock_refresh
     bound_runs
     own_references
+    lane_fit
     no_descriptions
     orbit_angles
     old_runtime
@@ -381,6 +386,7 @@ case $SHARD in
     machine_show_runs
     writes_once
     project_stream
+    agent_render
     web_serves
     page_resend
     queued_download
@@ -423,15 +429,21 @@ case $SHARD in
   lines) parts="machine_lines logs" ;;
   # An idle Calcifer and TensorD, CPU time and wakeups (xs-189): by dispatch, as it measures for minutes.
   idle) parts="idle_cost logs" ;;
+  # What a call may read on demand, on a cold machine (cl-966).
+  ondemand) parts="ondemand_ahead logs" ;;
+  # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
+  plan) parts="estimate_line plan_picks prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints
     catalog
     basics
+    component_models
     yaml_requests
     run_filters
     bound_runs
     own_references
+    lane_fit
     no_descriptions
     orbit_angles
     old_runtime
@@ -481,15 +493,12 @@ case $SHARD in
   web-beats) export DB_WEB=beats; parts="tools_read db_existing_web logs" ;;
   # Pasted mentions (cl-902).
   web-paste) export DB_WEB=paste; parts="tools_read db_existing_web logs" ;;
-  # A toast when a render finishes, with View (cl-937).
-  web-donetoast) export DB_WEB=donetoast; parts="tools_read db_existing_web logs" ;;
   # A run says one thing at most: no note of a completed run's warnings, one note of a failure that stays (cl-921).
   web-toasts) export DB_WEB=toasts; parts="tools_read db_existing_web logs" ;;
   # A rendering box at rest, and new takes not looked at (cl-928).
   web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
-  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it; an
-  # edit's backdrop with every picture it uses (cl-949).
-  web-tiles) export DB_WEB="tiles newtakes backdrop"; parts="tools_read db_existing_web logs" ;;
+  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it.
+  web-tiles) export DB_WEB="tiles newtakes"; parts="tools_read db_existing_web logs" ;;
   # The take looked at in Focus is the one drawn when it finishes (cl-942).
   web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
   # A take is one id from Render to its version, listed at once and never off, through a slow Calcifer and a reload (cl-945), with cl-942's.
@@ -538,20 +547,28 @@ case $SHARD in
     focusfinish
     takeids
     failedtakes
+    purged
+    toasts
     old_takes
     prepares
     db_migrate
+    db_opens
     db_waits
+    agent_render
     logs
   " ;;
   # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
+  # cozy render alone (cl-956), with the project part's fixtures.
+  projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
   projectdb-migrate) parts="db_migrate logs" ;;
   # project.db held by another program while a run begins, within Calcifer's wait and past it (cl-885).
   projectdb-waits) parts="db_waits logs" ;;
+  # A project opened and read again, across Calcifer's restart, with nothing in it changed (cl-885).
+  projectdb-opens) parts="db_opens logs" ;;
   # A run watched across Calcifer restarts, one whose lock record lands late (cl-885).
   follow-watch) parts="watch_restart logs" ;;
   projectdb-existing) parts="db_existing logs" ;;

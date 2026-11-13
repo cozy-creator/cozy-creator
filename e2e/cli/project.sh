@@ -347,6 +347,16 @@ soon told_more "$log" "$id" "$seen" || check "stream: a landing's lock told noth
 soon told "$log" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\" and .run.project_id == \"$id\"" \
   || check "stream: no run.updated says run $n completed in $id: $(sse "$log" | jq -c 'select(.type == "run.updated") | [.run.number, .run.status, .run.project_id]' | tail -5)"
 soon told "$other" ".type == \"run.updated\" and .run.number == $n and .run.status == \"completed\"" || check "stream: a connection with no projects missed the global run"
+# Another program's change (xs-189: Calcifer watches the folder, it no longer looks): a file leaving files/, as a sync tool's would,
+# and coming back.
+local kept aside=$OUT/stream-aside
+kept=$(find "$R/files" -type f | head -1)
+seen=$(revs "$log" "$id" | wc -l)
+{ [ -n "$kept" ] && mv "$kept" "$aside"; } || check "stream: the landing left nothing in files/"
+soon told_more "$log" "$id" "$seen" || check "stream: a file leaving files/ told nothing"
+seen=$(revs "$log" "$id" | wc -l)
+[ -z "$kept" ] || mv "$aside" "$kept"
+soon told_more "$log" "$id" "$seen" || check "stream: a file back in files/ told nothing"
 [ -z "$(revs "$other" "$id")" ] || check "stream: project changes reached a connection with no interest"
 soon told "$log" '.type == "machine.updated" and .machine.name == "local"' || check "stream: a run on local moved no machine.updated"
 [ -z "$(revs "$log" "$id" | sort | uniq -d)" ] || check "stream: a rev told twice: $(revs "$log" "$id" | sort | uniq -d)"

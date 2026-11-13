@@ -1,0 +1,1 @@
+A call's on-demand models now come ahead as a guess (Paul, 11-12: predict every download): a stage that reads one, such as Qwen Image's prompt expander or rewriter, finds it on disk; the run never waits on them, they come behind every run's sure needs, and none is fetched that doesn't fit beside what comes first.

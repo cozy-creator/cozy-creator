@@ -976,11 +976,12 @@ pub struct Runs {
     /// The new version is approved when it lands; only with `n` 1.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approve: bool,
-    /// Make only what has no state, rather than a new version.
+    /// Bring them up to date (`cozy render`), rather than a new version of each: `n` of each named that has no state, none of one
+    /// being made (it's joined), and what they read with no state first, a cut's too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub missing: bool,
-    /// With `all`: also make a new version of each pin that is out of date when its turn comes in reading order, which goes when that
-    /// lands. The version it held stays, to be approved again.
+    /// Also make a new version of each pin out of date, when its turn comes in reading order: with `all`, every one; else those named
+    /// and what they read. What reads it in this render reads that; the version it held stays approved.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub outdated: bool,
     /// Pick up from here: one box's new take goes on from this take's frame.
@@ -1249,11 +1250,8 @@ pub struct Ended {
     pub asks: Vec<String>,
 }
 
-/// How the target of a run fetching ahead starts.
-pub const AHEAD: &str = "ahead ";
-
-/// One function's code and weights a machine is fetching ahead of jobs that will need them. It is no job of anyone's: wrong, it costs
-/// bytes, and its job's run fetches what it needs.
+/// One upcoming job's code and weights its machine has ready ahead of it (cl-967): no job's run; wrong, it costs bytes, and the job's
+/// run fetches what it needs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Ahead {
@@ -1446,6 +1444,9 @@ pub struct HistoryStepped {
     /// What refused the next of a `to`, short of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped: Option<Error>,
+    /// What came back without its files, as a person says it: a box whose undo window ended (cl-919).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lost: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

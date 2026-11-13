@@ -203,7 +203,7 @@ fn stage(
     })?;
     // An instruction this machine cannot carry out fails; ignored, it would succeed unapplied.
     if let Some(name) = cohort.unknown.keys().next() {
-        let version = env!("CARGO_PKG_VERSION");
+        let version = ::api::VERSION;
         return Err(Error::validation("update_field_unknown", format!(
             "cozy {version} cannot carry out an update's {name:?}: move this machine's cozy first (`cozy machine update <machine>`), then ask again"
         )));

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useCanvasStore, useElement } from "./context"
 import { FocusedCard } from "./Card"
 import { Icon } from "../ui/Icon"
@@ -6,7 +6,7 @@ import { LET_GO, type LetGo } from "./carry"
 import type { CarriedFile } from "./CanvasStore"
 import { NameField } from "./NameField"
 import { failureOf, makingRun, shownOf, watched } from "./shown"
-import { RunFace, useArriving } from "./RunFace"
+import { RunDone, RunFace, useArriving } from "./RunFace"
 import { StateDot, viewState } from "./StateDot"
 import { noHash } from "./text"
 import { useSignal } from "../ui/signal"
@@ -34,8 +34,15 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
     })
     return () => cancelAnimationFrame(frame)
   }, [entering, shown, name, store])
+  // Hidden while it enters, nothing in it can take the caret: once shown, its words do, typing going on from what they say (a prompt is
+  // MentionText's `plaintext-only`).
   useEffect(() => {
-    if (!entering && store.get(name)?.hereWords) element.current?.querySelector<HTMLElement>(".focus-body [contenteditable=true], .focus-body textarea")?.focus({ preventScroll: true })
+    if (entering || !store.get(name)?.hereWords) return
+    const words = element.current?.querySelector<HTMLElement>(".focus-body [contenteditable=true], .focus-body [contenteditable=plaintext-only], .focus-body textarea")
+    words?.focus({ preventScroll: true })
+    if (!words?.isContentEditable) return
+    window.getSelection()?.selectAllChildren(words)
+    window.getSelection()?.collapseToEnd()
   }, [entering, name, store])
   useEffect(() => {
     const held = element.current
@@ -54,6 +61,12 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   }, [name, store, onCopyVersion])
   // Made, its file still on its way here: it says so as a render on its way does.
   const arriving = useArriving(view)
+  // The run its render's row last spoke of: once its take lands the row stays, saying so (Paul, 11-12).
+  const going = view?.asset && (view.asset.standing === "making" || Boolean(view.queued) || view.asked !== undefined) ? makingRun(view) : arriving
+  const [spoke, setSpoke] = useState<{ name: string; run: number } | null>(null)
+  useEffect(() => {
+    if (going !== undefined) setSpoke({ name, run: going })
+  }, [going, name])
   if (!view?.asset && !view?.entity) return null
   const version = shownOf(view)?.number
   // An Edit is never written as a take: what it shows is its cut, its versions joined from it (cl-957).
@@ -89,7 +102,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
         </div>
         <button type="button" className="iconb" aria-label="Close focus" title="Close focus" onClick={onClose}><Icon name="close" /></button>
       </header>
-      {(onItsWay || arriving !== undefined) && view.asset?.rendering == null && !view.asset?.timeline && !failureOf(view) && <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above />}
+      {view.asset?.rendering == null && !view.asset?.timeline && !failureOf(view) && (onItsWay || arriving !== undefined ? <RunFace view={view} name={name} number={onItsWay ? makingRun(view) : arriving} full above /> : spoke?.name === name && <RunDone view={view} number={spoke.run} />)}
       {view.warned && warnings.length > 0 && (
         <div className="warned-lines focus-warnings">
           {warnings.map((warning) => (

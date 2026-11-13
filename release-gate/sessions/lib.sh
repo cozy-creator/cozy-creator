@@ -23,8 +23,8 @@ state() { cozy machine show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 . "$(dirname "${BASH_SOURCE[0]}")/../machines.sh"
 gone() { local s; s=$(state "$1"); { [ "$s" = ended ] || [ -z "$s" ]; } && ! listed "$1"; }
 # made <name>: the checkpoint a step's upload or quantize made, as sha256:<hex>: its `checkpoint <org/name>@sha256:…` line
-# (a machine's own `checkpoint sha256:…` line names no model).
-made() { awk '$1=="checkpoint" && $2 ~ /@sha256:/ {c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
+# (a machine's own `checkpoint sha256:…` line names no model); cozy 0.24's quantize says `commit`.
+made() { awk '($1=="checkpoint" || $1=="commit") && $2 ~ /@sha256:/ {c=$2} END{sub(/.*@/, "", c); print c}' "$OUT/$1.txt"; }
 # runno <name>: the run a step's output names last (its own, after a local source's sync run).
 runno() { awk '$1=="run" && NF==2{print $2}' "$OUT/$1.txt" | tail -1; }
 finish() {

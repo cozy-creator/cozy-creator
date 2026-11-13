@@ -4,8 +4,8 @@ import { useConnection } from "../app/Connection"
 import { Icon } from "../ui/Icon"
 import { useSignal } from "../ui/signal"
 import { useCanvasStore, useElement } from "./context"
-import { modelChoiceLabel, type PickerSlot, slotsOf, withTrigger } from "./ModelPicker"
-import { insertAtCaret, triggersOf } from "./triggers"
+import { modelChoiceLabel, type PickerSlot, slotsOf, withTriggers } from "./ModelPicker"
+import { insertAtCaret } from "./triggers"
 
 type Entry = Record<string, unknown>
 /** A LoRA's place: `models[slot].lora[index]`, or the box's own `lora[index]` when `slot` is null. */
@@ -81,21 +81,21 @@ function Strength({ name, reference, value, onChange }: { name: string; referenc
   </span>
 }
 
-/** A LoRA's trigger words, as its Hub card says them, in their token colour: one clicked goes at the caret of the box's prompt last typed in,
- *  else after its prompt (cl-968, Paul 11-12). */
+/** A LoRA's triggers, as its Hub card says them, in their token colour: one clicked goes at the caret of the box's prompt last typed in,
+ *  else after its prompt (cl-968, Paul 11-12). A long one, a whole prompt, shows its first two lines; all of it on hover (cl-971). */
 function Triggers({ box, reference }: { box: string; reference: string }) {
   const store = useCanvasStore()
   const { client } = useConnection()
   const id = reference.split("@")[0]
   const { data } = useQuery({ queryKey: ["model", id], queryFn: ({ signal }) => client.model(id, signal), staleTime: 60_000, retry: false })
   const [all, setAll] = useState(false)
-  const words = triggersOf(data?.trigger)
+  const words = data?.triggers ?? []
   if (!words.length) return null
   const shown = all ? words : words.slice(0, 4)
-  const put = (word: string) => { if (!insertAtCaret(box, word)) store.putOn(box, withTrigger(store, box, word)) }
-  return <span className="lora-triggers" aria-label={`Trigger words of ${modelChoiceLabel(reference)}`}>
+  const put = (word: string) => { if (!insertAtCaret(box, word)) store.putOn(box, withTriggers(store, box, [word])) }
+  return <span className="lora-triggers" aria-label={`Triggers of ${modelChoiceLabel(reference)}`}>
     {shown.map((word) => <button key={word} type="button" className="lora-trigger" title={`Put “${word}” in the prompt`}
       onMouseDown={(event) => event.preventDefault()} onClick={() => put(word)}>{word}</button>)}
-    {words.length > shown.length && <button type="button" className="lora-trigger-more" title="Show every trigger word" onClick={() => setAll(true)}>+{words.length - shown.length}</button>}
+    {words.length > shown.length && <button type="button" className="lora-trigger-more" title="Show every trigger" onClick={() => setAll(true)}>+{words.length - shown.length}</button>}
   </span>
 }

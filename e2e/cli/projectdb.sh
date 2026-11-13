@@ -51,6 +51,9 @@ for name in ${DB_WEB:-place nodes versions tools live layout undo offline held};
     instant) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     palette) CATALOG=1 NO_HUB=$(web_restart "$lock" http://127.0.0.1:9) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     undo | offline) STOP=$(web_halt "$lock") START=$(web_start) web_proof "$name" "$chrome" "$pw" "$restart" ;;
+    # As web-core runs them (web.sh): see also on a Hub nothing answers, localfit on the GPU-selling stand-in.
+    see) NO_HUB=$(web_restart "$lock" http://127.0.0.1:9) web_proof "$name" "$chrome" "$pw" "$restart" ;;
+    localfit) HUB_RESTART=$(web_restart "$lock" @HUB@) web_proof "$name" "$chrome" "$pw" "$restart" ;;
     held) web_held "$chrome" "$pw" ;;
     deleted) web_deleted "$chrome" "$pw" "$lock" ;;
     *) web_proof "$name" "$chrome" "$pw" '' ;;
@@ -76,6 +79,13 @@ takeids() { DB_WEB=takeids db_existing_web; }
 # A take that fails stays in its column under its id, red, its own error with Copy when picked, through a reload, until its trash deletes
 # it (cl-954): web/failedtakes.js.
 failedtakes() { DB_WEB=failedtakes db_existing_web; }
+
+# Undo of a delete past the real 3-hour window, the clock moved on: each box back without its files, saying so (cl-919): web/purged.js.
+purged() { DB_WEB=purged db_existing_web; }
+
+# A run says one thing at most: none of a completed run's warnings, that it finished with its picture and View, nothing of a take landing
+# while looked at, and one note of a failure that stays (cl-921, cl-937): web/toasts.js.
+toasts() { DB_WEB=toasts db_existing_web; }
 
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return
@@ -646,6 +656,53 @@ with sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True) as db:
     data,kind=db.execute('SELECT snapshot,typeof(snapshot) FROM crdt_document WHERE id=1').fetchone()
 assert kind=='blob' and data==open(sys.argv[2],'rb').read()
 STREAM_RESTART
+}
+
+# Opening a project changes nothing in it (cl-885; the coordinator, 11-12: "opening a project must never change its text"). A starter
+# project with a text box, tool boxes with takes whose words mention none of their own and one that does, and an imported picture with
+# takes: read, closed and read again, then opened afresh after Calcifer is killed. Its document's heads, every box's fields and place, and
+# its history read the same each time.
+db_opens() {
+step "project.db: a project read, closed and opened again after a restart changes nothing in it"
+local O=$OUT/opens c source name
+starter_project "$O" > /dev/null 2>&1 || { check "opens: project new"; return; }
+db_calcifer
+cp "$here/project/draw.py" "$O/"
+# Each where a person put it, so where it sits is read too.
+jq -n '[{name: "notes", fields: {text: "Keep the boat small."}, at: {x: 100, y: 2000}},
+  {name: "drawn", tool: "./draw.py/draw", kind: "image", fields: {instructions: "A lighthouse at dusk, <shore> below."}, at: {x: 500, y: 2000}},
+  {name: "again", tool: "./draw.py/draw", kind: "image", fields: {instructions: "<self.1> brighter, the sky clearing."}, at: {x: 900, y: 2000}}]' \
+  | boxes_in "$O" || { check "opens: boxes"; return; }
+for c in red teal navy; do ffmpeg -v error -y -f lavfi -i "color=c=$c:size=320x180" -frames:v 1 "$O/$c.png"; done
+project_import "$O" "$O/red.png" shore > "$OUT/opens-import.txt" 2>&1 || { check "opens: import: $(tail -c 300 "$OUT/opens-import.txt")"; return; }
+for name in drawn again shore; do
+  for c in teal navy; do
+    source="sha256:$(sha "$O/$c.png")"
+    api --fail-with-body -X PUT --data-binary "@$O/$c.png" "http://$ADDR/v1/files/$source" > /dev/null || check "opens: upload $c"
+    project_api "$O" "/assets/$name/versions" -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/opens-version.txt" 2>&1 \
+      || check "opens: $name's take from $c: $(tail -c 300 "$OUT/opens-version.txt")"
+  done
+done
+# What it holds: its document's heads, each box's fields, where each sits, and its history.
+opens_read() {
+  status "$O" | jq -S '{heads: (.heads | sort), fields: ([.assets[] | {(.name): .fields}] | add)}' > "$OUT/opens-$1-state.json" \
+    && project_api "$O" /canvas | jq -S .cards > "$OUT/opens-$1-places.json" \
+    && project_api "$O" '/history?limit=500' | jq -S '[.entries[].id]' > "$OUT/opens-$1-history.json"
+}
+opens_read before || { check "opens: read it"; return; }
+[ "$(jq 'length' "$OUT/opens-before-places.json")" -ge 3 ] || check "opens: its boxes have no places to compare: $(head -c 300 "$OUT/opens-before-places.json")"
+for c in 1 2 3; do status "$O" > /dev/null || check "opens: read $c"; done
+opens_read again || { check "opens: read it again"; return; }
+kill9
+opens_read restarted || { check "opens: read it after a restart"; return; }
+db_calcifer
+local when part
+for when in again restarted; do
+  for part in state places history; do
+    cmp -s "$OUT/opens-before-$part.json" "$OUT/opens-$when-$part.json" \
+      || check "opens: its $part read otherwise $when: $(diff "$OUT/opens-before-$part.json" "$OUT/opens-$when-$part.json" | head -c 800)"
+  done
+done
 }
 
 # A project 0.24.0 made, opened by this cozy (cl-904's schema 3: its files, versions and runs leave the Automerge document for

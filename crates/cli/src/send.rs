@@ -5,6 +5,7 @@ use std::{
     collections::BTreeMap,
     io::SeekFrom,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use api::{
@@ -33,8 +34,11 @@ struct Sending {
 }
 
 impl Sending {
-    fn new(ctx: &Context) -> Self {
-        let line = Transfer::stderr(ctx.term.stderr, "Sending files");
+    fn new(ctx: &Context, quiet: bool) -> Self {
+        let line = match quiet {
+            true => Transfer::on_terminal(ctx.term.stderr, "Sending files"),
+            false => Transfer::stderr(ctx.term.stderr, "Sending files"),
+        };
         let counts = TransferCounts {
             files_done: 0,
             files_total: None,
@@ -76,6 +80,10 @@ pub(crate) struct Sender<'a> {
     ctx: &'a Context,
     calcifer: Client,
     project: Option<String>,
+    /// No progress off a terminal: `said` is its one line.
+    quiet: bool,
+    /// The files that moved bytes, and the bytes.
+    sent: (AtomicU64, AtomicU64),
 }
 
 impl<'a> Sender<'a> {
@@ -84,6 +92,8 @@ impl<'a> Sender<'a> {
             ctx,
             calcifer: ctx.calcifer().await?,
             project: None,
+            quiet: false,
+            sent: Default::default(),
         })
     }
 
@@ -92,7 +102,20 @@ impl<'a> Sender<'a> {
             ctx,
             calcifer: ctx.calcifer().await?,
             project: Some(project.to_owned()),
+            quiet: false,
+            sent: Default::default(),
         })
+    }
+
+    /// No progress off a terminal; `said` says what it sent, once.
+    pub(crate) fn quiet(self) -> Self {
+        Self { quiet: true, ..self }
+    }
+
+    /// What it sent, in a line: `sent 2 files, 4.1 MiB`. None: nothing moved.
+    pub(crate) fn said(&self) -> Option<String> {
+        let (files, bytes) = (self.sent.0.load(Ordering::Relaxed), self.sent.1.load(Ordering::Relaxed));
+        (files > 0).then(|| format!("sent {files} file{}, {:.1} MiB", if files == 1 { "" } else { "s" }, bytes as f64 / 1_048_576.0))
     }
 
     fn memo(&self) -> PathBuf {
@@ -101,7 +124,7 @@ impl<'a> Sender<'a> {
 
     /// The file at `path`, held by Calcifer: its digest.
     pub(crate) async fn file(&self, path: &Path) -> Result<Digest, Error> {
-        let mut progress = Sending::new(self.ctx);
+        let mut progress = Sending::new(self.ctx, self.quiet);
         progress.line.phase("Checking file");
         let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
         let digest = tokio::task::spawn_blocking(move || api::digests::of(memo.as_deref(), &at))
@@ -117,7 +140,7 @@ impl<'a> Sender<'a> {
 
     /// The folder at `root`, each file and then its tree document held by Calcifer: the document's digest.
     pub(crate) async fn tree(&self, root: &Path) -> Result<Digest, Error> {
-        let mut progress = Sending::new(self.ctx);
+        let mut progress = Sending::new(self.ctx, self.quiet);
         progress.line.phase("Checking folder");
         let (at, memo) = (root.to_owned(), self.project.is_none().then(|| self.memo()));
         let staged = tokio::task::spawn_blocking(move || api::stage::stage(&at, memo.as_deref()))
@@ -163,7 +186,7 @@ impl<'a> Sender<'a> {
     /// The package at `path` (a folder or a script) as local code: its tree, each file and then the document held by Calcifer
     /// (`api::code`). What never goes is said.
     pub(crate) async fn code(&self, path: &Path) -> Result<LocalCode, Error> {
-        let mut progress = Sending::new(self.ctx);
+        let mut progress = Sending::new(self.ctx, self.quiet);
         progress.line.phase("Checking local code");
         let (at, memo) = (path.to_owned(), self.project.is_none().then(|| self.memo()));
         let staged = tokio::task::spawn_blocking(move || api::code::stage(&at, memo.as_deref()))
@@ -223,6 +246,17 @@ impl<'a> Sender<'a> {
             "Sending {}",
             path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()
         ));
+        let moved = progress.counts.bytes_moved;
+        let answer = self.whole(path, digest, length, progress).await;
+        let delta = progress.counts.bytes_moved.saturating_sub(moved);
+        if delta > 0 {
+            self.sent.0.fetch_add(1, Ordering::Relaxed);
+            self.sent.1.fetch_add(delta, Ordering::Relaxed);
+        }
+        answer
+    }
+
+    async fn whole(&self, path: &Path, digest: Digest, length: u64, progress: &mut Sending) -> Result<(), Error> {
         for _ in 0..3 {
             let Some(held) = self
                 .calcifer

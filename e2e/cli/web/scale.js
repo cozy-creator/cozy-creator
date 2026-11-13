@@ -303,7 +303,7 @@ async function nativeMemory(base, folder) {
   const first = await status();
   numbers.status_import_s = seconds(first.ms);
   check('all_are_there', first.state.assets.length === ASSETS, first.state.assets.length);
-  check('its_storage_is_current_native', seen.native_seed.main.schema === 2 && seen.native_seed.main.assets === ASSETS && seen.native_seed.main.versions === (ASSETS - PICTURES) * 2);
+  check('its_storage_is_current_native', seen.native_seed.main.schema === seen.native_seed.main.current_schema && seen.native_seed.main.crdt_format === seen.native_seed.main.current_crdt_format && seen.native_seed.main.assets === ASSETS && seen.native_seed.main.versions === (ASSETS - PICTURES) * 2);
   seen.project = { id: first.state.id, folder };
   const id = first.state.id;
   const read = await status();
@@ -386,7 +386,8 @@ async function nativeMemory(base, folder) {
       else readGone.add(decodeURIComponent(pathname.split('/').at(-1)));
     }, () => {});
   });
-  const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm:text-is("${name}")`) });
+  // By its title: a name is drawn breakable after its underscores (cl-958's <wbr>), which its text no longer matches whole.
+  const box = (name) => page.locator('.react-flow__node').filter({ has: page.locator(`.nm[title="${name}"]`) });
   const shot = (name) => (process.env.SHOT ? page.screenshot({ path: `${process.env.SHOT}-${name}.png`, timeout: 60_000 }).catch(() => {}) : Promise.resolve());
 
   await signIn(page);
@@ -482,7 +483,7 @@ async function nativeMemory(base, folder) {
   // Opening it: boxes on screen, then the page settled, its frames short.
   const opening = Date.now();
   await page.goto(await projectUrl(id));
-  await page.waitForSelector('.nm:text-is("shot_0")', { timeout: 120_000 });
+  await page.waitForSelector('.react-flow__node .nm[title="shot_0"]', { timeout: 120_000 });
   numbers.open_boxes_s = seconds(Date.now() - opening);
   check('it_opens_quickly', numbers.open_boxes_s <= BAR.open_boxes_s, { s: numbers.open_boxes_s, bar: BAR.open_boxes_s });
   // The deliberate project navigation created this document. Watch its interactions from here.
@@ -521,8 +522,8 @@ async function nativeMemory(base, folder) {
     await here.waitFor();
     // On a take an image tool made, its words are its next take's, behind its +.
     await (await renderOf(page, name)).waitFor();
-    await here.locator('.more-toggle').waitFor();
-    if (!(await here.locator('.edit-more').count())) await here.locator('.more-toggle').click();
+    // In Focus every field shows, nothing under More (cl-934); a box worked on elsewhere keeps what it holds under More.
+    if ((await here.locator('.more-toggle').count()) && !(await here.locator('.edit-more').count())) await here.locator('.more-toggle').click();
     await here.locator('.mention-text[data-field=instructions], .held-line:has-text("Instructions")').first().waitFor();
   };
   const says = (name, words) => within(`${name} says ${words}`, page.evaluate(([asked, said]) => window.wordsAre(asked, said), [name, words]));

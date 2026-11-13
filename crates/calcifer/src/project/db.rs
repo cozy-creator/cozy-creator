@@ -23,8 +23,10 @@ use super::{
 mod tests;
 
 pub(crate) const DB: &str = "project.db";
+/// Its write-ahead log, where a commit lands first.
+pub(crate) const WAL: &str = "project.db-wal";
 /// This schema's `user_version`. A database of another isn't read; one of 2 is migrated (`migrate`).
-const VERSION: i64 = 3;
+pub(super) const VERSION: i64 = 3;
 const SCHEMA: &str = "
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
     CREATE TABLE head (key TEXT PRIMARY KEY, ord INTEGER NOT NULL, value TEXT NOT NULL) STRICT;

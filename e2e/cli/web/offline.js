@@ -98,16 +98,15 @@ const DESCRIBED_MS = 300_000;
   await box('quick').waitFor();
   await page.keyboard.press('f');
   const turbo = box('quick').locator('input[type=checkbox][aria-label="Turbo"]');
-  // Opened, with More open: a toggle isn't on a box's face.
+  // Opened: in Focus every field of its tool is out, with no More (cl-938, aeddbfe14).
   const openQuick = async (timeout = STEP_MS) => {
     await openBox(page, 'quick');
-    const more = box('quick').locator('.more-toggle');
-    await more.waitFor({ timeout });
-    if ((await more.getAttribute('aria-expanded')) !== 'true') await more.click();
     await turbo.waitFor({ timeout });
   };
   await openQuick(DESCRIBED_MS);
   await closeBox(page);
+  // The open project's tab: its title is its folder, then what a click on it does (cl-958).
+  const opened = (path) => page.locator('.ptab.on[aria-current="page"]').and(page.getByTitle(new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\n`)));
   // A project as a person reaches it: by its tab, or from "N more" when the bar has no room for its tab (cl-877).
   const reach = async (path) => {
     const tab = page.locator('nav.ptabs a.ptab').and(page.getByTitle(path, { exact: true }));
@@ -116,7 +115,7 @@ const DESCRIBED_MS = 300_000;
       await page.click('nav.ptabs .ptab.more');
       await page.locator('.drawer .list a').and(page.getByTitle(path, { exact: true })).click();
     }
-    await page.locator('.ptab.on').and(page.getByTitle(path, { exact: true })).waitFor();
+    await opened(path).waitFor();
   };
   // Another project, to go to and come back from while Calcifer's away.
   const other = (await api('/v1/projects', { method: 'POST', body: JSON.stringify({ name: `web-offline-other-${Date.now()}`, unencrypted: true }), headers: { 'Idempotency-Key': `other-${Date.now()}` } })).body;
@@ -124,7 +123,7 @@ const DESCRIBED_MS = 300_000;
   // Read again, as the tabs list what's read at the start.
   await page.goto(await projectUrl(other.id));
   await page.reload();
-  await page.locator('.ptab.on').and(page.getByTitle(other.path, { exact: true })).waitFor();
+  await opened(other.path).waitFor();
   await reach(folder);
   await box('quick').waitFor();
   const was = await asset('shot');

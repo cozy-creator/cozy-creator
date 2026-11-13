@@ -111,11 +111,23 @@ pub(crate) async fn serve(
     // keepalive (`live`) keeps NAT mappings open through a quiet run and ends a connection whose
     // client's host is gone (its runs go on; a client attaches again).
     let http = Arc::new(auto::Builder::new(TokioExecutor::new()));
+    let mut failed = 0u64;
     loop {
         let stream = match listener.accept().await {
-            Ok((stream, _)) => stream,
-            // Out of descriptors, say: accept fails again at once, so pause rather than spin.
-            Err(_) => {
+            Ok((stream, _)) => {
+                if failed > 0 {
+                    tracing::warn!("the listener accepts connections again, after {failed} failed accepts");
+                    failed = 0;
+                }
+                stream
+            }
+            // Out of descriptors, say: accept fails again at once, so pause rather than spin. Said
+            // once a streak: while it lasts no client or Hub reaches this machine (th-373).
+            Err(error) => {
+                if failed == 0 {
+                    tracing::warn!("the listener cannot accept connections, so nothing reaches this machine: {error}");
+                }
+                failed += 1;
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -172,7 +184,7 @@ pub(crate) fn booting(
     let frame = super::v1::StatusFrame {
         worker_id: identity.authority.worker_id.clone(),
         boot_id: identity.authority.boot_id.clone(),
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: ::api::VERSION.into(),
         commit: api::COMMIT.into(),
         phase: "booting".into(),
         ..Default::default()

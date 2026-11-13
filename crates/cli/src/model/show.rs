@@ -1,5 +1,5 @@
 //! `cozy model show` and `cozy lora show`: what each lane's checkpoint holds, read from its header alone through Calcifer
-//! (CALCIFER-API.md "Models"): its components' classes, configs, run data and tensors, and the base or recipe it records.
+//! (CALCIFER-API.md "Models"): its components' classes, configs, run data, tensors and their size, and the base or recipe it records.
 use std::process::ExitCode;
 
 use api::calcifer::hub::{ComponentHeader, LaneHeader, ModelHeaders};
@@ -65,9 +65,10 @@ fn print_lane(ctx: &Context, lane: &LaneHeader) {
         record = record.field(key, recorded(key, value));
     }
     record.print(ctx);
-    let mut table = Table::new(ctx, ["component", "class", "config", "tensors", "files"]);
+    let mut table = Table::new(ctx, ["component", "class", "config", "tensors", "size", "files"]);
     for component in &lane.components {
-        table = table.row([component.name.clone(), class(&component.class), config(component), tensors(component), files(component)]);
+        let size = if component.tensors == 0 { "—".into() } else { output::bytes(component.bytes) };
+        table = table.row([component.name.clone(), class(&component.class), config(component), tensors(component), size, files(component)]);
     }
     table.print();
     for component in lane.components.iter().filter(|component| component.config.is_some()) {

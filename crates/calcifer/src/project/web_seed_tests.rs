@@ -5,7 +5,7 @@ use api::calcifer::project::Card;
 use serde::Deserialize;
 
 use super::{
-    db,
+    crdt, db,
     folder::{Asset, File, Lock, Measured},
     graph::name_key,
     written::{Boxed, Written},
@@ -140,8 +140,10 @@ fn seed_current_web_project() {
     conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
         .unwrap();
     drop(conn);
-    let receipt = serde_json::json!({ "schema": schema, "crdt_format": format, "assets": seed.expected_assets,
-        "versions": seed.expected_versions, "measured": measured, "canvas": seed.expected_assets, "local_file_rows": 0 });
+    // What this build writes, beside what it wrote: the fixture holds the seed to the product's current schema, not a number of its own.
+    let receipt = serde_json::json!({ "schema": schema, "crdt_format": format, "current_schema": db::VERSION,
+        "current_crdt_format": crdt::FORMAT, "assets": seed.expected_assets, "versions": seed.expected_versions, "measured": measured,
+        "canvas": seed.expected_assets, "local_file_rows": 0 });
     let mut output = fs::OpenOptions::new()
         .write(true)
         .create_new(true)

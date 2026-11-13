@@ -259,7 +259,8 @@ async function loseAnswers(page, method, path, times) {
     await restarted;
     await until('it landed after the restart', () => Promise.resolve(hasAsset(fifth)), Boolean);
     await page.waitForTimeout(800);
-    check('restart_mid_queue_lands_once', (await box(fifth).count()) === 1 && count(fifth) === 1 && !hasAsset(`${name}_6`), names());
+    const shown = await box(fifth).count();
+    check('restart_mid_queue_lands_once', shown === 1 && count(fifth) === 1 && !hasAsset(`${name}_6`), { shown, held: count(fifth), names: names() });
     await until('the top bar says nothing waits', () => page.locator('.top .pill').allInnerTexts(), (lines) => !lines.some((line) => /offline|Saving|Not saved/.test(line)));
     check('nothing_left_saying_not_saved', true);
   }
@@ -304,7 +305,10 @@ async function loseAnswers(page, method, path, times) {
   // One a newer cozy has written, its schema one this cozy doesn't read, as after a downgrade. Calcifer reads a schema as it opens a project, so
   // it's opened again by a Calcifer that starts after: on a shared computer, with no restart, that half isn't asked.
   const unreadable = Boolean(process.env.RESTART);
+  let current;
   if (unreadable) {
+    // What this cozy writes is the schema it reads: the refusal names that one.
+    current = execFileSync(PYTHON, ['-c', 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("PRAGMA user_version").fetchone()[0])', join(old.path, 'project.db')], { encoding: 'utf8' }).trim();
     execFileSync(PYTHON, ['-c', 'import sqlite3, sys; sqlite3.connect(sys.argv[1], isolation_level=None).execute("PRAGMA user_version = 99")', join(old.path, 'project.db')]);
     await new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
   }
@@ -312,6 +316,8 @@ async function loseAnswers(page, method, path, times) {
   await page.waitForSelector('.ptabs .ptab.on');
   await box(name).waitFor();
   const tab = (project) => page.getByTitle(project.path, { exact: true });
+  // The open project's tab: its title is its folder, then what a click on it does (cl-958).
+  const opened = (project) => page.locator('.ptab.on[aria-current="page"]').and(page.getByTitle(new RegExp(`^${project.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\n`)));
   const here = page.locator('.ptab.on');
   await page.mouse.move(1400, 1000);
   await page.mouse.down();
@@ -321,7 +327,7 @@ async function loseAnswers(page, method, path, times) {
   const view = () => page.evaluate(() => getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
   const kept = await view();
   await tab(second_project).click();
-  await page.locator('.ptab.on').and(page.getByTitle(second_project.path, { exact: true })).waitFor();
+  await opened(second_project).waitFor();
   await page.waitForSelector('.empty-canvas');
   check('a_tab_opens_its_project', (await box(name).count()) === 0, await here.innerText());
   await page.getByTitle(folder, { exact: true }).click();
@@ -334,7 +340,7 @@ async function loseAnswers(page, method, path, times) {
     const unread = page.locator('.unread');
     await unread.waitFor();
     const refusal = await unread.innerText();
-    check('what_cant_be_read_says_why', /schema 99/.test(refusal) && /only current CRDT schema 2 is supported/.test(refusal) && /Preserve this database/.test(refusal) && /new current-format project in a separate empty directory/.test(refusal) && (await page.locator('.empty-canvas').count()) === 0, refusal);
+    check('what_cant_be_read_says_why', /schema 99/.test(refusal) && /^\d+$/.test(current) && refusal.includes(`only current CRDT schema ${current} is supported`) && /Preserve this database/.test(refusal) && /new current-format project in a separate empty directory/.test(refusal) && (await page.locator('.empty-canvas').count()) === 0, { refusal, current });
     await until('the Timeline implementation still there', async () => (await editor()).count(), (n) => n === 1);
     await carry(page, await editor(), { x: 1200, y: 300 });
     await until('what was dropped on it came back', async () => (await notes()).filter((line) => /Couldn't place Video Timeline/.test(line)).length, (n) => n === 1);

@@ -197,6 +197,15 @@ fn internal_models(installation: &Installation) -> Result<Vec<String>, Refused> 
         .collect())
 }
 
+/// What `plan`'s on-demand slots read (`Plan::possible`), as one guess.
+fn on_demand(plan: &Plan) -> Vec<(String, crate::access::Selected)> {
+    let possible = plan.possible();
+    match possible.is_empty() {
+        true => vec![],
+        false => vec![("its on-demand models".into(), possible)],
+    }
+}
+
 /// What the checkpoints and components of `each` all share. No components names a whole checkpoint.
 fn shared_of(each: &[Vec<(String, Vec<String>)>]) -> Vec<(String, Vec<String>)> {
     let holds = |list: &[(String, Vec<String>)], header: &str, component: Option<&str>| {
@@ -345,6 +354,9 @@ impl Runs {
         use crate::origin::priority;
         match self.service.engine.get(id) {
             Ok(record) if !record.invocation.parent.is_empty() => priority::next(priority::STARTED, rank),
+            Ok(record) if fetches_ahead(spec) && self.service.engine.caller_id(id).starts_with(crate::ahead::PREPARE) => {
+                priority::prepare(record.root_seq(), rank)
+            }
             Ok(record) if fetches_ahead(spec) => priority::ahead(record.root_seq(), rank),
             Ok(record) => priority::next(record.root_seq(), rank),
             Err(_) => priority::BEHIND,
@@ -649,9 +661,34 @@ impl Runs {
         let hub = spec.hub.clone().or_else(|| self.own_hub.clone());
         let mut models = vec![];
         for choice in choices {
-            // On a base, a Hub checkpoint is referenced too: its header and tree are enough.
-            let Present { mut header, mut tree, mut row, folder } = self.present(actor, id, spec, choice, base.is_some() || !adds.is_empty(), observe, stoppable)?;
+            // An upload of some of its components: choice `model:<component>,…`.
+            let (parameter, kept) = match choice.parameter.split_once(':') {
+                Some((parameter, names)) => (parameter, names.split(',').map(str::to_owned).collect::<Vec<_>>()),
+                None => (choice.parameter.as_str(), vec![]),
+            };
+            if kept.iter().any(|name| !tensorfs::format::segment(name)) || (!kept.is_empty() && base.is_some()) {
+                return Err(refused("invalid_request", format!("{}: name components as model:<component>[,<component>…], on no base", choice.parameter)));
+            }
+            let choice = &stored::ModelChoice { parameter: parameter.to_owned(), ..choice.clone() };
+            // On a base, cut to components, or with files added, a Hub checkpoint is referenced too: its header and tree are enough.
+            let structure = base.is_some() || !adds.is_empty() || !kept.is_empty();
+            let Present { mut header, mut tree, mut row, folder } = self.present(actor, id, spec, choice, structure, observe, stoppable)?;
             let upload_store = folder.as_ref().map_or(publisher.store().as_ref(), |folder| &folder.store);
+            if !kept.is_empty() {
+                if folder.is_some() {
+                    return Err(refused("invalid_request", "a CozyTensors folder uploads as it is; cut a model to components"));
+                }
+                let read = publisher.store().read(&header).map_err(|e| e.to_string())
+                    .and_then(|bytes| tensorfs::format::Header::from_cbor(&bytes).map_err(|e| e.to_string()))
+                    .map_err(|e| refused("model_resolution_failed", format!("{}: {e}", header.id())))?;
+                let cut = tensorfs::import::base::only(&read, &kept).map_err(|e| refused("model_components_refused", e.to_string()))?;
+                let bytes = cut.to_cbor().map_err(|e| refused("model_components_refused", e.to_string()))?;
+                header = publisher.store().put_bytes(&bytes).map_err(|e| refused("model_components_refused", e.to_string()))?;
+                let from = if choice.source.is_empty() { choice.model.clone() } else { choice.source.clone() };
+                row["source_checkpoint"] = row["checkpoint"].take();
+                row["checkpoint"] = json!(header.id());
+                row["components"] = json!(kept.iter().map(|name| (name.clone(), from.clone())).collect::<std::collections::BTreeMap<_, _>>());
+            }
             if let Some((base, names)) = &base {
                 if folder.is_some() {
                     return Err(refused("invalid_request", "a CozyTensors folder uploads as it is; compose from a model"));
@@ -819,7 +856,7 @@ impl Runs {
             drop(import);
             let row = json!({"parameter": choice.parameter, "source": choice.source,
                 "resolved": made.resolved, "profiles": made.profiles, "format": made.format,
-                "trigger": made.trigger.join(", "), "repository": made.model, "checkpoint": made.header.id()});
+                "triggers": made.trigger, "repository": made.model, "checkpoint": made.header.id()});
             let tree = crate::storage::local(publisher.store(), &made.model)?.map(|local| local.tree);
             (made.header, tree, row)
         } else if let (Some(name), None) = (choice.model.strip_prefix("local/"), &choice.manifest) {
@@ -1002,6 +1039,7 @@ impl Runs {
                     Ok(()) => crate::access::meter(self.service.engine.clone(), id.to_string(), &fetch),
                     Err(error) => crate::private_io::warning(&self.service.engine, id, format_args!("weights early fetch: {error}")),
                 }
+                self.guess_on_demand(id, &fetch, plan);
                 fetch
             });
             if plan.is_none() && spec.parent.is_empty() && internal_models(&installation).is_ok_and(|internal| !internal.is_empty()) {
@@ -1084,7 +1122,7 @@ impl Runs {
             // costs bytes, never room, as nothing is evicted for it. An on-demand model comes when a stage reads it (cl-804).
             let reads = match plan {
                 _ if install_only => crate::access::Reads::default(),
-                Some(plan) => crate::access::Reads { sure: plan.upfront(), guesses: vec![] },
+                Some(plan) => crate::access::Reads { sure: plan.upfront(), guesses: on_demand(&plan) },
                 None => {
                     let observer: Report = observe.clone();
                     let chosen = (spec.models.as_slice(), spec.lane.as_str());
@@ -1231,6 +1269,26 @@ impl Runs {
                 }
             }
         })
+    }
+
+    /// Run `id`'s on-demand models as a guess, behind every run's sure needs (Paul, 11-12, over cl-804's "never ahead"): a
+    /// stage that reads one finds it here, and the run never waits on one. One that doesn't fit beside what comes first isn't.
+    fn guess_on_demand(&self, id: &str, fetch: &Arc<crate::access::Fetch>, plan: &Plan) {
+        let reads = crate::access::Reads { sure: vec![], guesses: on_demand(plan) };
+        if reads.guesses.is_empty() {
+            return;
+        }
+        let wanted = (|| -> io::Result<()> {
+            let free = crate::reclaim::Disk::measure(self.publisher.store().root())?.free();
+            let lined = fetch.lined(&reads, &|_| u64::MAX, &|rank| self.order_guess(id, rank), free)?;
+            for note in &lined.held_back {
+                crate::private_io::warning(&self.service.engine, id, format_args!("{note}"));
+            }
+            fetch.hint(lined, &self.service.engine.caller_id(id))
+        })();
+        if let Err(error) = wanted {
+            crate::private_io::warning(&self.service.engine, id, format_args!("its on-demand models aren't fetched ahead: {error}"));
+        }
     }
 
     /// A guess of run `id`'s (`priority::guess`), `rank` within it: behind every run's sure needs, in job order.

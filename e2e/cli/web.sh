@@ -146,8 +146,15 @@ step "web-refocus: leaving Focus by Esc, its close, Back, a click off, after zoo
 web_proof refocus "$chrome" "$pw" ''
 step "web-aspect: a corner pulled to 1237:689 lands on 16:9, on the canvas and in Focus"
 web_proof aspect "$chrome" "$pw" ''
+# Its renders need this computer's machine: Linux's.
+if [ -n "$LOCAL" ]; then
+  step "web-frame: H3's Shot in Focus: Summary and Beats as sections in the frame, behind it what each mentions; New a draft; Render and Cmd/Ctrl+Enter render; Render where an image's is"
+  web_proof frame "$chrome" "$pw" ''
+fi
 step "web-scrub: a take's segments under its player, Redo from one, another box continuing it from its end; an empty box with no tool asks nothing"
 web_proof scrub "$chrome" "$pw" ''
+step "web-agent: the agent API: nodes listed, and read whole as a file with every default, their takes and revs; explain in words and as JSON Schema (cl-956)"
+web_proof agent "$chrome" "$pw" ''
 step "web-trash: a take's discard and a box's delete are trash cans, Undo brings a take back, and Focus's close is an X"
 web_proof trash "$chrome" "$pw" ''
 step "web-toolword: a box with a tool says it under its picture (cl-932), readable and shrinking with the box; one with none says nothing"
@@ -156,6 +163,8 @@ web_proof toolword "$chrome" "$pw" ''
 if [ -n "$LOCAL" ]; then
   step "web-unused: a mention its tool can't use is crossed out, saying why, and never sent: MOSS Image, Qwen-Image-2 and H3; cozy status and run watch say it once (cl-944)"
   web_proof unused "$chrome" "$pw" ''
+  step "web-ignored: past the binder, the Runtime keeps what a prompt can take and leaves the rest out as names, one ignored row each; run watch says each once (cl-944)"
+  web_proof ignored "$chrome" "$pw" ''
 fi
 step "web-drawer: the right-side panel closes on a click off it or Esc; a selection from inside let go outside keeps it"
 web_proof drawer "$chrome" "$pw" ''

@@ -54,6 +54,10 @@ pub(crate) mod priority {
     pub(crate) fn guess(run: u64, rank: u32) -> u64 {
         at(2, run, rank)
     }
+    /// What a caller expects demand for here with no job yet (`PUT /v1/prepare`, cl-967): after every guess.
+    pub(crate) fn prepare(run: u64, rank: u32) -> u64 {
+        at(3, run, rank)
+    }
     /// Kept for later (a warm set's `downloaded`).
     pub(crate) const BEHIND: u64 = u64::MAX;
 }

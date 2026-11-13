@@ -293,20 +293,21 @@ keeps its machine's GPU in `gpu` from the moment it has a machine.
 The machine owns its GPU width (cl-816): a lone job runs wide, several queued jobs one GPU each; Calcifer never picks a width and sends
 `gpus` only when a person asked for a count. It sends each job where it finishes soonest:
 
-- Each machine a job may go to is asked once per batch (a render's turn, or one `cozy run`), through TensorD's `POST /v1/estimate`
-  (capability `estimate/1`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's
-  lane commit and bytes, from its Hub card), `size` (`JobSize::of` its payload), `gpu` (it or a call it makes builds a model on a GPU) and `prior_ms`
-  (eta's time for it on one GPU of that kind, from runs at one width). Its quote is packed with that machine's queue as if the whole batch
-  went there; its relative ms are added to the time the answer came.
+- Calcifer quotes each machine a job may go to itself (cl-967), from the Status it pushes, with the estimator TensorD packs its queue by
+  (`api::estimate::quote`): each job by `function` (`org/pkg/fn@release`, local code `sha256:<manifest>/fn`), `models` (each checkpoint's
+  lane commit, bytes and repository, from its Hub card), `size` (`JobSize::of` its payload), `gpu` and `prior_ms` (eta's time for it on one
+  GPU of that kind, from runs at one width). A render's jobs not sent are planned together (`plan.rs`): each, in dependency order, where it
+  finishes soonest after those placed before it, then single moves while the whole ends sooner. A ready job goes when its planned machine
+  has a GPU for it (one machine: at once); each machine is told its upcoming jobs (`PUT /v1/upcoming`) and, idle with nothing planned
+  while others hold unstarted work it can run, what to prepare (`PUT /v1/prepare`).
 - A rental on its way (booting, or ordered) is quoted here as it will quote once it serves (cl-915): when it should serve (its Hub's
   `boot.expected_ready_at`, from its provider and card's recent boots and the phase it's in; else 4 min from its attempt's start; not before
   its image's pull can end; once overdue, as long again as it's late, at least 30 s; an order its Hub has had no pod for a minute isn't
-  quoted), then each job's preparation on a machine that holds nothing (TensorD's install, and its weights at the default link:
-  `api::estimate::prepare_ms`), then the runs already sent to it and the batch, packed on its GPUs as TensorD packs (`api::estimate::pack`),
-  each timed by this computer's runs on its card, else its Hub's (`GET /v1/run-times`), else a minute. Its quote's `ready_ms` says when.
+  quoted), then quoted as a machine that holds nothing (`placement::Picture`), the runs already sent to it ahead of the jobs asked, each
+  timed by this computer's runs on its card, else its Hub's (`GET /v1/run-times`), else a minute. Its quote's `ready_ms` says when.
   A job held for one says so on the board: `why` `waits for pluto, ready in about 2 min`, `machine` pluto. A run on a rental that
   completes tells its Hub what it took (`POST /v1/rentals/{id}/run-times`), so the next machine of that card is quoted before it runs.
-- A machine that can't run it at all (`fits: false`: no GPU for a function that builds a model on one, its weights too big for the disk) has no finish
+- A machine that can't run it at all (`fits: false`: its weights too big for the disk, its GPUs out of service) has no finish
   and is never chosen. Of the rest the soonest finish wins; within 2% (or 1 s), a machine that serves before one on its way, one whose
   quote stands on its own measured runs before one that doesn't, then a rental before `local`. `local` takes nothing it would do poorly (as `fit` judges) while another can, unless its
   quote stands on its own measured runs.
@@ -490,11 +491,11 @@ sends it back. A code lives 10 minutes, and a wrong answer leaves it waiting.
   class, config keys (`full`: the config), run data with sizes, tensor count and a LoRA's modules with their α; and the
   header's records of where it came from (`inherited`, `composed`, `added`, `provenance`, `family`, `adapter`). `resolves_to`
   is the release a run naming this one takes, its series' newest fix.
-- `PATCH /v1/models/{org}/{name}` `{hub, family, tags, add_tags, remove_tags, trigger, strength}`:
+- `PATCH /v1/models/{org}/{name}` `{hub, family, tags, add_tags, remove_tags, triggers, strength}`:
   `ModelEdited {model, warnings}`, the model as `GET` reads it. Each field given is set, an absent one
   kept: `family` empty or `none` clears the label (its weights' family shows then); `tags` replaces them
-  (empty clears them), then `add_tags` are added and `remove_tags` removed; an empty `trigger` and a null
-  `strength` clear. The Hub fills a model's family from its header and its tags from its source's page;
+  (empty clears them), then `add_tags` are added and `remove_tags` removed; `triggers` are each kept whole (a word,
+  words or a prompt), and an empty list and a null `strength` clear. The Hub fills a model's family from its header and its tags from its source's page;
   what its owner sets here wins.
 - `GET /v1/families`: `Families {families}`, what a header can verify as: the owner's picks.
 - `POST /v1/models/{org}/{name}/releases` `{hub, version, commits}`: `ModelReleased`, one commit per
@@ -519,10 +520,12 @@ hand), and one a Calcifer stopped under fails `calcifer_stopped`: asking again i
   say so. `source` is a provider source, a Hub model, a
   `local/` alias, a held file's `sha256:<hex>` (`PUT /v1/files`, `404 file_not_held`; `name` its client's name for it): a `.safetensors` file, or a
   CozyTensors folder's tree document, its files held too, or `run:N[#output]`, which runs
-  on the machine that holds the output. A commit, `org/name@sha256:…`, on no `base` is at the Hub
+  on the machine that holds the output. `components` (the CLI's `<source>:<component>,…`) cuts the checkpoint to those of the
+  source's components, a source of one taking the one name (a VAE file as `vae`): its card and installs hold them alone, and a
+  slot reads them composed with its other slots' models. A commit, `org/name@sha256:…`, on no `base` or `components` is at the Hub
   already: it's recorded as a commit of `destination` when the caller may read its whole closure,
   checked against `lane` before anything is recorded. That is Calcifer's own run, its result a `RecordedCommit`, and its quote
-  `null`, since nothing rents. Its trigger and strength (the flags, else the source's own)
+  `null`, since nothing rents. Its triggers and strength (the flags, else the source's own)
   are set at the Hub once it completes (`result.after.display`).
 - `cozy/model_quantize` `ModelQuantize` (quoted for published
   packages only): Calcifer picks the commit (a release's original weights, else the commit named),
@@ -638,6 +641,8 @@ read settles and on `approve`, reading each asset's state, else its newest versi
   its kind with none. A project's `absent` counts files the lock names that are not here and no machine keeps. `warnings` holds what reading its boxes said, what each
   state's version says, and each asset whose tool names a published package, as last heard of, with no one function that makes it. A read waits on no Hub and never writes: a package not heard of yet is asked of in the background, and a later read or a render says it.
 - `GET /v1/projects/{id}/assets/{name}?call=`: `{asset, versions: [{number, files, made_by?, seed?, runs, approved?, warnings?, pickup?, execution_ms?, text?}], discarded?: [number], call?, call_warnings?}`. With `call=true`, `call` is what its binder would send now, the JSON `cozy run --input` takes, with what binding said (the browser reads it through this endpoint); what can't make one, a package the Hub doesn't have among them, is no `call` and why in `call_warnings`, never a refusal of the read. `text`: the words that version was made from. `discarded`: what's set aside until `reclaim`, which undo of its discard brings back.
+- `GET /v1/projects/{id}/nodes?names=&takes=` (cl-956, the agent API: tracker `design/agent-api.md`): `{nodes, older?, rev, warnings?}`. Each box named (comma-separated; `name.N` is take N of it alone), else every box, in the project's order, as a node of the file `cozy get` prints and `cozy apply` takes: `kind` (`image`, `video`, `audio`, `text`, or `edit` for `cozy/edit`), `description`, a text node's `text`, its tool block keyed by its `tool` as the box writes it (each field of the tool's struct as the box holds it, else its default, `null` when it has none and `[]` for a list; each model slot by name; `loras`, the box's `lora`; then what else the box holds), `approved` as a take number, `takes` (each `{number?, state, file?, run?}`, `file` absolute; `done` versions, then `failed`, `running` and `queued` takes; the approved, the newest and what's going unless `takes=true`, the rest counted in `older` by name), and `rev`, eight hex digits of the document's heads it was read at, which `apply` maps back to them. Its tools are read as a run here would read them, from their packages' declarations, nothing of them run: a read waits on the Hub for one not heard of yet, as `GET /v1/projects/{id}` never does, so it's its own route. A tool that can't be read leaves its blocks with what they set, said in `warnings`. `404 node_unknown` for a name it doesn't have, with the one it likely meant.
+- `POST /v1/projects/{id}/apply` `{nodes, dry_run?, force_conflicts?}`, with an `Idempotency-Key` (cl-956): `{applied, nodes: [{name, did, changed?}], changes?: [{path, before, after}], conflicts?: [{path, yours, theirs, by, rev}], errors?, warnings?, notes?: [{path, message}], merged?, next?}`. `nodes` is a file of nodes, as `…/nodes` reads them, each merged against its own `rev` three ways: what it changed and the project didn't since is written, what the project changed and it didn't stands, a value both changed is a conflict, and words both edited merge by character through the document's text (`AssetPatch.typed`'s merge) unless the edits overlap. A key it leaves out is untouched; `null` resets one; a default as `…/nodes` printed it changes nothing. A name the project doesn't have is made, as a drop of its tool, its file or a kind; one it has with no `rev` is refused unless it says what it holds. A take entry with only `file` (a held file, `sha256:<hex>`) is its next take; the rest of `takes` is read-only. Every error is in `errors`, each with its fix: an unknown key (`did you mean beats?`), a value of the wrong type, a tool that makes another kind. A number out of its range is clamped and said in `warnings`, as is a `<name>` that names nothing. An error, or a conflict without `force_conflicts`, writes nothing and `applied` is false; otherwise every write is the page's own (a box made, its fields and tool set, its approval, a version joined), in one transaction and one entry of the history (`by` the request's `Cozy-Client`), which `history/undo` takes back whole. `did` is `created`, `configured` or `unchanged`; `merged` is each node of `nodes` as it now stands, with its new rev; `next` is `cozy render` of what the changes put out of date that nothing else reads. `dry_run` writes nothing and keeps no file: `cozy diff`. `409 apply_raced` when a node changed between its read and its write.
 - `POST /v1/projects/{id}/assets` `{tool?, at?: {x, y, w?}, name?, fields?, exact?, kind?, moves?, placed?}`, with an `Idempotency-Key`: `201 {name, etag, kept?}`. A tool dropped on a canvas: an asset, with `at` its row and `moves` what its drop pushed aside (as an import's), in one transaction. `tool` is an `id` from `GET /v1/tools`, and `name` and `kind` what its row says, so a page's drop waits on no read. With no `kind` that isn't held already, or no `name`, the tool is read, refusing what can't be one (`400 tool_names_no_function`, `400 tool_makes_no_media`), and a Hub that's away refuses nothing: its render says. With none it's a text asset, `kind` `text`, its words in `fields.text` (`400 asset_says_nothing`, and `400 asset_name_reserved` for a tag of a package the project uses). `exact` says a person typed `name`: `409 asset_exists` if the project has it, naming what does, not `_2`. `name` goes through `as_name`, a `.` staying a character like any other but for an ending of `.` and digits, which says a version and is `_` instead, `400 project_name` with `exact`; `self` is taken; absent, it's the tool's function. A taken name, or one whose versions the project keeps, gets `_2`, chosen in the transaction that writes it.
 - `POST /v1/projects/{id}/copies` `{boxes: [{from, at?: {x, y, w?}}], moves?, placed?}`, with an `Idempotency-Key`: `201 {made: [{name, etag}], kept?}`, each copy in the order asked. Boxes copied, as Ctrl+C and Ctrl+V, Ctrl+D or Alt and a drag copy them, in one transaction and one entry of the history, which undo takes back whole. Each is box `from` called its name counted up (`hei` is `hei_2`), with `at` its row: its tool and fields as they are, and its versions as they are, the same files by hash with no bytes copied, its approval naming the same version. `<self…>` in its words is the copy; a mention of a box copied with it names that one's copy, and any other is unchanged. `moves` and `placed` as an import's. `400 copies_none`, `400 project_edit` for a box it doesn't have.
 - An Edit's `fields.timeline` is `{tracks: [{clips: [{clip: "<name>", in?, out?} | {clip: "<name>", frames?}]}]}`: one track for now, a clip's place in the list its place on the track, with no gaps. `in` and `out` count a video's frames from 0 at the Edit's rate, `out` exclusive, as OTIO and an EDL do, and no `out` is its end; `frames` is how long a still is held, 3 s when absent. Its row and each of its `prefixes` also say `timeline: {fps, tracks: [{clips: [{clip, in?, out?, frames?, name, field?, path?, sha256?, holds?, width?, height?, missing?}]}]}`: the clips as they read now, or as they read when that version was rendered. `holds` is how many frames a video has at that rate, and `missing` why a render goes on without the clip (`no longer in the project`, `no version yet`, `not on this computer`). `rendering`, 0 to 1, is how far a render here is, with `standing: making`; each change says `project.changed`.
@@ -757,6 +762,13 @@ The CLI resolves the current directory to an existing project and sends its abso
 | `cozy package yank [--undo]` | `POST` (`DELETE`) `/v1/packages/{org}/{name}/releases/{release}/yank` |
 | `cozy package lock` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_lock`, `GET /v1/runs/{id}/events`; the CLI writes the `uv.lock` its result holds |
 | `cozy package publish` | the package's tree `PUT`, `POST /v1/runs` of `cozy/package_publish`, `GET /v1/runs/{id}/events`; a `lock` its result holds, the CLI writes |
+| `cozy get` | `GET /v1/projects/{id}`: one line per node |
+| `cozy get NAME…\|NAME.N\|--all [--takes]` | `GET /v1/projects/{id}/nodes?names=&takes=`, printed as YAML |
+| `cozy explain [KIND\|TOOL[.FIELD]] [--schema]` | `GET /v1/tools?project=`, and with `q` its package for a tool not listed; words or JSON Schema 2020-12 made here from each tool's fields |
+| `cozy apply -f FILE [--force-conflicts]` | each take's `file:` `HEAD`/`PUT /v1/project-files/sha256:<hex>`, `POST /v1/projects/{id}/apply`; the file is rewritten from its `merged` (`-f -`: on stdout) |
+| `cozy diff -f FILE` | the same, `dry_run` |
+| `cozy delete NAME…` | `GET /v1/projects/{id}`, then `DELETE /v1/projects/{id}/assets/{name}` each, under one `Cozy-Edit` |
+| `cozy render NAME… [--on M,…] [-n N] [--new] [--outdated] [--pickup '<NAME.N>@FRAME']` | `GET /v1/projects/{id}`; `--pickup`, `GET /v1/projects/{id}/assets/{name}` and `GET /v1/tools?project=` for the frames it lands on; on `local` alone, `POST /v1/projects/{id}/fit` first (off a terminal a poor fit refuses, naming `--on local` or `cozy machine rent`); `GET /v1/events` showing the project (`PUT /v1/events/{stream}`), then `POST /v1/projects/{id}/runs`, followed until the board's `ended` names its ask. Stopping it never cancels the render |
 <!-- each PR adds its verbs' rows -->
 | `machine use [MACHINE,...]` | current directory, `GET /v1/projects/{id}/address`, `PUT /v1/projects/{id}/machines` |
 | `machine ls` | `GET /v1/machines?refresh=true`; on a terminal, `GET /v1/events`, then `GET /v1/machines` |

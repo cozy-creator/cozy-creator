@@ -5,7 +5,6 @@ use std::{
     convert::Infallible,
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex, atomic::{AtomicU64, Ordering}},
-    time::Duration,
 };
 
 use axum::{
@@ -35,11 +34,6 @@ use serde::Deserialize;
 
 use crate::{api::Api, machines::Machines, project};
 
-/// How often, while anyone listens, what changes in an open project with no write of Calcifer's is looked for: a file into or out of
-/// `files/`, another program's commit to project.db. A look is a stat and a pragma a project, and an open canvas shows it within this
-/// and its one read.
-const LOOK: Duration = Duration::from_millis(250);
-
 /// What projects say to every stream. Process-wide, as `folder::WRITING` is: one process holds one
 /// Calcifer, and a `Folder` that writes may be no more than a path.
 static PROJECTS: LazyLock<Projects> = LazyLock::new(|| {
@@ -52,9 +46,19 @@ static PROJECTS: LazyLock<Projects> = LazyLock::new(|| {
         revs: Mutex::default(),
         owed: Mutex::default(),
         wake: Notify::new(),
-        listening: Notify::new(),
+        stirred: Mutex::default(),
+        stirring: Notify::new(),
     }
 });
+
+/// Moves whenever a project's revision does (a commit of this Calcifer's, or another program's its look read): what a walk looks at
+/// its deletions on, never a clock (xs-189).
+static EDITS: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+/// Told each time a project's revision moves.
+pub(crate) fn edits() -> tokio::sync::watch::Receiver<u64> {
+    EDITS.subscribe()
+}
 
 struct Projects {
     generation: String,
@@ -65,8 +69,9 @@ struct Projects {
     /// The projects to say something of, each by id: its folder, and whether it's to be said though neither file changed.
     owed: Mutex<BTreeMap<String, (PathBuf, bool)>>,
     wake: Notify,
-    /// Someone began listening: the looks begin.
-    listening: Notify,
+    /// The open projects whose folders changed since they were last looked at (`project_stirred`).
+    stirred: Mutex<std::collections::BTreeSet<String>>,
+    stirring: Notify,
 }
 
 fn cursor(sequence: u64) -> Option<ProjectEventCursor> {
@@ -103,8 +108,16 @@ fn moved(dir: &Path, rev: impl FnOnce() -> String) {
     if revs.get(&id) != Some(&rev) {
         revs.insert(id, rev);
         drop(revs);
+        EDITS.send_modify(|n| *n += 1);
         owe(dir, false);
     }
+}
+
+/// Project `id`'s folder changed: a file into or out of `files/`, a write to project.db, perhaps another program's. It's looked at
+/// (`Projects::look`), and told if that moved its revision.
+pub(crate) fn project_stirred(id: &str) {
+    PROJECTS.stirred.lock().expect("stirred lock").insert(id.to_owned());
+    PROJECTS.stirring.notify_one();
 }
 
 /// Tells every stream to read `dir`'s project again though neither file changed: `moving` ended, say.
@@ -117,15 +130,13 @@ pub(crate) fn project_settled(dir: &Path) {
 pub(crate) fn tell(api: Arc<Api>) {
     let looking = api.clone();
     tokio::spawn(async move {
-        let mut looks = tokio::time::interval(LOOK);
-        looks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            // With no one listening there is no one to tell: nothing wakes until a stream subscribes.
-            while PROJECTS.said.receiver_count() == 0 {
-                PROJECTS.listening.notified().await;
+            PROJECTS.stirring.notified().await;
+            let stirred = std::mem::take(&mut *PROJECTS.stirred.lock().expect("stirred lock"));
+            // With no one listening there is no one to tell: whoever comes next reads it whole.
+            if PROJECTS.said.receiver_count() > 0 {
+                looking.projects.look(&stirred);
             }
-            looks.tick().await;
-            looking.projects.look();
         }
     });
     tokio::spawn(async move {
@@ -218,7 +229,7 @@ pub(crate) struct Subscription {
 }
 
 /// Subscribed before this answers, so what changes after a client's first read is on the
-/// stream. Runs-only subscribers neither read machines nor enable project polling.
+/// stream. Runs-only subscribers read neither machines nor projects.
 pub(crate) async fn stream(
     State(api): State<Arc<Api>>,
     query: Result<Query<Subscription>, QueryRejection>,
@@ -237,9 +248,6 @@ async fn subscribe(api: Arc<Api>, scope: Scope) -> Watch {
     });
     let runs = api.calcifer.subscribe();
     let said = all.then(|| PROJECTS.said.subscribe());
-    if said.is_some() {
-        PROJECTS.listening.notify_one();
-    }
     let shown = if all {
         listed(&api.machines).await.unwrap_or_else(|e| {
             warn!("the events stream cannot list the machines: {}", e.message);
@@ -248,7 +256,7 @@ async fn subscribe(api: Arc<Api>, scope: Scope) -> Watch {
     } else { HashMap::new() };
     let showing = all.then(Showing::new);
     let id = showing.as_ref().map(|showing| showing.0.clone()).unwrap_or_else(stream_id);
-    let hello = StreamEvent::Hello { version: env!("CARGO_PKG_VERSION").into(), stream: id };
+    let hello = StreamEvent::Hello { version: ::api::VERSION.into(), stream: id };
     Watch {
         showing,
         pending: VecDeque::from([hello]),

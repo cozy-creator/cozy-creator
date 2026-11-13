@@ -316,6 +316,10 @@ impl Plan {
     pub(crate) fn upfront(&self) -> Vec<(String, Vec<String>)> {
         merged(self.slots.iter().filter(|slot| !slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
     }
+    /// What its on-demand slots read once a stage asks: guessed ahead, never waited on (Paul, 11-12).
+    pub(crate) fn possible(&self) -> Vec<(String, Vec<String>)> {
+        merged(self.slots.iter().filter(|slot| slot.on_demand)).into_iter().map(|s| (s.manifest, s.components)).collect()
+    }
     /// All its calls may read, on-demand slots too: what a `downloaded` warm set member holds,
     /// asked for by name (`cozy machine warm`), so its first call waits on no download (cl-790).
     pub(crate) fn read(&self) -> Vec<(String, Vec<String>)> {
@@ -1346,7 +1350,7 @@ impl Pool {
         let devices: Vec<&Device> = self.devices.iter().take(degree as usize).collect();
         let gpus = devices.iter().filter_map(|d| self.inventory(&d.entry)).map(|g| g.compute_cap.clone()).filter(|cc| !cc.is_empty()).collect();
         let free_vram = devices.iter().filter_map(|d| Some(d.memory.as_ref()?.free()? + d.idle_bytes())).min();
-        tensorfs::fetch::Hardware { gpus, free_vram, plain: false }
+        tensorfs::fetch::Hardware { gpus, free_vram, ..Default::default() }
     }
     fn inventory(&self, entry: &str) -> Option<&crate::machine::receipt::Gpu> {
         self.config.inventory.iter().find(|g| g.device_index.to_string() == entry || g.device_uuid == entry)
@@ -2598,6 +2602,19 @@ impl Pool {
     /// Whether an executor holds `plan`'s construction loaded: its call reads no weights.
     pub(crate) fn loaded(&self, plan: &Plan) -> bool {
         self.hosting(plan).iter().any(|(_, loaded)| *loaded)
+    }
+
+    /// Each idle executor's loaded models, its GPUs and the highest place it has them (`StatusFrame::resident`).
+    pub(crate) fn resident(&self) -> Vec<crate::api::v1::Resident> {
+        let held = self.serving.held.lock().unwrap().clone();
+        (self.sessions.lock().unwrap().values())
+            .filter_map(|session| {
+                let level = session.loaded.values().max()?;
+                let checkpoints = held.get(&session.serving).filter(|manifests| !manifests.is_empty())?.clone();
+                let gpus = session.lane().filter(|&device| device < self.devices.len()).map(|device| self.index(device)).collect();
+                Some(crate::api::v1::Resident { checkpoints, gpus, level: level.name().into() })
+            })
+            .collect()
     }
 
     fn hosting(&self, plan: &Plan) -> Vec<(usize, bool)> {

@@ -1,7 +1,7 @@
 //! What a project's render is doing, asset by asset: the `Board` that `GET /v1/projects/{id}` gives a view to draw, each change told
 //! on `GET /v1/events`. It decides nothing. `sync` reads what the walk owes, and `told` and `ran` fold what the walk and its runs say.
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     path::Path,
     sync::Mutex,
 };
@@ -78,10 +78,8 @@ struct Held {
     warned: HashSet<(String, String)>,
     /// Each job as last told, by id.
     told: HashMap<String, Job>,
-    /// What machines are fetching ahead, the run each is, what it's for as the text names it, and its key: machine, function and choices.
+    /// The upcoming jobs' rows: the id their machine's downloads name, what it's for as the text names it, and the job's key (cl-967).
     ahead: Vec<(RunId, String, String, Ahead)>,
-    /// The boxes waiting for each key's preparation.
-    ahead_names: HashMap<String, BTreeSet<String>>,
     said: Vec<Said>,
     errors: Vec<Error>,
     /// How the walk ended, once it has.
@@ -328,84 +326,42 @@ impl Jobs {
         !self.held.lock().expect("jobs lock").warned.insert((asset.to_owned(), message.to_owned()))
     }
 
-    /// A machine began fetching ahead, as run `id`, what `key` names for the boxes waiting for it.
-    pub(crate) fn ahead(&self, id: RunId, key: String, with: String, function: String, machine: String, run: u64) {
+    /// Upcoming job `key`'s row on its machine (cl-967), as `id` its machine names it: shown, and said when it moved.
+    pub(crate) fn upcoming(&self, id: &str, key: &str, row: Ahead) {
+        let Ok(id) = RunId::try_from(id.to_owned()) else { return };
         let mut held = self.held.lock().expect("jobs lock");
-        let names = held.ahead_names.get(&key).map(|names| names.iter().cloned().collect()).unwrap_or_default();
-        let row = Ahead { function, machine, run, names, stage: Some("asked".into()), ..Ahead::default() };
+        // Each row its own number, as the page keys them, the newest the greatest.
+        let next = held.ahead.iter().map(|(.., row)| row.run).max().unwrap_or(0) + 1;
+        let row = match held.ahead.iter_mut().find(|(run, ..)| *run == id) {
+            Some((.., was)) if Ahead { run: was.run, ..row.clone() } == *was => return,
+            Some((.., was)) => {
+                *was = Ahead { run: was.run, ..row };
+                was.clone()
+            }
+            None => {
+                let row = Ahead { run: next, ..row };
+                held.ahead.push((id, String::new(), key.to_owned(), row.clone()));
+                row
+            }
+        };
         crate::events::ahead_updated(&self.project, &row);
-        held.ahead.push((id, with, key, row));
         self.publish(&mut held);
     }
 
-    /// Box `name` waits for what `key` prepares: its rows say so.
-    pub(crate) fn wants_ahead(&self, key: &str, name: &str) {
+    /// The upcoming jobs' rows, but those of `keys`, leave the board: their jobs went or ended.
+    pub(crate) fn upcoming_kept(&self, keys: &HashSet<String>) {
         let mut held = self.held.lock().expect("jobs lock");
-        if !held.ahead_names.entry(key.to_owned()).or_default().insert(name.to_owned()) {
-            return;
-        }
-        let names: Vec<String> = held.ahead_names[key].iter().cloned().collect();
-        let mut changed = false;
-        for (.., row) in held.ahead.iter_mut().filter(|(_, _, held_key, _)| held_key == key) {
-            row.names.clone_from(&names);
-            crate::events::ahead_updated(&self.project, row);
-            changed = true;
-        }
-        if changed {
+        let before = held.ahead.len();
+        held.ahead.retain(|(id, _, key, _)| !id.as_str().starts_with(crate::ahead::UPCOMING) || keys.contains(key));
+        if held.ahead.len() != before {
             self.publish(&mut held);
         }
-    }
-
-    /// The keys of what is still being fetched ahead.
-    pub(crate) fn ahead_keys_going(&self) -> HashSet<String> {
-        let held = self.held.lock().expect("jobs lock");
-        held.ahead.iter().filter(|(.., row)| row.stage.is_some()).map(|(_, _, key, _)| key.clone()).collect()
-    }
-
-    /// What that did, if `id` is one; `Some` once it ended: why it stopped short, if it did.
-    fn ahead_ran(&self, held: &mut Held, id: &RunId, event: &RunEvent) -> bool {
-        let Some((.., row)) = held.ahead.iter_mut().find(|(run, ..)| run == id) else { return false };
-        let was = row.clone();
-        match event {
-            RunEvent::Progress { progress } => {
-                row.stage = (!progress.stage.is_empty()).then(|| words(&progress.stage));
-                (row.done, row.total) = (progress.bytes_done, progress.bytes_total);
-            }
-            RunEvent::Queued { run, .. } | RunEvent::InProgress { run, .. } => row.waiting.clone_from(&run.waiting),
-            RunEvent::Completed { .. } => {
-                row.stage = None;
-                row.waiting = None;
-                row.ready = true;
-                row.done = row.total;
-            }
-            RunEvent::Failed { run, .. } => {
-                row.stage = None;
-                row.waiting = None;
-                row.held_back = Some(run.reason.as_ref().map_or_else(|| "it failed".to_owned(), |reason| reason.message.clone()));
-            }
-            // Its job took over, or it was asked to stop.
-            RunEvent::Canceled { .. } => (row.stage, row.waiting) = (None, None),
-            _ => {}
-        }
-        if *row != was {
-            crate::events::ahead_updated(&self.project, row);
-        }
-        true
-    }
-
-    /// The runs fetching ahead that nothing it names waits for now.
-    pub(crate) fn ahead_going(&self) -> Vec<(String, String, RunId)> {
-        let held = self.held.lock().expect("jobs lock");
-        held.ahead.iter().filter(|(.., row)| row.stage.is_some()).map(|(id, with, _, row)| (with.clone(), row.machine.clone(), id.clone())).collect()
     }
 
     /// What run `id` did, when it is one of this board's, under `dir`: a warning it gave is said once, as its asset's.
     pub(crate) fn ran(&self, active: u64, id: &RunId, event: &RunEvent, dir: &Path) {
         let mut held = self.held.lock().expect("jobs lock");
         if held.active != Some(active) {
-            return;
-        }
-        if self.ahead_ran(&mut held, id, event) {
             return;
         }
         let Some(live) = held.live.iter_mut().find(|live| live.id == *id) else { return };

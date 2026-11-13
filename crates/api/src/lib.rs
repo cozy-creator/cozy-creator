@@ -29,3 +29,5 @@ pub mod yaml;
 
 /// The commit this build is from (`build.rs`).
 pub const COMMIT: &str = env!("COZY_COMMIT");
+/// This cozy's version (`build.rs`): a release (`0.25.0`), or the open RC's dev version with its commit (`0.26.0-dev+g1a2b3c4d`).
+pub const VERSION: &str = env!("COZY_VERSION");

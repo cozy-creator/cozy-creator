@@ -2,18 +2,16 @@ import { useQueries } from "@tanstack/react-query"
 import type { Tool } from "../api/calcifer"
 import { useConnection } from "../app/Connection"
 import type { CanvasStore } from "./CanvasStore"
+import { mainText } from "./controls"
 
-// A LoRA's trigger words (Paul, 11-12): its Hub card's, appended to a box's prompt when it's added, shown on its row beneath the box, and
-// drawn in a token colour wherever a prompt of that box says them. They stay plain text, sent as written.
+// A LoRA's triggers (Paul, 11-12): its Hub card's, appended to a box's prompt when it's added, shown on its row beneath the box, and
+// drawn in a token colour wherever a prompt of that box says them. They stay plain text, sent as written. Each is one entry, as Civitai's
+// trainedWords are (cl-971): a word, a few words or a whole prompt, kept whole.
 
 type Entry = Record<string, unknown>
 const entryOf = (value: unknown): Entry => value && typeof value === "object" && !Array.isArray(value) ? value as Entry : {}
 const refsIn = (value: unknown): string[] => Array.isArray(value) ? value.flatMap((held) => typeof entryOf(held).ref === "string" ? [entryOf(held).ref as string] : []) : []
 const identityOf = (ref: string) => ref.split("@")[0]
-
-/** A card's trigger, each of its comma-separated words or phrases. */
-export const triggersOf = (trigger: string | null | undefined): string[] =>
-  [...new Set((trigger ?? "").split(/[,，]/).map((word) => word.trim()).filter(Boolean))]
 
 /** The LoRAs on box `name`: each slot's and its own. */
 export function lorasOn(store: CanvasStore, name: string): string[] {
@@ -21,14 +19,14 @@ export function lorasOn(store: CanvasStore, name: string): string[] {
   return [...new Set([...slots, ...refsIn(store.valueOf(name, "lora"))].map(identityOf))]
 }
 
-/** The trigger words of the LoRAs on box `name`, as their Hub cards say them. */
+/** The triggers of the LoRAs on box `name`, as their Hub cards say them. */
 export function useTriggers(store: CanvasStore, name: string): string[] {
   const { client } = useConnection()
   const refs = lorasOn(store, name)
   const details = useQueries({
     queries: refs.map((ref) => ({ queryKey: ["model", ref], queryFn: ({ signal }: { signal: AbortSignal }) => client.model(ref, signal), staleTime: 60_000, retry: false })),
   })
-  return [...new Set(details.flatMap((detail) => triggersOf(detail.data?.trigger)))]
+  return [...new Set(details.flatMap((detail) => detail.data?.triggers ?? []))]
 }
 
 const WORD = /[\p{L}\p{N}_]/u
@@ -49,17 +47,18 @@ function found(text: string, word: string): [number, number][] {
 /** Whether `text` says `word`, as itself. */
 export const says = (text: string, word: string) => found(text, word).length > 0
 
-/** `text` with the trigger words it doesn't say yet after it, or null when it says them all. */
+/** `text` with the triggers it doesn't say yet after it, each once and whole, or null when it says them all. */
 export function appended(text: string, triggers: string[]): string | null {
   const missing = triggers.filter((word) => !says(text, word))
   if (!missing.length) return null
-  const kept = text.trimEnd()
-  const joint = !kept ? "" : /[.,;:!?]$/.test(kept) ? " " : ", "
-  return `${kept}${joint}${missing.join(", ")}`
+  return missing.reduce((said, word) => {
+    const kept = said.trimEnd()
+    return `${kept}${!kept ? "" : /[.,;:!?]$/.test(kept) ? " " : ", "}${word}`
+  }, text)
 }
 
-/** A tool's prompt: the first field a person writes it in. */
-export const promptOf = (tool: Tool | undefined): string | undefined => tool?.fields.find((field) => field.type === "prompt")?.field
+/** A tool's prompt: its main text (`mainText`). */
+export const promptOf = (tool: Tool | undefined): string | undefined => mainText(tool?.fields ?? [])?.field
 
 // The highlight: ranges over each prompt's own text nodes (never its chips), one CSS highlight for the page, so nothing a person types moves.
 
