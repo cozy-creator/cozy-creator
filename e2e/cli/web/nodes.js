@@ -735,7 +735,7 @@ function replaceFile(at, text) {
     const beforePreview = await of('Sheet');
     await previewVersion(page, 'Sheet', 1);
     const afterPreview = await of('Sheet');
-    check('thumbnail_preview_does_not_approve', afterPreview.version === beforePreview.version, { before: { version: beforePreview.version, approved: beforePreview.approved, pinned: beforePreview.pinned }, after: { version: afterPreview.version, approved: afterPreview.approved, pinned: afterPreview.pinned } });
+    check('thumbnail_preview_does_not_approve', afterPreview.version === beforePreview.version, { before: beforePreview, after: afterPreview });
     await approveVersion(page, 'Sheet', 1);
     await until('first version selected in the project', () => of('Sheet'), (held) => held.version === 1);
     check('selected_version_is_persistent', await box('Sheet').locator('.image-history .take.on[data-take]').getAttribute('data-take') === '1');
