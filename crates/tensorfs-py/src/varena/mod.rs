@@ -599,7 +599,7 @@ impl Drop for PyAllocatorCapture {
         if self.pid != std::process::id() {
             std::mem::forget(std::mem::replace(&mut self.guard, Mutex::new(None)));
         }
-        // Same-process guard release is an atomic decrement, with no native lock or CUDA work.
+        // Same-process guard release is an atomic decrement and at most a wake, with no CUDA work.
     }
 }
 

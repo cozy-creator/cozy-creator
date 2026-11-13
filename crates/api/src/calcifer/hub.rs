@@ -672,8 +672,29 @@ pub mod job {
     /// `input`: [`super::PackagePublish`], of the request's `code`. Calcifer's run; its result is a [`super::Published`].
     pub const PACKAGE_PUBLISH: &str = "cozy/package_publish";
 
-    /// Every job, by its target.
+    /// `input`: [`super::CozyUpdate`]. Calcifer's run, which no client asks: this computer's cozy updated to a newer release for a
+    /// package release that needs one (cl-978); its result is a [`super::CozyUpdated`]. Calcifer restarts on it once nothing else runs.
+    pub const COZY_UPDATE: &str = "cozy/update";
+
+    /// Every job a client asks, by its target.
     pub const ALL: [&str; 7] = [MODEL_DOWNLOAD, MODEL_UPLOAD, MODEL_QUANTIZE, PACKAGE_INSTALL, PACKAGE_REMOVE, PACKAGE_LOCK, PACKAGE_PUBLISH];
+}
+
+/// `cozy/update`'s input: the release it updates to, and for what (`qwen-image-2 0.12.0`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CozyUpdate {
+    pub to: String,
+    #[serde(rename = "for")]
+    pub needed_by: String,
+}
+
+/// `cozy/update`'s result.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CozyUpdated {
+    pub from: String,
+    pub to: String,
 }
 
 /// `cozy/model_download`'s input.
@@ -835,9 +856,6 @@ pub struct PackageLock {
 pub struct PackagePublish {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub root: bool,
-    /// Published yanked: a gated candidate, never the package's newest release.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub yanked: bool,
 }
 
 /// `cozy/package_lock`'s result: the new `uv.lock` and whether it changed.
@@ -855,7 +873,7 @@ pub struct Locked {
 pub struct Published {
     pub package: String,
     pub release: String,
-    /// `published`, `published yanked`, or `already published`.
+    /// `published` or `already published`.
     pub status: String,
     pub changed: bool,
     pub uploaded_bytes: u64,

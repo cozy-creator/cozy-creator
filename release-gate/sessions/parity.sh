@@ -81,13 +81,13 @@ elif mode == "envs":
 EOF
 )
 podpy() { printf '%s' "$POD_PY" | T=600 pod "cat > /tmp/parity.py && python3 /tmp/parity.py $*"; }
-# summary <name>: execution, then each GPU call's denoise (else longest) step track and the kernels it reports.
-summary() { jq -r '"exec \((.execution_ms // 0) / 1000 * 10 | floor / 10)s" + ([.calls[]? | select(.measurements.execution? != null) | .measurements as $m
-  | ($m.attribution.steps // {} | to_entries | (map(select(.key == "denoise")) + [max_by(.value.count // 0)])[0]) as $s | ($s.value.series // [] | map(.[1])) as $x
-  | "; \(.function): \($s.key // "-") step1 \(($x[0] // 0) / 100 | floor / 10)s steady \((if ($x | length) > 1 then ($x[1:] | add / length) else 0 end) / 100 | floor / 10)s x\($x | length), "
+# summary <name>: execution, the longest step track's step 1 and steady step, peak VRAM, each Triton set's source
+# (shipped: the package's own `_triton`; store: the machine's; compiled) and the plans applied.
+summary() { jq -r '.measurements as $m | ($m.attribution.steps // {} | to_entries | max_by(.value.count // 0)) as $s | ($s.value.series // [] | map(.[1])) as $x
+  | "exec \((.execution_ms // 0) / 1000 * 10 | floor / 10)s, \($s.key // "-") step1 \(($x[0] // 0) / 100 | floor / 10)s steady \((if ($x | length) > 1 then ($x[1:] | add / length) else 0 end) / 100 | floor / 10)s x\($x | length), "
   + "peak VRAM \(([$m.memory.driver[]?.peak_bytes] | max // 0) / 107374182.4 | floor / 10) GiB, "
-  + "kernels \([$m.observations[]? | select(.name | test("kernel|triton|gemm|attention")) | "\(.name)=\(.value)"] | unique | join(" ")), "
-  + "plan \([$m.execution.plan_reports[]? | to_entries[] | "\(.key)=\(.value.applied)\(if (.value.code // "") != "" then "(\(.value.code))" else "" end)"] | join(" "))"] | join(""))' "$OUT/$1.json" 2>/dev/null; }
+  + "kernels \([.. | objects | select(has("kernel") and has("source")) | "\(.kernel)=\(.source)"] | unique | join(" ")), "
+  + "plan \([$m.execution.plan_reports[]? | to_entries[] | "\(.key)=\(.value.applied)"] | join(" "))"' "$OUT/$1.json" 2>/dev/null; }
 exec_ms() { jq -r '.execution_ms // 0' "$OUT/$1.json" 2>/dev/null; }
 digests() { jq -r '[.result | .. | .digest? // empty] | join(",")' "$OUT/$1.json" 2>/dev/null; }
 # cell <name> <target> <seed> <cell JSON>: one run followed to its end, its record and outputs kept.
@@ -135,8 +135,9 @@ rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
 norm = lambda n: re.sub(r"[-_.]+", "-", n).lower()
 failed = 0
 for package in sys.argv[2:]:
-    mine = [r for r in rows if norm(package) in {norm(v.split("/")[-1].split("@")[0]) for v in r["record"].values()} and "dists" in r]
-    source = [r for r in mine if any(v.startswith("local/") for v in r["record"].values())]
+    mine = [r for r in rows if norm(r["record"].get("package", "")) == norm(package) and "dists" in r]
+    # A Hub install's module is in its environment's site-packages; a source run's, in its generation's tree.
+    source = [r for r in mine if any(t.get("at") and "site-packages" not in t["at"] for t in r["triton"].values())]
     hub = [r for r in mine if r not in source]
     if not source or not hub:
         print(f"{package}: environments not found (source {len(source)}, Hub {len(hub)}): {[r['record'] for r in rows]}"); failed += 1; continue

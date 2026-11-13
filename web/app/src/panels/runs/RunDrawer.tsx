@@ -95,9 +95,10 @@ export function RunDrawer() {
           ["Asked", when(run.created_at_ms)],
         ]}
       />
-      {/* A mention or input its function can't use was left out: a note, nothing to act on (cl-944). */}
+      {/* A mention or input its function can't use was left out (cl-944), or it ran from a dev home's packages checkout (xs-195): a note,
+          nothing to act on. */}
       {run.warnings?.map((warning) => (
-        <p className={warning.code === "mention_unused" ? "muted" : "warn"} key={`${warning.code}:${warning.message}`}>
+        <p className={warning.code === "mention_unused" || warning.code === "from_source" ? "muted" : "warn"} key={`${warning.code}:${warning.message}`}>
           {warning.message}
         </p>
       ))}

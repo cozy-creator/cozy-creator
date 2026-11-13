@@ -6,6 +6,7 @@ fn store() -> Arc<Store> {
         writer: Mutex::new(Connection::open_in_memory().unwrap()),
         reader: Mutex::new(Connection::open_in_memory().unwrap()),
         durable: Durable::sqlite(),
+        legacy_home: PathBuf::from("."),
     })
 }
 

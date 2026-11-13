@@ -791,6 +791,19 @@ macro_rules! journal_methods {
         })
     }
 
+    /// Whether this journal is at rest: no run going or waiting but an update, and none ended in the last `quiet_ms` (xs-195:
+    /// `local` moves to the RC only then, never between a render's steps).
+    pub(crate) fn at_rest(&self, quiet_ms: i64) -> Result<bool> {
+        self.read(|conn| {
+            let busy: bool = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM runs WHERE state <> 'settled' AND kind <> 'update' AND (?2 IS NULL OR owner=?2))
+                     OR EXISTS (SELECT 1 FROM runs WHERE settled_at > ?1 AND kind <> 'update' AND (?2 IS NULL OR owner=?2))",
+                params![now_ms() - quiet_ms, self.owner_id()],
+                |r| r.get(0),
+            )?;
+            Ok(!busy)
+        })
+    }
 
     pub(crate) fn plan_after(&self, key: &str, step: &str) -> Result<()> {
         self.write(|tx| { tx.execute("INSERT OR REPLACE INTO after_steps(key_sha256,step) VALUES(?1,?2)", params![key_digest(key),step])?; Ok(()) })

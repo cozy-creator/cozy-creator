@@ -63,7 +63,14 @@ pub(super) async fn create(
     let mut asked: NewAsset = parse(&body?)?;
     let project = api.projects.get(&api, &id)?;
     let ready = ready_new(&api, &project.folder, &mut asked).await.map_err(Refusal)?;
-    Ok((StatusCode::CREATED, Json(made(&project.folder, &project.id, &asked, &ready).map_err(Refusal)?)))
+    // Its answer is kept with it, in its transaction (cl-885).
+    let folder = &project.folder;
+    let made = folder.act(|| {
+        let made = made(folder, &project.id, &asked, &ready)?;
+        super::keyed::answering(StatusCode::CREATED, &made);
+        Ok(made)
+    }).map_err(Refusal)?;
+    Ok((StatusCode::CREATED, Json(made)))
 }
 
 /// What a new box needs read before its transaction: what its tool makes and calls a box of it, its models checked.
@@ -192,7 +199,10 @@ pub(super) async fn copy(
             let etag = folder.reading_boxes(|written| written.get(name).map(Boxed::etag))?.ok_or_else(|| own_lines(name))?;
             Ok(AssetMade { name: name.clone(), etag, kept: BTreeMap::new() })
         });
-        Ok(Copied { made: made.collect::<Result<_, _>>()?, kept })
+        let copied = Copied { made: made.collect::<Result<_, _>>()?, kept };
+        // Its answer is kept with it, in its transaction (cl-885).
+        super::keyed::answering(StatusCode::CREATED, &copied);
+        Ok(copied)
     });
     let copied = copied.map_err(Refusal)?;
     for reading in project.walker.lock().expect("walker lock").readings.values_mut() {
@@ -275,16 +285,28 @@ pub(super) async fn patch(
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let ready = ready_patch(&api, folder, &name, &asked).await.map_err(Refusal)?;
-    let mut patched = patched(folder, &name, &asked, &ready).map_err(Refusal)?;
     // What each field written came to, whole, and the heads it's at: what the page types on next.
     let typed = asked.typed.iter().flat_map(|typed| typed.fields.keys().map(|path| path.split('.').next().unwrap_or(path)));
     let fields: BTreeSet<&str> = asked.fields.keys().map(String::as_str).chain(typed).collect();
+    let came = |written: &Written| -> BTreeMap<String, Value> {
+        let held = written.get(&name);
+        fields.iter().map(|field| ((*field).to_owned(), held.and_then(|held| held.get(field)).cloned().unwrap_or(Value::Null))).collect()
+    };
+    // Its answer is kept with it, in its transaction, at the heads it commits (cl-885).
+    let mut patched = folder.act(|| {
+        let mut patched = patched(folder, &name, &asked, &ready)?;
+        match fields.is_empty() {
+            true => super::keyed::answering(StatusCode::OK, &patched),
+            false => {
+                patched.fields = folder.reading_boxes(came)?;
+                let said = patched.clone();
+                super::keyed::answering_at(StatusCode::OK, move |heads| AssetPatched { heads: heads.to_vec(), ..said.clone() });
+            }
+        }
+        Ok(patched)
+    }).map_err(Refusal)?;
     if !fields.is_empty() {
-        (patched.fields, patched.heads) = folder.reading_document(|written, heads| {
-            let held = written.get(&name);
-            let came = fields.into_iter().map(|field| (field.to_owned(), held.and_then(|held| held.get(field)).cloned().unwrap_or(Value::Null)));
-            (came.collect(), heads)
-        }).map_err(Refusal)?;
+        (patched.fields, patched.heads) = folder.reading_document(|written, heads| (came(written), heads)).map_err(Refusal)?;
     }
     Ok(Json(patched))
 }
@@ -524,7 +546,10 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
             folder.update_lock(|lock| lock.set_aside(&name, &box_id, pin.clone()))?;
         }
         canvas::set(folder, id, BTreeMap::from([(name.clone(), None)]))?;
-        Ok(AssetDeleted { name, at })
+        let gone = AssetDeleted { name, at };
+        // Its answer is kept with it, in its transaction (cl-885): an undo that puts a box back this way says its own after.
+        super::keyed::answering(StatusCode::OK, &gone);
+        Ok(gone)
     });
     let gone = gone.map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&gone.name));

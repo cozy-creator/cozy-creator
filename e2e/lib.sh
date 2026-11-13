@@ -9,7 +9,6 @@
 #   --runtime FILE|V      a candidate Runtime for the local machine (a wheel, or an exact release version)
 #   --pod-tensord FILE|V  the Linux TensorD a rental takes first, as a release's image carries it (release suite)
 #   --packages DIR        a packages checkout: its package directories run instead of the published releases
-#   --pins N@R,...        package releases to take instead of the latest unyanked ones (gated candidates)
 #   --published           the imports suite loads published releases, not the packages checkout
 #   --key FILE            sign in with this device key (`cozy login --key`; release suite)
 #   --sku SKU             what the release suite rents (default: the catalog's cheapest GPU)
@@ -31,7 +30,7 @@
 set -euo pipefail
 E2E=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$E2E/test-hub.sh"
-OUT='' CAND_COZY='' POD_TENSORD='' CAND_TFS='' CAND_RT='' PACKAGES='' PINS='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=1.00 MAX_USD=0.80 QUOTE='' RENT_WAIT=1200 RENT_LOCK='' PUBLICATION_LOG=''
+OUT='' CAND_COZY='' POD_TENSORD='' CAND_TFS='' CAND_RT='' PACKAGES='' PUBLISHED='' KEY='' SKU='' INSTALLED='' SHARD='' MODEL='' RELEASE='' MAX_HOURLY=1.00 MAX_USD=0.80 QUOTE='' RENT_WAIT=1200 RENT_LOCK='' PUBLICATION_LOG=''
 COZY=$HOME/.cozy/bin/cozy
 [ "${RUNNER_OS:-}" != Windows ] || COZY=$HOME/.cozy/bin/cozy.exe
 # Whether this OS runs models on its own machine, `local` (platform::Os::local_inference): Linux. macOS and Windows
@@ -50,7 +49,6 @@ parse() {
       --tensorfs) CAND_TFS=$2 ;;
       --runtime) CAND_RT=$2 ;;
       --packages) PACKAGES=$2 ;;
-      --pins) PINS=$2 ;;
       --published) PUBLISHED=1; shift; continue ;;
       --key) KEY=$2 ;;
       --sku) SKU=$2 ;;
@@ -513,17 +511,9 @@ picture() {
   echo "$file"
 }
 
-# pinned <package> [function]: a first-party package's `package[/function][@release]`: the release --pins names (an RC's
-# candidate, locked on the Runtime and TensorFS the candidates are, so a machine's own pair stands in for its lock's and
-# its runs speak the candidates' executor protocol), else none: the newest.
-pinned() {
-  local release
-  release=$(tr , '\n' <<< "${PINS:-}" | sed -n "s|^\(_/\)\{0,1\}$1@||p" | head -1)
-  echo "$1${2:+/$2}${release:+@$release}"
-}
-# The BiRefNet target: a pinned release, the packages checkout's directory, or the published release.
+# The BiRefNet target: the packages checkout's directory, or the published release.
 birefnet() {
-  if [ -z "$PACKAGES" ] || [[ $(pinned birefnet) == *@* ]]; then pinned birefnet remove_background
+  if [ -z "$PACKAGES" ]; then echo birefnet/remove_background
   else (cd "$PACKAGES" && printf '%s/birefnet/remove_background\n' "$PWD"); fi
 }
 

@@ -31,9 +31,11 @@ parse "$@"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
+. "$(dirname "$0")/selfupdate.sh"
 . "$(dirname "$0")/idle.sh"
 . "$(dirname "$0")/plan.sh"
 . "$(dirname "$0")/render.sh"
+. "$(dirname "$0")/source.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -65,7 +67,7 @@ step status; fixture_calcifer | tee "$OUT/status.json"
 step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
-[ "$SHARD" != projectvault ] || calcifer_diagnostics
+case $SHARD in projectvault | plan) calcifer_diagnostics ;; esac
 }
 
 # A vault failure names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings
@@ -499,7 +501,7 @@ case $SHARD in
   # What a call may read on demand, on a cold machine (cl-966).
   ondemand) parts="ondemand_ahead logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
-  plan) parts="estimate_line plan_picks prepare_ahead logs" ;;
+  plan) parts="estimate_line plan_picks plan_published prepare_ahead logs" ;;
   entrypoints) parts="entrypoints" ;;
   commands) parts="
     entrypoints
@@ -620,6 +622,7 @@ case $SHARD in
     db_opens
     db_migrate_large
     db_waits
+    db_keyed
     agent_render
     logs
   " ;;
@@ -627,6 +630,8 @@ case $SHARD in
   projectdb-prepares) parts="prepares logs" ;;
   projectvault) parts="projectvault vault_leftovers vault_web logs" ;;
   projectdb-latency) parts="db_latency logs" ;;
+  # A keyed write cut off mid-request, sent again (cl-885).
+  projectdb-keyed) parts="db_keyed logs" ;;
   # cozy render alone (cl-956), with the project part's fixtures.
   projectdb-render) parts="agent_render logs" ;;
   # A project 0.24.0 made, opened here (cl-904, schema 3).
@@ -655,8 +660,8 @@ case $SHARD in
   projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
   # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a child
-  # result's Latents in another package's caller (cr-276), a host path refused; then a docker rental's end, signed out,
-  # with a revoked key and signed in (cl-875).
+  # result's Latents in another package's caller (cr-276), a host path refused, a dev home's first-party packages from its
+  # packages checkout (xs-195); then a docker rental's end, signed out, with a revoked key and signed in (cl-875).
   local-code) parts="
     uv_at_once
     unseen
@@ -667,11 +672,14 @@ case $SHARD in
     runtime_floor
     child_latents
     path_manifest
+    from_source
     rental_end
     logs
   " ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
+  # cozy updates itself for a package that needs a newer cozy (cl-978): its own runner, as it replaces this computer's cozy.
+  selfupdate) parts="self_update logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="
     machine_show_runs

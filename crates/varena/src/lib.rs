@@ -47,7 +47,7 @@ pub mod fork_guard;
 
 use fence::{Fences, Waits};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use working::State;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -267,14 +267,12 @@ impl Region {
     }
 }
 
-fn decrement(counter: &AtomicUsize) {
-    assert!(
-        counter
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| value
-                .checked_sub(1))
-            .is_ok(),
-        "native owner count underflow"
-    );
+/// The count left.
+fn decrement(counter: &AtomicUsize) -> usize {
+    counter
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_sub(1))
+        .expect("native owner count underflow")
+        - 1
 }
 
 struct Entry {
@@ -498,11 +496,12 @@ impl PlanPhase {
 /// What the driver's own charge may grow by between samples under a development cap.
 const CAP_SLACK: usize = 128 << 20;
 
-/// The card's free bytes every map of ours leaves to the driver, one fixed amount per GPU. It allocates
-/// on its own (a kernel's code at its first launch, local memory, a library's handle), and its refusal
-/// fails that launch, not an allocation of ours, so no reclaim answers it: a cold H3 on a full 5090
-/// failed its first `index_select` (cr-293).
-pub(crate) const DRIVER_RESERVE: usize = 512 << 20;
+/// The card's free bytes every map of ours leaves to the driver. It allocates on its own (a kernel's code
+/// at its first launch, local memory, a library's handle), and its refusal fails that launch, not an
+/// allocation of ours, so no reclaim answers it: a cold H3 on a full 5090 failed its first `index_select`
+/// (cr-293). Measured (os-memory-patterns 10-24): 2x the largest out-of-books growth a request showed,
+/// 391 MiB in a cold H3 15 s (README: The driver's reserve), rounded up to 32 MiB.
+pub(crate) const DRIVER_RESERVE: usize = 800 << 20;
 
 thread_local! {
     /// A map short only of the reserve, with nothing idle and done left to give (`reclaim::acquire`).
@@ -547,6 +546,10 @@ pub struct Device {
     replays: AtomicUsize,
     producers: AtomicUsize,
     retirements: AtomicUsize,
+    /// Captures waiting to enter, and what wakes them: the last producer, replay or retirement ending.
+    entering: AtomicUsize,
+    drains: Mutex<u64>,
+    drained: Condvar,
     /// `set_limit`: the card as a smaller card would be, the driver's own charge included.
     ceiling: AtomicUsize,
     /// The card itself, once sampled: its driver's refusal is never how we learn it is full.
@@ -599,6 +602,9 @@ impl Device {
             replays: AtomicUsize::new(0),
             producers: AtomicUsize::new(0),
             retirements: AtomicUsize::new(0),
+            entering: AtomicUsize::new(0),
+            drains: Mutex::new(0),
+            drained: Condvar::new(),
             ceiling: AtomicUsize::new(usize::MAX),
             total: AtomicUsize::new(usize::MAX),
             reservation: OnceLock::new(),
@@ -680,7 +686,26 @@ impl Device {
     fn guard(&'static self, count: &'static AtomicUsize) -> Result<GlobalCaptureGuard> {
         count.try_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
             .map_err(|_| Error::Invalid("device activity count overflow"))?;
-        Ok(GlobalCaptureGuard { count, pid: std::process::id() })
+        Ok(GlobalCaptureGuard { count, device: self, pid: std::process::id() })
+    }
+
+    /// The last holder of `count` let go: a capture's end is what deferred cache work waits for,
+    /// the others' what a capture entering waits for.
+    fn let_go(&self, count: &AtomicUsize) {
+        if std::ptr::eq(count, &self.captures) {
+            cache_owner::stir(self.ordinal);
+        } else if !std::ptr::eq(count, &self.external_callbacks) {
+            // Paired with `enter_capture`'s: either it sees this count, or this sees it entering.
+            std::sync::atomic::fence(Ordering::SeqCst);
+            if self.entering.load(Ordering::Relaxed) != 0 {
+                *self.drains.lock().unwrap_or_else(|error| error.into_inner()) += 1;
+                self.drained.notify_all();
+            }
+        }
+    }
+
+    fn drains(&self) -> u64 {
+        *self.drains.lock().unwrap_or_else(|error| error.into_inner())
     }
 
     fn owned(&self) -> usize {
@@ -1072,8 +1097,13 @@ pub(crate) fn gate(ordinal: i32) -> Result<Gate> {
 /// thread, with no signal to tell. A refused capture falls back to eager.
 pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
     let deadline = std::time::Instant::now() + reclaim::RECOVERY_BUDGET;
-    loop {
+    let gpu = gpu(device)?;
+    gpu.entering.fetch_add(1, Ordering::Relaxed);
+    std::sync::atomic::fence(Ordering::SeqCst);
+    let entered = (|| loop {
         source::stop(device)?;
+        // Read before the counts: a holder letting go after them moves it.
+        let seen = gpu.drains();
         {
             let gate = gate(device)?;
             let state = gate.device;
@@ -1093,8 +1123,12 @@ pub fn enter_capture(device: i32) -> Result<GlobalCaptureGuard> {
                 });
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+        let drains = gpu.drains.lock().unwrap_or_else(|error| error.into_inner());
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        drop(gpu.drained.wait_timeout_while(drains, left, |drains| *drains == seen));
+    })();
+    gpu.entering.fetch_sub(1, Ordering::Relaxed);
+    entered
 }
 
 /// Bound a user callback's host interval. Only actual working alloc/free invalidates a
@@ -1127,13 +1161,14 @@ fn enter_retirement(device: i32) -> Result<GlobalCaptureGuard> {
 
 pub struct GlobalCaptureGuard {
     count: &'static AtomicUsize,
+    device: &'static Device,
     pid: u32,
 }
 
 impl Drop for GlobalCaptureGuard {
     fn drop(&mut self) {
-        if self.pid == std::process::id() {
-            decrement(self.count);
+        if self.pid == std::process::id() && decrement(self.count) == 0 {
+            self.device.let_go(self.count);
         }
     }
 }

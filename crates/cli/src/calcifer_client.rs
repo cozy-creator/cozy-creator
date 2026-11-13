@@ -1496,15 +1496,9 @@ pub(crate) fn installed(home: &Home) -> Result<PathBuf, Error> {
     Ok(chosen)
 }
 
-/// Homebrew's `<prefix>/bin/cozy` for a cozy it installed at `<prefix>/Cellar/<formula>/<version>/bin/cozy`,
-/// a path every upgrade moves.
+/// Homebrew's `<prefix>/bin/cozy` for a cozy it installed (`api::update::homebrew`).
 pub(crate) fn homebrew(exe: &Path) -> Option<PathBuf> {
-    let bin = exe.parent()?;
-    let cellar = bin.parent()?.parent()?.parent()?;
-    if bin.file_name()? != "bin" || cellar.file_name()? != "Cellar" {
-        return None;
-    }
-    Some(cellar.parent()?.join("bin").join(exe.file_name()?))
+    api::update::homebrew(exe)
 }
 
 /// The refusal a Calcifer that could not start left.

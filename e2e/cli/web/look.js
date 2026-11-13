@@ -2,7 +2,7 @@
 // pictures to be looked at: at 1440×900 and 1920×1080, on paper and dark, on a project of weightless local tools. The home page; the canvas
 // fitted, at 100% and far out, with boxes at rest, queued, rendering, with a take not looked at and failed, each also cropped; the machine's
 // flyout and drawer; the drawers; the menus; the toasts; Focus on a picture, an H3 Shot, an Edit, an empty box and one rendering, each on its
-// take and writing a new one; Models & LoRAs; the logo. It judges nothing: a view it couldn't reach is listed under `missed`.
+// take and writing a new one; a long takes column before and after a mouse drag up it; Models & LoRAs; the logo. It judges nothing: a view it couldn't reach is listed under `missed`.
 //   node look.js: signed in by page.js's signIn, on the Calcifer whose lock record is $HOLDER.
 // $PLAYWRIGHT: playwright-core's directory; $CHROME: the browser; $SHOT: where to keep its pictures; $ALONE: on a shared computer, so
 // nothing renders. Prints what it took as JSON; exits 1 only if it took nothing.
@@ -225,6 +225,13 @@ async function died(why) {
   ];
   for (const [name, fields, x, y] of mine) await post(`${at}/assets`, { tool: `${tool}/draw`, kind: 'image', name, exact: true, fields, at: { x, y } });
   boxes.push(...mine.map(([name]) => name), ...imports.map(([name]) => name));
+  // A picture with sixteen takes, so its column in Focus is longer than the window.
+  writeFileSync(join(folder, 'many_0.png'), png(40, 640, 400));
+  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'many_0.png'), id), name: 'many', exact: true, at: { x: 2100, y: 0 } });
+  for (let take = 1; take < 16; take++) {
+    writeFileSync(join(folder, `many_${take}.png`), png(40 + take * 12, 640, 400));
+    await post(`${at}/assets/many/versions`, { source: await upload(held?.token, join(folder, `many_${take}.png`), id) });
+  }
   // Off the view a box isn't drawn (culled): fitted, every one is.
   await until('every box in the project', async () => (await api(at)).body.assets.map((one) => one.name), (names) => boxes.every((name) => names.includes(name)));
   await both(async (page) => {
@@ -455,6 +462,32 @@ async function died(why) {
   }
   // A dropped picture, no tool.
   await shoot('focus-picture', { open: (page) => openBox(page, 'amy') });
+  await both(leave);
+  // A long takes column in Focus, at its top, then after a mouse drag up it from its bottom: what the drag did is what's shown (cl-885).
+  const column = (page) => page.locator('.card.here[data-asset="many"] .image-history.here-side').last();
+  const toTop = async (page) => {
+    if (!(await column(page).count())) await openBox(page, 'many');
+    await column(page).evaluate((element) => void (element.scrollTop = 0));
+  };
+  await shoot('focus-long-takes', { open: (page) => openBox(page, 'many'), prepare: toTop });
+  await shoot('focus-long-takes-dragged', {
+    prepare: async (page, theme) => {
+      await toTop(page);
+      await settled(page);
+      const side = await column(page).boundingBox();
+      const across = side.x + side.width / 2;
+      await page.mouse.move(across, side.y + side.height - 12);
+      await page.mouse.down();
+      for (let step = 1; step <= 8; step++) await page.mouse.move(across, side.y + side.height - 12 - step * 18);
+      await page.mouse.up();
+      await page.waitForTimeout(500);
+      const size = page.viewportSize();
+      (seen.long_takes ??= {})[`${size.width}x${size.height}-${theme}`] = {
+        in_focus: await page.locator('.focus-viewport').count() > 0,
+        scrolled: await column(page).evaluate((element) => element.scrollTop).catch(() => null),
+      };
+    },
+  });
   await both(leave);
 
   // The logo, and the top bar.

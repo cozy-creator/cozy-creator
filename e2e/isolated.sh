@@ -25,7 +25,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     --shard) shard=${args[i + 1]} ;;
     --packages) packages=$(cd "${args[i + 1]}" && pwd) ;;
     --only) only=${args[i + 1]} ;;
-    --published | --pins) published=${args[i]} ;;
+    --published) published=${args[i]} ;;
   esac
 done
 mkdir -p "$seed"
@@ -87,6 +87,19 @@ held() {
   export E2E_LIES=$seed/publish-e2e-lies.json
   if (cd "$copy" && cozy --json package publish -y) > "$E2E_LIES" 2>&1; then log "published $account/e2e-lies 0.1.0, which it should have refused"
   else log "publishing e2e-lies was refused: $(tail -c 300 "$E2E_LIES" | tr '\n' ' ')"; fi
+}
+
+# next (self_update, cl-978): the hub suite's weightless echo as the admin's account's `e2e-next` 0.1.0, needing cozy-runtime>=0.46.0,
+# which only a cozy of the Latest's line runs.
+next() {
+  local copy=$seed/packages/e2e-next account
+  account=$(cozy --json whoami | jq -r '.account // empty')
+  rm -rf "$copy" && mkdir -p "$seed/packages" && cp -r "$here/../release-gate/suites/hub/pkg" "$copy"
+  sed -i -e 's/^name = "ci-hub-pkg"$/name = "e2e-next"/' -e 's/"cozy-runtime>=0.30"/"cozy-runtime>=0.46.0"/' "$copy/pyproject.toml"
+  (cd "$copy" && cozy --json package publish -y) > "$seed/publish-e2e-next.json" 2>&1 \
+    || { echo "publishing e2e-next failed: $(tail -c 600 "$seed/publish-e2e-next.json")" >&2; return 1; }
+  export E2E_NEXT=$account/e2e-next
+  log "published $E2E_NEXT 0.1.0 (cozy-runtime>=0.46.0)"
 }
 
 # mirror <source> <org/name> <lane> <release> <page> [upload flags...]: a model uploaded by this computer's machine and
@@ -159,6 +172,7 @@ PY
 
 case $suite:$shard in
   cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web) needs='' ;;
+  cli:selfupdate) needs='next' ;;
   cli:runs | cli:local-code) needs='packages birefnet' ;;
   # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a
   # model of one component with another's (xs-190).
@@ -177,7 +191,7 @@ case $suite:$shard in
   cli:) needs='packages birefnet downloads loras vaes fits parts prompts' ;;
   cli:*) needs='packages' ;;
   imports:*)
-    # Production's published releases are what --published and --pins ask about, and CI reads no production (xs-169).
+    # Production's published releases are what --published asks about, and CI reads no production (xs-169).
     [ -z "$published" ] || { echo "imports $published asks about production's releases: CI runs only on an isolated Hub; the checkout's packages run without it" >&2; exit 2; }
     needs='' ;;
   cpu:*) needs='' ;;
@@ -263,6 +277,10 @@ if [ "$suite" = imports ]; then
   log "imports locks verified against the owned Hub; authoritative checkout unchanged"
 fi
 
+if [ "$needs" = next ]; then
+  next
+  needs=''
+fi
 if [ -n "$needs" ]; then
   [ -n "$packages" ] || { echo "the isolated Hub's first-party packages come from run.sh's --packages checkout" >&2; exit 2; }
   mkdir -p "$seed/project"

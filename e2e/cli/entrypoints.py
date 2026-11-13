@@ -229,16 +229,18 @@ def main() -> None:
         url = urlsplit(opened["url"])
         assert url.hostname in {"127.0.0.1", "localhost", "::1"}, "open did not print a local URL"
         assert url.path == f"/projects/{created['id']}", f"open printed another project's URL: {url.path}"
-        if opened["private"]:
-            # Cozy's private browser opened it: the URL is a reference, its credential went through the browser's pipe.
-            assert set(opened) == {"url", "private"} and not url.fragment, "a private open printed a credential"
-        else:
-            # No display here, no Chrome, or its launch failed: a one-use sign-in link any browser redeems, said not to be private.
-            assert set(opened) == {"url", "private", "reason"} and opened["reason"], f"open's fallback: {opened}"
-            assert url.fragment.startswith("code="), "the fallback link carries no sign-in code"
+        # cl-980: a --json caller is a program: it gets a one-use sign-in link, said not to be private, and no browser starts.
+        assert set(opened) == {"url", "private"} and opened["private"] is False, f"--json open: {opened}"
+        assert url.fragment.startswith("code="), "the --json link carries no sign-in code"
         plain = run("default project URL", ["open"], project)
         assert not plain.stdout.lstrip().startswith("{") and "url" in plain.stdout
-        assert opened["private"] or ("isn't private" in plain.stderr and project.name in plain.stderr), "the fallback didn't say it isn't private"
+        private = "private: true" in plain.stdout
+        if private:
+            # Cozy's private browser opened it: the URL is a reference, its credential went through the browser's pipe.
+            assert "code=" not in plain.stdout, "a private open printed a credential"
+        else:
+            # No display here, no Chrome, or its launch failed: a one-use sign-in link any browser redeems, said not to be private.
+            assert "isn't private" in plain.stderr and project.name in plain.stderr, "the fallback didn't say it isn't private"
         assert "expires_ms" not in plain.stdout
         assert not browser_log.exists(), "open launched the default browser"
         for flag in ("--no-open", "--print-url"):

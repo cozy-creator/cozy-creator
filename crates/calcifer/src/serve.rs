@@ -25,7 +25,7 @@ use ::api::{
     error::{Envelope, Error, Kind},
 };
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     Calcifer,
@@ -90,6 +90,8 @@ pub(crate) enum Stopped {
     AnotherHolds,
     /// `POST /v1/down`.
     Down,
+    /// cozy updated itself (cl-978): the installed binary starts in its place.
+    Updated,
 }
 
 /// `cozy calcifer`: exits 0 unless Calcifer could not start, which `refused.json` then says.
@@ -128,8 +130,37 @@ pub fn main() -> ExitCode {
         },
     };
     match served {
+        Ok(Stopped::Updated) => successor(),
         Ok(_) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// The installed cozy's Calcifer in this one's place, once it let go of the home (cl-978): on Unix this process becomes it, so its
+/// service manager (or none) holds the same process; on Windows it starts detached, as the CLI starts one, and this one exits.
+fn successor() -> ExitCode {
+    let binary = match configuration().map(|loaded| crate::cozy::installed(&loaded.home)) {
+        Ok(Ok(binary)) => binary,
+        Ok(Err(e)) | Err(e) => {
+            error!("the updated cozy: {e}; the next cozy command starts it");
+            return ExitCode::SUCCESS;
+        }
+    };
+    info!(binary = %binary.display(), "Calcifer starts on the updated cozy");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let e = std::process::Command::new(&binary).arg("calcifer").exec();
+        error!("starting {}: {e}; the next cozy command starts it", binary.display());
+        ExitCode::SUCCESS
+    }
+    #[cfg(not(unix))]
+    {
+        let log = configuration().ok().map(|loaded| loaded.home.calcifer_log());
+        if let Err(e) = process::detach(&binary, &["calcifer".into()], log.as_deref()) {
+            error!("starting {}: {e}; the next cozy command starts it", binary.display());
+        }
+        ExitCode::SUCCESS
     }
 }
 
@@ -287,6 +318,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let mut token = [0; 32];
     getrandom::fill(&mut token).expect("the OS provides randomness");
     let token = hex::encode(token);
+    crate::checkout::start(&loaded.config);
     let machines = Machines::start(calcifer.clone(), home.clone(), &loaded.user_home, &loaded.config);
     steps.done("machines");
     tokio::spawn(drop_old_measurements(calcifer.clone()));
@@ -357,7 +389,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     calcifer.close();
     drop(held);
     crate::health::service_health(crate::health::HealthEvent::Stopped);
-    Ok(Stopped::Down)
+    Ok(if api.updated() { Stopped::Updated } else { Stopped::Down })
 }
 
 /// Logs each startup step with the time it took.

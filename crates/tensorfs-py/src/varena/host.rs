@@ -9,9 +9,10 @@ use std::sync::Weak;
 #[cfg(target_os = "linux")]
 mod imp {
     use super::{Tier, Weak};
-    use std::sync::{Arc, Condvar, Mutex};
+    use platform::contain::host_pressure::{HostMode, Pressure};
+    use std::sync::{Arc, Condvar, Mutex, Once};
     use std::time::{Duration, Instant};
-    use varena_ledger::{Donor, Recovery, Row, Table};
+    use varena_ledger::{Donor, Look, Recovery, Row, Table};
 
     /// How long an ask waits on peers that have stopped answering.
     const PEER_WAIT: Duration = Duration::from_secs(2);
@@ -22,6 +23,7 @@ mod imp {
         tiers: Mutex<Vec<Weak<Tier>>>,
         asking: Mutex<Ask>,
         ask: Condvar,
+        watching: Once,
     }
 
     /// What tiers in a request are short of, for the asking thread. `refused`: the last ask
@@ -55,7 +57,7 @@ mod imp {
             return None;
         };
         let host: &'static Host = Box::leak(Box::new(Host {
-            table, row, tiers: Mutex::default(), asking: Mutex::default(), ask: Condvar::new(),
+            table, row, tiers: Mutex::default(), asking: Mutex::default(), ask: Condvar::new(), watching: Once::new(),
         }));
         let serving = std::thread::Builder::new().name("tensorfs-host-owner".into())
             .spawn(move || host.table.serve(host.row, &mut Giving(host)));
@@ -91,6 +93,25 @@ mod imp {
                 }
             }
         }
+
+        /// Out of a request its tiers look again only when asked or when the host stalls on memory or
+        /// meets a limit: what grew elsewhere takes pages back. No timer.
+        fn watch(&'static self, mode: HostMode) {
+            let mut pressure = match Pressure::arm(mode) {
+                Ok(pressure) => pressure,
+                Err(error) => return tracing::warn!("host pages: idle tiers look again only when asked: {error}"),
+            };
+            let watching = std::thread::Builder::new().name("tensorfs-host-pressure".into()).spawn(move || {
+                while pressure.wait().is_ok() {
+                    for tier in self.tiers() {
+                        tier.relook();
+                    }
+                }
+            });
+            if let Err(error) = watching {
+                tracing::warn!("host pages: idle tiers look again only when asked: {error}");
+            }
+        }
     }
 
     struct Giving(&'static Host);
@@ -122,17 +143,18 @@ mod imp {
         }
 
         /// Each tier looks again: other programs and processes grew, and its pages give way.
-        fn tick(&mut self, _: &Table, _: Row, _: u64) -> bool {
+        fn tick(&mut self, _: &Table, _: Row, _: u64) -> Look {
             for tier in self.0.tiers() {
                 tier.relook();
             }
-            false
+            Look::Nothing
         }
     }
 
-    pub(super) fn join(tier: Weak<Tier>) {
+    pub(super) fn join(tier: Weak<Tier>, shared: bool) {
         if let Some(host) = host() {
             host.tiers.lock().unwrap_or_else(|error| error.into_inner()).push(tier);
+            host.watching.call_once(|| host.watch(if shared { HostMode::Shared } else { HostMode::Dedicated }));
         }
     }
 
@@ -175,12 +197,12 @@ mod imp {
     }
 }
 
-/// `tier` gives and asks through this process's row.
-pub(super) fn join(tier: Weak<Tier>) {
+/// `tier` gives and asks through this process's row; `shared`, on a person's computer.
+pub(super) fn join(tier: Weak<Tier>, shared: bool) {
     #[cfg(target_os = "linux")]
-    imp::join(tier);
+    imp::join(tier, shared);
     #[cfg(not(target_os = "linux"))]
-    drop(tier);
+    let _ = (tier, shared);
 }
 
 /// A GPU request of this process begins or ends.

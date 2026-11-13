@@ -2403,7 +2403,7 @@ next?: Array<string>, warnings?: Array<string>, };
 /**
  * Why a run binds and runs the release it does.
  */
-export type ReleaseFrom = "asked" | "installed" | "latest" | "local";
+export type ReleaseFrom = "asked" | "installed" | "latest" | "local" | "source";
 
 /**
  * Whether a version is available publicly or only to authorized model owners.
@@ -3190,6 +3190,10 @@ local?: boolean,
  * The package a machine installs, where `package` is local code's path: its own name (`local/<name>`).
  */
 installs?: string | null,
+/**
+ * From a dev home's packages checkout (xs-195): its branch and commit, `rc/0.26.0 @ 1a2b3c4d`.
+ */
+source?: string | null,
 /**
  * What its box asks for, in its struct's order.
  */

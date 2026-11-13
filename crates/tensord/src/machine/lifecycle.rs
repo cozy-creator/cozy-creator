@@ -450,21 +450,21 @@ pub(crate) async fn keep_authority(hub: Arc<Hub>, keys: Keys, state: PathBuf) {
     }
 }
 
-/// Reads the journal's jobs each second and releases the rental once 15 minutes passed with
-/// none. Returns when the Hub accepted the release, or when the rental ended itself at its
-/// provider (`provider`, else by stopping) so billing stops: released, it takes no more work, and
-/// the Hub has not ended it (`on_its_own`).
+/// Reads the journal's jobs at each activity and deadline, and releases the rental once 15
+/// minutes passed with none. Returns when the Hub accepted the release, or when the rental ended
+/// itself at its provider (`provider`, else by stopping) so billing stops: released, it takes no
+/// more work, and the Hub has not ended it (`on_its_own`).
 pub(crate) async fn release_when_idle(
     lifecycle: Arc<Lifecycle>,
     hub: Arc<Hub>,
     provider: Option<super::provider::ProviderSelf>,
-    jobs: impl Fn(i64) -> io::Result<Jobs>,
+    engine: Arc<crate::execution::Engine>,
 ) {
     let (mut next_ask, mut unanswered) = (0, 2_500);
     loop {
-        let epoch = lifecycle.epoch();
-        match jobs(lifecycle.ended_ms()) {
-            Ok(read) => lifecycle.observe(read, epoch),
+        let (seen, epoch) = (engine.activity_epoch(), lifecycle.epoch());
+        match engine.jobs(lifecycle.ended_ms()) {
+            Ok((working, ended_ms)) => lifecycle.observe(Jobs { working, ended_ms }, epoch),
             Err(error) => {
                 tracing::warn!("cannot read this rental's jobs: {error}");
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -500,13 +500,23 @@ pub(crate) async fn release_when_idle(
                 }
             }
         }
-        // Read each second, not at each ask: an ask can wait as long as the Hub last said to.
+        // Read at each wake, not at each ask: an ask can wait as long as the Hub last said to.
         if lifecycle.released() && on_its_own(hub.contact_ms(), lifecycle.deadline_ms(), lifecycle.grace, now_ms()) {
             tracing::warn!("released, and Tensorhub has not ended this rental: silent for a whole idle window, or a whole window past the deadline; ending it itself");
             end_itself(provider.as_ref()).await;
             return;
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // Until work comes or goes, or the next deadline: the idle clock's end, or released, the next ask and ending on its own.
+        let next = match lifecycle.released() {
+            true => next_ask.min(hub.contact_ms().min(lifecycle.deadline_ms()) + lifecycle.grace),
+            false => match lifecycle.deadline_ms() {
+                0 => i64::MAX,
+                end => end,
+            },
+        };
+        let wait = (next != i64::MAX).then(|| Duration::from_millis((next - now_ms()).max(1000) as u64));
+        let engine = engine.clone();
+        let _ = tokio::task::spawn_blocking(move || engine.wait_activity(seen, wait)).await;
     }
 }
 

@@ -80,6 +80,34 @@ went=$(plan_machine near)
 [ "$went" = local ] || check "plan: near, whose weights only local holds, went to ${went:-nowhere}"
 }
 
+# plan_published (phase b2): each job of a published tool is planned (GPU session 43352204256: the second and third shots of one
+# weren't, and went to the first of their machines saying nothing). BiRefNet, as its isolated Hub publishes it, cuts out three stills:
+# twice on stand-w, then on local or stand-w. Calcifer keeps no project's lines in its own log; its test-only diagnostics (warnings,
+# run.sh: calcifer_diagnostics) say a job that `isn't planned`, and no cut's key is there.
+plan_published() {
+step "plan (cl-967): each job of a published tool is planned"
+[ "${RUNNER_OS:-}" = Linux ] && [ "${GITHUB_ACTIONS:-}" = true ] || { echo "plan: its stand-in is another user of a fresh GitHub runner"; return; }
+local P=$OUT/plan tool=$here/project/weighted.py/weighted r=$RANDOM at on key keys=() log=$HOME/.cozy/calcifer/diagnostics.log
+[ -f "$log" ] || { check "plan: Calcifer kept no diagnostics log"; return; }
+jq -n --arg t "$tool" --arg r "$r" '[range(1; 4) as $i | (
+  {name: "still_\($i)", tool: $t, kind: "image", fields: {instructions: "Still \($i), \($r).", seconds: 0}},
+  {name: "cut_\($i)", tool: "birefnet/remove_background", kind: "image", fields: {image: "<still_\($i)>"}})]' | boxes_in "$P" || return
+for at in 1 2 3; do
+  on='["stand-w"]'; [ "$at" != 3 ] || on='["local","stand-w"]'
+  coming_go "cut_$at" "$on"
+  coming_done "cut_$at" 900
+  key=$(status "$P" | jq -r --arg a "cut_$at" '[.board.jobs[]? | select(.asset == $a) | .id // empty] | last // empty')
+  [ -n "$key" ] || { check "plan: cut_$at has no job on the board"; return; }
+  keys+=("$key")
+done
+cp "$log" "$OUT/plan-published.log"
+grep -E "isn't planned: " "$OUT/plan-published.log" | sed 's/^/plan: /'
+for at in 1 2 3; do
+  key=${keys[$((at - 1))]}
+  ! grep -qF "$key isn't planned: " "$OUT/plan-published.log" || check "plan: cut_$at wasn't planned: $(grep -F "$key isn't planned: " "$OUT/plan-published.log" | head -1)"
+done
+}
+
 # prepare_ahead (phase c): BiRefNet, as its Hub publishes it, on a still that takes 4 min, can't start before it: unstarted work,
 # planned where BiRefNet's weights are. stand-v, a new stand-in that holds nothing, has nothing planned and runs nothing, is told to
 # prepare its function with no job (`PUT /v1/prepare`): it installs BiRefNet's environment and holds its weights while that box

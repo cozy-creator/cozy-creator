@@ -18,13 +18,12 @@ import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
 import { lost } from "../api/outbox"
 import { canvasQuery, machinesQuery, projectQuery, projectViewQuery, toolsQuery } from "../api/queries"
-import { useTo } from "../app/project"
+import { Unopened, useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
 import type { Opened, ProjectViewPatch } from "../api/calcifer"
 import { ProjectCreate } from "../panels/ProjectCreate"
-import { Copyable } from "../ui/Copyable"
-import { dismiss, say } from "../ui/notes"
+import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
 import { AssetMenu } from "./AssetMenu"
 import { Asking } from "./Asking"
@@ -41,7 +40,6 @@ import type { Box } from "./graph"
 import { Placer } from "./place"
 import { Dots, Sheet } from "./Sheet"
 import { aspectOf, bandOf, bodyBox, HEAD, madeHere, nameZoomOf, sameStep, shownOf, stepOf } from "./shown"
-import { noHash } from "./text"
 import { pressBeganOutside } from "../ui/press"
 import { ToolPanel } from "./ToolPanel"
 import { Viewer } from "./Viewer"
@@ -101,7 +99,6 @@ const words = (target: EventTarget | null) =>
 function ProjectSync({ id }: { id: string }) {
   const { client, stream, bridge } = useConnection()
   const store = useCanvasStore()
-  const navigate = useNavigate()
   const { data: state, error: stateError } = useQuery(projectQuery(client, stream, id))
   const { data: canvas, error: canvasError } = useQuery(canvasQuery(client, stream, id))
   const asked = useRef(new Set<string>())
@@ -128,13 +125,11 @@ function ProjectSync({ id }: { id: string }) {
   useEffect(() => {
     if (canvas) store.applyCanvas(canvas.cards, canvas.began, canvas.seq)
   }, [store, canvas])
-  // Gone: there's nothing to show. Anything else that stops it being read is said on the canvas (`Unread`), for as long as it holds.
+  // Gone (its folder deleted, say): said on the canvas (`Unread`) as anything else that stops it being read is, and the page stays where it is
+  // (cl-980: sent to `/`, the tabs sent it back, forever). Its tab goes from the list.
   useEffect(() => {
-    if (!(stateError instanceof ApiError && stateError.status === 404)) return
-    const note = say("Couldn't read this project", stateError)
-    navigate("/", { replace: true })
-    return () => dismiss(note)
-  }, [stateError, navigate])
+    if (stateError instanceof ApiError && stateError.status === 404) void queries.invalidateQueries({ queryKey: ["projects"] })
+  }, [stateError, queries])
   useEffect(() => {
     if (canvasError && !lost(canvasError)) say("Couldn't read where things sit", canvasError)
   }, [canvasError])
@@ -208,17 +203,9 @@ function RenderAll({ id }: { id: string }) {
 
 /** A project this Calcifer can't read: why, and what to do, where its boxes would be. */
 function Unread({ error }: { error: unknown }) {
-  const body = error instanceof ApiError ? error.body : undefined
   return (
     <div className="unread" role="alert">
-      <div>
-        <h2>This project can't be opened yet</h2>
-        <p>{error instanceof Error ? noHash(error.message) : String(error)}</p>
-        {body?.remedy && <p>{noHash(body.remedy)}</p>}
-        {body?.next?.map((line) => (
-          <Copyable key={line} text={line} />
-        ))}
-      </div>
+      <Unopened error={error} />
     </div>
   )
 }
