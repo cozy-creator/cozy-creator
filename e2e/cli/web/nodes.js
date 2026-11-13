@@ -745,13 +745,9 @@ function replaceFile(at, text) {
     const viewButton = box('Sheet').getByRole('button', { name: 'View image', exact: true });
     if (await viewButton.count()) await viewButton.click();
     check('image_has_an_explicit_edit_action', await box('Sheet').getByRole('button', { name: 'Edit image', exact: true }).count() === 1);
-    const { version: selectedBefore, fields: { instructions: wordsBefore } } = await of('Sheet');
+    const selectedBefore = (await of('Sheet')).version;
     await renderOf(page, 'Sheet');
     check('editing_keeps_current_selection', (await of('Sheet')).version === selectedBefore && await box('Sheet').locator('.in-frame').count() === 1);
-    // Edit leads its words with the take it's on (cl-909, `<self.1>`), a write of its own that leaves the approved take out of date: put back,
-    // as Undo would, so what's checked below is what a deleted input does to an approved box.
-    await api(`/v1/projects/${id}/assets/Sheet`, { method: 'PATCH', body: JSON.stringify({ fields: { instructions: wordsBefore } }) });
-    await until('its words as they were', () => of('Sheet'), (held) => held.fields.instructions === wordsBefore && held.standing === 'current');
     await previewVersion(page, 'Sheet', 1);
 
     // Stored version deletion and Undo remain available independently of the removed strip.
@@ -874,6 +870,8 @@ function replaceFile(at, text) {
 
     // X on what it was made from. What's approved shows nothing wrong, no dialog stops it, and Undo waits.
     const [heldFile, heldTakes] = [(await of('Sheet')).sha256, await versions('Sheet')];
+    // As it stands before: its words are its second take's (New wrote them, cl-909), so the first, approved, may already be out of date.
+    const { standing: standsBefore, changed: changedBefore } = await of('Sheet');
     const filesThen = readdirSync(join(folder, 'files')).length;
     // Held until the press: if the press can't be made, that's what's said, not this wait's own timeout.
     const deleting = page.waitForResponse((answer) => answer.request().method() === 'DELETE' && answer.url().endsWith('/assets/source-a')).catch((error) => error);
@@ -892,7 +890,9 @@ function replaceFile(at, text) {
     await away();
     await page.waitForTimeout(300);
     check('approved_stands', (await of('Sheet')).sha256 === heldFile && (await of('Sheet')).pinned, await of('Sheet'));
-    check('approved_shows_nothing_wrong', (await box('Sheet').locator('.state-dot.failed').count()) === 0 && (await of('Sheet')).standing === 'current', await of('Sheet'));
+    // A deleted input is no change to it (df98b8246): it stands as it did, and nothing on it says otherwise.
+    const standsAfter = await of('Sheet');
+    check('approved_shows_nothing_wrong', (await box('Sheet').locator('.state-dot.failed').count()) === 0 && standsAfter.standing === standsBefore && JSON.stringify(standsAfter.changed ?? []) === JSON.stringify(changedBefore ?? []), { before: { standing: standsBefore, changed: changedBefore }, after: standsAfter });
     await open('Sheet');
     check('approved_face_has_no_warning', (await box('Sheet').locator('.status.ood, .status.bad, .warned').count()) === 0, await box('Sheet').innerText());
     check('wire_missing', (await of('Sheet')).missing?.join() === 'source-a', (await of('Sheet')).missing);
