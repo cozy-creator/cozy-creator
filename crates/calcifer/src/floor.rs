@@ -378,7 +378,12 @@ pub(crate) async fn check(api: &Arc<Api>, uv: &Path, python: &str, src: &Path, p
             Wheel { version: release.version.clone(), url, sha256 }
         }
     };
-    let work = tempfile::tempdir().map_err(|e| Error::internal("runtime_floor_unread", e.to_string()))?;
+    // A project's package is read where its own staging is.
+    let work = match crate::private_io::current() {
+        Some(scope) => tempfile::tempdir_in(crate::private_io::cache(Some(&scope), PathBuf::new(), "author")?),
+        None => tempfile::tempdir(),
+    }
+    .map_err(|e| Error::internal("runtime_floor_unread", e.to_string()))?;
     let missing = lacks(uv, work.path(), python, &fetched(&floor, work.path()).await?, package)?;
     if missing.is_empty() {
         return Ok(());

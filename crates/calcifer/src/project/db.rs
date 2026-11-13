@@ -28,9 +28,10 @@ mod tests;
 pub(crate) const DB: &str = "project.db";
 /// Its write-ahead log, where a commit lands first.
 pub(crate) const WAL: &str = "project.db-wal";
-/// This schema's `user_version`: 3's, with each box's stable id on its row, so the rows alone say what the document does (cl-885). A
-/// database of another isn't read; an older one from 2 is migrated (`migrate`). A new schema is this number and its step in `migrate`.
-pub(super) const VERSION: i64 = 4;
+/// This schema's `user_version`: 4's (cl-904's rows, each box's stable id on its row so the rows alone say what the document does,
+/// cl-885), with the project's run journal beside them. A database of another isn't read; an older one from 2 is migrated (`migrate`).
+/// A new schema is this number and its step in `migrate`.
+pub(super) const VERSION: i64 = 5;
 const SCHEMA: &str = "
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
     CREATE TABLE head (key TEXT PRIMARY KEY, ord INTEGER NOT NULL, value TEXT NOT NULL) STRICT;
@@ -211,21 +212,35 @@ pub(crate) fn locked_elsewhere(conn: &Connection) -> bool {
 
 /// Open an existing current-format project. Read-only validation precedes every writable pragma.
 pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
-    migrate(path)?;
     let checked = connect(path, true)?;
-    require_current(&checked, path)?;
+    require_readable(&checked, path)?;
     drop(checked);
+    migrate(path)?;
     let conn = connect(path, false)?;
     require_current(&conn, path)?;
     configure(&conn, path)?;
     Ok(conn)
 }
 
+/// The released schema, 2, a 3 of either half, or 4: one whose CRDT format is current, what `migrate` takes.
+fn require_readable(conn: &Connection, path: &Path) -> Result<(), Error> {
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(|error| sql(path, error))?;
+    if !(2..=VERSION).contains(&version) { return require_current(conn, path); }
+    let format: i64 = conn.query_row("SELECT format FROM crdt_document WHERE id = 1", [], |row| row.get(0)).map_err(|error| sql(path, error))?;
+    if format != crdt::FORMAT { return Err(err(path, "unsupported CRDT format")); }
+    Ok(())
+}
+
+fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)", [name], |row| row.get(0))
+}
+
 /// Schema 2 kept a project's files, versions and runs in its Automerge document as well as in rows. Schema 3 keeps them in rows
 /// alone (cl-904, Paul 11-12: the CRDT is for node state, never files): the document's are written to the rows once, which then
 /// stand, and the document's next change leaves them out. Schema 4 reads a project from its rows (cl-885): it adds each box's id to its
-/// row, and `rows_at` and `conflicts` to `meta`, and changes no row 3 has. One transaction from any older schema; the project as it
-/// was is kept beside it once, `project.db.pre-schema4`, never read.
+/// row, and `rows_at` and `conflicts` to `meta`, and changes no row 3 has. Schema 5 adds the project's run journal beside them. A 3
+/// with the journal and no rows, from a candidate of 5, takes the rows too. One transaction from any older schema; the project as it was
+/// is kept beside it once, `project.db.pre-schema5`, never read.
 fn migrate(path: &Path) -> Result<(), Error> {
     let e = |error| sql(path, error);
     let version = |conn: &Connection| conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0));
@@ -234,29 +249,38 @@ fn migrate(path: &Path) -> Result<(), Error> {
     if !older(version(&checked).map_err(e)?) {
         return Ok(());
     }
+    // A 4 with the journal is a candidate's of 5, never released: refused as it is rather than read as #3198's 4.
+    if version(&checked).map_err(e)? == 4 && has_table(&checked, "runs").map_err(e)? {
+        return Err(Error::new(Kind::Validation, "project_db_version", format!("{} has an unreleased schema 4 with a run journal; only current CRDT schema {VERSION} is supported", path.display()))
+            .remedy("Preserve this database. Create a new current-format project in a separate empty directory"));
+    }
     let kept = path.with_file_name(format!("{DB}.pre-schema{VERSION}"));
     if !kept.exists() {
         let part = path.with_file_name(format!("{DB}.pre-schema{VERSION}.part"));
         checked.backup(rusqlite::MAIN_DB, &part, rusqlite::backup::NO_PROGRESS).map_err(e)?;
         std::fs::rename(&part, &kept).map_err(|error| err(path, error))?;
-        tracing::info!("project.db before schema {VERSION} kept at {}", kept.display());
     }
     drop(checked);
     let mut conn = connect(path, false)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     // Another process may have migrated it while this waited.
     let from = version(&tx).map_err(e)?;
-    if !older(from) {
+    if !older(from) || (from == 4 && has_table(&tx, "runs").map_err(e)?) {
         return Ok(());
     }
     let doc = read_document(&tx, path)?;
-    if from == 2 {
+    if !has_table(&tx, "lock_runs").map_err(e)? {
         let lock = doc.legacy_lock()?;
         tx.execute_batch("CREATE TABLE IF NOT EXISTS lock_runs (ord INTEGER PRIMARY KEY, record TEXT NOT NULL) STRICT;
             DELETE FROM lock_assets; DELETE FROM versions; DELETE FROM lock_files; DELETE FROM run_files; DELETE FROM lock_runs; DELETE FROM facts;").map_err(e)?;
         lock_written(&tx, &Lock::default(), &lock).map_err(e)?;
     }
     rows_of(&tx, path, doc)?;
+    if !has_table(&tx, "runs").map_err(e)? {
+        tx.execute_batch(super::journal::SCHEMA).map_err(e)?;
+    } else if !tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name = 'attempt')", [], |row| row.get::<_, bool>(0)).map_err(e)? {
+        tx.execute_batch("ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1").map_err(e)?;
+    }
     tx.pragma_update(None, "user_version", VERSION).map_err(e)?;
     tx.commit().map_err(e)
 }
@@ -351,6 +375,10 @@ fn configure(conn: &Connection, path: &Path) -> Result<(), Error> {
     let e = |error| sql(path, error);
     conn.pragma_update(None, "journal_mode", "WAL").map_err(e)?;
     conn.pragma_update(None, "synchronous", "FULL").map_err(e)?;
+    conn.execute_batch(super::journal::UNSEEN_SCHEMA).map_err(e)?;
+    conn.pragma_update(None, "foreign_keys", "ON").map_err(e)?;
+    conn.pragma_update(None, "temp_store", "MEMORY").map_err(e)?;
+    crate::store::register_owner(conn,path.parent().map(Path::to_owned)).map_err(e)?;
     // Checkpoints run beside writes, never in a commit.
     conn.pragma_update(None, "wal_autocheckpoint", 0).map_err(e)
 }
@@ -755,10 +783,12 @@ fn save_document(tx: &Transaction<'_>, at: &Path, doc: &mut crdt::Document, seq:
 }
 
 /// The initial current-format schema and native baseline commit atomically for a newly reserved file.
-fn initialize_current(conn: &mut Connection, at: &Path) -> Result<(), Error> {
+fn initialize_current(conn: &mut Connection, at: &Path, key:Option<&(String,String)>) -> Result<(), Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|error| sql(at, error))?;
     tx.execute_batch(SCHEMA).map_err(|error| sql(at, error))?;
     tx.execute_batch(CRDT_SCHEMA).map_err(|error| sql(at, error))?;
+    tx.execute_batch(super::journal::SCHEMA).map_err(|error| sql(at, error))?;
+    if let Some((key,digest))=key { tx.execute("INSERT INTO request_keys(key,digest,at_ms) VALUES(?1,?2,?3)",params![key,digest,super::now_ms()]).map_err(|error|sql(at,error))?; }
     tx.execute("INSERT INTO meta VALUES ('seq', '0')", []).map_err(|error| sql(at, error))?;
     let mut doc = crdt::Document::new(at);
     doc.initialize(crdt::value(&Stored::default(), &[], &serde_json::Value::Null, None))?;
@@ -1073,6 +1103,10 @@ pub(crate) fn keep_answer(conn: &Connection, key: &str, digest: &str, status: u1
 
 /// Exclusively create a fresh current database. Existing paths, including incomplete stages, are preserved.
 pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(String, String)]) -> Result<(), Error> {
+    create_with_key(path,stored,ops,asked,None)
+}
+
+pub(super) fn create_with_key(path:&Path,stored:&Stored,ops:&[OpRow],asked:&[(String,String)],key:Option<&(String,String)>)->Result<(),Error> {
     OpenOptions::new().write(true).create_new(true).open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
             Error::new(Kind::Conflict, "project_db_exists", format!("{} already exists; preserve it and choose a fresh database path", path.display()))
@@ -1080,7 +1114,7 @@ pub(crate) fn create(path: &Path, stored: &Stored, ops: &[OpRow], asked: &[(Stri
     })?;
     let mut conn = connect(path, false)?;
     configure(&conn, path)?;
-    initialize_current(&mut conn, path)?;
+    initialize_current(&mut conn, path,key)?;
     let mut fresh = stored.clone();
     crdt::identify(&Stored::default(), &mut fresh);
     let mut ops = ops.to_vec();

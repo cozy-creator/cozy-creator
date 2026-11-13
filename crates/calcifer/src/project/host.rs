@@ -181,13 +181,24 @@ pub(crate) struct Host {
     /// This walk's: the installs its local code asks for are keyed under it, so a failed one is
     /// asked again by the next walk, never replayed.
     walk: String,
+    project: Option<String>,
 }
 
 impl Host {
     pub(crate) fn new(api: &Arc<Api>) -> Self {
         let mut walk = [0u8; 8];
         getrandom::fill(&mut walk).expect("the OS has randomness");
-        Self { api: api.clone(), packages: Mutex::default(), walk: hex::encode(walk) }
+        Self { api: api.clone(), packages: Mutex::default(), walk: hex::encode(walk), project: crate::private_io::current().map(|scope| scope.storage.project_id) }
+    }
+
+    pub(crate) fn for_project(api: &Arc<Api>, project: &str) -> Self {
+        let mut host=Self::new(api); host.project=Some(project.into()); host
+    }
+    fn journal(&self) -> crate::store::Result<crate::store::RunStore<'_>> {
+        match &self.project {
+            Some(project) => self.api.calcifer.project_store(project).map(crate::store::RunStore::Project),
+            None => Ok(crate::store::RunStore::Maintenance(self.api.calcifer.maintenance_store())),
+        }
     }
 
     /// What it runs in, for what outlives one of its calls.
@@ -264,7 +275,7 @@ impl Host {
                 updating => updating?,
             };
             tracing::info!("{}: the render waits for run {}", note.message, run.number);
-            let ended = self.ended(&run.id).await?;
+            let ended = self.own_ended(&run.id).await?;
             if ended.status != RunStatus::Completed {
                 return Err(crate::cozy::update(&self.api, wanted).await.err().unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", note.message)));
             }
@@ -284,7 +295,7 @@ impl Host {
 
     /// How long the newest finished run of `target` on `machine` took, in seconds.
     pub(crate) fn last_took(&self, target: &str, machine: &str) -> Option<f64> {
-        let store = self.api.calcifer.store();
+        let store = self.journal().ok()?;
         let filter = crate::store::RunFilter { status: Some(RunStatus::Completed), target: Some(target.to_owned()), machine: Some(machine.to_owned()), out_dir: None, before: None, limit: 20 };
         let (rows, ..) = store.runs(&filter).ok()?;
         rows.iter().find_map(|row| took_s(&store.detail(row).ok()?))
@@ -303,14 +314,14 @@ impl Host {
     /// The run sent under `key`, if one was.
     pub(crate) fn sent(&self, key: &str) -> Result<Option<Run>, Error> {
         let calcifer = &self.api.calcifer;
-        let row = calcifer.store().keyed(key).map_err(|e| refused(e.into()))?;
+        let row = self.journal().map_err(|e| refused(e.into()))?.keyed(key).map_err(|e| refused(e.into()))?;
         row.map(|row| calcifer.record(&row).map_err(refused)).transpose()
     }
 
     /// Run `number`, as its record says now.
     pub(crate) fn numbered(&self, number: u64) -> Option<Run> {
         let calcifer = &self.api.calcifer;
-        calcifer.record(&calcifer.store().run_by_number(number).ok()??).ok()
+        calcifer.record(&self.journal().ok()?.run_by_number(number).ok()??).ok()
     }
 
     /// The run once it ended and each output landed here or failed to.
@@ -323,11 +334,26 @@ impl Host {
         self.until(id, |_| true).await
     }
 
+    /// Calcifer's own run `id` once it ended: cozy's update (cl-978), kept in no project's journal.
+    async fn own_ended(&self, id: &RunId) -> Result<Run, Error> {
+        let calcifer = &self.api.calcifer;
+        let mut tail = calcifer.subscribe();
+        loop {
+            let row = calcifer.maintenance_store().run(id.as_str()).map_err(|e| refused(e.into()))?;
+            let row = row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
+            let run = calcifer.record(&row).map_err(refused)?;
+            if matches!(run.status, RunStatus::Completed | RunStatus::Failed | RunStatus::Canceled) {
+                return Ok(run);
+            }
+            crate::Calcifer::moved(&mut tail, id).await;
+        }
+    }
+
     async fn until(&self, id: &RunId, and: impl Fn(&Run) -> bool) -> Result<Run, Error> {
         let calcifer = &self.api.calcifer;
         let mut tail = calcifer.subscribe();
         loop {
-            let row = calcifer.store().run(id.as_str()).map_err(|e| refused(e.into()))?;
+            let row = self.journal().and_then(|store|store.run(id.as_str())).map_err(|e| refused(e.into()))?;
             let row =
                 row.ok_or_else(|| Error::new(Kind::NotFound, "run_not_found", format!("Calcifer holds no run {id}")))?;
             let run = calcifer.record(&row).map_err(refused)?;
@@ -386,7 +412,7 @@ impl Host {
     /// Cancels run `number` on `machine` if it has not begun.
     pub(crate) fn cancel_unstarted(&self, number: u64, machine: &str) {
         let calcifer = &self.api.calcifer;
-        let Ok(Some(row)) = calcifer.store().run_by_number(number) else { return };
+        let Ok(Some(row)) = self.journal().and_then(|store| store.run_by_number(number)) else { return };
         if row.machine.as_deref() == Some(machine) && row.started_at_ms.is_none() && row.state != crate::store::State::Settled {
             let _ = calcifer.cancel(&row.id);
         }

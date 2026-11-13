@@ -40,7 +40,7 @@ async function drag(page, name, dx, dy) {
   const open = async (url) => {
     const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
-    await (url ? page.goto(url) : signIn(page));
+    await signIn(page, url);
     return page;
   };
 
@@ -55,17 +55,17 @@ async function drag(page, name, dx, dy) {
   const url = first.url();
   const id = (await projectFromPage(first)).id;
   const folder = (await first.evaluate(async (id) => {
-    const { token } = JSON.parse(localStorage.getItem('cozy.session'));
-    return (await fetch(`/v1/projects/${id}`, { headers: { Authorization: `Bearer ${token}` } })).json();
+    const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
+    return (await fetch(`/v1/projects/${id}`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
   }, id)).path;
   await drop(first, [{ name: 'Here.png', type: 'image/png', bytes: png(90) }], 600, 300);
   await first.waitForSelector('.nm-field');
   await first.keyboard.press('Enter');
   seen.project = { id, folder };
   // Its row as Calcifer answers it (cl-803: the canvas is project.db's), asked from here.
-  const { token } = JSON.parse(await first.evaluate(() => localStorage.getItem('cozy.session')));
+  const { token } = JSON.parse(await first.evaluate(() => sessionStorage.getItem('cozy.session')));
   const row = async (name) => {
-    const card = (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}` } })).json()).cards?.[name];
+    const card = (await (await fetch(`${base}/v1/projects/${id}/canvas`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).cards?.[name];
     return card ? `${card.x},${card.y}` : null;
   };
   await until('the element landed', () => first.locator('.nm:text-is("here")').count().then(async (n) => n === 1 && (await first.locator('.card .status.mak').count()) === 0), Boolean);
@@ -91,13 +91,13 @@ async function drag(page, name, dx, dy) {
 
   if (process.env.RESTART) {
     // kill -9: offline, in the top bar; then back with no reload and the session intact.
-    const held = await third.evaluate(() => localStorage.getItem('cozy.session'));
+    const held = await third.evaluate(() => sessionStorage.getItem('cozy.session'));
     const restarted = new Promise((done, fail) => exec(process.env.RESTART, { shell: 'bash' }, (error) => (error ? fail(error) : done())));
     const said = await until('it said offline', () => third.locator('.pill.warn').allTextContents(), (lines) => lines.some((line) => line.startsWith('Calcifer offline')));
     await restarted;
     await until('back', () => third.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('offline')));
     seen.said_during_restart = said;
-    check('no_sign_in_needed', (await third.locator('.gate').count()) === 0 && (await third.evaluate(() => localStorage.getItem('cozy.session'))) === held);
+    check('no_sign_in_needed', (await third.locator('.gate').count()) === 0 && (await third.evaluate(() => sessionStorage.getItem('cozy.session'))) === held);
     check('still_on_canvas', (await third.locator('.nm:text-is("here")').count()) === 1);
     const wasRow = await row('here');
     const otherWas = await place(second, 'here');

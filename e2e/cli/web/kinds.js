@@ -41,9 +41,9 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
 
@@ -62,7 +62,7 @@ async function died(why) {
   // A picture, a box of its own.
   const pictures = mkdtempSync(join(tmpdir(), 'web-kinds-'));
   writeFileSync(join(pictures, 'pic.png'), png(90));
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(pictures, 'pic.png')), name: 'pic', exact: true, at: { x: 100, y: 100 } }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(pictures, 'pic.png'), id), name: 'pic', exact: true, at: { x: 100, y: 100 } }) });
   await box('pic').waitFor();
 
   /** Nothing open. */
@@ -74,7 +74,7 @@ async function died(why) {
 
   // A clip, a video box of its own.
   writeFileSync(join(pictures, 'clip.mp4'), MP4);
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(pictures, 'clip.mp4')), name: 'clip', exact: true, at: { x: 700, y: 100 } }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(pictures, 'clip.mp4'), id), name: 'clip', exact: true, at: { x: 700, y: 100 } }) });
   await box('clip').waitFor();
 
   // The palette's Video, as Orbit is a video tool: its model is the first the palette has (H3's, a default).

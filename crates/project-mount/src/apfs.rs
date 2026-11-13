@@ -117,17 +117,6 @@ fn run(
     secret: Option<&[u8]>,
     budget: Duration,
 ) -> Result<Vec<u8>> {
-    #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os("COZY_VAULT_PROVIDER_DIAGNOSTICS") {
-        let mut log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(io_error("open native provider diagnostics"))?;
-        // Only executable/arguments: unlock material is supplied separately over stdin.
-        writeln!(log, "native operation {operation}: {command:?}")
-            .map_err(io_error("write native provider diagnostics"))?;
-    }
     let mut child = command
         .stdin(if secret.is_some() {
             Stdio::piped()

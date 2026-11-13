@@ -49,6 +49,8 @@ export type OutboxPort = Pick<Outbox, "add" | "owing" | "back" | "wait" | "owed"
 export class Outbox {
   readonly owed = signal<Owed>({ count: 0, slow: false })
   private queue: Action<any>[] = []
+  private frozen = false
+  private closeRefused = false
   /** What's on its way outside the queue: a file's bytes. */
   private outside = 0
   private going = false
@@ -60,11 +62,21 @@ export class Outbox {
   private active = new Map<Action<any>, AbortController>()
 
   /** The existing shared queue, with project ownership attached by its canvas. */
-  scoped(project: () => string | null): OutboxPort {
+  scoped(project: () => string | null, initial: string | null = null): OutboxPort {
+    let owner = initial
+    const current = () => {
+      const now = project()
+      if (now) owner = now
+      if (!now && owner) throw new DOMException("Project view retired", "AbortError")
+      return now
+    }
     return {
       owed: this.owed,
-      add: (action) => this.add({ ...action, project: project() }),
-      owing: () => this.owing(),
+      add: (action) => {
+        try { this.add({ ...action, project: current() }) }
+        catch (error) { action.refused?.(error) }
+      },
+      owing: () => { current(); return this.owing() },
       back: () => this.back(),
       wait: (tries, signal) => this.wait(tries, signal),
     }
@@ -94,7 +106,23 @@ export class Outbox {
     })
   }
 
+  freeze() { this.frozen = true; this.closeRefused = false }
+  /** Edits not yet sent: queued, and files on their way. */
+  unsent() { return this.queue.length + this.outside }
+  resume() { this.frozen = false }
+  async saved(): Promise<void> {
+    while (this.owed.get().count) {
+      if (this.closeRefused) throw new Error("A pending edit could not be saved")
+      await new Promise<void>((done) => { const stop = this.owed.subscribe(() => { stop(); done() }) })
+    }
+    if (this.closeRefused) throw new Error("A pending edit could not be saved")
+  }
+
   add<T>(action: Action<T>) {
+    if (this.frozen) {
+      action.refused?.(new ApiError(409, { kind: "conflict", code: "browser_closing", message: "The Cozy browser is saving its edits before closing" }))
+      return
+    }
     if (action.project && this.blocked.has(action.project)) {
       action.refused?.(new ApiError(423, { kind: "conflict", code: "project_locked", message: "Unlock the project before saving this change" }))
       return
@@ -139,7 +167,7 @@ export class Outbox {
   }
 
   private tell(change: Partial<Owed> = {}) {
-    const now = { ...this.owed.get(), ...change, count: this.queue.length + this.outside }
+    const now = { ...this.owed.get(), ...change, count: this.queue.length + this.outside + [...this.active.keys()].filter((action) => !this.queue.includes(action)).length }
     const was = this.owed.get()
     if (now.count !== was.count || now.slow !== was.slow || now.held !== was.held) this.owed.set(now)
   }
@@ -185,11 +213,14 @@ export class Outbox {
         }
         const was = tries > 1 && error instanceof ApiError ? action.landed?.(error) : undefined
         this.active.delete(action)
+        if (this.frozen && was === undefined) this.closeRefused = true
+        this.tell()
         if (was === undefined) action.refused?.(error)
         else action.done?.(was)
         return
       }
       this.active.delete(action)
+      this.tell()
       if (!this.cancelled.has(action)) action.done?.(answer)
       return
     }

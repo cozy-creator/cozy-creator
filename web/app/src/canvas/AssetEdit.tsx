@@ -504,9 +504,9 @@ function ListGroup({ name, field, bound, view, place }: Drawn) {
   const run = accordion && focused === name ? watched(view)?.run : undefined
   const live = view.run?.number === run ? view.run : undefined
   const settled = (status: string | undefined) => status === "completed" || status === "failed" || status === "canceled"
-  const enabled = run !== undefined && !settled(live?.status)
+  const enabled = Boolean(store.projectId) && run !== undefined && !settled(live?.status)
   const { data: full } = useQuery({
-    ...runFullQuery(client, run ?? 0, live?.settled_at_ms ?? 0),
+    ...runFullQuery(client, store.projectId ?? "", run ?? 0, live?.settled_at_ms ?? 0),
     enabled,
     refetchInterval: (query) => enabled && !settled(query.state.data?.status) ? 1000 : false,
     refetchIntervalInBackground: false,

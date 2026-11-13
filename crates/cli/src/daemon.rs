@@ -196,11 +196,11 @@ fn print_log_line(ctx: &Context, machine: &str, log: LogName, line: &str) {
     }
 }
 
-/// Calcifer's log, read from its file: there whether or not Calcifer is, its newest `lines` from
-/// the last `since`. Followed, each line as it is written, woken by a watch on its directory
-/// (`tail -F`, across a rotation to `calcifer.log.1`).
+/// Calcifer's closed health log (`health.log`), read from its file: there whether or not Calcifer
+/// is, its newest `lines` from the last `since`. Followed, each line as it is written, woken by a
+/// watch on its directory (`tail -F`, across a rotation to `health.log.1`).
 async fn calcifer_log(ctx: &Context, q: &LogQuery) -> Result<ExitCode, Error> {
-    let path = ctx.home.calcifer_log();
+    let path = ctx.home.calcifer_health();
     if !path.exists() {
         return Err(Error::new(
             Kind::NotFound,
@@ -219,7 +219,7 @@ async fn calcifer_log(ctx: &Context, q: &LogQuery) -> Result<ExitCode, Error> {
             format!("{}: {e}", path.display()),
         )
     };
-    let log = Log::rotated(ctx.home.calcifer(), "calcifer.log");
+    let log = Log::rotated(ctx.home.calcifer(), "health.log");
     let start = Start::Last(q.lines as u64);
     // Lines before `since` are skipped up to the first one stamped at or after it.
     let mut cutoff = q

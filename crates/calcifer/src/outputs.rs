@@ -58,6 +58,8 @@ const RANGE: u64 = 8 << 20;
 const RANGES_PER_LANE: usize = 4;
 /// How many whole reads of one revision may fail its digest before it is given up.
 const WRONG_READS: u32 = 3;
+/// An output landing this long after its run ended is said (`calcifer.diagnostics`).
+const LATE_LANDING_MS: i64 = 500;
 
 /// An output Calcifer still owes this computer: its run's number, its name and index, its length
 /// and the bytes of it in place.
@@ -134,10 +136,17 @@ fn export_warning(run: &RunRow, detail: impl std::fmt::Display) {
 }
 
 impl Calcifer {
+    pub(super) fn retire_exports(&self, ids:&std::collections::HashSet<String>) {
+        lock(&self.exports.appended).retain(|(id,..),_|!ids.contains(id.as_str()));
+        lock(&self.exports.moving).retain(|(id,..),_|!ids.contains(id.as_str()));
+        lock(&self.exports.arriving).retain(|id,_|!ids.contains(id.as_str()));
+        lock(&self.exports.runs).retain(|id,wake| { if ids.contains(id.as_str()) { wake.notify_waiters(); false } else { true } });
+    }
+
     /// Starts an exporter for each run that owes one, then for each run whose outputs change.
     pub(crate) fn export_outputs(self: &Arc<Self>) -> Result<(), Error> {
         let mut events = self.subscribe();
-        for (id, _) in self.store.exports_owed()? {
+        for (id, _) in self.each_store(|store| store.exports_owed())?.into_iter().flatten().collect::<Vec<_>>() {
             self.export(&id);
         }
         let me = Arc::downgrade(self);
@@ -170,7 +179,7 @@ impl Calcifer {
                         me.export(&id);
                     }
                     Ok(_) => {}
-                    Err(RecvError::Lagged(_)) => match me.store.exports_owed() {
+                    Err(RecvError::Lagged(_)) => match me.each_store(|store| store.exports_owed()).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()) {
                         Ok(owed) => owed.iter().for_each(|(id, _)| me.export(id)),
                         Err(e) => warn!("{e}"),
                     },
@@ -187,8 +196,13 @@ impl Calcifer {
         tasks.spawn(task);
     }
 
+    /// Whether the run's exporter goes on.
+    pub(super) fn exporting(&self, id: &RunId) -> bool {
+        lock(&self.exports.runs).contains_key(id)
+    }
+
     /// Starts the run's exporter, or wakes it.
-    fn export(self: &Arc<Self>, id: &RunId) {
+    pub(super) fn export(self: &Arc<Self>, id: &RunId) {
         let wake = {
             let mut runs = lock(&self.exports.runs);
             if let Some(wake) = runs.get(id) {
@@ -205,9 +219,9 @@ impl Calcifer {
 
     /// A project's run that ended: what stays on its machine, in the project's lock with who holds it.
     fn note_stays(&self, id: &RunId) {
-        let Ok(Some(row)) = self.store.run(id.as_str()) else { return };
+        let Ok(Some(row)) = self.with_run_store(id.as_str(), |store| store.run(id.as_str())) else { return };
         let (Some(project), Some(machine)) = (crate::project::of_landing(&row.out_dir), &row.machine) else { return };
-        let Ok(run) = self.store.record(&row) else { return };
+        let Ok(run) = self.record(&row) else { return };
         for item in run.output.iter().filter(|item| item.stays && item.path.is_none()) {
             let Some(sha256) = &item.sha256 else { continue };
             if let Err(why) = crate::project::stays(project, &sha256.to_string(), machine, item.length) {
@@ -216,12 +230,19 @@ impl Calcifer {
         }
     }
 
+    fn making_scoped(&self, digest: &str, machine: &str) -> crate::store::Result<Option<(RunRow, OutputRow)>> {
+        match crate::private_io::current() {
+            Some(scope) => self.project_store(&scope.storage.project_id)?.making(digest, machine),
+            None => self.maintenance_store().making(digest, machine),
+        }
+    }
+
     /// Whether `machine` still has what stays on it, a byte of it read as `bring` reads it, or it's on its way here. Only its saying
     /// it holds that no more is a no: one out of reach may have it yet.
     pub(crate) async fn still_holds(&self, digest: &str, machine: &str) -> bool {
-        let Ok(Some((run, item))) = self.store.making(digest, machine) else { return false };
+        let Ok(Some((run, item))) = self.making_scoped(digest, machine) else { return false };
         // Its export going: `bring` waits for it, so a reader bound now has it (cl-815).
-        let owed = self.store.outputs_to_export(run.id.as_str()).unwrap_or_default();
+        let owed = self.row_store(&run).and_then(|store|store.outputs_to_export(run.id.as_str())).unwrap_or_default();
         if owed.iter().any(|owed| owed.name == item.name && owed.index == item.index) {
             return true;
         }
@@ -231,7 +252,7 @@ impl Calcifer {
         {
             return true;
         }
-        let link = match self.reach(&run, &mut None) {
+        let link = match self.reach(&run, &mut None).await {
             Ok(link) => link,
             Err(Failure::Lost(_)) => return false,
             Err(_) => return true,
@@ -244,19 +265,19 @@ impl Calcifer {
     /// What stays on `machine` brought here now, because something needs it, as an export brings an output: its project's `files/`
     /// holds it after. A machine out of reach is tried again; Err says why it can't be had.
     pub(crate) async fn bring(&self, digest: &str, machine: &str) -> Result<(), String> {
-        let made = self.store.making(digest, machine).map_err(|e| e.to_string())?;
+        let made = self.making_scoped(digest, machine).map_err(|e| e.to_string())?;
         let Some((run, item)) = made else {
             return Err(format!("Calcifer knows of no run on {machine} that made it"));
         };
         // On its way here already: that export's landing, and no second read of it.
         let mut events = self.subscribe();
         let mut exporting = false;
-        while (self.store.outputs_to_export(run.id.as_str()).map_err(|e| e.to_string())?.iter()).any(|owed| owed.name == item.name && owed.index == item.index) {
+        while (self.row_store(&run).and_then(|store|store.outputs_to_export(run.id.as_str())).map_err(|e| e.to_string())?.iter()).any(|owed| owed.name == item.name && owed.index == item.index) {
             exporting = true;
             Calcifer::moved(&mut events, &run.id).await;
         }
         if exporting {
-            let now = self.store.output(run.id.as_str(), &item.name, item.index).map_err(|e| e.to_string())?;
+            let now = self.row_store(&run).and_then(|store|store.output(run.id.as_str(), &item.name, item.index)).map_err(|e| e.to_string())?;
             return match now.and_then(|now| now.export_error) {
                 Some(why) => Err(why),
                 None => Ok(()),
@@ -270,7 +291,7 @@ impl Calcifer {
         let mut backoff = tensorfs::fetch::Backoff::background();
         loop {
             let mut changed = None;
-            let done = match self.reach(&run, &mut changed) {
+            let done = match self.reach(&run, &mut changed).await {
                 Ok(link) => self.export_item(&run, &item, &link, changed).await,
                 Err(failure) => Err(failure),
             };
@@ -295,7 +316,8 @@ impl Calcifer {
         loop {
             let (run, items) = match self.next_exports(id) {
                 Ok(Some(next)) => next,
-                Ok(None) => return,
+                Ok(None) => return self.release_run(id),
+                Err(StoreError::Locked(code)) if code!="project_busy" => return,
                 Err(e) => {
                     warn!(run = %id, "{e}");
                     pause.wait(wake, None).await;
@@ -312,7 +334,12 @@ impl Calcifer {
                 continue;
             }
             let mut changed = None;
-            let exported = match self.reach(&run, &mut changed) {
+            let reaching = Instant::now();
+            let reached = self.reach(&run, &mut changed).await;
+            if reaching.elapsed() > std::time::Duration::from_millis(200) {
+                warn!(run = %id, "its machine took {} ms to reach for its outputs", reaching.elapsed().as_millis());
+            }
+            let exported = match reached {
                 Ok(link) => {
                     let exports = (items.iter())
                         .map(|item| self.export_item(&run, item, &link, changed.clone()));
@@ -347,7 +374,7 @@ impl Calcifer {
                             remove(&suffixed(&dest, HELD));
                             remove(&suffixed(&dest, ".manifest.part"));
                         }
-                        match (self.store).export_failed(id.as_str(), name, index, rev, &reason) {
+                        match self.with_run_store(id.as_str(), |store| store.export_failed(id.as_str(), name, index, rev, &reason)) {
                             Ok(events) => self.publish(id, events),
                             Err(e) => {
                                 warn!(run = %id, "{e}");
@@ -378,24 +405,32 @@ impl Calcifer {
     /// `export` takes, so an event after this starts another.
     fn next_exports(&self, id: &RunId) -> Result<Option<(RunRow, Vec<OutputRow>)>, StoreError> {
         let mut runs = lock(&self.exports.runs);
-        let next = match self.store.run(id.as_str())? {
+        let next = self.with_run_store(id.as_str(), |store| match store.run(id.as_str())? {
             Some(run) => {
-                let mut items = self.store.outputs_to_export(id.as_str())?;
+                let mut items = store.outputs_to_export(id.as_str())?;
                 items.truncate(LANES);
-                Some((run, items)).filter(|(_, items)| !items.is_empty())
+                Ok(Some((run, items)).filter(|(_, items)| !items.is_empty()))
             }
-            None => None,
-        };
-        if next.is_none() {
-            runs.remove(id);
-            lock(&self.exports.appended).retain(|(run, ..), _| run != id);
+            None => Ok(None),
+        });
+        match &next {
+            Ok(None) => {
+                runs.remove(id);
+                lock(&self.exports.appended).retain(|(run, ..), _| run != id);
+            }
+            // Its project closed: the exporter ends, and the project's next opening starts another.
+            Err(StoreError::Locked(code)) if code != "project_busy" => {
+                warn!(run = %id, "its exporter ends with its outputs owed: {code}");
+                drop(runs.remove(id));
+            }
+            _ => {}
         }
-        Ok(next)
+        next
     }
 
     /// The run's machine's connection, whose bulk lanes read; `changed` is told when the
     /// machine changes.
-    fn reach(
+    async fn reach(
         &self,
         run: &RunRow,
         changed: &mut Option<watch::Receiver<()>>,
@@ -410,10 +445,10 @@ impl Calcifer {
             return Err(Failure::Lost(format!("its machine {name} ended: {reason}")));
         }
         let link = link.ok_or_else(|| Failure::Again(format!("waiting for {name} to start")))?;
-        if name == "local" {
-            if let Some(scope) = crate::private_io::of_output(&run.out_dir).map_err(|error| Failure::Again(error.message))? {
-                return Ok(link.with_private(scope));
-            }
+        let owner=self.row_owner(run).map_err(|_|Failure::Again("project storage owner is unavailable".into()))?;
+        if let Some(owner)=owner {
+            if run.owner!=owner.project_id() { return Err(Failure::Refused("copied execution history is inert".into())); }
+            return crate::private_io::execution_link(owner.project_id(),owner.root(),name,&link).await.map_err(|error|Failure::Refused(error.code));
         }
         Ok(link)
     }
@@ -429,7 +464,7 @@ impl Calcifer {
     ) -> Result<(), Failure> {
         let mut events = self.subscribe();
         let superseded = || -> Result<bool, Failure> {
-            let now = self.store.output(run.id.as_str(), &item.name, item.index)?;
+            let now = self.row_store(&run).and_then(|store|store.output(run.id.as_str(), &item.name, item.index))?;
             Ok(now.is_none_or(|now| now.rev != item.rev))
         };
         if superseded()? {
@@ -475,7 +510,7 @@ impl Calcifer {
                 done = &mut work => break done,
                 _ = ticks.tick() => {
                     // Once it ended: while it goes, its own work is what it says.
-                    let ended = matches!(self.store.run(run.id.as_str()), Ok(Some(now)) if now.state == crate::store::State::Settled);
+                    let ended = matches!(self.row_store(run).and_then(|store|store.run(run.id.as_str())), Ok(Some(now)) if now.state == crate::store::State::Settled);
                     if ended && let Some(progress) = self.arriving(&run.id) {
                         let _ = self.events.send((run.id.clone(), Event::Arriving { progress }));
                     }
@@ -529,6 +564,13 @@ impl Calcifer {
         if !private_run(run) { info!(run = %run.id, output = %item.name, index = item.index, rev = item.rev,
             bytes = moved.load(Ordering::Relaxed), phase = "output_export", state = "end",
             ok = done.is_ok(), elapsed_ms = began.elapsed().as_secs_f64() * 1000.0); }
+        // A take is listed as its run ends and is here once this lands: one that lands late is said, with where its time went.
+        let settled = self.row_store(run).and_then(|store| store.run(run.id.as_str())).ok().flatten().and_then(|now| now.settled_at_ms);
+        let export_ms = began.elapsed().as_millis() as i64;
+        if done.is_ok() && !private_run(run) && let Some(settled) = settled && crate::store::now_ms() - settled > LATE_LANDING_MS {
+            warn!(run = %run.id, output = %item.name, "landed {} ms after its run ended: its export began {} ms after, and took {export_ms} ms",
+                crate::store::now_ms() - settled, crate::store::now_ms() - export_ms - settled);
+        }
         done
     }
 
@@ -564,7 +606,7 @@ impl Calcifer {
     /// The outputs of runs on `machine` that have not landed and are not given up, each with the
     /// bytes its export has in place.
     pub(crate) fn owed_on(&self, machine: &str) -> Result<Vec<Owed>, StoreError> {
-        let owed = self.store.exports_owed_on(machine)?;
+        let owed = self.each_store(|store| store.exports_owed_on(machine))?.into_iter().flatten().collect::<Vec<_>>();
         let moving = lock(&self.exports.moving);
         let owed = owed.into_iter().map(|owed| {
             let key = (owed.run, owed.name, owed.index);
@@ -651,10 +693,10 @@ impl Calcifer {
                 height: facts.height as u32,
                 duration_ms: facts.lasts_ms(),
             });
-            let mut events = self.store.exported(id, name, index, rev, &kept, measured)?;
+            let mut events = self.with_run_store(id, |store| store.exported(id, name, index, rev, &kept, measured))?;
             if let Some(said) = unlisted {
                 export_warning(run, &said);
-                events.extend(self.store.warned(id, &::api::calcifer::Warning { code: "output_unlisted".to_owned(), message: said })?);
+                events.extend(self.with_run_store(id, |store| store.warned(id, &::api::calcifer::Warning { code: "output_unlisted".to_owned(), message: said }))?);
             }
             let store_ms = store_began.elapsed().as_secs_f64() * 1000.0;
             let publish_began = Instant::now();
@@ -688,23 +730,34 @@ pub(crate) struct Item {
     download: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+pub(crate) struct OutputPath {
+    id: String,
+    #[serde(default)]
+    run: Option<String>,
+    name: String,
+}
+
 /// `GET /v1/runs/{id|number}/outputs/{name}[?index=i]`: the output's exported file, whole or one
 /// `Range` of it, with `ETag: "r<rev>"` naming the revision it holds; otherwise why not. A folder's is its tree document
 /// (`api::tree`), and `?member=` one of its files: a client fetches what it asks for, by content.
 pub(crate) async fn serve(
     State(api): State<Arc<Api>>,
-    Route((run, name)): Route<(String, String)>,
+    Route(path): Route<OutputPath>,
     query: Result<Query<Item>, QueryRejection>,
     headers: HeaderMap,
 ) -> Result<Response, Refusal> {
     let Item { index, member, download } = query?.0;
-    let row = api::find(&api, &run)?;
+    let run = path.run.as_deref().unwrap_or(&path.id);
+    let project = path.run.as_ref().map(|_| path.id.as_str());
+    let name = &path.name;
+    let row = api::find_scoped(&api, project, run).await?;
     crate::project::vault::require_path(&row.out_dir).map_err(Refusal)?;
     let readable = crate::project::vault::readable_token(&row.out_dir);
     let number = row.number;
     let (item, file, landed_folder) = {
         let _placing = lock(&api.calcifer.exports.placing);
-        let item = api.calcifer.store().output(row.id.as_str(), &name, index)?;
+        let item = api.calcifer.row_store(&row)?.output(row.id.as_str(), name, index)?;
         let item = item.ok_or_else(|| {
             let message = format!("run {number} has no output {name} at index {index}");
             Refusal(api::refuse(Kind::NotFound, "output_not_found", message).0.next(format!("cozy run watch {number}")))
@@ -735,7 +788,7 @@ pub(crate) async fn serve(
     }
     let (Some(file), Some(rev)) = (file, item.exported_rev) else {
         let record = api.calcifer.record(&row)?;
-        if record.output.iter().any(|kept| kept.stays && kept.name == name && kept.index == index) {
+        if record.output.iter().any(|kept| kept.stays && kept.name == *name && kept.index == index) {
             let on = row.machine.as_deref().unwrap_or("its machine");
             let message = format!("output {name} of run {number} stays on {on}: it isn't brought to this computer");
             return Err(Refusal(api::refuse(Kind::Conflict, "output_on_its_machine", message).0.next(format!("cozy run watch {number}"))));
@@ -773,7 +826,7 @@ fn protect(mut response: Response, readable: Option<Arc<AtomicBool>>) -> Respons
     let Some(readable) = readable else { return response };
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
-    let body = std::mem::replace(response.body_mut(), Body::empty());
+    let body = crate::project::vault::revocable(std::mem::replace(response.body_mut(), Body::empty()), readable.clone());
     let chunks = body.into_data_stream().map(move |chunk| {
         if !readable.load(Ordering::Acquire) {
             Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the project is locked"))

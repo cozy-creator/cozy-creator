@@ -51,8 +51,9 @@ function kindOf(view: ElementView): string {
 function TakeProgress({ view, run }: { view: ElementView; run: number }) {
   // Its own run, each tile (cl-945): the box follows only the one its frame is on.
   const { client } = useConnection()
+  const project = useCanvasStore().projectId
   const framed = view.run?.number === run
-  const { data } = useQuery({ ...runQuery(client, run), enabled: !framed })
+  const { data } = useQuery({ ...runQuery(client, project ?? "", run), enabled: Boolean(project) && !framed })
   const mine = framed ? view.run : data
   const on = useWaitsOn(mine)
   if (on) return <Icon name={on.kind === "download" ? "download" : "package"} />
@@ -65,14 +66,16 @@ function TakeProgress({ view, run }: { view: ElementView; run: number }) {
 
 function TileGlimpse({ glimpse, said }: { glimpse: NonNullable<ElementView["glimpse"]>; said: string }) {
   const { client } = useConnection()
+  const store = useCanvasStore()
   const [src, setSrc] = useState<string>()
   useEffect(() => {
+    if (!store.projectId) { setSrc(undefined); return }
     let live = true
-    void client.transport.src(client.output(glimpse.run, glimpse.output, glimpse.index, glimpse.rev)).then((url) => live && setSrc(url))
+    void client.transport.src(client.output({ project: store.projectId, run: glimpse.run }, glimpse.output, glimpse.index, glimpse.rev)).then((url) => live && setSrc(url))
     return () => {
       live = false
     }
-  }, [client, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
+  }, [client, store.projectId, glimpse.run, glimpse.output, glimpse.index, glimpse.rev])
   return (
     <>
       {src && <video className="take-glimpse" src={src} muted loop autoPlay playsInline preload="metadata" />}

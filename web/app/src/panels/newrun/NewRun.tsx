@@ -239,7 +239,7 @@ function Asking({ target, resolved, id, startInput }: { target: string; resolved
         label="Run"
         disabled={files.moving || unreadable}
         quote={(ask) => client.runQuote(ask)}
-        ask={(ask, key) => client.submit(ask, key)}
+        ask={(ask, key) => client.submit(id, ask, key)}
         onDone={done}
       />
       {files.moving && <p className="muted">Waiting for its files to reach Calcifer.</p>}
@@ -257,9 +257,9 @@ export function NewRun() {
   const [picked, setPicked] = useState<string | null>(params.get("target"))
 
   const { data: asked, error: askedError } = useQuery({
-    queryKey: ["run", Number(again), "full", "again"],
-    queryFn: ({ signal }) => client.runFull(Number(again), signal),
-    enabled: Boolean(again),
+    queryKey: ["project-run", id, Number(again), "full", "again"],
+    queryFn: ({ signal }) => client.runFull({ project: id, run: Number(again) }, signal),
+    enabled: Boolean(id && again),
   })
   const askedTarget = asked?.request?.target
   useEffect(() => {

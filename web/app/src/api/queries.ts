@@ -4,6 +4,7 @@ import type { Project } from "../types"
 import type { Client, RunFilter } from "./client"
 import type { EventStream } from "./events"
 import { nextProjectOrder } from "./projectOrder"
+import { migrateLegacyProjectView, rememberProjectView } from "../app/view"
 
 /** Keyed by name, so an asset that didn't change keeps its identity whatever moved around it. */
 function keepAssets(old: unknown, next: unknown): unknown {
@@ -69,6 +70,19 @@ export const projectQuery = (client: Client, stream: EventStream, id: string) =>
     structuralSharing: keepAssets,
   })
 
+export const projectViewQuery = (client: Client, stream: EventStream, id: string) =>
+  queryOptions({
+    queryKey: ["project-view", id],
+    queryFn: async ({ signal }) => {
+      await stream.whenShown(id, signal)
+      signal.throwIfAborted()
+      const view = await migrateLegacyProjectView(client, id, await client.projectView(id, signal), signal)
+      signal.throwIfAborted()
+      rememberProjectView(id, view)
+      return view
+    },
+  })
+
 /** Each list's answers in a row that a late Hub left short, and when the last came. */
 const short = new WeakMap<object, { at: number; n: number }>()
 
@@ -107,32 +121,50 @@ export const projectsQuery = (client: Client) =>
     queryFn: () => client.projects(),
   })
 
-export const runsQuery = (client: Client, filter: RunFilter, limit = 50) =>
+export const runsQuery = (client: Client, project: string, filter: RunFilter, limit = 50) =>
   queryOptions({
-    queryKey: ["runs", filter, limit],
-    queryFn: ({ signal }) => client.runs(filter, limit, signal),
+    queryKey: ["project-runs", project, filter, limit],
+    queryFn: ({ signal }) => client.runs(project, filter, limit, signal),
+  })
+
+export const maintenanceRunsQuery = (client: Client, filter: RunFilter, limit = 50) =>
+  queryOptions({
+    queryKey: ["maintenance-runs", filter, limit],
+    queryFn: ({ signal }) => client.maintenanceRuns(filter, limit, signal),
   })
 
 /** Kept live by `run.updated`, which carries a run's state, progress and outputs. */
-export const runQuery = (client: Client, number: number) =>
+export const runQuery = (client: Client, project: string, number: number) =>
   queryOptions({
-    queryKey: ["run", number],
-    queryFn: ({ signal }) => client.run(number, signal),
+    queryKey: ["project-run", project, number],
+    queryFn: ({ signal }) => client.run({ project, run: number }, signal),
   })
 
-/** A run's result, under a key of its own: `run.updated` writes `["run", n]` with runs that carry none. A settled result never changes. */
-export const runResultQuery = (client: Client, number: number) =>
+export const maintenanceRunQuery = (client: Client, number: number) =>
   queryOptions({
-    queryKey: ["run", number, "result"],
-    queryFn: async ({ signal }) => (await client.run(number, signal)).result ?? null,
+    queryKey: ["maintenance-run", number],
+    queryFn: ({ signal }) => client.maintenanceRun(number, signal),
+  })
+
+/** A run's result, under a key of its own: `run.updated` writes its run's key with runs that carry none. A settled result never changes. */
+export const runResultQuery = (client: Client, project: string, number: number) =>
+  queryOptions({
+    queryKey: ["project-run", project, number, "result"],
+    queryFn: async ({ signal }) => (await client.run({ project, run: number }, signal)).result ?? null,
     staleTime: (query) => (query.state.data ? Number.POSITIVE_INFINITY : 0),
   })
 
 /** What only `?detail=full` says, read again when `settled` moves: its report comes once it ended. */
-export const runFullQuery = (client: Client, number: number, settled: number) =>
+export const runFullQuery = (client: Client, project: string, number: number, settled: number) =>
   queryOptions({
-    queryKey: ["run", number, "full", settled],
-    queryFn: ({ signal }) => client.runFull(number, signal),
+    queryKey: ["project-run", project, number, "full", settled],
+    queryFn: ({ signal }) => client.runFull({ project, run: number }, signal),
+  })
+
+export const maintenanceRunFullQuery = (client: Client, number: number, settled: number) =>
+  queryOptions({
+    queryKey: ["maintenance-run", number, "full", settled],
+    queryFn: ({ signal }) => client.maintenanceRunFull(number, signal),
   })
 
 export const machinesQuery = (client: Client) =>
@@ -159,7 +191,7 @@ export function runsAfter(list: RunList, filter: RunFilter, changed: Run[]): { l
   const byNumber = new Map(changed.map((run) => [run.number, run]))
   const held = new Set(list.runs.map((run) => run.number))
   const lowest = Math.min(...list.runs.map((run) => run.number))
-  const belongs = (run: Run) => (!filter.status || run.status === filter.status) && (!filter.machine || run.machine === filter.machine) && (!filter.project || run.project_id === filter.project)
+  const belongs = (run: Run) => (!filter.status || run.status === filter.status) && (!filter.machine || run.machine === filter.machine)
   const runs = list.runs.map((run) => byNumber.get(run.number) ?? run).filter(belongs)
   return { list: { ...list, runs }, again: changed.some((run) => !held.has(run.number) && belongs(run) && (!list.older || run.number > lowest)) }
 }

@@ -116,9 +116,9 @@ const RECORD = () => {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const { id, path: folder } = await projectFromPage(page);
   seen.project = { id, folder };
-  const session = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = async (path) => {
-    const answer = await fetch(base + path, { headers: { Authorization: `Bearer ${session.token}` } });
+    const answer = await fetch(base + path, { headers: { Authorization: `Bearer ${session.token}`, 'cozy-project-storage': '3' } });
     const value = await answer.json().catch(() => null);
     if (!answer.ok) throw new Error(`GET ${path}: ${answer.status} ${JSON.stringify(value)}`);
     return value;

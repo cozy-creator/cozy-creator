@@ -55,9 +55,9 @@ const start = () => execFileSync(process.env.COZY, ['machine', 'ls'], { stdio: '
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
-  const token = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token);
+  const token = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token);
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   const at = `/v1/projects/${id}`;
@@ -101,9 +101,9 @@ const start = () => execFileSync(process.env.COZY, ['machine', 'ls'], { stdio: '
   // A tool's box with its prompt and a take, an imported picture, and a picture no one deletes.
   const prompt = 'a red hat on a cat';
   await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: `${drawer}/draw`, kind: 'image', name: 'hero', exact: true, fields: { instructions: prompt }, at: { x: 480, y: 120 } }) });
-  await api(`${at}/assets/hero/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture('hero', 30)) }) });
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture('pic', 90)), name: 'pic', exact: true, at: { x: 880, y: 120 } }) });
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture('stays', 150)), name: 'stays', exact: true, at: { x: 1280, y: 120 } }) });
+  await api(`${at}/assets/hero/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture('hero', 30), id) }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture('pic', 90), id), name: 'pic', exact: true, at: { x: 880, y: 120 } }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture('stays', 150), id), name: 'stays', exact: true, at: { x: 1280, y: 120 } }) });
   const hero = await until('hero holds its take', () => asset('hero'), (held) => Boolean(held?.sha256));
   const pic = await until('pic held', () => asset('pic'), (held) => Boolean(held?.sha256));
   const stays = await until('stays held', () => asset('stays'), (held) => Boolean(held?.sha256));

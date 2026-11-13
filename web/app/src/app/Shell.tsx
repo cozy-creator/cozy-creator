@@ -4,8 +4,7 @@ import { flushSync } from "react-dom"
 import { Link, Outlet, useLocation, useMatches, useNavigate } from "react-router-dom"
 import { TRIES } from "../api/client"
 import { ProjectLocked, vaultQuery } from "../panels/ProjectVault"
-import { protectProjectView, forgetProjectView, privateProject } from "./view"
-import { notes } from "../ui/notes"
+import { protectProjectView, privateProject } from "./view"
 import { projectQuery, projectsQuery } from "../api/queries"
 import { CanvasHost } from "../canvas/CanvasHost"
 import { warningsOf } from "../canvas/graph"
@@ -262,7 +261,7 @@ function MainMenu({ id }: { id: string | null }) {
 }
 
 export function Shell() {
-  const { client, stream, bridge, outbox, canvases, privateViewEpoch } = useConnection()
+  const { client, stream, bridge, outbox, canvases, retireProject, privateViewEpoch } = useConnection()
   const privateEpoch = useSignal(privateViewEpoch)
   const id = useProjectId()
   const vault = useQuery({ ...vaultQuery(client, id ?? ""), enabled: Boolean(id) })
@@ -318,11 +317,7 @@ export function Shell() {
     }
     if (!revoked) return
     setVerified(null)
-    bridge.forgetProject(id)
-    outbox.discardProject(id)
-    canvases.get(id)?.revokePrivateView()
-    canvases.delete(id)
-    forgetProjectView(id)
+    retireProject(id)
     for (const media of document.querySelectorAll<HTMLMediaElement>("video,audio")) {
       media.pause(); media.removeAttribute("src"); media.load()
     }
@@ -330,12 +325,8 @@ export function Shell() {
       if (image.src.startsWith("blob:")) URL.revokeObjectURL(image.src)
       image.removeAttribute("src")
     }
-    const privateData = ({ queryKey }: { queryKey: readonly unknown[] }) =>
-      (["project", "canvas"].includes(String(queryKey[0])) && queryKey[1] === id) || ["runs", "run", "tools", "history"].includes(String(queryKey[0]))
-    void queries.cancelQueries({ predicate: privateData })
-    queries.removeQueries({ predicate: privateData })
-    notes.set([])
-  }, [id, vault.data, freshChecked, checked, allowed, checking, uncertain, revoked, bridge, outbox, canvases, queries])
+
+  }, [id, vault.data, freshChecked, checked, allowed, checking, uncertain, revoked, bridge, outbox, canvases, queries, retireProject])
 
   useEffect(() => {
     if (!id || !vault.data?.encrypted) return

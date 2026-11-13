@@ -225,7 +225,8 @@ const newPage = async () => {
   page.on('pageerror', pageError);
   await authenticated.close();
   seen.initial_document_isolation = { auth_page_closed: authenticated.isClosed() };
-  await goto(page, `${href}/vault`);
+  // A session is its tab's: this one signs in on its own.
+  await signIn(page, `${href}/vault`);
   const body = page.locator('.drawer [data-vault-state]');
   await page.locator('.drawer [data-vault-state="plain"]').waitFor();
   // Import returns before first-use ffprobe preparation and background measurement.
@@ -414,7 +415,7 @@ const newPage = async () => {
   // conceal both pages without relying on the active tab's one-second status poll.
   peer = await newPage();
   peer.on('pageerror', (error) => errors.push(error.message));
-  await goto(peer, href);
+  await signIn(peer, href);
   await peer.locator('.react-flow').waitFor();
   requestLock(folder);
   for (const tab of [page, peer]) {
@@ -591,12 +592,14 @@ const newPage = async () => {
   await goto(page, href);
   await readyCanvas();
   const plainAt = await openCanvas(page);
+  // An ordinary project's viewport is kept in its project.db, not the browser.
+  const viewBefore = JSON.stringify(projectJson(folder, 'GET', '/view').viewport);
   await page.mouse.move(plainAt.x, plainAt.y);
   await page.mouse.down();
   await page.mouse.move(plainAt.x + 24, plainAt.y + 16, { steps: 4 });
   await page.mouse.up();
-  await until('ordinary viewport persists after fresh plain status', () => page.evaluate((project) => localStorage.getItem(`cozy.view:${project}`) !== null, id), Boolean, 45000);
-  check('fresh_plain_status_allows_browser_persistence', true);
+  await until('ordinary viewport persists after fresh plain status', () => projectJson(folder, 'GET', '/view').viewport, (viewport) => viewport !== null && JSON.stringify(viewport) !== viewBefore, 45000);
+  check('fresh_plain_status_allows_view_persistence', true);
   const plainImported = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v1/projects/${id}/imports` && response.ok());
   const plainImportAt = await openCanvas(page);
   await drop(page, [{ name: 'after_decrypt_plain.png', type: 'image/png', bytes: png(97) }], plainImportAt.x, plainImportAt.y);

@@ -46,6 +46,8 @@ impl Gpu {
         }
         let processes: Vec<_> = processes.into_iter().filter_map(|(pid, bytes)| {
             let tenant = book.get(&pid)?;
+            let visible = match crate::private_io::current() { Some(scope) => tenant.plan.starts_with(&crate::private_io::executor_prefix(&scope)), None => !tenant.plan.starts_with("private-") };
+            if !visible { return None; }
             Some(api::machine::ProcessMemory { pid, executor: format!("{}#{}", tenant.plan, tenant.start), bytes })
         }).collect();
         let allocated_bytes: u64 = processes.iter().map(|p| p.bytes).sum();
@@ -107,6 +109,12 @@ impl Figures {
         larger(&mut book.values, key, host);
         self.changed.set();
     }
+    pub(crate) fn forget_project(&self, workspace: &str) {
+        let prefix = format!("{workspace}:");
+        let mut book = self.book.lock().unwrap_or_else(|e| e.into_inner());
+        book.values.retain(|key, _| !key.starts_with(&prefix));
+        book.dispatched.retain(|key, _| !key.starts_with(&prefix));
+    }
     pub(crate) fn host_peak(&self, package: &str, shape: &str) -> Option<u64> {
         let book = self.book.lock().unwrap_or_else(|e| e.into_inner());
         let key = format!("{package}|{shape}");
@@ -118,10 +126,7 @@ impl Figures {
         let mut book = self.book.lock().unwrap_or_else(|e| e.into_inner());
         for peak in peaks { larger(&mut book.values, peak.key.clone(), peak.bytes); }
     }
-    fn peaks(&self) -> Vec<Peak> {
-        let book = self.book.lock().unwrap_or_else(|e| e.into_inner());
-        book.values.iter().map(|(key, bytes)| Peak { key: key.clone(), bytes: *bytes }).collect()
-    }
+
 }
 fn larger(figures: &mut BTreeMap<String, u64>, key: String, bytes: u64) {
     let value = figures.entry(key).or_insert(bytes); *value = (*value).max(bytes);
@@ -175,27 +180,10 @@ impl Peaks {
         self.log.note(serde_json::json!({"event": "peaks_restored", "model": model, "peaks": held.len()}));
     }
 
-    /// Saves what the GPUs of `model`, each holding what was restored into it, now
-    /// hold, when it changed.
-    pub(crate) fn save<'a>(&self, model: &str, figures: impl Iterator<Item = &'a Figures>) {
-        let mut saved = self.saved.lock().unwrap();
-        let held = Peak::merge(figures.flat_map(Figures::peaks));
-        let before = saved.get(model).map_or(&[][..], Vec::as_slice);
-        if before == held {
-            return;
-        }
-        let changed: Vec<&Peak> = held.iter().filter(|peak| !before.contains(peak)).collect();
-        let written = fs::create_dir_all(&self.dir)
-            .map_err(platform::Error::from)
-            .and_then(|()| platform::durable::replace(&self.path(model), &serde_json::to_vec(&held).unwrap_or_default(), 0o600));
-        match written {
-            Ok(()) => {
-                self.log.note(serde_json::json!({"event": "peaks_saved", "model": model, "changed": changed}));
-                saved.insert(model.into(), held);
-            }
-            Err(error) => tracing::warn!("memory: {model}'s peaks not saved: {error}"),
-        }
-    }
+    /// Measurements derived from calls are process-local. A machine-wide disk cache cannot
+    /// distinguish a public calibration from a project-derived construction or shape.
+    pub(crate) fn save<'a>(&self, _: &str, _: impl Iterator<Item = &'a Figures>) {}
+
 }
 
 /// One process on a call's GPU. A single process may own several GPUs; a group has one per rank.
@@ -467,9 +455,14 @@ impl MemoryLog {
     }
 
     pub(crate) fn note(&self, event: serde_json::Value) {
-        let Some(dir) = self.0.as_deref() else {
-            return tracing::info!("memory: {event}");
-        };
+        let private = crate::private_io::current();
+        let selected = private.as_ref().and_then(|scope| crate::private_io::root(scope).ok()).map(|root| root.join("logs"));
+        if private.is_some() && selected.is_none() { return; }
+        // Unscoped asynchronous pool events may contain plans/requests from any project.
+        // Persist only the explicitly system-owned host budget globally.
+        if selected.is_none() && event["event"] != "host_limit" { return; }
+        let Some(dir) = selected.as_deref().or(self.0.as_deref().map(|p| p.as_path())) else { return; };
+        let Ok(writing) = crate::config::legacy_diagnostics_read() else { return };
         let path = dir.join("memory.log");
         if fs::metadata(&path).is_ok_and(|meta| meta.len() > ROTATE_BYTES) {
             let _ = fs::rename(&path, dir.join("memory.log.1"));
@@ -478,8 +471,9 @@ impl MemoryLog {
         let written = fs::create_dir_all(dir)
             .and_then(|_| OpenOptions::new().create(true).append(true).open(&path))
             .and_then(|mut file| file.write_all(line.as_bytes()));
+        drop(writing);
         if let Err(error) = written {
-            tracing::warn!("memory: {event} ({}: {error})", path.display());
+            if private.is_none() { tracing::warn!("memory log unavailable: {error}"); }
         }
     }
 }

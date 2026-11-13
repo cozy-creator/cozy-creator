@@ -85,20 +85,30 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
             None => catalog::search(ctx, &query.join(" "), output::at_most("--limit", limit, 200), offset).await,
         },
         Command::Install { package, placement } => match local(ctx, &package)? {
+            // Local code is project data: it installs into the current project's environments.
             Some(path) => {
                 let on = placement.on()?;
-                let code = crate::send::Sender::new(ctx).await?.code(&path).await?;
-                machine::install(ctx, String::new(), Some(code), None, on).await
+                let project = crate::project::required(ctx).await?;
+                let code = crate::send::Sender::for_project(ctx, &project).await?.code(&path).await?;
+                machine::install(ctx, String::new(), Some(code), None, on, Some(project)).await
             }
             None => {
                 let named = PackageRef::parse(&package)?;
-                machine::install(ctx, named.package(), None, named.release, placement.on()?).await
+                machine::install(ctx, named.package(), None, named.release, placement.on()?, None).await
             }
         },
         Command::Uninstall {
             packages,
             placement,
-        } => machine::uninstall(ctx, &names(&packages)?, placement.on()?).await,
+        } => {
+            let names = names(&packages)?;
+            // A local package lives in its project's environments: it leaves them there.
+            let project = match names.iter().any(|name| name.starts_with("local/")) {
+                true => Some(crate::project::required(ctx).await?),
+                false => None,
+            };
+            machine::uninstall(ctx, &names, placement.on()?, project).await
+        }
         Command::Publish { root } => author::publish(ctx, root).await,
         Command::Delete { package } => author::delete(ctx, &PackageRef::parse(&package)?).await,
         Command::Yank { release, undo } => {

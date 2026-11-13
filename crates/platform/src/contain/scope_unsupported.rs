@@ -13,6 +13,11 @@ impl Scope {
         Err(Error::unsupported(Seam::Containment))
     }
 
+    /// Namespace-wide process proofs are currently available only on Linux.
+    pub fn namespace_processes(_: &str) -> Result<usize> {
+        Err(Error::unsupported(crate::Seam::Containment))
+    }
+
     pub fn sweep(_: &str) -> Result<usize> {
         Err(Error::unsupported(Seam::Containment))
     }

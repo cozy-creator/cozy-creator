@@ -97,12 +97,24 @@ def main() -> int:
     while time.monotonic() < deadline:
         jobs = status().get("board", {}).get("jobs", [])
         run = next((job["run"] for job in jobs if job["asset"] == "shot" and job.get("run")), None)
-        if run and json.loads(request(f"/v1/runs/{run}"))["status"] == "in_progress":
+        if run and json.loads(request(project_path(project, f"/runs/{run}")))["status"] == "in_progress":
             break
         time.sleep(0.1)
     else:
         raise RuntimeError("the long project render did not start")
     report["run"] = run
+
+    # The run's own record is in project.db, which this holds: its machine's, in the project's worker area, says where it ended.
+    run_id = json.loads(request(project_path(project, f"/runs/{run}")))["id"]
+
+    def executed() -> str | None:
+        for path in (project / ".vault-machine").rglob("executions.sqlite3"):
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as worker:
+                row = worker.execute("SELECT state FROM executions WHERE request_id = ? OR request_id LIKE ? || '~%' ORDER BY id DESC",
+                                     (run_id, run_id)).fetchone()
+            if row:
+                return cast(str, row[0])  # cast: a TEXT column
+        return None
 
     delete_edit = f"cancel-undo-{uuid4().hex}"
     with ThreadPoolExecutor(max_workers=1) as workers:
@@ -110,18 +122,16 @@ def main() -> int:
         lock.execute("BEGIN IMMEDIATE")
         deleted = workers.submit(request, project_path(project, "/assets/shot"), "DELETE", edit=delete_edit)
         try:
-            # Read scheduling scalars only. The real run must settle before the
-            # DELETE can commit. A pending HTTP response alone would not prove it.
-            with sqlite3.connect(f"file:{Path.home() / '.cozy/calcifer/state.db'}?mode=ro", uri=True) as journal:
-                deadline = time.monotonic() + 7
-                while time.monotonic() < deadline:
-                    row = journal.execute("SELECT state, status FROM runs WHERE number = ?", (run,)).fetchone()
-                    if row == ("settled", "canceled"):
-                        report["run_terminal_while_delete_held"] = list(row)
-                        break
-                    time.sleep(0.02)
-                else:
-                    raise RuntimeError("the real run did not settle canceled within the held-commit interval")
+            # Scheduling scalars only. The real run must end at its machine before
+            # the DELETE can commit. A pending HTTP response alone would not prove it.
+            deadline = time.monotonic() + 7
+            while time.monotonic() < deadline:
+                if executed() == "canceled":
+                    report["run_terminal_while_delete_held"] = ["canceled"]
+                    break
+                time.sleep(0.02)
+            else:
+                raise RuntimeError("the real run did not end canceled at its machine within the held-commit interval")
             if deleted.done():
                 raise RuntimeError("delete completed despite the external SQLite write lock")
             # The follower is runnable now, but its project writes still wait for the delete.
@@ -133,6 +143,12 @@ def main() -> int:
         answer = deleted.result(timeout=40)
     (output / "cancel-delete.json").write_text(answer)
     assert json.loads(answer)["name"] == "shot", answer
+    deadline = time.monotonic() + 30
+    while json.loads(request(project_path(project, f"/runs/{run}")))["status"] != "canceled":
+        if time.monotonic() > deadline:
+            raise RuntimeError("the run's own record did not settle canceled once the project was let go")
+        time.sleep(0.1)
+    report["run_recorded_canceled"] = True
 
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -162,7 +178,7 @@ def main() -> int:
     report["retained_media_unchanged"] = before_delete == before_undo == after_undo
     report["passed"] = (
         report["before_versions"] == report["after_versions"] == 3
-        and report["delete_held_until_terminal"] and not report["after_queue"]
+        and report["delete_held_until_terminal"] and report["run_recorded_canceled"] and not report["after_queue"]
         and len(before_delete) == 3 and report["retained_media_unchanged"]
     )
     print(json.dumps(report))

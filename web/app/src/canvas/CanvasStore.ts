@@ -255,6 +255,7 @@ const worst = (standings: (Standing | "failed" | undefined)[]) => WORST.find((st
  * `{name, width}` carries only its identity and published body geometry. Other view state never touches React Flow, and an import or a rename stays the same node.
  */
 export class CanvasStore {
+  private retired = false
   projectId: string | null
   private client: Client
   private flow: Flow | null = null
@@ -437,6 +438,8 @@ export class CanvasStore {
     })
   }
 
+  get active() { return !this.retired }
+
   /** The project has been read, so what isn't here isn't in it. */
   get hasRead() {
     return this.seen
@@ -449,6 +452,7 @@ export class CanvasStore {
 
   /** A canvas drawn for it, the first or again: back on a project, its boxes are as it left them, whatever's still on its way to Calcifer. */
   attach(flow: Flow) {
+    if (this.retired) return
     this.flow = flow
     this.zoomStep = stepOf(flow.getViewport().zoom)
     if (this.state && this.rows) this.reconcile()
@@ -485,6 +489,19 @@ export class CanvasStore {
 
   /** A confirmed vault lock retires even an off-route store. Navigation alone keeps its work. */
   revokePrivateView() {
+    this.retire()
+  }
+
+  async prepareClose() {
+    if (this.retired) return
+    const saved = await Promise.all([...this.views.keys()].map((name) => this.save(name)))
+    this.sendMoves()
+    if (saved.some((saved) => !saved)) throw new Error("A canvas edit still needs attention before the browser can close")
+  }
+
+  retire() {
+    if (this.retired) return
+    this.retired = true
     for (const pause of this.pauses.values()) clearTimeout(pause)
     this.pauses.clear()
     for (const view of this.views.values()) {
@@ -494,6 +511,21 @@ export class CanvasStore {
         view.preview = undefined
       }
     }
+    for (const timer of this.gliding.values()) clearTimeout(timer)
+    this.gliding.clear()
+    this.flow?.setNodes([])
+    this.detach()
+    this.projectId = null
+    this.state = null; this.rows = null; this.cardsRead = undefined
+    this.typing = null; this.gesture = null; this.pulling = null
+    this.history.retire()
+    this.views.clear(); this.aliases.clear(); this.shapes.clear(); this.asked.clear(); this.unsentSaid.clear(); this.runs.clear()
+    this.early.clear(); this.offers.clear(); this.dropTargets.clear(); this.carets.clear(); this.ids.clear(); this.namesById.clear(); this.served.clear()
+    this.poses.clear(); this.owners.clear(); this.deleting.clear(); this.own.clear(); this.landings.clear(); this.masks.clear(); this.unsettled.clear()
+    this.movedAt.clear(); this.moving.clear(); this.movingFrom.clear(); this.movingEdits.clear(); this.movingSince.clear(); this.renames.clear()
+    this.selected.clear(); this.moreOpen.clear(); this.tools.set(new Map()); this.allAsking.set(null)
+    for (const listeners of this.subscribers.values()) for (const listener of listeners) listener()
+    this.subscribers.clear(); this.named.clear()
     this.menu.set(null)
     this.viewing.set(null)
     if (this.inPlace) this.patch(this.inPlace.name, { here: undefined, hereWords: undefined })
@@ -532,6 +564,7 @@ export class CanvasStore {
   }
 
   patch(name: string, change: Partial<ElementView>) {
+    if (this.retired) return
     const key = this.resolveName(name)
     const view = this.views.get(key)
     if (!view) return
@@ -964,6 +997,7 @@ export class CanvasStore {
   // From Calcifer
 
   applyState(state: Project) {
+    if (this.retired) return
     this.state = state
     this.began = state.began ?? 0
     const ahead = state.board?.ahead ?? []
@@ -973,6 +1007,7 @@ export class CanvasStore {
 
   /** `GET canvas`: every row, but what this page moved since that read began: it can't know. */
   applyCanvas(cards: Record<string, Card>, began = 0, seq?: number) {
+    if (this.retired) return
     this.heard(seq)
     if (cards === this.cardsRead) return
     this.cardsRead = cards
@@ -998,6 +1033,7 @@ export class CanvasStore {
 
   /** A `canvas` event: the rows that changed. Stream order is the truth. */
   applyRows(cards: Record<string, Card | null>, seq?: number) {
+    if (this.retired) return
     this.heard(seq)
     if (!this.rows) return
     for (const [name, row] of Object.entries(cards)) {
@@ -1033,6 +1069,7 @@ export class CanvasStore {
 
   /** Tools the list didn't have, as they're found. */
   addTools(tools: Tool[]) {
+    if (this.retired) return
     const known = this.tools.get()
     const fresh = tools.filter((tool) => JSON.stringify(known.get(tool.id)) !== JSON.stringify(tool))
     if (!fresh.length) return
@@ -1042,6 +1079,8 @@ export class CanvasStore {
 
   /** What a run says of the asset it's making: the lowest going, when there are several. */
   applyRun(run: Run) {
+    if (this.retired) return
+    if (!this.projectId || run.project_id !== this.projectId) return
     this.runs.set(run.number, run)
     const owner = this.owners.get(run.number) ?? [...this.views].find(([, view]) => watched(view)?.run === run.number)?.[0]
     if (!owner) return
@@ -1197,7 +1236,7 @@ export class CanvasStore {
   private askRun(number: number) {
     if (this.asked.has(number)) return
     this.asked.add(number)
-    this.client.run(number).then((run) => this.applyRun(run), () => {})
+    if (this.projectId) this.client.run({ project: this.projectId, run: number }).then((run) => this.applyRun(run), () => {})
   }
 
   /** A name with no row may just be ahead of its row on the stream, so ask once. Still none: place it, once, and write the row. */
@@ -2158,7 +2197,8 @@ export class CanvasStore {
   cancelTake(name: string, take: Taking) {
     const view = this.get(name)
     const asset = view?.asset
-    if (!view || !asset) return
+    const project = this.projectId
+    if (!view || !asset || !project) return
     if (watched(view)?.id === take.id) this.patch(name, { watch: undefined })
     const taking = view.taking?.filter((held) => held.id !== take.id)
     if (taking?.length !== view.taking?.length) this.patch(name, { taking: taking?.length ? taking : undefined })
@@ -2166,9 +2206,9 @@ export class CanvasStore {
     // One with an id is off by it (`gone`), and what's listed after stays as read; a run no take names is off its runs until a read.
     const making = take.id ? {} : { making: asset.making?.filter((number) => number !== take.run) }
     // One that failed is deleted by its id (cl-954); one sent, its run is stopped; one queued is dropped by its id.
-    const byRun = take.run !== undefined && !take.failure
-    const send = byRun ? (_: string, write: Write) => this.client.cancelRun(String(take.run), write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(this.projectId!, [take.id], write.once).then(() => ({}))
-    this.over(name, making, send, take.failure ? "delete a failed take of" : byRun ? `cancel run ${take.run} of` : "cancel a take of", undefined)
+    const run = take.failure ? undefined : take.run
+    const send = run !== undefined ? (_: string, write: Write) => this.client.cancelRun({ project, run }, write.once).then(() => ({})) : (_: string, write: Write) => this.client.cancelTakes(project, [take.id], write.once).then(() => ({}))
+    this.over(name, making, send, take.failure ? "delete a failed take of" : run !== undefined ? `cancel run ${run} of` : "cancel a take of", undefined)
   }
 
   /** Its render stops, wherever it is: what's queued leaves, its runs are canceled (as `cozy run cancel`), and it says Cancelling… until

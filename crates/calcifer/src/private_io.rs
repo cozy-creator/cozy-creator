@@ -14,6 +14,8 @@ use std::{
 };
 
 static SCOPES: LazyLock<Mutex<HashMap<PathBuf, Scope>>> = LazyLock::new(Mutex::default);
+/// Each project proof a local worker proved it protects, by project, proof token and worker (`execution_link`).
+static PROVED: LazyLock<Mutex<std::collections::HashSet<(String, String, String)>>> = LazyLock::new(Mutex::default);
 
 tokio::task_local! { static PROJECT: Option<Scope>; }
 
@@ -23,7 +25,7 @@ pub(crate) fn current() -> Option<Scope> {
 
 pub(crate) fn of_path(path: &Path) -> Result<Option<Scope>, Error> {
     let logical = crate::project::vault::logical(path);
-    let Some(root) = logical.ancestors().find(|root| crate::project::vault::encrypted(root) || root.join(LOCAL_PRIVATE_MARKER).is_file()) else {
+    let Some(root) = logical.ancestors().find(|root| crate::project::vault::encrypted(root) || root.join(LOCAL_PRIVATE_MARKER).is_file() || root.join("project.db").is_file()) else {
         return Ok(None);
     };
     of_output(&crate::project::landing(root))
@@ -65,6 +67,69 @@ fn error(detail: &'static str) -> Error {
     Error::new(Kind::Conflict, "private_storage_unavailable", detail)
 }
 
+/// Validate the local canonical owner before placement. Choosing a remote machine
+/// keeps the existing remote working-copy flow; its provider storage is external.
+pub(crate) fn check_project_placement(
+    project_id: &str,
+    project_root: &Path,
+    on: &[api::calcifer::On],
+) -> Result<Vec<api::calcifer::On>, Error> {
+    if project_id.is_empty() || !project_root.is_absolute() {
+        return Err(error("The project storage owner is unavailable."));
+    }
+    Ok(on.to_vec())
+}
+
+/// Native project identity is checked before creating or reusing its owner proof. Preparation,
+/// source planning and uploads use this same scope, before any placement is accepted.
+pub(crate) fn scope_for_project(project_id: &str, project_root: &Path) -> Result<Scope, Error> {
+    let logical = crate::project::vault::logical(project_root);
+    let scope = if crate::project::vault::encrypted(&logical) {
+        of_output(&crate::project::landing(&logical))?.ok_or_else(|| error("The encrypted project storage is unavailable."))?
+    } else {
+        let view = platform::durable::canonical(project_root).map_err(|_| error("The project storage is unavailable."))?;
+        if crate::project::vault::plain_project_id(&view).as_deref() != Some(project_id) {
+            return Err(error("The project storage owner changed before execution."));
+        }
+        match retained_scope(&view, project_id)? {
+            Some(scope) => scope,
+            None => descriptor_for_mounted(&view, project_id, 1)?,
+        }
+    };
+    if scope.storage.project_id != project_id { return Err(error("The execution storage belongs to another project.")); }
+    Ok(scope)
+}
+
+/// Called with the admitted project's identity/root after its bounded DB operation has ended.
+pub(crate) async fn execution_link(
+    project_id: &str,
+    project_root: &Path,
+    machine: &str,
+    base: &crate::link::Link,
+) -> Result<crate::link::Link, Error> {
+    check_project_placement(project_id, project_root, &[api::calcifer::On::Machine(machine.into())])?;
+    let scope = scope_for_project(project_id, project_root)?;
+    // Never send this computer's mounted path or proof token to a remote worker.
+    // Canonical inputs, history and downloaded results remain in this project.
+    if machine != "local" { return Ok(base.clone()); }
+    // Proved once for this worker and this proof, not before each call: every protected request is checked there anyway, and an export
+    // that waited on two more round trips landed after its take was listed.
+    let proved = (project_id.to_owned(), scope.token.clone(), base.worker());
+    let selected = base.with_private(scope);
+    if PROVED.lock().unwrap().contains(&proved) { return Ok(selected); }
+    selected.probe_private().await.map_err(|failure| match failure {
+        crate::link::LinkError::Refused { code, message, remedy, next } => Error {
+            remedy, next, ..Error::new(Kind::Conflict, code, message)
+        },
+        crate::link::LinkError::NotFound => Error::new(Kind::Conflict, "project_worker_upgrade_required",
+            "This worker does not support project-owned execution.").next("cozy doctor"),
+        _ => Error::new(Kind::Unavailable, "project_worker_unavailable",
+            "The local worker could not verify protected execution. Project files were not sent.").next("cozy doctor"),
+    })?;
+    PROVED.lock().unwrap().insert(proved);
+    Ok(selected)
+}
+
 /// Root calls this after a successful mount/unlock and after rekey cutover. Replacing
 /// an old owned marker renews its proof without exposing the filesystem encryption key.
 pub(crate) fn descriptor_for_mounted(
@@ -77,6 +142,7 @@ pub(crate) fn descriptor_for_mounted(
     let storage = LocalPrivateStorage {
         project_id: project_id.to_owned(),
         generation,
+        ordinary: crate::project::vault::ordinary_storage(&view),
         view_root: view.clone(),
     };
     let mut bytes = [0u8; 32];
@@ -142,7 +208,7 @@ pub(crate) fn retained_scope(root: &Path, project_id: &str) -> Result<Option<Sco
     validate_retained(&marker, project_id)?;
     let view = platform::durable::canonical(root).map_err(|_| error("the retained project is unavailable"))?;
     if marker.storage.view_root != view {
-        return descriptor_for_mounted(&view, project_id, marker.storage.generation).map(Some);
+        return Err(error("close the existing execution namespace before relocating its project storage"));
     }
     let scope = Scope { storage: marker.storage, token: marker.token };
     SCOPES.lock().unwrap().insert(view, scope.clone());
@@ -188,9 +254,8 @@ pub(crate) fn of_output(out_dir: &Path) -> Result<Option<Scope>, Error> {
     };
     let logical = crate::project::vault::logical(project);
     if !crate::project::vault::encrypted(&logical) {
-        if !logical.join(LOCAL_PRIVATE_MARKER).exists() { return Ok(None); }
-        let Some(id) = crate::project::vault::plain_project_id(&logical) else { return Ok(None) };
-        return retained_scope(&logical, &id);
+        let id = crate::project::vault::plain_project_id(&logical).ok_or_else(|| error("The project storage owner is unavailable."))?;
+        return scope_for_project(&id, &logical).map(Some);
     }
     let view = crate::project::vault::resolve_path(&logical)?;
     let info = Keybag::load(&logical.join(KEYBAG_FILE))
@@ -234,21 +299,35 @@ pub(crate) fn input_root(out_dir: &Path, ordinary: &Path) -> Result<PathBuf, Err
     Ok(path)
 }
 
-/// No machine is started merely to lock a project. Root calls this before unmount,
-/// without holding the vault-session mutex; the server refuses live work and reaps only
-/// this namespace's idle executors before releasing private store handles.
+/// Root calls this before unmount, without holding the vault-session mutex; the server
+/// finishes any custody it still owes this project, refuses live work and reaps only this
+/// namespace's idle executors before releasing private store handles. A project with worker
+/// storage starts the local worker for this seal alone when none runs.
 pub(crate) async fn close_private_project(
     api: &Arc<crate::api::Api>,
     root: &Path,
 ) -> Result<(), Error> {
+    let view = crate::project::vault::resolve_path(root)?;
+    if !view.join(".vault-machine").exists() { let mut scopes = SCOPES.lock().unwrap(); scopes.remove(root); scopes.remove(&view); return Ok(()); }
     if !api.machines.local.running() {
-        return Ok(());
+        api.machines.local_up().await.map_err(|why| Error::new(Kind::Unavailable, "project_seal_pending",
+            format!("The local worker could not start to seal the project's execution custody: {}", why.message)).next("cozy doctor"))?;
     }
-    let scope = SCOPES.lock().unwrap().get(root).cloned();
-    let Some(scope) = scope else { return Ok(()) };
-    if !scope.storage.view_root.join(".vault-machine").exists() {
-        return Ok(());
-    }
+    let scope = match SCOPES.lock().unwrap().get(root).cloned() {
+        Some(scope) => scope,
+        None => {
+            let marker = read_marker(&view)?;
+            let logical = crate::project::vault::logical(root);
+            let id = if crate::project::vault::encrypted(&logical) {
+                let info = Keybag::load(&logical.join(KEYBAG_FILE)).map_err(|_| error("The project owner is unavailable."))?.info();
+                if marker.storage.generation != info.generation { return Err(error("The retained execution generation changed before seal.")); }
+                info.project_id
+            } else { crate::project::vault::plain_project_id(&view).ok_or_else(|| error("The project owner is unavailable."))? };
+            validate_retained(&marker, &id)?;
+            if marker.storage.view_root != view { return Err(error("The retained execution owner changed before seal.")); }
+            Scope { storage: marker.storage, token: marker.token }
+        }
+    };
     let Some(link) = api
         .calcifer
         .link("local")
@@ -258,12 +337,16 @@ pub(crate) async fn close_private_project(
             "the local execution service is not ready to close its private namespace",
         ));
     };
-    link.with_private(scope)
+    link.with_private(scope.clone())
         .close_private()
         .await
-        .map_err(|_| {
-            error("private execution is still active; wait or cancel its work before locking")
+        .map_err(|failure| match failure {
+            crate::link::LinkError::Refused { code, message, remedy, next } => Error { remedy, next, ..Error::new(Kind::Conflict, code, message) },
+            _ => error("The worker could not prove project migration and quiescent seal; locking remains pending."),
         })?;
-    SCOPES.lock().unwrap().remove(root);
+    descriptor_for_mounted(&scope.storage.view_root, &scope.storage.project_id, scope.storage.generation)?;
+    let mut scopes = SCOPES.lock().unwrap();
+    scopes.remove(root);
+    scopes.remove(&scope.storage.view_root);
     Ok(())
 }

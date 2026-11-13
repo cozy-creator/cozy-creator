@@ -18,17 +18,20 @@ function check(name, ok, detail) {
 }
 
 const here = join(__dirname, '..');
-/** The CLI's answer, whatever its exit: a canceled run's `show` exits 1 and still says so. */
-function cozy(...args) {
+/** The CLI's answer in `cwd`, whatever its exit: a canceled run's `show` exits 1 and still says so. */
+function cozyAt(cwd, ...args) {
   try {
-    return execFileSync(process.env.COZY, args, { encoding: 'utf8', cwd: here, stdio: ['ignore', 'pipe', 'pipe'], timeout: 600_000 });
+    return execFileSync(process.env.COZY, args, { encoding: 'utf8', cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 600_000 });
   } catch (error) {
     if (error.stdout) return error.stdout;
     throw error;
   }
 }
-const shown = (number) => JSON.parse(cozy('--json', 'run', 'watch', String(number), '--once'));
-// The 300 s run this cell starts, until it's canceled: a cell that dies must not leave it holding this computer for the cells after.
+const cozy = (...args) => cozyAt(here, ...args);
+/** A run by its number, which is its project's (project data containment): asked in the project's folder. */
+const shown = (number, folder) => JSON.parse(cozyAt(folder, '--json', 'run', 'watch', String(number), '--once'));
+// The 300 s run this cell starts, with its project's folder, until it's canceled: a cell that dies must not leave it holding this
+// computer for the cells after.
 let holding;
 const body = (page) => page.textContent('.drawer');
 const rowOf = (page, words) => page.locator('.runrow').filter({ hasText: words });
@@ -60,15 +63,15 @@ async function runs(page, base, id, folder) {
   await until('its log', () => page.textContent('.log'), (text) => text.trim().length > 0 && text !== 'Nothing yet.', 120_000);
   await until('its end, live', () => page.textContent('.run-head'), (text) => text.includes('completed'), 120_000);
   check('run_ends_live_with_no_reload', reloads === 0, reloads);
-  check('cli_agrees_it_ended', shown(number).status === 'completed', shown(number).status);
+  check('cli_agrees_it_ended', shown(number, folder).status === 'completed', shown(number, folder).status);
   await first;
   await until('the count goes', () => page.textContent('.top a[href*="runs"]'), (text) => !/\d/.test(text)).catch(async (error) => {
     // Whose it is: the page's, or a run Calcifer says is going.
-    seen.count_held = await page.evaluate(async () => {
-      const { token } = JSON.parse(localStorage.getItem('cozy.session'));
-      const going = async (status) => (await (await fetch(`/v1/runs?status=${status}&limit=5`, { headers: { Authorization: `Bearer ${token}` } })).json()).runs.map((run) => [run.number, run.status]);
+    seen.count_held = await page.evaluate(async (id) => {
+      const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
+      const going = async (status) => (await (await fetch(`/v1/projects/${id}/runs?status=${status}&limit=5`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json()).runs.map((run) => [run.number, run.status]);
       return { in_progress: await going('in_progress'), queued: await going('queued') };
-    });
+    }, id);
     throw error;
   });
   check('no_hash_on_a_run', !/sha256:|[0-9a-f]{64}/.test(await body(page)));
@@ -78,25 +81,25 @@ async function runs(page, base, id, folder) {
   await page.goto(await projectUrl(id, `/runs`));
   const second = asked(300);
   const secondNumber = await until('the second run', () => numberIn(rowOf(page, 'wait')), (now) => now > number);
-  holding = secondNumber;
+  holding = { number: secondNumber, folder };
   await rowOf(page, 'wait').first().locator('a').click();
   await until('it runs', () => page.textContent('.run-head'), (text) => text.includes('running'), 120_000);
 
   // One log stream across tabs: a second tab says it waits, while this one holds it.
   await until('this tab holds the log', () => page.textContent('.log'), (text) => text !== 'Nothing yet.' && !text.includes('Another tab'), 30_000).catch(() => {});
   const other = await page.context().newPage();
-  await other.goto(page.url());
+  await signIn(other, page.url());
   await until('the second tab waits for the log', () => other.textContent('.drawer'), (text) => text.includes('Another tab is following'));
   check('one_log_stream_across_tabs', true);
   await other.close();
 
   await page.click('.drawer-head button:has-text("Cancel")');
   await page.click('.confirm button:has-text("Not now")');
-  check('no_cancel_without_its_yes', !shown(secondNumber).cancel_requested);
+  check('no_cancel_without_its_yes', !shown(secondNumber, folder).cancel_requested);
   await page.click('.drawer-head button:has-text("Cancel")');
   await page.click('.confirm button:has-text("Cancel it")');
   await until('canceled, live', () => page.textContent('.run-head'), (text) => text.includes('canceled'), 120_000);
-  check('cli_agrees_it_canceled', shown(secondNumber).status === 'canceled', shown(secondNumber).status);
+  check('cli_agrees_it_canceled', shown(secondNumber, folder).status === 'canceled', shown(secondNumber, folder).status);
   await second;
   holding = undefined;
 
@@ -129,8 +132,8 @@ async function runs(page, base, id, folder) {
   const id = (await projectFromPage(page)).id;
   const read = (path) =>
     page.evaluate(async (path) => {
-      const { token } = JSON.parse(localStorage.getItem('cozy.session'));
-      return (await fetch(path, { headers: { Authorization: `Bearer ${token}` } })).json();
+      const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
+      return (await fetch(path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
     }, path);
   const folder = (await read(`/v1/projects/${id}`)).path;
   seen.project = { id, folder };
@@ -139,11 +142,10 @@ async function runs(page, base, id, folder) {
   seen.ran = runsHere;
   if (runsHere) await runs(page, base, id, folder);
 
-  // The filters: every project goes in the route.
+  // A project's runs are its own (project data containment): its Runs drawer offers no view of every project's.
   await page.goto(await projectUrl(id, `/runs`));
-  await page.click('.filters input[type=checkbox]');
-  await until('every project in the route', () => Promise.resolve(page.url()), (url) => url.includes('all'));
-  check('filter_every_project', true);
+  await page.locator('.filters').waitFor();
+  check('runs_stay_in_their_project', (await page.locator('.filters input[type=checkbox]').count()) === 0);
 
   // Local code is the CLI's: it says so, and offers no button to run it.
   await page.goto(await projectUrl(id, `/new?target=${encodeURIComponent('./weightless/wait')}`));
@@ -183,7 +185,7 @@ async function runs(page, base, id, folder) {
 async function died(error) {
   console.error(error);
   if (holding !== undefined) {
-    try { cozy('--json', 'run', 'cancel', String(holding)); } catch (why) { console.error(`run ${holding} not canceled: ${why}`); }
+    try { cozyAt(holding.folder, '--json', 'run', 'cancel', String(holding.number)); } catch (why) { console.error(`run ${holding.number} not canceled: ${why}`); }
   }
   console.log(JSON.stringify({ failures, seen }, null, 2));
   process.exit(2);

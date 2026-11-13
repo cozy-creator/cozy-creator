@@ -11,11 +11,19 @@ use api::{
 use super::PackageRef;
 use crate::{Context, calcifer_client::path, output, run};
 
-/// Send the current package directory by content for locking and publication.
-async fn sent(ctx: &Context) -> Result<(std::path::PathBuf, api::code::LocalCode), Error> {
+/// Send the current package directory by content for locking and publication. Publishing a project's package is an
+/// explicit export: it goes from that project, and its published copy is outside the project's protection.
+async fn sent(ctx: &Context) -> Result<(std::path::PathBuf, api::code::LocalCode, Option<String>), Error> {
     let dir = std::env::current_dir().map_err(|e| Error::new(Kind::Internal, "cwd", format!("the working directory: {e}")))?;
-    let code = crate::send::Sender::new(ctx).await?.code(&dir).await?;
-    Ok((dir, code))
+    match crate::project::identity(ctx).await {
+        Ok(project) => {
+            output::warn("publishing exports this package's source: the published copy leaves its project's protection");
+            let code = crate::send::Sender::for_project(ctx, &project.id).await?.code(&dir).await?;
+            Ok((dir, code, Some(project.id)))
+        }
+        Err(error) if error.code == "not_in_a_project" => Ok((dir.clone(), crate::send::Sender::independent_code(ctx, &dir).await?, None)),
+        Err(error) => Err(error),
+    }
 }
 
 /// The `uv.lock` Calcifer made, written into the package's folder `dir` whole: its path.
@@ -27,8 +35,8 @@ pub(crate) fn written(dir: &std::path::Path, lock: &str) -> Result<std::path::Pa
 }
 
 pub(crate) async fn publish(ctx: &Context, root: bool) -> Result<ExitCode, Error> {
-    let (dir, code) = sent(ctx).await?;
-    let going = run::job(ctx, job::PACKAGE_PUBLISH, &PackagePublish { root }, None, Some(code)).await?;
+    let (dir, code, project) = sent(ctx).await?;
+    let going = run::job(ctx, job::PACKAGE_PUBLISH, &PackagePublish { root }, None, Some(code), project).await?;
     let result: Published = run::done(ctx, going).await?;
     // Locked first, it holds the lock it was published with.
     if let Some(lock) = &result.lock {

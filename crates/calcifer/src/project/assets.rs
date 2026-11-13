@@ -20,7 +20,7 @@ use api::{
 };
 
 use super::{
-    Doc, Host, Project, Tool, Walk, binder, canvas, cancelled, deleted_why, find, folder, format, graph::{mention, name_key}, history::{self, Took}, keep_file, listed,
+    Doc, Host, Project, Tool, Walk, binder, canvas, cancelled, deleted_why, stop_at_machines, find, folder, format, graph::{mention, name_key}, history::{self, Took}, keep_file, listed,
     measure_soon, model, noun, stale_names,
     written::{Boxed, Start, Written},
 };
@@ -531,6 +531,7 @@ pub(super) async fn delete(State(api): State<Arc<Api>>, Path((id, name)): Path<(
 pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &str) -> Result<AssetDeleted, Refusal> {
     let folder = &project.folder;
     let unknown = || Error::new(Kind::NotFound, "asset_unknown", format!("the project has nothing named {name}")).next("cozy status");
+    stop_at_machines(api, project, name);
     let gone = folder.act(|| {
         // Its name and what it holds approved, from its box alone: a Doc of the whole project took a delete of one of 5,000 boxes 287 ms.
         let held = folder.reading_boxes(|written| written.get(name).map(|held| (held.name.clone(), held.id.clone(), held.get("approved").cloned())))?;
@@ -553,7 +554,7 @@ pub(super) fn deleted(api: &Arc<Api>, project: &Arc<Project>, id: &str, name: &s
     let gone = gone.map_err(Refusal)?;
     project.walker.lock().expect("walker lock").readings.values_mut().for_each(|reading| reading.moved(&gone.name));
     project.asked.notify_one();
-    super::purge::due(api, &project.id, super::now_ms() + super::purge::window_ms());
+    super::purge::due(&project.id, super::now_ms() + super::purge::window_ms());
     Ok(gone)
 }
 

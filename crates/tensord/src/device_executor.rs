@@ -234,6 +234,8 @@ pub(crate) struct DeviceExecutor {
     log_from: u64,
     memo: Option<Arc<crate::memo::Memo>>,
     lookahead: Arc<Mutex<LookaheadState>>,
+    private_scope: Option<api::machine::LocalPrivateStorage>,
+    transport_challenge: Option<String>,
 }
 
 /// A cancel ends the call at once: its executor is killed (its exact process and scope), never
@@ -305,15 +307,22 @@ fn zombie_status(birth: &Birth) -> Option<ExitStatus> {
 }
 
 /// The executor's root and listening socket, and the sealed environment it starts with.
-fn endpoint(config: &ExecutorConfig) -> io::Result<(LocalListener, BTreeMap<String, String>)> {
+struct Endpoint { listener: Option<LocalListener>, stream: Option<LocalStream>, child: Option<File> }
+fn endpoint(config: &ExecutorConfig) -> io::Result<(Endpoint, BTreeMap<String, String>)> {
     fs::create_dir_all(&config.root)?;
     platform::durable::set_mode(&config.root, 0o700)?;
+    if config.private {
+        let (stream, child) = platform::ipc::pair()?;
+        #[cfg(unix)] let child = File::from(std::os::fd::OwnedFd::from(child));
+        #[cfg(windows)] let child = File::from(std::os::windows::io::OwnedHandle::from(child));
+        return Ok((Endpoint { listener: None, stream: Some(stream), child: Some(child) }, config.seal.environment(&config.environment)));
+    }
     let listener = LocalListener::bind(&config.socket)?;
     // A Unix socket is a file whose mode and owner admit the executor; a Windows pipe's own
     // access list admits only this user.
     #[cfg(unix)]
     platform::durable::set_mode(&config.socket, 0o600)?;
-    Ok((listener, config.seal.environment(&config.environment)))
+    Ok((Endpoint { listener: Some(listener), stream: None, child: None }, config.seal.environment(&config.environment)))
 }
 
 /// Where an executor dials the listener at `root/name`. A Unix socket path has a short limit
@@ -324,21 +333,34 @@ fn endpoint(config: &ExecutorConfig) -> io::Result<(LocalListener, BTreeMap<Stri
 pub(crate) fn socket_path(root: &Path, name: &str) -> io::Result<PathBuf> {
     let natural = root.join(name);
     #[cfg(unix)]
-    if natural.as_os_str().len() > 100 || crate::private_io::is_private_path(root) {
-        use std::os::unix::fs::MetadataExt;
-        let dir = PathBuf::from(format!("/tmp/cozy-{}", crate::launch_identity::euid()));
-        platform::durable::private_dir(&dir)?;
-        let metadata = fs::symlink_metadata(&dir)?;
-        if !metadata.is_dir() || metadata.uid() != crate::launch_identity::euid() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "the short socket directory belongs to another user",
-            ));
-        }
+    if natural.as_os_str().len() > 100 {
+        if crate::private_io::is_protected_path(root) { return Err(io::Error::new(io::ErrorKind::Unsupported, "project path is too long for protected local IPC")); }
         let digest = tensorfs::sha256::hex_digest(natural.as_os_str().as_encoded_bytes());
-        return Ok(dir.join(&digest[..24]));
+        return Ok(short_sockets()?.join(&digest[..24]));
     }
     Ok(natural)
+}
+
+/// An unencrypted project's executor socket: a random name in the short socket directory, so its
+/// project's long path fits and nothing of that path is named outside it. A Windows pipe takes any path.
+pub(crate) fn ordinary_project_socket(root: &Path, name: &str) -> io::Result<PathBuf> {
+    #[cfg(unix)]
+    { let _ = (root, name); Ok(short_sockets()?.join(&crate::uuid::simple()[..24])) }
+    #[cfg(not(unix))]
+    { Ok(root.join(name)) }
+}
+
+/// This user's private directory under /tmp for sockets whose natural path is too long.
+#[cfg(unix)]
+fn short_sockets() -> io::Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let dir = PathBuf::from(format!("/tmp/cozy-{}", crate::launch_identity::euid()));
+    platform::durable::private_dir(&dir)?;
+    let metadata = fs::symlink_metadata(&dir)?;
+    if !metadata.is_dir() || metadata.uid() != crate::launch_identity::euid() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the short socket directory belongs to another user"));
+    }
+    Ok(dir)
 }
 
 /// The executor's containment scope, when its config names one. No scopes on this OS (macOS,
@@ -402,13 +424,15 @@ pub(crate) struct Codec {
 }
 struct CodecHelper {
     child: Child,
-    input: std::process::ChildStdin,
-    output: std::io::BufReader<std::process::ChildStdout>,
+    input: Box<dyn Write + Send>,
+    output: std::io::BufReader<Box<dyn Read + Send>>,
+    process_scope: Option<Arc<platform::contain::Scope>>,
 }
 impl Drop for CodecHelper {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(scope) = &self.process_scope { let _ = scope.end(); }
     }
 }
 impl Codec {
@@ -464,29 +488,28 @@ impl Codec {
             .map(|hold| hold.as_raw_fd());
         let mut command = std::process::Command::new(&self.config.python);
         platform::process::inherit_nothing(&mut command);
+        command.args(["-I", "-m", "cozy_runtime.cli.main", "frame-codec"]);
         command
-            .args(["-I", "-m", "cozy_runtime.cli.main", "frame-codec"])
             .env_clear()
             .envs(&self.config.environment)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr);
-        // The retained generation hold stays open in the codec.
+        let mut private_io = crate::private_io::command_io(&mut command, true, true, false)?;
+        let process_scope = crate::private_io::current().map(|_| crate::private_io::new_process_scope()).transpose()?;
+        crate::private_io::apply_native(&mut command, private_io.as_mut(), process_scope.as_ref())?;
+        // Preserve the reviewed generation lock after managed-child descriptor cleanup.
         #[cfg(unix)]
         platform::process::keep_open(&mut command, hold.into_iter().collect());
         let mut child = command.spawn()?;
-        let input = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("codec stdin missing"))?;
-        let output = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("codec stdout missing"))?;
+        drop(command);
+        let input: Box<dyn Write + Send> = match private_io.as_mut().and_then(|pipes| pipes.input.take()) { Some(file) => Box::new(file), None => Box::new(child.stdin.take().ok_or_else(|| io::Error::other("codec stdin missing"))?) };
+        let output: Box<dyn Read + Send> = match private_io.as_mut().and_then(|pipes| pipes.output.take()) { Some(file) => Box::new(file), None => Box::new(child.stdout.take().ok_or_else(|| io::Error::other("codec stdout missing"))?) };
         Ok(CodecHelper {
             child,
             input,
             output: std::io::BufReader::new(output),
+            process_scope,
         })
     }
     /// Encodes `frames` with the Runtime's `cozy-runtime frame-codec`, each into its owned spool
@@ -762,14 +785,19 @@ impl DeviceExecutor {
         launcher: Option<&crate::child_launcher::ChildLauncher>,
         on_birth: impl FnOnce(&Birth, &Cancellation) -> io::Result<()>,
     ) -> io::Result<Self> {
-        let (listener, environment) = endpoint(&config)?;
+        if config.private { crate::private_io::probe_runtime(&config.python)?; }
+        let (mut listener, environment) = endpoint(&config)?;
         let scope = scope(&config)?;
         let mut command =
-            crate::launch_identity::trampoline(&config.python, scope.as_deref())?;
-        command
-            .args(["-I", "-m", "cozy_runtime.internal.executor", "--socket"])
-            .arg(&config.socket)
-            .arg("--root")
+            if config.private { crate::launch_identity::private_trampoline(&config.python, scope.as_deref())? } else { crate::launch_identity::trampoline(&config.python, scope.as_deref())? };
+        // Project generations are editable installs: normal environment site processing
+        // makes their generated .pth links importable, just as in ordinary execution.
+        command.args(["-I", "-m", "cozy_runtime.internal.executor"]);
+        let mut private_io = if let Some(child) = listener.child.take() {
+            #[cfg(unix)] command.arg("--socket-fd").arg(child.as_raw_fd().to_string());
+            Some(crate::private_io::CommandIo::control(child))
+        } else { command.arg("--socket").arg(&config.socket); None };
+        command.arg("--root")
             .arg(&config.root)
             .env_clear()
             .envs(&environment)
@@ -779,7 +807,9 @@ impl DeviceExecutor {
             .stdout(File::create(config.root.join("stdout.log"))?)
             .stderr(File::create(config.root.join("stderr.log"))?);
         if config.private { command.current_dir(&config.root); }
+        if config.private { crate::private_io::apply_native(&mut command, private_io.as_mut(), scope.as_ref())?; }
         // Its generation and kernel namespace stay held while it lives, past this machine's death.
+        // Keep these reviewed native locks after managed-child descriptor cleanup.
         crate::launch_identity::inherit(
             &mut command,
             &[
@@ -876,7 +906,7 @@ impl DeviceExecutor {
     /// authored has run, so no measurement is needed to end it.
     fn connect(
         config: ExecutorConfig,
-        listener: LocalListener,
+        mut listener: Endpoint,
         environment: BTreeMap<String, String>,
         mut unready: Unready,
         on_birth: impl FnOnce(&Birth, &Cancellation) -> io::Result<()>,
@@ -909,23 +939,22 @@ impl DeviceExecutor {
         };
         on_birth(&birth, &cancellation)?;
         // Wait for connection OR observed process death. No elapsed-time startup kill.
-        let Some(stream) = listener.accept_unless(&exact)? else {
-            let status = unready.ended()?;
-            return Err(io::Error::other(EndedBeforeStart {
-                status,
-                stderr_tail: tail(&config.root.join("stderr.log")),
-            }));
+        let inherited = listener.stream.is_some();
+        let stream = match listener.stream.take() {
+            Some(stream) => stream,
+            None => match listener.listener.as_ref().ok_or_else(|| io::Error::other("executor has no transport"))?.accept_unless(&exact)? {
+                Some(stream) => stream,
+                None => return Err(io::Error::other(EndedBeforeStart { status: unready.ended()?, stderr_tail: tail(&config.root.join("stderr.log")) })),
+            },
         };
         let credential = platform::handles::peer(&stream)?;
-        if credential.pid != pid
-            || credential.uid != crate::launch_identity::euid()
-            || credential.gid != crate::launch_identity::egid()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "device executor connection differs from launched process",
-            ));
+        let expected_peer = if inherited { std::process::id() } else { pid };
+        if inherited != config.private || credential.pid != expected_peer
+            || credential.uid != crate::launch_identity::euid() || credential.gid != crate::launch_identity::egid() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "device executor transport differs from its owned launch"));
         }
+        let private_scope = if config.private { Some(crate::private_io::current().ok_or_else(|| io::Error::other("private launch lost its project scope"))?) } else { None };
+        let transport_challenge = inherited.then(|| format!("{}{}", crate::uuid::simple(), crate::uuid::simple()));
         let parent = unready.parent;
         let mut executor = Self {
             child: None,
@@ -944,12 +973,17 @@ impl DeviceExecutor {
             log_from: 0,
             memo: None,
             lookahead: Arc::default(),
+            private_scope,
+            transport_challenge,
         };
         end_channel_at_exit(executor.exact.try_clone()?, executor.stream.try_clone()?)?;
         let hello = executor.command(&Command::Hello, &mut Baseline)?;
         let (mismatched, unreported) = config.seal.mismatches(&hello.hello.sealed);
         if !unreported.is_empty() {
             tracing::warn!("executor {pid} (Runtime {}) does not report sealed names {unreported:?}: it is older than this machine", hello.hello.runtime_version);
+        }
+        if executor.transport_challenge.as_ref().is_some_and(|challenge| hello.hello.transport_challenge != *challenge) {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "project_transport_unsupported: Runtime does not prove inherited project transport"));
         }
         if !hello.ok
             || hello.hello.pid != executor.birth.pid
@@ -1077,7 +1111,12 @@ impl DeviceExecutor {
             }
         }
         if !sent {
-            let bytes = command_bytes(command)?;
+            let mut bytes = command_bytes(command)?;
+            if matches!(command, Command::Hello) { if let Some(challenge) = &self.transport_challenge {
+                let mut value: Value = serde_json::from_slice(&bytes)?;
+                value["transport_challenge"] = challenge.clone().into();
+                bytes = serde_json::to_vec(&value)?;
+            } }
             seam::write_body(&mut self.writer.lock().unwrap(), &bytes)?;
         }
         loop {
@@ -1150,6 +1189,7 @@ impl DeviceExecutor {
         let mut writer = self.writer.lock().unwrap();
         write_frame(&mut writer, &answer)?;
         if let Some(descriptor) = descriptor {
+            if let Some(scope) = &self.private_scope { platform::private_exec::validate_project_descriptor(&File::open(&scope.view_root)?, &descriptor)?; }
             platform::handles::send_fd(&writer, &descriptor)?;
         }
         Ok(())

@@ -52,6 +52,9 @@ pub enum On {
 /// `POST /v1/runs`, with an `Idempotency-Key` header: one key names one submission forever.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SubmitRun {
+    /// Canonical project owner. Absent only for validated project-independent maintenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     pub on: On,
     /// The Tensorhub origin the run belongs to.
     pub hub: String,
@@ -1480,9 +1483,12 @@ pub struct Operation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_s: Option<i64>,
     pub started_at_ms: i64,
-    /// The runs waiting on it, by number.
+    /// The runs waiting on it, by number: this computer's own runs, or those of `project`.
     #[serde(default)]
     pub runs: Vec<u64>,
+    /// The project whose runs wait on it, shown to its own views only; none for this computer's own work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 /// A run a machine holds for this controller, beside this controller's record of it.

@@ -20,6 +20,8 @@ ed25519-dalek = { workspace = true, features = ["pem", "pkcs8"] }
 futures-util = { workspace = true, features = ["alloc"] }
 getrandom.workspace = true
 hex.workspace = true
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util.workspace = true
 infer.workspace = true
 pep440_rs = { version = "0.7.3", default-features = false }
 reqwest.workspace = true
@@ -43,6 +45,9 @@ tensorfs = { workspace = true, features = ["net"] }
 toml.workspace = true
 toml_edit.workspace = true
 zip.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "process", "net"] }
 
 [lints]
 workspace = true

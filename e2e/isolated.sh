@@ -171,7 +171,7 @@ PY
 }
 
 case $suite:$shard in
-  cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake) needs='' ;;
+  cli:entrypoints | cli:executors | cli:projectdb-cancel | cli:local-wake | cli:containment | cli:containment-web) needs='' ;;
   cli:selfupdate) needs='next' ;;
   cli:runs | cli:local-code) needs='packages birefnet' ;;
   # commands shows a LoRA's modules (lora show, xs-183), fits a lane on a slot's components (lane_fit, xs-191) and composes a

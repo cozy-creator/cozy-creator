@@ -214,7 +214,7 @@ fn open_manifest(
 impl LocalSources {
     pub(crate) fn new(objects: Arc<Objects>, publisher: Arc<Publisher>, generations: &Path) -> Self {
         Self {
-            editable: generations.with_file_name("editable"),
+            editable: generations.with_file_name(api::machine::project_area::EDITABLE),
             generations: generations.to_path_buf(),
             objects,
             publisher,
@@ -229,7 +229,7 @@ impl LocalSources {
         if name.is_empty() || name.contains('/') {
             return Err(refused("local_source_invalid", "a local package manifest names local/<name>"));
         }
-        let root = crate::private_io::cache_root(self.editable.clone(), "editable")?;
+        let root = crate::private_io::cache_root(self.editable.clone(), api::machine::project_area::EDITABLE)?;
         Ok(root.join(&sha256::hex_digest(actor.as_bytes())[..16]).join(name))
     }
 
@@ -384,7 +384,7 @@ impl LocalSources {
         let identity = sha256::hex_digest(serde_json::json!([environment, digest]).to_string().as_bytes())[..32].to_string();
         if service.catalog.resolve(&identity).is_err() {
             job.stage(format!("describing {}", manifest.package));
-            let dir = crate::private_io::cache_root(service.catalog.root().to_owned(), "generations")?.join(&identity);
+            let dir = crate::private_io::cache_root(service.catalog.root().to_owned(), api::machine::project_area::GENERATIONS)?.join(&identity);
             let _ = fs::remove_dir_all(&dir); // an interrupted, never-published one
             fs::create_dir_all(&dir)?;
             let published = || -> Result<(), published::Failure> {
@@ -447,7 +447,7 @@ impl LocalSources {
         let installer = self.installer(package);
         let _installing = installer.turn.lock().unwrap();
         // An unavailable or partial inventory says nothing about which sources are unused.
-        let Ok(generation_root) = crate::private_io::cache_root(self.generations.clone(), "generations") else { return };
+        let Ok(generation_root) = crate::private_io::cache_root(self.generations.clone(), api::machine::project_area::GENERATIONS) else { return };
         let Ok(generations) = fs::read_dir(generation_root)
             .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>()) else { return; };
         // What generations link, canonical as each home's entries are read.

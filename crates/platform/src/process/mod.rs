@@ -529,3 +529,10 @@ impl Drop for Tree {
         let _ = self.kill();
     }
 }
+
+/// Chromium's closed debugging pipe: parent send/receive; child reads fd 3 and writes fd 4.
+/// Call before any final descriptor-confinement callback, classifying those pipes as KernelIpc.
+#[cfg(target_os = "linux")]
+pub fn private_browser_pipe(command: &mut Command) -> Result<(std::fs::File, std::fs::File)> {
+    unix::private_browser_pipe(command).map_err(Error::os("open a private browser pipe"))
+}

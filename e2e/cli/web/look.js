@@ -159,9 +159,9 @@ async function died(why) {
   await shoot('drawer-projects', { open: (page) => goto(page, '/projects') });
 
   const paper = pages.paper;
-  const held = await paper.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await paper.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => paper.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `look-${Date.now()}-${Math.random()}` } : {}) } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `look-${Date.now()}-${Math.random()}` } : {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
   const post = async (path, body) => {
@@ -200,18 +200,18 @@ async function died(why) {
   const shotTool = tools.find((one) => one.id === 'minimax-h3/generate') ?? tools.find((one) => one.package === 'minimax-h3' && one.makes === 'video');
   seen.tools = { image: imageTool?.id ?? null, shot: shotTool?.id ?? null };
   const imports = [['amy', 'amy.png', 1300, 0], ['boat', 'boat.png', 1700, 0], ['clip_a', 'clip_a.mp4', 1300, 420], ['clip_b', 'clip_b.mp4', 1700, 420]];
-  for (const [name, file, x, y] of imports) await post(`${at}/imports`, { source: await upload(held?.token, join(folder, file)), name, exact: true, at: { x, y } });
+  for (const [name, file, x, y] of imports) await post(`${at}/imports`, { source: await upload(held?.token, join(folder, file), id), name, exact: true, at: { x, y } });
   const boxes = [];
   if (imageTool) {
     await post(`${at}/assets`, { tool: imageTool.id, kind: 'image', name: 'still', exact: true, fields: { instructions: '<amy> in a red coat on the pier at dusk, the lighthouse behind her.' }, at: { x: 0, y: 0 } });
-    await post(`${at}/assets/still/versions`, { source: await upload(held?.token, join(folder, 'take.png')) });
+    await post(`${at}/assets/still/versions`, { source: await upload(held?.token, join(folder, 'take.png'), id) });
     await post(`${at}/assets`, { tool: imageTool.id, kind: 'image', name: 'empty_image', exact: true, fields: { instructions: '' }, at: { x: 0, y: 1100 } });
     boxes.push('still', 'empty_image');
   }
   if (shotTool) {
     const beats = [{ description: 'Waves roll in under a low sun.', duration: 5 }, { description: '<boat> sails past the lighthouse.', duration: 5 }];
     await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'shot', exact: true, fields: { summary: '<amy> watches the harbour at dusk as the boats come in.', beats }, at: { x: 440, y: 0 } });
-    await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'clip_b.mp4')) });
+    await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'clip_b.mp4'), id) });
     await post(`${at}/assets`, { tool: shotTool.id, kind: 'video', name: 'empty_shot', exact: true, fields: { summary: '', beats: [{ description: '', duration: 5 }] }, at: { x: 440, y: 1100 } });
     boxes.push('shot', 'empty_shot');
   }
@@ -227,10 +227,10 @@ async function died(why) {
   boxes.push(...mine.map(([name]) => name), ...imports.map(([name]) => name));
   // A picture with sixteen takes, so its column in Focus is longer than the window.
   writeFileSync(join(folder, 'many_0.png'), png(40, 640, 400));
-  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'many_0.png')), name: 'many', exact: true, at: { x: 2100, y: 0 } });
+  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'many_0.png'), id), name: 'many', exact: true, at: { x: 2100, y: 0 } });
   for (let take = 1; take < 16; take++) {
     writeFileSync(join(folder, `many_${take}.png`), png(40 + take * 12, 640, 400));
-    await post(`${at}/assets/many/versions`, { source: await upload(held?.token, join(folder, `many_${take}.png`)) });
+    await post(`${at}/assets/many/versions`, { source: await upload(held?.token, join(folder, `many_${take}.png`), id) });
   }
   // Off the view a box isn't drawn (culled): fitted, every one is.
   await until('every box in the project', async () => (await api(at)).body.assets.map((one) => one.name), (names) => boxes.every((name) => names.includes(name)));
@@ -372,7 +372,7 @@ async function died(why) {
   await shoot('drawer-runs', { open: (page) => goto(page, `${projectPath}/runs`) });
   const slowRun = await tryStep('the slow run', async () => (await assetOf('slow'))?.making?.[0]);
   if (slowRun) await shoot('drawer-run', { open: (page) => goto(page, `${projectPath}/runs/${slowRun}`) });
-  const failedRun = await tryStep('the failed run', async () => ((await api('/v1/runs?limit=50')).body?.runs ?? []).find((run) => run.project_id === id && run.status === 'failed')?.number);
+  const failedRun = await tryStep('the failed run', async () => ((await api(`/v1/projects/${id}/runs?limit=50`)).body?.runs ?? []).find((run) => run.project_id === id && run.status === 'failed')?.number);
   if (failedRun) await shoot('drawer-run-failed', { open: (page) => goto(page, `${projectPath}/runs/${failedRun}`) });
   await shoot('drawer-files', { open: (page) => goto(page, `${projectPath}/files`) });
   await shoot('drawer-account', { open: (page) => goto(page, `${projectPath}/account`) });

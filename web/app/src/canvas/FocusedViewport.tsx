@@ -53,7 +53,7 @@ export function FocusedViewport({ name, onClose, onCopyVersion }: { name: string
   // MentionText's `plaintext-only`).
   useEffect(() => {
     if (entering || !store.get(name)?.hereWords) return
-    const words = element.current?.querySelector<HTMLElement>(".focus-body [contenteditable=true], .focus-body [contenteditable=plaintext-only], .focus-body textarea")
+    const words = element.current?.querySelector<HTMLElement>(".focus-body [contenteditable]:not([contenteditable='false']), .focus-body textarea")
     words?.focus({ preventScroll: true })
     if (!words?.isContentEditable) return
     window.getSelection()?.selectAllChildren(words)

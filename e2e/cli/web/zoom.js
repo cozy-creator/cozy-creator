@@ -7,7 +7,7 @@ const playwright = require(process.env.PLAYWRIGHT);
 const { mkdtempSync, rmSync, writeFileSync } = require('fs');
 const { tmpdir } = require('os');
 const { join } = require('path');
-const { projectUrl, importFile, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
+const { projectUrl, importFile, projectJson, STEP_MS, boxOf, calcifer, closeBox, lastLook, launch, lookAt, noStall, openBox, panning, png, removeGeneratedProject, settled, signIn, summary, until } = require('./page');
 
 const failures = [];
 const seen = {};
@@ -47,8 +47,8 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
   lookAt(page);
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
-  const api = async (path, init = {}) => (await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers } })).json();
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const api = async (path, init = {}) => (await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', ...init.headers } })).json();
 
   const scratch = mkdtempSync(join(tmpdir(), 'web-zoom-'));
   const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `zoom-${Date.now()}` }, body: JSON.stringify({ name: `web-zoom-${Date.now()}`, unencrypted: true }) });
@@ -77,8 +77,8 @@ const shows = (at) => at.shown === `${Math.round(at.zoom * 100)}%`;
     const openTab = async (zoom, x) => {
       const tab = await context.newPage();
       watch(tab);
-      await tab.addInitScript(([id, zoom, x]) => localStorage.setItem(`cozy.view:${id}`, JSON.stringify({ x, y: 60, zoom })), [made.id, zoom, x]);
-      await tab.goto(await projectUrl(made.id));
+      projectJson(made.id, 'PATCH', '/view', { viewport: { x, y: 60, zoom } });
+      await signIn(tab, await projectUrl(made.id));
       await tab.waitForSelector('.react-flow__node');
       await until('every card its thumbnail', () => tab.evaluate(() => {
         const images = [...document.querySelectorAll('.react-flow__node .media img')];

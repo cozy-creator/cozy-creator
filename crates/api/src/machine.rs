@@ -20,12 +20,108 @@ pub struct LocalPrivateStorage {
     pub project_id: String,
     pub generation: u64,
     pub view_root: std::path::PathBuf,
+    /// An unencrypted project's storage: its executors take the ordinary transport, as any
+    /// Runtime speaks it. Absent, an encrypted view's executors need the protected one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ordinary: bool,
 }
 
 pub const LOCAL_PRIVATE_PREFIX: &str = "/v1/local-private";
 pub const LOCAL_PRIVATE_DESCRIPTOR: &str = "cozy-local-private-storage";
 pub const LOCAL_PRIVATE_TOKEN: &str = "cozy-local-private-token";
 pub const LOCAL_PRIVATE_MARKER: &str = ".vault-local-execution.json";
+
+/// A project's machine area in its own storage (`DIR`): TensorD's state for the project's runs.
+/// Its journal, results and objects are the project's. What `rebuildable` names TensorD makes
+/// again on next use, so a storage conversion leaves it out.
+pub mod project_area {
+    pub const DIR: &str = ".vault-machine";
+    /// Package environments, by identity.
+    pub const GENERATIONS: &str = "generations";
+    /// Local sources' editable environments, beside `GENERATIONS`.
+    pub const EDITABLE: &str = "editable";
+    /// Each executor's working root.
+    pub const EXECUTORS: &str = "executors";
+    /// A launch's home, compiled kernels and JIT scope.
+    pub const HOME: &str = "home";
+    pub const KERNELS: &str = "kernels";
+    pub const JIT: &str = "jit";
+    /// Where child tools are pointed: temporary files, uv's cache, tools and Pythons, XDG folders, bytecode.
+    pub const TMP: &str = "tmp";
+    pub const UV_CACHE: &str = "uv-cache";
+    pub const UV_TOOLS: &str = "uv-tools";
+    pub const PYTHON: &str = "python";
+    pub const CONFIG: &str = "config";
+    pub const DATA: &str = "data";
+    pub const STATE: &str = "state";
+    pub const CACHE: &str = "cache";
+    pub const BYTECODE: &str = "bytecode";
+    pub const MATPLOTLIB: &str = "matplotlib";
+    /// The project's own PyTorch base, `torch-<version>`, staged in `TORCH_STAGING`.
+    pub const TORCH_BASE: &str = "torch-";
+    pub const TORCH_STAGING: &str = ".torch.partial";
+
+    const REBUILT: [&str; 16] = [GENERATIONS, EDITABLE, EXECUTORS, HOME, KERNELS, JIT, TMP, UV_CACHE, UV_TOOLS, PYTHON, CONFIG, DATA, STATE, CACHE, BYTECODE, MATPLOTLIB];
+
+    /// Whether `name`, an entry of the area, is one TensorD recreates when it is gone.
+    pub fn rebuildable(name: &str) -> bool {
+        REBUILT.contains(&name) || name == TORCH_STAGING || name.strip_prefix(TORCH_BASE).is_some_and(|version| !version.is_empty())
+    }
+
+    /// The `torch-<version>` base folder name.
+    pub fn torch_base(version: &str) -> String {
+        format!("{TORCH_BASE}{version}")
+    }
+}
+
+/// The strict project-owned execution contract. Older partial-private endpoints are not substitutes.
+pub const PROJECT_EXECUTION_PREFIX: &str = "/v1/project-execution";
+pub type ProjectExecutionScope = LocalPrivateStorage;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectExecutionCapabilities {
+    pub protected_journal: bool,
+    pub protected_objects_and_scratch: bool,
+    /// Reserved broader sandbox capability; managed-storage readiness does not require it.
+    #[serde(default)]
+    pub filesystem_write_confinement: bool,
+    pub quiescent_seal: bool,
+}
+
+impl ProjectExecutionCapabilities {
+    pub fn ready(&self) -> bool {
+        self.protected_journal && self.protected_objects_and_scratch && self.quiescent_seal
+    }
+}
+
+/// Actual legacy acceptances covered by complete inside-project migration receipts.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionMigrationReceipt { pub bindings: Vec<ProjectExecutionMigrationBinding> }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionMigrationBinding {
+    pub request_id: String,
+    pub source_workspace_id: String,
+    pub invocation_spec_digest: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionMigrationRequest { pub legacy_requests: Vec<ProjectExecutionMigrationBinding> }
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionLegacyLookup { pub request_ids: Vec<String> }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionLegacyLookupAnswer { pub bindings: Vec<ProjectExecutionLegacyBinding> }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExecutionLegacyBinding {
+    pub binding: ProjectExecutionMigrationBinding,
+    pub source_number: u64,
+}
 
 /// A proof file written only INSIDE the live encrypted mount. Its random token is sent
 /// as a private authentication header, never as RunSpec, URL, log or global journal data.
@@ -51,8 +147,13 @@ impl std::fmt::Debug for LocalPrivateMarker {
 pub mod path {
     /// Verified local encrypted-project namespace; forwards GET/POST/PUT to existing data routes.
     pub const LOCAL_PRIVATE: &str = "/v1/local-private/{project_id}/{*rest}";
+    pub const PROJECT_EXECUTION: &str = "/v1/project-execution/{project_id}/{*rest}";
     /// Close only this project's idle local execution namespace before unmount.
-    pub const PRIVATE_CLOSE: &str = "/v1/local-private/{project_id}/close";
+    pub const PRIVATE_CLOSE: &str = "/v1/project-execution/{project_id}/close";
+    /// Native proof-owned local legacy migration. Empty body; no unscoped attribution is inferred.
+    pub const PROJECT_MIGRATE: &str = "/v1/project-execution/{project_id}/migrate";
+    /// Lookup actual actor-owned acceptances; this never adopts or retires them.
+    pub const PROJECT_LEGACY_BINDINGS: &str = "/v1/project-execution/{project_id}/migration-bindings";
     /// `GET` with no credential: 204 while the machine serves.
     pub const HEALTH: &str = "/v1/health";
     /// `GET`: one JSON [`super::StatusFrame`]; SSE `status` frames with `Accept: text/event-stream`.

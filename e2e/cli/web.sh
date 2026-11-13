@@ -239,9 +239,14 @@ web_deleted() {
 web_undo_window() {
   local config=$HOME/.cozy/config.toml pid
   awk -v n="$2" '/^undo_seconds *=/ { next } { print } /^\[calcifer\]/ && n != "" { print "undo_seconds = " n; put = 1 } END { if (n != "" && !put) printf "\n[calcifer]\nundo_seconds = %s\n", n }' "$config" > "$config.next" && mv "$config.next" "$config"
+  local waited=0
   pid=$(jq -r .pid < "$1")
   kill -TERM "$pid" 2> /dev/null || true
-  while kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
+  # One still running 120 s on is a failure, not a hang.
+  while kill -0 "$pid" 2> /dev/null; do
+    [ "$waited" -lt 600 ] || { check "Calcifer $pid still runs 120 s after SIGTERM"; kill -9 "$pid" 2> /dev/null; break; }
+    sleep 0.2; waited=$((waited + 1))
+  done
   [ -z "${3:-}" ] || "$3"
   bash -c "$(web_start)" || true
 }
@@ -316,11 +321,13 @@ web_proof() {
   [ "${ENGINE:-}" != webkit ] || shot=''
   HOLDER=$(web_path "$HOME/.cozy/calcifer/calcifer.lock.holder") ARGV_LOG=$(web_path "$OUT/argv.log") ALONE=${WEB_ALONE:-} RESTART=$restart ENGINE=${ENGINE:-} LAST_LOOK=$(web_path "$OUT/web-$pass") SHOT=$shot CHROME=$chrome PLAYWRIGHT=$(web_path "$pw/node_modules/playwright-core") COZY=$(web_path "$COZY") \
     node "$(web_path "$here/web/$name.js")" > "$json" 2> "$OUT/web-$pass.err" || code=$?
-  [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$pass.err")"
+  # What each failed check saw first: the rest of what it saw is cut short.
+  [ "$code" = 0 ] || check "web-$pass: failed $(jq -c .failures "$json" 2> /dev/null): $(jq -c '(.failures // []) as $f | .seen | with_entries(select(.key as $k | $f | index($k)))' "$json" 2> /dev/null | head -c 2000) $(jq -c '.seen | with_entries(select(.value != true))' "$json" 2> /dev/null | head -c 800) $(tail -c 500 "$OUT/web-$pass.err")"
   # What died on another Hub doesn't leave the next proof on it.
   [ "$code" = 0 ] || [ -z "$restart" ] || bash -c "$restart" || true
   folder=$(jq -r '.seen.project.folder // empty' "$json" 2> /dev/null)
-  case $folder in */web-*) rm -rf "$folder" ;; esac
+  # A project's machine storage (`.vault-machine`) may still be settling a canceled run: its leftovers never end the suite.
+  case $folder in */web-*) rm -rf "$folder" 2> /dev/null || { sleep 5; rm -rf "$folder"; } || true ;; esac
 }
 
 # web_serves's own, on its project.
@@ -342,7 +349,7 @@ J ".document.csp // \"\" | contains(\"'unsafe-eval'\") | not" "$OUT/web.json" ||
 J '(.violations | length) == 0 and (.page_errors | length) == 0' "$OUT/web.json" || check "web-serves: the page broke under its CSP: $(jq -c '{violations, page_errors}' "$OUT/web.json")"
 J '.console_errors | length == 0' "$OUT/web.json" || check "web-serves: the page's console has errors, such as a route Calcifer lacks: $(jq -c .console_errors "$OUT/web.json")"
 J '[.document.set_cookie, .session.set_cookie] == [null, null] and (.cookies | length) == 0' "$OUT/web.json" || check "web-serves: a cookie was set: $(jq -c '{document, session, cookies}' "$OUT/web.json")"
-J '(.assets | length) > 0 and (.assets | all(.status == 200 and (.cache_control // "" | contains("immutable"))))' "$OUT/web.json" || check "web-serves: /assets/* is not 200 and immutable: $(jq -c .assets "$OUT/web.json")"
+J '(.assets | length) > 0 and (.assets | all(.status == 200 and (.cache_control // "" | contains("no-store"))))' "$OUT/web.json" || check "web-serves: /assets/* is not 200 and no-store: $(jq -c .assets "$OUT/web.json")"
 J --arg b "Bearer $session" '.page_stream.status == 200 and (.page_stream.content_type // "" | startswith("text/event-stream")) and .page_stream.authorization == $b' "$OUT/web.json" \
   || check "web-serves: the page did not open GET /v1/events on its session: status $(jq -c .page_stream.status "$OUT/web.json")"
 J --arg id "$id" '.stream_status == 200 and .streamed[0].type == "hello" and (.streamed | any(.type == "project.changed" and .id == $id))' "$OUT/web.json" \

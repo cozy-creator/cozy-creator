@@ -3,6 +3,7 @@ import { parseLink, play } from "../../../../player/cozy-webrtc.js"
 import { useConnection } from "../../app/Connection"
 import { Player } from "../../canvas/Media"
 import type { OutputItem, Run } from "../../api/calcifer"
+import type { Client } from "../../api/client"
 import { Menu, useMenuAt } from "../../ui/Menu"
 import { Failure, useAsk } from "../common"
 import { bytes, span } from "../format"
@@ -14,6 +15,10 @@ const mediaKind = (item: OutputItem) => {
 
 /** Whether its bytes landed in Calcifer, so its route serves them. */
 const landed = (item: OutputItem) => Boolean(item.url)
+type OutputProps = { run: Run; item: OutputItem; project: string | null }
+const outputPath = (client: Client, { project, run, item }: OutputProps) => project
+  ? client.output({ project, run: run.id }, item.name, item.index)
+  : client.maintenanceOutput(run.id, item.name, item.index)
 
 /** A URL for a tag that can't send a header. Only an API path is ever followed. */
 function useSrc(path: string | null): string | undefined {
@@ -22,40 +27,43 @@ function useSrc(path: string | null): string | undefined {
   useEffect(() => {
     if (!path) return setSrc(undefined)
     let live = true
+    let held: string | undefined
     void client.transport.src(path).then((url) => {
-      if (live) setSrc(url)
-    })
+      if (live) { held = url; setSrc(url) }
+      else if (url.startsWith("blob:")) URL.revokeObjectURL(url)
+    }).catch(() => {})
     return () => {
       live = false
+      if (held?.startsWith("blob:")) URL.revokeObjectURL(held)
     }
   }, [client, path])
   return src
 }
 
-function Picture({ run, item }: { run: Run; item: OutputItem }) {
+function Picture({ run, item, project }: OutputProps) {
   const { client } = useConnection()
-  const full = client.output(run.id, item.name, item.index)
-  const [useThumb, setUseThumb] = useState(Boolean(run.project_id && item.sha256))
-  const src = useSrc(useThumb ? client.thumb(run.project_id!, item.sha256!, 512) : full)
+  const full = outputPath(client, { run, item, project })
+  const [useThumb, setUseThumb] = useState(Boolean(project && item.sha256))
+  const src = useSrc(useThumb ? client.thumb(project!, item.sha256!, 512) : full)
   if (!src) return null
   return <img src={src} alt={item.name} onError={() => setUseThumb(false)} />
 }
 
 /** A file served here. Its poster is a thumbnail, when its project can make one. */
-function Landed({ run, item, kind }: { run: Run; item: OutputItem; kind: "video" | "audio" }) {
+function Landed({ run, item, project, kind }: OutputProps & { kind: "video" | "audio" }) {
   const { client } = useConnection()
-  const poster = useSrc(kind === "video" && run.project_id && item.sha256 ? client.thumb(run.project_id, item.sha256, 512) : null)
+  const poster = useSrc(kind === "video" && project && item.sha256 ? client.thumb(project, item.sha256, 512) : null)
   const aspect = item.width && item.height ? item.width / item.height : kind === "audio" ? 6 : 16 / 9
   return (
     <div className="media" style={{ aspectRatio: aspect }}>
       {poster && <img src={poster} alt="" />}
-      <Player field={kind} path={client.output(run.id, item.name, item.index)} />
+      <Player field={kind} path={outputPath(client, { run, item, project })} />
     </div>
   )
 }
 
 /** Straight from its machine over WebRTC: a video that hasn't landed here, or never will. */
-function FromMachine({ run, item }: { run: Run; item: OutputItem }) {
+function FromMachine({ run, item, project }: OutputProps) {
   const { client } = useConnection()
   const ask = useAsk()
   const video = useRef<HTMLVideoElement>(null)
@@ -67,7 +75,7 @@ function FromMachine({ run, item }: { run: Run; item: OutputItem }) {
 
   const start = () =>
     ask.run(async () => {
-      const answer = await client.play(run.id, item.name, item.index)
+      const answer = await (project ? client.play({ project, run: run.id }, item.name, item.index) : client.maintenancePlay(run.id, item.name, item.index))
       setOpen(true)
       const el = video.current
       if (!el) return
@@ -95,14 +103,14 @@ function FromMachine({ run, item }: { run: Run; item: OutputItem }) {
   )
 }
 
-function Output({ run, item }: { run: Run; item: OutputItem }) {
+function Output({ run, item, project }: OutputProps) {
   const { client } = useConnection()
   const menu = useMenuAt()
   const kind = mediaKind(item)
   const here = landed(item)
   const name = item.label || (item.index ? `${item.name} ${item.index}` : item.name)
   // Saved as it's named, `image.png`, a list's item `image.2.png`.
-  const download = () => client.download(client.output(run.id, item.name, item.index), item.label || (item.index ? `${item.name}.${item.index}` : item.name))
+  const download = () => client.download(outputPath(client, { run, item, project }), item.label || (item.index ? `${item.name}.${item.index}` : item.name))
   const facts = [
     item.length ? bytes(item.length) : "",
     item.width && item.height ? `${item.width}×${item.height}` : "",
@@ -110,9 +118,9 @@ function Output({ run, item }: { run: Run; item: OutputItem }) {
   ].filter(Boolean)
   return (
     <figure className="output" onContextMenu={here ? menu.open : undefined}>
-      {!item.checkpoint && here && kind === "image" && <Picture run={run} item={item} />}
-      {!item.checkpoint && here && (kind === "video" || kind === "audio") && <Landed run={run} item={item} kind={kind} />}
-      {!item.checkpoint && !here && kind === "video" && run.machine && !item.export_error && <FromMachine run={run} item={item} />}
+      {!item.checkpoint && here && kind === "image" && <Picture run={run} item={item} project={project} />}
+      {!item.checkpoint && here && (kind === "video" || kind === "audio") && <Landed run={run} item={item} project={project} kind={kind} />}
+      {!item.checkpoint && !here && kind === "video" && run.machine && !item.export_error && <FromMachine run={run} item={item} project={project} />}
       {!item.checkpoint && !here && kind !== "video" && !item.export_error && <p className="muted">Not here yet.</p>}
       {item.checkpoint !== undefined && <p className="muted">A checkpoint in its machine's store, with no file here.</p>}
       {item.export_error && <p className="warn">It won't land here: {item.export_error}</p>}
@@ -121,8 +129,8 @@ function Output({ run, item }: { run: Run; item: OutputItem }) {
         <small>{facts.join(" · ")}</small>
         <span className="sp" />
         {here && (
-          <button type="button" className="more" onClick={download}>
-            Download
+          <button type="button" className="more" onClick={download} title={project ? "Exported copies are not protected when this project locks." : undefined}>
+            {project ? "Export copy" : "Download"}
           </button>
         )}
       </figcaption>
@@ -131,12 +139,13 @@ function Output({ run, item }: { run: Run; item: OutputItem }) {
           <button
             type="button"
             role="menuitem"
+            title={project ? "Exported copies are not protected when this project locks." : undefined}
             onClick={() => {
               download()
               menu.close()
             }}
           >
-            Download
+            {project ? "Export copy" : "Download"}
           </button>
         </Menu>
       )}
@@ -145,13 +154,13 @@ function Output({ run, item }: { run: Run; item: OutputItem }) {
 }
 
 /** What a person is told of: what stays on its machine is a package's own bytes. */
-export function Outputs({ run }: { run: Run }) {
+export function Outputs({ run, project }: { run: Run; project: string | null }) {
   const items = run.output?.filter((item) => !item.stays) ?? []
   if (!items.length) return null
   return (
     <div className="outputs">
       {items.map((item) => (
-        <Output key={item.id} run={run} item={item} />
+        <Output key={item.id} run={run} item={item} project={project} />
       ))}
     </div>
   )

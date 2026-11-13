@@ -49,9 +49,9 @@ async function loseAnswers(page, method, path, times) {
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
-  const token = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token);
+  const token = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token);
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token });
   const at = `/v1/projects/${id}`;
@@ -67,8 +67,8 @@ async function loseAnswers(page, method, path, times) {
     writeFileSync(path, png(shade));
     return path;
   };
-  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(10)), name: 'shot', exact: true, at: { x: 80, y: 120 } }) });
-  await api(`${at}/assets/shot/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(20)) }) });
+  await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(10), id), name: 'shot', exact: true, at: { x: 80, y: 120 } }) });
+  await api(`${at}/assets/shot/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, picture(20), id) }) });
   await boxOf(page, 'shot').waitFor();
   await page.keyboard.press('f');
   await settled(page);

@@ -96,9 +96,11 @@ stores=$(cd "$dir" && find . -maxdepth 1 -name '*.json' ! -name refused.json | s
 [ -z "$stores" ] || check "state: JSON stores in $dir: $stores"
 [ ! -e "$dir/after" ] || check "state: $dir/after is still there: $(ls -A "$dir/after" | head -5 | paste -sd' ')"
 [ "$(stat -c %a "$dir/state.db")" = 600 ] || check "state: state.db is $(stat -c %a "$dir/state.db"), not 600"
-for table in projects sessions tool_list tools_off rendered_here headers after_steps unseen; do
+for table in projects sessions tool_list tools_off rendered_here headers after_steps; do
   [ "$(state1 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = '$table'")" = 1 ] || check "state: state.db has no $table"
 done
+# What a project's page has not seen is the project's own, in its project.db: state.db holds none.
+[ "$(state1 "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'unseen'")" = 0 ] || check "state: state.db holds a global unseen table"
 echo "state: $dir holds $(cd "$dir" && ls -A | paste -sd' ')"
 }
 

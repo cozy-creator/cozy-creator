@@ -1,0 +1,432 @@
+//! Copy, verify and receipt a legacy closure before retiring its exact source rows.
+//! Unattributed rows stay in the fenced source. No global recovery copy is made.
+use super::*;
+use rusqlite::types::Value;
+use sha2::{Digest as _, Sha256};
+
+struct Rows {
+    table: &'static str,
+    columns: Vec<String>,
+    values: Vec<Vec<Value>>,
+}
+
+impl Rows {
+    fn load(conn: &Connection, table: &'static str, predicate: &str, key: &str) -> Result<Self> {
+        let mut stmt = conn.prepare(&format!("SELECT * FROM legacy_project_{table} WHERE {predicate} ORDER BY 1,2"))?;
+        let columns = stmt.column_names().into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let count = columns.len();
+        let values = stmt.query_map([key], |row| (0..count).map(|index| row.get(index)).collect::<rusqlite::Result<Vec<Value>>>())?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Self { table, columns, values })
+    }
+    fn column(&self, name: &str) -> Result<usize> {
+        self.columns.iter().position(|column| column == name).ok_or_else(|| corrupt("legacy journal column"))
+    }
+    fn fingerprint(&self) -> String {
+        let mut hash = Sha256::new();
+        hash.update(self.table.as_bytes());
+        for column in &self.columns { hash.update((column.len() as u64).to_le_bytes()); hash.update(column.as_bytes()); }
+        for row in &self.values {
+            for value in row {
+                match value {
+                    Value::Null => hash.update([0]),
+                    Value::Integer(value) => { hash.update([1]); hash.update(value.to_le_bytes()); }
+                    Value::Real(value) => { hash.update([2]); hash.update(value.to_bits().to_le_bytes()); }
+                    Value::Text(value) => { hash.update([3]); hash.update((value.len() as u64).to_le_bytes()); hash.update(value.as_bytes()); }
+                    Value::Blob(value) => { hash.update([4]); hash.update((value.len() as u64).to_le_bytes()); hash.update(value); }
+                }
+            }
+        }
+        hex::encode(hash.finalize())
+    }
+    fn insert_verified(&self, tx: &Transaction<'_>, destination: &str) -> Result<()> {
+        let names = self.columns.join(",");
+        let marks = (1..=self.columns.len()).map(|index| format!("?{index}")).collect::<Vec<_>>().join(",");
+        let mut insert = tx.prepare(&format!("INSERT OR IGNORE INTO {destination}({names}) VALUES({marks})"))?;
+        let matches = self.columns.iter().enumerate().map(|(index,column)| format!("{column} IS ?{}",index+1)).collect::<Vec<_>>().join(" AND ");
+        let mut verify = tx.prepare(&format!("SELECT EXISTS(SELECT 1 FROM {destination} WHERE {matches})"))?;
+        for row in &self.values {
+            insert.execute(rusqlite::params_from_iter(row))?;
+            if !verify.query_row(rusqlite::params_from_iter(row), |row| row.get::<_,bool>(0))? {
+                return Err(StoreError::Protected("project_migration_conflict".into()));
+            }
+        }
+        Ok(())
+    }
+    fn open(&mut self, index: usize, field: &str, context: impl Fn(&[Value]) -> Result<String>) -> Result<()> {
+        let column = self.column(field)?;
+        let row = &mut self.values[index];
+        let context = context(row)?;
+        row[column] = match &row[column] {
+            Value::Text(text) if vault::is_payload(text.as_bytes()) => Value::Text(open_text(&context,text)?),
+            Value::Blob(bytes) if vault::is_payload(bytes) => Value::Blob(open_bytes(&context,bytes)?),
+            value => value.clone(),
+        };
+        Ok(())
+    }
+}
+
+fn text(value: &Value) -> Result<&str> { if let Value::Text(value)=value { Ok(value) } else { Err(corrupt("legacy journal text")) } }
+fn integer(value: &Value) -> Result<i64> { if let Value::Integer(value)=value { Ok(*value) } else { Err(corrupt("legacy journal integer")) } }
+fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)", [name], |row| row.get(0))?)
+}
+
+fn plain_owner(source:&Connection,home:&Path,id:&str,root:&Path)->Result<bool> {
+    if table_exists(source,"legacy_project_projects")? {
+        let path=source.query_row("SELECT path FROM legacy_project_projects WHERE id=?1",[id],|row|row.get::<_,String>(0)).optional()?;
+        if path.as_ref().is_some_and(|path|vault::logical(Path::new(path))==root) {return Ok(true);}
+    }
+    match std::fs::read(home.join("projects.json")) {
+        Ok(bytes)=>{
+            let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|StoreError::Protected("legacy_project_ownership_pending".into()))?;
+            Ok(value.get("projects").and_then(|projects|projects.get(id)).and_then(|project|project.get("path")).and_then(serde_json::Value::as_str).is_some_and(|path|vault::logical(Path::new(path))==root))
+        },
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(false),
+        Err(_)=>Err(StoreError::Protected("legacy_project_ownership_pending".into())),
+    }
+}
+
+enum Destination<'a,'b> {
+    Open(&'a crate::project::ProjectStore),
+    Sealing(&'a crate::project::journal::SealingStore<'b>),
+}
+impl Destination<'_,'_> {
+    fn project_id(&self)->&str { match self { Self::Open(store)=>store.project_id(),Self::Sealing(store)=>store.project_id() } }
+    fn execution_scope(&self)->(&str,&Path) { match self { Self::Open(store)=>store.execution_scope(),Self::Sealing(store)=>store.execution_scope() } }
+    fn legacy_worker_pending(&self)->Result<bool> {self.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE owner=?1 AND custody='legacy_pending')",[self.project_id()],|row|row.get(0))?))}
+    fn input_root(&self)->Result<PathBuf> { match self { Self::Open(store)=>store.input_root(),Self::Sealing(store)=>store.input_root() } }
+    fn read<T>(&self, f:impl FnOnce(&Connection)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.read(f),Self::Sealing(store)=>store.read(f) } }
+    fn write<T>(&self, f:impl FnOnce(&Transaction<'_>)->Result<T>)->Result<T> { match self { Self::Open(store)=>store.write(f),Self::Sealing(store)=>store.write(f) } }
+}
+
+impl Store {
+    /// These selectors are checked against the unchanged old SQL, not inferred
+    /// from a copied project or a request's user-supplied opaque run ID.
+    pub(crate) fn verify_legacy_worker_requests(&self,project:&crate::project::ProjectStore)->Result<Vec<(String,String,Option<u64>)>> {
+        self.verified_legacy_requests(Destination::Open(project))
+    }
+    pub(crate) fn verify_legacy_worker_requests_sealing(&self,project:&crate::project::journal::SealingStore<'_>)->Result<Vec<(String,String,Option<u64>)>> {
+        self.verified_legacy_requests(Destination::Sealing(project))
+    }
+    fn verified_legacy_requests(&self,project:Destination<'_,'_>)->Result<Vec<(String,String,Option<u64>)>> {
+        let pending=project.read(|conn| {let mut stmt=conn.prepare("SELECT id,machine,machine_number FROM runs WHERE owner=?1 AND custody='legacy_pending' ORDER BY number")?;Ok(stmt.query_map([project.project_id()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<i64>>(2)?.map(|number|number as u64))))?.collect::<rusqlite::Result<Vec<_>>>()?)})?;
+        if pending.is_empty() {return Ok(vec![]);}
+        self.read(|source| {
+            if !table_exists(source,"legacy_project_runs")? && !pending.is_empty() {return Err(StoreError::Protected("legacy_worker_source_missing".into()));}
+            let root=project.execution_scope().1;
+            let plain=plain_owner(source,&self.legacy_home,project.project_id(),root)?;
+            for (id,machine,number) in &pending {
+                let row=source.query_row("SELECT machine,machine_number,out_dir,spec FROM legacy_project_runs WHERE id=?1",[id],|row|Ok((row.get::<_,Option<String>>(0)?,row.get::<_,Option<i64>>(1)?.map(|number|number as u64),row.get::<_,String>(2)?,row.get::<_,Vec<u8>>(3)?))).optional()?.ok_or_else(||StoreError::Protected("legacy_worker_source_missing".into()))?;
+                let owned=match vault::payload_root(&row.3).map_err(private_error)? {Some(owner)=>{if owner==root {open_bytes(&run_context(id,"spec"),&row.3)?;true} else {false}},None=>plain&&Path::new(&row.2)==crate::project::landing(root)};
+                if !owned || row.0.as_deref()!=Some(machine.as_str()) || row.1!=*number {return Err(StoreError::Protected("legacy_worker_owner_mismatch".into()));}
+            }
+            Ok(pending)
+        })
+    }
+    /// Only an admitted, mounted project can receive its legacy history. The source's
+    /// immediate transaction spans import and retirement, so its closure cannot change.
+    pub(crate) fn migrate_project(&self, project: &crate::project::ProjectStore, inputs: &Path) -> Result<()> {
+        self.migrate_into(Destination::Open(project),inputs)
+    }
+    pub(crate) fn migrate_project_sealing(&self, project: &crate::project::journal::SealingStore<'_>, inputs: &Path) -> Result<()> {
+        self.migrate_into(Destination::Sealing(project),inputs)
+    }
+    fn migrate_legacy_unseen(&self,project:&Destination<'_,'_>)->Result<bool> {
+        let mut writer=self.writer.lock().unwrap_or_else(|error|error.into_inner());
+        if !table_exists(&writer,"legacy_project_unseen")? {return Ok(false);}
+        let source=writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let rows=Rows::load(&source,"unseen","project=?1",project.project_id())?;
+        if rows.values.is_empty() {return Ok(false);}
+        let number=rows.column("number")?;
+        for row in &rows.values {
+            let value=integer(&row[number])?;
+            if value<0 || value>i64::from(u32::MAX) {return Err(corrupt("legacy unseen version"));}
+        }
+        let digest=rows.fingerprint();
+        project.write(|tx| {
+            let prior=tx.query_row("SELECT digest FROM journal_migrations WHERE source='controller-v7:unseen'",[],|row|row.get::<_,String>(0)).optional()?;
+            if prior.as_ref().is_some_and(|prior|prior!=&digest) {return Err(StoreError::Protected("project_unseen_source_changed".into()));}
+            rows.insert_verified(tx,"project_unseen")?;
+            tx.execute("INSERT OR IGNORE INTO journal_migrations(source,digest,record) VALUES('controller-v7:unseen',?1,'unseen')",[&digest])?;
+            Ok(())
+        })?;
+        // The project's FULL commit and exact row verification precede retirement.
+        let verified=project.read(|conn|Ok(conn.query_row("SELECT digest FROM journal_migrations WHERE source='controller-v7:unseen'",[],|row|row.get::<_,String>(0))?))?;
+        if verified!=digest {return Err(StoreError::Protected("project_unseen_unverified".into()));}
+        source.execute("DELETE FROM legacy_project_unseen WHERE project=?1",[project.project_id()])?;
+        source.commit()?;
+        Ok(true)
+    }
+
+    fn migrate_into(&self, project: Destination<'_,'_>, inputs: &Path) -> Result<()> {
+        let unseen_changed=self.migrate_legacy_unseen(&project)?;
+        let mut writer = self.writer.lock().unwrap_or_else(|error| error.into_inner());
+        if !table_exists(&writer,"legacy_project_runs")? {
+            drop(writer);self.migrate_legacy_files(&project)?;
+            return if unseen_changed {if self.migration_required()? {self.checkpoint_legacy_retirement()} else {self.cleanup_private_journal()}} else {Ok(())};
+        }
+        let source = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut changed=unseen_changed;
+        let root = project.execution_scope().1;
+        let plain=plain_owner(&source,&self.legacy_home,project.project_id(),root)?;
+        let landing = crate::project::landing(root);
+        let candidates: Vec<(String,String,Vec<u8>)> = {
+            let mut stmt=source.prepare("SELECT id,out_dir,spec FROM legacy_project_runs")?;
+            stmt.query_map([],|row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<rusqlite::Result<_>>()?
+        };
+        for (id,out,spec) in candidates {
+            let envelope_root=vault::payload_root(&spec).map_err(private_error)?;
+            if envelope_root.as_deref()!=Some(root) && !(envelope_root.is_none()&&plain&&Path::new(&out)==landing) { continue; }
+            // An envelope must open through this admitted view before any source is retired.
+            if envelope_root.is_some() { open_bytes(&run_context(&id,"spec"),&spec)?; }
+            let mut runs=Rows::load(&source,"runs","id=?1",&id)?;
+            let mut outputs=Rows::load(&source,"outputs","run=?1",&id)?;
+            let mut logs=Rows::load(&source,"run_logs","run=?1",&id)?;
+            let mut asks=Rows::load(&source,"asks","run=?1",&id)?;
+            let key=text(&runs.values[0][runs.column("idempotency_key")?])?.to_owned();
+            let after=if table_exists(&source,"legacy_project_after_steps")? { Some(Rows::load(&source,"after_steps","key_sha256=?1",&key_digest(&key))?) } else { None };
+            let after_name=format!("{}.json",key_digest(&key));
+            let after_file=match std::fs::read(self.legacy_home.join("after").join(&after_name)) {
+                Ok(bytes)=>{
+                    serde_json::from_slice::<crate::hub::after::After>(&bytes).map_err(|_|StoreError::Protected("project_after_migration_pending".into()))?;
+                    Some((String::from_utf8(bytes.clone()).map_err(|_|corrupt("legacy after step"))?,Digest::of(&bytes).to_string()))
+                },
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound=>None,
+                Err(_)=>return Err(StoreError::Protected("project_after_migration_pending".into())),
+            };
+            let source_digest=key_digest(&[runs.fingerprint(),outputs.fingerprint(),logs.fingerprint(),asks.fingerprint(),after.as_ref().map_or(String::new(),Rows::fingerprint),after_file.as_ref().map_or(String::new(),|(_,digest)|digest.clone())].join(":"));
+            for field in ["spec","outcome","target","warnings","inputs","reason_code","reason","job"] {
+                runs.open(0,field,|_| Ok(run_context(&id,field)))?;
+            }
+            let worker_run=!matches!(&runs.values[0][runs.column("machine")?],Value::Null) && text(&runs.values[0][runs.column("kind")?])?!="here";
+            let verified=project.read(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM journal_migrations WHERE source=?1)",[format!("worker-custody:{id}")],|row|row.get::<_,bool>(0))?))?;
+            let pending_worker=worker_run&&!verified;
+            runs.columns.push("custody".into());runs.values[0].push(Value::Text(if pending_worker {"legacy_pending"} else {"owned"}.into()));
+            runs.columns.push("owner".into());
+            runs.values[0].push(Value::Text(project.project_id().into()));
+            let out_column=runs.column("out_dir")?;
+            runs.values[0][out_column]=Value::Text(landing.to_string_lossy().into_owned());
+            for index in 0..outputs.values.len() {
+                let (name,idx,rev,exported,failed)=(outputs.column("name")?,outputs.column("idx")?,outputs.column("rev")?,outputs.column("exported_rev")?,outputs.column("failed_rev")?);
+                for (field,revision) in [("label",rev),("checkpoint",rev),("path",exported),("export_error",failed)] {
+                    outputs.open(index,field,|row| {
+                        let revision=if matches!(row[revision],Value::Null) { integer(&row[rev])? } else { integer(&row[revision])? };
+                        Ok(output_context(&id,text(&row[name])?,integer(&row[idx])? as u32,revision as u64,field))
+                    })?;
+                }
+                // Retained output bytes must already be within this project's custody.
+                // Unknown external trees/exports remain pending instead of being discarded.
+                let path=outputs.column("path")?;
+                if let Value::Text(value)=&outputs.values[index][path] {
+                    let owned=vault::logical(Path::new(value));
+                    let relative=owned.strip_prefix(root).map_err(|_|StoreError::Protected("project_output_migration_pending".into()))?;
+                    outputs.values[index][path]=Value::Text(relative.to_string_lossy().into_owned());
+                }
+            }
+            let seq=logs.column("seq")?;
+            for index in 0..logs.values.len() { logs.open(index,"text",|row| Ok(log_context(&id,integer(&row[seq])? as u64)))?; }
+            let ask_key=asks.column("key")?;
+            for index in 0..asks.values.len() {
+                for field in ["body","reason"] { asks.open(index,field,|row| Ok(format!("ask:{}:{field}",text(&row[ask_key])?)))?; }
+            }
+            let input_column=runs.column("inputs")?;
+            let objects: Vec<(Digest,u64)>=serde_json::from_str(text(&runs.values[0][input_column])?).map_err(|_| corrupt("legacy inputs"))?;
+            let retained=project.input_root()?;
+            for (digest,length) in objects.clone() {
+                let name=hex::encode(digest.bytes());
+                let target=retained.join(&name);
+                if target.is_file() {
+                    let mut file=std::fs::File::open(&target).map_err(|_| StoreError::Protected("project_input_migration_pending".into()))?;
+                    let mut hash=Sha256::new();
+                    let size=std::io::copy(&mut file,&mut hash).map_err(|_| StoreError::Protected("project_input_migration_pending".into()))?;
+                    if size!=length || Digest::from_bytes(hash.finalize().into())!=digest { return Err(StoreError::Protected("project_input_migration_pending".into())); }
+                    continue;
+                }
+                // Released writers removed settled staging files. A complete
+                // receipt still needs the actual bytes: recover only the exact
+                // canonical digest from retained project files or old CAS.
+                let source_file=legacy_input_source(root,inputs,&digest,length)?;
+                crate::copy_checked(&retained,&api::calcifer::StagedInput {path:source_file,digest,length},&target)
+                    .map_err(|_| StoreError::Protected("project_input_migration_pending".into()))?;
+            }
+            let receipt=format!("controller-v7:run:{id}");
+            project.write(|tx| {
+                let prior:Option<String>=tx.query_row("SELECT digest FROM journal_migrations WHERE source=?1",[&receipt],|row|row.get(0)).optional()?;
+                if prior.as_ref().is_some_and(|prior| prior!=&source_digest) { return Err(StoreError::Protected("project_migration_source_changed".into())); }
+                runs.insert_verified(tx,"runs")?; outputs.insert_verified(tx,"outputs")?; logs.insert_verified(tx,"run_logs")?; asks.insert_verified(tx,"asks")?;
+                if let Some(after)=&after { after.insert_verified(tx,"after_steps")?; }
+                if let Some((step,_))=&after_file {
+                    let value:serde_json::Value=serde_json::from_str(step).map_err(|_|corrupt("legacy after step"))?;
+                    let step=value.to_string();
+                    tx.execute("INSERT OR IGNORE INTO after_steps(key_sha256,step) VALUES(?1,?2)",params![key_digest(&key),step])?;
+                    let found:String=tx.query_row("SELECT step FROM after_steps WHERE key_sha256=?1",[key_digest(&key)],|row|row.get(0))?;
+                    if serde_json::from_str::<serde_json::Value>(&found).ok()!=Some(value) { return Err(StoreError::Protected("project_after_migration_conflict".into())); }
+                }
+                let record=serde_json::json!({"inputs":objects,"after":after_file.as_ref().map(|(_,digest)|serde_json::json!({"name":after_name,"digest":digest}))}).to_string();
+                tx.execute("INSERT OR IGNORE INTO journal_migrations(source,digest,record) VALUES(?1,?2,?3)",params![receipt,source_digest,record])?;
+                Ok(())
+            })?;
+            // FULL-synchronous project commit has returned; verify its durable receipt before
+            // the old transaction may delete even one of the imported records.
+            let verified=project.read(|conn| Ok(conn.query_row("SELECT digest FROM journal_migrations WHERE source=?1",[&receipt],|row|row.get::<_,String>(0))?))?;
+            if verified!=source_digest { return Err(StoreError::Protected("project_migration_unverified".into())); }
+            if pending_worker {continue;}
+            for table in ["outputs","run_logs","asks"] { source.execute(&format!("DELETE FROM legacy_project_{table} WHERE run=?1"),[&id])?; }
+            if after.is_some() { source.execute("DELETE FROM legacy_project_after_steps WHERE key_sha256=?1",[key_digest(&key)])?; }
+            source.execute("DELETE FROM legacy_project_runs WHERE id=?1",[&id])?;
+            changed=true;
+        }
+        // API mutation retry responses have their own explicit owner, never inferred from a
+        // generic body without an absolute admitted project path or protected envelope.
+        if table_exists(&source,"legacy_project_answers")? {
+            let mut answers=Rows::load(&source,"answers","?1=?1","")?;
+            for index in 0..answers.values.len() {
+                let (key,body)=(answers.column("key")?,answers.column("body")?);
+                let Value::Blob(bytes)=&answers.values[index][body] else { return Err(corrupt("legacy answer")) };
+                let owner=vault::payload_root(bytes).map_err(private_error)?.or_else(|| answer_path(bytes).map(|path|vault::logical(&path)));
+                if owner.as_ref().is_none_or(|owner| !owner.starts_with(root)) { continue; }
+                let named=text(&answers.values[index][key])?.to_owned();
+                let one=Rows::load(&source,"answers","key=?1",&named)?;
+                let digest=one.fingerprint();
+                answers.open(index,"body",|_| Ok(format!("answer:{named}:body")))?;
+                let row=&answers.values[index];
+                project.write(|tx| {
+                    tx.execute("INSERT OR IGNORE INTO request_keys(key,digest,status,content_type,body,at_ms) VALUES(?1,?2,?3,?4,?5,?6)",rusqlite::params_from_iter(row))?;
+                    let matches=tx.query_row("SELECT EXISTS(SELECT 1 FROM request_keys WHERE key IS ?1 AND digest IS ?2 AND status IS ?3 AND content_type IS ?4 AND body IS ?5 AND at_ms IS ?6)",rusqlite::params_from_iter(row),|row|row.get::<_,bool>(0))?;
+                    if !matches { return Err(StoreError::Protected("project_retry_migration_conflict".into())); }
+                    tx.execute("INSERT OR REPLACE INTO journal_migrations(source,digest,record) VALUES(?1,?2,'request_key')",params![format!("controller-v7:answer:{named}"),digest])?;
+                    Ok(())
+                })?;
+                source.execute("DELETE FROM legacy_project_answers WHERE key=?1",[named])?;
+                changed=true;
+            }
+        }
+        if table_exists(&source,"legacy_project_projects")? {
+            let index=Rows::load(&source,"projects","id=?1",project.project_id())?;
+            if !index.values.is_empty() {
+                let fingerprint=index.fingerprint();
+                // Retain old project-only activity inside the project; the global index is
+                // already reduced to the allowed public reference columns.
+                let record=format!("{:?}",index.values);
+                project.write(|tx| { tx.execute("INSERT OR REPLACE INTO journal_migrations(source,digest,record) VALUES('controller-v7:index',?1,?2)",params![fingerprint,record])?; Ok(()) })?;
+                if !project.legacy_worker_pending()? {source.execute("DELETE FROM legacy_project_projects WHERE id=?1",[project.project_id()])?;changed=true;}
+            }
+        }
+        source.commit()?;
+        drop(writer);
+        self.migrate_legacy_files(&project)?;
+        if changed {
+            if self.migration_required()? {self.checkpoint_legacy_retirement()} else {self.cleanup_private_journal()}
+        } else {Ok(())}
+    }
+
+    fn migrate_legacy_files(&self, project:&Destination<'_,'_>)->Result<()> {
+        let _source_files=self.writer.lock().unwrap_or_else(|error|error.into_inner());
+        for name in ["here.json","checkpoints.json"] {
+            let path=self.legacy_home.join(name);
+            match std::fs::read(&path) {
+                Ok(bytes)=>{
+                    let valid=if name=="here.json" {serde_json::from_slice::<crate::state::OldHere>(&bytes).is_ok()} else {serde_json::from_slice::<crate::state::OldHeaders>(&bytes).is_ok()};
+                    if !valid || std::fs::read(&path).ok().as_deref()!=Some(bytes.as_slice()) {return Err(StoreError::Protected("legacy_cache_migration_pending".into()));}
+                    // These two documented caches are wholly recomputable. No
+                    // request key, after step or source/input bytes are swept.
+                    std::fs::remove_file(&path).map_err(|_|StoreError::Protected("legacy_cache_migration_pending".into()))?;
+                    platform::durable::sync_dir(&self.legacy_home).map_err(|_|StoreError::Protected("legacy_cache_migration_pending".into()))?;
+                },
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                Err(_)=>return Err(StoreError::Protected("legacy_cache_migration_pending".into())),
+            }
+        }
+        // Keep each original JSON project record in its own durable project receipt.
+        // Other projects and malformed/unknown source files remain untouched.
+        let index_path=self.legacy_home.join("projects.json");
+        match std::fs::read(&index_path) {
+            Ok(bytes)=>{
+                let mut index:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|StoreError::Protected("project_index_migration_pending".into()))?;
+                let known_shape=index.as_object().is_some_and(|object|object.len()==1&&object.contains_key("projects"));
+                if !known_shape { return Err(StoreError::Protected("project_index_migration_pending".into())); }
+                let entries=index.get_mut("projects").and_then(serde_json::Value::as_object_mut).ok_or_else(||StoreError::Protected("project_index_migration_pending".into()))?;
+                if let Some(record)=entries.get(project.project_id()).cloned() {
+                    let encoded=record.to_string(); let digest=key_digest(&encoded);
+                    project.write(|tx| { tx.execute("INSERT OR REPLACE INTO journal_migrations(source,digest,record) VALUES('controller-json:index',?1,?2)",params![digest,encoded])?; Ok(()) })?;
+                    if std::fs::read(&index_path).map_err(|_|StoreError::Protected("project_index_migration_pending".into()))?!=bytes { return Err(StoreError::Protected("project_index_source_changed".into())); }
+                    if project.legacy_worker_pending()? {return Ok(());}
+                    entries.remove(project.project_id());
+                    if entries.is_empty() { std::fs::remove_file(&index_path).map_err(|_|StoreError::Protected("project_index_migration_pending".into()))?; platform::durable::sync_dir(&self.legacy_home).map_err(|_|StoreError::Protected("project_index_migration_pending".into()))?; }
+                    else { platform::durable::replace(&index_path,index.to_string().as_bytes(),0o600).map_err(|_|StoreError::Protected("project_index_migration_pending".into()))?; }
+                }
+            },
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+            Err(_)=>return Err(StoreError::Protected("project_index_migration_pending".into())),
+        }
+        let legacy_runs_empty=self.read(|conn| {
+            if !table_exists(conn,"legacy_project_runs")? { return Ok(true); }
+            Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_runs)",[],|row|row.get::<_,bool>(0))?)
+        })?;
+        let receipts=project.read(|conn| {
+            let mut stmt=conn.prepare("SELECT source,record FROM journal_migrations WHERE source LIKE 'controller-v7:run:%'")?;
+            Ok(stmt.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        for (source,receipt) in receipts {
+            let Some(id)=source.strip_prefix("controller-v7:run:") else {continue;};
+            let retired=self.read(|conn| {if !table_exists(conn,"legacy_project_runs")? {return Ok(true);} Ok(!conn.query_row("SELECT EXISTS(SELECT 1 FROM legacy_project_runs WHERE id=?1)",[id],|row|row.get::<_,bool>(0))?)})?;
+            if !retired {continue;}
+            let Ok(record)=serde_json::from_str::<serde_json::Value>(&receipt) else { continue; };
+            if let Some(after)=record.get("after").filter(|value|!value.is_null()) {
+                let name=after.get("name").and_then(serde_json::Value::as_str).ok_or_else(||corrupt("after migration receipt"))?;
+                if name.len()!=69 || !name.ends_with(".json") || !name.as_bytes()[..64].iter().all(|byte|byte.is_ascii_hexdigit()) { return Err(corrupt("after migration receipt")); }
+                let digest=after.get("digest").and_then(serde_json::Value::as_str).ok_or_else(||corrupt("after migration receipt"))?;
+                let path=self.legacy_home.join("after").join(name);
+                match std::fs::read(&path) {
+                    Ok(bytes) if Digest::of(&bytes).to_string()==digest=>{ std::fs::remove_file(&path).map_err(|_|StoreError::Protected("project_after_migration_pending".into()))?; platform::durable::sync_dir(path.parent().expect("after folder")).map_err(|_|StoreError::Protected("project_after_migration_pending".into()))?; },
+                    Ok(_)=>return Err(StoreError::Protected("project_after_source_changed".into())),
+                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                    Err(_)=>return Err(StoreError::Protected("project_after_migration_pending".into())),
+                }
+            }
+            if legacy_runs_empty {
+                let objects:Vec<(Digest,u64)>=serde_json::from_value(record.get("inputs").cloned().unwrap_or_else(||serde_json::json!([]))).map_err(|_|corrupt("input migration receipt"))?;
+                for (digest,length) in objects {
+                    let name=hex::encode(digest.bytes());
+                    let path=self.legacy_home.join("inputs").join(&name);
+                    if !path.exists() { continue; }
+                    if self.input_in_use(&digest)? { continue; }
+                    let target=project.input_root()?.join(name);
+                    verify_file(&target,digest,length)?; verify_file(&path,digest,length)?;
+                    std::fs::remove_file(&path).map_err(|_|StoreError::Protected("project_input_retirement_pending".into()))?;
+                    platform::durable::sync_dir(path.parent().expect("input folder")).map_err(|_|StoreError::Protected("project_input_retirement_pending".into()))?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn legacy_input_source(root:&Path,inputs:&Path,digest:&Digest,length:u64)->Result<PathBuf> {
+    let name=hex::encode(digest.bytes());
+    let staged=inputs.join(&name);
+    if staged.is_file() {return Ok(staged);}
+    let view=vault::resolve_path(root).map_err(private_error)?;
+    match std::fs::read_dir(view.join("files")) {
+        Ok(entries)=>for entry in entries {
+            let entry=entry.map_err(|_|StoreError::Protected("project_input_migration_pending".into()))?;
+            let file=entry.file_name();
+            if file.to_str().is_some_and(|file|file==name.as_str()||file.strip_prefix(name.as_str()).is_some_and(|tail|tail.starts_with('.'))) && entry.path().is_file() {
+                return Ok(entry.path());
+            }
+        },
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+        Err(_)=>return Err(StoreError::Protected("project_input_migration_pending".into())),
+    }
+    crate::runs::files::legacy_input_source(digest,length).filter(|path|path.is_file())
+        .ok_or_else(||StoreError::Protected("project_input_migration_pending".into()))
+}
+
+fn verify_file(path:&Path,digest:Digest,length:u64)->Result<()> {
+    let mut file=std::fs::File::open(path).map_err(|_|StoreError::Protected("project_input_retirement_pending".into()))?;
+    let mut hash=Sha256::new();
+    let size=std::io::copy(&mut file,&mut hash).map_err(|_|StoreError::Protected("project_input_retirement_pending".into()))?;
+    if size!=length || Digest::from_bytes(hash.finalize().into())!=digest { return Err(StoreError::Protected("project_input_source_changed".into())); }
+    Ok(())
+}

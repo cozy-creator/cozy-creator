@@ -400,7 +400,7 @@ class Proof:
     ) -> Payload | str:
         if holder is None:
             holder = self.controller()
-        fields = {'Authorization': 'Bearer ' + holder['token'], **(headers or {})}
+        fields = {'Authorization': 'Bearer ' + holder['token'], 'cozy-project-storage': '3', **(headers or {})}
         if isinstance(body, dict):
             fields['Content-Type'] = 'application/json'
             body = json.dumps(body).encode('utf-8')
@@ -734,12 +734,13 @@ foreach ($rule in $allowed) {
         diagnostic['partial_downloads'] = [
             {'name': path.name, 'bytes': path.stat().st_size}
             for path in sorted(cache.parent.glob('.ffmpeg-*.part'))[:4] if path.is_file()]
-        log = self.home / 'calcifer' / 'calcifer.log'
+        # Calcifer's closed health log: its tool fetches. A project's own errors are never kept outside it.
+        log = self.home / 'calcifer' / 'health.log'
         if log.is_file():
             with log.open('rb') as handle:
                 handle.seek(max(0, log.stat().st_size - 65536))
                 tail = handle.read(65536).decode('utf-8', errors='replace')
-            markers = ['fetching ffmpeg:', "measuring a project's files:"]
+            markers = ['fetching a tool']
             diagnostic['media_log'] = [
                 self.media_diagnostic_text(line[line.index(marker):])
                 for line in tail.splitlines() for marker in markers if marker in line][-12:]
@@ -874,8 +875,11 @@ foreach ($rule in $allowed) {
         pid = holder['pid']
         assert pid > 1
         digest = self.digest(media)
-        log = self.home / 'calcifer/calcifer.log'
-        stopped_before = log.read_text(errors='replace').count('calcifer::serve: Calcifer stopped')
+        # Calcifer's closed health log says each stop (`event="stopped"`).
+        log = self.home / 'calcifer/health.log'
+        stopped = 'event="stopped"'
+        assert log.is_file(), 'Calcifer keeps no health log to read its stop from'
+        stopped_before = log.read_text(errors='replace').count(stopped)
         reader = subprocess.Popen([sys.executable, '-c',
                                    "import sys; held=open(sys.argv[1],'rb'); print('ready',flush=True); sys.stdin.buffer.read(1); held.close()",
                                    str(media)], cwd=view, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -948,7 +952,7 @@ foreach ($rule in $allowed) {
             if time.monotonic() >= deadline:
                 raise AssertionError('Calcifer did not exit after its native reader released the view')
             time.sleep(0.05)
-        assert log.read_text(errors='replace').count('calcifer::serve: Calcifer stopped') > stopped_before
+        assert log.read_text(errors='replace').count(stopped) > stopped_before, 'Calcifer exited without saying it stopped'
         self.assert_inaccessible(view, media)
         assert self.status()['state'] == 'locked'
         reopened = self.view(self.vault('unlock', '--recovery-file', self.recovery('recovery1'), '--idle', 0))

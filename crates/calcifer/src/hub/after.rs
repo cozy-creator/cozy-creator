@@ -41,33 +41,33 @@ pub(crate) enum After {
 
 impl Calcifer {
     /// Keeps `after` for the ask under `key`, before its run is submitted.
-    pub(crate) fn plan(&self, key: &str, after: &After) -> Result<(), Error> {
+    pub(crate) fn plan(&self, project: Option<&str>, key: &str, after: &After) -> Result<(), Error> {
         let step = serde_json::to_string(after).expect("a step serializes");
-        self.store.plan_after(key, &step).map_err(|e| Error::internal("calcifer_store", e.to_string()))
+        match project { Some(project) => self.project_store(project).and_then(|store| store.plan_after(key,&step)), None => self.maintenance_store().plan_after(key,&step) }.map_err(|e| Error::internal("calcifer_store", e.to_string()))
     }
 
     /// Forgets the step kept under `key`: its run was refused.
-    pub(crate) fn unplan(&self, key: &str) {
-        if let Err(e) = self.store.forget_after(key) {
+    pub(crate) fn unplan(&self, project: Option<&str>, key: &str) {
+        if let Err(e) = match project { Some(project) => self.project_store(project).and_then(|store| store.forget_after(key)), None => self.maintenance_store().forget_after(key) } {
             warn!("an ask's step stays: {e}");
         }
     }
 
     /// Run `id`'s step, if its ask kept one: done when its machine succeeded, then forgotten.
     pub(crate) async fn after(&self, id: &RunId, outcome: &mut v1::Outcome) {
-        let Ok(Some(key)) = self.store.key(id.as_str()) else { return };
-        let Ok(Some(step)) = self.store.after_step(&key) else { return };
+        let Ok(Some(key)) = self.with_run_store(id.as_str(), |store| store.key(id.as_str())) else { return };
+        let Ok(Some(step)) = self.with_run_store(id.as_str(), |store| store.after_step(&key)) else { return };
         if outcome.status == "succeeded" {
             match serde_json::from_str::<After>(&step) {
                 Ok(after) => self.apply(id, after, outcome).await,
                 Err(e) => warn!(run = %id, "an ask's step is unreadable: {e}"),
             }
         }
-        self.unplan(&key);
+        let _ = self.with_run_store(id.as_str(), |store| store.forget_after(&key));
     }
 
     async fn apply(&self, id: &RunId, after: After, outcome: &mut v1::Outcome) {
-        let (Some(machines), Ok(Some(row))) = (self.machines(), self.store.run(id.as_str())) else { return };
+        let (Some(machines), Ok(Some(row))) = (self.machines(), self.with_run_store(id.as_str(), |store| store.run(id.as_str()))) else { return };
         let mut result: serde_json::Value = (outcome.result.as_ref())
             .and_then(|json| serde_json::from_str(json.0.get()).ok())
             .unwrap_or_else(|| serde_json::json!({}));
@@ -164,7 +164,7 @@ async fn retire(
     });
     let mut retired = vec![];
     for env in older {
-        let submit = SubmitRun {
+        let submit = SubmitRun { project: crate::private_io::current().map(|scope|scope.storage.project_id),
             agreed: None,
             stays: vec![],
             on: On::Machine(machine.to_owned()),
@@ -178,7 +178,7 @@ async fn retire(
             },
             inputs: vec![],
             held: vec![],
-            out: None,
+            out: crate::private_io::current().map(|scope|crate::project::landing(&crate::project::vault::logical(&scope.storage.view_root))),
             warnings: vec![],
         };
         let key = format!("retire-{id}-{}", env.installation);
@@ -202,7 +202,7 @@ pub(crate) async fn settled(calcifer: &std::sync::Arc<Calcifer>, key: &str, subm
     let mut events = calcifer.subscribe();
     let run = calcifer.submit(key, submit).await?.run;
     loop {
-        if let Some(row) = calcifer.store.run(run.id.as_str())?
+        if let Some(row) = calcifer.run_store(run.id.as_str())?.run(run.id.as_str())?
             && row.state == crate::store::State::Settled
         {
             return calcifer.record(&row);

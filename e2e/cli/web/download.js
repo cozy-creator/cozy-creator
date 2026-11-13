@@ -46,9 +46,9 @@ const hex = (digest) => digest?.replace(/^sha256:/, '');
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, headers: Object.fromEntries(answer.headers), body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
   const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
@@ -71,19 +71,19 @@ const hex = (digest) => digest?.replace(/^sha256:/, '');
     return path;
   };
   const takes = { 1: picture(40), 2: picture(80) };
-  await post(`${at}/imports`, { source: await upload(held?.token, takes[1]), name: 'hei', exact: true, at: { x: 100, y: 100 } });
-  await post(`${at}/assets/hei/versions`, { source: await upload(held?.token, takes[2]) });
+  await post(`${at}/imports`, { source: await upload(held?.token, takes[1], id), name: 'hei', exact: true, at: { x: 100, y: 100 } });
+  await post(`${at}/assets/hei/versions`, { source: await upload(held?.token, takes[2], id) });
   const row = await until('hei with two takes', async () => (await api(at)).body?.assets?.find((asset) => asset.name === 'hei'), (asset) => asset?.prefixes?.length === 2);
   const showing = row.prefixes.find((take) => take.number === row.version) ?? row.prefixes.at(-1);
   seen.showing = showing.number;
 
-  /** A right click on `target`, and Download from its menu: what the browser saved, and as what. */
-  const downloaded = async (target) => {
+  /** A right click on `target`, and `label` (Download) from its menu: what the browser saved, and as what. */
+  const downloaded = async (target, label = 'Download') => {
     await target.click({ button: 'right' });
     const menu = page.locator('.asset-menu');
     await menu.waitFor();
     const items = await menu.locator('[role=menuitem]').allTextContents();
-    const [download] = await Promise.all([page.waitForEvent('download'), menu.getByRole('menuitem', { name: 'Download', exact: true }).click()]);
+    const [download] = await Promise.all([page.waitForEvent('download'), menu.getByRole('menuitem', { name: label, exact: true }).click()]);
     const bytes = readFileSync(await download.path());
     return { items, name: download.suggestedFilename(), sha256: sha(bytes), bytes: bytes.length, closed: (await menu.count()) === 0 };
   };
@@ -126,13 +126,14 @@ const hex = (digest) => digest?.replace(/^sha256:/, '');
   if (local) {
     const fixture = join(__dirname, '..', 'project', 'tool.py');
     execFileSync(process.env.COZY, ['--json', 'run', `${fixture}/still`, 'prompt=download', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
-    const run = await until('its output landed', async () => (await api('/v1/runs?limit=5')).body?.runs?.find((held) => held.target.includes('still') && held.project_id === id), (held) => held?.output?.some((item) => item.name === 'image' && item.url));
+    const run = await until('its output landed', async () => (await api(`${at}/runs?limit=5`)).body?.runs?.find((held) => held.target.includes('still') && held.project_id === id), (held) => held?.output?.some((item) => item.name === 'image' && item.url));
     const item = run.output.find((held) => held.name === 'image');
     const said = item.label || item.name;
     await page.goto(await projectUrl(id, `/runs/${run.number}`));
     const output = page.locator('figure.output').filter({ has: page.locator('.nm', { hasText: said }) }).first();
-    await output.locator('button:has-text("Download")').waitFor();
-    const out = await downloaded(output);
+    // A project run's output is an exported copy, said so as it's saved (project data containment).
+    await output.locator('button:has-text("Export copy")').waitFor();
+    const out = await downloaded(output, 'Export copy');
     seen.output = { ...out, item: item.sha256, said };
     check('output_saves_as_its_name', out.name === `${said}.png`, out.name);
     check('output_saves_its_bytes', out.sha256 === hex(item.sha256), { out, item });

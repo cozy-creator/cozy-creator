@@ -54,7 +54,7 @@ pub(crate) fn release_private(root: &Path) -> Result<(), Error> {
 
 fn scoped(api: &Arc<Api>, scope: &UploadScope) -> Result<Arc<Store>, Refusal> {
     let Some(project) = &scope.project else { return Ok(store().map_err(Refusal)?.clone()) };
-    let Some(root) = crate::project::private_upload_root(api, project).map_err(Refusal)? else { return Ok(store().map_err(Refusal)?.clone()) };
+    let root = crate::project::private_upload_root(api, project).map_err(Refusal)?.ok_or_else(|| Refusal(Error::new(Kind::Conflict,"project_storage_required","the project storage is unavailable")))?;
     private_store(&root).map_err(Refusal)
 }
 
@@ -68,8 +68,14 @@ fn private_store(root: &Path) -> Result<Arc<Store>, Error> {
 }
 
 pub(crate) fn held_for(root: &Path, digest: &Digest) -> Option<PathBuf> {
-    if !crate::project::vault::encrypted(&crate::project::vault::logical(root)) { return held(digest); }
     held_in(private_store(root).ok()?.as_ref(), digest)
+}
+
+/// Read-only source for the one-way legacy migration. The digest and length
+/// must come from the unchanged canonical old run; this does not mark global
+/// use, admit a new project upload, or provide an ordinary execution fallback.
+pub(crate) fn legacy_input_source(digest:&Digest,length:u64)->Option<PathBuf> {
+    store().ok()?.path(&object(digest,length)).ok()
 }
 
 fn held_in(store: &Store, digest: &Digest) -> Option<PathBuf> {

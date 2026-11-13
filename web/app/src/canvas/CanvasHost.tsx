@@ -17,11 +17,11 @@ import { createPortal } from "react-dom"
 import { useMatch, useNavigate } from "react-router-dom"
 import { ApiError } from "../api/client"
 import { lost } from "../api/outbox"
-import { canvasQuery, machinesQuery, projectQuery, toolsQuery } from "../api/queries"
+import { canvasQuery, machinesQuery, projectQuery, projectViewQuery, toolsQuery } from "../api/queries"
 import { Unopened, useTo } from "../app/project"
 import { useConnection } from "../app/Connection"
 import { loadMore, loadSelection, loadToolsShut, loadViewport, saveMore, saveSelection, saveToolsShut, saveViewport } from "../app/view"
-import type { Opened } from "../api/calcifer"
+import type { Opened, ProjectViewPatch } from "../api/calcifer"
 import { ProjectCreate } from "../panels/ProjectCreate"
 import { say } from "../ui/notes"
 import { useSignal } from "../ui/signal"
@@ -262,16 +262,30 @@ function Canvas({
   const flowStore = useStoreApi<ElementNode, Edge>()
   const navigate = useNavigate()
   const to = useTo()
-  const { client, stream, bridge, outbox, canvases } = connection
+  const { client, stream, bridge, outbox, canvases, closeBlockers } = connection
   const [saved] = useState(() => loadViewport(projectId))
   // One per project for as long as the tab is open: a tab gone to and back finds what it showed, and what's still waiting for Calcifer shows as done.
   // One a code reload left is another class's, and is made again.
   const [store] = useState(() => {
     const kept = projectId ? canvases.get(projectId) : undefined
     if (kept instanceof CanvasStore) return kept
-    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId), projectId, loadSelection(projectId), loadMore(projectId))
+    const made: CanvasStore = new CanvasStore(client, outbox.scoped(() => made.projectId, projectId), projectId, loadSelection(projectId), loadMore(projectId))
     return made
   })
+  const keepView = useCallback((patch: ProjectViewPatch) => {
+    const id = store.projectId
+    if (!id) return
+    outbox.add({
+      project: id,
+      send: (once, action) => client.patchProjectView(id, patch, { once, action }),
+      refused: (error) => {
+        if (!(error instanceof ApiError && error.body.code === "project_locked")) say("Couldn't save the canvas view", error)
+      },
+    })
+  }, [client, outbox, store])
+  const keepViewport = useCallback((id: string, viewport: Viewport) => {
+    if (saveViewport(id, viewport)) keepView({ viewport })
+  }, [keepView])
   const focusedName = useSignal(store.focusedName)
   // A canvas's first box makes its project: kept from then on.
   useEffect(() => {
@@ -281,6 +295,11 @@ function Canvas({
   adopt.current = onAdopt
   const [creation, setCreation] = useState<{ resolve(project: Opened): void; reject(why: Error): void } | null>(null)
   const creating = useRef<typeof creation>(null)
+  useEffect(() => {
+    const blocked = () => Boolean(creating.current)
+    closeBlockers.add(blocked)
+    return () => { closeBlockers.delete(blocked) }
+  }, [closeBlockers])
   const [placer] = useState(() => new Placer(store, client, {
     adopt: (id, code) => adopt.current(id, code),
     create: () => new Promise<Opened>((resolve, reject) => {
@@ -493,14 +512,14 @@ function Canvas({
       if (fitted || !store.projectId || store.focusedName.get() || openedNow.current) return
       fitted = true
       if (openedOn) await fitLaidOut(fitOver())
-      saveViewport(store.projectId, flow.getViewport())
+      keepViewport(store.projectId, flow.getViewport())
     }
     store.onFirstRead = async () => {
       if (flow.getNodes().length || !store.projectId) return fitOnce()
     }
     store.onPlaced = fitOnce
     store.onMore = (names) => {
-      if (store.projectId) saveMore(store.projectId, names)
+      if (store.projectId && saveMore(store.projectId, names)) keepView({ more: names })
     }
     store.askMachine = () => navigate(to("machines"))
     store.rent = (pick) => {
@@ -509,7 +528,7 @@ function Canvas({
     }
     store.attach(flow)
     return () => store.detach()
-  }, [store, flow, saved, openedOn, bridge, navigate, to, fitLaidOut])
+  }, [store, flow, saved, openedOn, bridge, navigate, to, keepView, keepViewport, fitLaidOut])
 
   /** Where the last zoom of the buttons or keys is going, so a second press steps on from there, not from part of the way. */
   const aim = useRef<{ view: Viewport; until: number } | null>(null)
@@ -658,11 +677,11 @@ function Canvas({
   const moved = useCallback(
     (_: unknown, viewport: Viewport) => {
       if (store.focusedName.get() || visit.current) return
-      if (store.projectId) saveViewport(store.projectId, viewport)
+      if (store.projectId) keepViewport(store.projectId, viewport)
       // At rest on another step, its far names laid out again (cl-885): never on the way there.
       store.settleZoom(viewport.zoom)
     },
-    [store],
+    [store, keepViewport],
   )
 
   const selectionChanged = useCallback(
@@ -670,10 +689,11 @@ function Canvas({
       store.select(nodes.map((node) => node.data.name))
       clearTimeout(settling.current)
       settling.current = setTimeout(() => {
-        if (store.projectId) saveSelection(store.projectId, nodes.map((node) => node.data.name))
+        const selection = nodes.map((node) => node.data.name)
+        if (store.projectId && saveSelection(store.projectId, selection)) keepView({ selection })
       }, 200)
     },
-    [store],
+    [store, keepView],
   )
 
   /** The boxes selected. */
@@ -1071,6 +1091,14 @@ const LAYERED = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.te
 
 /** Always mounted: everything else is a drawer over it, so opening one loses no viewport, no draft and no import in flight. */
 export function CanvasHost(props: { projectId: string | null; active: boolean; slot: HTMLElement | null; history: HTMLElement | null; onAdopt: (id: string, code: string) => void }) {
+  const { client, stream } = useConnection()
+  // A first drop adopts a newly created project without unmounting its in-flight placer.
+  const [openedProject] = useState(props.projectId)
+  const view = useQuery({ ...projectViewQuery(client, stream, props.projectId ?? ""), enabled: Boolean(openedProject && props.projectId) })
+  // A project Calcifer refuses to read (a newer schema, say) still opens its canvas: it says why there, and the tools stay.
+  if (openedProject && !view.data && !(view.error instanceof ApiError)) {
+    return <div className="empty-canvas"><p>{view.error ? "Couldn't read this project's canvas view." : "Opening project…"}</p>{view.error && <button className="tb" onClick={() => void view.refetch()}>Retry</button>}</div>
+  }
   return (
     <ReactFlowProvider defaultNodes={[]}>
       <Canvas {...props} />

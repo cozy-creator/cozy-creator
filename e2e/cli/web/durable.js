@@ -150,7 +150,7 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   const theirs = 'Theirs.';
   const theirsRead = page.waitForResponse((answer) => answer.request().method() === 'GET' && new URL(answer.url()).pathname.endsWith('/assets/words'), { timeout: 20_000 }).then(() => true, () => false);
   const wrote = await fetch(`http://${holder().address}/v1/projects/${id}/assets/words`, {
-    method: 'PATCH', headers: { Authorization: `Bearer ${holder().token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: `${quick} ${theirs}` } }),
+    method: 'PATCH', headers: { Authorization: `Bearer ${holder().token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' }, body: JSON.stringify({ fields: { text: `${quick} ${theirs}` } }),
   });
   check('theirs_written', wrote.ok && inDb() === `${quick} ${theirs}`, { status: wrote.status, held: inDb() });
   // The stream brings theirs back to the page, which reads it; its own unsent words stand over it.
@@ -173,7 +173,7 @@ const WORDS = 'one two three four five six seven eight nine ten eleven twelve'.s
   await saved();
   const other = await context.newPage();
   other.on('pageerror', (error) => errors.push(error.message));
-  await other.goto(page.url());
+  await signIn(other, page.url());
   await openBox(other, 'words');
   const otherText = () => other.locator('.card.here[data-asset="words"] .mention-text').last();
   await until('the other page reads it', async () => (await otherText().innerText()).trim(), (text) => text === 'Middle.');

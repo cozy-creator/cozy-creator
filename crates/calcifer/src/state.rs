@@ -1,8 +1,8 @@
 //! Calcifer's own state beside its runs, as tables of `state.db` (cl-818): the project folders it opened, browser sessions, your tool
-//! list, Render here, what each model header said, an ask's step after its run, and the takes you haven't looked at. Each change is one
+//! list, Render here, model header caches and independent asks. Project activity belongs to project.db. Each change is one
 //! transaction; nothing is rewritten whole. The JSON files an earlier Calcifer kept these in are imported once, at open, and deleted ([`import`]).
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, HashMap},
     io::ErrorKind,
     path::{Path, PathBuf},
 };
@@ -21,11 +21,7 @@ pub(crate) const TABLES: &str = "
     CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
         path TEXT NOT NULL,
-        used_at_ms INTEGER NOT NULL,
-        walking INTEGER NOT NULL DEFAULT 0,
-        name TEXT NOT NULL DEFAULT '',
-        code TEXT NOT NULL DEFAULT '',
-        purge_ms INTEGER NOT NULL DEFAULT 0
+        code TEXT NOT NULL DEFAULT ''
     ) STRICT;
     CREATE TABLE IF NOT EXISTS projects_gone (
         id TEXT PRIMARY KEY,
@@ -61,19 +57,12 @@ pub(crate) const TABLES: &str = "
         families TEXT NOT NULL,
         lora INTEGER NOT NULL,
         family TEXT,
-        parts TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (hub, sha256)
     ) STRICT, WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS after_steps (
         key_sha256 TEXT PRIMARY KEY,
         step TEXT NOT NULL
-    ) STRICT;
-    CREATE TABLE IF NOT EXISTS unseen (
-        project TEXT NOT NULL,
-        box TEXT NOT NULL,
-        number INTEGER NOT NULL,
-        PRIMARY KEY (project, box, number)
-    ) STRICT, WITHOUT ROWID;";
+    ) STRICT;";
 
 /// A project Calcifer opened, by its id: its name, and where it last was.
 #[derive(Clone, Debug)]
@@ -85,8 +74,6 @@ pub(crate) struct KnownProject {
     pub used_at_ms: i64,
     /// Its walk was going: the next start walks it again.
     pub walking: bool,
-    /// When a deleted box's undo window next ends in it, in ms (cl-919): its files go then, or as the next start catches up. 0: none.
-    pub purge_ms: i64,
 }
 
 /// A browser session, by its secrets' digests.
@@ -101,33 +88,11 @@ fn known(row: &rusqlite::Row) -> rusqlite::Result<KnownProject> {
     let path = PathBuf::from(row.get::<_, String>(1)?);
     let name = Some(row.get::<_, String>(4)?).filter(|name| !name.is_empty());
     let name = name.unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
-    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)?, purge_ms: row.get(6)? })
-}
-
-/// An index from before cl-919 knows of no deleted boxes' files to purge: its column, added, none due.
-pub(crate) fn project_purges(conn: &Connection) -> rusqlite::Result<()> {
-    match conn.prepare("SELECT purge_ms FROM projects LIMIT 0").is_ok() {
-        true => Ok(()),
-        false => conn.execute_batch("ALTER TABLE projects ADD COLUMN purge_ms INTEGER NOT NULL DEFAULT 0"),
-    }
+    Ok(KnownProject { id: row.get(0)?, code: row.get(5)?, name, path, used_at_ms: row.get(2)?, walking: row.get(3)? })
 }
 
 /// A store from before cl-819 names no project: its column, added.
-pub(crate) fn project_names(conn: &Connection) -> rusqlite::Result<()> {
-    let named = conn.prepare("SELECT name FROM projects LIMIT 0").is_ok();
-    match named {
-        true => Ok(()),
-        false => conn.execute_batch("ALTER TABLE projects ADD COLUMN name TEXT NOT NULL DEFAULT ''"),
-    }
-}
-
-/// A store from before cl-943 keeps no header's parts: its column, added. Its rows were read under other facts, and go.
-pub(crate) fn header_parts(conn: &Connection) -> rusqlite::Result<()> {
-    match conn.prepare("SELECT parts FROM headers LIMIT 0").is_ok() {
-        true => Ok(()),
-        false => conn.execute_batch("ALTER TABLE headers ADD COLUMN parts TEXT NOT NULL DEFAULT ''"),
-    }
-}
+pub(crate) fn project_names(_conn: &Connection) -> rusqlite::Result<()> { Ok(()) }
 
 /// Older indexes gain public codes without replacing their project identities or rows.
 pub(crate) fn project_codes(conn: &Connection) -> rusqlite::Result<()> {
@@ -221,13 +186,13 @@ fn digest(key: &str) -> String {
 
 impl Store {
     pub(crate) fn known_project(&self, id: &str) -> Result<Option<KnownProject>> {
-        self.read(|conn| Ok(conn.query_row("SELECT id, path, used_at_ms, walking, name, code, purge_ms FROM projects WHERE id = ?1", [id], known).optional()?))
+        self.read(|conn| Ok(conn.query_row("SELECT id, path, 0, 0, '', code FROM projects WHERE id = ?1", [id], known).optional()?))
     }
 
     /// Every project opened here, last used first.
     pub(crate) fn known_projects(&self) -> Result<Vec<KnownProject>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id, path, used_at_ms, walking, name, code, purge_ms FROM projects ORDER BY used_at_ms DESC, id")?;
+            let mut statement = conn.prepare("SELECT id, path, 0, 0, '', code FROM projects ORDER BY id")?;
             Ok(statement.query_map([], known)?.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -254,50 +219,18 @@ impl Store {
     }
 
     /// `id`, called `name`, in `path`, opened at `used_at_ms` (none: when it was last, or now if it's new here); whether it was walking stands.
-    pub(crate) fn project_opened(&self, id: &str, name: &str, path: &Path, used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
+    pub(crate) fn project_opened(&self, id: &str, _name: &str, path: &Path, _used_at_ms: Option<i64>, preferred: Option<&str>) -> Result<String> {
         self.write(|tx| {
-            // A folder holds one project: another the index had there is gone.
             tx.execute("DELETE FROM projects WHERE path = ?2 AND id <> ?1", params![id, path.to_string_lossy()])?;
             tx.execute("DELETE FROM projects_gone WHERE id = ?1 OR path = ?2", params![id, path.to_string_lossy()])?;
             let code = project_code(tx, id, preferred, crate::project::code::generate)?;
-            tx.execute(
-                "INSERT INTO projects (id, path, used_at_ms, name, code) VALUES (?1, ?2, COALESCE(?4, CAST(strftime('%s', 'now') AS INTEGER) * 1000), ?3, ?5)
-                 ON CONFLICT (id) DO UPDATE SET path = excluded.path, name = excluded.name, code = excluded.code, used_at_ms = COALESCE(?4, projects.used_at_ms)",
-                params![id, path.to_string_lossy(), name, used_at_ms, code],
-            )?;
+            tx.execute("INSERT INTO projects (id, path, code) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET path = excluded.path, code = excluded.code", params![id, path.to_string_lossy(), code])?;
             Ok(code)
         })
     }
 
-    /// `id`'s deleted boxes' files are due to go at `at_ms`, if that's sooner than what was due.
-    pub(crate) fn purge_due(&self, id: &str, at_ms: i64) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("UPDATE projects SET purge_ms = ?2 WHERE id = ?1 AND (purge_ms = 0 OR purge_ms > ?2)", params![id, at_ms])?;
-            Ok(())
-        })
-    }
-
-    /// `id` purged, its next due at `next_ms` (0: none), as read when it was due at `was_ms`: a delete since, due later, stands too.
-    pub(crate) fn purged(&self, id: &str, was_ms: i64, next_ms: i64) -> Result<()> {
-        self.write(|tx| {
-            tx.execute(
-                "UPDATE projects SET purge_ms = CASE WHEN purge_ms = ?2 THEN ?3 WHEN ?3 = 0 THEN purge_ms ELSE MIN(purge_ms, ?3) END WHERE id = ?1",
-                params![id, was_ms, next_ms],
-            )?;
-            Ok(())
-        })
-    }
-
     /// Whether each project is being walked, which the next start walks again.
-    pub(crate) fn projects_walking(&self, walking: &[(String, bool)]) -> Result<()> {
-        self.write(|tx| {
-            let mut statement = tx.prepare("UPDATE projects SET walking = ?2 WHERE id = ?1 AND walking <> ?2")?;
-            for (id, walking) in walking {
-                statement.execute(params![id, walking])?;
-            }
-            Ok(())
-        })
-    }
+    pub(crate) fn projects_walking(&self, _walking: &[(String, bool)]) -> Result<()> { Ok(()) }
 
     /// The sessions used after `since_ms`; the rest have ended, and go.
     pub(crate) fn sessions(&self, since_ms: i64) -> Result<Vec<SessionRow>> {
@@ -388,72 +321,10 @@ impl Store {
     }
 
     /// What each header read here said, by Hub and sha256, while TensorFS's families are `families`: what others said goes.
-    pub(crate) fn header_facts(&self, families: &str) -> Result<HashMap<(String, String), Facts>> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM headers WHERE families <> ?1", [families])?;
-            let mut statement = tx.prepare("SELECT hub, sha256, lora, family, parts FROM headers")?;
-            let rows = statement.query_map([], |r| {
-                let parts: String = r.get(4)?;
-                Ok(((r.get(0)?, r.get(1)?), Facts { lora: r.get(2)?, family: r.get(3)?, parts: serde_json::from_str(&parts).unwrap_or_default() }))
-            })?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
+    pub(crate) fn header_facts(&self, _families: &str) -> Result<HashMap<(String,String),Facts>> { Ok(HashMap::new()) }
+    pub(crate) fn keep_header_facts(&self, _families: &str, _read: &[((String,String),Facts)]) -> Result<()> { Ok(()) }
 
-    /// What headers said, by Hub and sha256, read under `families`.
-    pub(crate) fn keep_header_facts(&self, families: &str, read: &[((String, String), Facts)]) -> Result<()> {
-        self.write(|tx| {
-            let mut statement = tx.prepare("INSERT OR REPLACE INTO headers (hub, sha256, families, lora, family, parts) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
-            for ((hub, sha256), facts) in read {
-                let parts = serde_json::to_string(&facts.parts).unwrap_or_default();
-                statement.execute(params![hub, sha256, families, facts.lora, facts.family, parts])?;
-            }
-            Ok(())
-        })
-    }
 
-    /// Keeps `step` (JSON) for the ask under `key`, before its run is submitted.
-    pub(crate) fn plan_after(&self, key: &str, step: &str) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("INSERT OR REPLACE INTO after_steps (key_sha256, step) VALUES (?1, ?2)", params![digest(key), step])?;
-            Ok(())
-        })
-    }
-
-    pub(crate) fn after_step(&self, key: &str) -> Result<Option<String>> {
-        self.read(|conn| Ok(conn.query_row("SELECT step FROM after_steps WHERE key_sha256 = ?1", [digest(key)], |r| r.get(0)).optional()?))
-    }
-
-    pub(crate) fn forget_after(&self, key: &str) -> Result<()> {
-        self.write(|tx| {
-            tx.execute("DELETE FROM after_steps WHERE key_sha256 = ?1", [digest(key)])?;
-            Ok(())
-        })
-    }
-
-    /// The versions of `project`'s boxes this person hasn't looked at (cl-928), by box id.
-    pub(crate) fn unseen(&self, project: &str) -> Result<BTreeMap<String, BTreeSet<u32>>> {
-        self.read(|conn| {
-            let mut statement = conn.prepare("SELECT box, number FROM unseen WHERE project = ?1")?;
-            let mut unseen: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
-            for row in statement.query_map([project], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)))? {
-                let (held, number) = row?;
-                unseen.entry(held).or_default().insert(number);
-            }
-            Ok(unseen)
-        })
-    }
-
-    /// Version `number` of box `held` landed unseen, or with `seen`, was looked at.
-    pub(crate) fn keep_unseen(&self, project: &str, held: &str, number: u32, seen: bool) -> Result<()> {
-        self.write(|tx| {
-            match seen {
-                true => tx.execute("DELETE FROM unseen WHERE project = ?1 AND box = ?2 AND number = ?3", params![project, held, number])?,
-                false => tx.execute("INSERT OR IGNORE INTO unseen (project, box, number) VALUES (?1, ?2, ?3)", params![project, held, number])?,
-            };
-            Ok(())
-        })
-    }
 }
 
 #[derive(Deserialize)]
@@ -478,12 +349,14 @@ struct OldSession {
 }
 
 #[derive(Deserialize)]
-struct OldHere {
+#[serde(deny_unknown_fields)]
+pub(super) struct OldHere {
     #[serde(default)]
     here: Vec<OldRenderedHere>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OldRenderedHere {
     tool: String,
     machine: String,
@@ -492,7 +365,8 @@ struct OldRenderedHere {
 }
 
 #[derive(Deserialize)]
-struct OldHeaders {
+#[serde(deny_unknown_fields)]
+pub(super) struct OldHeaders {
     families: String,
     facts: HashMap<String, Facts>,
 }
@@ -536,7 +410,6 @@ pub(crate) fn import(store: &Store, dir: &Path) {
             steps.push((key.to_string_lossy().into_owned(), step.map(|step| step.to_string()), path));
         }
     }
-    let families = tensorfs::family::facts_digest();
     let none = index.is_none() && sessions.is_none() && tools.is_none() && here.is_none() && headers.is_none() && steps.is_empty();
     if none {
         let _ = std::fs::remove_dir(&after_dir);
@@ -545,8 +418,8 @@ pub(crate) fn import(store: &Store, dir: &Path) {
     let mut counts = BTreeMap::new();
     let imported = store.write(|tx| {
         for (id, project) in index.iter().flatten().flat_map(|index| &index.projects) {
-            let sql = "INSERT OR IGNORE INTO projects (id, path, used_at_ms, walking) VALUES (?1, ?2, ?3, ?4)";
-            *counts.entry("projects").or_insert(0) += tx.execute(sql, params![id, project.path.to_string_lossy(), project.used_at_ms, project.walking])?;
+            let sql = "INSERT OR IGNORE INTO projects (id, path, code) VALUES (?1, ?2, '')";
+            *counts.entry("projects").or_insert(0) += tx.execute(sql, params![id, project.path.to_string_lossy()])?;
         }
         for session in sessions.iter().flatten().flatten() {
             let sql = "INSERT OR IGNORE INTO sessions (token_sha256, media_sha256, used_at_ms) VALUES (?1, ?2, ?3)";
@@ -562,21 +435,6 @@ pub(crate) fn import(store: &Store, dir: &Path) {
                 *counts.entry("tools_off").or_insert(0) += tx.execute("INSERT OR IGNORE INTO tools_off (tool) VALUES (?1)", [tool])?;
             }
         }
-        for held in here.iter().flatten().flat_map(|here| &here.here) {
-            let sql = "INSERT OR IGNORE INTO rendered_here (tool, machine, bytes) VALUES (?1, ?2, ?3)";
-            *counts.entry("rendered_here").or_insert(0) += tx.execute(sql, params![held.tool, held.machine, held.bytes as i64])?;
-        }
-        // What other families said is read again.
-        for (key, facts) in headers.iter().flatten().filter(|held| held.families == families).flat_map(|held| &held.facts) {
-            let Some((hub, sha256)) = key.rsplit_once(' ') else { continue };
-            let sql = "INSERT OR IGNORE INTO headers (hub, sha256, families, lora, family) VALUES (?1, ?2, ?3, ?4, ?5)";
-            *counts.entry("headers").or_insert(0) += tx.execute(sql, params![hub, sha256, families, facts.lora, facts.family])?;
-        }
-        for (key, step, _) in &steps {
-            let Some(step) = step else { continue };
-            let sql = "INSERT OR IGNORE INTO after_steps (key_sha256, step) VALUES (?1, ?2)";
-            *counts.entry("after_steps").or_insert(0) += tx.execute(sql, params![key, step])?;
-        }
         Ok(())
     });
     if let Err(e) = imported {
@@ -584,8 +442,8 @@ pub(crate) fn import(store: &Store, dir: &Path) {
         return;
     }
     info!("imported into state.db: {counts:?}");
-    let read = [("projects.json", index.is_some()), ("sessions.json", sessions.is_some()), ("tools.json", tools.is_some()), ("here.json", here.is_some()), ("checkpoints.json", headers.is_some())];
-    let gone = read.into_iter().filter(|(_, read)| *read).map(|(name, _)| file(name)).chain(steps.into_iter().map(|(_, _, path)| path));
+    let read = [("projects.json", false), ("sessions.json", sessions.is_some()), ("tools.json", tools.is_some()), ("here.json", false), ("checkpoints.json", false)];
+    let gone = read.into_iter().filter(|(_, read)| *read).map(|(name, _)| file(name));
     for path in gone {
         if let Err(e) = std::fs::remove_file(&path) {
             warn!("{}: {e}", path.display());

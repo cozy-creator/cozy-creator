@@ -29,6 +29,15 @@ for line in (out / "ondemand-ahead.tensord.log").read_text(errors="replace").spl
         (fetching if found[1] == "fetching" else landed).append((at(line), int(found[2])))
     if "waiting for required model inputs" in line and run in line:
         waited.append(line.split(": ", 2)[-1][:200])
+# A project run's id stays out of TensorD's log: what it waited on is in its own events.
+for line in (out / "ondemand-ahead.ndjson").read_text(errors="replace").splitlines():
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    reason = event.get("reason") if isinstance(event, dict) else None
+    if isinstance(reason, str) and "waiting for required model inputs" in reason:
+        waited.append(reason[:200])
 record = json.loads((out / "ondemand-ahead.json").read_text())
 fields = {k: record.get(k) for k in ("number", "status", "accepted_at_ms", "started_at_ms", "settled_at_ms")}
 print(json.dumps({"run": fields, "guessed_objects": len(landed), "guessed_bytes": sum(b for _, b in landed),

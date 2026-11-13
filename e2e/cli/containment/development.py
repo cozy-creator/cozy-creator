@@ -1,0 +1,113 @@
+"""Opt-in hosted Vite process and independent source-only HMR probe; never laptop config."""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import time
+import tomllib
+import urllib.error
+import urllib.request
+
+from common import Birth, Failure, birth, alive, require
+
+
+class Development:
+    def __init__(self) -> None:
+        require(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "development_hosted_only")
+        self.repo = Path(__file__).resolve().parents[3]
+        self.config = Path.home() / ".cozy/config.toml"
+        self.module = self.repo / "web/app/src/__cozy_hmr_proof.ts"
+        require(not self.config.is_symlink() and not self.module.exists(), "development_owned_paths")
+        self.original = self.config.read_bytes() if self.config.exists() else None
+        self.written: bytes | None = None
+        self.identity: tuple[int, int] | None = None
+        self.process: subprocess.Popen[bytes] | None = None
+        self.birth: Birth | None = None
+
+    def start(self) -> None:
+        require(shutil.which("pnpm"), "development_pnpm_missing")
+        text = (self.original or b"").decode()
+        parsed = tomllib.loads(text)
+        lines, result, section, inserted = text.splitlines(keepends=True), [], "", False
+        for line in lines:
+            clean = line.split("#", 1)[0].strip()
+            if clean.startswith("["):
+                if section == "[calcifer]" and not inserted:
+                    result.append('development_web = "127.0.0.1:5173"\n'); inserted = True
+                section = clean
+            if section == "[calcifer]" and clean.partition("=")[0].strip() == "development_web":
+                continue
+            result.append(line)
+        if section == "[calcifer]" and not inserted:
+            result.append('\ndevelopment_web = "127.0.0.1:5173"\n'); inserted = True
+        if not inserted:
+            require("calcifer" not in parsed, "development_config_shape")
+            result.append('\n[calcifer]\ndevelopment_web = "127.0.0.1:5173"\n')
+        self.written = "".join(result).encode()
+        tomllib.loads(self.written.decode())
+        self.config.write_bytes(self.written)
+        with self.module.open("x") as target:
+            target.write(self.code(1))
+        metadata = self.module.lstat()
+        self.identity = (metadata.st_dev, metadata.st_ino)
+        self.process = subprocess.Popen(["pnpm", "--dir", str(self.repo / "web/app"), "dev", "--host", "127.0.0.1", "--port", "5173"], cwd=self.repo, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        self.birth = birth(self.process.pid)
+        deadline = time.monotonic() + 90
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        while time.monotonic() < deadline:
+            require(alive(self.birth), "development_server_exited")
+            try:
+                with opener.open("http://127.0.0.1:5173/@vite/client", timeout=2) as response:
+                    if response.status == 200:
+                        return
+            except (OSError, urllib.error.URLError):
+                pass
+            time.sleep(0.1)
+        raise Failure("development_server_readiness")
+
+    @staticmethod
+    def code(value: int) -> str:
+        return f'''/// <reference types="vite/client" />
+export const value = {value}
+const proof = globalThis as typeof globalThis & {{ __cozyHmrProof?: number }}
+proof.__cozyHmrProof = value
+if (import.meta.hot) import.meta.hot.accept((updated) => {{ if (updated) proof.__cozyHmrProof = updated.value }})
+'''
+
+    def no_api_bridge(self) -> None:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open("http://127.0.0.1:5173/v1/project-storage", timeout=5) as response:
+                status = response.status
+        except urllib.error.HTTPError as error:
+            status = error.code
+            error.close()
+        require(status == 403, "development_native_bearer_bridge_present")
+
+    def update(self) -> None:
+        metadata = self.module.lstat()
+        require(self.identity == (metadata.st_dev, metadata.st_ino) and not self.module.is_symlink(), "development_probe_replaced")
+        self.module.write_text(self.code(2))
+
+    def close(self) -> None:
+        try:
+            if self.process is not None:
+                if self.birth is not None and alive(self.birth):
+                    require(birth(self.process.pid) == self.birth, "development_process_replaced")
+                    os.killpg(self.process.pid, 9)
+                self.process.wait()
+        finally:
+            try:
+                if self.identity is not None:
+                    metadata = self.module.lstat()
+                    require(self.identity == (metadata.st_dev, metadata.st_ino) and not self.module.is_symlink(), "development_probe_replaced")
+                    self.module.unlink()
+            finally:
+                if self.written is not None:
+                    require(not self.config.is_symlink() and self.config.read_bytes() == self.written, "development_config_changed")
+                    if self.original is None:
+                        self.config.unlink()
+                    else:
+                        self.config.write_bytes(self.original)

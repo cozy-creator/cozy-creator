@@ -15,7 +15,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tensorfs::format::{Body, Component, Dtype, Header, ObjectRef, Tensor};
-use tensorfs::store::{Checkpoint, Store};
+use tensorfs::store::Store;
+use crate::storage::ProjectCheckpoint as Checkpoint;
 
 use crate::storage;
 
@@ -574,7 +575,7 @@ fn plan(base: &Checkpoint, adapters: &[(Selection, Checkpoint)]) -> io::Result<(
 /// The adapter view of `base` with `selections`, composed by reference (the same bytes, so the
 /// same id, each time) and kept in this process's memory, never the store.
 pub(crate) fn compose(store: &Store, base: &ObjectRef, selections: &[Selection]) -> io::Result<Composed> {
-    let checkpoint = |header: &ObjectRef| store.checkpoint(header).map_err(storage::io_error);
+    let checkpoint = |header: &ObjectRef| storage::checkpoint(store, &header.id());
     let base_ref = base;
     let base = checkpoint(base)?;
     let adapters = selections.iter().map(|s| Ok((s.clone(), checkpoint(&s.checkpoint)?))).collect::<io::Result<Vec<_>>>()?;

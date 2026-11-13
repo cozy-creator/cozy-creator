@@ -10,7 +10,7 @@
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # project.db's schema (db.rs VERSION): what a project this cozy opens holds, and what its copy before a migration is named after.
-SCHEMA=4
+SCHEMA=5
 
 # sql <project> <query>: what project.db holds, read only, one JSON row a line.
 sql() {
@@ -118,7 +118,7 @@ db_latency
 # (the last 200 edits) brought it back with them. 0.25 dates such a delete at its first open: the files stay, Undo brings the box back,
 # and once the window ends (config.toml's calcifer.undo_seconds, cut for the cell) the box left deleted loses its files. 0.24.0's own
 # cozy, in this one's place, imports two pictures and deletes them as its page does; then this cozy goes back in its place, its Calcifer
-# started with the short window, and opens the project for the first time (cl-904's schema 3 with it).
+# started with the short window, and opens the project for the first time (schema 4 with it).
 db_deleted_024() {
 step "project.db: boxes deleted under 0.24 keep their files for the undo window from the first 0.25 open; Undo brings one back"
 local lock=$HOME/.cozy/calcifer/calcifer.lock.holder undo=40 a b entry old made=0
@@ -179,7 +179,7 @@ db_024_made() {
   [ "$(sql1 "$DB024" 'PRAGMA user_version')" = 2 ] || { check "0.24 deletes: 0.24.0 made schema $(sql1 "$DB024" 'PRAGMA user_version'), not 2"; return 1; }
 }
 # This cozy back in its place, as an update puts it, while no Calcifer runs (web_undo_window's restart).
-db_024_back() { cp "$OUT/cozy-now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY"; }
+db_024_back() { state_back && cp "$OUT/cozy-now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY"; }
 # cozy_0240: the path of 0.24.0's cozy, from its release archive, fetched once.
 cozy_0240() {
   local was=$OUT/cozy-0.24.0 arch old
@@ -375,7 +375,7 @@ for ((i = 0; i < takes; i++)); do printf -v c '%06x' $((i * 33331 % 16777215)); 
 local hex=()
 for ((i = 1; i < takes; i++)); do
   hex[i]=$(sha "$L/clips/$i.mp4")
-  api -f -o /dev/null -X PUT --data-binary "@$L/clips/$i.mp4" "http://$ADDR/v1/files/sha256:${hex[i]}" || { check "latency: PUT take $i"; return; }
+  api -f -o /dev/null -X PUT --data-binary "@$L/clips/$i.mp4" "http://$ADDR/v1/project-files/sha256:${hex[i]}?project=$ID" || { check "latency: PUT take $i"; return; }
 done
 began=$SECONDS
 : > "$OUT/db-latency-join.txt"
@@ -429,8 +429,7 @@ JSON
 tiny "$OUT/crdt-a.png"; cp "$OUT/crdt-a.png" "$OUT/crdt-b.png"; printf 'second' >> "$OUT/crdt-b.png"
 project_import "$P" "$OUT/crdt-a.png" art > "$OUT/crdt-import.txt" 2>&1 || check "CRDT: import: $(tail -c 300 "$OUT/crdt-import.txt")"
 db_calcifer
-source="sha256:$(sha "$OUT/crdt-b.png")"
-api --fail-with-body -X PUT --data-binary "@$OUT/crdt-b.png" "http://$ADDR/v1/files/$source" > /dev/null || check "CRDT: upload second version"
+source=$(project_upload "$P" "$OUT/crdt-b.png") || check "CRDT: upload second version"
 project_api "$P" /assets/art/versions -X POST -H 'Content-Type: application/json' -d "$(jq -cn --arg source "$source" '{source:$source}')" > "$OUT/crdt-version.txt" 2>&1 || check "CRDT: version: $(tail -c 300 "$OUT/crdt-version.txt")"
 project_api "$P" /assets/kyogre -X PATCH -H 'Content-Type: application/json' -d '{"fields":{"instructions":"Before the rename."}}' > "$OUT/crdt-set.txt" 2>&1 || check "CRDT: set: $(tail -c 300 "$OUT/crdt-set.txt")"
 python3 - "$P/project.db" "$OUT/crdt-before.am" <<'PY'
@@ -696,8 +695,7 @@ for c in red teal navy; do ffmpeg -v error -y -f lavfi -i "color=c=$c:size=320x1
 project_import "$O" "$O/red.png" shore > "$OUT/opens-import.txt" 2>&1 || { check "opens: import: $(tail -c 300 "$OUT/opens-import.txt")"; return; }
 for name in drawn again shore; do
   for c in teal navy; do
-    source="sha256:$(sha "$O/$c.png")"
-    api --fail-with-body -X PUT --data-binary "@$O/$c.png" "http://$ADDR/v1/files/$source" > /dev/null || check "opens: upload $c"
+    source=$(project_upload "$O" "$O/$c.png") || check "opens: upload $c"
     project_api "$O" "/assets/$name/versions" -X POST -H 'Content-Type: application/json' -d "{\"source\": \"$source\"}" > "$OUT/opens-version.txt" 2>&1 \
       || check "opens: $name's take from $c: $(tail -c 300 "$OUT/opens-version.txt")"
   done
@@ -781,8 +779,7 @@ project_integrity "$M" "its first open here"
 local kept=$M/project.db.pre-schema$SCHEMA kept_at
 [ -f "$kept" ] && [ "$(dump_of "$kept")" = "$was_0240" ] || check "migrate: no copy of it as 0.24.0 left it: $([ -f "$kept" ] && dump_of "$kept") (was $was_0240)"
 kept_at=$(stat -c %Y.%s "$kept" 2> /dev/null)
-cozy machine logs local calcifer --lines 5000 2> /dev/null | grep -q "project.db before schema $SCHEMA kept at .*/migrate/project.db.pre-schema$SCHEMA" \
-  || check "migrate: Calcifer's log doesn't say where the copy is"
+# Calcifer's own log names no project's path: the copy is found beside it.
 migrate_read "$M" now || check "migrate: what this cozy holds of it"
 local part
 for part in facts rows history; do
@@ -827,7 +824,8 @@ echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.nam
 
 # A 5,000-box project of schema 3 (cl-904's) opens here as $SCHEMA (cl-885) with nothing lost. The migration adds each box's id to its
 # row and rows_at and conflicts to meta, changes no row 3 has, and keeps the project as it was beside it once; its rows then stand at
-# the document, so a read takes them. Schema 3 is this cozy's project, Calcifer stopped, with what 4 added taken off.
+# the document, so a read takes them, and adds the project's run journal beside them. Schema 3 is this cozy's project, Calcifer stopped,
+# with what 4 and 5 added taken off.
 db_migrate_large() {
 step "project.db: a 5,000-box project of schema 3 migrates with nothing lost"
 local L=$OUT/migrate-large K=$OUT/migrate-large-kept n=5000 pid was began
@@ -852,7 +850,10 @@ python3 - "$L/project.db" <<'PY' || { check "migrate large: made schema 3"; retu
 import sqlite3, sys
 db = sqlite3.connect(sys.argv[1], isolation_level=None)
 db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-db.executescript("BEGIN; ALTER TABLE boxes DROP COLUMN id; DELETE FROM meta WHERE key IN ('rows_at', 'conflicts'); PRAGMA user_version = 3; COMMIT;")
+journal = ["outputs", "run_logs", "asks", "runs", "project_view", "project_diagnostics", "journal_migrations", "after_steps",
+    "project_headers", "project_rendered_here", "project_vault_operations"]
+db.executescript("BEGIN; ALTER TABLE boxes DROP COLUMN id; DELETE FROM meta WHERE key IN ('rows_at', 'conflicts'); "
+    + "".join(f"DROP TABLE {table}; " for table in journal) + "PRAGMA user_version = 3; COMMIT;")
 PY
 was=$(dump_of "$L/project.db")
 began=$SECONDS
@@ -862,8 +863,6 @@ db_calcifer
 [ "$(sql1 "$L" 'PRAGMA user_version')" = "$SCHEMA" ] || check "migrate large: schema $(sql1 "$L" 'PRAGMA user_version') after its open, not $SCHEMA"
 local kept=$L/project.db.pre-schema$SCHEMA
 [ -f "$kept" ] && [ "$(dump_of "$kept")" = "$was" ] || check "migrate large: no copy of it as it was: $([ -f "$kept" ] && dump_of "$kept") (was $was)"
-cozy machine logs local calcifer --lines 5000 2> /dev/null | grep -q "project.db before schema $SCHEMA kept at .*/migrate-large/project.db.pre-schema$SCHEMA" \
-  || check "migrate large: Calcifer's log doesn't say where the copy is"
 project_integrity "$L" "its migration"
 [ "$(sql1 "$L" "SELECT count(*) FROM meta WHERE key = 'rows_at'")" = 1 ] || check "migrate large: its rows don't stand at its document"
 [ "$(sql1 "$L" "SELECT count(*) FROM boxes WHERE id = ''")" = 0 ] || check "migrate large: $(sql1 "$L" "SELECT count(*) FROM boxes WHERE id = ''") boxes with no id"
@@ -891,12 +890,34 @@ large_read() {
   sql1 "$1" 'SELECT heads FROM crdt_document' > "$OUT/migrate-large-$2-heads"
 }
 # in_cozy <file>: that cozy in this one's place, as an update puts it, and its Calcifer the one serving: the last stopped as a
-# service manager stops one, and started by the next verb.
+# service manager stops one, and started by the next verb. An older cozy refuses this one's newer state.db, as its release
+# would never meet it: it keeps one of its own while it serves, and this one's comes back with this cozy ($OUT/cozy-now).
 in_cozy() {
   local lock=$HOME/.cozy/calcifer/calcifer.lock.holder pid
   pid=$(jq -r .pid < "$lock" 2> /dev/null) || pid=''
-  [ -z "$pid" ] || { kill -TERM "$pid" 2> /dev/null; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done; }
+  [ -z "$pid" ] || term_calcifer "$pid" || return
+  if [ "$1" -ef "$OUT/cozy-now" ]; then state_back; else state_aside; fi
   cp "$1" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY" && cozy --json machine ls > /dev/null && db_calcifer
+}
+# term_calcifer <pid>: stopped as a service manager stops it; one still running 120 s on is a failure, not a hang.
+term_calcifer() {
+  local waited=0
+  kill -TERM "$1" 2> /dev/null || return 0
+  while kill -0 "$1" 2> /dev/null; do
+    [ "$waited" -lt 1200 ] || { check "Calcifer $1 still runs 120 s after SIGTERM"; kill -9 "$1" 2> /dev/null; return 1; }
+    sleep 0.1; waited=$((waited + 1))
+  done
+}
+# This cozy's state.db set aside while an older cozy serves (once), and back with this cozy.
+state_aside() {
+  local aside=$OUT/state-aside
+  [ ! -d "$aside" ] || return 0
+  mkdir -p "$aside" && find "$HOME/.cozy/calcifer" -maxdepth 1 -name 'state.db*' -exec mv -t "$aside" {} +
+}
+state_back() {
+  local aside=$OUT/state-aside
+  [ -d "$aside" ] || return 0
+  rm -f "$HOME"/.cozy/calcifer/state.db* && find "$aside" -maxdepth 1 -name 'state.db*' -exec mv -t "$HOME/.cozy/calcifer" {} + && rmdir "$aside"
 }
 # migrate_facts <project>: each box's words, takes (number, approved, files by hash) and discarded, as the API reads them.
 migrate_facts() {

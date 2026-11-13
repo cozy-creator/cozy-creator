@@ -46,14 +46,14 @@ projectvault() (
   answered_ms=$(python3 -c 'import time; print(time.time_ns() // 1000000)')
   jq -e --argjson b "$asked_ms" --argjson a "$answered_ms" '.vault.state == "unlocked" and .vault.expires_at_ms >= $b + 86400000 and .vault.expires_at_ms <= $a + 86400000' \
     "$work/plain-encrypted.json" > /dev/null || fail "vault encrypt --max-duration 86400: $(jq -c .vault "$work/plain-encrypted.json")"
-  in_project "$plain" --json vault lock > /dev/null || fail "the project the CLI encrypted doesn't lock"
+  in_project "$plain" --json vault lock > "$work/plain-lock.json" || fail "the project the CLI encrypted doesn't lock: $(jq -c '.error | {code, message}' "$work/plain-lock.json" 2> /dev/null)"
   step "a new project encrypted from the start: its passphrase from a file, its recovery secret saved outside it"
   cozy --json new "$work/born" --passphrase-file "$secrets/initial" --recovery-out "$secrets/born-recovery" > "$work/born.json" 2> "$work/born.err" \
     || fail "new --passphrase-file --recovery-out: $(tail -c 300 "$work/born.err")"
   in_project "$work/born" --json vault status > "$work/born-status.json"
   jq -e '.encrypted == true and .state == "unlocked"' "$work/born-status.json" > /dev/null || fail "new --passphrase-file made no unlocked encrypted project: $(cat "$work/born-status.json")"
   [ -s "$secrets/born-recovery" ] || fail "new --recovery-out saved no recovery secret"
-  in_project "$work/born" --json vault lock > /dev/null || fail "the new encrypted project doesn't lock"
+  in_project "$work/born" --json vault lock > "$work/born-lock.json" || fail "the new encrypted project doesn't lock: $(jq -c '.error | {code, message}' "$work/born-lock.json" 2> /dev/null)"
   cozy --json new --unencrypted "$P" > "$work/created.json"
   boxes_of "$P" > "$work/before.json"
   mkdir -p "$P/files"
@@ -96,8 +96,9 @@ PY_ENCRYPT_DEADLINE
   ffprobe -v error -show_entries format=duration -of json "$view/files/audio.wav" > "$work/audio.json"
   boxes_of "$P" > "$work/after-encryption.json"
   cmp "$work/before.json" "$work/after-encryption.json" || fail "encryption changed logical project state"
-  # The fixture directory contains only encrypted backing storage and a public keybag.
-  python3 - "$E2E/cli" "$P" > "$work/plaintext-matches.txt" <<'PY_BACKING_SCAN'
+  # The fixture directory contains only encrypted backing storage and a public keybag. Its open view is mounted inside it
+  # (`.vault-runtime/<id>/view`): that mount, and no other, is the readable view, not backing.
+  python3 - "$E2E/cli" "$P" "$view" > "$work/plaintext-matches.txt" <<'PY_BACKING_SCAN'
 import os
 from pathlib import Path
 import sys
@@ -106,8 +107,11 @@ from private_execution import contains
 markers = [b"SYNTHETIC_PRIVATE_VAULT_CONTENT_1762838400", b"private-sentinel.txt"]
 def failed(error):
     raise error
-leaks = []
+leaks, mounts = [], []
 for directory, dirs, files in os.walk(sys.argv[2], followlinks=False, onerror=failed):
+    mounted = [name for name in dirs if os.path.ismount(Path(directory) / name)]
+    mounts += [Path(directory) / name for name in mounted]
+    dirs[:] = [name for name in dirs if name not in mounted]
     for name in dirs + files:
         path = Path(directory) / name
         assert not path.is_symlink(), "backing scan encountered an unexpected symlink"
@@ -116,7 +120,8 @@ for directory, dirs, files in os.walk(sys.argv[2], followlinks=False, onerror=fa
         if any(marker in name.encode() for marker in markers) or contains(path, markers):
             leaks.append(str(path))
 print("\n".join(leaks))
-assert not leaks, "encrypted backing retains readable private file content or names"
+assert all(mount.resolve() == Path(sys.argv[3]).resolve() for mount in mounts), f"backing holds a mount other than its view: {mounts}"
+assert not leaks, "encrypted backing retains readable private file content or names: " + ", ".join(os.path.relpath(leak, sys.argv[2]) for leak in leaks)
 PY_BACKING_SCAN
 
   step "recovery output inside the unlocked view refuses without replacing recovery"
@@ -136,7 +141,7 @@ PY_BACKING_SCAN
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery1" --idle 0 > "$work/recovered.json"
   in_project "$P" --json vault passphrase --passphrase-file "$secrets/changed" > "$work/passphrase.json"
   in_project "$P" --json vault recovery --recovery-out "$secrets/recovery2" > "$work/replacement-recovery.json"
-  in_project "$P" --json vault lock > /dev/null
+  in_project "$P" --json vault lock > "$work/replaced-lock.json" || fail "the project doesn't lock after its credentials change: $(jq -c '.error | {code, message}' "$work/replaced-lock.json" 2> /dev/null)"
   if in_project "$P" --json vault unlock --passphrase-file "$secrets/initial" > "$work/old-pass.json" 2> "$work/old-pass.err"; then fail "old live passphrase slot remained active"; fi
   if in_project "$P" --json vault unlock --recovery-file "$secrets/recovery1" > "$work/old-recovery.json" 2> "$work/old-recovery.err"; then fail "old live recovery slot remained active"; fi
   in_project "$P" --json vault unlock --recovery-file "$secrets/recovery2" --idle 0 > "$work/new-recovery.json"
@@ -159,7 +164,7 @@ PY_BACKING_SCAN
   boxes_of "$P" > "$work/after-rekey.json"
   cmp "$work/before-rekey.json" "$work/after-rekey.json" || fail "rekey changed logical project history"
   step "status polling cannot defeat the absolute unlock deadline"
-  in_project "$P" --json vault lock > /dev/null
+  in_project "$P" --json vault lock > "$work/deadline-lock.json" || fail "the rotated project doesn't lock: $(jq -c '.error | {code, message}' "$work/deadline-lock.json" 2> /dev/null)"
   in_project "$P" --json vault unlock --passphrase-file "$secrets/rekey" --idle 0 --max-duration 2 > "$work/timed-unlock.json"
   code=unlocked
   for _ in $(seq 1 80); do
@@ -219,13 +224,23 @@ vault_leftovers() (
   work=$(mktemp -d "$OUT/vault-leftovers.XXXXXX")
   secrets=$(mktemp -d "$OUT/vault-leftovers-credentials.XXXXXX")
   L=$work/leftovers fake=$work/.cozy-project-source-planted copy=$work/leftovers-copy
-  trap 'in_project "$L" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"' EXIT
+  # A Calcifer the interrupt killed starts again before anything else reads this folder: its start detaches the
+  # conversion's dead mount and recovers the stage. A mount a failed recovery left (its checks already failed) would
+  # break the artifact upload, so it is detached last.
+  trap 'cozy --json machine ls > /dev/null 2>&1 || true; in_project "$L" --json vault lock > /dev/null 2>&1 || true; rm -rf -- "$secrets"
+    mounts | while IFS= read -r m; do fusermount3 -uz "$m" 2> /dev/null || fusermount -uz "$m" 2> /dev/null || true; done' EXIT
   printf '%s\n' 'synthetic leftovers passphrase' > "$secrets/pass"
   chmod 600 "$secrets/pass"
-  # What a conversion may leave: its stage, the original it moves aside, its receipt and its mounts' folders.
+  # Encrypted views mounted under the fixture, live or dead.
+  mounts() { awk '$0 ~ / - fuse\.securefs / {print $5}' /proc/self/mountinfo | grep -F -- "$work/" || true; }
+  # What a conversion may leave: in the project, its stage, the original it moves aside, its receipt and its mounts'
+  # runtime folders; beside it or in Calcifer's home, where conversions once staged, anything; and any mount.
   left() {
-    find "$work" -maxdepth 1 \( -name '.cozy-vault-stage-*' -o -name '.cozy-project-source-*' -o -name '.cozy-vault-*.transaction.json' \) -print
+    find "$L" -maxdepth 1 \( -name '.cozy-vault-stage-*' -o -name '.cozy-project-source-*' -o -name '.vault-transition.json' \) -print 2> /dev/null || true
+    find "$L/.vault-runtime" -mindepth 1 -maxdepth 1 -type d -print 2> /dev/null || true
+    find "$work" -maxdepth 1 \( -name '.cozy-vault-*' -o -name '.cozy-project-source-*' \) -print
     find "$HOME/.cozy/calcifer/vaults" -mindepth 1 -maxdepth 1 \( -name 'stage-*' -o -name 'source-*' -o -name 'decrypt-*' -o -name 'new-*' \) -print 2> /dev/null || true
+    mounts
   }
   listed_clean() {
     fixture_projects > "$work/ls-$1.json" || { check "leftovers: project list ($1) failed"; return; }

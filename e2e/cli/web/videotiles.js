@@ -38,9 +38,9 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;
@@ -75,7 +75,7 @@ const SHOTS = join(__dirname, '..', 'project', 'shots.py');
   // With no H3 listed, the box would be a plain video box, and its case not H3's.
   check('the_hub_lists_h3', Boolean(h3), tools.map((tool) => tool.id));
   await api(`${at}/assets`, { method: 'POST', body: JSON.stringify({ tool: h3?.id ?? '', kind: 'video', name: 'h3', exact: true, fields: { node_kind: 'video', summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 4 }] } }) });
-  await api(`${at}/assets/h3/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, clip('h3', 'testsrc')) }) });
+  await api(`${at}/assets/h3/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(token, clip('h3', 'testsrc'), id) }) });
   await until('the h3 take', async () => (await asset('h3'))?.versions, (n) => n >= 1);
 
   const names = ['imported', 'old', 'cut', 'h3'];

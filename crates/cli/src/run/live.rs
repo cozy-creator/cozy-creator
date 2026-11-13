@@ -67,7 +67,7 @@ impl Runs {
     /// Takes in `run` as it is now; true when the view changed.
     fn apply(&mut self, run: Run) -> bool {
         let fits = list::matches(&self.query, &run);
-        match self.runs.iter().position(|r| r.id == run.id) {
+        match self.runs.iter().position(|r| r.project_id == run.project_id && r.id == run.id) {
             Some(i) if fits => self.runs[i] = run,
             Some(i) => drop(self.runs.remove(i)),
             None if !fits => return false,
@@ -98,7 +98,7 @@ impl Runs {
         list::rows(&[self.runs.as_slice(), &self.others].concat())
     }
 
-    pub(crate) fn id(&self, selected: usize) -> Option<String> {
-        self.runs.iter().chain(&self.others).nth(selected).map(|r| r.id.to_string())
+    pub(crate) fn id(&self, selected: usize) -> Option<crate::calcifer_client::RunAddress> {
+        self.runs.iter().chain(&self.others).nth(selected).map(crate::calcifer_client::RunAddress::of)
     }
 }

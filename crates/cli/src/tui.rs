@@ -345,7 +345,7 @@ enum Next {
 /// screen, its record and all, until then.
 async fn watch(
     ctx: &Context,
-    id: &str,
+    id: &crate::calcifer_client::RunAddress,
     keys: &mut (impl Stream<Item = io::Result<Input>> + Unpin),
     signals: &mut Signals,
 ) -> Result<bool, Error> {

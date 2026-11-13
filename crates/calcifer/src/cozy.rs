@@ -75,7 +75,7 @@ pub(crate) async fn update(api: &Arc<Api>, wanted: &Wanted) -> Result<(Run, Note
     let its = api.clone();
     let work = move |here: Here| async move { run(&its, input, &here).await };
     let digest = crate::runs::digest(&ask);
-    let run = calcifer.here(&key, &digest, job::COZY_UPDATE.into(), &hub, kept, work).await.map_err(crate::runs::refused)?.run;
+    let run = calcifer.here(None, &key, &digest, job::COZY_UPDATE.into(), &hub, kept, work).await.map_err(crate::runs::refused)?.run;
     Ok((run, note))
 }
 

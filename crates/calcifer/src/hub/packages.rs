@@ -212,6 +212,7 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
     let home = api.machines.hubs.home();
     if let Some(code) = &code {
         let source = crate::local_code::source(home, code, &api.machines.hubs, hub).await.map_err(Refusal)?;
+        crate::maintenance_source::keep_derived(api,code,&source).map_err(Refusal)?;
         let mut submit = crate::local_code::install_run(home, hub.as_str(), on, &source);
         submit.agreed = agreed;
         return Ok(Planned::Run { submit: Box::new(submit), after: Some(After::Keep(source.filed())), notes: vec![], mirror: None });
@@ -251,7 +252,7 @@ pub(super) async fn install(api: &Arc<Api>, hub: &Origin, on: On, agreed: Option
 
 /// The run that installs `release` of `package` on a machine: a warm one naming no function.
 fn release_install(hub: &str, on: On, package: &str, release: &str, agreed: Option<api::calcifer::Agreed>) -> SubmitRun {
-    SubmitRun {
+    SubmitRun { project: None,
         agreed,
         stays: vec![],
         on,
@@ -282,6 +283,13 @@ pub(super) struct Removal {
 pub(super) async fn removal(api: &Arc<Api>, hub: &Origin, on: &On, ask: PackageRemove) -> Result<Planned, Refusal> {
     let machine = super::jobs::machine(on, "a removal")?;
     let held = crate::machines::fresh(&api.machines, &machine).await.map_err(Refusal)?;
+    // A project's packages live in its own environments, which the machine's status never lists:
+    // its remove runs answer for them, and a name none removed is refused after them.
+    if crate::private_io::current().is_some() {
+        let targets = ask.packages.iter().map(|name| (name.clone(), hub.to_string())).collect();
+        let target = format!("remove {}", ask.packages.join(", "));
+        return Ok(Planned::Here { target, work: Work::Remove(Removal { machine: held.name, targets }) });
+    }
     let envs: Vec<&Environment> = held.status.iter().flat_map(|s| &s.environments).collect();
     if let Some(name) = ask.packages.iter().find(|name| !envs.iter().any(|env| &&env.package == name)) {
         return Err(Refusal(
@@ -313,7 +321,7 @@ impl Removal {
             retained: Vec<String>,
         }
         let runs = self.targets.iter().enumerate().map(|(i, (package, from))| {
-            let submit = SubmitRun {
+            let submit = SubmitRun { project: crate::private_io::current().map(|scope|scope.storage.project_id),
                 agreed: None,
                 stays: vec![],
                 on: On::Machine(self.machine.clone()),
@@ -327,7 +335,7 @@ impl Removal {
                 },
                 inputs: vec![],
                 held: vec![],
-                out: None,
+                out: crate::private_io::current().map(|scope|crate::project::landing(&crate::project::vault::logical(&scope.storage.view_root))),
                 warnings: vec![],
             };
             let key = format!("{key}-{i}");
@@ -345,6 +353,13 @@ impl Removal {
                 Ok(run) => done.failed.push(format!("{package}: {}", failure(&run))),
                 Err(e) => done.failed.push(format!("{package}: {e}")),
             }
+        }
+        if crate::private_io::current().is_some()
+            && let Some((name, _)) = self.targets.iter().find(|(name, _)| !done.removed.iter().any(|gone| &gone.package == name))
+            && done.failed.is_empty()
+        {
+            return Err(Error::not_found("package_not_installed", format!("{name} is not installed in this project on {}", done.machine))
+                .next(format!("cozy package ls --on {}", done.machine)));
         }
         if done.failed.is_empty() {
             return Ok(done);

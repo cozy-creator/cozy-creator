@@ -71,6 +71,9 @@ pub(crate) struct Machines {
     pub(crate) providers: Option<v1::ProviderAccess>,
     pub(crate) seen: Mutex<HashMap<String, Seen>>,
     watching: Mutex<HashMap<String, (Endpoint, AbortHandle)>>,
+    /// What this computer's machine does for each open project's own runs, read in that project's scope (`follow_project`): the
+    /// machine's own status never lists it.
+    project_activity: Mutex<HashMap<String, Vec<v1::Operation>>>,
     /// Rentals whose boot is followed, by rental id.
     pub(crate) booting: Mutex<HashSet<String>>,
     /// Runs a rental is being asked for.
@@ -144,6 +147,7 @@ impl Machines {
             user_home: user_home.to_owned(),
             seen: Mutex::default(),
             watching: Mutex::default(),
+            project_activity: Mutex::default(),
             booting: Mutex::default(),
             renting: Mutex::default(),
             asking: Mutex::default(),
@@ -266,6 +270,11 @@ impl Machines {
     /// here or by another of its clients. `refresh` lists every Hub again first; otherwise the
     /// Hubs' last word is answered.
     pub(crate) async fn list(self: &Arc<Self>, refresh: bool) -> Result<MachineList, Error> {
+        self.list_for(refresh, &[]).await
+    }
+
+    /// The list as a page showing `projects` sees it: what each machine does for their runs too (`picture_for`).
+    pub(crate) async fn list_for(self: &Arc<Self>, refresh: bool, projects: &[String]) -> Result<MachineList, Error> {
         if refresh {
             self.list_hubs().await;
         }
@@ -277,7 +286,7 @@ impl Machines {
         let mut machines = Vec::new();
         let listed = |r: &&MachineRow| r.state != MachineState::Ended && (here || r.kind != MachineKind::Local);
         for row in rows.iter().filter(listed) {
-            machines.push(self.picture(row)?);
+            machines.push(self.picture_for(row, projects)?);
         }
         let (hubs, unanswered, signed_out) = self.hubs.listing();
         machines.extend(self.orders()?);
@@ -346,6 +355,13 @@ impl Machines {
         let name = self.show(&text).await.ok()?.name;
         let frame = self.frame(&name)?;
         Some((name, frame.environments))
+    }
+
+    /// What local holds for one project: its runs install into the project's own worker area, which the machine's frame
+    /// never lists. Nothing while local is down.
+    pub(crate) async fn project_holds(&self, scope: crate::private_io::Scope) -> Vec<v1::Environment> {
+        let Some(link) = self.local_runs().then(|| self.calcifer.link("local").ok().flatten()).flatten() else { return vec![] };
+        link.with_private(scope).status().await.map(|frame| frame.environments).unwrap_or_default()
     }
 
     /// Adds another computer's machine: it must present the leaf `fingerprint` names and admit
@@ -691,6 +707,11 @@ impl Machines {
 
     /// The machine as `GET /v1/machines` answers it.
     pub(crate) fn picture(&self, row: &MachineRow) -> Result<Machine, Error> {
+        self.picture_for(row, &[])
+    }
+
+    /// The machine, its installs and downloads with those of `projects`' own runs: never another project's, nor a locked one's.
+    pub(crate) fn picture_for(&self, row: &MachineRow, projects: &[String]) -> Result<Machine, Error> {
         let store = self.store();
         let ending = self.pending_end(&row.name)?;
         // `row` may have been read before its end settled (a list reads every row, then each one's asks): an end that is no
@@ -707,7 +728,7 @@ impl Machines {
         }
         machine.alias = store.alias(&row.name).map_err(internal)?;
         machine.ordered = self.ordered(row);
-        let load = store.machine_load().map_err(internal)?;
+        let load = self.calcifer.machine_load().map_err(internal)?;
         (machine.running, machine.queued) = load.get(&row.name).copied().unwrap_or_default();
         if let Some(ask) = ending.filter(|_| row.state != MachineState::Ended) {
             machine.state = MachineState::Ending;
@@ -727,23 +748,70 @@ impl Machines {
                 machine.state = MachineState::Stopped;
             }
             machine.status = seen.frame.as_ref().map(|frame| {
-                let mut status = status(frame, &self.hubs);
+                let mut visible=frame.clone();
+                let rows=self.calcifer.maintenance_rows(&row.name);
+                let mut manifests=HashSet::new();
+                let mut installations=HashSet::new();
+                for run in &rows {
+                    for choice in run.spec.models.iter().chain(run.spec.set.iter().flat_map(|set|set.items.iter().flat_map(|item|&item.models))) {
+                        if !choice.model.is_empty() && !choice.manifest.is_empty() {manifests.insert((choice.model.clone(),choice.manifest.clone()));}
+                    }
+                    if run.status==Some(wire::Status::Completed) {
+                        if let Some(result)=run.outcome.as_ref().and_then(|outcome|outcome.result.as_ref()).and_then(|result|serde_json::from_str::<serde_json::Value>(result.get()).ok()) {
+                            if let Some(id)=result.get("installation").and_then(serde_json::Value::as_str) {installations.insert(id.to_owned());}
+                            for model in result.get("models").and_then(serde_json::Value::as_array).into_iter().flatten() {
+                                if let (Some(name),Some(commit))=(model.get("repository").and_then(serde_json::Value::as_str),model.get("checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
+                                // What the run made: an install's local alias, or an upload's commit, held by its destination.
+                                if let (Some(name),Some(commit))=(model.pointer("/published/destination").and_then(serde_json::Value::as_str),model.pointer("/published/checkpoint").and_then(serde_json::Value::as_str)) {manifests.insert((name.to_owned(),commit.to_owned()));}
+                            }
+                        }
+                    }
+                }
+                for model in &mut visible.models {
+                    let total=model.checkpoints.len();
+                    model.checkpoints.retain(|checkpoint|manifests.contains(&(model.model.clone(),checkpoint.manifest.clone())));
+                    if total!=model.checkpoints.len() {model.total_bytes=0;model.unique_bytes=0;}
+                }
+                visible.models.retain(|model|!model.checkpoints.is_empty());
+                visible.models_bytes=visible.models.iter().map(|model|model.total_bytes).sum();
+                visible.environments.retain(|environment|installations.contains(&environment.installation));
+                for environment in &mut visible.environments {environment.warning.clear();}
+                visible.warm=self.calcifer.maintenance_warm(&row.name,visible.warm);
+                visible.kernels.clear();
+                for process in &mut visible.stuck {process.command.clear();}
+                visible.toolchain.detail.clear();
+                let mut status = status(&visible, &self.hubs);
                 // An update says what it waits for by this controller's run numbers.
                 status.update = (frame.update.as_ref())
-                    .map(|u| self.calcifer.waiting_for(&u.waiting_for).unwrap_or_else(|| Some(&u.waiting).filter(|w| !w.is_empty()).unwrap_or(&u.state).clone()))
+                    .map(|u| self.calcifer.machine_waiting_for(&u.waiting_for).unwrap_or_else(|| Some(&u.waiting).filter(|w| !w.is_empty()).unwrap_or(&u.state).clone()))
                     .unwrap_or_default();
                 status
             });
             held = seen.frame.as_ref().map(|f| f.runs.clone()).unwrap_or_default();
             activity = seen.frame.as_ref().map(|f| f.activity.clone()).unwrap_or_default();
+            if row.kind == MachineKind::Local {
+                let followed = lock(&self.project_activity);
+                activity.extend(projects.iter().filter_map(|project| followed.get(project)).flatten().cloned());
+            }
             machine.unreachable.clone_from(&seen.unreachable);
             machine.unreachable_since_ms = seen.since;
             machine.boot.clone_from(&seen.boot);
             machine.attempt.clone_from(&seen.attempt);
         }
         if let Some(status) = &mut machine.status {
-            status.runs = held.into_iter().map(|run| self.held(run)).collect();
-            status.activity = activity.iter().map(|operation| self.operation(operation)).collect();
+            status.runs = held.into_iter().filter_map(|run| self.held(run)).collect();
+            // A project's runs execute in its own engine: listed from its journal, as the machine holds them (cl-811).
+            let listed: HashSet<String> = status.runs.iter().map(|run| crate::store::calcifer_id(&run.id).to_owned()).collect();
+            for project_run in self.calcifer.project_runs_on(&row.name).into_iter().filter(|run| !listed.contains(run.id.as_str())) {
+                let Ok(run) = self.calcifer.record(&project_run) else { continue };
+                status.runs.push(wire::LiveRun {
+                    id: project_run.id.to_string(),
+                    state: run.machine_state.clone().unwrap_or_else(|| "running".into()),
+                    waiting: run.waiting.clone().unwrap_or_default(),
+                    run: Some(run),
+                });
+            }
+            status.activity = activity.iter().filter_map(|operation| self.operation(operation, projects)).collect();
         }
         machine.rc = self.rc_follow(&row.name, self.frame(&row.name).as_ref());
         let asked = match row.kind {
@@ -779,36 +847,75 @@ impl Machines {
         Some(wire::Ssh { args, line })
     }
 
-    /// A run the machine holds for this controller, with this controller's record of it.
-    fn held(&self, run: v1::RunState) -> wire::LiveRun {
+    /// A run the machine holds for this controller, with this controller's record of it: Calcifer's own or an open project's.
+    fn held(&self, run:v1::RunState)->Option<wire::LiveRun> {
         // A run sent again (cl-935) is `<id>~<attempt>` there.
-        let row = self.store().run(crate::store::calcifer_id(&run.id)).ok().flatten();
-        wire::LiveRun {
-            run: row.and_then(|row| self.calcifer.record(&row).ok()),
-            id: run.id,
-            state: run.state,
-            waiting: run.waiting,
-        }
+        let row=self.calcifer.active_run(crate::store::calcifer_id(&run.id))?;
+        Some(wire::LiveRun {run:self.calcifer.record(&row).ok(),id:run.id,state:run.state,waiting:run.waiting})
     }
 
-    /// What a machine does for runs, its waiters by this controller's run numbers: a run it keeps no record of isn't one.
-    fn operation(&self, operation: &v1::Operation) -> wire::Operation {
-        let runs = (operation.runs.iter()).filter_map(|id| Some(self.store().run(crate::store::calcifer_id(id)).ok()??.number)).collect();
-        let rate = Some(operation.bytes_per_s).filter(|rate| *rate >= 1.0);
-        let left = operation.bytes_total.saturating_sub(operation.bytes_done);
-        wire::Operation {
-            id: operation.id.clone(),
-            kind: operation.kind.clone(),
-            subject: operation.subject.clone(),
-            stage: operation.stage.clone(),
-            bytes_done: operation.bytes_done,
-            bytes_total: operation.bytes_total,
-            bytes_here: operation.bytes_here,
-            bytes_per_s: rate,
-            eta_s: rate.filter(|_| left > 0).map(|rate| (left as f64 / rate) as i64),
-            started_at_ms: operation.started_at_unix_ms,
-            runs,
+    /// What `operation` is waited on by, by run number: maintenance runs, and runs of `projects` that are open. An operation of a
+    /// project's own is in its private scope (`resource_key`), so its runs are all that project's.
+    fn operation(&self,operation:&v1::Operation,projects:&[String])->Option<wire::Operation> {
+        let mut project=None;
+        let mut number=|id:&str| {
+            let id=crate::store::calcifer_id(id);
+            if let Some(row)=self.calcifer.maintenance_store().run(id).ok().flatten() { return Some(row.number); }
+            match self.calcifer.run_store(id).ok()? {
+                crate::store::RunStore::Project(store) if projects.iter().any(|project| project==store.project_id()) => {
+                    let row=store.run(id).ok().flatten()?;
+                    project=Some(store.project_id().to_owned());
+                    Some(row.number)
+                }
+                _ => None,
+            }
+        };
+        let runs=operation.runs.iter().map(|id|number(id)).collect::<Option<Vec<_>>>()?;
+        if runs.is_empty() {return None;}
+        let rate=Some(operation.bytes_per_s).filter(|rate|*rate>=1.0);
+        let left=operation.bytes_total.saturating_sub(operation.bytes_done);
+        Some(wire::Operation {id:operation.id.clone(),kind:operation.kind.clone(),subject:operation.subject.clone(),stage:operation.stage.clone(),bytes_done:operation.bytes_done,bytes_total:operation.bytes_total,bytes_here:operation.bytes_here,bytes_per_s:rate,eta_s:rate.filter(|_|left>0).map(|rate|(left as f64/rate) as i64),started_at_ms:operation.started_at_unix_ms,runs,project})
+    }
+
+    /// What this computer's machine does for `project`'s own runs, followed in the project's scope while it has runs there: its runs
+    /// execute in the project's own engine, whose installs and downloads only that scope's status lists. A locked project's ends.
+    pub(crate) fn follow_project(self: &Arc<Self>, project: &str) {
+        if lock(&self.project_activity).contains_key(project) { return; }
+        lock(&self.project_activity).insert(project.to_owned(), vec![]);
+        let (me, project) = (self.clone(), project.to_owned());
+        self.spawn(async move {
+            let listed = me.project_frames(&project).await;
+            // Asked again no sooner: one that can't be followed now isn't tried in a loop.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            lock(&me.project_activity).remove(&project);
+            if listed { me.calcifer.machine_changed(); }
+        });
+    }
+
+    /// Whether it listed anything.
+    async fn project_frames(&self, project: &str) -> bool {
+        let mut listed = false;
+        let working = || self.calcifer.project_store(project).and_then(|store| store.working("local")).is_ok_and(|n| n > 0);
+        while working() {
+            let scoped = (|| {
+                let store = self.calcifer.project_store(project).ok()?;
+                let (id, root) = store.execution_scope();
+                let scope = crate::private_io::scope_for_project(id, root).ok()?;
+                Some(self.calcifer.link("local").ok()??.with_private(scope))
+            })();
+            let Some(link) = scoped else { return listed };
+            if let Ok(mut frames) = link.watch().await {
+                while let Some(Ok(frame)) = frames.next().await {
+                    let quiet = frame.activity.is_empty();
+                    listed |= !quiet;
+                    if let Some(held) = lock(&self.project_activity).get_mut(project) { *held = frame.activity; }
+                    self.calcifer.machine_changed();
+                    if quiet && !working() { return listed; }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
+        listed
     }
 
     /// Keeps one `Status` stream open to the machine while it has an endpoint and has not ended.
@@ -1152,7 +1259,7 @@ impl Machines {
     }
 
     fn place_unplaced(self: &Arc<Self>) {
-        let unplaced = match self.store().unplaced() {
+        let unplaced = match self.calcifer.each_store(|store| store.unplaced()).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()) {
             Ok(unplaced) => unplaced,
             Err(e) => return warn!("reading unplaced runs: {e}"),
         };
@@ -1218,7 +1325,7 @@ impl Machines {
     /// ready one before a booting one: runs wait for a rental on its way, never buy around it.
     fn fitting(&self, gpus: u32) -> Result<Option<String>, Error> {
         let store = self.store();
-        let load = store.machine_load().map_err(internal)?;
+        let load = self.calcifer.machine_load().map_err(internal)?;
         let ending: HashSet<String> = store
             .pending_asks()
             .map_err(internal)?
@@ -1329,6 +1436,8 @@ pub(crate) struct Fresh {
     fresh: bool,
     /// The Hub whose client reads it.
     hub: Option<String>,
+    /// The project its client is in: what that project's own runs installed on this computer's machine is listed too.
+    project: Option<String>,
 }
 
 /// The machine; `?fresh=true` answers a Status it read now, or refuses.
@@ -1357,8 +1466,22 @@ pub(crate) async fn packages(
     UrlPath(name): UrlPath<String>,
     query: Result<Query<Fresh>, QueryRejection>,
 ) -> Result<Json<wire::MachinePackages>, Refusal> {
-    let (machine, hub) = asked(&api, &name, query).await?;
+    let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    let project = query.project.clone();
+    let (mut machine, hub) = asked(&api, &name, Ok(Query(query))).await?;
     let hub = crate::hub::origin(&api, hub.as_deref())?;
+    // A project's local code installs into its own worker area, which the machine's frame never lists (`project_holds`).
+    if let Some(project) = project.filter(|_| machine.kind == MachineKind::Local) {
+        let scope = {
+            let store = api.projects.store(&api, &project).await.map_err(Refusal)?;
+            let (id, root) = store.execution_scope();
+            crate::private_io::scope_for_project(id, root).map_err(Refusal)?
+        };
+        let held = api.machines.project_holds(scope).await;
+        if let Some(status) = &mut machine.status {
+            status.environments.extend(held.iter().map(|env| environment(env, &api.machines.hubs)));
+        }
+    }
     Ok(Json(machine.packages(&hub.to_string())))
 }
 
@@ -1597,8 +1720,8 @@ async fn calcifer_log(api: &Arc<Api>, name: &str, query: LogQuery, headers: &Hea
         return Err(Refusal(Error::new(Kind::Usage, "log_not_kept", said).next("cozy machine logs local calcifer")));
     }
     let home = api.machines.hubs.home();
-    let log = Log::rotated(home.calcifer(), "calcifer.log");
-    let unreadable = |e: &dyn std::fmt::Display| Refusal(Error::new(Kind::Internal, "log_unreadable", format!("{}: {e}", home.calcifer_log().display())));
+    let log = Log::rotated(home.calcifer(), "health.log");
+    let unreadable = |e: &dyn std::fmt::Display| Refusal(Error::new(Kind::Internal, "log_unreadable", format!("{}: {e}", home.calcifer_health().display())));
     let mut since = Since(query.since_ms);
     if !follows(headers) {
         let read = tokio::task::spawn_blocking({
@@ -1794,6 +1917,19 @@ pub(crate) fn merge_warm(current: &mut Vec<v1::WarmItem>, spec: &mut v1::RunSpec
     *current = set.items.clone();
 }
 
+/// An installed environment as a machine's Status lists it, its Hub by this controller's name for it.
+fn environment(env: &v1::Environment, hubs: &Hubs) -> wire::Environment {
+    wire::Environment {
+        installation: env.installation.clone(),
+        package: env.package.clone(),
+        release: env.release.clone(),
+        hub: hubs.named(&env.hub),
+        runtime: env.runtime.clone(),
+        level: env.level.clone(),
+        warning: env.warning.clone(),
+    }
+}
+
 fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
     let level = |level: v1::WarmLevel| match level {
         v1::WarmLevel::Off => "",
@@ -1869,19 +2005,7 @@ fn status(frame: &v1::StatusFrame, hubs: &Hubs) -> MachineStatus {
             })
             .collect(),
         models_bytes: frame.models_bytes,
-        environments: frame
-            .environments
-            .iter()
-            .map(|env| wire::Environment {
-                installation: env.installation.clone(),
-                package: env.package.clone(),
-                release: env.release.clone(),
-                hub: hubs.named(&env.hub),
-                runtime: env.runtime.clone(),
-                level: env.level.clone(),
-                warning: env.warning.clone(),
-            })
-            .collect(),
+        environments: frame.environments.iter().map(|env| environment(env, hubs)).collect(),
         warm: frame
             .warm
             .iter()

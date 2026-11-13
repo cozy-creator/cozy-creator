@@ -205,6 +205,7 @@ async fn fetch(say: Say<'_>, name: &str, archives: &[Archive], dir: &Path) -> Re
     let staging = tempfile::tempdir_in(parent).map_err(|e| failed(e.to_string()))?;
     for archive in archives {
         say(&format!("fetching {name}: {}", archive.url));
+        tracing::info!(target: "cozy.service_health", tool = name, "fetching a tool");
         let part = parent.join(format!(".{name}-{}.part", &archive.sha256[..12]));
         let (mut download, got) = tensorfs::fetch::get_pinned_into(archive.url, &part, &mut |_| {}).await.map_err(failed)?;
         if got != archive.sha256 {

@@ -18,7 +18,7 @@ use crate::{
     Context, output,
     send::{Paths, Sender},
 };
-pub(crate) use follow::{done, exit_code, follow, follow_until, job, mint_key, settled};
+pub(crate) use follow::{done, exit_code, follow, follow_until, handle, in_folder, job, mint_key, note_folder, settled};
 
 pub(crate) mod fetch;
 mod follow;
@@ -89,7 +89,7 @@ struct RunArgs {
     /// Show the function's inputs and outputs.
     #[arg(long)]
     describe: bool,
-    /// Download outputs to this directory.
+    /// Export output copies to this directory. Project locks do not protect exported copies.
     #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
     output: Option<PathBuf>,
     /// Save previews of what it's making to this directory while it runs.
@@ -156,7 +156,7 @@ enum Verb {
         /// Show the current state and exit.
         #[arg(long)]
         once: bool,
-        /// Download outputs to this directory.
+        /// Export output copies to this directory. Project locks do not protect exported copies.
         #[arg(short = 'o', long = "output", value_name = "DIR", value_hint = ValueHint::DirPath)]
         output: Option<PathBuf>,
         /// Save previews of what it's making to this directory while it runs.
@@ -200,9 +200,10 @@ pub(crate) async fn exec(ctx: &Context, args: Args) -> Result<ExitCode, Error> {
         Some(Verb::Watch { run, once, output, previews }) => watch::exec(ctx, &run, once, output.as_deref(), previews.as_deref()).await,
         Some(Verb::Cancel { run }) => {
             let calcifer = ctx.calcifer().await?;
-            let mut run = calcifer.run(&run).await?;
+            let address = crate::calcifer_client::RunAddress::current(ctx, &run).await?;
+            let mut run = calcifer.run(&address).await?;
             if !follow::settled(&run) {
-                run = calcifer.cancel(run.id.as_str()).await?;
+                run = calcifer.cancel(&crate::calcifer_client::RunAddress::of(&run)).await?;
             }
             follow::record(ctx, &run);
             Ok(ExitCode::SUCCESS)
@@ -226,11 +227,10 @@ async fn run(ctx: &Context, args: RunArgs) -> Result<ExitCode, Error> {
                     Err(error) if error.code == "not_in_a_project" => None,
                     Err(error) => return Err(error),
                 };
-                let sender = match &project {
-                    Some(id) => Sender::for_project(ctx, id).await?,
-                    None => Sender::new(ctx).await?,
+                let code = match &project {
+                    Some(id) => Sender::for_project(ctx, id).await?.code(&package).await?,
+                    None => Sender::independent_code(ctx, &package).await?,
                 };
-                let code = sender.code(&package).await?;
                 describe(ctx, &function.unwrap_or_default(), Some(&code), args.on.as_deref(), project.as_deref()).await
             }
         };

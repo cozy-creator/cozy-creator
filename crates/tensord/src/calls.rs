@@ -31,6 +31,8 @@ pub(crate) struct Calls {
     machine: Arc<crate::origin::Machine>,
     /// Each live call's fetches, by run: its cancel ends them at once.
     fetches: Mutex<HashMap<String, Vec<Weak<crate::access::Fetch>>>>,
+    stopped: std::sync::atomic::AtomicBool,
+    observer: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 /// A running attempt that calls: its signer, spool, callables and calls.
@@ -159,15 +161,26 @@ impl Calls {
             parents: Mutex::new(HashMap::new()),
             machine,
             fetches: Mutex::default(),
+            stopped: std::sync::atomic::AtomicBool::new(false),
+            observer: Mutex::default(),
         });
         let (watching, engine) = (Arc::downgrade(&calls), service.engine.clone());
-        std::thread::Builder::new()
+        let private = crate::private_io::current();
+        *calls.observer.lock().unwrap() = Some(std::thread::Builder::new()
             .name("call-nudges".into())
-            .spawn(move || nudge(watching, engine))?;
+            .spawn(move || crate::private_io::within(private, || nudge(watching, engine)))?);
         service.configure_calls(calls.clone());
         Ok(calls)
     }
 
+    pub(crate) fn seal(&self, engine: &Engine) -> io::Result<()> {
+        self.stopped.store(true, std::sync::atomic::Ordering::Release);
+        engine.notify_activity();
+        if let Some(thread) = self.observer.lock().unwrap().take() { thread.join().map_err(|_| io::Error::other("project call observer stopped unexpectedly"))?; }
+        self.parents.lock().unwrap().clear();
+        self.fetches.lock().unwrap().clear();
+        Ok(())
+    }
     /// `id`'s attempt waits on a call it made.
     pub(crate) fn waiting(&self, engine: &Engine, id: &str) -> bool {
         self.parents.lock().unwrap().get(id).is_some_and(|parent| parent.unfinished(engine))
@@ -1004,7 +1017,7 @@ fn nudge(calls: Weak<Calls>, engine: Arc<Engine>) {
         let Some(calls) = calls.upgrade() else {
             return;
         };
-        if seen == u64::MAX {
+        if seen == u64::MAX || calls.stopped.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
         for parent in calls.parents.lock().unwrap().values() {

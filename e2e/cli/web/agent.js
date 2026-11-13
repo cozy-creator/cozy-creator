@@ -41,7 +41,7 @@ function json(...words) {
 /** Its rows against the document they were written with (cl-885), after a write: a read takes the rows, so any difference is a fault. */
 async function integrity(project, after) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
-  const answer = await fetch(`http://${holder.address}/v1/projects/${encodeURIComponent(project)}/integrity`, { headers: { Authorization: `Bearer ${holder.token}` } });
+  const answer = await fetch(`http://${holder.address}/v1/projects/${encodeURIComponent(project)}/integrity`, { headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3' } });
   const found = answer.ok ? (await answer.json()).differences : [`${answer.status} ${await answer.text()}`];
   check(`rows_equal_document_after_${after}`, found.length === 0, found);
 }

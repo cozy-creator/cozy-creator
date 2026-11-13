@@ -133,7 +133,7 @@ async function placedInView(page, expected) {
   await signIn(page);
   await page.waitForSelector('.top');
   check('code_left_the_url', !page.url().includes('code='), page.url());
-  const session = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const session = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
   check('session_kept', Boolean(session?.token && session?.media), session);
 
   // A project of its own, by name, from the Projects drawer.
@@ -145,8 +145,8 @@ async function placedInView(page, expected) {
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
   const state = await page.evaluate(async (id) => {
-    const { token } = JSON.parse(localStorage.getItem('cozy.session'));
-    return (await fetch(`/v1/projects/${id}`, { headers: { Authorization: `Bearer ${token}` } })).json();
+    const { token } = JSON.parse(sessionStorage.getItem('cozy.session'));
+    return (await fetch(`/v1/projects/${id}`, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
   }, id);
   const folder = state.path;
   seen.project = { id, folder };

@@ -1555,6 +1555,28 @@ impl Folder {
         self.write_past(|conn| db::keep_answer(conn, key, digest, status, content_type, body).map_err(|e| Error::new(Kind::Unavailable, "project_db", e.to_string())))
     }
 
+    pub(crate) fn journal_read<T>(&self, read: impl FnOnce(&rusqlite::Connection) -> crate::store::Result<T>) -> crate::store::Result<T> {
+        self.reading_db(read).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?
+    }
+
+    /// Whether this thread is inside one of this project's acts: its writer is this thread's until the act commits.
+    pub(crate) fn acting_here(&self) -> bool {
+        acting(self.id()).is_some()
+    }
+
+    pub(crate) fn journal_write<T>(&self, write: impl FnOnce(&rusqlite::Transaction<'_>) -> crate::store::Result<T>) -> crate::store::Result<T> {
+        // The act holds the writer on this thread: taking it again would never return.
+        if self.acting_here() { return Err(crate::store::StoreError::Locked("project_acting".into())); }
+        let mut turn = self.shared.writing.lock().unwrap_or_else(|error| error.into_inner());
+        let conn = self.writer(&mut turn).map_err(|error| crate::store::StoreError::Protected(error.code.to_string()))?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let value = write(&tx)?;
+        tx.commit()?;
+        let mut held = self.shared.held.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(held) = held.as_mut() { held.seen = self.version(); }
+        Ok(value)
+    }
+
     /// What the project says: its boxes, as rows.
     pub(crate) fn written(&self) -> Result<Written, Error> {
         self.reading_written(Written::clone)

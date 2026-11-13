@@ -37,8 +37,8 @@ const HOLDER = join(dirname(process.env.HOLDER), '..', 'machine', 'var', 'lib', 
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
-  const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}` } })).json();
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
   const machines = async () => (await api('/v1/machines')).machines ?? [];
   const local = async () => (await machines()).find((machine) => machine.name === 'local');
   check('no_other_machine', (await machines()).every((machine) => machine.name === 'local' || machine.state === 'ended'), (await machines()).map((machine) => machine.name));
@@ -70,7 +70,7 @@ const HOLDER = join(dirname(process.env.HOLDER), '..', 'machine', 'var', 'lib', 
   const held = (now) => now.assets?.find((asset) => asset.name === 'idle_box');
   const made = await until('idle_box made or failed', state, (now) => !now.busy && Boolean(held(now)?.versions >= 1 || held(now)?.failure), RENDER_MS).catch(() => null);
   check('rendered', made !== null && held(made)?.versions >= 1, made ? held(made)?.failure?.message ?? held(made)?.status : 'nothing in time');
-  const runs = ((await api(`/v1/runs?project=${id}&limit=100`)).runs ?? []).filter((run) => /\/still(@\S+)?$/.test(run.target ?? ''));
+  const runs = ((await api(`/v1/projects/${id}/runs?limit=100`)).runs ?? []).filter((run) => /\/still(@\S+)?$/.test(run.target ?? ''));
   seen.placed = runs.map((run) => `${run.number} ${run.machine} ${run.status}`);
   check('ran_here', runs.length >= 1 && runs.every((run) => run.machine === 'local' && run.status === 'completed'), seen.placed);
   check('started', (await local())?.state === 'ready', (await local())?.state);

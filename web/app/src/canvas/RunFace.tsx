@@ -62,9 +62,10 @@ const reason = (run: Run, boxOf: (run: number) => string | undefined) =>
  *  it's here). None for a file a machine keeps. */
 export function useArriving(view: ElementView | undefined): number | undefined {
   const { client } = useConnection()
+  const store = useCanvasStore()
   const shown = view ? shownOf(view) : null
   const number = shown?.absent ? shown.run : undefined
-  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: number !== undefined })
+  const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && number !== undefined) })
   return data && data.status === "completed" && owed(data) !== undefined ? number : undefined
 }
 
@@ -170,7 +171,7 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const asset = view.asset
   const making = asset?.standing === "making"
   const later = number !== undefined && number !== view.run?.number
-  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: later })
+  const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && later) })
   const run = later ? data : view.run
   const on = useWaitsOn(run)
   const { data: machines } = useQuery(machinesQuery(client))
@@ -179,7 +180,7 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
   const onItsWay = making || Boolean(view.queued) || view.asked !== undefined
   const waits = making || !onItsWay ? null : store.waitsFor(name)
   const installsOf = asset?.tool ? tools.get(asset.tool) : undefined
-  const installing = useInstalling(run || waits ? undefined : installsOf && (installsOf.installs ?? installsOf.package))
+  const installing = useInstalling(run || waits ? undefined : installsOf && (installsOf.installs ?? installsOf.package), store.projectId)
   useElement(store.mentionOf(waits ?? name, "")?.name ?? name)
   useSignal(store.ahead)
   // Its clock ticks only while it has a time to show.
@@ -226,8 +227,9 @@ export function RunFace({ view, name, number, above = false }: { view: ElementVi
  *  took. The same two lines in the same place, so nothing under them moves. */
 export function RunDone({ view, number }: { view: ElementView; number: number }) {
   const { client } = useConnection()
+  const project = useCanvasStore().projectId
   const later = number !== view.run?.number
-  const { data } = useQuery({ ...runQuery(client, number), enabled: later })
+  const { data } = useQuery({ ...runQuery(client, project ?? "", number), enabled: Boolean(project && later) })
   const run = later ? data : view.run
   const made = view.asset?.prefixes?.find((version) => version.run === number)
   const ms = run?.settled_at_ms ? run.settled_at_ms - run.created_at_ms : made?.execution_ms
@@ -249,8 +251,9 @@ export function RunDone({ view, number }: { view: ElementView; number: number })
  *  only once there's an estimate. Focus has the lines alone. */
 export function RunMeter({ view, number }: { view: ElementView; number?: number }) {
   const { client } = useConnection()
+  const store = useCanvasStore()
   const later = number !== undefined && number !== view.run?.number
-  const { data } = useQuery({ ...runQuery(client, number ?? 0), enabled: later })
+  const { data } = useQuery({ ...runQuery(client, store.projectId ?? "", number ?? 0), enabled: Boolean(store.projectId && later) })
   const run = later ? data : view.run
   const now = useNow(run !== undefined && leftOf(run) !== undefined)
   const since = run ? (now - run.created_at_ms) / 1000 : undefined

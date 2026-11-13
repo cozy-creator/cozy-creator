@@ -115,7 +115,7 @@ impl Machines {
         if row.as_ref().is_some_and(|row| row.kind == MachineKind::Added) {
             return Err(refused("it is its owner's to update".into()));
         }
-        if self.store().working(name).map_err(internal)? > 0 {
+        if self.calcifer.each_store(|store|store.working(name)).map_err(internal)?.into_iter().sum::<u32>() > 0 {
             return Err(refused("it has work going, which an update would hold new runs behind".into()));
         }
         // What it takes to run this build: `local`, the cozy installed here; else this release, or a dev build's own binary.
@@ -136,6 +136,10 @@ impl Machines {
     /// Starts the update `ask` of the machine `text` names under `key`: the same key again answers
     /// the run it made.
     pub(crate) async fn update(self: &Arc<Self>, key: &str, text: &str, ask: MachineUpdate) -> Result<(Updating, bool), Error> {
+        crate::private_io::context(None,self.update_independent(key,text,ask)).await
+    }
+
+    async fn update_independent(self: &Arc<Self>, key:&str, text:&str, ask:MachineUpdate)->Result<(Updating,bool),Error> {
         wire::local_usable(text)?;
         if let Some(row) = self.store().keyed(key).map_err(internal)? {
             let run = self.calcifer.record(&row).map_err(|e| Refusal::from(e).0)?;
@@ -309,7 +313,7 @@ impl Machines {
             warnings.push(format!("{}'s warm models reload after it restarts", m.name));
         }
         let target = named.join(", ");
-        let submit = SubmitRun {
+        let submit = SubmitRun { project: None,
             agreed: None,
             stays: vec![],
             on: On::Machine(m.name.clone()),

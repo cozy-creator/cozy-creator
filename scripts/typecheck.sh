@@ -37,6 +37,7 @@ mypy_path() {
   local path=$top/crates/tensorfs-py/python:$top/typings
   case $1 in
     e2e/capabilities) path=$top/e2e:$path ;;
+    e2e/cli/containment) path=$top/e2e:$path ;;  # run.py and legacy_seed.py put e2e (test_hub) on sys.path
     release-gate) path=$top/release-gate/suites:$top/release-gate/suites/bench:$path ;;  # analyze.py's suites (its `tensorfs` is the suite), bench.py's media and comfy
     release-gate/suites/varena/core/faults) path=$top/release-gate/suites/varena/native-tensor-export:$top/release-gate/suites/varena/ledger:$path ;;
     release-gate/suites/varena/public-api) path=$top/crates/varena/examples:$path ;;

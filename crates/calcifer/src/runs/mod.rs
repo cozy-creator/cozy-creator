@@ -42,14 +42,53 @@ use target::Resolved;
 pub(crate) async fn submit(
     State(api): State<Arc<Api>>,
     IdempotencyKey(key): IdempotencyKey,
+    headers: axum::http::HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Response, Refusal> {
     let body = body?;
     prebuilt(&body)?;
     let ask: RunRequest = parse(&body)?;
+    if ask.project.is_some() || (ask.warm.is_none() && !crate::hub::jobs::is(&ask.target)) {
+        if !crate::api::speaks_project_storage(&headers) { return Err(crate::api::project_storage_protocol_required()); }
+        return Err(Refusal(Error::new(Kind::Usage, "project_context_required", "use the explicit project run-submission route")));
+    }
     let project = ask.project.clone();
     vault::project_reply(&api, project.as_deref(), async {
         let submitted = Box::pin(request(&api, &key, ask)).await.map_err(Refusal)?;
+        let status = if submitted.replay { StatusCode::OK } else { StatusCode::ACCEPTED };
+        Ok((status, Json(submitted)))
+    }).await
+}
+
+pub(crate) async fn submit_project(
+    State(api): State<Arc<Api>>,
+    axum::extract::Path(project): axum::extract::Path<String>,
+    IdempotencyKey(key): IdempotencyKey,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Response, Refusal> {
+    let bytes = body?;
+    prebuilt(&bytes)?;
+    let mut raw:serde_json::Value=parse(&bytes)?;
+    let legacy_on=raw.get("on").is_some_and(serde_json::Value::is_string);
+    if legacy_on {let value=raw.get("on").cloned().expect("checked on");raw["on"]=serde_json::json!([value]);}
+    let mut ask:RunRequest=serde_json::from_value(raw).map_err(|_|Refusal(Error::new(Kind::Validation,"invalid_run_request","the run request is invalid")))?;
+    let (id,recorded) = { let store = api.projects.store(&api, &project).await.map_err(Refusal)?; (store.project_id().to_owned(),store.recorded(&key)?) };
+    // A migrated retry keeps its exact original body digest. Its old locator
+    // may have moved; the existing row inside this admitted owner is authority.
+    if let Some((row,recorded))=recorded {
+        if recorded!=digest(&ask) && legacy_024_digest(&ask).as_deref()!=Some(recorded.as_str()) {return Err(Refusal(crate::api::conflict(&key)));}
+        return vault::project_reply(&api,Some(&project),async {
+            Ok((StatusCode::OK,Json(Submitted {run:api.calcifer.record(&row)?,replay:true,notes:vec![],preparing:false,lock:None})))
+        }).await;
+    }
+    if legacy_on {return Err(Refusal(Error::new(Kind::Usage,"legacy_run_request","legacy request encoding is supported only for an existing migrated retry")));}
+    if let Some(named) = ask.project.as_deref() {
+        let actual = { let store = api.projects.store(&api, named).await.map_err(Refusal)?; store.project_id().to_owned() };
+        if actual != id { return Err(Refusal(Error::new(Kind::Validation, "project_scope_mismatch", "the route and request name different projects"))); }
+    }
+    if ask.project.is_none() {ask.project = Some(id);}
+    vault::project_reply(&api, Some(&project), async {
+        let submitted = request(&api, &key, ask).await.map_err(Refusal)?;
         let status = if submitted.replay { StatusCode::OK } else { StatusCode::ACCEPTED };
         Ok((status, Json(submitted)))
     }).await
@@ -79,7 +118,7 @@ pub(crate) async fn priced(api: &Arc<Api>, ask: RunRequest) -> Result<Option<Run
         },
         false => ask,
     };
-    let _access = project_access(api, ask.project.as_deref()).await?;
+    drop(project_access(api, ask.project.as_deref()).await?);
     let scope = match ask.project.as_deref() {
         Some(project) => {
             let root = crate::project::named(api, project)?;
@@ -104,6 +143,7 @@ async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuot
             let hub = hub(api, &ask.hub);
             let origin = api::config::Origin::parse(&hub)?;
             let source = crate::local_code::source(home, code, &api.machines.hubs, &origin).await?;
+            crate::maintenance_source::keep_derived(api,code,&source)?;
             crate::local_code::install_run(home, &hub, on, &source)
         }
         None => match prepare(api, "quote", &ask, For::Quote).await? {
@@ -202,6 +242,7 @@ pub(crate) async fn describe(
 }
 
 async fn describe_asked(api: &Arc<Api>, asked: Asked) -> Result<Json<api::calcifer::Target>, Refusal> {
+    if let Some(project)=asked.project.as_deref() { drop(api.projects.store(api,project).await.map_err(Refusal)?); }
     let hub = hub(api, asked.hub.as_deref().unwrap_or_default());
     // Of several (named, else its project's), the first: what it calls is the same on each.
     let pinned = match (&asked.on, asked.project.as_deref()) {
@@ -258,7 +299,11 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
     };
     let digest = digest(&ask);
     let calcifer = &api.calcifer;
-    if let Some((row, recorded)) = calcifer.store().recorded(key).map_err(store)? {
+    let recorded = match ask.project.as_deref() {
+        Some(project) => api.projects.store(api, project).await?.recorded(key).map_err(store)?,
+        None => calcifer.maintenance_store().recorded(key).map_err(store)?,
+    };
+    if let Some((row, recorded)) = recorded {
         if recorded != digest {
             return Err(crate::api::conflict(key));
         }
@@ -268,7 +313,7 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
     }
     // Prepared inputs can name files in the mounted view. Keep the view
     // leased until submission takes them and their history is kept.
-    let access = project_access(api, ask.project.as_deref()).await?;
+    drop(project_access(api, ask.project.as_deref()).await?);
     let prepared = prepare(api, key, &ask, For::Run).await?;
     let lock = match &ask.code {
         Some(code) => made_lock(api, &ask, code).await,
@@ -300,14 +345,11 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
             }
             if let Some(project) = project.filter(|_| !submitted.replay) {
                 // What Calcifer holds is in this computer's store.
-                let uploads = match crate::private_io::of_output(&crate::project::landing(&project)) {
-                    Ok(Some(scope)) => Some(scope.storage.view_root.join(".vault-uploads")),
-                    Ok(None) => Some(files::store().map(|store| store.root().to_owned()).unwrap_or_default()),
-                    Err(_) => None,
-                };
+                let uploads = crate::project::private_upload_root(api,&project.to_string_lossy()).ok().flatten().map(|root|root.join(".vault-uploads"));
                 if let Some(uploads) = uploads {
                     // Even if this request is canceled, the queued worker owns
                     // the lease until its retention work has finished.
+                    let access=crate::project::vault::admit_root(&project).await?;
                     let (kept, _access) = tokio::task::spawn_blocking(move || {
                         (crate::project::keep_given(&project, &given, &uploads), access)
                     }).await.map_err(|e| Error::internal("keep_given", e.to_string()))?;
@@ -376,6 +418,21 @@ pub(crate) fn digest(ask: &RunRequest) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&asked).expect("serializes"))))
 }
 
+/// v0.24.0 serialized one optional placement before the set-valued wire change.
+/// This exact original field order is used only to prove a read-only replay;
+/// no canonical digest is rewritten and no fresh legacy invocation is admitted.
+fn legacy_024_digest(ask:&RunRequest)->Option<String> {
+    if ask.on.len()>1 || ask.attention_capture.is_some() {return None;}
+    let mut value=serde_json::to_value(RunRequest {agreed:None,..ask.clone()}).ok()?;
+    let fields=value.as_object_mut()?;
+    match ask.on.first() {Some(on)=>{fields.insert("on".into(),serde_json::to_value(on).ok()?);},None=>{fields.remove("on");}}
+    const ORDER:[&str;19]=["target","code","on","hub","input","input_text","terms","files","fidelities","loras","paths","gpus","lane","attention_kernel","warm","project","recipes","agreed","attention_capture"];
+    let mut bytes=vec![b'{'];let mut comma=false;
+    for field in ORDER {if let Some(value)=fields.get(field) {if comma {bytes.push(b',');}comma=true;serde_json::to_writer(&mut bytes,field).ok()?;bytes.push(b':');serde_json::to_writer(&mut bytes,value).ok()?;}}
+    bytes.push(b'}');
+    Some(format!("sha256:{}",hex::encode(Sha256::digest(bytes))))
+}
+
 enum Prepared {
     /// The submission, what binding it said, and its machines' offers where they were asked, for each copy quoted.
     Run { submit: SubmitRun, notes: Vec<Note>, offers: Vec<Vec<crate::placement::Offer>> },
@@ -424,11 +481,20 @@ async fn prepare(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> R
 async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: For) -> Result<Prepared, Error> {
     // Resolved first on the first of its set.
     let set = run_set(api, ask).await?;
+    let set = if let Some(named) = ask.project.as_deref() {
+        let (project, root) = {
+            let store = api.projects.store(api, named).await?;
+            store.admit_new_work().map_err(|error|refused(error.into()))?;
+            let (project, root) = store.execution_scope();
+            (project.to_owned(), root.to_owned())
+        };
+        crate::private_io::check_project_placement(&project, &root, &set)?
+    } else { set };
     let mut on = set.first().cloned().unwrap_or_else(|| default_on(api));
     // Only to a machine on this cozy's minor: one on another is updated first, which the client follows, then asks again. Before
     // anything is resolved there, local code's install too. Of several, placement does this for each.
     if let (On::Machine(machine), For::Run, 1) = (&on, purpose, set.len()) {
-        match api.machines.current(machine).await {
+        match api.machines.current(&machine).await {
             Ok(Some(update)) => return Ok(Prepared::Install(update)),
             Err(e) if e.code == crate::update::OTHER_MINOR => return Err(e),
             // Not known yet: its driver asks again before it sends.
@@ -777,6 +843,11 @@ async fn call(
     // Even a prepare-only private local-code call needs protected input/journal scope.
     let out = out.or_else(|| project.as_deref().filter(|project| crate::project::vault::encrypted(&crate::project::vault::logical(project))).map(crate::project::landing));
     let mut submission = call.submission(code.on, hub, &spec, bound.as_ref(), out);
+    if let Some(named) = ask.project.as_deref() {
+        let store = api.projects.store(api, named).await?;
+        submission.project = Some(store.project_id().to_owned());
+        submission.out = project.as_deref().map(crate::project::landing);
+    }
     submission.inputs.extend(code.files.iter().cloned());
     Ok((submission, notes))
 }

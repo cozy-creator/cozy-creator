@@ -117,7 +117,7 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
         }
     });
     let needs = futures_util::future::join_all(judging).await;
-    let kept = api.calcifer.store().rendered_here(&machine)?;
+    let kept = api.calcifer.project_store(&project.id)?.rendered_here(&machine)?;
     let mut fit = Fit::default();
     let mut picks = vec![];
     for (need, names) in needs.into_iter().flatten() {
@@ -136,7 +136,7 @@ async fn judged(api: &Arc<Api>, id: &str, asked: &FitAsk, keep: bool) -> Result<
     });
     if keep && !fit.tools.is_empty() {
         let tools: Vec<(String, u64)> = fit.tools.iter().map(|tool| (tool.tool.clone(), tool.bytes)).collect();
-        let kept = api.calcifer.store().keep_rendered_here(&machine, &tools);
+        let kept = api.calcifer.project_store(&project.id)?.keep_rendered_here(&machine, &tools);
         kept.map_err(|why| Refusal(Error::new(Kind::Unavailable, "here_io", why.to_string())))?;
         fit.tools.iter_mut().for_each(|tool| tool.here = true);
     }

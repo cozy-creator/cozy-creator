@@ -437,6 +437,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "hex",
+ "hyper",
+ "hyper-util",
  "infer",
  "jiff",
  "pep440_rs",
@@ -445,6 +447,7 @@ dependencies = [
  "project-vault",
  "reqwest",
  "rusqlite",
+ "rustix",
  "rustls",
  "serde",
  "serde_ignored",
@@ -4011,6 +4014,7 @@ name = "tensord"
 version = "0.26.0-dev"
 dependencies = [
  "api",
+ "automerge",
  "aws-lc-rs",
  "axum",
  "base64",

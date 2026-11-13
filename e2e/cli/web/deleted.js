@@ -42,9 +42,9 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   await page.click('form button[type=submit]');
   await page.waitForURL(/\/p\/[0-9A-HJKMNP-TV-Z]{9}$/);
   const id = (await projectFromPage(page)).id;
-  const token = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null')?.token);
+  const token = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null')?.token);
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   const at = `/v1/projects/${id}`;
@@ -72,7 +72,7 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
     writeFileSync(path, png(shade));
     return path;
   };
-  const imported = async (name, path, x) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, path), name, exact: true, at: { x, y: 560 } }) });
+  const imported = async (name, path, x) => api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(token, path, id), name, exact: true, at: { x, y: 560 } }) });
 
   // What reads it: a picture tool's prompt, and a box of words, clear of the tools on the left. Two boxes share one file, one of which is
   // deleted later.
@@ -155,12 +155,15 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   check('no_picture_behind_the_words', (await shown.count()) === 0);
   await shot('marked');
   await away();
-  const runsBefore = (await api(`/v1/runs?project=${id}&limit=100`)).body?.runs?.length ?? null;
+  // A project's run history also lists its look-ahead (warm) runs since project data containment: what it renders is its calls.
+  const calls = async () => ((await api(`${at}/runs?limit=100`)).body?.runs ?? null)?.filter((run) => run.kind === 'call').map((run) => `${run.number} ${run.status} ${run.target}`) ?? null;
+  const runsBefore = await calls();
   seen.render_asked = await api(`${at}/runs`, { method: 'POST', body: JSON.stringify({ names: ['reader'], on: ['local'] }), headers: { 'Idempotency-Key': `deleted-${Date.now()}` } });
   const failed = await until('reader refused', () => asset('reader'), (held) => Boolean(held?.failure)).catch(() => null);
   seen.render_refused = failed?.failure ?? null;
   check('render_refused_naming_it_deleted', failed?.failure?.message?.includes('<pic> was deleted') === true, failed?.failure);
-  check('render_refused_free', ((await api(`/v1/runs?project=${id}&limit=100`)).body?.runs?.length ?? null) === runsBefore && !(failed?.making?.length), { runsBefore, making: failed?.making });
+  const runsAfter = await calls();
+  check('render_refused_free', runsBefore !== null && JSON.stringify(runsAfter) === JSON.stringify(runsBefore) && !(failed?.making?.length), { runsBefore, runsAfter, making: failed?.making });
   let cli = '';
   try {
     cli = execFileSync(process.env.COZY, ['run', `${drawer}/draw`, 'instructions=a hat on <pic>', '--on', 'local'], { cwd: folder, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: STEP_MS });

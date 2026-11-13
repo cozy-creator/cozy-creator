@@ -31,6 +31,11 @@ use serde_json::Value;
 pub(crate) use api::code::source_files;
 
 use crate::{api::Api, rentals::Hubs};
+mod private_process;
+pub(crate) use private_process::active as private_process_active;
+pub(crate) use private_process::cancel as cancel_private_processes;
+pub(crate) use private_process::retire as retire_private_processes;
+pub(crate) fn project_tool_output(command:&mut Command)->std::io::Result<std::process::Output> {private_process::output(command)}
 
 /// The uv index name a project's sources use for cozy packages on the Hub: its account's own, else the root's (`bindings`).
 pub(crate) const INDEX: &str = "tensorhub";
@@ -130,6 +135,7 @@ const UNUSED: Duration = Duration::from_secs(24 * 60 * 60);
 /// The package `code` names, in Calcifer's copy of its tree: made once from the files it holds (`PUT /v1/files`), and only read
 /// after. A script's copy holds the package it is beside its tree. Its project's folder.
 pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
+    if crate::private_io::current().is_none() { crate::maintenance_source::require_home(home,code)?; }
     let dir = copies(home)?.join(hex(&code.tree));
     if !dir.join("tree").is_dir() {
         let scope = crate::private_io::current();
@@ -157,6 +163,7 @@ pub(crate) fn copied(home: &Home, code: &LocalCode) -> Result<PathBuf, Error> {
 /// A folder of Calcifer's own (a project's `with: ./dir`) as local code: read as a client reads its own, and copied as a
 /// client's is, so the one path from here on is the copy's.
 pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
+    if crate::private_io::current().is_none() { return Err(refuse("source_scope_required","use native independent source capture before staging project-independent code")); }
     let memo = crate::private_io::cache(crate::private_io::current().as_ref(), home.root().join("cache").join("digests"), "digests")?;
     let staged = match crate::checkout::package_at(path) {
         Some(_) => {
@@ -179,7 +186,7 @@ pub(crate) fn own(home: &Home, path: &Path) -> Result<LocalCode, Error> {
 
 /// The tree's files, each from `from`, copied under `code/<digest>/tree`, made whole and then named; and a copy unused for a day
 /// past the newest `COPIES` goes.
-fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, api::tree::Member>, from: impl Fn(&Digest) -> Option<PathBuf>) -> Result<(), Error> {
+pub(crate) fn materialize(home: &Home, tree: &Digest, members: &BTreeMap<String, api::tree::Member>, from: impl Fn(&Digest) -> Option<PathBuf>) -> Result<(), Error> {
     let root = copies(home)?;
     let dir = root.join(hex(tree));
     let failed = |e: std::io::Error| refuse("code_unwritable", format!("{}: {e}", root.display()));
@@ -811,6 +818,7 @@ pub(crate) fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> Su
         ..Default::default()
     };
     SubmitRun {
+        project: crate::private_io::current().map(|scope|scope.storage.project_id),
         agreed: None,
         stays: vec![],
         on,
@@ -820,7 +828,7 @@ pub(crate) fn install_run(home: &Home, hub: &str, on: On, source: &Source) -> Su
         spec,
         inputs: source.inputs.clone(),
         held: vec![],
-        out: crate::private_io::current().map(|scope| crate::project::landing(&scope.storage.view_root)),
+        out: crate::private_io::current().map(|scope| crate::project::landing(&crate::project::vault::logical(&scope.storage.view_root))),
         warnings: vec![],
     }
 }
@@ -885,6 +893,7 @@ pub(crate) async fn prepare(
     let home = hubs.home().clone();
     let origin = Origin::parse(&if hub.is_empty() { hubs.default_origin() } else { hub.to_owned() })?;
     let code = source(&home, local, hubs, &origin).await?;
+    crate::maintenance_source::keep_derived(api,local,&code)?;
     let runtime = runtime(api, on).await;
     let from = crate::checkout::of(local);
     let prepared = |interface, installation, machine, install| Prepared {
@@ -929,7 +938,7 @@ pub(crate) enum Install {
 pub(crate) async fn install_through(api: &Arc<Api>, key: &str, after: Option<&crate::hub::after::After>, submit: impl FnOnce() -> SubmitRun) -> Result<Install, Error> {
     let Some(run) = sent(api, key)? else {
         if let Some(after) = after {
-            api.calcifer.plan(key, after)?;
+            api.calcifer.plan(crate::private_io::current().as_ref().map(|scope|scope.storage.project_id.as_str()),key, after)?;
         }
         let run = api.calcifer.submit(key, submit()).await.map_err(|e| crate::api::Refusal::from(e).0)?.run;
         return Ok(Install::Going(run));
@@ -952,7 +961,10 @@ pub(crate) async fn ready(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str, 
 /// The run sent under `key`, if one was.
 fn sent(api: &Api, key: &str) -> Result<Option<Run>, Error> {
     let calcifer = &api.calcifer;
-    let row = calcifer.store().keyed(key).map_err(|e| crate::api::Refusal::from(crate::Error::from(e)).0)?;
+    let row = match crate::private_io::current() {
+        Some(scope)=>calcifer.project_store(&scope.storage.project_id).and_then(|store|store.keyed(key)),
+        None=>calcifer.maintenance_store().keyed(key),
+    }.map_err(|e| crate::api::Refusal::from(crate::Error::from(e)).0)?;
     row.map(|row| calcifer.record(&row).map_err(|e| crate::api::Refusal::from(e).0)).transpose()
 }
 
@@ -997,7 +1009,7 @@ pub(crate) fn run(command: &mut Command, code: &str, what: &str) -> Result<Strin
 
 /// `run`, a failure with the tool's whole stderr beside its refusal (what `uv_listed` reads).
 pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<String, (Error, String)> {
-    let out = command.output().map_err(|e| {
+    let out = private_process::output(command).map_err(|e| {
         let error = match e.kind() {
             std::io::ErrorKind::NotFound => Error::new(
                 Kind::Unavailable,
@@ -1015,7 +1027,6 @@ pub(crate) fn run_said(command: &mut Command, code: &str, what: &str) -> Result<
     }
     let said = String::from_utf8_lossy(&out.stderr).into_owned();
     let (ended, killed) = platform::process::ended(&out.status);
-    tracing::warn!(code, "{what} {ended}; its stderr ends:\n{}", platform::process::tail(&said, 40));
     let refusal = runtime_refusal(&said);
     let words = refusal.as_ref().map(|refusal| refusal.error.message.clone())
         .or_else(|| platform::process::last_line(&said));
@@ -1250,6 +1261,7 @@ fn last_runtime(api: &Api, on: &On) -> Option<String> {
 /// very source, else Runtime's static describer, using its lock, plain version bounds or PyPI's newest. That can
 /// be older than the machine's, and refuse what the machine runs. No package code runs and no machine is asked.
 pub(crate) async fn describe(api: &Arc<Api>, code: &LocalCode, on: &On, hub: &str) -> Result<(String, Value), Error> {
+    if crate::private_io::current().is_none() { crate::maintenance_source::require_home(api.machines.hubs.home(),code)?; }
     let (package, document) = described(api, code, on, hub).await?;
     Ok((crate::checkout::of(code).map_or(package, |from| from.package), document))
 }
@@ -1338,6 +1350,7 @@ async fn own_reading(api: &Arc<Api>, local: &LocalCode, hub: &str, runtime: Opti
     let home = hubs.home();
     let origin = Origin::parse(hub).ok()?;
     let code = source(home, local, hubs, &origin).await.ok()?;
+    crate::maintenance_source::keep_derived(api,local,&code).ok()?;
     Some((code.package.clone(), kept(home, &code.filed(), runtime?)?))
 }
 

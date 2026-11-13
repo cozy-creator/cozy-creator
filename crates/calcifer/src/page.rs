@@ -1,10 +1,11 @@
 //! The app's page (`web/app`), embedded by `build.rs`, on Calcifer's own port. It holds no secret, so it's below the
 //! guard and outside `admit`. Client routes serve the same page so direct navigation and reload work.
+mod development;
 use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::Path,
+    extract::{Path, Request, State},
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -25,6 +26,7 @@ pub(crate) const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-uns
 pub(crate) fn routes() -> Router<Arc<Api>> {
     Router::new()
         .route("/", get(index))
+        .route("/__cozy_hmr", get(development::upgrade))
         .route("/assets/{file}", get(asset))
         .route("/p/{code}", get(index))
         .route("/p/{code}/{*rest}", get(index))
@@ -57,13 +59,15 @@ fn answer(body: &'static [u8], media_type: &'static str) -> Response {
     (headers, body).into_response()
 }
 
-async fn index() -> Result<Response, Refusal> {
+async fn index(State(api): State<Arc<Api>>, request: Request) -> Result<Response, Refusal> {
+    if let Some(address) = api.development_web.get() { return development::http(&api, *address, request, true).await; }
     let (_, body, media_type) = FILES.iter().find(|(name, ..)| *name == "index.html").ok_or_else(not_built)?;
     Ok(answer(body, media_type))
 }
 
 /// A file Vite names by its hash.
-async fn asset(Path(file): Path<String>) -> Result<Response, Refusal> {
+async fn asset(State(api): State<Arc<Api>>, Path(file): Path<String>, request: Request) -> Result<Response, Refusal> {
+    if let Some(address) = api.development_web.get() { return development::http(&api, *address, request, false).await; }
     if FILES.is_empty() {
         return Err(not_built());
     }
@@ -73,4 +77,14 @@ async fn asset(Path(file): Path<String>) -> Result<Response, Refusal> {
     let mut response = answer(body, media_type);
     response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(IMMUTABLE));
     Ok(response)
+}
+
+/// Only development web resources reach the selected Vite backend. Every API path stays local.
+pub(crate) async fn fallback(State(api): State<Arc<Api>>, request: Request) -> Response {
+    if !request.uri().path().starts_with("/v1") && matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD) {
+        if let Some(address) = api.development_web.get() {
+            return match development::http(&api, *address, request, false).await { Ok(response) => response, Err(error) => error.into_response() };
+        }
+    }
+    crate::api::unknown_route(request.method().clone(), request.uri().clone()).await.into_response()
 }

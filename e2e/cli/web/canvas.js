@@ -259,8 +259,8 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
   lookAt(page);
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
-  const api = async (path, init = {}) => (await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers } })).json();
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const api = async (path, init = {}) => (await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', ...init.headers } })).json();
   const scratch = mkdtempSync(join(tmpdir(), 'web-canvas-'));
   const made = await api('/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `canvas-${Date.now()}` }, body: JSON.stringify({ name: `web-canvas-${Date.now()}`, unencrypted: true }) });
   const contexts = [first];
@@ -289,12 +289,12 @@ const moving = (page, kind, ms) => page.evaluate(([kind, ms]) => new Promise((do
       lookAt(tab);
       const { width, height } = tab.viewportSize();
       const view = { x: width / 2 - SPOT.x * zoom, y: height / 2 - SPOT.y * zoom, zoom };
-      await tab.addInitScript(([id, view, [look, land]]) => {
-        localStorage.setItem(`cozy.view:${id}`, JSON.stringify(view));
+      await tab.addInitScript(([look, land]) => {
         localStorage.setItem('cozy.theme', look);
         localStorage.setItem('cozy.landscape', land);
-      }, [made.id, view, THEMES[theme]]);
-      await tab.goto(url);
+      }, THEMES[theme]);
+      projectJson(made.id, 'PATCH', '/view', { viewport: view });
+      await signIn(tab, url);
       await tab.waitForSelector('.react-flow__node .media img');
       await until('every picture drawn', () => tab.evaluate(() => [...document.querySelectorAll('.react-flow__node .media img')].every((image) => image.complete)), Boolean);
       await settled(tab);

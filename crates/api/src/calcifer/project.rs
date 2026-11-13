@@ -9,6 +9,43 @@ use serde_json::{Map, Value};
 
 use crate::{calcifer::On, error::Error};
 
+/// Project mutation storage protocol; clients without this fence cannot mutate project state.
+pub const PROJECT_STORAGE_HEADER: &str = "cozy-project-storage";
+pub const PROJECT_STORAGE_VERSION: &str = "3";
+
+/// The canvas view, saved inside its project's database.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectView {
+    #[serde(default)]
+    pub viewport: Option<ProjectViewport>,
+    #[serde(default)]
+    pub selection: Vec<String>,
+    #[serde(default)]
+    pub more: Vec<String>,
+}
+
+/// Supplied view fields replace the corresponding saved fields.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectViewPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<ProjectViewport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub more: Option<Vec<String>>,
+}
+
+/// A canvas position and zoom level.
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ProjectViewport {
+    pub x: f64,
+    pub y: f64,
+    pub zoom: f64,
+}
+
 /// `POST /v1/projects`: a new project called `name`, in Calcifer's home folder (`~/<name>`, the next free name when that is
 /// taken) or at `path` (absolute, on Calcifer's computer), with the starter film when `starter`. A project is its id, kept in
 /// its `project.db`: the folder is only where it lives. An existing one is named in a route (`NAMED_BY`) and needs no call here.

@@ -1,22 +1,35 @@
 import type { BrowserSession } from "../api/calcifer"
 
+/** Injected over the native process's private debugging pipe before application boot. */
+const owned = (globalThis as typeof globalThis & { __cozyOwned?: { session: BrowserSession; birth: string } }).__cozyOwned
+export const ownedBirth = owned?.birth ?? null
+
+// Any other browser's session is this tab's: kept through a reload, gone with the tab, never in localStorage.
 const KEY = "cozy.session"
 
-export function readSession(): BrowserSession | null {
+function stored(): BrowserSession | null {
   try {
-    const held = JSON.parse(localStorage.getItem(KEY) ?? "null")
+    localStorage.removeItem(KEY)
+    const held = JSON.parse(sessionStorage.getItem(KEY) ?? "null")
     return typeof held?.token === "string" && typeof held?.media === "string" ? held : null
   } catch {
     return null
   }
 }
 
+let held: BrowserSession | null = owned ? owned.session : stored()
+
+export function readSession(): BrowserSession | null { return held }
+
+/** The owned browser's authority stays in memory only. */
 export function saveSession(session: BrowserSession | null) {
+  held = session
+  if (owned) return
   try {
-    if (session) localStorage.setItem(KEY, JSON.stringify(session))
-    else localStorage.removeItem(KEY)
+    if (session) sessionStorage.setItem(KEY, JSON.stringify(session))
+    else sessionStorage.removeItem(KEY)
   } catch {
-    // Private windows may refuse storage: this tab still has the session in memory.
+    // Storage refused: this load still has the session in memory.
   }
 }
 

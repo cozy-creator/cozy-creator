@@ -95,9 +95,18 @@ pub(crate) enum Stopped {
 }
 
 /// `cozy calcifer`: exits 0 unless Calcifer could not start, which `refused.json` then says.
-/// Its log is its stdout (the service's `calcifer.log`).
+/// Its persistent diagnostics are the closed events in `health.log`.
 pub fn main() -> ExitCode {
-    tracing_subscriber::fmt().init();
+    // Inherited native proof IPC stays available here, never in browser/worker/helper children.
+    #[cfg(unix)]
+    platform::process::cloexec_from(3);
+    // The trusted controller never executes project code in-process. Stop OS-managed dump
+    // capture before configuration, keybags, state recovery or native proof payloads are read.
+    if platform::private_exec::disable_project_parent_dumps().is_err() {
+        return ExitCode::FAILURE;
+    }
+    // The panic payload and location never enter stderr or the health sink.
+    std::panic::set_hook(Box::new(|_| crate::health::service_health(crate::health::HealthEvent::Panicked)));
     // Before the runtime's workers start: Linux names the calling thread.
     if let Err(e) = process::set_name("calcifer")
         && !e.is_unsupported()
@@ -105,7 +114,7 @@ pub fn main() -> ExitCode {
         warn!("{e}");
     }
     let served = match configuration() {
-        Ok(loaded) => match runtime(&loaded) {
+        Ok(loaded) => match crate::health::install(&loaded.home, loaded.config.calcifer.diagnostics).and_then(|()| runtime(&loaded)) {
             // Stopped, Calcifer exits now: nothing left on the runtime holds the process (or its
             // service) past `down`.
             Ok(runtime) => {
@@ -173,20 +182,21 @@ fn runtime(_loaded: &Loaded) -> Result<tokio::runtime::Runtime, Error> {
         .map_err(|e| Error::new(Kind::Internal, "calcifer_runtime", e.to_string()))
 }
 
-/// Logs why Calcifer cannot start and leaves it in `<home>/calcifer/refused.json` for the CLI.
+/// Logs why Calcifer cannot start and leaves it in `<home>/calcifer/refused.json` for the CLI: the
+/// failed step's code as its cause, never its message.
 fn refuse(home: &Home, error: Error) -> Error {
-    error!("Calcifer cannot start: {error}");
+    crate::health::service_health(crate::health::HealthEvent::StartRefused);
     let envelope = serde_json::to_vec(&Envelope {
-        error: error.clone(),
+        error: Error::new(Kind::Unavailable, "calcifer_start_failed", "Calcifer could not start")
+            .cause(error.code.clone())
+            .next("cozy doctor"),
     })
     .expect("serializes");
     let written = home
         .open()
         .and_then(|()| durable::private_dir(&home.calcifer()))
         .and_then(|()| durable::replace(&home.calcifer().join(REFUSED), &envelope, 0o600));
-    if let Err(e) = written {
-        error!("{e}");
-    }
+    let _ = written;
     error
 }
 
@@ -260,6 +270,10 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
         info!("another Calcifer holds this home");
         return Ok(Stopped::AnotherHolds);
     };
+    crate::browser::recover_profiles(&home.calcifer()).map_err(|error| failed(error.0))?;
+    // Old raw captures are disposable, unlike the authoritative run journal. A
+    // retained/unknown artifact remains visible through migration_required.
+    let _ = crate::legacy_cleanup::retire(&home.calcifer());
     crate::project::bind_calcifer(&home.calcifer()).map_err(failed)?;
     // Only the holder announces: its birth is what `Services::stop` must end.
     Services::new(home, &loaded.user_home)
@@ -296,6 +310,10 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     let address = listener
         .local_addr()
         .map_err(|e| failed(Error::new(Kind::Internal, "calcifer_port", e.to_string())))?;
+    if loaded.config.calcifer.development_web.is_some_and(|development| development.port() == address.port()) {
+        calcifer.close();
+        return Err(failed(Error::new(Kind::Usage, "calcifer_development_web", "Vite and Calcifer must use different ports")));
+    }
     steps.done("listen");
     let mut token = [0; 32];
     getrandom::fill(&mut token).expect("the OS provides randomness");
@@ -305,6 +323,10 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     steps.done("machines");
     tokio::spawn(drop_old_measurements(calcifer.clone()));
     let api = Api::new(calcifer.clone(), machines.clone(), &token);
+    api.browser_address.set(address).expect("listener address set once");
+    if let Some(development) = loaded.config.calcifer.development_web {
+        api.development_web.set(development).expect("development web address set once");
+    }
     // A service manager's stop (SIGTERM) is `down`, as graceful: the machine runs on.
     #[cfg(unix)]
     if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
@@ -344,9 +366,11 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
             .with_graceful_shutdown(api.stopped())
             .into_future(),
     );
+    crate::browser::hosted_proof(api.clone());
+    crate::health::service_health(crate::health::HealthEvent::Started);
     info!(%address, ms = began.elapsed().as_millis() as u64, "Calcifer serves");
     match calcifer.resume() {
-        Ok(runs) => steps.done(&format!("resume ({runs} runs)")),
+        Ok(_) => steps.done("resume"),
         Err(e) => warn!("resuming what an earlier Calcifer left: {e}"),
     }
     tokio::spawn(crate::hub::jobs::resume(api.clone()));
@@ -356,6 +380,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     crate::project::purge::start(api.clone());
 
     api.stopped().await;
+    crate::health::service_health(crate::health::HealthEvent::Stopping);
     tokio::task::block_in_place(|| crate::project::vault::close_all(&api)).map_err(failed)?;
     if let Ok(Err(e)) = server.await {
         warn!("the API server ended: {e}");
@@ -363,7 +388,7 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
     machines.close();
     calcifer.close();
     drop(held);
-    info!("Calcifer stopped");
+    crate::health::service_health(crate::health::HealthEvent::Stopped);
     Ok(if api.updated() { Stopped::Updated } else { Stopped::Down })
 }
 
@@ -371,8 +396,9 @@ pub(crate) async fn serve(loaded: &Loaded) -> Result<Stopped, Error> {
 struct Steps(Instant);
 
 impl Steps {
-    fn done(&mut self, step: &str) {
-        info!(step, ms = self.0.elapsed().as_millis() as u64, "started");
+    /// A start's step and how long it took, in the closed health log: a slow start names its slow step.
+    fn done(&mut self, step: &'static str) {
+        info!(target: "cozy.service_health", step, ms = self.0.elapsed().as_millis() as u64, "started");
         self.0 = Instant::now();
     }
 }

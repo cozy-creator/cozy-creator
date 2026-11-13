@@ -25,7 +25,11 @@ mod retired_storage_tests;
 mod web_seed_tests;
 pub(crate) mod host;
 mod jobs;
+pub(crate) mod journal;
+pub(crate) use journal::{OpenProject, ProjectRef, ProjectStore, RunOwner};
 mod keyed;
+pub(crate) mod legacy_worker;
+mod view;
 pub(crate) mod model;
 mod nodes;
 mod remote;
@@ -104,6 +108,25 @@ pub(crate) struct Projects {
     heard_changes: AtomicU64,
     /// Each project made by name since Calcifer started, by the `Idempotency-Key` that asked: a retry makes no `_2`.
     made: Mutex<HashMap<String, PathBuf>>,
+    requests:Mutex<HashMap<PathBuf,usize>>,
+}
+
+pub(super) struct RequestActivity {api:Arc<Api>,root:PathBuf}
+impl Drop for RequestActivity {
+    fn drop(&mut self) {
+        let mut requests=self.api.projects.requests.lock().expect("project requests");
+        if let Some(count)=requests.get_mut(&self.root) { *count-=1; if *count==0 {requests.remove(&self.root);} }
+    }
+}
+impl Projects {
+    pub(crate) fn active_requests(&self,root:&FsPath)->bool {
+        self.requests.lock().expect("project requests").get(&vault::logical(root)).is_some_and(|count|*count>0)
+    }
+    fn track_request(&self,api:&Arc<Api>,root:&FsPath)->RequestActivity {
+        let root=vault::logical(root);
+        *self.requests.lock().expect("project requests").entry(root.clone()).or_default()+=1;
+        RequestActivity {api:api.clone(),root}
+    }
 }
 
 /// A package as a project's read knows it: when it was last asked of, and what that found.
@@ -182,8 +205,16 @@ pub(crate) fn routes(api: &Arc<Api>) -> Router<Arc<Api>> {
         .route("/v1/projects/{id}", get(state))
         .route("/v1/projects/{id}/imports", post(import))
         .route("/v1/projects/{id}/canvas", get(canvas::read).patch(canvas::patch))
+        .route("/v1/projects/{id}/view", get(view::read).patch(view::patch))
         .route("/v1/projects/{id}/thumbs/{sha256}", get(thumbs::thumb))
-        .route("/v1/projects/{id}/runs", post(runs))
+        .route("/v1/projects/{id}/runs", post(runs).get(crate::api::project_list))
+        .route("/v1/projects/{id}/runs/submit", post(crate::runs::submit_project))
+        .route("/v1/projects/{id}/runs/{run}", get(crate::api::show))
+        .route("/v1/projects/{id}/runs/{run}/cancel", post(crate::api::cancel))
+        .route("/v1/projects/{id}/runs/{run}/events", get(crate::api::events))
+        .route("/v1/projects/{id}/runs/{run}/outputs/{name}", get(crate::outputs::serve))
+        .route("/v1/projects/{id}/runs/{run}/play", get(crate::play::play))
+        .route("/v1/projects/{id}/runs/{run}/preview", get(crate::previews::serve))
         .route("/v1/projects/{id}/fit", post(fit::fit))
         .route("/v1/projects/{id}/fit/here", post(fit::here))
         .route("/v1/projects/{id}/cancel", post(cancel))
@@ -318,6 +349,7 @@ impl Projects {
             .filter(|project| project.root == root && project.mount_id == mount_id && project.folder.dir == dir) {
             Some(project) => project,
             None => {
+                let unseen=unseen::read(&folder,&id)?;
                 let watch = (!vault::encrypted(&root)).then(|| watch(&id, dir)).flatten();
                 let project = Arc::new(Project {
                     id: id.clone(),
@@ -336,7 +368,7 @@ impl Projects {
                     moving: tokio::sync::Mutex::default(),
                     said: Mutex::default(),
                     unsent: Mutex::default(),
-                    unseen: Mutex::new(unseen::read(api.calcifer.store(), &id)),
+                    unseen: Mutex::new(unseen),
                     _watch: watch,
                 });
                 // What closed since the last open goes from the list.
@@ -349,13 +381,16 @@ impl Projects {
             }
         };
         drop(open);
+        // Calcifer finds its journal while anything holds it open.
+        api.calcifer.note_open(RunOwner::of(&project, &api.calcifer));
         // Its deleted boxes looked at as it opens: one set aside before cl-919 counts from now.
-        purge::due(api, &project.id, now_ms());
-        if let Some(said) = copy_told(&project.root) { project.said.lock().expect("said lock").push(said); }
-        project.require_view()?;
-        if project.folder.lock()?.owes() {
-            walk(api, &project);
+        purge::due(&project.id, now_ms());
+        // Told until a reader hears it: a project closes when nothing holds it, so this open may not be the one read.
+        if let Some(said) = copy_note(&project.root) {
+            let mut told = project.said.lock().expect("said lock");
+            if !told.contains(&said) { told.push(said); }
         }
+        project.require_view()?;
         Ok(project)
     }
 
@@ -369,6 +404,11 @@ const HEARD_FOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// Where a run of the project in `dir` lands its outputs.
 pub(crate) fn landing(dir: &FsPath) -> PathBuf {
     vault::logical(dir).join(folder::RUNS)
+}
+
+/// Project `id` opened again for Calcifer's work on it, as any request opens it: none for a locked or unknown one.
+pub(crate) fn reopen(api: &Arc<Api>, id: &str) -> Option<RunOwner> {
+    api.projects.get(api, id).ok().map(|project| RunOwner::of(&project, &api.calcifer))
 }
 
 /// The project a run's landing folder is in, if it's one.
@@ -473,9 +513,8 @@ fn known(api: &Api, text: &str) -> Result<crate::state::KnownProject, Error> {
 /// named by its content and linked; anything else is a person's file and is copied. Says what it couldn't keep.
 /// An encrypted project's transport uploads stay inside its mounted storage, never the shared plaintext CAS.
 pub(crate) fn private_upload_root(api: &Arc<Api>, named: &str) -> Result<Option<PathBuf>, Error> {
-    let root = self::named(api, named)?;
-    if !vault::encrypted(&root) { return Ok(None); }
     let project = api.projects.get(api, named).map_err(|e| e.0)?;
+    project.require_view()?;
     Ok(Some(project.folder.dir.clone()))
 }
 
@@ -549,6 +588,7 @@ impl Holding {
         let doc = Doc::load(&folder)?;
         let lock = folder.lock()?;
         let stand = doc.stand(&lock);
+        drop(_access);
         let mut fields = written;
         let picked = callable.request.fields.iter().find(|field| matches!(field.ty.plain(), api::interface::Type::Pickup(_))).and_then(|field| fields.remove(&field.name));
         let pickup = match picked {
@@ -763,6 +803,11 @@ fn copy_told(dir: &FsPath) -> Option<String> {
     COPIES.lock().expect("copies lock").remove(&vault::logical(dir))
 }
 
+/// What a copy has to tell, still untold.
+fn copy_note(dir: &FsPath) -> Option<String> {
+    COPIES.lock().expect("copies lock").get(&vault::logical(dir)).cloned()
+}
+
 /// Calcifer's own folders beside a project, a conversion's stage and the original it moves aside, are never projects.
 pub(crate) fn own_folder(dir: &FsPath) -> bool {
     dir.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".cozy-"))
@@ -837,7 +882,7 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
     let walk = Walk::new(api, project);
     let api = api.clone();
     tokio::spawn(async move {
-        let _access = match vault::admit_work(&walk.project).await {
+        let access = match vault::admit_work(&walk.project).await {
             Ok(access) => access,
             Err(error) => {
                 let mut walking = walk.project.walking.lock().expect("walking lock");
@@ -851,6 +896,7 @@ fn walk_under(api: &Arc<Api>, project: &Arc<Project>, walking: &mut bool) {
                 return;
             }
         };
+        drop(access);
         let following = following(&api, &walk.project, active);
         remember(&api);
         if let Err(error) = walk.go(&following).await {
@@ -1229,8 +1275,9 @@ pub(super) fn not_saved(why: &str) -> String {
 
 /// Makes a new project called `name`: in this person's home folder, or at `path`, a folder of this computer's, recorded in the index as
 /// used now.
-async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
+async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, retry:Option<axum::Extension<keyed::CreationRetry>>, body: Result<Bytes, BytesRejection>) -> Result<Response, Refusal> {
     let mut open: Open = parse(&body?)?;
+    let _ownership=crate::maintenance_source::begin_project_creation().map_err(Refusal)?;
     let key = headers.get("idempotency-key").and_then(|key| key.to_str().ok());
     if open.unencrypted {
         if open.passphrase.is_some() {
@@ -1248,7 +1295,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
     let engine = if open.unencrypted { None } else { Some(tokio::task::block_in_place(|| vault::preflight_creation(&api)).map_err(Refusal)?) };
     let io = |at: &FsPath, e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
     let mut moved_on = None;
-    let (dir, recovery_secret) = match &open.path {
+    let (dir, recovery_secret) = if let Some(axum::Extension(retry))=retry {(retry.0,None)} else { match &open.path {
         Some(path) if !path.is_absolute() => {
             let said = format!("{} is relative: a project is made at a folder of Calcifer's computer by its absolute path", path.display());
             return Err(Refusal(Error::new(Kind::Usage, "project_path", said)));
@@ -1282,7 +1329,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
                 }
             }
         }
-    };
+    }};
     // Named, a project nothing reads is only identified: the call that reads it opens it. One open, maybe where it was before it moved,
     // is opened here.
     let unread = match dir.join(db::DB).is_file() {
@@ -1297,6 +1344,7 @@ async fn open(State(api): State<Arc<Api>>, headers: HeaderMap, body: Result<Byte
         None => {
             let project = api.projects.open(&api, &dir).map_err(Refusal)?;
             let said = std::mem::take(&mut *project.said.lock().expect("said lock"));
+            copy_told(&project.root);
             (project.id.clone(), project.code.clone(), said)
         }
     };
@@ -1351,7 +1399,8 @@ fn made_new(api: &Api, dir: &FsPath, name: &str, starter: bool) -> Result<PathBu
 
 fn new_database(dir: &FsPath, id: &str, name: &str, written: written::Written) -> Result<(), Error> {
     let part = dir.join(format!("{}.new", db::DB));
-    db::create(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[])?;
+    let creation=keyed::claimed();
+    db::create_with_key(&part, &db::Stored { written: written.into(), ..Default::default() }, &[], &[],creation.as_ref())?;
     db::set_identity(&mut db::open(&part)?, &part, id, name, None)?;
     std::fs::rename(&part, dir.join(db::DB)).map_err(|e| Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", dir.display())))?;
     platform::durable::sync_dir(dir).map_err(|e| Error::new(Kind::Unavailable, "project_io", e.to_string()))
@@ -1381,16 +1430,47 @@ fn refuse_encrypted_parent(dir: &FsPath) -> Result<(), Error> {
     Ok(())
 }
 
-/// The project folder holding `path`: the nearest, up from it, that is one.
+/// The project folder holding a source staged by path: the nearest, up from it, that is one. A retired or incomplete project's
+/// files there are never global maintenance data either.
+pub(crate) fn source_project(path: &FsPath) -> Result<Option<PathBuf>, Error> {
+    match owning(path, true) {
+        Ok(project) => Ok(Some(project)),
+        Err(error) if error.code == "project_not_found" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The project folder a request names by a path: the nearest, up from it, that is one. A folder of old files (a
+/// `project.canvas.yaml`) or an interrupted creation's `project.db.new` is no project (cl-930).
 fn holding(path: &FsPath) -> Result<PathBuf, Error> {
-    let not_found = || {
-        let said = format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB);
-        Error::new(Kind::NotFound, "project_not_found", said)
-            .remedy("run from an existing project directory, or create one with cozy new")
-            .next("cozy new")
-    };
-    let start = platform::durable::canonical(path).map_err(|_| not_found())?;
-    (start.ancestors()).find(|dir| Folder::is_project(dir)).map(FsPath::to_owned).ok_or_else(not_found)
+    owning(path, false)
+}
+
+fn owning(path: &FsPath, source: bool) -> Result<PathBuf, Error> {
+    let unavailable = || Error::new(Kind::Unavailable, "project_ownership_unavailable", "the source's project ownership cannot be verified");
+    // A client can name a path only it sees (its own copy under a project's folder here): the nearest
+    // ancestor that exists here decides the owner, as for any path.
+    let existing = path.ancestors().find(|dir| dir.exists()).ok_or_else(unavailable)?;
+    let start = platform::durable::canonical(existing).map_err(|_| unavailable())?;
+    let metadata=std::fs::metadata(&start).map_err(|_|unavailable())?;
+    let start=if metadata.is_file() {start.parent().ok_or_else(unavailable)?.to_owned()} else if metadata.is_dir() {start} else {return Err(unavailable());};
+    for dir in start.ancestors() {
+        let logical = vault::logical(dir);
+        if logical != dir || vault::encrypted(dir) { return Ok(logical); }
+        for marker in [project_vault::KEYBAG_FILE, db::DB, "project.canvas.yaml", "project.db.new"] {
+            match std::fs::symlink_metadata(dir.join(marker)) {
+                Ok(_) if marker == project_vault::KEYBAG_FILE || marker == db::DB => return Ok(dir.to_owned()),
+                Ok(_) if source => return Err(Error::new(Kind::Validation, "project_format_unsupported", "the source belongs to a retired or incomplete project; do not treat it as global maintenance")),
+                Ok(_) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(_) => return Err(unavailable()),
+            }
+        }
+    }
+    if source { return Err(Error::new(Kind::NotFound, "project_not_found", "the verified source is outside a project").next("cozy new")); }
+    Err(Error::new(Kind::NotFound, "project_not_found", format!("{} is in no project: no {} there or in a folder above it", path.display(), db::DB))
+        .remedy("run from an existing project directory, or create one with cozy new")
+        .next("cozy new"))
 }
 
 fn now_ms() -> i64 {
@@ -1471,6 +1551,7 @@ async fn state(State(api): State<Arc<Api>>, Path(id): Path<String>, Query(asked)
     state.covered = covered;
     state.unsent = project.unsent.lock().expect("unsent lock").clone();
     state.warnings.extend(project.said.lock().expect("said lock").drain(..).map(ProjectWarning::of_project));
+    copy_told(&project.root);
     Ok(Json(state))
 }
 
@@ -1991,7 +2072,7 @@ async fn reclaim(
         before: None,
         limit: 100,
     };
-    let going = (api.calcifer.store().runs(&filter).map(|(rows, ..)| rows).unwrap_or_default().iter()).any(|row| row.state != crate::store::State::Settled);
+    let going = (api.calcifer.project_store(&project.id).and_then(|store| store.runs(&filter)).map(|(rows, ..)| rows).unwrap_or_default().iter()).any(|row| row.state != crate::store::State::Settled);
     if asked.yes && (going || *project.walking.lock().expect("walking lock")) {
         let said = "the project is rendering: reclaim once its runs land";
         return Err(Refusal(Error::new(Kind::Conflict, "project_busy", said).next("cozy status")));
@@ -2271,7 +2352,7 @@ async fn runs(
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<Asked>), Refusal> {
     let body = body?;
-    let asked: Runs = parse(&body)?;
+    let mut asked: Runs = parse(&body)?;
     api::calcifer::machine_set(&asked.on).map_err(Refusal)?;
     if asked.on.iter().any(|on| matches!(on, On::New(_))) {
         let said = "a project's runs go to machines: rent one first, then name it with --on";
@@ -2287,6 +2368,8 @@ async fn runs(
     };
     Origin::parse(&hub).map_err(Refusal)?;
     let project = api.projects.get(&api, &id)?;
+    api.calcifer.project_store(&project.id)?.admit_new_work()?;
+    asked.on=crate::private_io::check_project_placement(&project.id,&project.root,&asked.on).map_err(Refusal)?;
     let id = project.id.clone();
     // None named: where `cozy run` naming none goes (cl-894).
     let on = match asked.on.is_empty() {
@@ -2546,12 +2629,12 @@ async fn runs(
     }))
     .map_err(Refusal)?;
     if lost.get() {
-        purge::due(&api, &project.id, now_ms() + purge::window_ms());
+        purge::due(&project.id, now_ms() + purge::window_ms());
     }
     project.join(&project.folder.lock().map_err(Refusal)?);
     let queued = queued_now(&project, &ask.id);
     walk_under(&api, &project, &mut walking);
-    sync_jobs(&project, numbered(&api)).map_err(Refusal)?;
+    sync_jobs(&project, numbered(&api, &project.id)).map_err(Refusal)?;
     let board = project.jobs.board();
     drop(walking);
     let said = lines.into_inner();
@@ -2559,10 +2642,10 @@ async fn runs(
 }
 
 /// A run by its number, as its record says now.
-fn numbered(api: &Api) -> impl Fn(u64) -> Option<Run> + '_ {
+fn numbered<'a>(api: &'a Api, project: &'a str) -> impl Fn(u64) -> Option<Run> + 'a {
     move |number| {
         let calcifer = &api.calcifer;
-        calcifer.record(&calcifer.store().run_by_number(number).ok()??).ok()
+        calcifer.record(&calcifer.project_store(project).ok()?.run_by_number(number).ok()??).ok()
     }
 }
 
@@ -2627,7 +2710,7 @@ fn cancelled(api: &Arc<Api>, project: &Arc<Project>, names: &[String], takes: &[
         folder.update_lock(|lock| lock.assets.values_mut().for_each(|held| held.ended.retain(|ended| !takes.contains(&ended.id)))).map_err(Refusal)?;
     }
     project.asked.notify_one();
-    sync_jobs(project, numbered(api)).map_err(Refusal)?;
+    sync_jobs(project, numbered(api, &project.id)).map_err(Refusal)?;
     // `all` stops what its machines have ready ahead for it too; the walker drops what fewer leave unneeded from their lists.
     if all {
         api.machines.lists.set(&api.machines, &folder.dir.to_string_lossy(), HashMap::new());
@@ -2664,16 +2747,29 @@ fn stop_jobs(api: &Api, project: &Project, lock: &Lock, wanted: &dyn Fn(&str, &s
             ask.sent.extend(owed.iter().cloned());
         }
     })?;
-    let store = api.calcifer.store();
+    let store = api.calcifer.project_store(&project.id).map_err(|error|Error::new(Kind::Conflict,"project_journal",error.to_string()))?;
     let mut canceled = vec![];
     for pending in lock.pending.iter().filter(|(key, pending)| pending.run > 0 && wanted(&pending.asset, pending.job_of(key))).map(|(_, pending)| pending) {
         let Ok(Some(row)) = store.run_by_number(pending.run) else { continue };
         if row.state != crate::store::State::Settled {
+            // Inside a delete's act, `cancel` tells the machine now and keeps the request once the act lets the writer go.
             api.calcifer.cancel(&row.id).map_err(|e| Error::new(Kind::Internal, "run_cancel", e.to_string()))?;
             canceled.push(pending.run);
         }
     }
     Ok((dropped.into_iter().map(|job| job.asset).collect(), canceled))
+}
+
+/// Box `name`'s runs not yet ended, each told to stop at its machine now: what deletes it waits for the project's writer, which a
+/// run's own progress or another program may hold, and a held commit never keeps a render going.
+fn stop_at_machines(api: &Arc<Api>, project: &Project, name: &str) {
+    let (Ok(lock), Ok(store)) = (project.folder.lock(), api.calcifer.project_store(&project.id)) else { return };
+    let key = name_key(name);
+    for pending in lock.pending.values().filter(|pending| pending.run > 0 && name_key(&pending.asset) == key) {
+        if let Ok(Some(row)) = store.run_by_number(pending.run) && row.state != crate::store::State::Settled {
+            api.calcifer.stop_at_machine(&row.id);
+        }
+    }
 }
 
 /// `source` kept as a file of the project, in the lock.
@@ -2705,7 +2801,7 @@ fn held_name(source: &str) -> Result<Option<Digest>, Refusal> {
 fn import_failed(source: &str, why: String) -> Refusal {
     // A hash is no one's to read: a person dropped a file, and is told of it by its name.
     let said = if source.starts_with("sha256:") { why } else { format!("{source}: {why}") };
-    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("import a picture, video or sound in the browser opened by cozy open"))
+    Refusal(Error::new(Kind::Validation, "import_failed", said).remedy("import a picture, video or sound"))
 }
 
 fn not_held(source: &str) -> Refusal {
@@ -3175,7 +3271,7 @@ struct Followed {
 impl Walk {
     fn new(api: &Arc<Api>, project: &Arc<Project>) -> Self {
         Self {
-            host: Host::new(api),
+            host: Host::for_project(api, &project.id),
             project: project.clone(),
             began: Instant::now(),
             tally: Mutex::default(),
@@ -3300,7 +3396,8 @@ impl Walk {
         if gone.is_empty() || gone.len() < on.len() {
             return on.iter().filter(|on| !matches!(on, On::Machine(name) if api.machines.gone(name).is_some())).cloned().collect();
         }
-        let automatic = api.machines.automatic();
+        // The set a render naming none takes, under this project's storage policy. `any` alone is a rental, which never comes uninvited.
+        let automatic = crate::private_io::check_project_placement(&self.project.id, &self.project.root, &api.machines.automatic()).unwrap_or_default();
         if self.fell_back.lock().expect("fell back lock").insert(ask.to_owned()) {
             let set = automatic.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
             self.say(Told::Warning { message: format!("{}: it goes where it finishes soonest of {set}", gone.join("; ")), name: None });
@@ -3401,7 +3498,9 @@ impl Walk {
 
     /// `run` sent under `key`. A machine that answers no connect has recorded nothing, so it is asked
     /// again under that key; one its Hub says stopped or ended is refused at once.
-    async fn send_run(&self, key: &str, run: SubmitRun) -> Result<Run, Error> {
+    async fn send_run(&self, key: &str, mut run: SubmitRun) -> Result<Run, Error> {
+        run.project = Some(self.project.id.clone());
+        run.out = Some(landing(&self.project.root));
         self.again(|| self.host.submit(key, run.clone())).await
     }
 
@@ -3626,6 +3725,10 @@ impl Walk {
     /// that makes this kind, with its model choices; and the function, as its row says it. None: its package makes nothing of the kind.
     /// Local code is installed there first, as a call's is.
     async fn item(&self, key: &str, wanted: &Wanted) -> Result<Option<(v1::Ahead, String)>, Error> {
+        // A machine-wide list is no project's: what a project's job will read comes with its own run, in its own storage.
+        if crate::private_io::of_path(&self.folder().dir)?.is_some() {
+            return Ok(None);
+        }
         let Wanted { machine, hub, with, kind, made } = wanted;
         let package = self.host.package(hub, with, &self.folder().dir, std::slice::from_ref(machine)).await?;
         let Some(renderer) = package.first_making(kind) else { return Ok(None) };
@@ -4754,7 +4857,7 @@ impl Walk {
             models,
             ..Default::default()
         };
-        let submit = SubmitRun {
+        let submit = SubmitRun { project: None,
             on: placed,
             hub,
             kind: RunKind::Call,
@@ -5445,7 +5548,7 @@ impl Walk {
     /// A version that lands beside an approved one, which the box goes on showing, is unseen until it's looked at (cl-928).
     fn landed_unseen(&self, name: &str, number: u32, approve: bool) {
         if !approve {
-            unseen::landed(self.host.api().calcifer.store(), &self.project, name, number);
+            unseen::landed(&self.project, name, number);
         }
     }
 

@@ -1,6 +1,6 @@
 // What the web proofs share: real media made here, a timeout on every wait, and a drop as the browser delivers one.
 const { execFileSync } = require('child_process');
-const { readFileSync, rmSync, writeFileSync, readdirSync, readlinkSync, realpathSync } = require('fs');
+const { existsSync, readFileSync, rmSync, writeFileSync, readdirSync, readlinkSync, realpathSync } = require('fs');
 const { join } = require('path');
 const zlib = require('zlib');
 
@@ -140,8 +140,10 @@ function projectHeld(folder, pid) {
   const db = join(realpathSync(folder), 'project.db');
   if (process.platform === 'linux') {
     const fds = `/proc/${pid}/fd`;
-    let unread;
-    for (const fd of readdirSync(fds)) {
+    let unread, entries;
+    // A Calcifer holding protected projects is no dumpable process, its descriptors its own: an open project.db keeps its WAL.
+    try { entries = readdirSync(fds); } catch (error) { if (error.code === 'EACCES') return existsSync(`${db}-wal`); throw error; }
+    for (const fd of entries) {
       try {
         if (readlinkSync(join(fds, fd)) === db) return true;
       } catch (error) {
@@ -344,27 +346,36 @@ const boxLog = (page) => page.evaluate(() => ({
 /** This computer's Calcifer, where its lock ($HOLDER) says: what serves each cell's page, unless $PAGE_ORIGIN does. */
 const calcifer = () => process.env.PAGE_ORIGIN ?? `http://${JSON.parse(readFileSync(process.env.HOLDER, 'utf8')).address}`;
 
-/** The file at `path` held by Calcifer, sent as a client sends every file (`PUT /v1/files`, cl-817): its `sha256:`. */
-async function upload(token, path) {
+/** The file at `path` held in `project`'s own content store, sent as the page sends a file (`PUT /v1/project-files`): its `sha256:`. */
+async function upload(token, path, project) {
+  if (!project) throw new Error(`upload ${path}: no project to hold it`);
   const bytes = readFileSync(path);
   const digest = `sha256:${require('crypto').createHash('sha256').update(bytes).digest('hex')}`;
-  const answer = await fetch(`${calcifer()}/v1/files/${digest}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}` }, body: bytes });
-  if (!answer.ok) throw new Error(`PUT /v1/files/${digest}: ${answer.status} ${await answer.text()}`);
+  const at = `/v1/project-files/${digest}?project=${encodeURIComponent(project)}`;
+  const answer = await fetch(`${calcifer()}${at}`, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' }, body: bytes });
+  if (!answer.ok) throw new Error(`PUT ${at}: ${answer.status} ${await answer.text()}`);
   const held = await answer.json();
-  if (held.digest !== digest || held.length !== bytes.length) throw new Error(`PUT /v1/files/${digest}: the reply names another file or length`);
+  if (held.digest !== digest || held.length !== bytes.length) throw new Error(`PUT ${at}: the reply names another file or length`);
   return digest;
 }
 
-/** Sign the browser in with a fresh session code after it has launched. The code lives 15 minutes. */
-async function signIn(page, options) {
+/** Sign this tab in with a fresh session code, opening `to` (a URL on this Calcifer), else its home. The session is the tab's (sessionStorage):
+ *  a reload or another page in the tab keeps it, and another tab or context signs in again. The code lives 15 minutes. */
+async function signIn(page, to, options) {
+  if (typeof to === 'object') [to, options] = [undefined, to];
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
   const response = await fetch(`http://${holder.address}/v1/session-codes`, {
-    method: 'POST', headers: { Authorization: `Bearer ${holder.token}`, 'Content-Type': 'application/json' }, body: '{}',
+    method: 'POST', headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' }, body: '{}',
   });
   if (!response.ok) throw new Error(`session code: ${response.status} ${await response.text()}`);
   const code = await response.json();
-  const link = process.env.PAGE_ORIGIN ? code.url.replace(/^http:\/\/[^/]+/, process.env.PAGE_ORIGIN) : code.url;
-  return page.goto(link, options);
+  const link = to ? `${to.replace(/#.*$/, '')}#code=${encodeURIComponent(code.code)}`
+    : process.env.PAGE_ORIGIN ? code.url.replace(/^http:\/\/[^/]+/, process.env.PAGE_ORIGIN) : code.url;
+  const redeemed = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/session', { timeout: STEP_MS });
+  const went = await page.goto(link, options);
+  const answer = await redeemed;
+  if (!answer.ok()) throw new Error(`sign in: POST /v1/session ${answer.status()}`);
+  return went;
 }
 
 /** Chrome with its scrollbars shown, as on a person's screen, not hidden as headless has them. */
@@ -442,6 +453,7 @@ const body = fs.readFileSync(0);
 const url = new URL(process.argv[2], 'http://' + holder.address);
 const request = http.request(url, { method: process.argv[1], headers: {
   Authorization: 'Bearer ' + holder.token,
+  'cozy-project-storage': '3',
   'Content-Type': process.argv[3],
   'Content-Length': body.length,
 }}, (response) => {
@@ -467,7 +479,7 @@ const projectPath = (folder, suffix = '') => `/v1/projects/${encodeURIComponent(
 const projectAddresses = new Map();
 async function projectRecord(reference) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
-  const response = await fetch(`http://${holder.address}${projectPath(reference)}?assets=false`, { headers: { Authorization: `Bearer ${holder.token}` } });
+  const response = await fetch(`http://${holder.address}${projectPath(reference)}?assets=false`, { headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3' } });
   if (!response.ok) throw new Error(`project ${reference}: ${response.status} ${await response.text()}`);
   const project = await response.json();
   if (!/^[0-9A-HJKMNP-TV-Z]{9}$/.test(project.code ?? '')) throw new Error(`project ${project.id} has no canonical compact code`);
@@ -508,7 +520,7 @@ function integrity(folder) {
 function importFile(folder, file, name) {
   const bytes = readFileSync(file);
   const sha256 = `sha256:${require('crypto').createHash('sha256').update(bytes).digest('hex')}`;
-  apiText('PUT', `/v1/files/${sha256}`, bytes, 'application/octet-stream');
+  apiText('PUT', `/v1/project-files/${sha256}?project=${encodeURIComponent(folder)}`, bytes, 'application/octet-stream');
   const stem = require('path').parse(file).name;
   return projectJson(folder, 'POST', '/imports', { source: sha256, name: name ?? stem, exact: name !== undefined });
 }
@@ -520,7 +532,7 @@ async function projectAction(folder, action, ...args) {
   const request = async (method, suffix = '', body) => {
     const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
     const response = await fetch(`http://${holder.address}${path}${suffix}`, {
-      method, headers: { Authorization: `Bearer ${holder.token}`, 'Content-Type': 'application/json' },
+      method, headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(STEP_MS),
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -569,7 +581,7 @@ async function projectAction(folder, action, ...args) {
       if (/^(sha256:)?[0-9a-f]{6,64}$/i.test(source)) value = await request('POST', '/imports', { source, name, description, exact: true });
       else {
         const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
-        const sourceHash = await upload(holder.token, source);
+        const sourceHash = await upload(holder.token, source, folder);
         value = await request('POST', '/imports', { source: sourceHash, name: name ?? require('path').parse(source).name, exact: name !== undefined });
       }
       break;
@@ -611,7 +623,7 @@ async function newProject(folder) {
   const holder = JSON.parse(readFileSync(process.env.HOLDER, 'utf8'));
   const answer = await fetch(`http://${holder.address}/v1/projects`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${holder.token}`, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${holder.token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: folder, starter: true, unencrypted: true }),
   });
   const opened = await answer.json();

@@ -228,11 +228,11 @@ impl Machines {
         let store = self.store();
         // `local` moves only at rest, never ahead of a run (xs-195).
         let local = row.kind == MachineKind::Local;
-        if local && (sending || !store.at_rest(AT_REST.as_millis() as i64).unwrap_or(false)) {
+        if local && (sending || !self.calcifer.at_rest(AT_REST.as_millis() as i64).unwrap_or(false)) {
             return None;
         }
-        let queued = store.machine_load().ok()?.get(name).map_or(0, |(_, queued)| *queued);
-        if store.working(name).ok()? > 0 || store.updating(name).ok()? || (!sending && queued > 0) {
+        let queued = self.calcifer.machine_load().ok()?.get(name).map_or(0, |(_, queued)| *queued);
+        if self.calcifer.working(name).ok()? > 0 || store.updating(name).ok()? || (!sending && queued > 0) {
             return None;
         }
         if self.held_by_hand(name).is_some() {

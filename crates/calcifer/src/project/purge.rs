@@ -4,9 +4,9 @@
 //! anything has the project open, and a Calcifer that was stopped then does it as it starts. An Undo after that brings the box back
 //! without them, its fields, words and place, and says so (`history`).
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 
@@ -28,6 +28,9 @@ const AGAIN: Duration = Duration::from_secs(10 * 60);
 
 static WINDOW: OnceLock<Duration> = OnceLock::new();
 static WAKE: Notify = Notify::const_new();
+/// When each project's deleted boxes are next due, by id. In memory only: the global index keeps just the project reference, and a
+/// start looks at every project it knows once.
+static DUE: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
 
 /// The window this Calcifer keeps: `calcifer.undo_seconds` (tests only), else `UNDO_WINDOW`.
 pub(crate) fn set_window(seconds: Option<u32>) {
@@ -49,28 +52,51 @@ pub(crate) fn window_said() -> String {
     format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
 }
 
-/// Project `id` has deleted boxes whose files may go at `at_ms`: Calcifer looks then, and the next start does if this one doesn't.
-pub(crate) fn due(api: &Api, id: &str, at_ms: i64) {
-    if let Err(error) = api.calcifer.store().purge_due(id, at_ms) {
-        warn!("{id}: when its deleted boxes go: {error}");
-    }
+/// Project `id` has deleted boxes whose files may go at `at_ms`: Calcifer looks then.
+pub(crate) fn due(id: &str, at_ms: i64) {
+    let mut due = DUE.lock().expect("purge due lock");
+    let at = due.entry(id.to_owned()).or_insert(at_ms);
+    *at = (*at).min(at_ms);
+    drop(due);
     WAKE.notify_one();
 }
 
+/// `id` purged as it was due at `was_ms`, next due at `next` if any: a delete since, due sooner, stands.
+fn settled(id: &str, was_ms: i64, next: Option<i64>) {
+    let mut due = DUE.lock().expect("purge due lock");
+    let kept = match due.get(id).copied() {
+        Some(at) if at != was_ms => Some(next.map_or(at, |next| at.min(next))),
+        _ => next,
+    };
+    match kept {
+        Some(at) => due.insert(id.to_owned(), at),
+        None => due.remove(id),
+    };
+}
+
 /// Calcifer's purger: each project whose deleted boxes' windows have ended, purged, in the background, then asleep until the next is due.
+/// A Calcifer that was stopped catches up as it starts.
 pub(crate) fn start(api: Arc<Api>) {
+    let now = now_ms();
+    for project in api.calcifer.store().known_projects().unwrap_or_default() {
+        due(&project.id, now);
+    }
     tokio::spawn(async move {
         loop {
-            let known = api.calcifer.store().known_projects().unwrap_or_default();
             let now = now_ms();
-            for project in known.iter().filter(|project| project.purge_ms > 0 && project.purge_ms <= now) {
-                let (held, id, path) = (api.clone(), project.id.clone(), project.path.clone());
-                let next = tokio::task::spawn_blocking(move || purged(&held, &path)).await.unwrap_or(Some(now + AGAIN.as_millis() as i64));
-                if let Err(error) = api.calcifer.store().purged(&id, project.purge_ms, next.unwrap_or(0)) {
-                    warn!("{id}: when its deleted boxes go: {error}");
-                }
+            let ready: Vec<(String, i64)> = DUE.lock().expect("purge due lock").iter().filter(|(_, at)| **at <= now).map(|(id, at)| (id.clone(), *at)).collect();
+            for (id, was) in ready {
+                let next = match api.calcifer.store().known_project(&id) {
+                    Ok(Some(project)) => {
+                        let (held, path) = (api.clone(), project.path);
+                        tokio::task::spawn_blocking(move || purged(&held, &path)).await.unwrap_or(Some(now + AGAIN.as_millis() as i64))
+                    }
+                    Ok(None) => None,
+                    Err(_) => Some(now + AGAIN.as_millis() as i64),
+                };
+                settled(&id, was, next);
             }
-            let next = api.calcifer.store().known_projects().unwrap_or_default().iter().filter(|project| project.purge_ms > 0).map(|project| project.purge_ms).min();
+            let next = DUE.lock().expect("purge due lock").values().min().copied();
             let wait = next.map_or(Duration::from_secs(24 * 60 * 60), |at| Duration::from_millis((at - now_ms()).max(0) as u64));
             let _ = tokio::time::timeout(wait, WAKE.notified()).await;
         }
@@ -83,13 +109,15 @@ fn purged(api: &Api, path: &Path) -> Option<i64> {
         return None;
     }
     let again = || Some(now_ms() + AGAIN.as_millis() as i64);
+    // Held as any reader's: a lock or a move of the project waits for it, and one going now means later.
+    let Ok(_access) = vault::try_admit_root(path) else { return again() };
     let Ok(dir) = vault::resolve_path(path) else { return again() };
     let home = api.machines.hubs.home();
     let caches = [home.thumbs(), home.root().join("cache").join("clips")];
     match purge(&Folder::at(&dir), now_ms(), &caches) {
         Ok(next) => next,
         Err(error) => {
-            warn!("{}: deleted boxes' files: {}", path.display(), error.message);
+            warn!(code = %error.code, "a project's deleted boxes' files stay for now");
             again()
         }
     }
@@ -108,8 +136,14 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
     let set_aside = |key: &str| key.contains(TOMBSTONE);
     let ended = |held: &super::folder::Asset| held.files().next().is_some() && held.lapsed(now);
     let gone: Vec<String> = lock.assets.iter().filter(|(key, held)| set_aside(key) && ended(held)).map(|(key, _)| key.clone()).collect();
-    let oldest = history::oldest_ms(folder).unwrap_or(i64::MAX);
-    let forgotten = |held: &super::folder::Asset| held.files().next().is_none() && held.deleted_ms.is_some_and(|at| at < oldest);
+    // Its history read only for a box emptied, already or now: a start looks at every project. One emptied now is forgotten only once the
+    // history no longer reaches it, so its Undo still says it can't come back.
+    let emptied = |held: &super::folder::Asset| held.files().next().is_none() && held.deleted_ms.is_some();
+    let oldest = match !gone.is_empty() || lock.assets.iter().any(|(key, held)| set_aside(key) && emptied(held)) {
+        true => history::oldest_ms(folder).unwrap_or(i64::MAX),
+        false => i64::MAX,
+    };
+    let forgotten = |held: &super::folder::Asset| emptied(held) && held.deleted_ms.is_some_and(|at| at < oldest);
     let stubs = lock.assets.iter().any(|(key, held)| set_aside(key) && forgotten(held));
     if gone.is_empty() && !stubs {
         return Ok(next_due(&lock, window));
@@ -137,7 +171,7 @@ pub(super) fn purge(folder: &Folder, now: i64, caches: &[PathBuf]) -> Result<Opt
         if let Err(error) = std::fs::remove_file(path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            warn!("{}: {error}", path.display());
+            warn!(kind = %error.kind(), "a deleted box's file stays");
         }
     }
     for name in &films {

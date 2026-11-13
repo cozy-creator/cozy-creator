@@ -54,7 +54,7 @@ def main() -> int:
 
     def raw(method: str, path: str, body: bytes, key: str | None, content_type: str = "application/json") -> bytes:
         head = [f"{method} {path} HTTP/1.1", f"Host: {host}:{port}", f"Authorization: Bearer {holder['token']}", "Cozy-Client: page e2e-keyed",
-                f"Content-Type: {content_type}", f"Content-Length: {len(body)}", "Connection: close"]
+                "cozy-project-storage: 3", f"Content-Type: {content_type}", f"Content-Length: {len(body)}", "Connection: close"]
         if key:
             head.append(f"Idempotency-Key: {key}")
         return ("\r\n".join(head) + "\r\n\r\n").encode() + body
@@ -112,7 +112,8 @@ def main() -> int:
 
     picture = png()
     sha = hashlib.sha256(picture).hexdigest()
-    status, _, said = ask("PUT", f"/v1/files/sha256:{sha}", picture, None, "image/png")
+    # Into the project's own content store, as the page sends a file.
+    status, _, said = ask("PUT", f"/v1/project-files/sha256:{sha}?project={quote(str(project.absolute()), safe='')}", picture, None, "image/png")
     check("picture_held", status < 300, said[-300:].decode("utf-8", "replace"))
 
     cases: list[tuple[str, str, Json, int, str]] = [

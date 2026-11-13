@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
-import { machinesQuery, projectQuery, runsQuery } from "../../api/queries"
+import { machinesQuery, maintenanceRunsQuery, projectQuery, runsQuery } from "../../api/queries"
 import { useConnection } from "../../app/Connection"
 import { useProjectId, useTo } from "../../app/Shell"
 import type { Run } from "../../api/calcifer"
@@ -50,7 +50,7 @@ function RunRow({ run, now, box }: { run: Run; now: number; box?: string }) {
   )
 }
 
-/** The runs, live: this project's, or every project's with `?all`; by machine and status. */
+/** This project's runs, or project-independent maintenance; by machine and status. */
 export function Runs() {
   const { client, stream } = useConnection()
   const to = useTo()
@@ -59,10 +59,9 @@ export function Runs() {
   const boxes = boxesOf(project)
   const [params, setParams] = useSearchParams()
   const [limit, setLimit] = useState(PAGE)
-  const all = !id || params.has("all")
   const status = params.get("status") ?? ""
   const machine = params.get("machine") ?? ""
-  const { data, error } = useQuery(runsQuery(client, { project: all ? undefined : id, status, machine }, limit))
+  const { data, error } = useQuery(id ? runsQuery(client, id, { status, machine }, limit) : maintenanceRunsQuery(client, { status, machine }, limit))
   const { data: machines } = useQuery(machinesQuery(client))
   const runs = data?.runs ?? []
   const now = useNow(runs.some((run) => !settled(run)))
@@ -80,12 +79,6 @@ export function Runs() {
   return (
     <DrawerFrame title="Runs">
       <div className="row filters">
-        {id && (
-          <label className="check">
-            <input type="checkbox" checked={all} onChange={(event) => set("all", event.target.checked ? "" : null)} />
-            Every project
-          </label>
-        )}
         <span className="sp" />
         <select className="field" aria-label="Status" value={status} onChange={(event) => set("status", event.target.value || null)}>
           <option value="">Any status</option>
@@ -112,7 +105,7 @@ export function Runs() {
       </ul>
       {data && !runs.length && (
         <p className="muted">
-          {status || machine ? "No runs match." : all ? "No runs yet." : "No runs in this project yet."}
+          {status || machine ? "No runs match." : !id ? "No runs yet." : "No runs in this project yet."}
           {id && !status && !machine && (
             <>
               {" "}

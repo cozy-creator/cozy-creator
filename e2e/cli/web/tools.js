@@ -58,9 +58,9 @@ function replaceFile(at, text) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;

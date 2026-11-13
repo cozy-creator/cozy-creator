@@ -47,7 +47,7 @@ fn private(mut response: Response) -> Response {
 }
 
 fn valid_id(id: &str) -> bool {
-    (16..=128).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    id.starts_with("p3_") && (19..=128).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
 fn binding(named: &str, ask: &VaultAsk) -> String {
@@ -209,38 +209,18 @@ fn sanitize(event: &mut VaultEvent, operation: &Operation) {
 }
 
 fn perform(api: &Arc<Api>, id: &str, operation: &Operation, mut ask: VaultAsk) -> Result<VaultChanged, Error> {
-    let previous = api.calcifer.store().write(|transaction| {
-        let previous: Option<(String, String)> = transaction.query_row("SELECT binding, state FROM vault_operations WHERE id=?1", [id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
-        if previous.is_none() {
-            transaction.execute("INSERT INTO vault_operations (id,binding,state) VALUES (?1,?2,'accepted')", rusqlite::params![id, operation.binding])?;
-        }
-        Ok(previous)
-    }).map_err(|error| Error::new(Kind::Unavailable, "vault_operation_receipt", error.to_string()))?;
-    if let Some((binding, state)) = previous {
-        if binding != operation.binding { return Err(Error::new(Kind::Conflict, "vault_operation_conflict", "this operation ID already names another request")); }
-        let (code, message) = if state == "completed" {
-            ("vault_operation_result_expired", "the operation completed, but its private reply is no longer held; check the vault status and replace the recovery secret if needed")
-        } else {
-            ("vault_operation_interrupted", "Calcifer stopped before this operation's result was received; check the vault status before starting a new operation")
-        };
-        return Err(Error::new(Kind::Conflict, code, message).next("cozy vault status"));
-    }
     let root = super::vault::location(api, &operation.named)?;
     *operation.root.lock().expect("vault operation root") = Some(root.clone());
-    let mut progress = Progress::new(operation.events.clone());
+    let mut progress = Progress::with_operation(operation.events.clone(), id.to_owned(), operation.binding.clone());
     let result = super::vault::operate(api, &root, &mut ask, &mut progress);
     *operation.readable.lock().expect("vault result authority") = progress.readable;
-    let state = if result.is_ok() { "completed" } else { "failed" };
-    api.calcifer.store().write(|transaction| {
-        transaction.execute("UPDATE vault_operations SET state=?2 WHERE id=?1", rusqlite::params![id, state])?;
-        Ok(())
-    }).map_err(|error| Error::new(Kind::Unavailable, "vault_operation_receipt", format!("the operation ended but its receipt could not be saved: {error}; check the vault status before retrying")))?;
     result
 }
 
 /// Progress stays local to the worker and sends a bounded latest snapshot. It
 /// never blocks filesystem work because a terminal or browser is reading slowly.
 pub(super) struct Progress {
+    operation: Option<(String, String)>,
     events: Option<watch::Sender<VaultEvent>>,
     phase: &'static str,
     files: u64,
@@ -253,8 +233,34 @@ pub(super) struct Progress {
 }
 
 impl Progress {
+    #[cfg(test)]
     fn new(events: watch::Sender<VaultEvent>) -> Self { Self { events: Some(events), ..Self::quiet() } }
-    pub(super) fn quiet() -> Self { Self { events: None, phase: "preparing", files: 0, bytes: 0, files_total: 0, bytes_total: 0, last: Instant::now(), skipped: vec![], readable: None } }
+    fn with_operation(events: watch::Sender<VaultEvent>, id: String, binding: String) -> Self { Self { operation: Some((id, binding)), events: Some(events), ..Self::quiet() } }
+    pub(super) fn quiet() -> Self { Self { operation: None, events: None, phase: "preparing", files: 0, bytes: 0, files_total: 0, bytes_total: 0, last: Instant::now(), skipped: vec![], readable: None } }
+    pub(super) fn admit_receipt(&self, store: &super::journal::SealingStore<'_>) -> Result<(), Error> {
+        let Some((id, binding)) = &self.operation else { return Ok(()) };
+        store.write(|tx| {
+            let previous: Option<(String, String)> = tx.query_row("SELECT binding,state FROM project_vault_operations WHERE id=?1", [id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+            if let Some((known, state)) = previous {
+                let code = if &known != binding { "vault_operation_conflict" } else if state == "completed" { "vault_operation_result_expired" } else { "vault_operation_interrupted" };
+                return Err(crate::store::StoreError::Protected(code.into()));
+            }
+            tx.execute("INSERT INTO project_vault_operations(id,binding,state) VALUES(?1,?2,'accepted')", rusqlite::params![id,binding])?;
+            Ok(())
+        }).map_err(|error| match error {
+            crate::store::StoreError::Protected(code) if code.starts_with("vault_operation_") => Error::new(Kind::Conflict, code, "this operation was already admitted; inspect the vault status before starting another mutation").next("cozy vault status"),
+            _ => Error::new(Kind::Unavailable, "vault_operation_receipt", "the project's operation receipt is unavailable"),
+        })
+    }
+    pub(super) fn finish_receipt(&self, store: &super::journal::SealingStore<'_>, state: &str) -> Result<(), Error> {
+        let Some((id, binding)) = &self.operation else { return Ok(()) };
+        if !matches!(state, "completed" | "failed") { return Err(Error::new(Kind::Internal, "vault_operation_state", "invalid project receipt state")); }
+        store.write(|tx| {
+            let changed = tx.execute("UPDATE project_vault_operations SET state=?3 WHERE id=?1 AND binding=?2", rusqlite::params![id,binding,state])?;
+            if changed != 1 { return Err(crate::store::StoreError::Protected("vault_operation_receipt_missing".into())); }
+            Ok(())
+        }).map_err(|_| Error::new(Kind::Unavailable, "vault_operation_receipt", "the project operation receipt could not be saved"))
+    }
     pub(super) fn begin_inventory(&mut self) { self.files_total = 0; self.bytes_total = 0; }
     pub(super) fn plan_file(&mut self, bytes: u64) { self.files_total += 1; self.bytes_total = self.bytes_total.saturating_add(bytes); }
     pub(super) fn inventory_done(&mut self) { self.report(true); }

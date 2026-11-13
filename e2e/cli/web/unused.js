@@ -53,9 +53,9 @@ const cozy = (folder, words) => {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
   const post = async (path, body) => {
@@ -88,10 +88,10 @@ const cozy = (folder, words) => {
   seen.tools = { moss: moss.id, qwen: qwen.id, h3: h3.id };
 
   for (const [name, file, x] of [['pic', 'pic.png', 100], ['clip', 'clip.mp4', 460], ['hum', 'hum.wav', 820]]) {
-    await post(`${at}/imports`, { source: await upload(held?.token, join(files, file)), name, exact: true, at: { x, y: 80 } });
+    await post(`${at}/imports`, { source: await upload(held?.token, join(files, file), id), name, exact: true, at: { x, y: 80 } });
   }
   await post(`${at}/assets`, { tool: qwen.id, kind: 'image', name: 'photo', exact: true, fields: { instructions: 'a harbour' }, at: { x: 1180, y: 80 } });
-  await post(`${at}/assets/photo/versions`, { source: await upload(held?.token, join(files, 'photo.png')) });
+  await post(`${at}/assets/photo/versions`, { source: await upload(held?.token, join(files, 'photo.png'), id) });
   const written = {
     moss: { tool: moss.id, kind: 'image', fields: { instructions: '<pic> is in a pose, beside <clip>, as in <photo.1>' }, x: 100 },
     qwen: { tool: qwen.id, kind: 'image', fields: { instructions: '<pic> by the sea as in <photo.1>, with <clip:0-5> and <hum>' }, x: 560 },
@@ -167,11 +167,11 @@ const cozy = (folder, words) => {
 
   // A run of a stand-in picture tool: the video is its name in the prompt, and `cozy run watch` says it once, as a note.
   // Each run is read back from Calcifer once it ends, as the page reads it.
-  const newest = async () => Math.max(0, ...((await api('/v1/runs?limit=10')).body?.runs ?? []).map((run) => run.number ?? 0));
+  const newest = async () => Math.max(0, ...((await api(`${at}/runs?limit=10`)).body?.runs ?? []).map((run) => run.number ?? 0));
   const ended = async (target, after) => {
     const ends = (run) => run && ['completed', 'failed', 'canceled'].includes(run.status);
-    const found = await until(`a run of ${target} ended`, async () => (await api('/v1/runs?limit=10')).body?.runs?.find((run) => run.target?.includes(target) && run.number > after), ends, STEP_MS * 3).catch(() => null);
-    return found ? (await api(`/v1/runs/${encodeURIComponent(found.id)}`)).body : null;
+    const found = await until(`a run of ${target} ended`, async () => (await api(`${at}/runs?limit=10`)).body?.runs?.find((run) => run.target?.includes(target) && run.number > after), ends, STEP_MS * 3).catch(() => null);
+    return found ? (await api(`${at}/runs/${encodeURIComponent(found.id)}`)).body : null;
   };
   const still = join(__dirname, '..', 'project', 'tool.py') + '/still';
   const before = await newest();

@@ -46,8 +46,8 @@ const PICS_WORK = /drawing|\d+ \/ \d+|step/i;
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
-  const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}` } })).json();
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
+  const api = async (path) => (await fetch(base + path, { headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } })).json();
 
   await page.goto(`${base}/projects`);
   await page.fill('input[aria-label="New project\'s name"]', `web-prepares-${Date.now()}`);
@@ -124,7 +124,7 @@ const PICS_WORK = /drawing|\d+ \/ \d+|step/i;
   seen.failed = (made?.assets ?? []).filter((held) => ['pic', 'clip'].includes(held.name) && held.failure).map((held) => `${held.name}: ${held.failure.message}`);
   // The video's own run, prepared ahead: from sent to started, it waits for nothing of its own.
   const clipRun = samples.at(-1).clip_making[0];
-  const run = clipRun === undefined ? null : await api(`/v1/runs/${clipRun}`);
+  const run = clipRun === undefined ? null : await api(`/v1/projects/${id}/runs/${clipRun}`);
   if (run?.started_at_ms) seen.timeline.clip_sent_to_started_s = Math.round((run.started_at_ms - run.created_at_ms) / 100) / 10;
   check('rendered', made !== null && seen.failed.length === 0, seen.failed);
 

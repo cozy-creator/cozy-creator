@@ -48,9 +48,9 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
 
@@ -73,8 +73,8 @@ async function died(why) {
   const fixture = join(folder, 'when.py');
   writeFileSync(fixture, `${readFileSync(FIXTURE, 'utf8')}\n# ${id}\n`);
   const cozy = (...args) => spawnSync(COZY, args, { encoding: 'utf8', cwd: folder, timeout: FIRST_RUN_MS });
-  const runs = async () => ((await api(`/v1/runs?project=${id}&limit=100`)).body?.runs ?? []).filter((run) => run.target?.endsWith('/image') && run.status === 'completed').sort((a, b) => b.number - a.number);
-  const given = async (number) => (await api(`/v1/runs/${number}`)).body?.result?.given;
+  const runs = async () => ((await api(`${at}/runs?limit=100`)).body?.runs ?? []).filter((run) => run.target?.endsWith('/image') && run.status === 'completed').sort((a, b) => b.number - a.number);
+  const given = async (number) => (await api(`${at}/runs/${number}`)).body?.result?.given;
 
   // `cozy run`: each value given where it doesn't apply is said and goes as its default; given where it does, as written.
   const off = cozy('--json', 'run', `${fixture}/image`, 'instructions=a lighthouse', 'prompt_upsampling=false', 'creativity=wild', 'temporal_overlap=4', '--on', 'local');

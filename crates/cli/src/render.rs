@@ -470,7 +470,7 @@ impl<'a> Follow<'a> {
         let version = held.as_ref().and_then(|held| held.versions.iter().find(|version| version.number == number));
         let seconds = job.seconds.or_else(|| main.as_ref().and_then(|main| main.duration_ms).filter(|ms| *ms > 0).map(|ms| ms as f64 / 1000.0));
         let seams = match (job.run, main.as_ref().is_some_and(|main| main.field == "video")) {
-            (Some(run), true) => project.calcifer.run(&run.to_string()).await.ok().and_then(|run| seams(run.result.as_ref())),
+            (Some(run), true) => project.calcifer.run(&crate::calcifer_client::RunAddress { project: Some(project.id.clone()), run: run.to_string() }).await.ok().and_then(|run| seams(run.result.as_ref())),
             _ => None,
         };
         let took = job.took_ms.or_else(|| job.started_at_ms.map(|at| (now_ms() - at).max(0) as u64));

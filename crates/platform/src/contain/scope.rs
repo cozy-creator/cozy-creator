@@ -515,6 +515,47 @@ impl Scope {
         }
     }
 
+    /// Count actual surviving members, including live and previously stuck scopes. Unlike
+    /// `sweep`, this is a post-retirement observation, not a count of signals sent.
+    /// Best-effort Cozy lifecycle ownership, not an OS-wide process census: unreadable
+    /// unrelated peers are omitted. Observed owned members and exact known stuck births
+    /// still prevent retirement.
+    pub fn namespace_processes(namespace: &str) -> crate::Result<usize> {
+        if namespace.is_empty() || namespace.contains('/') {
+            return Err(io::Error::other("invalid executor namespace").into());
+        }
+        let rows = census()?;
+        let mut found: BTreeSet<u32> = members(&rows, |token| namespace_token(token, namespace))
+            .filter(|row| row.alive)
+            .map(|row| row.pid)
+            .collect();
+        let prefix = format!("cozy-executor-{namespace}-");
+        for row in rows.iter().filter(|row| row.alive) {
+            match fs::read_to_string(format!("/proc/{}/cgroup", row.pid)) {
+                Ok(text) => {
+                    if text.lines().any(|line| {
+                        line.split_once("::").is_some_and(|(_, path)| {
+                            path.split('/').any(|part| {
+                                part.strip_prefix(&prefix)
+                                    .is_some_and(|id| !id.is_empty() && !id.contains('-'))
+                            })
+                        })
+                    }) {
+                        found.insert(row.pid);
+                    }
+                }
+                Err(error) if gone(&error) => (),
+                Err(error) if found.contains(&row.pid) => return Err(error.into()),
+                Err(_) => (), // No observed ownership: another same-UID program may be nondumpable.
+            }
+        }
+        let stuck:Vec<Birth>=STUCK.lock().unwrap().iter().map(|(birth,_)|birth.clone()).collect();
+        for birth in stuck {
+            if !birth.ended()? { found.insert(birth.pid); }
+        }
+        Ok(found.len())
+    }
+
     /// At machine start every scope of this namespace belongs to an earlier run: kill, wait
     /// for and remove each. Returns how many processes they still held.
     pub fn sweep(namespace: &str) -> crate::Result<usize> {
@@ -775,6 +816,13 @@ fn members(rows: &[Row], owned: impl Fn(&str) -> bool) -> impl Iterator<Item = &
         }
     }
     rows.iter().filter(move |row| pids.contains(&row.pid))
+}
+
+fn namespace_token(token: &str, namespace: &str) -> bool {
+    token
+        .strip_prefix(namespace)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|id| !id.is_empty() && !id.contains('-'))
 }
 
 /// A token of this namespace that no live scope of this process holds.

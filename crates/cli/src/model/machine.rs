@@ -73,7 +73,7 @@ pub(crate) async fn download(ctx: &Context, args: Download) -> Result<ExitCode, 
 
 pub(super) async fn download_to(ctx: &Context, mut ask: ModelDownload, on: Option<api::calcifer::On>) -> Result<ExitCode, Error> {
     crate::send::held(ctx, &mut ask.model, &mut ask.name, false).await?;
-    let run = crate::run::job(ctx, job::MODEL_DOWNLOAD, &ask, on, None).await?;
+    let run = crate::run::job(ctx, job::MODEL_DOWNLOAD, &ask, on, None, None).await?;
     let run = crate::run::follow(ctx, run).await?;
     made(ctx, &run);
     Ok(crate::run::exit_code(&run))
@@ -142,7 +142,7 @@ pub(crate) async fn upload(ctx: &Context, args: Upload) -> Result<ExitCode, Erro
         ask.add.insert(at.to_owned(), held);
     }
     crate::send::held(ctx, &mut ask.source, &mut ask.name, true).await?;
-    let run = crate::run::job(ctx, job::MODEL_UPLOAD, &ask, on, None).await?;
+    let run = crate::run::job(ctx, job::MODEL_UPLOAD, &ask, on, None, None).await?;
     // A Hub checkpoint is recorded there by Calcifer: no machine ran.
     if run.kind == RunKind::Here {
         recorded(ctx, &crate::run::done(ctx, run).await?);

@@ -37,8 +37,29 @@ parse "$@"
 . "$(dirname "$0")/render.sh"
 . "$(dirname "$0")/source.sh"
 
+# This proof owns its foreground Calcifer/private observation pipe. Keep it out
+# of the ordinary raw-log/body collectors and never emit its private CLI data.
+if [ "$SHARD" = containment ] || [ "$SHARD" = containment-web ]; then
+  user_services
+  step install; install_cozy
+  step candidates; candidates
+  systemctl --user stop cozy-calcifer.service
+  mkdir -p "$OUT/containment"
+  python3 - "$HOME/.cozy/bin/cozy" "$OUT/containment/ready.json" "$SHARD" "${CAND_RT:-}" "${CAND_TFS:-}" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+binary, ready = map(Path, sys.argv[1:3])
+ready.write_text(json.dumps({"ready": True, "native_execution": sys.argv[3] == "containment", "remote_cpu": sys.argv[3] == "containment-web", "runtime": sys.argv[4], "tensorfs": sys.argv[5], "development_web": True, "sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest()}))
+PY
+  exec xvfb-run -a uv run --no-project "$here/containment/run.py" \
+    --ready-file "$OUT/containment/ready.json" --out "$OUT/containment"
+fi
+
 start() {
-step install; install_cozy; run_project "$OUT/project" || fail "project initialization failed"
+step install; install_cozy
+# The newest release makes its project before the candidate's first start: Calcifer's store is one way (released.sh).
+[[ $parts != *released_project* ]] || { user_services; released_made; }
+run_project "$OUT/project" || fail "project initialization failed"
 user_services
 step status; fixture_calcifer | tee "$OUT/status.json"
 [ -z "$LOCAL" ] || { step "the local machine"; machine_ready; }
@@ -46,6 +67,19 @@ step status; fixture_calcifer | tee "$OUT/status.json"
 step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
+case $SHARD in projectvault | plan | web-core) calcifer_diagnostics ;; esac
+}
+
+# A vault failure, or a web-core cell's, names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings
+# in calcifer/diagnostics.log, which the job collects with the other logs.
+calcifer_diagnostics() {
+  local config=$HOME/.cozy/config.toml pid
+  awk '/^diagnostics *=/ { next } { print } /^\[calcifer\]/ { print "diagnostics = true"; put = 1 } END { if (!put) printf "\n[calcifer]\ndiagnostics = true\n" }' "$config" > "$config.next" && mv "$config.next" "$config"
+  pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
+  kill -TERM "$pid" 2> /dev/null || true
+  while kill -0 "$pid" 2> /dev/null; do sleep 0.2; done
+  cozy --json machine ls > /dev/null || fail "Calcifer did not start again with its diagnostics"
+  [ -f "$HOME/.cozy/calcifer/diagnostics.log" ] || fail "Calcifer kept no diagnostics log"
 }
 
 # The candidate set end to end: a request through TensorD, the Runtime and TensorFS to the reply, no model.
@@ -108,7 +142,8 @@ for form in script folder; do
   fi
 done
 # accelerator=True is the default's GPU-when-there-is-one: an interface writes only `false`.
-kept=$(ls ~/.cozy/packages/local/words/*.json 2> /dev/null | head -1)
+# A project's runs keep their interfaces inside it (.vault-calcifer); a call outside any project keeps them in the home.
+kept=$(ls "$RUN_PROJECT"/.vault-calcifer/packages/local/words/*.json ~/.cozy/packages/local/words/*.json 2> /dev/null | head -1 || true)
 [ -n "$kept" ] && ! grep -q '"accelerator":false' "$kept" || check "the script's interface is not accelerator=True (${kept:-none kept})"
 }
 
@@ -213,20 +248,43 @@ step "Calcifer reaps the machine it started"; machine_reaped
 step "a restarted Calcifer adopts the machine"; calcifer_restart_adopts
 }
 
+# bounded_cell <seconds> <name> <target> <inputs...>: `cell`, in $here, still going after <seconds> is said (its events, its
+# record, its follower) and ended: a hang after a Calcifer restart fails the step, never the suite.
+bounded_cell() {
+  local limit=$1 name=$2 job pid n began=$SECONDS; shift 2
+  (cd "$here" && cell "$name" "$@") & job=$!
+  while kill -0 "$job" 2> /dev/null && [ $((SECONDS - began)) -lt "$limit" ]; do sleep 1; done
+  if kill -0 "$job" 2> /dev/null; then
+    pid=$(cat "$OUT/$name.pid" 2> /dev/null) n=$(cat "$OUT/$name.number" 2> /dev/null)
+    echo "$name: run ${n:-none}'s cell still going after $limit s; its follower ${pid:-?} $([ -n "$pid" ] && kill -0 "$pid" 2> /dev/null && echo runs || echo exited)"
+    echo "  events: $(grep '^{' "$OUT/$name.ndjson" 2> /dev/null | jq -r '.type' 2> /dev/null | uniq -c | tr -s ' \n' ' ')"
+    echo "  last: $(grep '^{' "$OUT/$name.ndjson" 2> /dev/null | tail -n 3 | jq -c '{type, status: .run.status, machine_state: .run.machine_state, reason}' 2> /dev/null | tr '\n' ' ')"
+    echo "  stderr: $(tail -n 3 "$OUT/$name.err" 2> /dev/null | cut -c1-300 | tr '\n' ' ')"
+    echo "  record: $(cozy --json run watch "${n:-0}" --once 2> /dev/null | jq -c '{status, machine_state, waiting, reason: .reason.code}' 2> /dev/null)"
+    [ -z "$pid" ] || echo "  process: $(grep -E '^(State|voluntary_ctxt|nonvoluntary_ctxt)' "/proc/$pid/status" 2> /dev/null | tr -s '\t\n' ' ') wchan $(cat "/proc/$pid/wchan" 2> /dev/null) cpu $(ps -o time= -p "$pid" 2> /dev/null)"
+    [ -z "$pid" ] || kill "$pid" 2> /dev/null || true
+    kill "$job" 2> /dev/null || true
+    wait "$job" 2> /dev/null || true
+    check "$name: run ${n:-none}'s cell did not end in $limit s"
+    return 1
+  fi
+  wait "$job"
+}
+
 # After the other parts, as these stop Calcifer, and not straight after calcifer_restart_adopts: systemd starts a
 # unit at most five times in 10 s (run 40132725041: doctor's restart was refused).
 calcifer_faults() {
 if [ -n "$LOCAL" ]; then
   step "Calcifer stopped under the machine it started"
   if calcifer_orphaned; then
-    (cd "$here" && cell after-orphan ./weightless/reverse "text=orphan$RANDOM") || check "no run went after cozy doctor recovered Calcifer"
+    bounded_cell 300 after-orphan ./weightless/reverse "text=orphan$RANDOM" || check "no run went after cozy doctor recovered Calcifer"
   fi
 fi
 
 step "a stuck Calcifer"
 if calcifer_stuck; then
   if [ -n "$LOCAL" ]; then
-    (cd "$here" && cell after-stuck ./weightless/reverse "text=after$RANDOM") || check "no run went after cozy doctor restarted Calcifer"
+    bounded_cell 300 after-stuck ./weightless/reverse "text=after$RANDOM" || check "no run went after cozy doctor restarted Calcifer"
   else
     fixture_calcifer | jq -e '.calcifer.running' > /dev/null || check "Calcifer does not answer after cozy doctor restarted it"
   fi
@@ -245,7 +303,8 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC -o "$OUT/slow-record.so" "$h
 (cd "$here" && in_project "$RUN_PROJECT" --json run "$here/weightless/wait" seconds:=45 --on local > "$OUT/watched-run.ndjson" 2> "$OUT/watched-run.err") & submitter=$!
 for _ in $(seq 240); do n=$(grep -m1 -oE '"number": *[0-9]+' "$OUT/watched-run.ndjson" | grep -oE '[0-9]+$') && break; sleep 0.5; done
 [ -n "$n" ] || { check "watch restart: the run never began: $(tail -c 300 "$OUT/watched-run.err")"; wait "$submitter" || true; return; }
-timeout 600 cozy --json run watch "$n" > "$OUT/watch.ndjson" 2> "$OUT/watch.err" & watcher=$!
+# Its number names a run of its project: watched from there.
+(cd "$RUN_PROJECT" && timeout 600 cozy --json run watch "$n") > "$OUT/watch.ndjson" 2> "$OUT/watch.err" & watcher=$!
 for _ in $(seq 60); do [ -s "$OUT/watch.ndjson" ] && break; sleep 0.5; done
 for slow in yes no; do
   pid=$(jq -r .pid "$holder")
@@ -258,12 +317,13 @@ for slow in yes no; do
   for _ in $(seq 120); do [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] && [ -s "$holder" ] && break; sleep 0.5; done
   [ "$(jq -r .pid "$holder" 2> /dev/null)" != "$pid" ] || check "watch restart: no new Calcifer's record 60 s after a restart"
 done
-slowed=$(grep -a 'started step="record"' "$HOME/.cozy/calcifer/calcifer.log" | tail -2 | head -1 | grep -oE 'ms=[0-9]+' | cut -d= -f2)
+# Calcifer's start steps are in its closed health log.
+slowed=$(grep -a 'started step="record"' "$HOME/.cozy/calcifer/health.log" 2> /dev/null | tail -2 | head -1 | grep -oE 'ms=[0-9]+' | cut -d= -f2) || slowed=
 [ "${slowed:-0}" -ge 4000 ] || check "watch restart: the first restart's record wasn't slowed (record step ${slowed:-?} ms): the cell proves nothing"
 wait "$watcher" || code=$?
 [ "$code" = 0 ] && J -s 'any(.[]; .type == "run.completed" and .run.status == "completed")' "$OUT/watch.ndjson" \
   || check "watch restart: the watch of run $n didn't reach its end (exit $code): $(tail -c 300 "$OUT/watch.ndjson") $(tail -c 300 "$OUT/watch.err")"
-cozy --json run watch "$n" --once | J '.status == "completed"' || check "watch restart: run $n did not complete"
+in_project "$RUN_PROJECT" --json run watch "$n" --once | J '.status == "completed"' || check "watch restart: run $n did not complete"
 wait "$submitter" || true
 }
 
@@ -290,7 +350,7 @@ systemctl --user show -p Result --value cozy-calcifer > "$OUT/burst-result.txt" 
 echo "after the burst: $(cat "$OUT/burst-result.txt")"
 cozy --json machine ls > "$OUT/burst-machines.json" 2> "$OUT/burst-machines.err" && fixture_calcifer | J '.calcifer.running == true' \
   || check "after a burst of restarts ($(cat "$OUT/burst-result.txt")), the next command did not start Calcifer: $(tail -c 300 "$OUT/burst-machines.err")"
-(cd "$here" && cell after-burst ./weightless/reverse "text=burst$RANDOM") || check "no run went after the burst of restarts"
+bounded_cell 300 after-burst ./weightless/reverse "text=burst$RANDOM" || check "no run went after the burst of restarts"
 }
 
 update() { step update; update_to_newest; }
@@ -332,7 +392,8 @@ for at in 1 2 1; do
     grep -q "\"words\": *$at\b" "$OUT/folder-$turn.ndjson" || check "one package name at two paths: path $at ran another's code"
   fi
 done
-cozy --json package uninstall local/one-name --on local > /dev/null || check "package uninstall local/one-name failed"
+in_project "$RUN_PROJECT" --json package uninstall local/one-name --on local > "$OUT/uninstall-one-name.json" 2>&1 \
+  || check "package uninstall local/one-name failed: $(tail -c 300 "$OUT/uninstall-one-name.json")"
 for at in 1 2; do
   mkdir -p "$OUT/paths/$at/scripts"
   sed "s/words=len(payload.text.split())/words=$at/" "$words" > "$OUT/paths/$at/scripts/one_script.py"
@@ -343,7 +404,13 @@ for at in 1 2 1; do
     grep -q "\"words\": *$at\b" "$OUT/script-$turn.ndjson" || check "one script name at two paths: path $at ran another's code"
   fi
 done
-cozy --json package uninstall local/one_script --on local > /dev/null || check "package uninstall local/one_script failed"
+in_project "$RUN_PROJECT" --json package uninstall local/one_script --on local > "$OUT/uninstall-one-script.json" 2>&1 \
+  || check "package uninstall local/one_script failed: $(tail -c 300 "$OUT/uninstall-one-script.json")"
+# Outside any project, a local package is refused typed, naming where to go.
+mkdir -p "$OUT/outside-projects"
+code=0; (cd "$OUT/outside-projects" && cozy --json package uninstall local/one_script --on local) > "$OUT/uninstall-outside.json" 2> "$OUT/uninstall-outside.err" || code=$?
+[ "$code" != 0 ] && J '.error.code == "project_required" and (.error.next | index("cozy new"))' "$OUT/uninstall-outside.json" \
+  || check "package uninstall outside a project: exit $code, not project_required naming cozy new: $(tail -c 300 "$OUT/uninstall-outside.json")"
 }
 
 # Balanced by step times (runs 40128128311, 40132063815, 40132725041). A shard keeps its parts' order; whole, the suite runs every part.
@@ -420,12 +487,12 @@ case $SHARD in
     second_executor
     lifetime
     kept_preparing
-    update
     released_project
+    update
     remove
   " ;;
-  # A project the newest release made, read by the candidate (cl-930).
-  released) parts="update released_project logs" ;;
+  # A project the newest release made, read by the candidate (cl-930); then the release refuses the candidate's store.
+  released) parts="released_project update logs" ;;
   local-wake) parts="local_wake_update logs" ;;
   # A machine's install, download and run lines, three jobs queued on it cold (cl-905): by dispatch, as BiRefNet runs minutes.
   lines) parts="machine_lines logs" ;;

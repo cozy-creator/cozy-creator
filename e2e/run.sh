@@ -33,7 +33,7 @@ import urllib.request
 holder = json.loads((Path.home() / '.cozy/calcifer/calcifer.lock.holder').read_text())
 body = json.dumps({'path': str(Path.cwd()), 'unencrypted': True}).encode()
 request = urllib.request.Request('http://' + holder['address'] + '/v1/projects', data=body, method='POST',
-    headers={'Authorization': 'Bearer ' + holder['token'], 'Content-Type': 'application/json'})
+    headers={'Authorization': 'Bearer ' + holder['token'], 'cozy-project-storage': '3', 'Content-Type': 'application/json'})
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 with opener.open(request, timeout=30) as response:
     if not json.load(response).get('id'):
@@ -84,7 +84,7 @@ run_submit1() {
 
 run_start() {
   local dir=$1 name=$2 n='' k=1 limit=${RUN_NUMBER_S:-1860} start=$SECONDS at; shift 2
-  rm -f "$dir/$name".{ndjson,err,json,number,pid}
+  rm -f "$dir/$name".{ndjson,err,json,number,pid,at}
   (cd "${RUN_PROJECT:-$PWD}" && "$@") > "$dir/$name.ndjson" 2> "$dir/$name.err" &
   local pid=$!
   echo "$pid" > "$dir/$name.pid"
@@ -108,10 +108,13 @@ run_start() {
 
 # API warming stays available to fixtures after the public CLI option is removed.
 run_warm_submit() {
-  local dir=$1 name=$2 target=$3 stage=(); shift 3
+  local dir=$1 name=$2 target=$3 stage=() n; shift 3
   [[ $target != .* ]] || target="$PWD/$target"
   [ -z "${RUN_CODE_STAGE:-}" ] || stage=(--stage-code "$RUN_CODE_STAGE")
-  run_start "$dir" "$name" python3 "$RUN_WARM_API" --cozy "${COZY:-$RUN_CLI}" "${stage[@]}" "$target" "$@"
+  n=$(run_start "$dir" "$name" python3 "$RUN_WARM_API" --cozy "${COZY:-$RUN_CLI}" "${stage[@]}" "$target" "$@")
+  # A warm names no project: its run is read outside any (run_show).
+  echo "$HOME" > "$dir/$name.at"
+  [ -z "$n" ] || echo "$n"
 }
 
 run_warm_cell() {
@@ -148,10 +151,12 @@ run_wait() {
 }
 
 # run_show <dir> <name> <number>: the run's record now, into <name>.json (kept as it was when the read fails). `run
-# show` exits non-zero for a run that failed or was canceled: the record is what it printed.
-
+# show` exits non-zero for a run that failed or was canceled: the record is what it printed. A number names a run of
+# the project it was asked in: read where run_start asked it, or where <name>.at says.
 run_show() {
-  "$RUN_CLI" --json --full run watch "$3" --once > "$1/$2.json.new" 2> /dev/null || true
+  local at
+  at=$(cat "$1/$2.at" 2> /dev/null || echo "${RUN_PROJECT:-$PWD}")
+  (cd "$at" && "$RUN_CLI" --json --full run watch "$3" --once) > "$1/$2.json.new" 2> /dev/null || true
   if jq -e .status "$1/$2.json.new" > /dev/null 2>&1; then
     mv "$1/$2.json.new" "$1/$2.json"
   else
@@ -182,11 +187,12 @@ run_get() { jq -r "($3) // empty" "$1/$2.json" 2> /dev/null || true; }
 # run_outputs <dir> <name>: each landed output of the run, downloaded into <dir>/<name>.out by its digest, in its record's
 # order, one path a line.
 run_outputs() {
-  local n name line path
+  local n name line path out
   n=$(cat "$1/$2.number" 2> /dev/null || true)
   [ -n "$n" ] && [ "$n" != none ] || return 0
   # JSON's paths belong to Calcifer and are not sent; the CLI says each downloaded path on stderr.
-  "$RUN_CLI" run watch "$n" --once -o "$1/$2.out" > /dev/null 2> "$1/$2.export.err" || true
+  out=$(cd "$1" && pwd)/$2.out
+  (cd "${RUN_PROJECT:-$PWD}" && "$RUN_CLI" run watch "$n" --once -o "$out") > /dev/null 2> "$1/$2.export.err" || true
   while IFS= read -r line; do
     while IFS= read -r name; do
       case "$line" in

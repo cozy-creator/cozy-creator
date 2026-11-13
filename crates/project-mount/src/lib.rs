@@ -477,6 +477,7 @@ impl Provider {
             #[cfg(not(target_os = "macos"))]
             identity: None,
             helpers: Vec::new(),
+            retired: false,
             #[cfg(target_os = "macos")]
             native_lease: None,
         };
@@ -690,6 +691,7 @@ pub struct Mounted {
     #[cfg(not(target_os = "macos"))]
     identity: Option<String>,
     helpers: Vec<platform::process::Exact>,
+    retired: bool,
     #[cfg(target_os = "macos")]
     native_lease: Option<apfs::Lease>,
 }
@@ -706,6 +708,7 @@ impl Mounted {
         Ok(self.owner.try_clone()?)
     }
     pub fn is_mounted(&self) -> Result<bool> {
+        if self.retired { return Ok(false); }
         if self.owner.wait_for(Duration::ZERO)? {
             return Ok(false);
         }
@@ -734,6 +737,7 @@ impl Mounted {
     /// Reconciles an unexpectedly exited supervisor before the caller checks mount status.
     /// Native disk-image keys live in the kernel, so an exited helper alone is not a lock.
     pub fn reconcile(&mut self) -> Result<()> {
+        if self.retired { return Ok(()); }
         if self.owner.wait_for(Duration::ZERO)? {
             let _ = self
                 .child
@@ -761,6 +765,7 @@ impl Mounted {
                 }
             }
             self.guard.seal()?;
+            self.retired = true;
         }
         Ok(())
     }
@@ -799,6 +804,7 @@ impl Mounted {
 
 impl Drop for Mounted {
     fn drop(&mut self) {
+        if self.retired { return; }
         self.input.take();
         // A failed startup cannot return while its delayed helper could still expose a view.
         // EOF makes the supervisor stop its owned provider before this process releases it.
@@ -866,6 +872,8 @@ pub fn run_supervisor() -> Option<i32> {
 }
 
 fn supervise(arguments: &[OsString]) -> Result<()> {
+    platform::private_exec::disable_project_parent_dumps()
+        .map_err(|_| Error::Invalid("cannot protect filesystem unlock material from process dumps"))?;
     if arguments.len() != 8 {
         return Err(Error::Invalid("invalid filesystem supervisor arguments"));
     }
@@ -1077,21 +1085,8 @@ fn clean_command(program: &Path) -> Command {
 }
 
 fn provider_stderr() -> Result<Stdio> {
-    #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os("COZY_VAULT_PROVIDER_DIAGNOSTICS") {
-        let file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(path)
-            .map_err(io_error("open explicitly requested provider diagnostics"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(0o600))
-                .map_err(io_error("protect provider diagnostics"))?;
-        }
-        return Ok(Stdio::from(file));
-    }
+    // A native filesystem error can include project filenames. Even a debug
+    // environment variable must not redirect those bytes into an outside file.
     Ok(Stdio::null())
 }
 

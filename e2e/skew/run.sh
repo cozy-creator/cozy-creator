@@ -24,7 +24,7 @@
 set -uo pipefail
 E2E=$(cd "$(dirname "$0")/.." && pwd) HERE=$(cd "$(dirname "$0")/../../release-gate" && pwd)
 START=$PWD
-SRC= HUB_BIN= CLIENT= BIN= CHECKS= COMMAND= OUT= MIN= RT= TF= PUBLICATION_LOG= CLIENT_READY= ADMIN= RELEASE= SOFTWARE=
+SRC= HUB_BIN= CLIENT= BIN= CHECKS= COMMAND= OUT= MIN= RT= TF= PUBLICATION_LOG= CLIENT_READY= ADMIN= RELEASE= PRIVATE_ARTIFACTS= SOFTWARE=
 COMMAND_ARGS=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -47,6 +47,7 @@ while [ $# -gt 0 ]; do
     --software) SOFTWARE=$2;;
     --command) COMMAND=$(realpath "$2") || exit 2;;
     --admin) ADMIN=1; shift; continue;;
+    --private-artifacts) PRIVATE_ARTIFACTS=1; shift; continue;;
     --) shift; COMMAND_ARGS=("$@"); break;;
     *) echo "unknown argument $1" >&2; exit 2;;
   esac; shift 2
@@ -77,7 +78,7 @@ expect() { printf '%s\t%s\t%s\n' "$1" "$2" "$(tr '\n\t' '  ' <<< "$3" | cut -c1-
 die() { expect "skew $1" FAIL "$2"; verdict; }
 verdict() {
   local fails passes
-  [ -n "$CLIENT_READY" ] && [ "$OS" = Linux ] && command -v cozy > /dev/null && for l in tensord calcifer; do timeout 30 cozy machine logs local $l -n 0 > machine-$l.log 2>&1; done
+  [ -z "$PRIVATE_ARTIFACTS" ] && [ -n "$CLIENT_READY" ] && [ "$OS" = Linux ] && command -v cozy > /dev/null && for l in tensord calcifer; do timeout 30 cozy machine logs local $l -n 0 > machine-$l.log 2>&1; done
   fails=$(grep -c $'\tFAIL\t' expect.tsv) passes=$(grep -c $'\tPASS\t' expect.tsv)
   grep $'\tFAIL\t' expect.tsv | cut -f1,3 | sed 's/^/FAIL /' | tee verdict.txt
   if [ "$fails" = 0 ] && [ "$passes" -gt 0 ]; then echo "VERDICT PASS: cozy $CLIENT × the Hub at $(cat hub.version 2>/dev/null) ($passes cells)" | tee -a verdict.txt; exit 0; fi

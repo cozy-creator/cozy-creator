@@ -66,9 +66,9 @@ const SEAM = 6;
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
   if (!(await api('/v1/status')).body?.local_usable) throw new Error('this computer runs no tools: the cell renders its own take here');
@@ -105,7 +105,7 @@ const SEAM = 6;
   const focus = page.locator('.focus-viewport');
   const resultOf = async (name, number) => {
     const version = (await versionsOf(name)).find((one) => one.number === number);
-    return { version, result: version?.runs?.length ? (await api(`/v1/runs/${version.runs.at(-1)}`)).body?.result : undefined };
+    return { version, result: version?.runs?.length ? (await api(`${at}/runs/${version.runs.at(-1)}`)).body?.result : undefined };
   };
   // Render on its title row, here; this computer's tools ask first only when it's weak.
   const renderHere = async () => {
@@ -235,7 +235,7 @@ const SEAM = 6;
   // Asked off a seam (only `cozy run` asks a frame of its own): the tool starts at the seam before it, says so, and keeps that seam.
   const off = execFileSync(process.env.COZY, ['--json', 'run', `${SHOTS}/shoot`, 'summary=On <look>.', 'pickup.take=<shot.1>', 'pickup.out_frame=50', '--on', 'local'], { encoding: 'utf8', cwd: folder, stdio: ['ignore', 'pipe', 'inherit'], timeout: FIRST_RUN_MS });
   const offRun = off.trim().split('\n').map((line) => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean).map((event) => event.run?.number).filter(Boolean).at(-1);
-  const offResult = (await api(`/v1/runs/${offRun}`)).body?.result;
+  const offResult = (await api(`${at}/runs/${offRun}`)).body?.result;
   seen.off_seam = { run: offRun, seams: offResult?.seams, warnings: offResult?.warnings };
   check('off_a_seam_it_starts_at_the_seam_before', offResult?.seams?.[0] === SEAM && (offResult?.warnings ?? []).some((said) => said.includes(`keeps up to frame ${SEAM}, not 50`)), seen.off_seam);
 

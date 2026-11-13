@@ -45,9 +45,9 @@ async function died(why) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
 
@@ -99,7 +99,7 @@ async function died(why) {
     await closeBox(page);
 
     // Its first take: New is there.
-    const added = await api(`${at}/assets/${box.name}/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, box.take()) }) });
+    const added = await api(`${at}/assets/${box.name}/versions`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, box.take(), id) }) });
     if (added.status >= 300) throw new Error(`${box.name}'s first take: ${JSON.stringify(added)}`);
     await until(`${box.name}'s first take`, () => asset(box.name), (row) => row?.versions >= 1 || row?.prefixes?.length >= 1);
     await openBox(page, box.name);
@@ -118,7 +118,7 @@ async function died(why) {
     await boxOf(page, 'pending').waitFor();
     await openBox(page, 'pending');
     await (await renderOf(page, 'pending')).click();
-    const runs = async () => ((await api('/v1/runs?limit=100')).body?.runs ?? []).filter((run) => run.project_id === id && run.kind === 'call');
+    const runs = async () => ((await api(`${at}/runs?limit=100`)).body?.runs ?? []).filter((run) => run.project_id === id && run.kind === 'call');
     const phase = async () => ({ ...(await offers('pending')), runs: (await runs()).map((run) => run.status), takes: (await asset('pending'))?.versions ?? 0 });
     const queued = await until('the first take on its way', phase, (now) => now.runs.length === 1 && now.takes === 0, 60_000).catch(phase);
     seen.pending_queued = queued;
@@ -136,7 +136,7 @@ async function died(why) {
     seen.pending_two = two;
     check('new_starts_a_second_take_beside_it', two.runs.length === 2 && two.runs.some((status) => status === 'in_progress'), two);
     await shot('pending-second');
-    for (const run of await runs()) if (!['completed', 'failed', 'canceled'].includes(run.status)) await api(`/v1/runs/${run.id}/cancel`, { method: 'POST', body: '{}' });
+    for (const run of await runs()) if (!['completed', 'failed', 'canceled'].includes(run.status)) await api(`${at}/runs/${run.id}/cancel`, { method: 'POST', body: '{}' });
     await closeBox(page);
   } else check('this_computer_runs_the_slow_still', false, (await api('/v1/status')).body);
 

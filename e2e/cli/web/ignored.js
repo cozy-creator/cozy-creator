@@ -40,9 +40,9 @@ const cozy = (folder, words) => {
   page.setDefaultTimeout(STEP_MS);
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json' } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
 
@@ -60,20 +60,20 @@ const cozy = (folder, words) => {
   writeFileSync(join(files, 'clip.mp4'), MP4);
   writeFileSync(join(files, 'hum.wav'), wav());
   for (const [name, file, x] of [['pic', 'pic.png', 100], ['clip', 'clip.mp4', 460], ['hum', 'hum.wav', 820]]) {
-    const answer = await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(files, file)), name, exact: true, at: { x, y: 80 } }) });
+    const answer = await api(`${at}/imports`, { method: 'POST', body: JSON.stringify({ source: await upload(held?.token, join(files, file), id), name, exact: true, at: { x, y: 80 } }) });
     if (answer.status >= 300) throw new Error(`import ${name}: ${JSON.stringify(answer)}`);
   }
   const assets = await until('three files', async () => (await api(at)).body?.assets ?? [], (now) => ['pic', 'clip', 'hum'].every((name) => now.find((asset) => asset.name === name)?.sha256));
   const file = (name) => { const sha = assets.find((asset) => asset.name === name).sha256; return sha.startsWith('sha256:') ? sha : `sha256:${sha}`; };
 
   const raw = join(__dirname, '..', 'project', 'raw.py');
-  const newest = async () => Math.max(0, ...((await api('/v1/runs?limit=10')).body?.runs ?? []).map((run) => run.number ?? 0));
+  const newest = async () => Math.max(0, ...((await api(`${at}/runs?limit=10`)).body?.runs ?? []).map((run) => run.number ?? 0));
   const run = async (fn, field, prompt) => {
     const after = await newest();
     const ran = cozy(project, ['--json', 'run', `${raw}/${fn}`, `${field}:=${JSON.stringify(prompt)}`, '--on', 'local']);
     const ends = (one) => one && ['completed', 'failed', 'canceled'].includes(one.status);
-    const found = await until(`${fn} ended`, async () => (await api('/v1/runs?limit=10')).body?.runs?.find((one) => one.target?.endsWith(`/${fn}`) && one.number > after), ends, STEP_MS * 5).catch(() => null);
-    const record = found ? (await api(`/v1/runs/${encodeURIComponent(found.id)}`)).body : null;
+    const found = await until(`${fn} ended`, async () => (await api(`${at}/runs?limit=10`)).body?.runs?.find((one) => one.target?.endsWith(`/${fn}`) && one.number > after), ends, STEP_MS * 5).catch(() => null);
+    const record = found ? (await api(`${at}/runs/${encodeURIComponent(found.id)}`)).body : null;
     return { code: ran.code, status: record?.status, result: record?.result, ignored: (record?.adjustments ?? []).filter((row) => row.kind === 'ignored'), number: record?.number, reason: record?.reason?.message, err: ran.err.slice(-600) };
   };
 

@@ -392,6 +392,9 @@ impl Machines {
         shape: Shape,
         run: Option<RunId>,
     ) -> Result<(Ask, bool), Error> {
+        if run.as_ref().is_some_and(|id| matches!(self.calcifer.run_store(id.as_str()),Ok(crate::store::RunStore::Project(_)))) {
+            return Err(Error::new(Kind::Conflict,"project_remote_execution_unavailable","project work cannot create a global rental intent"));
+        }
         let origin = config::Origin::parse(hub)?;
         let mut intent = serde_json::json!({"hub": origin, "sku": sku, "gpus": shape.gpus,
             "disk_gb": shape.disk_gb});
@@ -412,6 +415,9 @@ impl Machines {
                 ));
             }
             return Ok((asked, false));
+        }
+        if self.store().legacy_rental_pending().map_err(internal)? {
+            return Err(Error::new(Kind::Conflict,"legacy_rental_pending","an earlier rental order still needs ownership or history recovery; resolve it before creating another order"));
         }
         // A rent its Hub has not answered is this computer's one order for what it asks: asking
         // again, under any key, never buys a second pod.
@@ -1577,6 +1583,26 @@ struct RentBody {
     /// `cozy machine end` stopped it.
     #[serde(default)]
     stopped: bool,
+}
+
+/// Old run-less rows came only from independent machine rent/end operations.
+/// Reject unknown fields instead of reclassifying an opaque payload as maintenance.
+pub(crate) fn independent_legacy_ask(kind:&str,bytes:&[u8])->bool {
+    fn known(source:&serde_json::Value,shape:&serde_json::Value)->bool {
+        match (source,shape) {
+            (serde_json::Value::Object(source),serde_json::Value::Object(shape))=>source.iter().all(|(key,value)|shape.get(key).is_some_and(|shape|known(value,shape))),
+            (serde_json::Value::Array(source),serde_json::Value::Array(shape))=>source.len()==shape.len() && source.iter().zip(shape).all(|(value,shape)|known(value,shape)),
+            _=>source==shape || source.is_null(),
+        }
+    }
+    if kind=="end" && bytes.is_empty() {return true;}
+    let Ok(source)=serde_json::from_slice::<serde_json::Value>(bytes) else {return false;};
+    let shape=match kind {
+        "rent"=>serde_json::from_slice::<RentBody>(bytes).ok().and_then(|value|serde_json::to_value(value).ok()),
+        "end"=>serde_json::from_slice::<EndBody>(bytes).ok().and_then(|value|serde_json::to_value(value).ok()),
+        _=>None,
+    };
+    shape.is_some_and(|shape|known(&source,&shape))
 }
 
 /// How long an order stays open while its Hub doesn't answer. Past it nobody is waiting on the

@@ -61,9 +61,9 @@ function replaceFile(at, text) {
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const { token } = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session')));
+  const { token } = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session')));
   const api = async (path, init = {}) => {
-    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init.headers } });
+    const answer = await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3', 'Content-Type': 'application/json', ...init.headers } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   const local = (await api('/v1/status')).body.local_usable && !process.env.ALONE;
@@ -327,7 +327,7 @@ function replaceFile(at, text) {
   check('less_than_offers_names', offered.includes('source-a') && offered.includes('source-b'), offered);
   await shot('offered');
   // Enter takes the name offered and nothing else: no render starts, and what's typed next goes on after it (Paul, 11-12, as Slack's list).
-  const runsBefore = (await api(`/v1/runs?project=${id}&limit=100`)).body?.runs?.length ?? 0;
+  const runsBefore = (await api(`/v1/projects/${id}/runs?limit=100`)).body?.runs?.length ?? 0;
   await page.keyboard.press('Enter');
   await until('a chip', () => sheetText.locator('.chip').count(), (n) => n === 1);
   await page.keyboard.type('and ');
@@ -335,7 +335,7 @@ function replaceFile(at, text) {
   await until('a pause saves it', () => Promise.resolve(storedBox('Sheet')?.instructions ?? ''), (words) => words.includes('A sheet of <source-a> and'));
   check('a_pause_saves_it', JSON.stringify(storedBox('Sheet')) !== before2);
   const sheetAfter = await of('Sheet');
-  const runsAfter = (await api(`/v1/runs?project=${id}&limit=100`)).body?.runs?.length ?? 0;
+  const runsAfter = (await api(`/v1/projects/${id}/runs?limit=100`)).body?.runs?.length ?? 0;
   const faces = await box('Sheet').locator('.run-face').count();
   check('enter_on_a_name_renders_nothing', runsAfter === runsBefore && !sheetAfter?.making?.length && faces === 0 && (await sheetText.innerText()).includes('and'), { runsBefore, runsAfter, making: sheetAfter?.making, faces, words: await sheetText.innerText() });
 
@@ -812,7 +812,7 @@ function replaceFile(at, text) {
     await projectAction(folder, 'render', 'mentioning', '--on', 'local');
     // A project's status counts an asset's versions; one asset's status lists them.
     const madeBy = projectJson(folder, 'GET', '/assets/mentioning').versions.at(-1).runs.at(-1);
-    const sent = JSON.parse(execFileSync(COZY, ['--json', '--full', 'run', 'watch', String(madeBy), '--once'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).request.input;
+    const sent = JSON.parse(execFileSync(COZY, ['--json', '--full', 'run', 'watch', String(madeBy), '--once'], { cwd: folder, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] })).request.input;
     check('a_mention_is_no_keyframe', !('first_frame' in sent) && !('last_frame' in sent), sent);
     check('a_mention_is_a_reference', sent.summary?.references?.length === 2 && sent.aspect_ratio === '16:9', sent);
 

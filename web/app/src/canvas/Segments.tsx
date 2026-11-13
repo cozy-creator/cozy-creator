@@ -17,7 +17,8 @@ import { Playhead, Ruler, Transport } from "./timeline/Player"
  *  for a take its tool didn't say them of. */
 export function useSeams(run: number | undefined): number[] | null {
   const { client } = useConnection()
-  const { data: result } = useQuery({ ...runResultQuery(client, run ?? 0), enabled: Boolean(run) })
+  const project = useCanvasStore().projectId
+  const { data: result } = useQuery({ ...runResultQuery(client, project ?? "", run ?? 0), enabled: Boolean(project && run) })
   const seams = result && typeof result === "object" && !Array.isArray(result) ? (result as Record<string, unknown>).seams : undefined
   return Array.isArray(seams) && seams.every((seam) => Number.isInteger(seam)) ? (seams as number[]) : null
 }

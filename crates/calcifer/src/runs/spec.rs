@@ -154,7 +154,7 @@ impl Call<'_> {
             message: line.clone(),
         });
         let warnings = ignored.into_iter().chain(cuts).chain(limits).chain(unused).collect();
-        SubmitRun {
+        SubmitRun { project: None,
             agreed: None,
             stays: api::calcifer::tool::stays(self.callable),
             on,

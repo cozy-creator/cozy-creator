@@ -37,7 +37,7 @@ import uuid
 
 Json = dict[str, object]
 HOLDER = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
-BASE, AUTH = "http://" + HOLDER["address"], {"Authorization": "Bearer " + HOLDER["token"]}
+BASE, AUTH = "http://" + HOLDER["address"], {"Authorization": "Bearer " + HOLDER["token"], "cozy-project-storage": "3"}
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # A render whose names show no run and no new version for this long made nothing.
 IDLE_S = 600
@@ -59,14 +59,16 @@ def project(folder: str) -> str:
     return "/v1/projects/" + urllib.parse.quote(str(Path(folder).resolve()), safe="")
 
 
-def held(data: bytes) -> str:
+def held(data: bytes, folder: str) -> str:
+    """The file in the project's own content store, as the page sends it: its digest."""
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    route = "/v1/project-files/" + digest + "?project=" + urllib.parse.quote(str(Path(folder).resolve()), safe="")
     try:
-        OPENER.open(urllib.request.Request(BASE + "/v1/files/" + digest, headers=AUTH, method="HEAD"), timeout=30).close()
+        OPENER.open(urllib.request.Request(BASE + route, headers=AUTH, method="HEAD"), timeout=30).close()
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise
-        call("PUT", "/v1/files/" + digest, data, "application/octet-stream", timeout=600)
+        call("PUT", route, data, "application/octet-stream", timeout=600)
     return digest
 
 
@@ -171,7 +173,7 @@ def main() -> int:
         one.add_argument("names", nargs="+")
     args = parser.parse_args()
     if args.verb == "import":
-        ask = {"source": held(Path(args.file).read_bytes())}
+        ask = {"source": held(Path(args.file).read_bytes(), args.project)}
         ask |= {key: value for key, value in (("name", args.name), ("description", args.description)) if value}
         print(json.dumps(call("POST", project(args.project) + "/imports", json.dumps(ask).encode())))
     elif args.verb == "add":

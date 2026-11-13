@@ -1,5 +1,8 @@
 //! Durable acceptance and transitions. Observation has no lifecycle side effects.
 use platform::process::Birth;
+mod project_migration;
+mod project_inventory;
+mod project_retirement;
 use crate::private_journal;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -791,6 +794,19 @@ impl Journal {
         })
     }
 
+    /// A legacy field-encrypted row is still project metadata outside the project. Detect it
+    /// before the strict namespace can claim custody; migration is never an implicit delete.
+    pub(crate) fn contains_private_project(&self, project: &str) -> io::Result<bool> {
+        let present: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM executions WHERE json_extract(invocation,'$.local_private.project_id')=?1 UNION ALL SELECT 1 FROM private_object_uses WHERE project=?1)", [project], |row| row.get(0)).map_err(db_error)?;
+        if present { return Ok(true); }
+        let prefix = format!("local-private:{}:{}:", project.len(), project);
+        for (table, column) in [("installations", "actor"), ("preparations", "actor"), ("warm_sets", "actor"), ("native_outputs", "actor"), ("resolutions", "actor"), ("objects", "actor"), ("held_memos", "actor"), ("held_memo_objects", "actor"), ("held_names", "name")] {
+            let sql = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE substr({column},1,length(?1))=?1)");
+            if self.connection.query_row(&sql, [&prefix], |row| row.get::<_, bool>(0)).map_err(db_error)? { return Ok(true); }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
@@ -829,6 +845,13 @@ impl Journal {
         Ok(bound)
     }
     /// Every generation an unfinished run names.
+    /// Startup may import independently published software, never local source or an
+    /// environment already observed in a protected legacy invocation. Historical absence of
+    /// a project tag is not permission to resume a saved warm payload.
+    pub(crate) fn auto_import_generations(&self) -> io::Result<std::collections::HashSet<String>> {
+        self.generations("SELECT json_extract(i.record,'$.generation') FROM installations i WHERE i.actor NOT LIKE 'local-private:%' AND json_extract(i.record,'$.package') NOT LIKE 'local/%' AND NOT EXISTS(SELECT 1 FROM executions e WHERE json_extract(e.invocation,'$.local_private.project_id') IS NOT NULL AND json_extract(e.invocation,'$.generation')=json_extract(i.record,'$.generation'))")
+    }
+
     pub(crate) fn running_generations(&self) -> io::Result<std::collections::HashSet<String>> {
         self.generations(
             "SELECT json_extract(invocation,'$.generation') FROM executions
@@ -1706,6 +1729,14 @@ impl Journal {
                 |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(since))),
             )
             .map_err(db_error)
+    }
+
+    /// Numeric startup ownership only: never decode private or unscoped authored payloads
+    /// merely to keep pre-upgrade work inert until its project claims custody.
+    pub(crate) fn nonterminal_ids(&self) -> io::Result<std::collections::HashSet<String>> {
+        let mut query=self.connection.prepare("SELECT id FROM executions WHERE state IN ('queued','starting','running')").map_err(db_error)?;
+        let rows=query.query_map([],|row|row.get::<_,i64>(0).map(|id|id.to_string())).map_err(db_error)?;
+        rows.collect::<Result<_,_>>().map_err(db_error)
     }
 
     pub(crate) fn nonterminal(&self, limit: usize) -> io::Result<Vec<Execution>> {

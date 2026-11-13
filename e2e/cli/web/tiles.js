@@ -133,9 +133,9 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
 
   await signIn(page);
   await page.waitForSelector('.top');
-  const held = await page.evaluate(() => JSON.parse(localStorage.getItem('cozy.session') ?? 'null'));
+  const held = await page.evaluate(() => JSON.parse(sessionStorage.getItem('cozy.session') ?? 'null'));
   const api = (path, init = {}) => page.evaluate(async ({ path, init, token }) => {
-    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `tiles-${Date.now()}-${Math.random()}` } : {}) } });
+    const answer = await fetch(path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}`, 'cozy-project-storage': '3' } : {}), 'Content-Type': 'application/json', ...(init.method === 'POST' ? { 'Idempotency-Key': `tiles-${Date.now()}-${Math.random()}` } : {}) } });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   }, { path, init, token: held?.token });
   const post = async (path, body) => {
@@ -173,10 +173,10 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
   const video = tools.find((one) => one.id === 'minimax-h3/generate') ?? tools.find((one) => one.package === 'minimax-h3' && one.makes === 'video');
   if (!image || !video) throw new Error(`the Hub lists no Qwen Image or H3 Shot: ${JSON.stringify(tools.map((one) => one.id))}`);
   await post(`${at}/assets`, { tool: image.id, kind: 'image', name: 'still', exact: true, fields: { instructions: 'a lighthouse at dusk' }, at: { x: 0, y: 0 } });
-  await post(`${at}/assets/still/versions`, { source: await upload(held?.token, join(folder, 'take.png')) });
+  await post(`${at}/assets/still/versions`, { source: await upload(held?.token, join(folder, 'take.png'), id) });
   await post(`${at}/assets`, { tool: video.id, kind: 'video', name: 'shot', exact: true, fields: { summary: 'a lighthouse at dusk', beats: [{ description: 'Waves.', duration: 5 }] }, at: { x: 380, y: 0 } });
-  await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'take.mp4')) });
-  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png')), name: 'plain', exact: true, at: { x: 820, y: 0 } });
+  await post(`${at}/assets/shot/versions`, { source: await upload(held?.token, join(folder, 'take.mp4'), id) });
+  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png'), id), name: 'plain', exact: true, at: { x: 820, y: 0 } });
   /** Each of these drawn: fitted until they're all in view, as a canvas draws only what's in view, wherever they were placed. */
   const seeAll = (names) => until(`${names.join(', ')} on the canvas`, async () => {
     await fitCanvas(page);
@@ -395,8 +395,8 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
   // under a tool's box lands clear's 16 under what it keeps, and what hangs under the upper one, a render's lines too (cl-936), never lies on
   // the lower one. At 100% and 75%, each a screenshot.
   await post(`${at}/assets`, { tool: image.id, kind: 'image', name: 'upper', exact: true, fields: { instructions: 'a lighthouse at dawn' }, at: { x: 0, y: 2400 } });
-  await post(`${at}/assets/upper/versions`, { source: await upload(held?.token, join(folder, 'take.png')) });
-  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png')), name: 'lower', exact: true, at: { x: 520, y: 2400 } });
+  await post(`${at}/assets/upper/versions`, { source: await upload(held?.token, join(folder, 'take.png'), id) });
+  await post(`${at}/imports`, { source: await upload(held?.token, join(folder, 'plain.png'), id), name: 'lower', exact: true, at: { x: 520, y: 2400 } });
   projectJson(project, 'PATCH', '/canvas', { cards: { upper: { x: 0, y: 2400 }, lower: { x: 520, y: 2400 } } });
   await seeAll(['upper', 'lower']);
   await boxOf(page, 'upper').locator('.media').first().click();
@@ -440,7 +440,7 @@ const SHAPE = /^(\d+(\.\d+)?:\d+(\.\d+)?|Auto( · .+)?)$/;
 
   // As a person sees it (cl-963, Paul 11-12: "things were just far too small or hard to see or read"), at 1440×900 and 1920×1080, light and
   // dark: the tiles at 100%, and a picture with two takes in Focus. Every label at least the page's body size; every control at least 28.
-  await post(`${at}/assets/still/versions`, { source: await upload(held?.token, join(folder, 'plain.png')) });
+  await post(`${at}/assets/still/versions`, { source: await upload(held?.token, join(folder, 'plain.png'), id) });
   const sizes = () => page.evaluate(() => {
     const px = (el) => (el ? parseFloat(getComputedStyle(el).fontSize) : null);
     const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; };

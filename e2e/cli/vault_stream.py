@@ -84,12 +84,12 @@ def events(response: Iterable[bytes]) -> Iterator[VaultEvent]:
 def main() -> None:
     project, credential, recovery = map(Path, sys.argv[1:])
     holder = json.loads((Path.home() / ".cozy/calcifer/calcifer.lock.holder").read_text())
-    operation = uuid.uuid4().hex
+    operation = "p3_" + uuid.uuid4().hex
     url = f"http://{holder['address']}/v1/projects/{urllib.parse.quote(str(project.resolve()), safe='')}/vault/operations/{operation}"
     sources_before = set(project.parent.glob(".cozy-project-source-*"))
     body = json.dumps({"action": "encrypt", "passphrase": credential.read_text().strip(),
                        "idle_timeout_s": 0, "max_duration_s": 86400}).encode()
-    headers = {"Authorization": f"Bearer {holder['token']}", "Content-Type": "application/json", "Accept": "text/event-stream"}
+    headers = {"Authorization": f"Bearer {holder['token']}", "cozy-project-storage": "3", "Content-Type": "application/json", "Accept": "text/event-stream"}
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def connect() -> HTTPResponse:
@@ -129,9 +129,10 @@ def main() -> None:
         assert not (Path(changed["vault"]["view"]) / "files/missing-legacy-image.jpg").exists()
     secret = changed.pop("recovery_secret")
     write_recovery(recovery, secret)
-    database = Path.home() / ".cozy/calcifer/state.db"
+    # A project's operation receipt is in its own journal, inside its view.
+    database = Path(changed["vault"]["view"]) / "project.db"
     connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
-    rows = connection.execute("SELECT id,binding,state FROM vault_operations WHERE id=?", (operation,)).fetchall()
+    rows = connection.execute("SELECT id,binding,state FROM project_vault_operations WHERE id=?", (operation,)).fetchall()
     assert len(rows) == 1 and rows[0][2] == "completed"
     assert secret not in json.dumps(rows)
     assert hashlib.sha256(secret.encode()).hexdigest() != rows[0][1]

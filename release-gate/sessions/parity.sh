@@ -98,7 +98,8 @@ cell() {
   (cd "$SRC" && step "$1" run "$2" "${args[@]}" --on "$NAME")
   N=$(runno "$1")
   [ -n "$N" ] || fail "$1: no run: $(tail -c 400 "$OUT/$1.txt")"
-  cozy run watch "$N" --once --json --full > "$OUT/$1.json" 2>/dev/null; cozy run watch "$N" --once -o "$OUT/$1.out" > /dev/null 2>&1
+  # Its number is its project's: read where it was asked.
+  (cd "$SRC" && cozy run watch "$N" --once --json --full) > "$OUT/$1.json" 2>/dev/null; (cd "$SRC" && cozy run watch "$N" --once -o "$OUT/$1.out") > /dev/null 2>&1
   st=$(jq -r '.status // "none"' "$OUT/$1.json" 2>/dev/null)
   say "$1 run $N $st: $(summary "$1")"
   [ "$st" = completed ] || fail "$1 $st: $(jq -r '.reason.message // .reason // empty' "$OUT/$1.json" 2>/dev/null | head -c 400)"

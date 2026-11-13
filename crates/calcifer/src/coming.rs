@@ -54,9 +54,9 @@ pub(crate) async fn picture(api: &Arc<Api>, coming: &Coming) -> Picture {
     let gpus = (0..way.gpus).map(|index| v1::Gpu { index, name: way.card.clone(), ..Default::default() }).collect();
     let frame = v1::StatusFrame { gpus, serving_gpus: way.gpus, ..Default::default() };
     let filter = RunFilter { status: Some(Status::Queued), machine: Some(coming.name.clone()), limit: QUEUED, ..RunFilter::default() };
-    let sent = api.calcifer.store().runs(&filter).map(|(rows, ..)| rows).unwrap_or_default();
+    let sent = api.calcifer.each_store(|store| store.runs(&filter).map(|(rows, ..)| rows)).map(|lists| lists.into_iter().flatten().collect::<Vec<_>>()).unwrap_or_default();
     let mut ahead = vec![];
-    for row in sent.iter().filter(|row| row.kind == Kind::Call) {
+    for row in sent.iter().filter(|row| row.kind == Kind::Call && !row.custody_pending) {
         let payload: serde_json::Value = row.spec.payload.as_ref().and_then(|p| serde_json::from_str(p.get()).ok()).unwrap_or_default();
         let size = JobSize::of(&payload);
         let (one_ms, _) = card_time(api, &coming.hub, way, &row.target, &size).await;
