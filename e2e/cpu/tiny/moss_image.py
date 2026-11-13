@@ -42,6 +42,11 @@ def _dit(folder: Path, layers: int) -> None:
                                                     "text_dim": TEXT_WIDTH, "freq_dim": FREQ, "latent_channels": LATENT}))
 
 
+#: The factors' spread. The Runtime bakes a caller LoRA into the bf16 weights; at 1 (an update three times the weights)
+#: a last-bit difference in the bake, which one runner made (e2e 43356331363), grew through the 23 blocks to 13/255.
+_FACTOR = 0.3
+
+
 def _lora(store: Path, seed: int, rank: int) -> str:
     """An adapter at `rank` (each states `lora_alpha` = `r`) on every block's linears, bf16."""
     sites = [f"layers.{layer}.proj.{site}" for layer in range(LAYERS) for site in _SITES]
@@ -53,7 +58,7 @@ def _lora(store: Path, seed: int, rank: int) -> str:
     for site in sites:
         inputs, outputs = _SITES[site.rsplit(".", 1)[1]]
         for factor, shape in (("lora_A", [rank, inputs]), ("lora_B", [outputs, rank])):
-            data = torch.randn(shape, generator=generator).to(torch.bfloat16).contiguous()
+            data = (torch.randn(shape, generator=generator) * _FACTOR).to(torch.bfloat16).contiguous()
             component.put(f"{site}.{factor}.weight", memoryview(data.view(torch.uint8).numpy()).cast("B"), dtype="BF16",
                           shape=shape)
     return writer.commit().id
