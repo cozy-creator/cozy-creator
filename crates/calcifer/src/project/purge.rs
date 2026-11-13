@@ -113,7 +113,7 @@ fn purged(api: &Api, path: &Path) -> Option<i64> {
     let Ok(_access) = vault::try_admit_root(path) else { return again() };
     let Ok(dir) = vault::resolve_path(path) else { return again() };
     let home = api.machines.hubs.home();
-    let caches = [home.thumbs(), home.root().join("cache").join("clips")];
+    let caches = [home.root().join("cache").join("clips")];
     match purge(&Folder::at(&dir), now_ms(), &caches) {
         Ok(next) => next,
         Err(error) => {
@@ -228,17 +228,15 @@ fn next_due(lock: &Lock, window: i64) -> Option<i64> {
     (lock.assets.iter()).filter(|(key, held)| key.contains(TOMBSTONE) && held.files().next().is_some()).filter_map(|(_, held)| held.deleted_ms).map(|at| at + window).min()
 }
 
-/// What Calcifer made of each of `freed` and keeps by its hash, gone: thumbnails, posters and previews (`<hex>-…`), and clips (`<hex>.…`),
-/// in its own caches and a private project's.
+/// What Calcifer made of each of `freed` and keeps by its hash, gone: thumbnails, posters and previews (`<hex>-…`) in the project's own
+/// store, and clips (`<hex>.…`) in Calcifer's caches and a private project's.
 fn forget_derived(dir: &Path, freed: &BTreeSet<String>, caches: &[PathBuf]) {
     if freed.is_empty() {
         return;
     }
     let scope = crate::private_io::of_path(dir).ok().flatten();
-    let private = scope.iter().flat_map(|scope| {
-        [("thumbs", 0), ("clips", 1)].into_iter().filter_map(|(name, at)| crate::private_io::cache(Some(scope), caches.get(at)?.clone(), name).ok())
-    });
-    let dirs: Vec<PathBuf> = caches.iter().cloned().chain(private).collect();
+    let private = scope.iter().flat_map(|scope| caches.iter().filter_map(move |cache| crate::private_io::cache(Some(scope), cache.clone(), "clips").ok()));
+    let dirs: Vec<PathBuf> = caches.iter().cloned().chain(private).chain([dir.join(super::thumbs::STORE)]).collect();
     let hexes: Vec<&str> = freed.iter().map(|sha256| sha256.trim_start_matches("sha256:")).collect();
     for cache in dirs {
         for entry in std::fs::read_dir(&cache).into_iter().flatten().flatten() {

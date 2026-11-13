@@ -44,7 +44,7 @@ function Picture({ run, item, project }: OutputProps) {
   const { client } = useConnection()
   const full = outputPath(client, { run, item, project })
   const [useThumb, setUseThumb] = useState(Boolean(project && item.sha256))
-  const src = useSrc(useThumb ? client.thumb(project!, item.sha256!, 512) : full)
+  const src = useSrc(useThumb ? client.thumb(project!, item.sha256!) : full)
   if (!src) return null
   return <img src={src} alt={item.name} onError={() => setUseThumb(false)} />
 }
@@ -52,7 +52,7 @@ function Picture({ run, item, project }: OutputProps) {
 /** A file served here. Its poster is a thumbnail, when its project can make one. */
 function Landed({ run, item, project, kind }: OutputProps & { kind: "video" | "audio" }) {
   const { client } = useConnection()
-  const poster = useSrc(kind === "video" && project && item.sha256 ? client.thumb(project, item.sha256, 512) : null)
+  const poster = useSrc(kind === "video" && project && item.sha256 ? client.thumb(project, item.sha256) : null)
   const aspect = item.width && item.height ? item.width / item.height : kind === "audio" ? 6 : 16 / 9
   return (
     <div className="media" style={{ aspectRatio: aspect }}>

@@ -1,20 +1,21 @@
 //! `GET|HEAD /v1/projects/{id}/thumbs/{sha256}?w=&strip=&preview=&wave=`: a small picture of a project's file, by Calcifer's own ffmpeg: a
-//! picture with its alpha, a video's poster, a strip of its frames side by side or its preview, a sound's waveform or a video's. Named by hash, size and
-//! strip, so it never changes, and kept under the cache while it is used. Each is made once however many ask, from a task of its own that a
-//! request going away leaves to finish, at most a few at a time, so none of it holds up another request. A video's preview is made as it
-//! lands, too.
+//! picture with its alpha, a video's poster, a strip of its frames side by side or its preview, a sound's waveform or a video's. Each is kept
+//! in its project, in `.thumbs/` beside `files/` (an encrypted project's inside its encrypted store), named by hash, size and strip, so it
+//! never changes. What the canvas draws of a file (a picture, a video's poster and its preview) is made as the file lands (cl-982; Paul,
+//! 11-13: "all thumbnails should be generated ahead of time, and stored in the project"). A request only reads: one not made yet is drawn
+//! next, in the background, and answered `202 thumb_pending` at once, and the `thumb` event tells the project's pages when it's made. So no
+//! request, and none of a browser's six connections to Calcifer, waits on ffmpeg.
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
     path::{Path as FsPath, PathBuf},
     sync::{Arc, LazyLock, Mutex},
-    time::{Duration, SystemTime},
 };
 
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, header},
-    response::Response,
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use api::error::{Error, Kind};
 use serde::Deserialize;
@@ -27,20 +28,20 @@ use crate::{
     tools::Media,
 };
 
-/// The ffmpegs a project's files may have going at once, for this and for measuring: a canvas of hundreds asks for all of them at once.
+/// The ffmpegs a project's files may have going at once, for this and for measuring.
 pub(super) static FFMPEGS: Semaphore = Semaphore::const_new(2);
-/// Who is making each thumbnail, by its name.
-static MAKING: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = LazyLock::new(Mutex::default);
-/// The videos that landed whose previews are still to make, the first first.
-static LANDED: LazyLock<(Mutex<VecDeque<(String, Drawing)>>, Notify)> = LazyLock::new(Default::default);
+/// What's to be drawn: what a page waits on first, then what landed.
+static QUEUE: LazyLock<(Mutex<Queue>, Notify)> = LazyLock::new(Default::default);
 
-/// A thumbnail unused this long goes the next time one is made.
-const KEPT_FOR: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-/// A partial thumbnail or a failure marker left by an older version is discarded sooner.
-const TEMP_KEPT_FOR: Duration = Duration::from_secs(24 * 60 * 60);
-const WIDTH: u32 = 480;
+/// Where a project keeps its thumbnails, beside `files/`.
+pub(super) const STORE: &str = ".thumbs";
+/// What the canvas draws of a picture or a video at rest, and what every list of them does: a box (240 CSS px) at 100% on a screen of
+/// twice the density. Drawn wider, a picture is its own file.
+const PICTURE: u32 = 512;
 const WIDEST: u32 = 2048;
 const MOST_FRAMES: u32 = 32;
+/// How many are drawn at once, each from a task of its own.
+const DRAWERS: usize = 2;
 const WAVE_COLOR: &str = "#9aa4b2";
 /// Where a poster may come from, through a video, as media-worker samples them.
 const POSTER_AT: [f64; 5] = [0.2, 0.35, 0.5, 0.65, 0.8];
@@ -52,7 +53,7 @@ const PREVIEW_SIDE: u32 = 480;
 
 #[derive(Deserialize)]
 pub(super) struct Asked {
-    /// How wide it is, a strip's frames each: never wider than the file. Held to 16 to 2048.
+    /// How wide it is, a strip's frames each: never wider than the file. Held to 16 to 2048; none, what the canvas draws.
     w: Option<u32>,
     /// How many frames of a video, side by side. Held to 1 to 32.
     strip: Option<u32>,
@@ -65,11 +66,14 @@ pub(super) struct Asked {
 }
 
 /// What to draw of one file.
+#[derive(Clone)]
 struct Drawing {
+    /// Its project, as registered: an encrypted one's root, never the view it's read through now, which a lock and an unlock replace.
+    root: PathBuf,
+    /// The file, under `root`.
     source: PathBuf,
-    /// Remember the logical private project across queueing and lock/remount. A failed
-    /// lookup later must never turn this drawing into an ordinary global-cache write.
-    project: Option<PathBuf>,
+    sha256: String,
+    private: bool,
     field: &'static str,
     /// How long it lasts, when that is measured.
     seconds: f64,
@@ -77,22 +81,33 @@ struct Drawing {
     frames: u32,
     preview: bool,
     wave: bool,
-    /// A picture's EXIF orientation, 1 to 8, in its name: one drawn before it was turned isn't taken for it. A private one's can't be read before
-    /// its turn, and is 1 here.
-    turn: u8,
 }
 
 impl Drawing {
-    /// A poster by its rule's name, so one cached by an earlier rule is made again; a turned picture's too, as one was drawn as stored.
-    fn name(&self, hex: &str) -> String {
-        match (self.preview, self.field, self.frames, self.turn) {
+    fn name(&self) -> String {
+        let hex = folder::hex_of(&self.sha256).to_ascii_lowercase();
+        match (self.preview, self.field, self.frames) {
             (true, ..) => format!("{hex}-preview"),
             _ if self.wave => format!("{hex}-{}-wave", self.width),
-            (false, "video", 0, _) => format!("{hex}-{}-poster", self.width),
-            (_, _, _, 1) => format!("{hex}-{}-{}", self.width, self.frames),
-            _ => format!("{hex}-{}-{}-turned{}", self.width, self.frames, self.turn),
+            (false, "video", 0) => format!("{hex}-{}-poster", self.width),
+            _ => format!("{hex}-{}-{}", self.width, self.frames),
         }
     }
+
+    /// Its store and name: what it's queued under.
+    fn key(&self) -> String {
+        format!("{}\0{}", self.root.display(), self.name())
+    }
+}
+
+#[derive(Default)]
+struct Queue {
+    /// Each in its turn; one asked again by a page goes first again, and its later place is passed over.
+    jobs: VecDeque<Drawing>,
+    /// What's queued, by key: whether it's being drawn.
+    held: HashMap<String, bool>,
+    /// What ffmpeg couldn't draw, for as long as this Calcifer runs: asked again, it's refused, not drawn again.
+    failed: HashSet<String>,
 }
 
 pub(super) async fn thumb(
@@ -104,29 +119,35 @@ pub(super) async fn thumb(
     let project = api.projects.get(&api, &id)?;
     let folder = &project.folder;
     let hex = folder::hex_of(&named).to_ascii_lowercase();
-    let lock = folder.lock().map_err(Refusal)?;
-    let file = lock.files.get(&format!("sha256:{hex}")).filter(|file| folder.path(&file.path).is_file());
-    let Some(file) = file else {
-        return Err(Refusal(Error::new(Kind::NotFound, "file_missing", format!("the project has no file {named}"))));
+    let (field, seconds, source) = {
+        let lock = folder.lock().map_err(Refusal)?;
+        let file = lock.files.get(&format!("sha256:{hex}")).filter(|file| folder.path(&file.path).is_file());
+        let Some(file) = file else {
+            return Err(Refusal(Error::new(Kind::NotFound, "file_missing", format!("the project has no file {named}"))));
+        };
+        (file.field(), file.lasts_ms() as f64 / 1000.0, folder.path(&file.path))
     };
-    let field = file.field();
     let preview = asked.preview && field == "video";
     let wave = asked.wave && field == "video" && !preview;
     let frames = asked.strip.filter(|_| field == "video" && !preview && !wave).map_or(0, |n| n.clamp(1, MOST_FRAMES));
-    let source = folder.path(&file.path);
-    let private = private_project(&source);
-    let turn = if field == "image" && private.is_none() { tools::orientation(&source) } else { 1 };
-    let source = if private.is_some() { super::vault::logical(&source) } else { source };
-    let drawing = Drawing { source, project: private, field, seconds: file.lasts_ms() as f64 / 1000.0, width: asked.w.unwrap_or(WIDTH).clamp(16, WIDEST), frames, preview, wave, turn };
-    let name = drawing.name(&hex);
-    let private = drawing.project.is_some();
-    let dir = directory(&drawing, api.machines.hubs.home().thumbs()).map_err(Refusal)?;
-    let at = match kept(&dir, &name) {
-        Some(at) => at,
-        None => made(Host::new(&api), drawing, dir, name.clone()).await?,
+    let private = super::vault::encrypted(&project.root);
+    let source = super::vault::logical(&source);
+    let width = asked.w.unwrap_or(PICTURE).clamp(16, WIDEST);
+    let drawing = Drawing { root: project.root.clone(), source, sha256: format!("sha256:{hex}"), private, field, seconds, width, frames, preview, wave };
+    let name = drawing.name();
+    let Some(at) = kept(&folder.dir.join(STORE), &name) else {
+        // Drawn next: `202 thumb_pending` now, which is no picture and no error, and the page hears `thumb` when it's there.
+        let mut response = match ask(drawing, true) {
+            true => {
+                let mut pending = Refusal(Error::new(Kind::NotFound, "thumb_pending", "this thumbnail is being made; the thumb event says when it's there")).into_response();
+                *pending.status_mut() = StatusCode::ACCEPTED;
+                pending
+            }
+            false => Refusal(Error::new(Kind::Validation, "thumb_failed", "ffmpeg can't draw this file")).into_response(),
+        };
+        response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return Ok(response);
     };
-    // Shown now: a use.
-    let _ = std::fs::File::options().write(true).open(&at).and_then(|f| f.set_modified(std::time::SystemTime::now()));
     let unreadable = |e: std::io::Error| Refusal(Error::new(Kind::Unavailable, "project_io", format!("{}: {e}", at.display())));
     let opened = std::fs::File::open(&at).map_err(unreadable)?;
     let len = opened.metadata().map_err(unreadable)?.len();
@@ -135,74 +156,106 @@ pub(super) async fn thumb(
     Ok(response)
 }
 
-/// A video at `source` that just landed, measured: its preview is made soon, after the thumbnails asked before it.
-pub(super) fn landed(source: PathBuf, sha256: &str, seconds: f64) {
-    let project = private_project(&source);
-    let source = if project.is_some() { super::vault::logical(&source) } else { source };
-    let drawing = Drawing { source, project, field: "video", seconds, width: 0, frames: 0, preview: true, wave: false, turn: 1 };
-    LANDED.0.lock().expect("landed lock").push_back((drawing.name(&folder::hex_of(sha256).to_ascii_lowercase()), drawing));
-    LANDED.1.notify_one();
+/// A file that just landed at `source` (`<project>/files/<hex>.<ext>`), measured as a `field`: what the canvas draws of it is made soon,
+/// after what pages wait on.
+pub(super) fn landed(source: PathBuf, sha256: &str, field: &str, seconds: f64) {
+    let source = super::vault::logical(&source);
+    let Some(root) = source.parent().and_then(FsPath::parent).map(FsPath::to_owned) else { return };
+    let field = match field {
+        "image" => "image",
+        "video" => "video",
+        _ => return,
+    };
+    let private = super::vault::encrypted(&root);
+    let sha256 = format!("sha256:{}", folder::hex_of(sha256).to_ascii_lowercase());
+    let picture = Drawing { root, source, sha256, private, field, seconds, width: PICTURE, frames: 0, preview: false, wave: false };
+    let preview = (field == "video").then(|| Drawing { width: 0, preview: true, ..picture.clone() });
+    ask(picture, false);
+    if let Some(preview) = preview {
+        ask(preview, false);
+    }
 }
 
-/// Makes the preview of each video that lands, one at a time, so a canvas's thumbnails take their turns between them.
-pub(crate) fn previews(api: Arc<Api>) {
-    tokio::spawn(async move {
-        loop {
-            let next = LANDED.0.lock().expect("landed lock").pop_front();
-            match next {
-                Some((name, drawing)) => drop(made(Host::new(&api), drawing, api.machines.hubs.home().thumbs(), name).await),
-                None => LANDED.1.notified().await,
-            }
+/// `drawing` queued, `first` when a page waits on it. False: ffmpeg couldn't draw it.
+fn ask(drawing: Drawing, first: bool) -> bool {
+    let key = drawing.key();
+    let mut queue = QUEUE.0.lock().expect("thumbnail queue");
+    if queue.failed.contains(&key) {
+        return false;
+    }
+    match queue.held.get(&key) {
+        Some(true) => return true,
+        Some(false) if !first => return true,
+        _ => {}
+    }
+    queue.held.insert(key, false);
+    match first {
+        true => queue.jobs.push_front(drawing),
+        false => queue.jobs.push_back(drawing),
+    }
+    drop(queue);
+    QUEUE.1.notify_one();
+    true
+}
+
+/// The next to draw, marked as being drawn.
+fn next() -> Option<Drawing> {
+    let mut queue = QUEUE.0.lock().expect("thumbnail queue");
+    while let Some(drawing) = queue.jobs.pop_front() {
+        let key = drawing.key();
+        if queue.held.get(&key) == Some(&false) {
+            queue.held.insert(key, true);
+            return Some(drawing);
         }
+    }
+    None
+}
+
+/// Draws what's queued, `DRAWERS` at a time, and tells each project's pages of each it drew, or couldn't. What Calcifer kept before
+/// thumbnails were kept in their projects goes.
+pub(crate) fn previews(api: Arc<Api>) {
+    let old = api.machines.hubs.home().root().join("cache").join("thumbs");
+    tokio::task::spawn_blocking(move || {
+        let _ = std::fs::remove_dir_all(old);
     });
+    for _ in 0..DRAWERS {
+        let api = api.clone();
+        tokio::spawn(async move {
+            loop {
+                let Some(drawing) = next() else {
+                    QUEUE.1.notified().await;
+                    continue;
+                };
+                let (key, root, sha256) = (drawing.key(), drawing.root.clone(), drawing.sha256.clone());
+                let made = make(Host::new(&api), drawing).await;
+                {
+                    let mut queue = QUEUE.0.lock().expect("thumbnail queue");
+                    queue.held.remove(&key);
+                    // What a lock or an unlock cut short is drawn when it's asked again; what else failed isn't tried again.
+                    if made.as_ref().is_err_and(|error| !matches!(error.kind, Kind::Conflict)) {
+                        queue.failed.insert(key);
+                    }
+                }
+                crate::events::thumb(&super::project_id(&root), &sha256);
+            }
+        });
+    }
 }
 
-fn private_project(source: &FsPath) -> Option<PathBuf> {
-    super::vault::logical(source).ancestors().find(|path| super::vault::encrypted(path)).map(FsPath::to_owned)
-}
-
-fn directory(drawing: &Drawing, ordinary: PathBuf) -> Result<PathBuf, Error> {
-    let Some(root) = &drawing.project else { return Ok(ordinary) };
-    let scope = crate::private_io::of_output(&super::landing(root))?
-        .ok_or_else(|| Error::new(Kind::Conflict, "project_locked", "the private project view is unavailable"))?;
-    crate::private_io::cache(Some(&scope), ordinary, "thumbs")
-}
-
-/// The thumbnail called `name`, if it is there.
+/// The thumbnail called `name` in `dir`, if it is there.
 fn kept(dir: &FsPath, name: &str) -> Option<PathBuf> {
     ["png", "jpg", "mp4"].iter().map(|ext| dir.join(format!("{name}.{ext}"))).find(|at| at.is_file())
 }
 
-/// The thumbnail called `name`, made now if no one has: the wait for it is all a request holds.
-async fn made(host: Host, drawing: Drawing, dir: PathBuf, name: String) -> Result<PathBuf, Refusal> {
-    let key = format!("{}\0{name}", dir.display());
-    let turn = MAKING.lock().expect("making lock").entry(key.clone()).or_default().clone();
-    let making = tokio::spawn(async move {
-        let answer = {
-            let _turn = turn.lock().await;
-            make(host, drawing, dir, name.clone()).await
-        };
-        // Keep the same turn for requests already waiting to draw this name in this cache.
-        let mut making = MAKING.lock().expect("making lock");
-        drop(turn);
-        if making.get(&key).is_some_and(|turn| Arc::strong_count(turn) == 1) {
-            making.remove(&key);
-        }
-        answer
-    });
-    let answer = making.await.map_err(|e| Refusal(Error::new(Kind::Internal, "thumb_failed", e.to_string())))?;
-    answer.map_err(Refusal)
-}
-
-/// What the one making the thumbnail called `name` does, if one before it did not succeed.
-async fn make(host: Host, mut drawing: Drawing, dir: PathBuf, name: String) -> Result<PathBuf, Error> {
-    let access = match &drawing.project {
-        Some(root) => Some(super::vault::admit_root(root).await?),
-        None => None,
+/// `drawing` drawn into its project's store, unless it's there already.
+async fn make(host: Host, mut drawing: Drawing) -> Result<PathBuf, Error> {
+    let access = match drawing.private {
+        true => Some(super::vault::admit_root(&drawing.root).await?),
+        false => None,
     };
-    let private = drawing.project.is_some();
-    let dir = directory(&drawing, dir)?;
-    if private { drawing.source = super::vault::resolve_path(&drawing.source)?; }
+    let dir = super::vault::resolve_path(&drawing.root)?.join(STORE);
+    drawing.source = super::vault::resolve_path(&drawing.source)?;
+    let name = drawing.name();
     if let Some(at) = kept(&dir, &name) {
         return Ok(at);
     }
@@ -213,8 +266,8 @@ async fn make(host: Host, mut drawing: Drawing, dir: PathBuf, name: String) -> R
         let _access = access;
         let _permit = permit;
         draw(&ffmpeg, &ffprobe, &drawing, &dir, &name).map_err(|why| {
-            // The source path can disappear while waiting for FFmpeg. Only a successful draw is cacheable.
-            if !private { warn!("thumbnail {name} can't be drawn: {why}"); }
+            // The source path can disappear while waiting for FFmpeg. Only a successful draw is kept.
+            if !drawing.private { warn!("thumbnail {name} can't be drawn: {why}"); }
             Error::new(Kind::Validation, "thumb_failed", format!("ffmpeg can't draw this file: {why}"))
         })
     })
@@ -251,7 +304,6 @@ fn input(source: &str) -> Vec<OsString> {
 /// Draws `drawing` as the thumbnail called `name`, whole or not there at all.
 fn draw(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, dir: &FsPath, name: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    prune(dir);
     let source = drawing.source.to_string_lossy().into_owned();
     let width = drawing.width;
     let scale = format!("scale='min(iw,{width})':-2");
@@ -391,20 +443,4 @@ fn strip(ffmpeg: &FsPath, ffprobe: &FsPath, drawing: &Drawing, source: &str, fra
         let rate = if seconds > 0.0 { f64::from(frames) / seconds } else { f64::from(frames) };
         run(ffmpeg, &input(source), &after(&format!("[0:v:0]fps={rate:.6},{scale},setsar=1,tile={frames}x1[out]")), out)
     })
-}
-
-/// Old thumbnails, partial draws and legacy failure markers are discarded.
-fn prune(dir: &FsPath) {
-    let now = SystemTime::now();
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        let kept_for = match path.extension().is_some_and(|ext| ext == "failed") || path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".making")) {
-            true => TEMP_KEPT_FOR,
-            false => KEPT_FOR,
-        };
-        let old = entry.metadata().and_then(|meta| meta.modified()).is_ok_and(|used| now.duration_since(used).is_ok_and(|age| age > kept_for));
-        if old {
-            let _ = std::fs::remove_file(path);
-        }
-    }
 }

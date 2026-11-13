@@ -10,7 +10,7 @@
 const playwright = require(process.env.PLAYWRIGHT);
 const { execSync, execFileSync } = require('child_process');
 const { existsSync, mkdtempSync, readdirSync, writeFileSync } = require('fs');
-const { homedir, tmpdir } = require('os');
+const { tmpdir } = require('os');
 const { join } = require('path');
 const { projectFromPage, projectUrl, calcifer, signIn, STEP_MS, boxOf, closeBox, drop, launch, lastLook, lookAt, noStall, openBox, png, pointAt, renderOf, until, rowsOf, upload } = require('./page');
 
@@ -23,7 +23,6 @@ function check(name, ok, detail) {
 }
 const WINDOW_MS = Number(process.env.UNDO_S ?? 75) * 1000;
 const drawer = join(__dirname, '..', 'project', 'draw.py');
-const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
 
 (async () => {
   const base = calcifer();
@@ -65,7 +64,8 @@ const THUMBS = join(homedir(), '.cozy', 'cache', 'thumbs');
   };
   const hexOf = (sha256) => sha256.replace(/^sha256:/, '');
   const inFiles = (sha256) => existsSync(folder) && readdirSync(join(folder, 'files')).some((name) => name.startsWith(hexOf(sha256)));
-  const thumbsOf = (sha256) => (existsSync(THUMBS) ? readdirSync(THUMBS).filter((name) => name.startsWith(hexOf(sha256))) : []);
+  // Kept in the project, beside its files (cl-982).
+  const thumbsOf = (sha256) => (existsSync(join(folder, '.thumbs')) ? readdirSync(join(folder, '.thumbs')).filter((name) => name.startsWith(hexOf(sha256))) : []);
   const pictures = mkdtempSync(join(tmpdir(), 'web-deleted-'));
   const picture = (name, shade) => {
     const path = join(pictures, `${name}.png`);

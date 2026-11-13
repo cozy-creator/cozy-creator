@@ -1132,6 +1132,10 @@ pub enum StreamEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         redo: Option<Box<crate::calcifer::project::HistoryEntry>>,
     },
+    /// A thumbnail of a project's file was made, or can't be (cl-982): one asked for before it was answered `202 thumb_pending`; it's
+    /// asked again.
+    #[serde(rename = "thumb")]
+    Thumb { project: String, sha256: String },
     /// This stream fell behind: read again what you hold.
     #[serde(rename = "resync")]
     Resync,
