@@ -317,7 +317,13 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
   const barCheck = await page.evaluate(() => {
     // What the canvas draws (its renderer: the pane and every box on it), not React Flow's own frame around it.
     const canvas = document.querySelector('.react-flow__renderer');
-    const controls = [...document.querySelectorAll('.top button, .top a, .top summary, .top input')].map((el) => ({ el, box: el.getBoundingClientRect() })).filter(({ box }) => box.width && box.height);
+    // The bar's own controls, as shown: a closed menu's items keep a layout but aren't drawn, and an open menu's hang over the canvas on a
+    // panel of their own.
+    const bar = document.querySelector('.top').getBoundingClientRect();
+    const controls = [...document.querySelectorAll('.top button, .top a, .top summary, .top input')]
+      .filter((el) => el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }))
+      .map((el) => ({ el, box: el.getBoundingClientRect() }))
+      .filter(({ box }) => box.width && box.height && box.bottom <= bar.bottom + 1);
     const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
     const label = (el) => el.getAttribute('aria-label') || el.textContent.trim().slice(0, 24);
     const under = [];
@@ -333,10 +339,10 @@ const named = (tool) => (tool.package_title && tool.package_title !== tool.label
       const reached = controls.filter(({ box }) => parts.some((part) => meets(part.getBoundingClientRect(), box))).map(({ el }) => label(el));
       return reached.length ? [{ node: node.querySelector('.card')?.dataset.asset, controls: reached }] : [];
     });
-    return { under, overlapping };
+    return { controls: controls.map(({ el }) => label(el)), under, overlapping };
   });
   seen.app_bar = barCheck;
-  check('no_canvas_under_the_app_bars_controls', barCheck.under.length === 0, barCheck);
+  check('no_canvas_under_the_app_bars_controls', barCheck.controls.length >= 3 && barCheck.under.length === 0, barCheck);
   await page.setViewportSize({ width: 1600, height: 1100 });
   // The LoRA removed: its words stay as written, no longer drawn.
   await button.click();
