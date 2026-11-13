@@ -63,7 +63,7 @@ async fn runs_scope_skips_other_subscriptions_and_streams_run_updates() {
     assert!(all.machines_changed.is_some());
     assert!(all.showing.is_some());
     PROJECTS.said.send(StreamEvent::ProjectVault { id: "test-project".into(), state: "locked".into() }).unwrap();
-    let submitted = calcifer.here("scope-test", "scope-test", "test/echo".into(), &config.hub_url, b"{}".to_vec(),
+    let submitted = calcifer.here(None, "scope-test", "scope-test", "test/echo".into(), &config.hub_url, b"{}".to_vec(),
         |_| async { Ok(serde_json::json!({"done": true})) }).await.unwrap();
     let update = decoded(&tokio::time::timeout(Duration::from_secs(2), body.next()).await.unwrap().unwrap().unwrap());
     assert_eq!(update["type"], "run.updated");
