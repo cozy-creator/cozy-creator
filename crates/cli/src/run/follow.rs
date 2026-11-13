@@ -183,11 +183,14 @@ async fn interrupt() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-/// `run` as `event` moves it: its record anew, or one of its outputs.
+/// `run` as `event` moves it: its record anew, or one of its outputs. An event's record names no project, so the run keeps the
+/// one it was followed in, which every read after it names (cl-885: the last read after a restart asked the global route).
 fn absorb(run: &mut Run, event: &Event) {
     match event {
         Event::Created { run: now, .. } | Event::Queued { run: now, .. } | Event::InProgress { run: now, .. }
-        | Event::Completed { run: now, .. } | Event::Failed { run: now, .. } | Event::Canceled { run: now, .. } => *run = now.clone(),
+        | Event::Completed { run: now, .. } | Event::Failed { run: now, .. } | Event::Canceled { run: now, .. } => {
+            *run = Run { project: now.project.clone().or(run.project.take()), project_id: now.project_id.clone().or(run.project_id.take()), ..now.clone() };
+        }
         Event::OutputAdded { output_index, item, .. } | Event::OutputDone { output_index, item, .. } | Event::OutputLanded { output_index, item, .. } => {
             let at = *output_index as usize;
             if at < run.output.len() {
