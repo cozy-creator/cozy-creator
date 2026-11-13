@@ -30,7 +30,8 @@ rent_ok() {
     [ "$tries" -lt 3 ] || fail "three rentals came with driver $driver"
   done
 }
-quote 3600 "$SKU" "$SKU"
+# Both pods for 40 min, which overstates it: the cold one runs about 10 of them.
+quote 2400 "$SKU" "$SKU"
 rent_ok; WARM=$NAME
 step tensord machine update "$WARM" --tensord "$(command -v cozy)" -y || fail "$WARM refused the session's TensorD"
 say "step first: on $WARM alone, its first H3 call there: the cold time"
