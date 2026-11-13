@@ -29,7 +29,7 @@ pub(crate) const DB: &str = "project.db";
 /// Its write-ahead log, where a commit lands first.
 pub(crate) const WAL: &str = "project.db-wal";
 /// This schema's `user_version`: 3's, with each box's stable id on its row, so the rows alone say what the document does (cl-885). A
-/// database of another isn't read; one of 2 or 3 is migrated (`migrate`).
+/// database of another isn't read; an older one from 2 is migrated (`migrate`). A new schema is this number and its step in `migrate`.
 pub(super) const VERSION: i64 = 4;
 const SCHEMA: &str = "
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
@@ -213,34 +213,32 @@ pub(crate) fn open(path: &Path) -> Result<Connection, Error> {
     Ok(conn)
 }
 
-/// A schema-2 project.db as it was before its migration (cl-904).
-const BEFORE_SCHEMA_3: &str = "project.db.pre-schema3";
-
 /// Schema 2 kept a project's files, versions and runs in its Automerge document as well as in rows. Schema 3 keeps them in rows
 /// alone (cl-904, Paul 11-12: the CRDT is for node state, never files): the document's are written to the rows once, which then
-/// stand, and the document's next change leaves them out. Schema 4 reads a project from its rows (cl-885), which carry each box's id
-/// beside its name: they're written from the document once, in the same transaction.
+/// stand, and the document's next change leaves them out. Schema 4 reads a project from its rows (cl-885): it adds each box's id to its
+/// row, and `rows_at` and `conflicts` to `meta`, and changes no row 3 has. One transaction from any older schema; the project as it
+/// was is kept beside it once, `project.db.pre-schema4`, never read.
 fn migrate(path: &Path) -> Result<(), Error> {
     let e = |error| sql(path, error);
     let version = |conn: &Connection| conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0));
+    let older = |version: i64| (2..VERSION).contains(&version);
     let checked = connect(path, true)?;
-    if !matches!(version(&checked).map_err(e)?, 2 | 3) {
+    if !older(version(&checked).map_err(e)?) {
         return Ok(());
     }
-    // The migration is one way: the project as it was, kept beside it once and never read.
-    let kept = path.with_file_name(BEFORE_SCHEMA_3);
-    if version(&checked).map_err(e)? == 2 && !kept.exists() {
-        let part = path.with_file_name(format!("{BEFORE_SCHEMA_3}.part"));
+    let kept = path.with_file_name(format!("{DB}.pre-schema{VERSION}"));
+    if !kept.exists() {
+        let part = path.with_file_name(format!("{DB}.pre-schema{VERSION}.part"));
         checked.backup(rusqlite::MAIN_DB, &part, rusqlite::backup::NO_PROGRESS).map_err(e)?;
         std::fs::rename(&part, &kept).map_err(|error| err(path, error))?;
-        tracing::info!("project.db before schema 3 kept at {}", kept.display());
+        tracing::info!("project.db before schema {VERSION} kept at {}", kept.display());
     }
     drop(checked);
     let mut conn = connect(path, false)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(e)?;
     // Another process may have migrated it while this waited.
     let from = version(&tx).map_err(e)?;
-    if !matches!(from, 2 | 3) {
+    if !older(from) {
         return Ok(());
     }
     let doc = read_document(&tx, path)?;
@@ -255,18 +253,30 @@ fn migrate(path: &Path) -> Result<(), Error> {
     tx.commit().map_err(e)
 }
 
-/// The rows a read takes, written whole from `doc`, with the id each box has.
+/// What a read takes, added beside the rows a project already has: each box's id on its row, and its identity and alternatives in
+/// `meta` where they're missing. No row there is changed. The rows stand (`rows_at`) when they're what the document says; else a read
+/// takes the document and the next write writes them whole.
 fn rows_of(tx: &Transaction, at: &Path, doc: crdt::Document) -> Result<(), Error> {
-    let has_id: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name = 'id'", [], |row| row.get(0)).map_err(|e| sql(at, e))?;
+    let e = |error| sql(at, error);
+    let has_id: i64 = tx.query_row("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name = 'id'", [], |row| row.get(0)).map_err(e)?;
     if has_id == 0 {
-        tx.execute_batch("ALTER TABLE boxes ADD COLUMN id TEXT NOT NULL DEFAULT ''").map_err(|e| sql(at, e))?;
+        tx.execute_batch("ALTER TABLE boxes ADD COLUMN id TEXT NOT NULL DEFAULT ''").map_err(e)?;
     }
-    if let Some((id, name)) = doc.identity() {
-        identity_rows(tx, &id, &name).map_err(|e| sql(at, e))?;
+    let identity = doc.identity();
+    let mut projected = from_document(doc)?;
+    Arc::make_mut(&mut projected.written).in_stored_order();
+    // A row holds the box the document selects for its name, its last of that name.
+    for held in projected.written.boxes.iter() {
+        tx.execute("UPDATE boxes SET id = ?1 WHERE key = ?2 AND name = ?3", params![held.id, name_key(&held.name), held.name]).map_err(e)?;
     }
-    let stored = from_document(doc)?;
-    let digest = all_rows(tx, at, &stored)?;
-    rows_written(tx, at, &stored.written, digest).map(drop)
+    for (key, value) in identity.into_iter().flat_map(|(id, name)| [("id", id), ("name", name)]).chain([(CONFLICTS, json(&*projected.conflicts))]) {
+        tx.execute("INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)", params![key, value]).map_err(e)?;
+    }
+    let (rows, digest) = read_rows(tx, at)?;
+    if rows_differ(&rows, &projected).is_empty() {
+        rows_written(tx, at, &projected.written, digest)?;
+    }
+    Ok(())
 }
 
 /// The identity a read takes, beside the document's.
@@ -340,7 +350,7 @@ fn configure(conn: &Connection, path: &Path) -> Result<(), Error> {
 /// Its identity, as its rows keep it beside its document; one from before schema 4 is the document's.
 pub(crate) fn identity(conn: &Connection) -> Option<(String, String)> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).ok()?;
-    if !matches!(version, 2 | 3) {
+    if !(2..VERSION).contains(&version) {
         require_current(conn, Path::new(DB)).ok()?;
         // Never a project with no native document: its row stands beside what it keeps.
         document_at(conn, Path::new(DB)).ok()?;
@@ -651,8 +661,8 @@ pub(crate) fn integrity(conn: &Connection, at: &Path) -> Result<Vec<String>, Err
     let digest = rows_kept(&tx, at)?;
     let (rows, read) = read_rows(&tx, at)?;
     let doc = read_document(&tx, at)?;
-    let (heads, conflicts, identity) = (doc.heads(), doc.conflicts(), doc.identity());
-    let mut projected = doc.into_stored()?;
+    let (heads, identity) = (doc.heads(), doc.identity());
+    let mut projected = from_document(doc)?;
     Arc::make_mut(&mut projected.written).in_stored_order();
     let mut found = Vec::new();
     let kept = meta(&tx, "id").zip(meta(&tx, "name"));
@@ -664,6 +674,7 @@ pub(crate) fn integrity(conn: &Connection, at: &Path) -> Result<Vec<String>, Err
             let mut names = std::collections::HashSet::new();
             if projected.written.boxes.iter().all(|held| names.insert(name_key(&held.name))) {
                 found.push(format!("rows written at {:?}, the document at {:?}", meta(&tx, ROWS_AT), document_at(&tx, at).map(|now| json(&now)).ok()));
+                found.extend(rows_differ(&rows, &projected));
             }
             // A read takes the document: the rows aren't read.
             return Ok(found);
@@ -672,27 +683,35 @@ pub(crate) fn integrity(conn: &Connection, at: &Path) -> Result<Vec<String>, Err
         Some(kept) if kept != read => found.push(format!("rows changed past Calcifer: their digest is {}, their last commit's {}", read.hex(), kept.hex())),
         Some(_) => {}
     }
-    if serde_json::to_string(&rows.written.head).ok() != serde_json::to_string(&projected.written.head).ok() {
-        found.push(format!("head: rows {} | document {}", json(&rows.written.head), json(&projected.written.head)));
+    found.extend(rows_differ(&rows, &projected));
+    let set = |list: &[String]| list.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    if set(&rows.heads) != set(&heads) {
+        found.push(format!("heads: rows {:?} | document {:?}", rows.heads, heads));
     }
-    let row_boxes: Vec<_> = rows.written.boxes.iter().map(|held| (held.id.clone(), held.name.clone(), json(&held.fields))).collect();
-    let doc_boxes: Vec<_> = projected.written.boxes.iter().map(|held| (held.id.clone(), held.name.clone(), json(&held.fields))).collect();
+    Ok(found)
+}
+
+/// Where `rows` (as a read takes them) and `document` (as it projects, in stored order) say otherwise: boxes, head, canvas, alternatives.
+fn rows_differ(rows: &Stored, document: &Stored) -> Vec<String> {
+    let mut found = Vec::new();
+    if serde_json::to_string(&rows.written.head).ok() != serde_json::to_string(&document.written.head).ok() {
+        found.push(format!("head: rows {} | document {}", json(&rows.written.head), json(&document.written.head)));
+    }
+    let boxes = |stored: &Stored| stored.written.boxes.iter().map(|held| (held.id.clone(), held.name.clone(), json(&held.fields))).collect::<Vec<_>>();
+    let (row_boxes, doc_boxes) = (boxes(rows), boxes(document));
     if row_boxes != doc_boxes {
         let first = row_boxes.iter().zip(&doc_boxes).position(|(a, b)| a != b).unwrap_or(row_boxes.len().min(doc_boxes.len()));
         found.push(format!("boxes: {} rows, {} in the document; first differing at {first}: rows {:?} | document {:?}", row_boxes.len(), doc_boxes.len(), row_boxes.get(first), doc_boxes.get(first)));
     }
     let cards = |canvas: &BTreeMap<String, CardRow>| canvas.iter().map(|(key, row)| (key.clone(), row.name.clone(), json(&row.card), row.seq, row.by.clone())).collect::<Vec<_>>();
-    if cards(&rows.canvas) != cards(&projected.canvas) {
-        found.push(format!("canvas: rows {:?} | document {:?}", cards(&rows.canvas), cards(&projected.canvas)));
+    if cards(&rows.canvas) != cards(&document.canvas) {
+        found.push(format!("canvas: rows {:?} | document {:?}", cards(&rows.canvas), cards(&document.canvas)));
     }
     let set = |list: &[String]| list.iter().cloned().collect::<std::collections::BTreeSet<_>>();
-    if set(&rows.heads) != set(&heads) {
-        found.push(format!("heads: rows {:?} | document {:?}", rows.heads, heads));
+    if set(&rows.conflicts) != set(&document.conflicts) {
+        found.push(format!("conflicts: rows {:?} | document {:?}", rows.conflicts, document.conflicts));
     }
-    if set(&rows.conflicts) != set(&conflicts) {
-        found.push(format!("conflicts: rows {:?} | document {:?}", rows.conflicts, conflicts));
-    }
-    Ok(found)
+    found
 }
 
 fn read_document(conn: &Connection, at: &Path) -> Result<crdt::Document, Error> {

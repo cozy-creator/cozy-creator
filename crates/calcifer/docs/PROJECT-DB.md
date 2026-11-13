@@ -129,7 +129,9 @@ stands, and is answered in `kept` as it is. This is checked in the transaction, 
 
 ## Current-format opening
 
-Schema 4 databases with the current native Automerge storage format are opened; 2 and 3 are migrated in one transaction.
+Schema 4 databases with the current native Automerge storage format are opened; 2 and 3 are migrated in one transaction, the
+project as it was kept beside it once as `project.db.pre-schema4` (never read). 3 → 4 is additive: `boxes.id` and the `meta` keys
+`rows_at` and `conflicts`; no row 3 has is changed.
 `db::open` opens an existing file only. Read-only SQLite inspection validates schema and native
 storage format before any writable connection setup, pragmas or DDL. Schema 1, unversioned/empty
 existing databases and unsupported versions are refused; no migration, recovery backup, stage,

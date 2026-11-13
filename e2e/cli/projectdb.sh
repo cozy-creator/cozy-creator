@@ -4,10 +4,13 @@
 #   db_crash        Calcifer killed (kill -9) amid writes of a box, its row and its push-aside: each whole or absent; a resend is done once
 #   db_crdt         the native CRDT: stable identities, old-schema refusal, projection damage, replica merges, append and restart
 #   db_latency      write latency at a project with 500 takes (it runs on the cozy before project.db too: --shard projectdb-latency)
-#   db_migrate      a project 0.24.0 made opens here with nothing lost: its takes, files and words, ids and history (schema 3)
+#   db_migrate      a project 0.24.0 made opens here with nothing lost: its takes, files and words, ids and history
+#   db_migrate_large  a 5,000-box project of schema 3 opens here as $SCHEMA with nothing lost, and its rows read
 #   db_waits        project.db held by another program while a `cozy run` begins: waited out within Calcifer's wait and past it
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# project.db's schema (db.rs VERSION): what a project this cozy opens holds, and what its copy before a migration is named after.
+SCHEMA=4
 
 # sql <project> <query>: what project.db holds, read only, one JSON row a line.
 sql() {
@@ -406,7 +409,7 @@ step "project CRDT: canonical state, stable identities, old-schema refusal and n
 local P=$OUT/crdt-project V=$OUT/crdt-v1 before after source
 cozy --json new --unencrypted "$P" > "$OUT/crdt-new.json" 2> "$OUT/crdt-new.err" || { check "CRDT: project new: $(tail -c 300 "$OUT/crdt-new.err")"; return; }
 J '.created == true and (.id | length > 0)' "$OUT/crdt-new.json" || check "CRDT: new did not create a project"
-[ "$(sql1 "$P" 'PRAGMA user_version')" = 4 ] || { check "CRDT: project.db is not schema 4"; return; }
+[ "$(sql1 "$P" 'PRAGMA user_version')" = "$SCHEMA" ] || { check "CRDT: project.db is not schema $SCHEMA"; return; }
 [ "$(sql1 "$P" 'SELECT count(*) FROM crdt_document WHERE format = 1 AND length(snapshot) > 0')" = 1 ] || check "CRDT: no native snapshot"
 boxes_in "$P" <<'JSON' || { check "CRDT: seed the editable graph"; return; }
 [{"name": "kyogre", "tool": "qwen-image-2/image", "kind": "image", "fields": {"instructions": "A whale."}},
@@ -742,6 +745,9 @@ project_api "$M" /assets/notes -X PATCH -H 'Content-Type: application/json' -d '
 # 0.24.0's CLI has no export, history or delete: its Calcifer's routes, as its page asks, read and write alike on both.
 migrate_read "$M" 0240 || check "migrate: what 0.24.0 holds of it"
 local was_0240; was_0240=$(dump_of "$M/project.db")
+# What a migration must leave as it was: the document's heads, and how many boxes.
+local heads_0240 boxes_0240
+heads_0240=$(sql1 "$M" 'SELECT heads FROM crdt_document') boxes_0240=$(sql1 "$M" 'SELECT count(*) FROM boxes')
 # A copy of it whose project.db refuses a take's row, as a migration that fails part-way would meet: below.
 local F=$OUT/migrate-fails was_dump
 mkdir -p "$F" && cp -a "$M/." "$F/" && rm -f "$F"/project.db*
@@ -754,13 +760,17 @@ PY
 
 in_cozy "$now" || { check "migrate: this cozy back in its place"; return; }
 in_project "$M" --json status > "$OUT/migrate-open.json" 2> "$OUT/migrate-open.err" || { check "migrate: this cozy opening it: $(tail -c 300 "$OUT/migrate-open.err")"; return; }
-[ "$(sql1 "$M" 'PRAGMA user_version')" = 4 ] || check "migrate: project.db is schema $(sql1 "$M" 'PRAGMA user_version') after its first open here, not 4"
+[ "$(sql1 "$M" 'PRAGMA user_version')" = "$SCHEMA" ] || check "migrate: project.db is schema $(sql1 "$M" 'PRAGMA user_version') after its first open here, not $SCHEMA"
 project_integrity "$M" "its first open here"
+[ "$(sql1 "$M" 'SELECT heads FROM crdt_document')" = "$heads_0240" ] || check "migrate: the document's heads moved: $heads_0240, now $(sql1 "$M" 'SELECT heads FROM crdt_document')"
+[ "$(sql1 "$M" 'SELECT count(*) FROM boxes')" = "$boxes_0240" ] && [ "$(sql1 "$M" "SELECT count(*) FROM boxes WHERE id = ''")" = 0 ] \
+  || check "migrate: $boxes_0240 boxes, now $(sql1 "$M" 'SELECT count(*) FROM boxes'), $(sql1 "$M" "SELECT count(*) FROM boxes WHERE id = ''") with no id"
+[ "$(sql1 "$M" "SELECT count(*) FROM meta WHERE key = 'rows_at'")" = 1 ] || check "migrate: its rows don't stand at its document after the migration"
 # The project as 0.24.0 left it, kept beside it once.
-local kept=$M/project.db.pre-schema3 kept_at
+local kept=$M/project.db.pre-schema$SCHEMA kept_at
 [ -f "$kept" ] && [ "$(dump_of "$kept")" = "$was_0240" ] || check "migrate: no copy of it as 0.24.0 left it: $([ -f "$kept" ] && dump_of "$kept") (was $was_0240)"
 kept_at=$(stat -c %Y.%s "$kept" 2> /dev/null)
-cozy machine logs local calcifer --lines 5000 2> /dev/null | grep -q "project.db before schema 3 kept at .*/migrate/project.db.pre-schema3" \
+cozy machine logs local calcifer --lines 5000 2> /dev/null | grep -q "project.db before schema $SCHEMA kept at .*/migrate/project.db.pre-schema$SCHEMA" \
   || check "migrate: Calcifer's log doesn't say where the copy is"
 migrate_read "$M" now || check "migrate: what this cozy holds of it"
 local part
@@ -791,11 +801,83 @@ if in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1; then check "m
 [ "$(dump_of "$F/project.db")" = "$was_dump" ] || check "migrate: a migration refused part-way changed project.db ($was_dump, now $(dump_of "$F/project.db")): $(tail -c 300 "$OUT/migrate-fails.json")"
 db_sql "$F" "DROP TRIGGER e2e_refused"
 in_project "$F" --json status > "$OUT/migrate-fails.json" 2>&1 || check "migrate: let be, the copy didn't open: $(tail -c 300 "$OUT/migrate-fails.json")"
-[ "$(sql1 "$F" 'PRAGMA user_version')" = 4 ] || check "migrate: let be, the copy is schema $(sql1 "$F" 'PRAGMA user_version')"
+[ "$(sql1 "$F" 'PRAGMA user_version')" = "$SCHEMA" ] || check "migrate: let be, the copy is schema $(sql1 "$F" 'PRAGMA user_version')"
 migrate_facts "$F" | cmp -s - "$OUT/migrate-0240-facts" || check "migrate: let be, the copy reads otherwise: $(migrate_facts "$F" | diff "$OUT/migrate-0240-facts" - | head -c 600)"
 [ "$(stat -c %Y.%s "$kept" 2> /dev/null)" = "$kept_at" ] || check "migrate: the copy kept beside it was written again"
-[ "$(dump_of "$F/project.db.pre-schema3")" = "$was_dump" ] || check "migrate: the refused copy's own kept copy isn't it as it was"
+[ "$(dump_of "$F/project.db.pre-schema$SCHEMA")" = "$was_dump" ] || check "migrate: the refused copy's own kept copy isn't it as it was"
+# The copy kept beside it opens as a project of its own, migrated in its turn, and reads as 0.24.0 read it.
+local K=$OUT/migrate-kept
+mkdir -p "$K" && cp "$kept" "$K/project.db" && cp -al "$M/files" "$K/files" || check "migrate: a folder for the kept copy"
+in_project "$K" --json status > "$OUT/migrate-kept.json" 2>&1 || check "migrate: the kept copy doesn't open: $(tail -c 300 "$OUT/migrate-kept.json")"
+project_integrity "$K" "the kept copy's open"
+migrate_facts "$K" | cmp -s - "$OUT/migrate-0240-facts" || check "migrate: the kept copy reads otherwise: $(migrate_facts "$K" | diff "$OUT/migrate-0240-facts" - | head -c 600)"
 echo "migrate: 0.24.0's project read here as it read there: $(jq -sc 'map({(.name): [.versions[].number]}) | add' "$OUT/migrate-now-facts")"
+}
+
+# A 5,000-box project of schema 3 (cl-904's) opens here as $SCHEMA (cl-885) with nothing lost. The migration adds each box's id to its
+# row and rows_at and conflicts to meta, changes no row 3 has, and keeps the project as it was beside it once; its rows then stand at
+# the document, so a read takes them. Schema 3 is this cozy's project, Calcifer stopped, with what 4 added taken off.
+db_migrate_large() {
+step "project.db: a 5,000-box project of schema 3 migrates with nothing lost"
+local L=$OUT/migrate-large K=$OUT/migrate-large-kept n=5000 pid was began
+cozy --json new --unencrypted "$L" > "$OUT/migrate-large-new.json" 2>&1 || { check "migrate large: project new: $(tail -c 300 "$OUT/migrate-large-new.json")"; return; }
+python3 - "$L/nodes.yaml" "$n" <<'PY'
+import sys
+with open(sys.argv[1], "w") as out:
+    for i in range(int(sys.argv[2])):
+        out.write(f"note_{i}:\n  kind: text\n  text: Note {i}. The colossal blue whale rises through a storm, lit from below, and the small boat holds.\n")
+PY
+in_project "$L" apply -f nodes.yaml > "$OUT/migrate-large-apply.txt" 2>&1 || { check "migrate large: apply $n nodes: $(tail -c 300 "$OUT/migrate-large-apply.txt")"; return; }
+jq -n --argjson n "$n" '{cards: ([range(0; $n)] | map({key: "note_\(.)", value: {x: ((. % 71) * 300), y: ((. / 71 | floor) * 333)}}) | from_entries)}' > "$OUT/migrate-large-cards.json"
+project_api "$L" /canvas -X PATCH -H 'Content-Type: application/json' -d @"$OUT/migrate-large-cards.json" > /dev/null || check "migrate large: place them"
+for i in 1 2 3; do
+  project_api "$L" "/assets/note_$i" -X PATCH -H 'Content-Type: application/json' -d "{\"fields\": {\"text\": \"Note $i, edited.\"}}" > /dev/null || check "migrate large: edit note_$i"
+done
+large_read "$L" before || { check "migrate large: what it holds"; return; }
+[ "$(jq length "$OUT/migrate-large-before-boxes")" = "$n" ] || check "migrate large: $(jq length "$OUT/migrate-large-before-boxes") boxes, not $n"
+pid=$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")
+kill -TERM "$pid"; while kill -0 "$pid" 2> /dev/null; do sleep 0.1; done
+python3 - "$L/project.db" <<'PY' || { check "migrate large: made schema 3"; return; }
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1], isolation_level=None)
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+db.executescript("BEGIN; ALTER TABLE boxes DROP COLUMN id; DELETE FROM meta WHERE key IN ('rows_at', 'conflicts'); PRAGMA user_version = 3; COMMIT;")
+PY
+was=$(dump_of "$L/project.db")
+began=$SECONDS
+in_project "$L" --json status > "$OUT/migrate-large-open.json" 2>&1 || { check "migrate large: its open: $(tail -c 300 "$OUT/migrate-large-open.json")"; return; }
+echo "migrate large: $n boxes migrated and read in $((SECONDS - began)) s"
+db_calcifer
+[ "$(sql1 "$L" 'PRAGMA user_version')" = "$SCHEMA" ] || check "migrate large: schema $(sql1 "$L" 'PRAGMA user_version') after its open, not $SCHEMA"
+local kept=$L/project.db.pre-schema$SCHEMA
+[ -f "$kept" ] && [ "$(dump_of "$kept")" = "$was" ] || check "migrate large: no copy of it as it was: $([ -f "$kept" ] && dump_of "$kept") (was $was)"
+cozy machine logs local calcifer --lines 5000 2> /dev/null | grep -q "project.db before schema $SCHEMA kept at .*/migrate-large/project.db.pre-schema$SCHEMA" \
+  || check "migrate large: Calcifer's log doesn't say where the copy is"
+project_integrity "$L" "its migration"
+[ "$(sql1 "$L" "SELECT count(*) FROM meta WHERE key = 'rows_at'")" = 1 ] || check "migrate large: its rows don't stand at its document"
+[ "$(sql1 "$L" "SELECT count(*) FROM boxes WHERE id = ''")" = 0 ] || check "migrate large: $(sql1 "$L" "SELECT count(*) FROM boxes WHERE id = ''") boxes with no id"
+large_read "$L" after || check "migrate large: what it holds after"
+local part
+for part in boxes canvas history heads; do
+  cmp -s "$OUT/migrate-large-before-$part" "$OUT/migrate-large-after-$part" || check "migrate large: its $part read otherwise: $(diff "$OUT/migrate-large-before-$part" "$OUT/migrate-large-after-$part" | head -c 600)"
+done
+# The kept copy opens as a project of its own, migrated in its turn, and holds what this did.
+mkdir -p "$K" && cp "$kept" "$K/project.db" || check "migrate large: a folder for the kept copy"
+in_project "$K" --json status > "$OUT/migrate-large-kept.json" 2>&1 || check "migrate large: the kept copy doesn't open: $(tail -c 300 "$OUT/migrate-large-kept.json")"
+project_integrity "$K" "the kept copy's open"
+large_read "$K" kept || check "migrate large: what the kept copy holds"
+for part in boxes canvas; do
+  cmp -s "$OUT/migrate-large-before-$part" "$OUT/migrate-large-kept-$part" || check "migrate large: the kept copy's $part read otherwise"
+done
+}
+# large_read <project> <tag>: each box's fields, the canvas, its history and the document's heads, to $OUT/migrate-large-<tag>-*.
+large_read() {
+  local state
+  state=$(project_api "$1" '') || return
+  jq -S '[.assets[] | {name, fields}] | sort_by(.name)' <<< "$state" > "$OUT/migrate-large-$2-boxes" || return
+  project_api "$1" /canvas | jq -S '.cards | map_values({x, y, w})' > "$OUT/migrate-large-$2-canvas" || return
+  project_api "$1" '/history?limit=200' | jq -c '[.entries[] | {words, undone: (.undone != null)}]' > "$OUT/migrate-large-$2-history" || return
+  sql1 "$1" 'SELECT heads FROM crdt_document' > "$OUT/migrate-large-$2-heads"
 }
 # in_cozy <file>: that cozy in this one's place, as an update puts it, and its Calcifer the one serving: the last stopped as a
 # service manager stops one, and started by the next verb.
