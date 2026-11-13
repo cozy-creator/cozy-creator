@@ -372,10 +372,8 @@ pub(crate) fn acquire<T>(
             Ok(value) => return Ok(value),
             Err(AllocationFailure::ReserveShort(_)) => {
                 // The pages fit, not beside the driver's reserve: what is idle and done goes for it,
-                // with no wait, no owner and no peer; short of that, the demand takes the reserve.
-                let mut released = 0;
-                release(device, crate::DRIVER_RESERVE, usize::MAX, Wait::No, protect, ReclaimReason::Allocator, &mut released)?;
-                if released == 0 {
+                // with no wait on our own work and no owner; short of that, the demand takes the reserve.
+                if !reserve(device, protect, wait != Wait::No)? {
                     return crate::waived(&mut try_map).map_err(Into::into);
                 }
                 continue;
@@ -468,6 +466,31 @@ pub(crate) fn release(
     })();
     *completed += sequence.released;
     result.map(|()| sequence.evicted)
+}
+
+/// The driver's reserve for pages that fit but not beside it, in the one order with no wait on this
+/// process's GPU work and no owner. A demand (`ask`) asks idle peers before our weights go: they hold
+/// what nothing is about to use, and ours are read again. Without the ask an idle H3 executor kept
+/// 27 GB on a 5090 while SDXL beside it evicted and refilled 66 GB of its own weights a call (var-020).
+/// Whether anything came free.
+fn reserve(device: i32, protect: Protect<'_>, ask: bool) -> Result<bool> {
+    if working::existing(device)?.is_none() {
+        return Ok(false);
+    }
+    let want = crate::DRIVER_RESERVE;
+    let mut sequence = Sequence::new(device, usize::MAX, Wait::No, protect, ReclaimReason::Allocator)?;
+    while sequence.released < want && sequence.step < ORDER.len() {
+        let (step, left) = (ORDER[sequence.step], want - sequence.released);
+        if step == Step::IdlePeers {
+            if ask && idle_peers_gave(device, left) {
+                return Ok(true);
+            }
+            sequence.step += 1;
+        } else if !sequence.run(step, left, false)? {
+            sequence.step += 1;
+        }
+    }
+    Ok(sequence.released > 0)
 }
 
 /// A peer's ask, once this process's owner caches have answered: completed high regions may go.
