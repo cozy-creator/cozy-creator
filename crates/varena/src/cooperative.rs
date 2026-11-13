@@ -8,7 +8,7 @@ use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use varena_ledger::{Donor, Recovery, Row, Table};
+use varena_ledger::{Donor, Look, Recovery, Row, Table};
 
 /// The room a process needs to come up: its CUDA context and first stream (xs-112: 2 to 3 GB).
 const BRING_UP_BYTES: usize = 3 << 30;
@@ -271,20 +271,21 @@ impl Donor for Native {
 
     /// Design §4.6: `free < H` gives back up to `2H - free`, wherever a foreign program or this
     /// card's own fill put it, and speculation regrows at a pass boundary only once `2H` is free.
-    fn tick(&mut self, table: &Table, row: Row, idle: u64) -> bool {
+    /// Sampled only on a shared card with idle bytes: the driver tells no one of another program's use.
+    fn tick(&mut self, table: &Table, row: Row, idle: u64) -> Look {
         // Right after a give its taker may not have taken it yet: the next look comes as soon.
         let gave = std::mem::take(&mut self.asked);
         if gave {
             table.stop_asking(row);
         }
         if !self.shared || idle == 0 {
-            return false;
+            return Look::Nothing;
         }
         let sample = crate::gate(self.device).and_then(|gate| {
             gate.not_capturing()?;
             working::peer::memory_info(self.device)
         });
-        let Ok((free, total)) = sample else { return false };
+        let Ok((free, total)) = sample else { return Look::Sample };
         let (free, total) = (free as u64, total as u64);
         let reserve = (total / 16).max(512 << 20);
         // Short only for memory that isn't ours: a process filling its own weights asks for itself.
@@ -304,6 +305,6 @@ impl Donor for Native {
             table.ask(row, want);
             self.asked = true;
         }
-        want != 0 || gave
+        if want != 0 || gave { Look::Short } else { Look::Sample }
     }
 }
