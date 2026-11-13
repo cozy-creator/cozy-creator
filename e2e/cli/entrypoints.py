@@ -25,6 +25,7 @@ PUBLIC = {
     "explain",
     "render",
     "status",
+    "key",
     "vault",
     "machine",
     "model",
