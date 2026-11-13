@@ -14,7 +14,7 @@ dog=$(picture dog2.jpg); other=$(picture dog1.jpg); target=birefnet/remove_backg
 run_cell "$OUT" line-first "$target" --file "image=$dog" --on local || { check "estimate line: the first BiRefNet run: $(run_get "$OUT" line-first .reason.message)"; return; }
 cozy --json machine show local > "$OUT/line-models.json" || { check "estimate line: machine show local"; return; }
 model=$(jq -r '[.status.models[]?.repository] | map(select(test("birefnet"; "i"))) | first // empty' "$OUT/line-models.json")
-[ -n "$model" ] || { check "estimate line: BiRefNet's weights aren't listed: $(jq -c '[.status.models[]?.repository]' "$OUT/line-models.json")"; run_show "$OUT" line-first "$(cat "$OUT/line-first.number")"; echo "estimate line: the first run: $(run_get "$OUT" line-first '{machine, status, models: [.request.models? // {} | to_entries[]? | .value]}' | head -c 600)"; diagnosed "estimate line"; return; }
+[ -n "$model" ] || { check "estimate line: BiRefNet's weights aren't listed: $(jq -c '[.status.models[]?.repository]' "$OUT/line-models.json")"; echo "estimate line: where weights are: $(du -sm "$RUN_PROJECT"/.vault-machine/* "$HOME"/.cozy/machine/var/lib/cozy/* 2> /dev/null | sort -n | tail -6 | tr '\t\n' ' ')"; diagnosed "estimate line"; return; }
 cozy --json model uninstall "$model" > "$OUT/line-uninstall.json" 2>&1 || { check "estimate line: model uninstall $model: $(tail -c 300 "$OUT/line-uninstall.json")"; return; }
 machine_stop || { check "estimate line: the local machine did not stop"; return; }
 machine_ready

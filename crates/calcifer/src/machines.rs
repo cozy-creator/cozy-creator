@@ -329,9 +329,12 @@ impl Machines {
                 let Ok(scope) = crate::private_io::scope_for_project(&id, &root) else { continue };
                 // Only a project that has run here has an engine of its own to ask: asking makes none.
                 if !scope.storage.view_root.join(".vault-machine").exists() { continue; }
-                if let Ok(frame) = link.with_private(scope).status().await {
-                    models.extend(frame.models.iter().map(|m| m.model.clone()));
-                    held.insert(id, frame.models);
+                match link.with_private(scope).status().await {
+                    Ok(frame) => {
+                        models.extend(frame.models.iter().map(|m| m.model.clone()));
+                        held.insert(id, frame.models);
+                    }
+                    Err(error) => warn!("what a project's own engine on local holds is unread: {error}"),
                 }
             }
             *lock(&self.project_models) = held;
@@ -354,7 +357,7 @@ impl Machines {
                     .filter(|said| !said.is_empty() && said != "sha256:")
                     .collect(),
                 Err(::api::hub::Error::Hub { status: 404, .. }) => HashSet::new(),
-                Err(_) => continue,
+                Err(error) => { warn!("which releases of {model} are public is unread: {error}"); continue }
             };
             lock(&self.public).insert(model, public);
         }

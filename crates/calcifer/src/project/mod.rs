@@ -170,6 +170,9 @@ pub(crate) struct Project {
     unseen: Mutex<unseen::Unseen>,
     /// Its folder watched while it's open, a plain one's (`Projects::look`).
     _watch: Option<platform::watch::Watcher>,
+    /// Each package a plan asked described, by Hub and `with`: one description each, going on past the plan's budget, its answer
+    /// kept for the next plan (`Walk::quotable`).
+    described: Mutex<HashMap<(String, String), Arc<tokio::sync::OnceCell<Result<Package, Error>>>>>,
 }
 
 impl Drop for Project {
@@ -362,6 +365,7 @@ impl Projects {
                     unsent: Mutex::default(),
                     unseen: Mutex::new(unseen),
                     _watch: watch,
+                    described: Mutex::default(),
                 });
                 // What closed since the last open goes from the list.
                 open.retain(|_, held| held.strong_count() > 0);
@@ -3699,13 +3703,12 @@ impl Walk {
     async fn quotable(&self, key: String, on: Vec<On>, hub: &str, with: &str, made: Map<String, Value>, late: Option<std::time::Duration>) -> Option<placement::Job> {
         let api = self.host.api();
         let late = late.unwrap_or(std::time::Duration::MAX);
-        let found = tokio::time::timeout(late, self.host.package(hub, with, &self.folder().dir, &on)).await;
         // Why a job isn't placed, said: it goes to the first of its machines, and nothing is fetched ahead for it.
         let dir = self.folder().dir.display().to_string();
-        let package = match found {
-            Ok(Ok(package)) => package,
-            Ok(Err(error)) => { warn!("{dir}: {key} isn't planned: its package: {}", error.message); return None; }
-            Err(_) => { warn!("{dir}: {key} isn't planned: its package said nothing in {late:?}"); return None; }
+        let package = match self.described(hub, with, &on, late).await {
+            Some(Ok(package)) => package,
+            Some(Err(error)) => { warn!("{dir}: {key} isn't planned: its package: {}", error.message); return None; }
+            None => { warn!("{dir}: {key} isn't planned this time: its package is still being described"); return None; }
         };
         let Some(renderer) = package.maker().ok().flatten() else { warn!("{dir}: {key} isn't planned: its package makes nothing it can quote"); return None };
         let models = tokio::time::timeout(late, fit::checkpoints(&api, hub, &package, &renderer.function, &made)).await.unwrap_or_default();
@@ -3714,6 +3717,44 @@ impl Walk {
             interface.callables.iter().find(|callable| callable.name == renderer.function).is_some_and(|callable| interface.needs_gpu(callable))
         });
         Some(placement::Job { key, target: renderer.target(), function: package.estimated(&renderer.function), models, size, gpus: 0, gpu, on })
+    }
+
+    /// The package `with` names as `hub` has it, described once for every plan of this project: a description that outlasts `late`
+    /// goes on by itself, and a later plan reads its answer. None: it's still going. A failed one is asked again by the next plan.
+    async fn described(&self, hub: &str, with: &str, on: &[On], late: std::time::Duration) -> Option<Result<Package, Error>> {
+        let at = (hub.to_owned(), with.to_owned());
+        let (cell, fresh) = {
+            let mut described = self.project.described.lock().expect("described lock");
+            match described.get(&at) {
+                Some(cell) => (cell.clone(), false),
+                None => {
+                    let cell = Arc::new(tokio::sync::OnceCell::new());
+                    described.insert(at.clone(), cell.clone());
+                    (cell, true)
+                }
+            }
+        };
+        if fresh {
+            let (api, project, cell, on) = (self.host.api(), self.project.clone(), cell.clone(), on.to_vec());
+            let scope = crate::private_io::of_path(&project.folder.dir).ok().flatten();
+            tokio::spawn(crate::private_io::context(scope, async move {
+                let host = Host::for_project(&api, &project.id);
+                let found = host.package(&at.0, &at.1, &project.folder.dir, &on).await;
+                let failed = found.is_err();
+                let _ = cell.set(found);
+                // Its answer is the next plan's; a failure is asked again then.
+                if failed {
+                    project.described.lock().expect("described lock").remove(&at);
+                }
+                project.asked.notify_one();
+            }));
+        }
+        let waited = tokio::time::timeout(late, async {
+            while cell.get().is_none() {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }).await;
+        waited.ok().and_then(|()| cell.get().cloned())
     }
 
     /// Places the jobs not sent yet, the nearest `plan::PLANNED` of them (cl-967): every machine pictured from the Status it pushed, each
