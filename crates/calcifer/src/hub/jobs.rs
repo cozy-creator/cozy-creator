@@ -7,7 +7,7 @@ use std::sync::Arc;
 use api::{
     calcifer::{
         Note, NoteLevel, On, Run, RunQuote, RunRequest, SubmitRun, Submitted,
-        hub::{PackageLock, PackagePublish, job},
+        hub::{CozyUpdate, PackageLock, PackagePublish, job},
     },
     code::LocalCode,
     config::Origin,
@@ -34,6 +34,8 @@ pub(super) enum Planned {
     Request(Box<RunRequest>),
     /// Local code's install, still going: its client follows it, then asks again under the same key.
     Preparing(Box<Run>),
+    /// cozy updates itself first for the package release asked (cl-978): its run, which the client follows, then asks again.
+    Cozy(Box<crate::cozy::Wanted>),
     /// Calcifer's own work, called `target` in the run's record.
     Here { target: String, work: Work },
 }
@@ -44,6 +46,8 @@ pub(super) enum Work {
     Publish(LocalCode, PackagePublish),
     Record(Box<weights::Record>),
     Remove(packages::Removal),
+    /// cozy's own update for a package that needs it (`crate::cozy`, cl-978): asked by no client, carried out again after a stop.
+    Cozy(CozyUpdate),
 }
 
 /// A machine's run with nothing more to it.
@@ -91,6 +95,7 @@ async fn plan(api: &Arc<Api>, key: &str, hub: &Origin, ask: &RunRequest) -> Resu
         job::PACKAGE_REMOVE => packages::removal(api, hub, &on, input(ask)?).await,
         job::PACKAGE_LOCK => Ok(Planned::Here { target: ask.target.clone(), work: Work::Lock(code(ask)?, input(ask)?) }),
         job::PACKAGE_PUBLISH => Ok(Planned::Here { target: ask.target.clone(), work: Work::Publish(code(ask)?, input(ask)?) }),
+        job::COZY_UPDATE => Ok(Planned::Here { target: ask.target.clone(), work: Work::Cozy(input(ask)?) }),
         other => unreachable!("{other} is no job"),
     }
 }
@@ -116,6 +121,10 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, digest: &str, ask: RunReq
     let hub = origin(api, Some(&ask.hub)).map_err(|Refusal(e)| e)?;
     let submitted = match plan(api, key, &hub, &ask).await.map_err(|Refusal(e)| e)? {
         Planned::Preparing(run) => Ok(Submitted { run: *run, replay: false, notes: vec![], preparing: true, lock: None }),
+        Planned::Cozy(wanted) => {
+            let (run, note) = crate::cozy::update(api, &wanted).await?;
+            Ok(Submitted { run, replay: false, notes: vec![note], preparing: true, lock: None })
+        }
         Planned::Request(request) => return Ok(Job::Call(request)),
         Planned::Run { submit, after, mut notes, mirror } => {
             if let Some(mirror) = mirror {
@@ -197,7 +206,7 @@ pub(crate) async fn quote(api: &Arc<Api>, ask: RunRequest) -> Result<Job<Option<
     }
     let hub = origin(api, Some(&ask.hub)).map_err(|Refusal(e)| e)?;
     match plan(api, "quote", &hub, &ask).await.map_err(|Refusal(e)| e)? {
-        Planned::Here { .. } => Ok(Job::Done(None)),
+        Planned::Here { .. } | Planned::Cozy(_) => Ok(Job::Done(None)),
         Planned::Request(request) => Ok(Job::Call(request)),
         Planned::Run { submit, .. } => {
             api.machines.hubs.client(&submit.hub)?;
@@ -215,6 +224,7 @@ impl Work {
             Work::Publish(code, ask) => serde_json::to_value(author::publish(api, hub, &code, &ask, here).await?),
             Work::Record(record) => serde_json::to_value(record.run(api, hub).await.map_err(|Refusal(e)| e)?),
             Work::Remove(removal) => serde_json::to_value(removal.run(api, key).await?),
+            Work::Cozy(ask) => return crate::cozy::run(api, ask, here).await,
         };
         result.map_err(|e| Error::internal("job_result", e.to_string()))
     }

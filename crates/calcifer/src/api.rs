@@ -78,6 +78,10 @@ pub(crate) struct Api {
     /// never land between a submission's check and its commit.
     stopping: Arc<RwLock<bool>>,
     stop: watch::Sender<bool>,
+    /// Set once cozy updated itself (cl-978): this Calcifer stops to start the installed binary in its place.
+    updated: std::sync::atomic::AtomicBool,
+    /// When this Calcifer started: its own updates are keyed by it.
+    pub(crate) started_ms: i64,
 }
 
 impl Api {
@@ -99,6 +103,8 @@ impl Api {
             bearer: Sha256::digest(token).into(),
             stopping: Arc::new(RwLock::new(false)),
             stop: watch::channel(false).0,
+            updated: std::sync::atomic::AtomicBool::new(false),
+            started_ms: crate::store::now_ms(),
         });
         crate::project::vault::start(&api);
         api
@@ -129,6 +135,50 @@ impl Api {
         info!(owed = owed.len(), "down: stopping");
         self.stop();
         Ok(owed)
+    }
+
+    /// What keeps this Calcifer from restarting now but `own`, its update's run (cl-978): runs going (its machines', its own),
+    /// and requests being served. None: it's idle; a page with a stream open reconnects.
+    pub(crate) fn busy_but(&self, own: &str) -> Result<Option<String>, Error> {
+        let store = self.calcifer.store();
+        let internal = |e: StoreError| Error::internal("store_unreadable", e.to_string());
+        let runs = store.unsettled().map_err(internal)?.len();
+        let here = store.unsettled_here().map_err(internal)?.into_iter().filter(|id| id.as_str() != own).count();
+        let requests = self.activity.requests.load(Ordering::Relaxed);
+        let mut busy = vec![];
+        match runs + here {
+            0 => {}
+            1 => busy.push("a run is going".to_owned()),
+            n => busy.push(format!("{n} runs are going")),
+        }
+        if requests > 0 {
+            busy.push(format!("{requests} request(s) in flight"));
+        }
+        Ok((!busy.is_empty()).then(|| busy.join(", ")))
+    }
+
+    /// Stops this Calcifer for the cozy it updated to, which starts in its place (`serve::main`): as `down` does, admission closed
+    /// once mutations in flight are done, again while an encrypted view is still closing.
+    pub(crate) async fn restart_updated(self: &Arc<Self>) {
+        self.updated.store(true, Ordering::Relaxed);
+        loop {
+            let mut closed = std::pin::pin!(crate::project::vault::CLOSED.notified());
+            closed.as_mut().enable();
+            match self.down().await {
+                Ok(_) => return,
+                Err(e) => warn!(code = %e.code, "restarting on the updated cozy: {}; again once a view closes", e.message),
+            }
+            tokio::select! {
+                () = self.stopped() => return,
+                () = closed => {}
+                () = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+            }
+        }
+    }
+
+    /// Whether this Calcifer stopped for the cozy it updated to.
+    pub(crate) fn updated(&self) -> bool {
+        self.updated.load(Ordering::Relaxed)
     }
 
     /// Ends every stream and the server.

@@ -18,8 +18,9 @@
 # 0.23.0) must instead be refused at every step with the typed client_too_old naming `cozy update`. Any 5xx fails.
 # --candidates takes e2e/candidates' $CANDIDATES: its --tensord file (or version) or its --release's Linux archive is the
 # client, with its --runtime and --tensorfs. --command runs a focused suite instead of the cells: `FILE OUT COZY RUNTIME
-# TENSORFS ARGS...`, signed in, as the Hub's admin with --admin. --software RUNTIME,TENSORFS pins the Hub's software (what
-# `cozy machine update <machine>` naming nothing moves a machine to).
+# TENSORFS ARGS...`, signed in, as the Hub's admin with --admin. --software RUNTIME,TENSORFS[,COZY] pins the Hub's software (what
+# `cozy machine update <machine>` naming nothing moves a machine to, and the cozy that updates itself for a package, cl-978). A
+# cell restarts the Hub with other settings by e2e/skew/rehub.sh.
 set -uo pipefail
 E2E=$(cd "$(dirname "$0")/.." && pwd) HERE=$(cd "$(dirname "$0")/../../release-gate" && pwd)
 START=$PWD
@@ -100,6 +101,7 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/cozy-hub-fixture.XXXXXX") && WORK=$(cd "$WORK"
 PG_NAME=cozy-skew-pg-$$-$RANDOM PG_BIN=''
 cleanup() {
   local status=$?
+  [ ! -s "$WORK/hub.pid" ] || HUBPID=$(cat "$WORK/hub.pid")
   for pid in "${HUBPID:-}" "${S3PID:-}" "${INGRESS:-}"; do
     [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
   done
@@ -183,7 +185,8 @@ hub=("$WORK/tensorhub$EXE" --config "$(native "$CONFIG")"
   --set storage.backend.access_key_id=$S3KEY --set storage.backend.secret_access_key=$S3SECRET
   --set storage.repo_cas.bucket=repo --set storage.package_source.bucket=source
   --set package_release.scratch_root="$(native "$WORK/release")" ${MIN:+--set clients.cozy_min=$MIN}
-  ${SOFTWARE:+--set software.runtime=${SOFTWARE%,*} --set software.tensorfs=${SOFTWARE#*,}})
+  ${SOFTWARE:+--set software.runtime=$(cut -d, -f1 <<< "$SOFTWARE") --set software.tensorfs=$(cut -d, -f2 <<< "$SOFTWARE")}
+  ${SOFTWARE:+--set software.cozy=$(cut -s -d, -f3 <<< "$SOFTWARE")})
 (umask 077; printf '%s\0' "${hub[@]}" > "$WORK/hub-command.argv")
 export COZY_TEST_HUB_COMMAND_FILE=$WORK/hub-command.argv
 "${hub[@]}" migrate > hub-migrate.log 2>&1 || die hub "migrate: $(tail -c 300 hub-migrate.log)"
@@ -194,6 +197,8 @@ if [ "$OS" = Windows ]; then
     attrib +R "$(native "$WORK/authkit/totp.key")"; } > authkit-key.log 2>&1 || die hub "the read-only TOTP key: $(tail -c 300 authkit-key.log)"
 fi
 "${NICE[@]}" "${hub[@]}" serve > hub.log 2>&1 & HUBPID=$!
+echo "$HUBPID" > "$WORK/hub.pid"
+export COZY_TEST_HUB_PID_FILE=$WORK/hub.pid COZY_TEST_HUB_SERVE_LOG=$OUT/hub.log COZY_TEST_HUB_HEALTH=$HUB/healthz
 for _ in $(seq 90); do [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] && break; kill -0 $HUBPID 2>/dev/null || break; sleep 1; done
 [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] || die hub "the Hub did not come up: $(tail -c 600 hub.log)"
 kill -0 "$HUBPID" 2>/dev/null || die hub "the owned fixture Hub exited during startup"
@@ -300,6 +305,36 @@ log "model upload by the machine, publish, download, delete"; hub_models
 log "package publish, then install on the machine (its first environment: slow on a fresh runner)"; hub_publish
 hub_do package-install ok package install "$WHO/$HUB_PKG" --on local
 if ! older "$CLIENT" 0.24.0; then hub_packages; fi
+# skew_newer (cl-978): a release whose cozy-runtime floor only a newer cozy's line runs (NEXT: the next line's Runtime, on
+# PyPI). A client before cozy's self-update (0.26) is refused, typed, naming `cozy update`, at its run and its install, and so
+# is its machine's move to the Hub's software (`cozy machine update local`, what its machine's refusals name), which it
+# can't run; never a 5xx. A newer client updates itself (e2e/cli/selfupdate.sh).
+skew_newer() {
+  local next dir=$HB/pkg-newer name=ci-next-$R code
+  case $CLIENT in
+    0.24.*) next=0.46.0 ;;
+    *) log "skew newer: no released Runtime needs a cozy newer than $CLIENT yet"; return 0 ;;
+  esac
+  rm -rf "$dir" && cp -r "$HERE/suites/hub/pkg" "$dir" &&
+    sed -i "s/^name = \"ci-hub-pkg\"/name = \"$name\"/; s/\"cozy-runtime>=0.30\"/\"cozy-runtime>=$next\"/" "$dir/pyproject.toml" || return 1
+  (cd "$dir" && hub_do newer-publish ok package publish -y) || return 0
+  for verb in run install software; do
+    case $verb in
+      run) (cd "$RUN_PROJECT" && timeout 1200 "$COZY_BIN" --json run "$WHO/$name/echo" text=newer --on "$M") > "$HB/newer-$verb.out" 2>&1 < /dev/null; code=$? ;;
+      install) timeout 1200 "$COZY_BIN" --json package install "$WHO/$name" --on "$M" > "$HB/newer-$verb.out" 2>&1 < /dev/null; code=$? ;;
+      software) timeout 1200 "$COZY_BIN" --json machine update "$M" -y > "$HB/newer-$verb.out" 2>&1 < /dev/null; code=$? ;;
+    esac
+    log "skew newer $verb (cozy $CLIENT, $name needs cozy-runtime>=$next): exit $code: $(grep -o '"code": *"[^"]*"\|"message": *"[^"]*"\|"next": *\[[^]]*\]' "$HB/newer-$verb.out" | head -6 | tr '\n' ' ')"
+    if hub_5xx "$HB/newer-$verb.out"; then
+      expect "skew newer-$verb" FAIL "cozy $CLIENT: a server failure: $(tail -c 300 "$HB/newer-$verb.out")"
+    elif [ "$code" != 0 ] && grep -q 'cozy update' "$HB/newer-$verb.out" && ! grep -q '"code": *"internal"' "$HB/newer-$verb.out"; then
+      expect "skew newer-$verb" PASS "cozy $CLIENT refused $name (cozy-runtime>=$next), naming cozy update: $(grep -o '"message": *"[^"]*"' "$HB/newer-$verb.out" | head -1)"
+    else
+      expect "skew newer-$verb" FAIL "cozy $CLIENT → exit $code, not a refusal naming cozy update: $(tail -c 400 "$HB/newer-$verb.out")"
+    fi
+  done
+}
+if ! older "$CLIENT" 0.24.0; then skew_newer; fi
 if [ -n "$CHECKS" ]; then
   . "$CHECKS" "${COMMAND_ARGS[@]}"
   checks_status=$?

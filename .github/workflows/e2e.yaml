@@ -712,6 +712,22 @@ jobs:
         with:
           name: fixture-hub
           path: ${{ runner.temp }}/fixture-hub
+      # selfupdate (cl-978): the change built as a release of the line before the Latest, the cozy that updates itself.
+      - if: matrix.shard == 'selfupdate'
+        uses: actions/checkout@v5
+        with:
+          repository: cozy-creator/cozy-creator
+          ref: ${{ needs.affected.outputs.repo == 'cozy-creator' && needs.affected.outputs.ref || needs.affected.outputs.stack }}
+          path: .before
+      - if: matrix.shard == 'selfupdate'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .before -> target
+          save-if: false
+      - if: matrix.shard == 'selfupdate'
+        env:
+          CARGO_INCREMENTAL: "0"
+        run: echo "E2E_COZY_BEFORE=$(bash .creator/e2e/candidates/build.sh cozy-before .before "$RUNNER_TEMP/before")" >> "$GITHUB_ENV"
       - name: cli suite
         env:
           GH_TOKEN: ${{ github.token }}
@@ -725,9 +741,10 @@ jobs:
           until [ -S "$XDG_RUNTIME_DIR/bus" ]; do sleep 1; done
           export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
           # local-code's and web-palette's isolated Hubs pin Runtime 0.45.0 / TensorFS 0.24.1: runtime_floor's machine moves there, held by
-          # nothing (cl-952), and so does the palette's, which still offers what needs 0.46 (cl-975).
+          # nothing (cl-952), and so does the palette's, which still offers what needs 0.46 (cl-975). selfupdate's pins 0.24's software,
+          # then restarts it on 0.25's (e2e/cli/selfupdate.sh, cl-978).
           bash .creator/e2e/skew/run.sh --hub-bin "$RUNNER_TEMP/fixture-hub" --candidates "$CANDIDATES" --admin --out "$RUNNER_TEMP/e2e/hub" \
-            ${{ (matrix.shard == 'local-code' || matrix.shard == 'web-palette') && '--software 0.45.0,0.24.1' || '' }} \
+            ${{ (matrix.shard == 'local-code' || matrix.shard == 'web-palette') && '--software 0.45.0,0.24.1' || (matrix.shard == 'selfupdate' && '--software 0.45.2,0.24.2' || '') }} \
             --command .creator/e2e/isolated.sh -- cli \
             --out "$RUNNER_TEMP/e2e" --shard ${{ matrix.shard }} $MODEL $CANDIDATES $(case " $CANDIDATES " in (*" --packages "*) ;; (*) echo ${PACKAGES_MASTER:+--packages "$PACKAGES_MASTER"} ;; esac) 2>&1 | node .creator/e2e/publish/scrub.js
       # cozy's logs (Calcifer's too) however the suite ended: one the job's timeout ends never reaches its `logs` part (cl-837).

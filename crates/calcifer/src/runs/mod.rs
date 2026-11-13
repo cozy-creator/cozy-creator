@@ -108,7 +108,7 @@ async fn priced_scoped(api: &Arc<Api>, ask: RunRequest) -> Result<Option<RunQuot
         }
         None => match prepare(api, "quote", &ask, For::Quote).await? {
             Prepared::Run { submit, .. } => submit,
-            Prepared::Install(_) => unreachable!("a published target installs nothing first"),
+            Prepared::Install(_) | Prepared::Cozy(..) => unreachable!("a published target installs nothing first"),
         },
     };
     // A `new` run that a machine up or on its way finishes sooner goes there, and rents nothing (cl-915).
@@ -141,6 +141,7 @@ async fn estimate_asked(api: &Arc<Api>, key: &str, ask: &RunRequest, copies: Cop
             let notes = updating(&run).into_iter().collect();
             return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes, ..RunEstimate::default() }));
         }
+        Prepared::Cozy(run, note) => return Ok(Json(RunEstimate { preparing: Some(Box::new(run)), notes: vec![note], ..RunEstimate::default() })),
         Prepared::Run { submit, notes, offers } => (submit, notes, offers),
     };
     if copies.count.is_some_and(|asked| asked != count) {
@@ -278,6 +279,8 @@ pub(crate) async fn request(api: &Arc<Api>, key: &str, ask: RunRequest) -> Resul
             let notes = updating(&run).into_iter().collect();
             Ok(Submitted { run, replay: false, notes, preparing: true, lock })
         }
+        // The run waits behind cozy's own update: its client follows it, then asks again (cl-978).
+        Prepared::Cozy(run, note) => Ok(Submitted { run, replay: false, notes: vec![note], preparing: true, lock }),
         Prepared::Run { submit, mut notes, offers } => {
             let given = given(&submit);
             let project = submit.out.as_deref().and_then(crate::project::of_landing).map(Path::to_owned);
@@ -368,7 +371,7 @@ pub(crate) fn asked(row: &crate::store::RunRow) -> Option<api::calcifer::RunAske
 }
 
 /// The ask's identity: what it asks, whatever price it was quoted since.
-fn digest(ask: &RunRequest) -> String {
+pub(crate) fn digest(ask: &RunRequest) -> String {
     let asked = RunRequest { agreed: None, ..ask.clone() };
     format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&asked).expect("serializes"))))
 }
@@ -378,6 +381,8 @@ enum Prepared {
     Run { submit: SubmitRun, notes: Vec<Note>, offers: Vec<Vec<crate::placement::Offer>> },
     /// Local code's install, still running.
     Install(api::calcifer::Run),
+    /// cozy's own update for the release the run takes (cl-978), and the line it says.
+    Cozy(api::calcifer::Run, Note),
 }
 
 /// What a client following `run` before its ask goes again is told, when it is its machine's update to this cozy's minor.
@@ -442,6 +447,15 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     // Given something to run with, a package of one function runs it; given nothing, it is listed.
     let given = !ask.terms.is_empty() || ask.input.is_some() || ask.input_text.is_some() || !ask.files.is_empty() || ask.warm.is_some();
     let resolved = Box::pin(target::resolve(api, &hub, &ask.target, ask.code.as_ref(), &on, ask.warm.is_some(), given, key, agreed)).await?;
+    // cozy updates itself first for a release only a newer cozy's line runs (cl-978); a quote or an estimate says so.
+    let cozy = match &resolved {
+        Resolved::Release { cozy: Some(wanted), .. } if purpose == For::Run => {
+            let (run, note) = crate::cozy::update(api, wanted).await?;
+            return Ok(Prepared::Cozy(run, note));
+        }
+        Resolved::Release { cozy: Some(wanted), .. } => Some(Note { level: NoteLevel::Warning, message: wanted.said() }),
+        _ => None,
+    };
     let (package, function, code) = match &resolved {
         Resolved::Release { package, function, card, .. } => {
             let code = Code {
@@ -567,6 +581,7 @@ async fn prepare_scoped(api: &Arc<Api>, key: &str, ask: &RunRequest, purpose: Fo
     if let Resolved::Release { moved: Some(moved), .. } = &resolved {
         notes.push(moved.clone());
     }
+    notes.extend(cozy);
     // Its machine's Runtime moves first to one that runs the release (cl-952): the run waits behind that update.
     if let (Resolved::Release { upgrade: Some(upgrade), .. }, For::Run) = (&resolved, purpose)
         && matches!(&submit.on, On::Machine(name) if *name == upgrade.machine)

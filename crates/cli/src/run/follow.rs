@@ -69,6 +69,8 @@ pub(crate) async fn job(ctx: &Context, target: &str, input: &impl serde::Seriali
             // Following stopped: the install goes on, and nothing more is asked.
             return Ok(install);
         }
+        // cozy updated itself for it (cl-978): the job goes on as the new cozy.
+        crate::update::after_update(ctx, &install)?;
     }
 }
 

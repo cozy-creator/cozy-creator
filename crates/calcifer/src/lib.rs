@@ -15,6 +15,7 @@ mod api;
 mod authorized;
 mod checkout;
 mod coming;
+mod cozy;
 mod eta;
 mod events;
 mod files;
