@@ -248,17 +248,17 @@ def main() -> None:
         url = urlsplit(opened["url"])
         assert url.hostname in {"127.0.0.1", "localhost", "::1"}, "open did not print a local URL"
         assert url.path == f"/projects/{created['id']}", f"open printed another project's URL: {url.path}"
-        # cl-980: a --json caller is a program: it gets a one-use sign-in link, said not to be private, and no browser starts.
+        # A --json caller is a program: it gets the page's plain address, said not to be private, and no browser starts (cl-985).
         assert set(opened) == {"url", "private"} and opened["private"] is False, f"--json open: {opened}"
-        assert url.fragment.startswith("code="), "the --json link carries no sign-in code"
+        assert not url.fragment and not url.query, f"the --json address carries something besides the page: {opened['url']}"
         plain_open = run("default project URL", ["open"], project)
         assert not plain_open.stdout.lstrip().startswith("{") and "url" in plain_open.stdout
         private = "private: true" in plain_open.stdout
         if private:
-            # Cozy's private browser opened it: the URL is a reference, its credential went through the browser's pipe.
+            # Cozy's private browser opened it: the URL is the page's, and nothing went with it.
             assert "code=" not in plain_open.stdout, "a private open printed a credential"
         else:
-            # No display here, no Chrome, or its launch failed: a one-use sign-in link any browser redeems, said not to be private.
+            # No display here, no Chrome, or its launch failed: the page's address, which any browser of this account opens, said not to be private.
             assert "isn't private" in plain_open.stderr and project.name in plain_open.stderr, "the fallback didn't say it isn't private"
         assert "expires_ms" not in plain_open.stdout
         assert not browser_log.exists(), "open launched the default browser"

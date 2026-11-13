@@ -118,14 +118,15 @@ mod imp {
         }
     }
     fn ipc(file: &File) -> Result<()> {
-        let kind = file.metadata()?.mode() & libc::S_IFMT;
-        if kind == libc::S_IFIFO {
+        // mode_t is u16 on macOS, u32 on Linux.
+        let kind = file.metadata()?.mode() & u32::from(libc::S_IFMT);
+        if kind == u32::from(libc::S_IFIFO) {
             return Ok(());
         }
-        if kind == libc::S_IFREG && anonymous_ram(file)? {
+        if kind == u32::from(libc::S_IFREG) && anonymous_ram(file)? {
             return Ok(());
         }
-        if kind != libc::S_IFSOCK {
+        if kind != u32::from(libc::S_IFSOCK) {
             return Err(denied("managed IPC manifest contains a filesystem object"));
         }
         #[cfg(target_os = "linux")]

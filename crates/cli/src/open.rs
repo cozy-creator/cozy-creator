@@ -62,11 +62,10 @@ struct Opened {
     url: String,
 }
 
-/// The project's page on this Calcifer: any browser of this computer's user opens it, as Calcifer's own page (cl-980).
+/// The project's page on this Calcifer, as the owned browser opens it: any browser of this account opens it as Calcifer's own page.
 fn page_url(calcifer: &Client, project: &Address) -> Result<String, Error> {
     let holder = calcifer.holder().ok_or_else(|| Error::new(Kind::Unavailable, "calcifer_unavailable", "Calcifer isn't running").next("cozy open"))?;
-    let path = if project.code.is_empty() { format!("projects/{}", project.id) } else { format!("p/{}", project.code) };
-    Ok(format!("http://{}/{path}", holder.address))
+    Ok(format!("http://{}/projects/{}", holder.address, project.id))
 }
 
 fn reserve_port(port: u16) -> Result<TcpListener, Error> {

@@ -51,10 +51,14 @@ function attacker() {
 /** From a page at `origin`, what Calcifer answered its fetch, <img>, WebSocket and frame (the browser's own record of each). */
 async function from(context, origin, base, id, file, code) {
   const page = await context.newPage();
-  const statuses = {};
-  page.on('response', (response) => {
-    const url = new URL(response.url());
-    if (url.origin === base) statuses[url.pathname] = response.status();
+  // The status Calcifer answered, from the network itself: CORS and ORB keep a refused answer from the page, and from Playwright.
+  const statuses = {}, asked = {};
+  const network = await context.newCDPSession(page);
+  await network.send('Network.enable');
+  network.on('Network.requestWillBeSent', ({ requestId, request }) => { asked[requestId] = request.url; });
+  network.on('Network.responseReceivedExtraInfo', ({ requestId, statusCode }) => {
+    const url = asked[requestId] && new URL(asked[requestId]);
+    if (url && url.origin === base) statuses[url.pathname] = statusCode;
   });
   const refusedFrame = [];
   page.on('console', (message) => { if (/frame-ancestors/.test(message.text())) refusedFrame.push(message.text()); });
@@ -123,7 +127,8 @@ function devConfig(text) {
   context.on('request', async (request) => {
     const url = new URL(request.url());
     if (url.origin !== base || !url.pathname.startsWith('/v1/')) return;
-    if (url.pathname.startsWith('/v1/session') || (await request.allHeaders()).authorization) minted.push(url.pathname);
+    const headers = await request.allHeaders().catch(() => ({}));
+    if (url.pathname.startsWith('/v1/session') || headers.authorization) minted.push(url.pathname);
   });
   const read = (page) => page.evaluate(async (id) => (await fetch(`/v1/projects/${id}?assets=false`, { headers: { 'cozy-project-storage': '3' } })).status, project.id);
 
@@ -200,12 +205,15 @@ function devConfig(text) {
 /** Another account's own headless Chrome, attached over its DevTools port: Calcifer's page as that account sees it. */
 async function otherChrome(base, project) {
   const profile = `/tmp/${OTHER}-chrome`;
+  const port = 9333;
   spawnSync('sudo', ['-n', '-u', OTHER, 'mkdir', '-p', profile]);
-  const chrome = spawn('sudo', ['-n', '-u', OTHER, '-H', process.env.CHROME, '--headless=new', '--no-sandbox', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const chrome = spawn('sudo', ['-n', '-u', OTHER, '-H', process.env.CHROME, '--headless=new', '--no-sandbox', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let said = '';
+  chrome.stdout.on('data', (chunk) => { said += chunk; });
+  chrome.stderr.on('data', (chunk) => { said += chunk; });
   try {
-    let said = '';
-    chrome.stderr.on('data', (chunk) => { said += chunk; });
-    const endpoint = await until('the other account\'s Chrome listens', async () => said.match(/DevTools listening on (ws:\S+)/)?.[1], Boolean);
+    const version = `http://127.0.0.1:${port}/json/version`;
+    const endpoint = await until('the other account\'s Chrome listens', () => fetch(version).then((r) => r.json()).then((v) => v.webSocketDebuggerUrl, () => null), Boolean);
     const other = await playwright.chromium.connectOverCDP(endpoint);
     const page = await other.contexts()[0].newPage();
     const reads = [];
@@ -216,7 +224,7 @@ async function otherChrome(base, project) {
     await other.close();
     return seenThere;
   } catch (error) {
-    return { gate: 0, text: String(error), project_reads: [] };
+    return { gate: 0, text: String(error), project_reads: [], chrome_said: said.slice(-1500), exited: chrome.exitCode };
   } finally {
     spawnSync('sudo', ['-n', 'pkill', '-u', OTHER]);
   }

@@ -159,7 +159,8 @@ async fn folders(ctx: &Context) -> Vec<Check> {
     loosened.map(|project| {
         let path = project.path.display();
         let fix = if cfg!(windows) { "give only your account access to it".to_owned() } else { format!("chmod 700 {path}") };
-        Check::bad("project folder", format!("other accounts on this computer can open {path}: {fix}"))
+        // A warning: the project still opens, as it did.
+        Check::ok("project folder", format!("warning: other accounts on this computer can open {path}: {fix}"))
     }).collect()
 }
 

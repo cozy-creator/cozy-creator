@@ -63,7 +63,8 @@ function watch() {
     return page;
   };
   const moves = (page) => page.evaluate(() => window.__moves);
-  const gates = (page) => page.evaluate(() => window.__gates);
+  // The gate a refused page draws; "Connecting…" and "Opening project…" are a page loading, which a restart may show.
+  const gates = (page) => page.evaluate(() => window.__gates.filter((text) => text.includes('No project open here')));
   /** Where it is, and it stays there with nothing moving it. */
   const stays = async (page, name, path) => {
     const at = new URL(page.url()).pathname;
@@ -94,7 +95,7 @@ function watch() {
     const now = JSON.parse(require('fs').readFileSync(process.env.HOLDER, 'utf8')).pid;
     check('restart_is_a_new_calcifer', now !== pid, { was: pid, now });
     await stays(page, 'restart_stays', `/p/${gone.code}`);
-    check('restart_draws_no_gate', (await gates(page)).length === 0 && (await page.locator('.unread, .gate').count()) === 0, await gates(page));
+    check('restart_draws_no_gate', (await gates(page)).length === 0 && (await page.locator('.unread').count()) === 0 && (await page.locator('main.gate', { hasText: 'No project open here' }).count()) === 0, await gates(page));
     check('restart_keeps_the_canvas', (await page.locator('.react-flow__node').count()) > 0);
     const read = await page.evaluate((id) => fetch(`/v1/projects/${id}`, { headers: { 'cozy-project-storage': '3' } }).then((answer) => answer.status), gone.id);
     check('restart_answers_its_reads', read === 200, read);
@@ -127,11 +128,11 @@ function watch() {
     await restarted;
     await until('back again', () => page.locator('.pill.warn').allTextContents(), (lines) => !lines.some((line) => line.includes('offline')));
     await stays(page, 'restart_again_stays', `/p/${kept.code}`);
-    check('restart_again_draws_no_gate', (await gates(page)).length === 0 && (await page.locator('.unread, .gate').count()) === 0, await gates(page));
+    check('restart_again_draws_no_gate', (await gates(page)).length === 0 && (await page.locator('.unread').count()) === 0 && (await page.locator('main.gate', { hasText: 'No project open here' }).count()) === 0, await gates(page));
     await page.reload();
     await page.locator('.react-flow__node').first().waitFor();
     await stays(page, 'reload_after_restart_stays', `/p/${kept.code}`);
-    check('reload_after_restart_draws_no_gate', (await gates(page)).length === 0 && (await page.locator('.unread, .gate').count()) === 0, await gates(page));
+    check('reload_after_restart_draws_no_gate', (await gates(page)).length === 0 && (await page.locator('.unread').count()) === 0 && (await page.locator('main.gate', { hasText: 'No project open here' }).count()) === 0, await gates(page));
     await shot(page, 'reloaded');
   }
 
