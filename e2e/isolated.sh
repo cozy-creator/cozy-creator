@@ -434,7 +434,9 @@ PYN
     mirror "$seed/dit.safetensors:transformer" e2e/parts-dit f32 0.1.0 "$page" --source-format as-is
     mirror "$seed/vae-a.safetensors" e2e/parts f32 0.1.0 "$page" --source-format as-is --base e2e/parts-dit@0.1.0:vae
     mirror "$seed/vae-b.safetensors:vae" e2e/parts-vae f32 0.1.0 "$page" --source-format as-is
-    log "published e2e/parts@0.1.0 (transformer, vae) and e2e/parts-vae@0.1.0 (vae)"
+    # e2e/parts@0.2.0: 0.1.0 cut by reference to its vae, a part an unversioned pick takes only for a slot that reads it (xs-192).
+    mirror "e2e/parts@0.1.0:vae" e2e/parts f32 0.2.0 "$page"
+    log "published e2e/parts@0.1.0 (transformer, vae), its part 0.2.0 (vae) and e2e/parts-vae@0.1.0 (vae)"
     rm -f "$seed"/*.safetensors
   fi
   if [[ " $needs " == *" fits "* ]]; then
