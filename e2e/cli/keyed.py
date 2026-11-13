@@ -1,7 +1,9 @@
 """A keyed write cut off mid-request, and sent again under its key, hears what it did (cl-885): a create, an import and an apply. Each is
 held inside its transaction by another program's hold on project.db while its connection is closed, then let go and sent again. And a
-write's key is never in project.db without its answer, from the first moment it can be read: a create, an import, an apply, a patch, a
-rename, a copy, a delete, an undo, a redo (the delete again, a helper's answer the step's own), an unpin, an approve and a render.
+write's key is never in project.db without its answer, from the first moment it can be read: every keyed project write (a create, an
+import, an apply, a patch, a rename, a copy, a delete, an undo, a redo: the delete again, a helper's answer the step's own; an unpin, an
+approve, a canvas move, a version's metadata, seen, the machines, a fit and a fit here, a cancel, a reclaim, a version joined and
+discarded, and a render).
     python3 keyed.py <project> <out>: $COZY the cozy under test. Prints what it saw as JSON and exits 1 if anything failed."""
 from __future__ import annotations
 
@@ -25,11 +27,11 @@ Json = dict[str, object]
 HOLD_S = 1.5
 
 
-def png() -> bytes:
+def png(colour: tuple[int, int, int] = (40, 160, 90)) -> bytes:
     """An 8x8 picture, one colour."""
     def chunk(kind: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-    rows = (b"\x00" + bytes((40, 160, 90)) * 8) * 8
+    rows = (b"\x00" + bytes(colour) * 8) * 8
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
@@ -157,9 +159,9 @@ def main() -> int:
         except (TypeError, ValueError):
             return None
 
-    def kept_with(case: str, method: str, suffix: str, ask_body: Json | None, code: int, said: str, whole: bool) -> object:
-        """Sent once under a new key, its row watched from before it's there: its answer with it from the first sight, saying `said`, and,
-        for a write whose answer is all known in its transaction (`whole`), the answer it gave."""
+    def kept_with(case: str, method: str, suffix: str, ask_body: Json | None, code: int, said: str | None, whole: bool) -> object:
+        """Sent once under a new key, its row watched from before it's there: its answer with it from the first sight, saying `said` (a
+        204's: nothing), and, for a write whose answer is all known in its transaction (`whole`), the answer it gave."""
         key, stop = uuid.uuid4().hex, threading.Event()
         found: dict[str, object] = {}
         watcher = threading.Thread(target=first_sight, args=(key, stop, found))
@@ -170,7 +172,8 @@ def main() -> int:
         watcher.join()
         kept, heard = parsed(found.pop("whole", None)), parsed(answer)
         seen[f"{case}_first_sight"] = {"status": status, "row": found, "answer": answer[-300:].decode("utf-8", "replace")}
-        ok = status == code and found.get("status") == code and isinstance(kept, dict) and bool(kept.get(said)) and (not whole or kept == heard)
+        shaped = kept is None if code == 204 else isinstance(kept, dict) and (said is None or bool(kept.get(said)))
+        ok = status == code and found.get("status") == code and shaped and (not whole or kept == heard)
         check(f"{case}_key_kept_with_its_answer", ok, seen[f"{case}_first_sight"])
         return heard
 
@@ -187,6 +190,21 @@ def main() -> int:
     check("still_numbered", status == 200, said[-300:].decode("utf-8", "replace"))
     kept_with("unpin", "POST", "/unpin", {"name": "keyed_still"}, 200, "name", False)
     kept_with("approve", "POST", "/approve", {"name": "keyed_still", "version": "1"}, 200, "name", False)
+    kept_with("canvas", "PATCH", "/canvas", {"cards": {"keyed_box": {"x": 40, "y": 40, "w": 240}}}, 200, "seq", False)
+    kept_with("version_metadata", "PATCH", "/assets/keyed_still/versions/1", {"metadata": {"orbit": True}}, 200, "metadata", True)
+    kept_with("seen", "POST", "/assets/keyed_still/versions/1/seen", None, 204, None, False)
+    kept_with("machines", "PUT", "/machines", {"machines": []}, 200, None, True)
+    kept_with("fit", "POST", "/fit", {"names": ["keyed_note"]}, 200, None, False)
+    kept_with("fit_here", "POST", "/fit/here", {"names": ["keyed_note"]}, 200, None, False)
+    kept_with("cancel", "POST", "/cancel", {"names": ["keyed_note"]}, 200, None, True)
+    kept_with("reclaim", "POST", "/reclaim", {"yes": True}, 200, "deleted", True)
+    # Another picture, a version of its own, then off it again.
+    other = png((200, 60, 30))
+    status, _, said = ask("PUT", f"/v1/files/sha256:{hashlib.sha256(other).hexdigest()}", other, None, "image/png")
+    check("other_picture_held", status < 300, said[-300:].decode("utf-8", "replace"))
+    joined = kept_with("version_join", "POST", "/assets/keyed_still/versions", {"source": f"sha256:{hashlib.sha256(other).hexdigest()}"}, 200, "number", False)
+    number = joined.get("number") if isinstance(joined, dict) else None
+    kept_with("version_discard", "DELETE", f"/assets/keyed_still/versions/{number}", None, 200, "number", False)
     kept_with("render", "POST", "/runs", {"names": ["keyed_note"], "on": []}, 202, "board", False)
 
     print(json.dumps({"failures": failures, "seen": seen}, indent=1, default=str))

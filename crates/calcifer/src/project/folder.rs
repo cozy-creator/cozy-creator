@@ -1226,9 +1226,13 @@ impl Folder {
         kept.and_then(|kept| serde_json::from_str(&kept).ok()).unwrap_or_default()
     }
 
+    /// The machines its runs go to, in one transaction (or the act it's in).
     pub(crate) fn set_machines(&self, machines: &[String]) -> Result<(), Error> {
         let kept = (!machines.is_empty()).then(|| serde_json::to_string(machines).expect("names serialize"));
-        self.write_past(|conn| db::set_meta(conn, &self.db(), MACHINES, kept.as_deref()))
+        self.act(|| {
+            acting(self.id()).expect("in its act").extra.borrow_mut().meta.push((MACHINES, kept));
+            Ok(())
+        })
     }
 
     /// Whether another program holds project.db's write lock, asked this moment with no wait. None while a write of Calcifer's has the
@@ -1364,7 +1368,7 @@ impl Folder {
             extra.key = Some(key);
         }
         extra.answer = said;
-        if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.key.is_none() && extra.answer.is_none() {
+        if !changed.contains(&true) && extra.ops.is_empty() && extra.ops_gone.is_empty() && extra.asked.is_empty() && !extra.asked_cleared && extra.meta.is_empty() && extra.key.is_none() && extra.answer.is_none() {
             return Ok(answer);
         }
         // A document decoded in it, or by its history since, at the heads it began from: the commit needn't decode it again.
@@ -2093,7 +2097,12 @@ impl Folder {
     /// record may be all that's left of a take, so it's said and it stays. What a run left in `.runs/` goes only if what stays in `files/`
     /// holds every byte of it, by sha256: else it may be an output's only copy (one `files/` couldn't take, or a folder), and stays, unheld.
     pub(crate) fn sweep(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64, Vec<Unheld>), Error> {
-        let _held = self.shared.collecting.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = self.collecting();
+        self.swept(named, recorded, delete)
+    }
+
+    /// `sweep`, `collecting` held by the caller: in an act it is part of, its answer with it.
+    pub(crate) fn swept(&self, named: &BTreeSet<String>, recorded: &BTreeSet<String>, delete: bool) -> Result<(u64, u64, u64, Vec<Unheld>), Error> {
         let lock = self.lock()?;
         let (mut files, mut bytes, mut unrecorded) = (0, 0, 0);
         // What stays in `files/`, by the sha256 its name says, which its bytes must say too before anything goes for it.
