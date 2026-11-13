@@ -1,6 +1,7 @@
 """Hosted proof transport. Private request/CLI bodies remain in RAM, never evidence files."""
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
@@ -8,7 +9,9 @@ from http.client import HTTPConnection
 import json
 import os
 from pathlib import Path
+import pwd
 import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -179,8 +182,9 @@ _FAILURE_CODES = frozenset({
     'native_core_protection_failed', 'native_file_not_retained_after_restart', 'native_history_not_retained_after_restart',
     'native_http_status', 'native_outside_file_created', 'native_private_run_identity_missing',
     'native_project_write_failed', 'native_terminal_result_missing', 'not_own_page_refusal', 'old_holder_authority_survived',
-    'other_user_refusal', 'outside_baseline_replaced', 'outside_project_canary', 'owned_browser_tree_not_retired',
-    'owned_media_capability', 'owned_page_injected',
+    'other_user_account', 'other_user_refusal', 'outside_baseline_replaced', 'outside_project_canary', 'owned_browser_tree_not_retired',
+    'owned_media_capability', 'owned_page_injected', 'hmr_websocket_page', 'hmr_websocket_refusal', 'upgrade_needs_bearer',
+    'development_web_without_dev',
     'owned_hmr_csp_header', 'owned_hmr_initial_module', 'owned_hmr_nonce_missing',
     'owned_hmr_reloaded_document', 'owned_hmr_update', 'owned_host_core_control_required',
     'owned_host_core_control_unavailable', 'owned_no_store_200', 'owned_no_store_206',
@@ -446,6 +450,68 @@ def project_run_ids(get: Callable[[str], dict[str, object]], reference: str) -> 
         if not page.get("older") or not page["runs"]:
             return found, unreadable
         before = "&before=" + str(page["runs"][-1]["number"])
+
+
+HMR = "/__cozy_hmr"
+
+
+def upgrade_headers(address: str) -> dict[str, str]:
+    """Calcifer's page's hot reload socket upgrade: its exact Origin and no `Sec-Fetch-Site`, as a browser opens it."""
+    return {"Connection": "Upgrade", "Upgrade": "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Protocol": "vite-hmr",
+            "Sec-WebSocket-Key": base64.b64encode(os.urandom(16)).decode(), "Origin": "http://" + address}
+
+
+# Runs as the other account: GETs of Calcifer at its exact Host, the bearer added from stdin where asked; closed facts out, no body.
+ASK = '''import http.client,json,sys
+from urllib.parse import urlsplit
+ask=json.load(sys.stdin)
+at=urlsplit("http://"+ask["address"])
+found=[]
+for one in ask["requests"]:
+    headers=dict(one["headers"])
+    if one["bearer"]: headers["Authorization"]="Bearer "+ask["token"]
+    connection=http.client.HTTPConnection(at.hostname,at.port,timeout=30)
+    try:
+        connection.request("GET",one["path"],headers=headers)
+        response=connection.getresponse()
+        try: code=json.loads(response.read()).get("error",{}).get("code")
+        except (ValueError,AttributeError): code=None
+        found.append({"status":response.status,"code":code if isinstance(code,str) else None,"no_store":"no-store" in (response.getheader("Cache-Control") or "")})
+    finally: connection.close()
+print(json.dumps(found))
+'''
+
+
+class OtherAccount:
+    """A fresh Unix account on this computer, made for one access check and removed after it."""
+    def __init__(self) -> None:
+        self.user = "cozy-other-" + secrets.token_hex(5)
+        try:
+            pwd.getpwnam(self.user)
+        except KeyError:
+            pass
+        else:
+            raise Failure("other_user_account")
+        made = subprocess.run(["sudo", "-n", "useradd", "-m", self.user], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd="/")
+        require(made.returncode == 0, "other_user_account")
+        self.home = Path(pwd.getpwnam(self.user).pw_dir)
+
+    def ask(self, address: str, token: str, requests: list[dict[str, object]]) -> list[dict[str, object]]:
+        # The bearer goes by stdin, never argv or environment.
+        body = json.dumps({"address": address, "token": token, "requests": requests}).encode()
+        completed = subprocess.run(["sudo", "-n", "-u", self.user, "-H", "python3", "-c", ASK], input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd="/")
+        require(completed.returncode == 0, "other_user_account")
+        found = json.loads(completed.stdout)
+        require(isinstance(found, list) and len(found) == len(requests) and all(isinstance(item, dict) for item in found), "other_user_account")
+        return cast(list[dict[str, object]], found)  # cast: ASK's JSON list, checked above
+
+    def remove(self) -> bool:
+        subprocess.run(["sudo", "-n", "userdel", "-r", self.user], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd="/")
+        try:
+            pwd.getpwnam(self.user)
+            return False
+        except KeyError:
+            return not self.home.exists()
 
 
 class Proof:

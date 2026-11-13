@@ -28,32 +28,9 @@ class Development:
         self.birth: Birth | None = None
 
     def start(self) -> None:
+        """Vite and the probe, with `[calcifer] development_web` alone: Calcifer ignores it until `enable`."""
         require(shutil.which("pnpm"), "development_pnpm_missing")
-        text = (self.original or b"").decode()
-        parsed = tomllib.loads(text)
-        # Dev mode needs both a top-level `dev = true` (first, before any table) and `[calcifer] development_web`.
-        lines, result, section, inserted = text.splitlines(keepends=True), ["dev = true\n"], "", False
-        for line in lines:
-            clean = line.split("#", 1)[0].strip()
-            if clean.startswith("["):
-                if section == "[calcifer]" and not inserted:
-                    result.append('development_web = "127.0.0.1:5173"\n'); inserted = True
-                section = clean
-            if section == "" and clean.partition("=")[0].strip() == "dev":
-                continue
-            if section == "[calcifer]" and clean.partition("=")[0].strip() == "development_web":
-                continue
-            result.append(line)
-        if section == "[calcifer]" and not inserted:
-            result.append('\ndevelopment_web = "127.0.0.1:5173"\n'); inserted = True
-        if not inserted:
-            require("calcifer" not in parsed, "development_config_shape")
-            result.append('\n[calcifer]\ndevelopment_web = "127.0.0.1:5173"\n')
-        self.written = "".join(result).encode()
-        written = tomllib.loads(self.written.decode())
-        require(written.get("dev") is True and written.get("calcifer", {}).get("development_web") == "127.0.0.1:5173", "development_config_shape")
-        # close() restores the original bytes exactly, which takes `dev` and `development_web` out again.
-        self.config.write_bytes(self.written)
+        self.write(dev=False)
         with self.module.open("x") as target:
             target.write(self.code(1))
         metadata = self.module.lstat()
@@ -72,6 +49,39 @@ class Development:
                 pass
             time.sleep(0.1)
         raise Failure("development_server_readiness")
+
+    def enable(self) -> None:
+        """Dev mode: a top-level `dev = true` as well, for the next Calcifer to start."""
+        self.write(dev=True)
+
+    def write(self, dev: bool) -> None:
+        require(self.written is None or not self.config.is_symlink() and self.config.read_bytes() == self.written, "development_config_changed")
+        text = (self.original or b"").decode()
+        parsed = tomllib.loads(text)
+        # `dev = true` must be top-level, so it goes first, before any table; any other top-level `dev` goes.
+        lines, result, section, inserted = text.splitlines(keepends=True), ["dev = true\n"] if dev else [], "", False
+        for line in lines:
+            clean = line.split("#", 1)[0].strip()
+            if clean.startswith("["):
+                if section == "[calcifer]" and not inserted:
+                    result.append('development_web = "127.0.0.1:5173"\n'); inserted = True
+                section = clean
+            if section == "" and clean.partition("=")[0].strip() == "dev":
+                continue
+            if section == "[calcifer]" and clean.partition("=")[0].strip() == "development_web":
+                continue
+            result.append(line)
+        if section == "[calcifer]" and not inserted:
+            result.append('\ndevelopment_web = "127.0.0.1:5173"\n'); inserted = True
+        if not inserted:
+            require("calcifer" not in parsed, "development_config_shape")
+            result.append('\n[calcifer]\ndevelopment_web = "127.0.0.1:5173"\n')
+        written_bytes = "".join(result).encode()
+        written = tomllib.loads(written_bytes.decode())
+        require(written.get("dev") is (True if dev else None) and written.get("calcifer", {}).get("development_web") == "127.0.0.1:5173", "development_config_shape")
+        # close() restores the original bytes exactly, which takes `dev` and `development_web` out again.
+        self.written = written_bytes
+        self.config.write_bytes(written_bytes)
 
     @staticmethod
     def code(value: int) -> str:

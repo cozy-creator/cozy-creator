@@ -28,12 +28,12 @@ import time
 from typing import NotRequired, TypedDict, cast
 from urllib.parse import quote
 
-from common import (Birth, Failure, Native, Observed, Project, Proof, Receipt, RunDetail, VaultStatus, alive, birth,
-                    daemon_birth, kill_exact, principal, project_route, require, sha, until)
+from common import (HMR, Birth, Failure, Native, Observed, OtherAccount, Project, Proof, Receipt, RunDetail, VaultStatus, alive, birth,
+                    daemon_birth, kill_exact, principal, project_route, require, sha, until, upgrade_headers)
 from scan import Scanner, places, tmpfs
 from native_execution import qualify as qualify_native
 from development import Development
-from remote_cpu import other_account, qualify as qualify_remote
+from remote_cpu import qualify as qualify_remote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from test_hub import require_test_hub
@@ -229,27 +229,50 @@ REFUSALS: dict[str, tuple[dict[str, str], bool, int, str, str]] = {
 }
 
 
-def access_rule(native: Native, receipt: Receipt, project: Project, other: str | None) -> None:
+def access_rule(native: Native, receipt: Receipt, project: Project, hmr: bool) -> None:
     # A project route and a media file route: each answers this computer's cozy, and refuses everything else by its code.
     routes = {"project": project_route(project["id"]), "media": project_route(project["id"], "/" + project["text_file"])}
+    holder = native.holder()
+    upgrade = upgrade_headers(holder["address"])
     facts: dict[str, bool] = {}
-    failed: str | None = None
+    failures: list[str] = []
+    def note(case: str, passed: bool, failure: str) -> None:
+        facts[case] = passed
+        if not passed:
+            failures.append(failure)
     for route, path in routes.items():
-        facts["native_" + route] = native.raw("GET", path).status == 200
-        failed = failed or (None if facts["native_" + route] else "native_http_status")
+        note("native_" + route, native.raw("GET", path).status == 200, "native_http_status")
         for case, (extra, bearer, status, code, failure) in REFUSALS.items():
-            facts[case + "_" + route] = native.raw("GET", path, auth=bearer, extra=extra).refused(status, code)
-            failed = failed or (None if facts[case + "_" + route] else failure)
-    facts["other_user_checked"] = other is not None
-    if other is not None:
-        holder = native.holder()
-        # Another Unix account with this Calcifer's exact Host and even its bearer (stdin only): 403 `other_user`.
-        for route, answer in zip(routes, other_account(other, holder["address"], holder["token"], list(routes.values()))):
-            facts["other_user_" + route] = answer.get("status") == 403 and answer.get("other_user") is True and answer.get("no_store") is True
-            failed = failed or (None if facts["other_user_" + route] else "other_user_refusal")
+            note(case + "_" + route, native.raw("GET", path, auth=bearer, extra=extra).refused(status, code), failure)
+        # A WebSocket's exact Origin counts as the page on GET /__cozy_hmr alone; anywhere else it needs the bearer.
+        note("upgrade_" + route, native.raw("GET", path, auth=False, extra=upgrade).refused(401, "unauthenticated"), "upgrade_needs_bearer")
+    if hmr:
+        # This account's page opens its hot reload socket by its exact Origin, with no bearer.
+        note("hmr_own_page", native.raw("GET", HMR, auth=False, extra=upgrade).status == 101, "hmr_websocket_page")
+    # Another Unix account, made for this: Calcifer's exact Host, the bearer (stdin only) on the routes, the page's upgrade on HMR.
+    asks: dict[str, dict[str, object]] = {route: {"path": path, "headers": {"cozy-project-storage": "3", "Cozy-Client": "cli"}, "bearer": True} for route, path in routes.items()}
+    if hmr:
+        asks["hmr"] = {"path": HMR, "headers": upgrade, "bearer": False}
+    other = OtherAccount()
+    try:
+        answers = other.ask(holder["address"], holder["token"], list(asks.values()))
+    finally:
+        facts["other_account_removed"] = other.remove()
+    for name, answer in zip(asks, answers):
+        refused = answer.get("status") == 403 and answer.get("code") == "other_user" and answer.get("no_store") is True
+        note("other_user_" + name, refused, "hmr_websocket_refusal" if name == "hmr" else "other_user_refusal")
     receipt.add("access_rule", **facts)
-    if failed:
-        raise Failure(failed)
+    require(not failures, failures[0] if failures else "fixture_failure")
+    require(facts["other_account_removed"], "other_user_account")
+
+
+def development_ignored(native: Native, receipt: Receipt) -> None:
+    # Vite is up and named, but without `dev = true` Calcifer serves its embedded page and opens no hot reload socket.
+    page = native.raw("GET", "/", auth=False)
+    embedded = page.status == 200 and page.headers.get("content-type", "").startswith("text/html") and b"/@vite/client" not in page.body
+    upgraded = native.raw("GET", HMR, auth=False, extra=upgrade_headers(native.holder()["address"])).status == 101
+    receipt.add("development_web_needs_dev", embedded_page=embedded, hmr_upgraded=upgraded)
+    require(embedded and not upgraded, "development_web_without_dev")
 
 
 def scan_case(scanner: Scanner, receipt: Receipt, case: str, roots: list[Path], exclusions: list[Path], located: dict[str, Path]) -> None:
@@ -293,7 +316,6 @@ def main() -> int:
     foreign: ForeignBrowsers | None = None
     development: Development | None = None
     projects: list[Project] = []
-    other: str | None = None
     readiness = {"slot": -1, "ready_errors": 0, "last_page_ready": False, "last_cards": -1}
     editing: dict[str, bool | int] = {}
     phase = "start"
@@ -302,6 +324,16 @@ def main() -> int:
             phase = "development_start"
             development = Development()
             development.start()
+            # Before any project or browser: a Calcifer with `[calcifer] development_web` and no top-level `dev = true` ignores it.
+            phase = "development_needs_dev"
+            proof = Proof(cli)
+            first_pid = proof.process.pid
+            until(lambda: native.holder(), lambda holder: holder.get("pid") == first_pid, "holder_ready")
+            development_ignored(native, receipt)
+            native.call("POST", "/v1/down", {})
+            proof.process.wait(timeout=90); proof.close_channel(); proof = None
+            development.enable()
+            phase = "development_start"
         proof = Proof(cli)
         caf_pid = proof.process.pid
         until(lambda: native.holder(), lambda holder: holder.get("pid") == caf_pid, "holder_ready")
@@ -367,7 +399,7 @@ def main() -> int:
                     title_flags=True, tmpdir_singleton=True, launch_environment_redirected=True, launch_environments=len(launched), nothing_injected=True)
         if ready.get("remote_cpu") is True:
             phase = "remote_cpu"
-            other = qualify_remote(native, a, receipt, ready)
+            qualify_remote(native, a, receipt, ready)
         # The page sends no credential: its capability names this account and this Calcifer's birth, as the native CLI's does.
         account, calcifer_birth = principal(), daemon_birth(proof.process.pid)
         for project in projects:
@@ -396,7 +428,7 @@ def main() -> int:
         # A private name in a refused path and Origin: refused, no-store, and never found outside by the scans.
         refused = native.raw("GET", project_route(a["id"], "/files/" + a["marker"]), extra={"Origin": "http://" + a["marker"] + ".invalid"})
         require(refused.refused(403, "origin_not_allowed"), "csrf_no_store_refusal")
-        access_rule(native, receipt, a, other)
+        access_rule(native, receipt, a, development is not None)
         scan_case(scanner, receipt, "live_outside_scan", roots, [a["view"], b["view"], profile], located)
         if development is not None:
             phase = "development_hmr"

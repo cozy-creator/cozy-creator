@@ -60,9 +60,10 @@ it must not substitute a second browser and call that an OwnedBrowser pass.
    request returning 200 rather than 304 is valid if it is explicitly no-store; it is not a
    fabricated 304 pass. Prove the native CLI's and the credential-free owned page's capability
    both name `user:<euid>` and this Calcifer's birth. On a project route and a media route,
-   refuse another Unix account even with the bearer (`other_user`, containment-web's fresh
-   account), `Sec-Fetch-Site` cross-site/same-site/non-navigation `none` (`not_own_page`), a
-   foreign Origin (`origin_not_allowed`) and no bearer or browser headers (`unauthenticated`).
+   refuse a fresh Unix account the check makes and removes, even with the bearer (`other_user`),
+   `Sec-Fetch-Site` cross-site/same-site/non-navigation `none` (`not_own_page`), a foreign
+   Origin (`origin_not_allowed`), and no bearer or browser headers or a WebSocket upgrade there
+   (`unauthenticated`).
 4. Hold a real SQLite write transaction in B, enqueue a real browser edit, and request A's lock
    through the CLI. Observe busy/pending work without discarding it. Release the transaction;
    verify B's exact value from its own project DB, A locked, all owned pages/processes retired,
@@ -134,9 +135,11 @@ receipts remain failures and are not relabeled as managed-storage passes.
 ## Optional real development/HMR case
 
 `development_web: true` in the coordinator's ready file additionally requires a hosted runner
-with pnpm and the checkout's web dependencies installed. The fixture owns one Vite process,
-sets only top-level `dev = true` and `[calcifer].development_web` before its foreground Calcifer starts,
-and creates one independent source-only HMR probe. Through the same actual owned browser it
+with pnpm and the checkout's web dependencies installed. The fixture owns one Vite process
+and sets `[calcifer].development_web`; a first Calcifer, before any project, must still serve
+its embedded page and no `/__cozy_hmr` upgrade. Only then does it add top-level `dev = true`
+for its foreground Calcifer. This account's upgrade with the exact Origin gets 101; the fresh
+account's gets 403 `other_user`. With one independent source-only HMR probe, through the same actual owned browser it
 loads that module, changes the file, and requires value 2 without a document replacement. The
 ordinary project reads/edits/lock/restart cases then run through that same Calcifer origin.
 Probe source and config are restored by exact identity/content checks; no laptop configuration,

@@ -40,15 +40,17 @@ reads an answer that shows this as a version skew and never shows it as a bare 4
 Who may talk to Calcifer, and why: `tracker/design/calcifer-access.md`. There are no sessions, sign-in links or page tokens;
 each request is judged alone (`crates/calcifer/src/loopback.rs`). Every request passes, in order:
 1. **Loopback peer** (`not_loopback`).
-2. **`Host`** is exactly the listener it reached: `127.0.0.1:<port>` or `localhost:<port>` (`host_not_allowed`). A
-   DNS-rebinding page's `Host` is its own name, and it's turned away before anything else.
+2. **`Host`** is exactly the listener it reached: `127.0.0.1:<port>`, or `[::1]:<port>` (`host_not_allowed`). `localhost:<port>`
+   counts only while Calcifer holds `[::1]:<port>` too, so no other account can answer `localhost` there. A DNS-rebinding page's
+   `Host` is its own name, and it's turned away before anything else.
 3. **`Origin`**, when present, is `http://<Host>` (`origin_not_allowed`); a WebSocket upgrade must send it. No CORS header is
    ever sent.
 4. On `/v1` (media, streams and the dev page's hot reload too): **the peer's OS account** is Calcifer's (`other_user`), by the
-   kernel's word for its socket (Linux `/proc/net/tcp{,6}`, macOS libproc, Windows `GetExtendedTcpTable` and the owning
-   process's token). Then **who sent it**:
+   kernel's word for its established socket, read as the connection is accepted (Linux `/proc/net/tcp{,6}`, macOS libproc,
+   Windows `GetExtendedTcpTable` and the owning process's token). Then **who sent it**:
    - a browser on Calcifer's own page: `Sec-Fetch-Site: same-origin`, or `none` on a `GET` navigation (a URL a person or another
      app opened). `same-site` (another port), `cross-site` and an extension's `none` fetch are refused (`not_own_page`);
+   - the hot reload socket (`GET /__cozy_hmr`, dev mode) with its exact `Origin`, for a browser that labels no upgrade;
    - anything that isn't a browser sends no `Sec-Fetch-Site`, and must send the lock record's `Authorization: Bearer <token>`
      (`unauthenticated`). The token is new at every start, lives only in the 0600 lock record, never in argv or the
      environment, and no file route serves it.
@@ -56,8 +58,12 @@ each request is judged alone (`crates/calcifer/src/loopback.rs`). Every request 
    pass.
 
 A `GET` changes nothing a person would undo, so a navigation can only read; describing an asset's call (`?call=true`), which may
-install its package, is skipped for one. There are no cookies, and nothing of Calcifer's is kept in the browser: a tab outlives a
-restart. Project storage's principal is the verified account (`GET /v1/project-storage`: `principal: user:<uid or SID>`).
+install its package, is skipped for one. Every `/v1` answer carries `Content-Security-Policy: sandbox`, so nothing under it (a
+package's preview, a project's file) runs script on Calcifer's origin; a run's preview is a picture or nothing. There are no
+cookies, and nothing of Calcifer's is kept in the browser: a tab outlives a restart. Project storage's principal is the verified
+account (`GET /v1/project-storage`: `principal: user:<uid or SID>`); the page pins the first one and that Calcifer's
+`daemon_birth`, and after a change sends no passphrase until it's reloaded. Calcifer runs with umask 077: what it makes is its
+account's alone.
 
 ## Conventions
 
