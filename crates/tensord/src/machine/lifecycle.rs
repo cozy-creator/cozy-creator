@@ -71,6 +71,8 @@ pub(crate) struct Lifecycle {
     /// Called when an activation starts or ends without its restart (the runs it holds change),
     /// and when an admission or a follower lets go: the idle clock may start.
     changed: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
+    /// Why nothing can run here (cl-977): new work is refused, and a rental releases itself once nothing works there.
+    broken: std::sync::OnceLock<String>,
 }
 
 /// Holds the release while a call that may queue a job is in flight.
@@ -161,6 +163,7 @@ impl Lifecycle {
             kept: AtomicBool::new(false),
             transferred: AtomicI64::new(0),
             changed: Default::default(),
+            broken: Default::default(),
         });
         lifecycle.save(&lifecycle.state.lock().unwrap().ledger)?;
         Ok(lifecycle)
@@ -174,7 +177,21 @@ impl Lifecycle {
     /// and the last bytes an output read or an upload moved.
     fn idle_end(&self, state: &State) -> i64 {
         let used = state.jobs.ended_ms.max(self.transferred.load(Ordering::Acquire));
-        state.ledger.idle_since_ms.max(used) + self.grace
+        state.ledger.idle_since_ms.max(used) + self.window()
+    }
+
+    /// The idle window now: none for a broken rental, which bills for nothing.
+    fn window(&self) -> i64 {
+        match self.rental && self.broken.get().is_some() {
+            true => 0,
+            false => self.grace,
+        }
+    }
+
+    /// Nothing can run here (cl-977): it takes no new work, and a rental releases itself once nothing works there.
+    pub(crate) fn broken(&self, why: &str) {
+        let _ = self.broken.set(why.to_owned());
+        self.changed();
     }
 
     /// An output read or an object upload moved bytes: the rental is in use, and its idle clock
@@ -211,7 +228,7 @@ impl Lifecycle {
     fn idle_since(&self) -> Option<i64> {
         let state = self.state.lock().unwrap();
         let idle = !self.working(&state) && !state.activating && !state.ledger.released;
-        idle.then(|| self.idle_end(&state) - self.grace)
+        idle.then(|| self.idle_end(&state) - self.window())
     }
 
     /// A client follows a run's events or a log: the machine is in use until it lets go.
@@ -227,6 +244,9 @@ impl Lifecycle {
                 "machine_updating",
                 "the machine is activating an update; submit again once it is back",
             ));
+        }
+        if let Some(why) = self.broken.get() {
+            return Err(Error::unavailable("machine_broken", format!("this machine is broken: {why}")));
         }
         // This computer's machine past its deadline but not yet exiting takes the call.
         if state.ledger.released || (self.rental && self.due(&state, now_ms())) {
@@ -476,7 +496,10 @@ pub(crate) async fn release_when_idle(
             match lifecycle.claim() {
                 Ok(true) => match hub.release().await {
                     Ok(()) => {
-                        tracing::info!("15 minutes without a job; Tensorhub accepted the release");
+                        match lifecycle.broken.get() {
+                            Some(why) => tracing::info!("broken ({why}); Tensorhub accepted the release"),
+                            None => tracing::info!("15 minutes without a job; Tensorhub accepted the release"),
+                        }
                         return;
                     }
                     // Its rental is over at the Hub, yet the pod is here: only it can end itself.
@@ -543,7 +566,7 @@ pub(crate) fn exit_when_idle(
             match lifecycle.release(false).and_then(|claimed| Ok(claimed && stop()?)) {
                 Ok(true) => {
                     tracing::info!("its controllers changed: it starts again, listening as they need");
-                    std::process::exit(0);
+                    super::supervise::leave(0);
                 }
                 Ok(false) => lifecycle.reopen(),
                 Err(error) => tracing::warn!("this machine's restart for its controllers: {error}"),
@@ -567,7 +590,7 @@ pub(crate) fn exit_when_idle(
             match lifecycle.claim().and_then(|claimed| Ok(claimed && stop()?)) {
                 Ok(true) => {
                     tracing::info!("idle {} s: this machine exits until it is used", (now - since) / 1000);
-                    std::process::exit(0);
+                    super::supervise::leave(0);
                 }
                 Ok(false) => lifecycle.reopen(),
                 Err(error) => tracing::warn!("this machine's idle exit: {error}"),

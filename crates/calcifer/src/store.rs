@@ -1910,7 +1910,8 @@ impl Store {
                         State::Accepted => format!("its machine {machine} ended mid-run, and the run was not retried: {reason}"),
                         _ => format!("its machine {machine} ended before it accepted the run: {reason}"),
                     };
-                    end(tx, &id, Status::Failed, Some(Reason { code: "machine_lost".into(), message, ..Default::default() }))?
+                    let next = vec![format!("cozy run {} … --on new", row.target)];
+                    end(tx, &id, Status::Failed, Some(Reason { code: "machine_lost".into(), message, next, ..Default::default() }))?
                 };
                 events.extend(ended.into_iter().map(|event| (row.id.clone(), event)));
             }
@@ -2579,6 +2580,7 @@ impl From<&MachineRow> for Machine {
             fingerprint: row.endpoint.as_ref().map(|e| Digest::from_bytes(e.pin)),
             reason: row.reason.clone(),
             offline: None,
+            broken: None,
             rental: None,
             status: None,
             unreachable: None,

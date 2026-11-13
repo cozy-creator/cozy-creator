@@ -1072,6 +1072,9 @@ pub struct StatusFrame {
     /// held until it exits.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stuck: Vec<StuckProcess>,
+    /// Why nothing can run here: it takes no work, and a rental releases itself once nothing works there (cl-977).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub broken: Option<Broken>,
     /// What it does for the caller's runs besides their own work, each once however many wait on it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub activity: Vec<Operation>,
@@ -1213,6 +1216,17 @@ pub struct Operation {
     pub started_at_unix_ms: i64,
     /// The runs waiting on it, by the caller's ids.
     pub runs: Vec<String>,
+}
+
+/// Why nothing can run on a machine (`StatusFrame::broken`, cl-977). `code` is the state: `stuck_in_driver`, the TensorD
+/// before this one can't exit (it is in `stuck`) and a fresh process can't open its GPUs; Calcifer's own, for a rental that
+/// hasn't answered since an update restarted it, `silent_after_update`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct Broken {
+    pub code: String,
+    pub message: String,
 }
 
 /// A killed process in uninterruptible sleep (`D`: a driver after an Xid, a hung network

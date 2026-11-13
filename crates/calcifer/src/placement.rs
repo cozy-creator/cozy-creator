@@ -267,6 +267,9 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
         machines.local_up().await.map_err(|e| e.message)?;
     }
     let (row, link) = machines.linked(text).map_err(|e| e.message)?;
+    if let Some(broken) = machines.broken(&row.name) {
+        return Err(format!("it's broken: {}", broken.message));
+    }
     let frame = match machines.frame(&row.name) {
         Some(frame) => frame,
         None => link.status().await.map_err(|e| e.to_string())?,

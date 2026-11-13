@@ -26,7 +26,7 @@ pub fn machine(lifetime: Lifetime) -> ExitCode {
     if let Err(error) = run(lifetime) {
         config::init_logs(None);
         tracing::error!("{error}");
-        std::process::exit(1);
+        crate::machine::supervise::leave(1);
     }
     ExitCode::SUCCESS
 }
@@ -76,11 +76,21 @@ fn run(lifetime: Lifetime) -> io::Result<()> {
         }
     }
     let paths = update::Paths::new(&grant.layout.engine(), &grant.layout.root);
+    // The stable parent holds the listeners: a service that can't exit keeps no port from the next (cl-977).
     #[cfg(unix)]
-    let ready = supervise::supervise(&paths, grant.provider.clone())?;
+    let listeners = {
+        let local = grant.lifetime != Lifetime::Rental;
+        crate::machine::net::Listeners::hold(&grant.layout.state, grant.listen_host, grant.worker_port, grant.webrtc_port, local)?
+    };
+    #[cfg(unix)]
+    let ready = supervise::supervise(&paths, grant.provider.clone(), &listeners)?;
+    #[cfg(unix)]
+    let listeners = Some(listeners);
+    #[cfg(windows)]
+    let listeners = None;
     // The service: why it fails reaches its parent's rollback reason.
     config::reread(&mut config)
-        .and_then(|()| run_machine(config, ready))
+        .and_then(|()| run_machine(config, ready, listeners))
         .inspect_err(|error| update::service_failed(&paths, error))
 }
 
@@ -97,18 +107,28 @@ fn machine_runtime() -> io::Result<&'static tokio::runtime::Runtime> {
 }
 
 /// The state root's one owner: its lock held while the process lives, and the TensorFS store it
-/// serves (which may live outside `root`), claimed for this machine alone.
-fn own(root: &std::path::Path, store: &std::path::Path) -> io::Result<((std::fs::File, std::fs::File), Arc<Store>)> {
+/// serves (which may live outside `root`), claimed for this machine alone. An earlier service that
+/// can't exit (`stuck`) may still hold them: it runs no code again, and this one takes them over.
+fn own(root: &std::path::Path, store: &std::path::Path, stuck: Option<&str>) -> io::Result<((std::fs::File, std::fs::File), Arc<Store>)> {
     std::fs::create_dir_all(root)?;
     let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
         .open(root.join("owner.lock"))?;
-    lock.try_lock()
-        .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "state already has a machine owner"))?;
+    match (lock.try_lock(), stuck) {
+        (Ok(()), _) => {}
+        (Err(_), Some(holder)) => tracing::warn!("this state's lock is held by {holder}; this machine takes the state over"),
+        (Err(_), None) => return Err(io::Error::new(io::ErrorKind::AlreadyExists, "state already has a machine owner")),
+    }
     platform::durable::set_mode(root, 0o700)?;
     let store = crate::storage::open(store)?;
     // The store is this machine's alone, whatever path another machine names it by.
-    let claim = crate::storage::claim(store.root())?;
+    let claim = crate::storage::claim(store.root(), stuck)?;
     Ok(((lock, claim), store))
+}
+
+/// `cozy machine probe-gpus` (the `tensord` binary's `probe-gpus`): a process of its own opening the GPUs for the machine
+/// (`machine::receipt::gpus`). Not for people.
+pub fn probe_gpus(args: impl IntoIterator<Item = std::ffi::OsString>) -> ExitCode {
+    crate::machine::receipt::probe_gpus(args)
 }
 
 /// `tensord version --json`: what a candidate binary declares to the machine's update.
@@ -133,7 +153,11 @@ pub fn version() -> io::Result<()> {
 
 /// Runs the machine from its grant: identity and readiness under the machine root, the engine
 /// under `var/lib/cozy/tensord`, the API on the granted port.
-fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Ready) -> io::Result<()> {
+fn run_machine(
+    config: config::Config,
+    mut ready: crate::machine::supervise::Ready,
+    listeners: Option<crate::machine::net::Listeners>,
+) -> io::Result<()> {
     let config::Config { grant, visible_devices, gpu_memory_limit, mode, display_pace, endpoint, logs, gpu_samples, .. } = config;
     // A shared computer's own programs come first: from this thread, before the runtime's, the
     // background priority reaches every thread and process the machine starts (executors too).
@@ -166,7 +190,10 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     )?;
     // The machine answers before it does anything slow: its listener first, then its step as it
     // starts, so whoever watches it (a rental's Hub, Calcifer) hears a slow start, never silence.
-    let api = crate::machine::net::kept_listener(&layout.state.join("api-port"), grant.listen_host, grant.worker_port)?;
+    let crate::machine::net::Listeners { api, webrtc } = match listeners {
+        Some(held) => held,
+        None => crate::machine::net::Listeners::hold(&layout.state, grant.listen_host, grant.worker_port, grant.webrtc_port, !rental)?,
+    };
     let boot = crate::api::Boot::new();
     api.set_nonblocking(true)?;
     let booting = runtime.spawn(crate::api::booting(api.try_clone()?, &identity, boot.clone())?);
@@ -180,7 +207,10 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     let engine = layout.engine();
     let generations = engine.join("generations");
     let paths = crate::machine::update::Paths::new(&engine, &layout.root);
-    let (_owned, store) = own(&engine, &layout.store)?;
+    // Earlier services that can't exit, which the stable parent recorded (cl-977).
+    let stuck = crate::machine::stuck::current(&paths);
+    let holder = stuck.first().map(|stuck| format!("the TensorD before this one ({})", stuck.line()));
+    let (_owned, store) = own(&engine, &layout.store, holder.as_deref())?;
     // The machine's one downloader, held for its life: it reads the datacenter volume before the
     // Hub and fills it. A variable naming no mount point (the volume was not delivered) is none.
     boot.at("cache");
@@ -237,20 +267,36 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
                 tracing::warn!("Runtime update commit: {error}");
             }
             // An update queued behind the one this restart ended starts now.
-            updates.next(|code| std::process::exit(code));
+            updates.next(|code| crate::machine::supervise::leave(code));
             ready.report();
         })?;
     // A machine serves every package on its pool: its GPUs (the envelope, sorted by index; a
     // degree-K plan uses the first K) and deviceless executors, with the executor environment
     // the pod proofs used.
     boot.at("gpus");
-    let (mut gpus, mut gpu_problems) = receipt::gpus(visible_devices.as_deref());
+    // After a TensorD that can't exit, a fresh process must still open the GPUs as an executor does (cl-977).
+    let (mut gpus, mut gpu_problems, opened) = receipt::gpus(visible_devices.as_deref(), !stuck.is_empty());
     // A driver below CUDA 13.0's floor serves no GPU; the machine stays for CPU work.
     if let Some(why) = gpus.first().and_then(|gpu| platform::gpu::below_floor(&gpu.driver_version)) {
         gpu_problems.push(format!("{why}; until then this machine runs on its CPU"));
         gpus.clear();
     }
     gpu_problems.iter().for_each(|problem| tracing::error!("{problem}"));
+    let broken = match (stuck.first(), opened) {
+        (Some(before), Err(why)) if !gpus.is_empty() => {
+            let message = format!("the TensorD before this one can't exit ({}), and its GPUs can't be opened: {why}", before.line());
+            tracing::error!("broken: {message}; it takes no work, and a rental releases itself");
+            Some(::api::machine::Broken { code: "stuck_in_driver".into(), message })
+        }
+        (Some(before), _) => {
+            tracing::warn!("the TensorD before this one can't exit ({}); its GPUs still open, so this one serves", before.line());
+            None
+        }
+        (None, _) => None,
+    };
+    if let Some(broken) = &broken {
+        lifecycle.broken(&broken.message);
+    }
     boot.at("pool");
     {
         let devices: Vec<String> = gpus.iter().map(|g| g.device_index.to_string()).collect();
@@ -266,9 +312,10 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
             "environment": {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": home, "COZY_HOME": home},
             // `machine.mode`, else a rented pod is the machine's alone and anywhere else it is a guest.
             "host": {"mode": mode.name()},
-            "image_kernels": (!gpus.is_empty()).then(|| image_kernels(&layout.root, &paths.sdk())).flatten(),
+            "image_kernels": (!gpus.is_empty() && broken.is_none()).then(|| image_kernels(&layout.root, &paths.sdk())).flatten(),
             "toolchain": crate::machine::toolchain::dir(&engine),
             "gpu_samples": gpu_samples,
+            "broken": broken.as_ref().map(|broken| format!("broken: {}", broken.message)),
         });
         let config = serde_json::from_value::<crate::gpu_service::GpuConfig>(config)
             .map_err(io::Error::other)?
@@ -333,7 +380,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
                     crate::machine::lifecycle::release_when_idle(lifecycle, hub, provider, jobs).await;
                 });
                 // The Hub accepted the release, or the rental ended itself: this process ends.
-                std::process::exit(0);
+                crate::machine::supervise::leave(0);
             })?;
     }
     boot.at("api");
@@ -349,7 +396,7 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         lifecycle,
         hubs: own_hub.iter().map(|hub| (hub.origin.clone(), hub.worker_id.clone())).collect(),
         updates,
-        webrtc: crate::machine::player::listen(&layout.state, grant.webrtc_port, !rental)?,
+        webrtc,
         player: grant.webrtc_reach.clone(),
         webrtc_port: None,
         store_logs: store.root().join("logs"),
@@ -360,6 +407,8 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
         gpu_memory_limit,
         mode: mode.name(),
         torch,
+        stuck: watch_stuck(stuck, paths.clone()),
+        broken,
     };
     // The boot answer ends before the API takes its listener: one server answers at a time.
     booting.abort();
@@ -381,6 +430,27 @@ fn run_machine(config: config::Config, mut ready: crate::machine::supervise::Rea
     loop {
         std::thread::park();
     }
+}
+
+/// The TensorDs before this one that can't exit, each shown until its exit, which a thread of its own waits on (cl-977).
+fn watch_stuck(stuck: Vec<crate::machine::stuck::Stuck>, paths: crate::machine::update::Paths) -> Arc<std::sync::Mutex<Vec<crate::machine::stuck::Stuck>>> {
+    let shown = Arc::new(std::sync::Mutex::new(stuck.clone()));
+    for before in stuck {
+        let (shown, paths, pid) = (shown.clone(), paths.clone(), before.birth.pid);
+        let watching = std::thread::Builder::new().name(format!("stuck-{pid}")).spawn(move || {
+            if let Ok(Some(exact)) = platform::process::Exact::open(&before.birth) {
+                let _ = exact.wait();
+            }
+            tracing::info!("pid {pid}, the TensorD before this one, exited");
+            crate::machine::stuck::exited(&paths, &before.birth);
+            shown.lock().unwrap().retain(|shown| shown.birth != before.birth);
+            crate::activity::status_changed();
+        });
+        if let Err(error) = watching {
+            tracing::warn!("pid {pid}, the TensorD before this one, stays shown: {error}");
+        }
+    }
+    shown
 }
 
 /// The image's Runtime interpreter and the executors' Runtime wheel, when both are here: the

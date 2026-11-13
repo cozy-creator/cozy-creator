@@ -14,7 +14,7 @@ import { End } from "./End"
 import { Installed } from "./Installed"
 import { MachineLogs } from "./MachineLogs"
 import { RenderCheck, Spec, useRenderMachines } from "./RenderHere"
-import { called, endsWords, kindWords, named, slowWords, spentWords } from "./words"
+import { brokenWords, called, endsWords, kindWords, named, slowWords, spentWords } from "./words"
 
 /** Its idle clock renewed (`cozy machine keepalive`), which only a person asks for: a rental ends 15 minutes after its last job. */
 function KeepRunning({ machine }: { machine: Machine }) {
@@ -228,6 +228,7 @@ export function MachineDrawer() {
         </p>
       )}
       {machine.offline && <p className="warn">It's offline and refuses runs. It returns if its provider resumes it, and ends after 15 minutes idle.</p>}
+      {brokenWords(machine) && <p className="warn">{brokenWords(machine)}</p>}
       {machine.unreachable && !ended && <p className="muted">It didn't answer just now ({machine.unreachable}). This is from its last report.</p>}
       {!ended && <Doing machine={machine} now={now} />}
       <div className="machine-actions">

@@ -97,10 +97,18 @@ pub(crate) struct Machines {
     pub(crate) arrivals: tokio::sync::watch::Sender<u64>,
 }
 
+/// How long a rental may say nothing after an update restarted it before this computer calls it broken (cl-977). Its own
+/// restart, with a TensorD before it that can't exit, takes about 3 minutes at most (`tensord::machine::stuck`).
+const UPDATE_RETURN_MS: i64 = 10 * 60_000;
+
 /// What Calcifer last heard of a machine, never stored.
 #[derive(Default)]
 pub(crate) struct Seen {
     frame: Option<v1::StatusFrame>,
+    /// When its last frame came, else (none came since this Calcifer started) its first failed attempt (unix ms).
+    heard: Option<i64>,
+    /// This computer's word that it is broken: silent since an update restarted it (cl-977). Cleared when it answers.
+    silent: Option<v1::Broken>,
     unreachable: Option<String>,
     /// Since when it has not answered (unix ms).
     since: Option<i64>,
@@ -719,6 +727,7 @@ impl Machines {
             activity = seen.frame.as_ref().map(|f| f.activity.clone()).unwrap_or_default();
             machine.unreachable.clone_from(&seen.unreachable);
             machine.unreachable_since_ms = seen.since;
+            machine.broken = broken_in(seen).filter(|_| row.state != MachineState::Ended);
             machine.boot.clone_from(&seen.boot);
             machine.attempt.clone_from(&seen.attempt);
         }
@@ -879,6 +888,7 @@ impl Machines {
                         hub_pause = Duration::ZERO;
                     }
                 }
+                self.silent_after_update(&name);
             }
             let ask = kind == MachineKind::Rental && (offline || unreachable);
             if ask && tokio::time::Instant::now() >= hub_at {
@@ -949,7 +959,9 @@ impl Machines {
             }
             seen.stopped &= frame.phase == "releasing";
             seen.frame = Some(frame);
+            seen.heard = Some(crate::store::now_ms());
             seen.since = None;
+            seen.silent = None;
             seen.unreachable.take().is_some()
         };
         // Its runs and exports that wait on it try again now.
@@ -993,6 +1005,46 @@ impl Machines {
     pub(crate) fn offline(&self, name: &str) -> Option<String> {
         let row = self.store().machine(name).ok()??;
         self.offline_in(&row, &lock(&self.seen))
+    }
+
+    /// Why nothing can run on the machine (cl-977): its own word, else this computer's that it went silent after an update.
+    pub(crate) fn broken(&self, name: &str) -> Option<v1::Broken> {
+        broken_in(lock(&self.seen).get(name)?)
+    }
+
+    /// A rental silent since an update restarted it, past `UPDATE_RETURN_MS` (cl-977): broken by this computer's word, its runs
+    /// unsent here leave it, and one this computer ordered is ended, billing for nothing. Nothing there can be making progress:
+    /// it has said nothing since its update drained its runs. Asked at each failed attempt to reach it, never on a timer.
+    fn silent_after_update(self: &Arc<Self>, name: &str) {
+        let Ok(Some(row)) = self.store().machine(name) else { return };
+        if row.kind != MachineKind::Rental || row.state == MachineState::Ended {
+            return;
+        }
+        let updating = self.store().updating(name).unwrap_or_default();
+        let now = crate::store::now_ms();
+        let said = {
+            let mut seen = lock(&self.seen);
+            let seen = seen.entry(name.to_owned()).or_default();
+            let restarted = updating || seen.frame.as_ref().and_then(|f| f.update.as_ref()).is_some_and(|u| u.state == "running");
+            match *seen.heard.get_or_insert(now) {
+                heard if seen.silent.is_none() && restarted && now - heard >= UPDATE_RETURN_MS => {
+                    let said = format!("it hasn't answered since an update restarted it {} ago", wire::clock(now - heard));
+                    seen.silent = Some(v1::Broken { code: "silent_after_update".into(), message: said.clone() });
+                    said
+                }
+                _ => return,
+            }
+        };
+        warn!(machine = name, "broken: {said}");
+        self.calcifer.touch(name);
+        self.calcifer.machine_changed();
+        if !self.ordered(&row) || self.pending_end(name).ok().flatten().is_some() {
+            return;
+        }
+        match self.end_here(row, true) {
+            Ok(_) => warn!(machine = name, "ending it: broken, it bills for nothing"),
+            Err(e) => warn!(machine = name, "ending it: {}", e.message),
+        }
     }
 
     fn offline_in(&self, row: &MachineRow, seen: &HashMap<String, Seen>) -> Option<String> {
@@ -1049,6 +1101,9 @@ impl Machines {
         }
         if let Some(reason) = self.offline(&name) {
             return Err(offline_refusal(&name, &reason));
+        }
+        if let Some(broken) = self.broken(&name) {
+            return Err(broken_refusal(&name, &broken.message));
         }
         let failed = match lock(&self.seen).get(&name) {
             Some(seen) if seen.unreachable.is_some() => true,
@@ -1216,6 +1271,7 @@ impl Machines {
             .filter(|row| row.kind == MachineKind::Rental && row.state != MachineState::Ended && self.ordered(row))
             .filter(|row| !ending.contains(&row.name))
             .filter(|row| self.offline_in(row, &seen).is_none())
+            .filter(|row| seen.get(&row.name).and_then(broken_in).is_none())
             .filter(|row| gpus == 0 || count(row).is_none_or(|n| n >= gpus))
             .min_by_key(|row| {
                 let (running, queued) = load.get(&row.name).copied().unwrap_or_default();
@@ -1239,6 +1295,9 @@ impl Machines {
         }
         if self.pending_end(name).ok().flatten().is_some() {
             return Some(format!("{name} is ending"));
+        }
+        if let Some(broken) = self.broken(name) {
+            return Some(format!("{name} is broken: {}", broken.message));
         }
         self.offline(name).map(|why| format!("{name} is offline: {why}"))
     }
@@ -2015,6 +2074,17 @@ fn ended_refusal(name: &str, reason: &str) -> Error {
     Error::new(Kind::Conflict, "machine_ended", format!("{name} has ended: {reason}"))
         .remedy("`--on new` rents a machine, or name another")
         .next("cozy machine ls")
+}
+
+/// Why `seen`'s machine is broken (cl-977): its own Status's word, else this computer's.
+fn broken_in(seen: &Seen) -> Option<v1::Broken> {
+    seen.frame.as_ref().and_then(|frame| frame.broken.clone()).or_else(|| seen.silent.clone())
+}
+
+pub(crate) fn broken_refusal(name: &str, reason: &str) -> Error {
+    Error::new(Kind::Unavailable, "machine_broken", format!("{name} is broken: {reason}"))
+        .remedy("it takes no work and a rental is released; `--on new` rents a machine, or name another")
+        .next(format!("cozy machine show {name}"))
 }
 
 fn offline_refusal(name: &str, reason: &str) -> Error {

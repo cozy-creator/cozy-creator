@@ -258,6 +258,9 @@ pub(crate) fn record(ctx: &Context, m: &Machine) -> output::Record {
         }
         None => {}
     }
+    if let Some(broken) = broken(m) {
+        record = record.alarm("broken", broken);
+    }
     if let Some(note) = offline(m) {
         record = record.note(note);
     }
@@ -446,6 +449,7 @@ fn kind(m: &Machine) -> &'static str {
 pub(crate) fn state_cell(m: &Machine) -> String {
     let mut cell = match m.state {
         _ if m.offline.is_some() => format!("offline: {}", m.offline.as_deref().unwrap_or_default()),
+        MachineState::Ready | MachineState::Booting if m.broken.is_some() => format!("broken: {}", m.broken.as_ref().map_or("", |b| b.code.as_str())),
         MachineState::Booting => match &m.boot {
             Some(boot) => format!("booting · {boot}"),
             None => "booting".into(),
@@ -566,6 +570,18 @@ fn end_failed(m: &Machine) -> Option<String> {
 }
 
 /// What an offline machine's owner can do: it is kept, never replaced, and refuses runs meanwhile.
+/// Why nothing runs on it, and what becomes of it (cl-977).
+fn broken(m: &Machine) -> Option<String> {
+    let broken = m.broken.as_ref().filter(|_| m.state != MachineState::Ended)?;
+    let then = match (m.kind, m.ordered) {
+        (MachineKind::Rental, _) if m.status.as_ref().is_some_and(|s| s.phase == "releasing") => "it is releasing itself",
+        (MachineKind::Rental, true) if broken.code == "silent_after_update" => "this computer ends it",
+        (MachineKind::Rental, _) => "it releases itself once nothing runs there",
+        _ => "it takes no work until what's stuck exits (a reboot ends it)",
+    };
+    Some(format!("{} ({}); {then}", broken.message, broken.code))
+}
+
 fn offline(m: &Machine) -> Option<String> {
     let r = m.rental.as_ref().filter(|_| m.offline.is_some())?;
     Some(format!(

@@ -270,7 +270,7 @@ fn stage(
         notes,
     };
     updates
-        .request(request, ready, |code| std::process::exit(code))
+        .request(request, ready, |code| crate::machine::supervise::leave(code))
         .map(|_| ())
         .map_err(|(code, message)| refusal(code, message))
 }

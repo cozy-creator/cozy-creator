@@ -522,7 +522,7 @@ impl Updates {
                 notes: vec![],
             };
             // One already answered (installed, failed or queued) asks nothing.
-            let _ = self.request(fetch, true, |code| std::process::exit(code));
+            let _ = self.request(fetch, true, |code| super::supervise::leave(code));
         }
         verdicts
     }

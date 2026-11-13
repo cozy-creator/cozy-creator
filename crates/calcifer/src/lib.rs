@@ -699,6 +699,11 @@ impl Calcifer {
         self.machines()?.offline(name)
     }
 
+    /// Why nothing can run on the machine (cl-977).
+    pub(crate) fn broken(&self, name: &str) -> Option<::api::machine::Broken> {
+        self.machines()?.broken(name)
+    }
+
     /// Records the machine as gone for good: its unconfirmed runs return to the outbox or fail,
     /// its accepted ones fail.
     pub(crate) fn machine_ended(&self, name: &str, reason: &str) -> Result<(), Error> {
@@ -1231,6 +1236,26 @@ impl Calcifer {
                 tokio::select! {
                     _ = changed.changed() => {}
                     _ = wake.notified() => {}
+                }
+                continue;
+            }
+            // Broken (cl-977): an unsent run leaves it now, as from one offline. One it holds is followed on: it settles there (its
+            // GPUs out of service fail it, to be placed again) or with the machine's end.
+            if run.state == State::Queued
+                && let Some(broken) = self.broken(&name)
+            {
+                let left = match (run.pinned, run.wants.as_str()) {
+                    (false, "any") => self.store.unplace(id.as_str()),
+                    _ => self.store.fail(id.as_str(), Reason {
+                        code: "machine_broken".into(),
+                        message: format!("{name} is broken: {}", broken.message),
+                        next: vec![format!("cozy run {} … --on new", run.target)],
+                        ..Default::default()
+                    }),
+                };
+                match left {
+                    Ok(events) => self.publish(id, events),
+                    Err(e) => warn!(run = %id, "{e}"),
                 }
                 continue;
             }

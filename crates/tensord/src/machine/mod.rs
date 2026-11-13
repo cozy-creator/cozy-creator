@@ -16,6 +16,7 @@ pub(crate) mod release;
 pub(crate) mod receipt;
 pub(crate) mod speed;
 pub(crate) mod ssh;
+pub(crate) mod stuck;
 pub(crate) mod supervise;
 pub(crate) mod toolchain;
 pub(crate) mod update;
