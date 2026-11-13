@@ -728,13 +728,30 @@ def written(cell: Cell, items: list[Item], store: Path) -> dict[str, dict[str, i
 type Files = dict[str, tuple[Path, str]]
 
 
+def graphs_off_cuda(reply: Reply) -> None:
+    """CUDA graphs fall back to the call as written off CUDA, and the record says so (cr-297): every component
+    call the Runtime counted (`residency.graphs[*].calls`) is a guarded one, "off CUDA", none recorded or replayed.
+    A Runtime that counts no calls yet is not judged."""
+    residency = cast(dict[str, Json], cast(dict[str, Json], reply).get("residency") or {})
+    regions = cast(dict[str, dict[str, Json]], residency.get("graphs") or {})
+    for component, region in regions.items():
+        calls = cast(dict[str, int] | None, region.get("calls"))
+        if calls is None:
+            continue
+        ran = {code: n for code, n in calls.items() if code != "guard"}
+        why = cast(dict[str, str], region.get("why") or {}).get("guard", "")
+        if ran or (calls.get("guard") and why != "off CUDA"):
+            raise Failed(f"{component}: a CPU call's graphs ran {ran or calls} ({why or 'no reason'}), not as written off CUDA")
+
+
 def judge(cell: Cell, reply: Reply, spool: Path, reference: Seen | None,
           committed: Callable[[], dict[str, dict[str, int]]]) -> tuple[Seen, Files]:
     """The cell's output judged, never only its completion: every declared output present, finite and not flat (or
-    declared empty), the cell's own check, and the stored reference's."""
+    declared empty), the cell's own check, the stored reference's, and its graphs' fallback (`graphs_off_cuda`)."""
     outcome = reply.get("outcome", {})
     if not reply.get("ok") or outcome.get("terminal") != "succeeded":
         raise Failed(f"{outcome.get('code') or reply.get('code')}: {first_line(outcome.get('message') or reply.get('detail', ''))}")
+    graphs_off_cuda(reply)
     result_file = spool / "result.canonical"
     result = cast(Json, json.loads(result_file.read_bytes())) if result_file.exists() else reply.get("result")
     seen: Seen = {"result": plain(result), "outputs": []}
