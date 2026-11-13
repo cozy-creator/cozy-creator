@@ -455,13 +455,25 @@ fn indexed(api: &Api) -> Result<Vec<crate::state::KnownProject>, Error> {
         // A locked project still has its canonical id. Do not mint a public
         // code until an opened view can recover the code stored in its DB.
         if vault::encrypted(&entry.path) { continue; }
+        let db = entry.path.join(db::DB);
+        if UNCODED.lock().expect("uncoded lock").get(&entry.id) == Some(&stamp(&db)) { continue; }
         match backfill_code(store, entry) {
-            Ok(code) => entry.code = code,
-            Err(error) => warn!("keeping the existing project link for {}: {}", entry.path.display(), error.message),
+            Ok(code) => {
+                UNCODED.lock().expect("uncoded lock").remove(&entry.id);
+                entry.code = code;
+            }
+            Err(error) => {
+                warn!("keeping the existing project link for {}: {}", entry.path.display(), error.message);
+                UNCODED.lock().expect("uncoded lock").insert(entry.id.clone(), stamp(&db));
+            }
         }
     }
     Ok(here)
 }
+
+/// Each project whose code couldn't be backfilled, by id, with its `project.db` as it was then (`stamp`): tried again only once that
+/// file changes, never on each list.
+static UNCODED: std::sync::LazyLock<Mutex<HashMap<String, String>>> = std::sync::LazyLock::new(Mutex::default);
 
 /// An older project keeps its existing link if its public code cannot be recorded.
 fn backfill_code(store: &crate::store::Store, entry: &crate::state::KnownProject) -> Result<String, Error> {
