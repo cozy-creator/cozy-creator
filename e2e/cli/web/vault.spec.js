@@ -5,7 +5,7 @@
 // `@vault`: on the job with the filesystem driver, sharing its Calcifer, so it touches only its own projects.
 const { randomBytes, createHash } = require('crypto');
 const { existsSync, readFileSync, readdirSync, realpathSync } = require('fs');
-const { join, relative } = require('path');
+const { dirname, join, relative } = require('path');
 const { test: base, expect, box, canvasIdle, middle, png } = require('./fixtures');
 
 const test = base.extend({
@@ -121,9 +121,9 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
 
   await test.step('an encrypted project, made from the page', async () => {
     await page.getByRole('navigation', { name: 'Projects' }).getByRole('link', { name: project.name, exact: true }).click();
-    const field = page.getByLabel("New project's name");
+    const field = page.getByLabel("New project's folder");
     await expect(field).toBeFocused();
-    await field.fill(name);
+    await field.fill(join(dirname(project.path), name));
     await expect.soft(page.getByLabel('Create without encryption'), 'encrypted unless asked').not.toBeChecked();
     await page.getByLabel('Passphrase', { exact: true }).fill(passphrase);
     await page.getByLabel('Confirm passphrase', { exact: true }).fill(passphrase);

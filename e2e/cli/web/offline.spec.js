@@ -242,7 +242,8 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     expect.soft(await page.evaluate(() => window.unreloaded), 'no reload').toBe(true);
     await expect.soft(page.locator('.notes .note .line').filter({ hasText: /^Couldn't/ }), 'nothing refused').toHaveCount(0);
     // History keeps Redo: nothing was done after the undo. Done again, by its key, it deletes the box again.
-    await expect.soft(page.getByRole('button', { name: 'Redo', exact: true }), 'history keeps Redo').toHaveAttribute('title', /^Redo: Deleted spare/);
+    // The top bar's (a note may offer its own Redo).
+    await expect.soft(page.getByRole('button', { name: 'Redo', exact: true }).and(page.getByLabel('Redo', { exact: true })), 'history keeps Redo').toHaveAttribute('title', /^Redo: Deleted spare/);
     const clear = await openPoint(page);
     await page.mouse.click(clear.x, clear.y);
     await page.keyboard.press('ControlOrMeta+Shift+z');

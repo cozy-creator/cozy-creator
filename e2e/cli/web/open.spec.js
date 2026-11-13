@@ -2,6 +2,7 @@
 // through a reload; used again, in a browser of its own, it's refused in words until that browser has a code of its own; and a new
 // project from the projects page opens at its address, unencrypted.
 const { randomBytes } = require('crypto');
+const { dirname, join } = require('path');
 const { test, expect } = require('./fixtures');
 
 const redeeming = (answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/session';
@@ -66,11 +67,12 @@ test('open', { tag: '@engines' }, async ({ context, newContext, project, api, si
 
   await test.step('New project, on the projects page', async () => {
     const name = `web-open-made-${randomBytes(3).toString('hex')}`;
-    // The open project's tab opens Projects, ready for a new one's name.
+    // The open project's tab opens Projects, ready for a new one's folder, suggested beside the last project (cl-980).
     await signedIn(page, project).click();
-    const field = page.getByLabel("New project's name");
+    const field = page.getByLabel("New project's folder");
     await expect(field).toBeFocused();
-    await field.fill(name);
+    await expect.soft(field, 'a folder suggested').toHaveValue(/[\\/]untitled-\d+$/);
+    await field.fill(join(dirname(project.path), name));
     await page.getByLabel('Create without encryption').check();
     const made = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/projects');
     await page.getByRole('button', { name: 'Create project' }).click();
