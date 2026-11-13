@@ -32,15 +32,18 @@ async function holdWrites(page, name) {
   let release;
   const held = new Promise((done) => (release = done));
   const asked = [];
+  const going = [];
   const pattern = (url) => new URL(url).pathname.endsWith(`/assets/${name}`);
   const handler = async (route) => {
     if (route.request().method() !== 'PATCH') return route.fallback();
     asked.push(route.request().postDataJSON());
-    await held;
-    await route.continue();
+    const sent = held.then(() => route.continue());
+    going.push(sent);
+    await sent;
   };
   await page.route(pattern, handler);
-  return { asked, release: async () => { release(); await page.unroute(pattern, handler); } };
+  // Each held write goes on, and only once they have is the route taken away: taken away first, Playwright handles them itself.
+  return { asked, release: async () => { release(); await Promise.all(going); await page.unroute(pattern, handler); } };
 }
 
 test('type', { tag: '@engines' }, async ({ page, context, project, api, signIn }) => {

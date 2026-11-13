@@ -4,7 +4,7 @@
 // field's; a selection of three let go on it appends three. Rendered, its prompt holds Amy's file and only Walk's name, and `cozy run watch`
 // says so once.
 const { test, expect, box, focus, middle, fixtureTool, MP4, png } = require('./fixtures');
-const { carry, fit, leave } = require('./hands');
+const { carry, carryBox, fit, leave } = require('./hands');
 
 const STILL = fixtureTool('tool.py/still');
 const RUN_MS = 120_000;
@@ -59,7 +59,7 @@ test('mention', async ({ page, project, api, cli }) => {
 
   await test.step('Walk let go on the box, and names pasted plain and rich: chips at once', async () => {
     await leave(page);
-    await carry(page, await middle(box(page, 'walk').locator('.nm')), await middle(box(page, 'still').locator('.media')));
+    await carryBox(page, 'walk', await middle(box(page, 'still').locator('.media')));
     await expect.poll(said, { message: 'the drop is its name' }).toBe('A sheet of <amy> and <walk>');
     await focus(page, 'still');
     await expect(words).toBeFocused();

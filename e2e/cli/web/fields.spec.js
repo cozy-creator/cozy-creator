@@ -183,13 +183,17 @@ test('fields', async ({ page, project, api, cli }) => {
     const radios = picker.locator('.model-picker-choices [role="radio"]');
     await radios.filter({ hasText: 'sexgod1979 / Pinkcherry' }).click();
     await expect.poll(async () => (await fieldsOf('scene')).models?.base_model?.ref, { message: 'a base model picked' }).toBe('sexgod1979/pinkcherry');
+    // 360 Orbit: its card's one trigger is a whole prompt, commas and all (cl-971).
+    const triggers = (await api.get('/v1/models/pablodawson/360-orbit')).triggers ?? [];
+    expect(triggers, "the seeded LoRA's triggers").toHaveLength(1);
+    const [trigger] = triggers;
     await picker.getByRole('button', { name: 'LoRAs', exact: true }).click();
-    await picker.locator('.model-picker-lora-option', { hasText: /vfx.edit/i }).click();
+    await picker.locator('.model-picker-lora-option', { hasText: /360 Orbit/i }).click();
     let lora;
-    await expect.poll(async () => (lora = (await fieldsOf('scene')).models?.base_model?.lora?.[0]?.ref), { message: 'a LoRA added' }).toMatch(/^alissonerdx\/minimax-h3-vfx-edit/);
+    await expect.poll(async () => (lora = (await fieldsOf('scene')).models?.base_model?.lora?.[0]?.ref), { message: 'a LoRA added' }).toMatch(/^pablodawson\/360-orbit/);
     await expect.poll(async () => {
       const summary = String((await fieldsOf('scene')).summary ?? '');
-      return summary.startsWith('A harbour at dusk.') && summary.split('vfx_edit').length - 1;
+      return summary.startsWith('A harbour at dusk.') && summary.split(trigger).length - 1;
     }, { message: 'its trigger after the prompt, once' }).toBe(1);
     const strength = picker.locator('.model-picker-adapters input[type="number"]').first();
     await strength.fill('1.5');
@@ -207,7 +211,7 @@ test('fields', async ({ page, project, api, cli }) => {
       const marks = globalThis.CSS?.highlights?.get('lora-trigger');
       return marks ? [...marks].filter((range) => held.some((el) => el.contains(range.startContainer))).map((range) => range.toString().toLowerCase()) : [];
     });
-    await expect.poll(lit, { message: 'its trigger drawn in the prompt' }).toEqual(['vfx_edit']);
+    await expect.poll(lit, { message: 'its trigger drawn in the prompt' }).toEqual([trigger.toLowerCase()]);
   });
 
   await test.step("Qwen Image 2's VAE slot lists the seeded VAE", async () => {

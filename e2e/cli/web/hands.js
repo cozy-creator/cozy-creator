@@ -4,7 +4,7 @@ const { execFileSync } = require('child_process');
 const { readdirSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
-const { expect, canvasIdle, middle } = require('./fixtures');
+const { expect, box, canvasIdle, middle } = require('./fixtures');
 
 /** Files from the computer let go at `at` (a point of the screen) on `target`, as a browser hands a drop over: `[{name, type, bytes}]`. */
 async function dropFiles(page, files, at, target = '.stage') {
@@ -26,6 +26,16 @@ async function carry(page, from, to, during) {
   const said = during ? await during() : undefined;
   await page.mouse.up();
   return said;
+}
+
+/** Box `name` carried by its name and let go at `to`, on what takes it: it glides back where it was, and is there, still, before this ends. */
+async function carryBox(page, name, to) {
+  const node = page.locator('.react-flow__node', { has: page.locator(`.card[data-asset=${JSON.stringify(name)}]`) });
+  const at = () => node.evaluate((el) => (el.classList.contains('glide') || el.getAnimations({ subtree: true }).some((one) => one.playState === 'running' && one.effect?.getComputedTiming().iterations !== Infinity) ? 'moving' : el.style.transform));
+  await expect.poll(at, { message: `${name} still before it's carried` }).not.toBe('moving');
+  const was = await at();
+  await carry(page, await middle(box(page, name).locator('.nm')), to);
+  await expect.poll(at, { message: `${name} back where it was` }).toBe(was);
 }
 
 /** The zoom menu's Zoom to fit: every box in view, the canvas still. */
@@ -98,4 +108,4 @@ function ffmpeg(tool) {
   return (...args) => execFileSync(own, args, { encoding: tool === 'ffprobe' ? 'utf8' : 'buffer', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26 });
 }
 
-module.exports = { carry, dropFiles, ffmpeg, fit, leave, rest, spread, toolRow };
+module.exports = { carry, carryBox, dropFiles, ffmpeg, fit, leave, rest, spread, toolRow };

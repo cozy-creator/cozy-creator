@@ -13,13 +13,19 @@ const FIRST_MS = 60_000;
 
 const asked = (id) => (url) => decodeURIComponent(url.pathname) === `/v1/tools/${id}/ui`;
 
-test('package-ui', async ({ page, project, guards }) => {
+test('package-ui', async ({ page, project, api, cli, guards }) => {
   // What this cell brings about on purpose: a module asked for under a hash nothing holds, and one that throws as React draws it.
   guards.allow(/status of 404\b.*\/v1\/tools\/[^ ]*\/ui\/b{64}\//, /thrown on purpose by the fixture/);
   await project.add({ name: 'shaded', tool: ONE, kind: 'image', fields: { instructions: 'a pebble' }, at: { x: 0, y: 0 } });
   await project.add({ name: 'thrown', tool: THROWS, kind: 'image', fields: { instructions: 'a stone' }, at: { x: 420, y: 0 } });
   for (const name of ['shaded', 'thrown']) await expect(box(page, name)).toBeVisible();
   await fit(page);
+  // Its release on this machine, as `tool_ui_not_installed`'s remedy says: its component loads only from an installed release.
+  const installed = await cli('--json', 'package', 'install', 'e2e-boxed', '--on', 'local');
+  expect(installed.code, `cozy package install e2e-boxed: ${installed.stderr.slice(-400)}`).toBe(0);
+  for (const id of [ONE, THROWS]) {
+    await expect.poll(async () => (await api.raw('GET', `/v1/tools/${encodeURIComponent(id)}/ui?project=${encodeURIComponent(project.id)}`)).status, { message: `${id}'s component served`, timeout: FIRST_MS }).toBe(200);
+  }
   const region = page.getByRole('region', { name: 'Focused asset' });
   const shade = region.locator('[data-boxed=shade]');
   const declared = region.getByRole('slider', { name: 'Shade', exact: true });

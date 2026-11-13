@@ -13,8 +13,6 @@ const WARM = process.platform === 'linux' ? [
   ['boxes.py/still', 'instructions=warm'],
   ['when.py/image', 'instructions=warm'],
   ['segments.py/segments', 'segments=1', 'seconds=1', 'wait=0'],
-  // package-ui's component loads from a release a machine you hold has installed.
-  ['e2e-boxed/plain', 'instructions=warm'],
 ] : [];
 /** What isolated.sh publishes at the root for every web job. */
 const SEED = ['qwen-image-2', 'minimax-h3', 'sdxl', 'birefnet', 'moss-image', 'e2e-boxed'];

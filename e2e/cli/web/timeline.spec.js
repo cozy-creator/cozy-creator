@@ -6,7 +6,7 @@ const { spawnSync } = require('child_process');
 const { readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, box, focus, middle, openPoint, png } = require('./fixtures');
-const { carry, ffmpeg, fit, toolRow } = require('./hands');
+const { carry, carryBox, ffmpeg, fit, toolRow } = require('./hands');
 
 const FPS = 24;
 // A cut joined a moment after it stops changing; the first also fetches what joins it.
@@ -146,7 +146,7 @@ test('timeline', async ({ page, project, guards }) => {
   });
 
   await test.step('three clips: a box let go on it, and two files on its timeline', async () => {
-    await carry(page, await middle(box(page, 'red').locator('.nm')), await middle(box(page, edit).locator('.media')));
+    await carryBox(page, 'red', await middle(box(page, edit).locator('.media')));
     await expect.poll(async () => JSON.stringify((await project.asset(edit)).fields?.timeline ?? null), { message: 'red on its timeline' }).toContain('<red>');
     await focus(page, edit);
     await expect(region.locator('.tl-clip')).toHaveCount(1);
