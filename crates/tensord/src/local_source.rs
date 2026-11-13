@@ -219,15 +219,14 @@ impl LocalSources {
         Ok(root.join(&sha256::hex_digest(actor.as_bytes())[..16]).join(name))
     }
 
-    /// Where the environments of `actor`'s live `package` are: the machine's, whichever project runs it (cl-984). Each is
-    /// keyed on what it is built from, never the code, which stays in the project's own `home`.
-    fn environments(&self, actor: &str, package: &str) -> Result<PathBuf, Refused> {
+    /// Where the environments of a live `package` are: the machine's, whichever project or signer runs it (cl-984). Each
+    /// is keyed on what it is built from, never the code, which stays in the project's own `home`.
+    fn environments(&self, package: &str) -> Result<PathBuf, Refused> {
         let name = crate::catalog::normalized(package.strip_prefix("local/").unwrap_or_default());
         if name.is_empty() || name.contains('/') {
             return Err(refused("local_source_invalid", "a local package manifest names local/<name>"));
         }
-        let actor = crate::private_io::unscoped_key(actor);
-        let dir = self.editable.join(&sha256::hex_digest(actor.as_bytes())[..16]).join(name);
+        let dir = self.editable.join("machine").join(name);
         fs::create_dir_all(&dir)?;
         Ok(dir)
     }
@@ -341,7 +340,7 @@ impl LocalSources {
             Err(error) => return Err(error.into()),
         };
         let built_from = self.environment(&manifest, locked.as_ref());
-        let environment = self.environments(actor, &manifest.package)?.join(format!("env-{}", &built_from[..16]));
+        let environment = self.environments(&manifest.package)?.join(format!("env-{}", &built_from[..16]));
         let ready = environment.join(".ready");
         let label = format!("{} {}", manifest.package, manifest.release);
         // Reused, it is in use again: reclaim drops only an environment no generation names that

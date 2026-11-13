@@ -33,6 +33,11 @@ pub fn prepare_managed_child(
     imp::prepare(command, inherited)
 }
 
+/// This process writes no core, and stays dumpable (cl-984): its /proc and descriptors open to the same user.
+pub fn limit_own_cores() -> Result<()> {
+    imp::own_cores()
+}
+
 /// A managed child that never writes a core: an encrypted project's executor, whose memory holds its data.
 pub fn limit_cores(command: &mut Command) -> Result<()> {
     imp::limit_cores(command)
@@ -262,6 +267,13 @@ mod imp {
         }
         Ok(())
     }
+    pub(super) fn own_cores() -> Result<()> {
+        // SAFETY: setrlimit reads only this constant structure.
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 }) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
     pub(super) fn limit_cores(command: &mut Command) -> Result<()> {
         // SAFETY: setrlimit is async-signal-safe and reads only this constant structure.
         unsafe {
@@ -315,6 +327,9 @@ mod imp {
         Err(unsupported())
     }
     pub(super) fn prepare(_: &mut Command, _: Vec<PrivateDescriptor>) -> Result<()> {
+        Err(unsupported())
+    }
+    pub(super) fn own_cores() -> Result<()> {
         Err(unsupported())
     }
     pub(super) fn limit_cores(_: &mut Command) -> Result<()> {
