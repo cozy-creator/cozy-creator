@@ -72,7 +72,7 @@ case $SHARD in projectvault | projectdb | plan) calcifer_diagnostics ;; esac
 diagnosed() {
   [ -f "$HOME/.cozy/calcifer/diagnostics.log" ] || return 0
   echo "$1: Calcifer's last warnings:"
-  grep -aE ' (WARN|ERROR) ' "$HOME/.cozy/calcifer/diagnostics.log" | tail -n 25 | cut -c1-400 | sed 's/^/  /'
+  { grep -aE ' (WARN|ERROR) ' "$HOME/.cozy/calcifer/diagnostics.log" || true; } | tail -n 25 | cut -c1-400 | sed 's/^/  /'
 }
 
 # A vault failure names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings

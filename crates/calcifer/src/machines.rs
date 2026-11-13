@@ -291,7 +291,6 @@ impl Machines {
         let mut machines = Vec::new();
         let listed = |r: &&MachineRow| r.state != MachineState::Ended && (here || r.kind != MachineKind::Local);
         for row in rows.iter().filter(listed) {
-            self.learn_holdings(&row.name).await;
             machines.push(self.picture_for(row, projects)?);
         }
         let (hubs, unanswered, signed_out) = self.hubs.listing();
@@ -321,7 +320,7 @@ impl Machines {
 
     /// What `machine` (its frame) and, on this computer's machine, each open project's own engine hold, read now: each project's own
     /// Status asked, and the default Hub asked once which of their models' releases are public (`public_release`).
-    async fn learn_holdings(&self, machine: &str) {
+    pub(crate) async fn learn_holdings(&self, machine: &str) {
         let mut models: Vec<String> = self.frame(machine).map(|frame| frame.models.iter().map(|m| m.model.clone()).collect()).unwrap_or_default();
         if machine == "local" && let Some(link) = self.calcifer.link("local").ok().flatten() {
             let open = self.calcifer.open_projects();
@@ -394,7 +393,6 @@ impl Machines {
                 Err(_) => {}
             }
         }
-        self.learn_holdings(&row.name).await;
         self.picture(&row)
     }
 
@@ -1503,6 +1501,11 @@ pub(crate) async fn list(
     query: Result<Query<Refresh>, QueryRejection>,
 ) -> Result<Json<MachineList>, Refusal> {
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    // What each holds, read for a client's view; Calcifer's own reads of its machines never wait on it.
+    let names: Vec<String> = api.machines.store().machines().map_err(internal).map_err(Refusal)?.into_iter().map(|row| row.name).collect();
+    for name in names {
+        api.machines.learn_holdings(&name).await;
+    }
     Ok(Json(
         api.machines.list(query.refresh).await.map_err(Refusal)?,
     ))
@@ -1530,6 +1533,9 @@ pub(crate) async fn show(
 /// The machine `GET /v1/machines/{name}` answers.
 async fn asked(api: &Arc<Api>, name: &str, query: Result<Query<Fresh>, QueryRejection>) -> Result<(Machine, Option<String>), Refusal> {
     let Query(query) = query.map_err(|e| Refusal(usage(e.body_text())))?;
+    if let Ok(Some(row)) = api.machines.named(name) {
+        api.machines.learn_holdings(&row.name).await;
+    }
     let machine = match query.fresh {
         true => fresh(&api.machines, name).await,
         false => api.machines.show(name).await,
