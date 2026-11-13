@@ -292,7 +292,8 @@ test('canvas-nav', async ({ context, project, api, signIn }) => {
     const looks = [];
     const look = async (how) => {
       await canvasIdle(page);
-      await expect.poll(() => page.evaluate(() => !document.getAnimations().some((held) => held.playState === 'running' && held.effect?.getComputedTiming().iterations !== Infinity)), { message: `${how}: nothing animating` }).toBe(true);
+      // On the clock, that is: a list's edge fades by its scroll (app.css), and runs while the page does.
+      await expect.poll(() => page.evaluate(() => document.getAnimations().filter((held) => held.timeline === document.timeline && held.playState === 'running' && held.effect?.getComputedTiming().iterations !== Infinity).map((held) => `${held.animationName ?? held.id} on ${held.effect?.target?.className}`)), { message: `${how}: nothing animating` }).toEqual([]);
       const now = await page.evaluate(audit, NAMED);
       const moved = [];
       for (const [name, at] of Object.entries(now.at)) {

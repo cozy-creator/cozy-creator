@@ -3,18 +3,24 @@
 // the tab stays there and the index lets the project go; a reload says the same, and stays. Its own cell, off the native lane: Windows can't
 // delete a folder Calcifer holds open.
 const { rmSync } = require('fs');
-const { test, expect, recordAddress, stays } = require('./fixtures');
+const { test, expect, canvasIdle, recordAddress, stays } = require('./fixtures');
+const { camera, sameCamera } = require('./geometry');
 
 test.use({ projectOptions: { starter: true } });
 
-test('gone', async ({ context, project, api, signIn, guards }) => {
-  // Its reads answer that its folder is gone, as they should: Chrome says each in its console.
-  guards.allow(new RegExp(`status of 404\\b.*/v1/projects/${project.id}(?:[/?][^ ]*)?$`));
+test('gone', async ({ context, project, api, signIn }) => {
   await context.addInitScript(recordAddress);
   const page = await context.newPage();
   await signIn(page, project.url());
   await expect(page.locator('.react-flow__node').first()).toBeVisible();
   await expect.soft(page.locator('.unread, .gate'), 'it opens').toHaveCount(0);
+  // Opened, the page fits it and keeps its view: that write lands before the folder goes, as a person deletes a folder after the page
+  // has settled.
+  await canvasIdle(page);
+  await expect.poll(async () => {
+    const [{ viewport }, now] = await Promise.all([api.get(project.at('/view')), camera(page)]);
+    return Boolean(viewport) && sameCamera({ x: viewport.x, y: viewport.y, zoom: viewport.zoom }, now);
+  }, { message: "the page's view saved" }).toBe(true);
   const said = `This project's folder is gone: ${project.path}`;
   const here = { path: `/p/${project.code}`, moves: [] };
 
