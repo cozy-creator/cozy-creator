@@ -74,7 +74,7 @@ def models(root: Path, store: Path) -> dict[str, Path | str]:
         "transformer": ["diffusers", "Ideogram4Transformer2DModel"],
         "unconditional_transformer": ["diffusers", "Ideogram4Transformer2DModel"],
         "vae": ["diffusers", "AutoencoderKLFlux2"]}))
-    return {"ideogram-ai/ideogram-4@0.1.1": ideogram, "qwen/qwen3-vl-8b-instruct@0.1.1": qwen}
+    return {"ideogram-ai/ideogram-4@0.2.0": ideogram, "qwen/qwen3-vl-8b-instruct@0.1.1": qwen}
 
 
 CAPTION = json.dumps({"high_level_description": "a red fox on a mossy log",
