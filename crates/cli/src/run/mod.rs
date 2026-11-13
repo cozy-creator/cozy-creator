@@ -415,6 +415,8 @@ async fn send(ctx: &Context, ask: RunRequest, package: Option<&Path>, previews: 
             // Following stopped: the install goes on, and nothing is called.
             return Ok(install);
         }
+        // cozy updated itself for it (cl-978): the run goes on as the new cozy.
+        crate::update::after_update(ctx, &install)?;
     }
 }
 

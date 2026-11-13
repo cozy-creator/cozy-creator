@@ -31,6 +31,7 @@ parse "$@"
 . "$(dirname "$0")/coming.sh"
 . "$(dirname "$0")/slow.sh"
 . "$(dirname "$0")/oldtakes.sh"
+. "$(dirname "$0")/selfupdate.sh"
 . "$(dirname "$0")/idle.sh"
 . "$(dirname "$0")/plan.sh"
 . "$(dirname "$0")/render.sh"
@@ -607,6 +608,8 @@ case $SHARD in
   " ;;
   # A job waits for a rental on its way that finishes it sooner (cl-915), by hand: about 15 min.
   coming) parts="coming_machine logs" ;;
+  # cozy updates itself for a package that needs a newer cozy (cl-978): its own runner, as it replaces this computer's cozy.
+  selfupdate) parts="self_update logs" ;;
   # By hand: the control-plane audit's cells alone (control.sh).
   control) parts="
     machine_show_runs

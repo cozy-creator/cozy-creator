@@ -18,8 +18,9 @@
 # 0.23.0) must instead be refused at every step with the typed client_too_old naming `cozy update`. Any 5xx fails.
 # --candidates takes e2e/candidates' $CANDIDATES: its --tensord file (or version) or its --release's Linux archive is the
 # client, with its --runtime and --tensorfs. --command runs a focused suite instead of the cells: `FILE OUT COZY RUNTIME
-# TENSORFS ARGS...`, signed in, as the Hub's admin with --admin. --software RUNTIME,TENSORFS pins the Hub's software (what
-# `cozy machine update <machine>` naming nothing moves a machine to).
+# TENSORFS ARGS...`, signed in, as the Hub's admin with --admin. --software RUNTIME,TENSORFS[,COZY] pins the Hub's software (what
+# `cozy machine update <machine>` naming nothing moves a machine to, and the cozy that updates itself for a package, cl-978). A
+# cell restarts the Hub with other settings by e2e/skew/rehub.sh.
 set -uo pipefail
 E2E=$(cd "$(dirname "$0")/.." && pwd) HERE=$(cd "$(dirname "$0")/../../release-gate" && pwd)
 START=$PWD
@@ -100,6 +101,7 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/cozy-hub-fixture.XXXXXX") && WORK=$(cd "$WORK"
 PG_NAME=cozy-skew-pg-$$-$RANDOM PG_BIN=''
 cleanup() {
   local status=$?
+  [ ! -s "$WORK/hub.pid" ] || HUBPID=$(cat "$WORK/hub.pid")
   for pid in "${HUBPID:-}" "${S3PID:-}" "${INGRESS:-}"; do
     [ -z "$pid" ] || { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
   done
@@ -183,7 +185,8 @@ hub=("$WORK/tensorhub$EXE" --config "$(native "$CONFIG")"
   --set storage.backend.access_key_id=$S3KEY --set storage.backend.secret_access_key=$S3SECRET
   --set storage.repo_cas.bucket=repo --set storage.package_source.bucket=source
   --set package_release.scratch_root="$(native "$WORK/release")" ${MIN:+--set clients.cozy_min=$MIN}
-  ${SOFTWARE:+--set software.runtime=${SOFTWARE%,*} --set software.tensorfs=${SOFTWARE#*,}})
+  ${SOFTWARE:+--set software.runtime=$(cut -d, -f1 <<< "$SOFTWARE") --set software.tensorfs=$(cut -d, -f2 <<< "$SOFTWARE")}
+  ${SOFTWARE:+--set software.cozy=$(cut -s -d, -f3 <<< "$SOFTWARE")})
 (umask 077; printf '%s\0' "${hub[@]}" > "$WORK/hub-command.argv")
 export COZY_TEST_HUB_COMMAND_FILE=$WORK/hub-command.argv
 "${hub[@]}" migrate > hub-migrate.log 2>&1 || die hub "migrate: $(tail -c 300 hub-migrate.log)"
@@ -194,6 +197,8 @@ if [ "$OS" = Windows ]; then
     attrib +R "$(native "$WORK/authkit/totp.key")"; } > authkit-key.log 2>&1 || die hub "the read-only TOTP key: $(tail -c 300 authkit-key.log)"
 fi
 "${NICE[@]}" "${hub[@]}" serve > hub.log 2>&1 & HUBPID=$!
+echo "$HUBPID" > "$WORK/hub.pid"
+export COZY_TEST_HUB_PID_FILE=$WORK/hub.pid COZY_TEST_HUB_SERVE_LOG=$OUT/hub.log COZY_TEST_HUB_HEALTH=$HUB/healthz
 for _ in $(seq 90); do [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] && break; kill -0 $HUBPID 2>/dev/null || break; sleep 1; done
 [ "$(curl -s -o /dev/null -w '%{http_code}' $HUB/healthz)" = 204 ] || die hub "the Hub did not come up: $(tail -c 600 hub.log)"
 kill -0 "$HUBPID" 2>/dev/null || die hub "the owned fixture Hub exited during startup"

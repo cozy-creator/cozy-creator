@@ -456,6 +456,7 @@ struct Runner {
     tensorfs: String,
     runtimes: Vec<String>,
     moves: Moves,
+    newer: Option<api::release::Newer>,
 }
 
 impl Runner {
@@ -464,8 +465,8 @@ impl Runner {
     async fn of(api: &Arc<Api>, on: &On) -> Option<Self> {
         let On::Machine(name) = on else { return None };
         let frame = api.machines.frame(name).filter(|frame| !frame.runtime.is_empty())?;
-        let (runtimes, moves) = tokio::time::timeout(HUB_LATE, api.machines.runtimes(name, &frame, api.machines.takes_rc(name, on))).await.ok()?;
-        Some(Self { runtime: frame.runtime, tensorfs: frame.tensorfs, runtimes, moves })
+        let (runtimes, moves, newer) = tokio::time::timeout(HUB_LATE, api.machines.runtimes(name, &frame, api.machines.takes_rc(name, on))).await.ok()?;
+        Some(Self { runtime: frame.runtime, tensorfs: frame.tensorfs, runtimes, moves, newer })
     }
 
     /// Whether a run here takes a release whose wheel requires `pair`, as a run decides (`api::release::takes`): its Runtime runs it
@@ -473,11 +474,12 @@ impl Runner {
     /// its own TensorFS. A requirement that can't be read holds nothing back, as TensorD's own check decides.
     fn takes(&self, pair: &[String]) -> bool {
         let required = |member: &str| api::release::required(pair.iter().map(String::as_str), member);
-        let machine = api::release::Machine { runtime: &self.runtime, runtimes: &self.runtimes, moves: self.moves };
+        let machine = api::release::Machine { runtime: &self.runtime, runtimes: &self.runtimes, moves: self.moves, newer: self.newer.as_ref() };
         match required(PAIR[0]).map_or(Takes::Runs, |needs| api::release::takes(&needs, &machine)) {
             Takes::Runs => required(PAIR[1]).is_none_or(|needs| self.tensorfs.is_empty() || api::release::runs(&needs, &self.tensorfs)),
-            Takes::Moves(_) => true,
-            Takes::Held(_) | Takes::No => false,
+            // A run moves it, or updates cozy first (cl-978).
+            Takes::Moves(_) | Takes::Cozy { .. } => true,
+            Takes::Held(_) | Takes::Major(_) | Takes::No => false,
         }
     }
 }

@@ -252,9 +252,21 @@ impl Host {
         }
         // As `cozy run` resolves it.
         let hub = crate::runs::hub(&self.api, hub);
-        let Resolved::Release { package, function, card, mut moved, upgrade, .. } = target::published(&self.api, &hub, with, on, true).await? else {
+        let Resolved::Release { package, function, card, mut moved, upgrade, cozy, .. } = target::published(&self.api, &hub, with, on, true).await? else {
             unreachable!("a published target resolves to a release");
         };
+        // cozy updates itself first for a release only a newer cozy's line runs (cl-978): the render waits behind it, and Calcifer
+        // restarts on the new cozy, whose walk takes it up again.
+        if let Some(wanted) = &cozy {
+            let (run, note) = crate::cozy::update(&self.api, wanted).await?;
+            tracing::info!("{}: the render waits for run {}", note.message, run.number);
+            let ended = self.ended(&run.id).await?;
+            if ended.status != RunStatus::Completed {
+                return Err(crate::cozy::update(&self.api, wanted).await.err().unwrap_or_else(|| Error::new(Kind::Unavailable, "cozy_update_failed", note.message)));
+            }
+            self.api.stopped().await;
+            return Err(Error::new(Kind::Unavailable, api::error::STOPPING, "Calcifer restarts on the updated cozy"));
+        }
         // Its machine's Runtime moves first to one that runs the release (cl-952): the render waits behind that update.
         if let Some(upgrade) = &upgrade
             && self.api.machines.upgrade(upgrade).await?.is_some()
