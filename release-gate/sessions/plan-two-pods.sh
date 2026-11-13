@@ -16,15 +16,29 @@ jq -s . <(shot first "A lighthouse on a cliff at dawn, waves breaking below, the
   <(shot second "A heron wading through reeds at sunrise, mist over the water, the camera low beside it.") \
   <(shot third "A fishing boat leaving a harbour at dusk, gulls following it, lamps coming on along the quay.") > "$OUT/boxes.json"
 run_page boxes "$OUT/boxes.json" > "$OUT/boxes.txt" 2>&1 || fail "the project's boxes: $(tail -3 "$OUT/boxes.txt")"
+# rent_ok: a rental, as `rent`, on a driver no TensorD update is known to hang on: 610.57.04 holds a thread in uvm, so the update
+# never finishes (cl-977). Such a pod is ended at once, before its update, and another rented, at most three times.
+rent_ok() {
+  local tries=0 driver
+  while :; do
+    rent
+    driver=$(jq -r '.status.gpus[0].driver // empty' "$OUT/show$((${#RIDS[@]} - 1)).json")
+    [ "$driver" = 610.57.04 ] || return 0
+    say "$NAME has driver $driver, where a TensorD update hangs (cl-977): it ends now, and another is rented"
+    cozy machine end "$RID" -y >> "$OUT/end.txt" 2>&1 || cozy machine end "$RID" -y --force >> "$OUT/end.txt" 2>&1
+    tries=$((tries + 1))
+    [ "$tries" -lt 3 ] || fail "three rentals came with driver $driver"
+  done
+}
 quote 3600 "$SKU" "$SKU"
-rent; WARM=$NAME
+rent_ok; WARM=$NAME
 step tensord machine update "$WARM" --tensord "$(command -v cozy)" -y || fail "$WARM refused the session's TensorD"
 say "step first: on $WARM alone, its first H3 call there: the cold time"
 timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$WARM" first > "$OUT/first.txt" 2>&1 || fail "the first shot: $(tail -c 400 "$OUT/first.txt")"
 say "step second: on $WARM alone again: the warm time, H3 left held"
 timeout 3000 python3 "$RUN_PAGE" render "$RUN_PROJECT" --on "$WARM" second > "$OUT/second.txt" 2>&1 || fail "the second shot: $(tail -c 400 "$OUT/second.txt")"
 # The cold one rented only now: nothing of it is paid for while the first two render.
-rent; COLD=$NAME
+rent_ok; COLD=$NAME
 step tensord machine update "$COLD" --tensord "$(command -v cozy)" -y || fail "$COLD refused the session's TensorD"
 ASK=$(date +%s%3N)
 say "step third: on $WARM and $COLD, where it finishes soonest"
