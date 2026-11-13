@@ -10,6 +10,8 @@ static ALLOCATOR: platform::heap::Counted<mimalloc::MiMalloc> = platform::heap::
 
 fn main() -> std::process::ExitCode {
     if let Some(code) = project_mount::run_supervisor() { std::process::exit(code); }
+    // Where this cozy started from, before an update can rename another build over it (cl-981); `machine serve` says a failure.
+    let _ = platform::exe::record();
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let words: Vec<&std::ffi::OsString> = args.iter().filter(|arg| *arg != "--json").collect();
     match words.as_slice() {

@@ -18,6 +18,8 @@ pub mod contain;
 #[cfg(feature = "seams")]
 pub mod durable;
 #[cfg(feature = "seams")]
+pub mod exe;
+#[cfg(feature = "seams")]
 pub mod gpu;
 #[cfg(feature = "seams")]
 pub mod handles;
@@ -73,6 +75,9 @@ pub enum Error {
     },
     #[error("NVML {op}: {detail}")]
     Gpu { op: &'static str, detail: String },
+    /// An update replaced this running program's file, and this OS starts no other copy of it (`exe::running`).
+    #[error("cozy was updated while it ran ({} is another build now); restart it with `cozy restart`", path.display())]
+    Updated { path: PathBuf },
 }
 
 /// `Result` with this crate's [`Error`].
