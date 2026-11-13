@@ -260,6 +260,23 @@ async function died(why) {
   }
   check('decoded_state_switching_has_no_empty_flash', flips.every((look) => look.first !== null && look.first < 400 && look.emptyFrames === 0), flips);
   check('warm_thumbnail_clicks_do_not_change_approval', await current('Ada') === 1);
+  // A column with nothing to scroll carries a take whichever way it's dragged; let go back on the column, it's put back: Focus stays, the
+  // take shown and what's approved stay, nothing is copied (cl-885, Paul 11-12: a drag begun inside never leaves). It was copied onto the
+  // canvas, and Focus left.
+  const shortSide = history('Ada');
+  const shortRoom = await shortSide.evaluate((element) => element.scrollHeight - element.clientHeight);
+  const lowest = await previews('Ada').last().boundingBox();
+  const namesBeforeDrag = (await state()).assets.map((row) => row.name).sort();
+  const shownBeforeDrag = await selected('Ada');
+  const pressAt = { x: lowest.x + lowest.width / 2, y: lowest.y + lowest.height / 2 };
+  await page.mouse.move(pressAt.x, pressAt.y);
+  await page.mouse.down();
+  for (let step = 1; step <= 8; step++) await page.mouse.move(pressAt.x, pressAt.y - step * 18);
+  const carriedUp = await page.locator('.carry-ghost').count();
+  await page.mouse.up();
+  await settled(page);
+  const putBack = { room: shortRoom, carried: carriedUp, focused: await page.locator('[data-focused-asset="Ada"]').count(), path: new URL(page.url()).pathname, shown: [shownBeforeDrag, await selected('Ada')], approved: await current('Ada'), names: (await state()).assets.map((row) => row.name).sort() };
+  check('a_take_let_go_on_its_column_stays_in_focus', shortRoom < 1 && putBack.focused === 1 && putBack.path.endsWith('/assets/Ada') && putBack.shown[1] === shownBeforeDrag && putBack.approved === 1 && JSON.stringify(putBack.names) === JSON.stringify(namesBeforeDrag), putBack);
 
   // A longer state history keeps the original scrollable previews, with both mouse and touch scrolling. Sixteen 100px previews are
   // longer than Focus's full-height column at this window, so there's always something to scroll (at nine they can just fit).
