@@ -7,6 +7,7 @@
 # params:
 #   seconds  each H3 shot's length (default 15)
 #   tool     the shots' tool (default minimax-h3/generate); another is an image box with a prompt, e.g. qwen-image-2/generate_turbo
+#   paid     the seconds of both pods the cap must buy before renting (default 2400: H3's; the cold one runs about a quarter of them)
 . "$(dirname "$0")/lib.sh"
 SECONDS_LONG=$(param seconds 15)
 TOOL=$(param tool minimax-h3/generate)
@@ -36,8 +37,7 @@ rent_ok() {
     [ "$tries" -lt 3 ] || fail "three rentals came with driver $driver"
   done
 }
-# Both pods for 40 min, which overstates it: the cold one runs about 10 of them.
-quote 2400 "$SKU" "$SKU"
+quote "$(param paid 2400)" "$SKU" "$SKU"
 rent_ok; WARM=$NAME
 step tensord machine update "$WARM" --tensord "$(command -v cozy)" -y || fail "$WARM refused the session's TensorD"
 say "step first: on $WARM alone, its first $TOOL call there: the cold time"
