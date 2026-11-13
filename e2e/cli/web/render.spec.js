@@ -1,7 +1,8 @@
 // render (cl-973 core cell 11), on local: "A still" from the palette, typed in and rendered by Render, lists its take the frame after the
-// press and keeps that one id until it lands in place, unreloaded; another box rendered by Ctrl+Enter says Queued, then Rendering, its
-// whole job's meter rising and a faded preview of its latents until its take replaces it, and its finish note's View opens it. Render all:
-// a box waiting on another says so and shows none of the other's progress; Cancel stops one waiting and one rendering, and their takes go.
+// press and keeps that one id until it lands in place, unreloaded; another box rendered by Ctrl+Enter says Queued, then Rendering, with a
+// faded preview of its latents until its take replaces it, and its finish note's View opens it. Render all: a box waiting on another says
+// so and shows none of the other's progress; the other's whole job's meter rises as it renders; Cancel stops one waiting and one
+// rendering, and their takes go.
 // A failed take stays red, its error with Copy, through a reload, until its trash deletes it. The take watched in Focus is the one drawn
 // when it lands, through a reload; its run's warnings are the box's, never a note.
 const { writeFileSync } = require('fs');
@@ -175,7 +176,7 @@ test('render', async ({ page, project, api, cli }) => {
   // Its environment readied while the rest goes: no box names it yet, so the palette's list isn't held reading it.
   const primed = cli('run', `${warns}/warned`, 'instructions=primed', '--on', 'local');
   // `slow` and `after`, which reads it, are what Cancel stops; `slow` names tool.py, so the palette lists its tools.
-  await project.add({ name: 'slow', tool: `${TOOL}/slow`, kind: 'image', fields: { instructions: 'Slow.', seconds: 20 }, at: { x: 0, y: 0 } });
+  await project.add({ name: 'slow', tool: `${TOOL}/slow`, kind: 'image', fields: { instructions: 'Slow.', seconds: 30 }, at: { x: 0, y: 0 } });
   await project.add({ name: 'after', tool: STILL, kind: 'image', fields: { instructions: 'After <slow>.' }, at: { x: 360, y: 0 } });
   await project.add({ name: 'latent', tool: LATENTS, kind: 'image', fields: { instructions: 'A denoised still', steps: 16, seconds: 0.5 }, at: { x: 720, y: 0 } });
   const before = new Set(['slow', 'after', 'latent']);
@@ -245,9 +246,6 @@ test('render', async ({ page, project, api, cli }) => {
     const faces = sayings.map((look) => look.face).filter(Boolean);
     expect.soft(faces[0], 'its face says Queued first').toMatch(/^Queued/);
     expect.soft(faces.some((words) => /^Denoising/.test(words)), `then its stage: ${faces.join(' | ')}`).toBe(true);
-    const meter = sayings.map((look) => look.meter).filter((value) => value !== null);
-    expect.soft(meter.length, 'the whole job has its meter').toBeGreaterThan(1);
-    expect.soft(meter.every((value, i) => i === 0 || value >= meter[i - 1]) && meter.at(-1) > meter[0], `the meter rises: ${meter.join(' ')}`).toBe(true);
     const faded = sayings.map((look) => look.preview).filter((opacity) => opacity !== null);
     expect.soft(faded.length, 'a preview of its latents shows as it renders').toBeGreaterThan(0);
     expect.soft(faded.every((opacity) => opacity > 0 && opacity < 1), `faded: ${faded.join(' ')}`).toBe(true);
@@ -280,6 +278,13 @@ test('render', async ({ page, project, api, cli }) => {
     await expect.poll(() => settled(project, 'after'), { message: 'after canceled, its take gone' }).toEqual({ takes: 0, making: 0, versions: 0 });
     await expect.soft(face(page, 'after')).toHaveCount(0);
     await expect(face(page, 'slow').locator('.face-state b'), 'slow renders').toHaveText(/^Drawing/, { timeout: 90_000 });
+    // The whole job's meter, at rest, rises as it goes. Nothing like slow ran here, so its estimate is its own steps': latents.py's is
+    // setup's 0 s steps (43401337115: 99 on every frame of latent's 8 s), and the meter never goes back within a run.
+    const rising = async () => {
+      const meter = (await said(page, 'slow')).map((look) => look.meter).filter((value) => value !== null);
+      return meter.length > 1 && meter.every((value, i) => i === 0 || value >= meter[i - 1]) && meter.at(-1) > meter[0] ? 'rising' : `not rising: ${meter.join(' ') || 'no meter'}`;
+    };
+    await softly.poll(rising, { message: "slow's whole job's meter", timeout: 15_000 }).toBe('rising');
     const [run] = (await project.asset('slow'))?.making ?? [];
     expect(run, "slow's run").toBeTruthy();
     await face(page, 'slow').getByRole('button', { name: "Cancel slow's render", exact: true }).click();
@@ -331,13 +336,17 @@ test('render', async ({ page, project, api, cli }) => {
     expect(run.code, `cozy run of warns.py: ${run.stderr.slice(-400)}`).toBe(0);
     await project.add({ name: 'warned', tool: `${warns}/warned`, kind: 'image', fields: { instructions: 'A still that warns.' }, at: { x: 360, y: 420 } });
     for (const shade of [30, 90]) await api.post(project.at('/assets/warned/versions'), { source: await project.upload(png(shade, 16, 16)) });
-    await expect.poll(async () => (await project.asset('warned'))?.versions).toBe(2);
+    // The first file joined is approved (format::can_initialize_approval): unapproved, the take it makes is its state, with its warnings.
+    await api.post(project.at('/unpin'), { name: 'warned' });
+    await expect.poll(async () => { const held = await project.asset('warned'); return { versions: held?.versions, pinned: Boolean(held?.pinned) }; })
+      .toEqual({ versions: 2, pinned: false });
     await fit(page);
     const region = await focus(page, 'warned');
     await recordViewer(page, 'warned');
     await region.getByRole('button', { name: 'Render', exact: true }).click();
     await expect.poll(async () => (await project.asset('warned'))?.versions, { message: "warned's third take", timeout: 120_000 }).toBe(3);
     const warned = await project.asset('warned');
+    expect.soft({ version: warned.version, pinned: Boolean(warned.pinned) }, 'the take it made is its state').toEqual({ version: 3, pinned: false });
     const third = shaOf(warned, 3);
     await softly.poll(() => drawn(region.locator('.focus-viewer')), { message: 'the take watched is drawn as it lands' }).toBe(third);
     await expect.soft(region.getByLabel('Take', { exact: true })).toHaveText('v3');

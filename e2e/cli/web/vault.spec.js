@@ -203,8 +203,10 @@ test('vault', { tag: '@vault' }, async ({ page, project, api, cli, signIn, guard
     await signIn(second, `${api.origin}/p/${made.code}`);
     await expect(box(second, picture)).toBeVisible();
     const said = await cli('--json', 'vault', '--directory', made.path, 'lock');
-    expect(said.code, `cozy vault lock: ${said.stdout.slice(-300)} ${said.stderr.slice(-300)}`).toBe(0);
-    expect.soft(JSON.parse(said.stdout).vault?.state, 'cozy says it locked').toBe('locked');
+    // Run 43401337115: refused `project_busy` while the second tab's reads held the project, though its view was revoked and it locked.
+    expect.soft(said.code, `cozy vault lock: ${said.stdout.slice(-300)} ${said.stderr.slice(-300)}`).toBe(0);
+    expect.soft(said.code === 0 ? JSON.parse(said.stdout).vault?.state : said.stdout.slice(-300), 'cozy says it locked').toBe('locked');
+    await expect.poll(async () => (await vault()).state, { message: 'the project locked', timeout: 60_000 }).toBe('locked');
     await Promise.all([page, second].map(async (tab, i) => {
       const which = i ? 'the second tab' : 'the first tab';
       await expect(tab.getByText('This project is locked.', { exact: true }), `${which} covered`).toBeVisible();

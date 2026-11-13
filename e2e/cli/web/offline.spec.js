@@ -123,12 +123,21 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
   await expect(box(page, 'shot')).toBeVisible();
   await expect(bar(page)).toHaveCount(0);
   await page.evaluate(() => { window.unreloaded = true; });
-  // Calcifer away: the page's calls to it fail, as the browser says in its console. What this cell does on purpose.
+  // Calcifer away: what the page asks of it, its calls and its own files (a frame's sheet, its icons), fails as the browser says in its
+  // console. What this cell does on purpose, from each stop until the page is back with it: past that, the same is a failure.
   const origin = api.origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  guards.allow(new RegExp(`^console error: Failed to load resource: net::ERR_[A-Z_]+ ${origin}/v1/`));
+  const refused = new RegExp(`^console error: Failed to load resource: net::ERR_[A-Z_]+ ${origin}/`);
+  let away = false;
+  guards.allow({ test: (line) => away && refused.test(line) });
+  /** Calcifer back, and the page with it: what failed while it was away was said by then. */
+  const back = async () => {
+    await expect(bar(page), 'the top bar clears').toHaveCount(0, { timeout: 60_000 });
+    away = false;
+  };
 
   let atStop;
   await test.step('Calcifer stopped with SIGTERM, and kept down', async () => {
+    away = true;
     await calciferControl.stop();
     await expect(status(page)).toHaveText(/^Calcifer offline/);
     atStop = held(project.path);
@@ -192,8 +201,9 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     expect.soft(await placeOf(page, 'shot'), 'and the move').toEqual(moved);
     await expect.soft(box(page, 'words'), 'and the words').toContainText(SECOND);
     await expect.soft(box(page, 'shot').locator('.node-version-label'), 'and the approval').toHaveText(`v${approve}`);
-    // Two saves, the moves as one, the rename, the approval, the file, the delete and its undo.
-    await expect.soft(status(page), 'every edit counted in the top bar').toHaveText(/^Calcifer offline: 8 changes waiting/);
+    // The person's changes: two saves, the moves as one, the rename, the approval, the file, the delete and its undo. What the page keeps
+    // of its own view (what's selected, where the canvas is) is no change of theirs.
+    await expect.soft(status(page), 'every edit counted in the top bar, and only those').toHaveText(/^Calcifer offline: 8 changes waiting/);
     await expect.soft(page.getByRole('dialog'), 'nothing over the canvas').toHaveCount(0);
     await expect.soft(page.getByRole('alertdialog')).toHaveCount(0);
     await expect.soft(page.locator('main.gate')).toHaveCount(0);
@@ -203,7 +213,7 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
 
   await test.step('Calcifer started (cozy machine ls)', async () => {
     await calciferControl.start();
-    await expect(bar(page), 'the top bar clears').toHaveCount(0, { timeout: 60_000 });
+    await back();
     const landed = async () => {
       const assets = Object.fromEntries((await project.assets()).map((asset) => [asset.name, asset]));
       const { cards } = await api.get(project.at('/canvas'));
@@ -224,16 +234,20 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     const stored = held(project.path);
     expect.soft(stored.boxes.words?.text, 'project.db holds the last words').toBe(SECOND);
     expect.soft(JSON.stringify(stored.boxes), 'and never the first').not.toContain(FIRST);
+    // Newest first, as it was done: the file dropped before the delete, which was undone.
     const { entries } = await api.get(project.at('/history?limit=50'));
-    expect.soft(entries.find((entry) => entry.words === 'Deleted spare')?.undone, 'history: the delete, undone').toBeTruthy();
+    const deleted = entries.findIndex((entry) => entry.words === 'Deleted spare');
+    expect.soft(entries[deleted]?.undone, 'history: the delete, undone').toBeTruthy();
+    expect.soft(entries.findIndex((entry) => entry.words === 'Added late'), 'history: the drop before the delete').toBeGreaterThan(deleted);
     expect.soft(await page.evaluate(() => window.unreloaded), 'no reload').toBe(true);
     await expect.soft(page.locator('.notes .note .line').filter({ hasText: /^Couldn't/ }), 'nothing refused').toHaveCount(0);
-    // History keeps Redo, which deletes it again.
-    const redo = page.getByRole('button', { name: 'Redo', exact: true });
-    await expect(redo).toHaveAttribute('title', /^Redo: Deleted spare/);
-    await redo.click();
+    // History keeps Redo: nothing was done after the undo. Done again, by its key, it deletes the box again.
+    await expect.soft(page.getByRole('button', { name: 'Redo', exact: true }), 'history keeps Redo').toHaveAttribute('title', /^Redo: Deleted spare/);
+    const clear = await openPoint(page);
+    await page.mouse.click(clear.x, clear.y);
+    await page.keyboard.press('ControlOrMeta+Shift+z');
     await expect.soft(box(page, 'spare'), 'Redo shows at once').toHaveCount(0, AT_ONCE);
-    await expect.poll(async () => Boolean(await project.asset('spare')), { message: 'Redo landed' }).toBe(false);
+    await expect.configure({ soft: true }).poll(async () => Boolean(await project.asset('spare')), { message: 'Redo landed' }).toBe(false);
   });
 
   await test.step('kill -9 while typing: systemd starts it again', async () => {
@@ -247,10 +261,11 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     const { region, text } = await typeOver(page, 'words', BEFORE, { delay: 30 });
     // Its pause sends what's typed, and Calcifer is killed under it as typing goes on.
     await sent;
+    away = true;
     const killed = calciferControl.kill();
     await page.keyboard.type(AFTER, { delay: 120 });
     await killed;
-    await expect(bar(page), 'back with no reload').toHaveCount(0, { timeout: 60_000 });
+    await back();
     await expect.soft(text, 'every character shown').toHaveText(BEFORE + AFTER);
     await leave(page, region);
     expect.soft(await page.evaluate(() => window.barSaid), 'it said Calcifer was offline').toContainEqual(expect.stringMatching(/^Calcifer offline/));
@@ -262,10 +277,14 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
   });
 
   await test.step('no Hub: the page loads, the palette says so, a local tool renders, Rent says why it lists nothing; the Hub again', async () => {
-    // Its rental list is the Hub's, asked through Calcifer, which says it can't: as the browser says it in its console, on purpose.
-    guards.allow(new RegExp(`^console error: Failed to load resource: the server responded with a status of 50[234] .* ${origin}/v1/rental-skus`));
+    // Its rental list is the Hub's, asked through Calcifer, which says it can't: as the browser says it in its console, on purpose, while
+    // there's no Hub.
+    const unlisted = new RegExp(`^console error: Failed to load resource: the server responded with a status of 50[234] .* ${origin}/v1/rental-skus$`);
+    let hubless = true;
+    guards.allow({ test: (line) => hubless && unlisted.test(line) });
+    away = true;
     await calciferControl.hub('http://127.0.0.1:9');
-    await expect(bar(page)).toHaveCount(0, { timeout: 60_000 });
+    await back();
     await page.reload();
     await expect(page.locator('.stage')).toBeVisible();
     await fitAll(page);
@@ -285,7 +304,10 @@ test('offline', { tag: '@solo' }, async ({ context, project, api, signIn, guards
     await page.getByRole('link', { name: 'Machines', exact: true }).click();
     await expect.soft(page.getByRole('alert').filter({ hasText: "The Hub didn't list its machines" }), 'Rent says the Hub listed none').toBeVisible({ timeout: 30_000 });
 
+    away = true;
     await calciferControl.hub();
+    await back();
+    hubless = false;
     await expect.poll(async () => (await api.get('/v1/tools')).note ?? null, { message: 'the Hub lists its tools again', timeout: 60_000 }).toBeNull();
   });
 });

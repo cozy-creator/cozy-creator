@@ -165,8 +165,9 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await cliSignIn(email, project.path);
       const who = await cli.json('whoami');
       expect(who, 'cozy login signed this computer in').toMatchObject({ logged_in: true, email });
-      // On purpose, and Chrome says each: Calcifer refusing a second code to the email inside the Hub's spacing, and the wrong code.
-      guards.allow(/status of 429\b.*\/v1\/account\/codes$/, /status of 4\d\d\b.*\/v1\/account\/codes\/[^/\s]+$/);
+      // On purpose, and Chrome says each: Calcifer refusing a second code to the email inside the Hub's 30 s spacing (answered 503
+      // `rate_limited`, run 43401337115, though it's the client's to wait: a 429), and the wrong code (400 `code_wrong`).
+      guards.allow(/status of (429 \(Too Many Requests\)|503 \(Service Unavailable\)) http:\/\/\S+\/v1\/account\/codes$/, /status of 400 \(Bad Request\) http:\/\/\S+\/v1\/account\/codes\/code-[0-9a-f]+$/);
 
       await menu('Account');
       await expect(account(email), 'the account, signed in').toBeVisible();
@@ -184,10 +185,15 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       for (const button of await rent.getByRole('button', { name: 'Rent', exact: true }).all()) await expect.soft(button).toBeDisabled();
       await rent.getByRole('link', { name: 'Sign in', exact: true }).click();
       await address.fill(email);
+      const asked = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/account/codes');
       await drawer.getByRole('button', { name: 'Continue', exact: true }).click();
+      // Too soon is the client's to wait out: a 429 with how long, never a 503 (run 43401337115 answered 503 `rate_limited`).
+      expect.soft((await asked).status(), 'a code asked for too soon').toBe(429);
       const field = drawer.getByLabel('Verification code', { exact: true });
       await expect(field).toBeVisible();
-      // cozy login's code went out moments ago, and the Hub spaces codes to one email: Resend opens once it may ask again.
+      // cozy login's code went out moments ago, and the Hub spaces codes to one email: the page says how long, and Resend opens once it
+      // may ask again.
+      await expect.soft(drawer.getByText(/^Check your email\. You can ask for another code in \d+ s\.$/), 'the wait, said in words').toBeVisible();
       const resend = drawer.getByRole('button', { name: 'Resend', exact: true });
       await expect(resend).toBeEnabled({ timeout: 75_000 });
       const before = codesFor(email).length;
@@ -243,28 +249,33 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       const sent = await first;
       expect.soft(sent.postDataJSON().on, 'Run here anyway renders here').toEqual(['local']);
       expect((await sent.response())?.ok(), 'its render asked').toBe(true);
+      // Cancel as a person presses it, as soon as its face offers it. Run 43401337115: pressed 80 ms after its 202, Calcifer answered
+      // {"dropped":["heavy"]}, and the run went on to complete with its take.
       await region.getByRole('status', { name: "heavy's render" }).getByRole('button', { name: "Cancel heavy's render", exact: true }).click();
-      await expect.poll(async () => (await runsOf(project, 'heavy')).map((one) => one.status), { message: "heavy's runs", timeout: 60_000 }).toEqual(['canceled']);
-      expect.soft((await project.asset('heavy')).versions ?? 0, 'canceled: no take').toBe(0);
+      const ended = ['completed', 'failed', 'canceled'];
+      await expect.poll(async () => (await runsOf(project, 'heavy')).map((one) => ended.includes(one.status)), { message: "heavy's run ended", timeout: 60_000 }).toEqual([true]);
+      const [canceled] = await runsOf(project, 'heavy');
+      const takes = (await project.asset('heavy')).versions ?? 0;
+      expect.soft({ status: canceled.status, takes }, 'Cancel stops its render: no take').toEqual({ status: 'canceled', takes: 0 });
       expect.soft((await api.post(project.at('/fit'), { names: ['heavy'] })).tools, 'Run here anyway, kept by Calcifer').toMatchObject([{ here: true }]);
 
-      /** Render, asking nothing: sent to this computer, and its take `made` lands. */
-      const again = async (made) => {
+      /** Render, asking nothing: sent to this computer, and one more take lands. */
+      const again = async (what) => {
+        const had = (await project.asset('heavy')).versions ?? 0;
         const next = page.waitForRequest(renderOf('heavy'));
         await region.getByRole('button', { name: 'Render', exact: true }).click();
-        expect.soft((await next).postDataJSON().on, `render ${made} renders here, asking nothing`).toEqual(['local']);
+        expect.soft((await next).postDataJSON().on, `${what} renders here, asking nothing`).toEqual(['local']);
         await expect.soft(asking).toHaveCount(0);
-        await expect.poll(async () => (await project.asset('heavy')).versions ?? 0, { message: `heavy's take ${made}`, timeout: 120_000 }).toBe(made);
+        await expect.poll(async () => (await project.asset('heavy')).versions ?? 0, { message: `${what}: heavy's take ${had + 1}`, timeout: 120_000 }).toBe(had + 1);
       };
-      await again(1);
+      await again('Render again');
       await page.reload();
       region = page.getByRole('region', { name: 'Focused asset' });
       await expect(region).toHaveAttribute('data-focused-asset', 'heavy');
       await canvasIdle(page);
-      await again(2);
-      const ran = await runsOf(project, 'heavy');
-      expect.soft(ran.map((one) => one.status).sort(), "heavy's runs").toEqual(['canceled', 'completed', 'completed']);
-      expect.soft(ran.map((one) => one.machine), 'each on this computer').toEqual(['local', 'local', 'local']);
+      await again('Render after a reload');
+      const later = (await runsOf(project, 'heavy')).filter((one) => one.number !== canceled.number);
+      expect.soft(later.map((one) => `${one.status} on ${one.machine}`), 'the later renders, each on this computer').toEqual(['completed on local', 'completed on local']);
     });
 
     await test.step("Rent a GPU on another heavy box: Machines opens with the stand-in's rtx-4090 chosen, and nothing renders", async () => {
@@ -272,11 +283,12 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await page.getByRole('region', { name: 'Focused asset' }).getByRole('button', { name: 'Back to canvas' }).click();
       await expect(page.getByRole('region', { name: 'Focused asset' })).toHaveCount(0);
       await canvasIdle(page);
+      // Asked first: were it not said to render poorly here, its Render would run Qwen Image 2 on this runner's CPU.
+      expect(await api.post(project.at('/fit'), { names: ['kite'] }), 'the Hub, by the stand-in, places it on the rtx-4090').toMatchObject({ tools: [{ names: ['kite'] }], rent: { sku: CARD.name, card: 'RTX 4090' } });
       const region = await focus(page, 'kite');
       const asking = region.getByRole('group', { name: 'Render here?' });
       await region.getByRole('button', { name: 'Render', exact: true }).click();
       await expect(asking, 'it asks on the box itself').toBeVisible({ timeout: 60_000 });
-      expect.soft((await api.post(project.at('/fit'), { names: ['kite'] })).rent, 'the Hub, by the stand-in, places it on the rtx-4090').toMatchObject({ sku: CARD.name, card: 'RTX 4090' });
       expect.soft(await asking.getByRole('button').allInnerTexts(), 'Rent a GPU first, Run here anyway second').toEqual(['Rent an RTX 4090', 'Run here anyway']);
       await asking.getByRole('button', { name: 'Rent an RTX 4090', exact: true }).click();
       await expect(page, 'Machines, the card asked for').toHaveURL(`${project.url('machines')}?rent=${CARD.name}&gpus=1`);
@@ -343,7 +355,7 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       const record = (await cli.json('machine', 'ls', '--history')).rentals.find((one) => one.rental_id === rental);
       expect.soft(record?.ended_at_ms, "ended once its Hub says it's gone").toBeGreaterThan(0);
       await expect.poll(async () => (await run('docker', CONTAINERS)).stdout.trim(), { message: "the docker provider's containers", timeout: 90_000 }).toBe('');
-      expect.soft((await cli.json('machine', 'ls')).machines.filter((one) => one.rental_id === rental), 'machine ls: no live rental').toEqual([]);
+      expect.soft((await cli.json('machine', 'ls')).machines.filter((one) => one.rental_id === rental && one.state !== 'ended'), 'machine ls: no live rental').toEqual([]);
     });
   } catch (error) {
     failure = error;

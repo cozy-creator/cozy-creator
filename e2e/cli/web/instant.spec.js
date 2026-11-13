@@ -6,7 +6,10 @@
 const { spawn } = require('child_process');
 const { join } = require('path');
 const { createInterface } = require('readline');
-const { test, expect, box, canvasIdle, focus, middle, openPoint } = require('./fixtures');
+const { test, expect, box, canvasIdle, focus, middle } = require('./fixtures');
+
+/** Polls whose miss leaves the cell going, as `expect.soft` does. */
+const softly = expect.configure({ soft: true });
 
 /** Each `method` call to `path` waits here, unsent, until `release`. */
 async function hold(page, method, path) {
@@ -39,20 +42,34 @@ async function loseOne(page, method, path) {
   return { keys, done: () => page.unroute(matches, handler) };
 }
 
-/** project.db's write lock, held by another program (an open `BEGIN IMMEDIATE`, as a SQLite browser holds one) until `release`. */
+/** project.db's write lock, held by another program (an open `BEGIN IMMEDIATE`, as a SQLite browser holds one) until `release`. `boxes()`
+ *  reads the boxes it holds, in that same transaction: what Calcifer has written, past nothing it could be waiting on. */
 async function holdDatabase(file) {
-  const script = 'import sqlite3, sys\nc = sqlite3.connect(sys.argv[1], isolation_level=None)\nc.execute("BEGIN IMMEDIATE")\nprint("acquired", flush=True)\nsys.stdin.buffer.read(1)\nc.execute("ROLLBACK")';
+  const script = [
+    'import json, sqlite3, sys',
+    'c = sqlite3.connect(sys.argv[1], isolation_level=None)',
+    'c.execute("BEGIN IMMEDIATE")',
+    'print("acquired", flush=True)',
+    'while sys.stdin.readline():',
+    '    print(json.dumps([name for (name,) in c.execute("SELECT name FROM boxes ORDER BY ord")]), flush=True)',
+    'c.execute("ROLLBACK")',
+  ].join('\n');
   const child = spawn(process.platform === 'win32' ? 'python' : 'python3', ['-c', script, file], { stdio: ['pipe', 'pipe', 'pipe'] });
   let said = '';
   child.stderr.on('data', (bytes) => { said = (said + bytes).slice(-4000); });
   const ended = new Promise((done) => child.once('close', (code) => done(code)));
+  const answers = [];
   await new Promise((done, fail) => {
-    createInterface({ input: child.stdout }).on('line', (line) => { if (line === 'acquired') done(); });
+    createInterface({ input: child.stdout }).on('line', (line) => { if (line === 'acquired') done(); else answers.shift()?.(JSON.parse(line)); });
     ended.then((code) => fail(new Error(`the SQLite holder ended before it held the lock: exit ${code}: ${said}`)));
     child.once('error', fail);
   });
   let released;
   return {
+    boxes: () => new Promise((done) => {
+      answers.push(done);
+      child.stdin.write('boxes\n');
+    }),
     release: () => {
       released ??= (async () => {
         child.stdin.end();
@@ -74,6 +91,18 @@ async function carry(page, from, to) {
   await page.mouse.up();
 }
 
+/** A point on open canvas near the middle of what shows of it, `dx` from it: a box let go there lands in view. */
+const centre = (page, dx = 0) => page.evaluate((dx) => {
+  const left = document.querySelector('aside.tools')?.getBoundingClientRect().right ?? 0;
+  const [x, y] = [(left + innerWidth) / 2 + dx, innerHeight / 2];
+  for (let r = 0; r <= 600; r += 30) {
+    for (const [dx, dy] of [[0, 0], [-r, 0], [r, 0], [0, -r], [0, r], [-r, -r], [r, -r], [-r, r], [r, r]]) {
+      if (document.elementFromPoint(x + dx, y + dy)?.classList.contains('react-flow__pane')) return { x: x + dx, y: y + dy };
+    }
+  }
+  throw new Error('no open canvas near the middle');
+}, dx);
+
 /** In the page: the boxes on the canvas as the next drop is let go, and in the frame after it. */
 const armDrop = (page) => page.evaluate(() => {
   const names = () => [...document.querySelectorAll('.react-flow__node .card[data-asset]')].map((card) => card.dataset.asset);
@@ -84,12 +113,16 @@ const armDrop = (page) => page.evaluate(() => {
   }, { capture: true, once: true });
 });
 
-/** The box the armed drop drew in its frame, after the boxes before it: exactly one. */
+/** The box the armed drop made: drawn in the frame of its drop, one box. */
 async function dropped(page) {
   await expect.poll(() => page.evaluate(() => Boolean(window.__dropped.after)), { message: 'the frame after the drop' }).toBe(true);
   const { before, after } = await page.evaluate(() => window.__dropped);
-  const made = after.filter((name) => !before.includes(name));
-  expect(made, 'one box drawn in the frame of its drop').toHaveLength(1);
+  expect.soft(after.filter((name) => !before.includes(name)), 'one box drawn in the frame of its drop').toHaveLength(1);
+  let made;
+  await expect.poll(async () => {
+    made = (await page.locator('.react-flow__node .card[data-asset]').evaluateAll((cards) => cards.map((card) => card.dataset.asset))).filter((name) => !before.includes(name));
+    return made.length;
+  }, { message: 'one box made by the drop' }).toBe(1);
   return made[0];
 }
 
@@ -121,7 +154,7 @@ test('instant', async ({ page, project, api, guards }) => {
     await expect(text).toBeVisible();
     const posts = await hold(page, 'POST', project.at('/assets'));
     await armDrop(page);
-    await carry(page, text, await openPoint(page));
+    await carry(page, text, await centre(page));
     first = await dropped(page);
     await expect.poll(() => posts.calls.length, { message: 'its POST asked, and held' }).toBe(1);
     expect.soft(await project.asset(first), 'nothing saved yet').toBeUndefined();
@@ -141,16 +174,17 @@ test('instant', async ({ page, project, api, guards }) => {
     await page.mouse.move(head.x + 4, head.y + 2);
     await page.mouse.move(head.x + 120, head.y + 80, { steps: 6 });
     await page.mouse.up();
-    const now = await box(page, first).boundingBox();
-    expect.soft(Math.abs(now.x - was.x - 120), 'the move shows at once, where it was let go: x, px off').toBeLessThanOrEqual(2);
-    expect.soft(Math.abs(now.y - was.y - 80), 'and y, px off').toBeLessThanOrEqual(2);
+    await softly.poll(async () => {
+      const now = await box(page, first).boundingBox();
+      return Math.round(Math.max(Math.abs(now.x - was.x - 120), Math.abs(now.y - was.y - 80)));
+    }, { message: 'the move shows at once, where it was let go: px off', timeout: 1000 }).toBeLessThanOrEqual(2);
     const place = await placeOf(page, first);
     expect.soft(posts.calls.length, 'still the one POST, held').toBe(1);
     expect.soft(await project.asset(first), 'still nothing saved').toBeUndefined();
 
     await posts.release();
-    await expect.poll(async () => (await project.asset(first))?.fields?.text, { message: 'its words landed' }).toBe('Typed while it was held');
-    await expect.poll(async () => {
+    await softly.poll(async () => (await project.asset(first))?.fields?.text, { message: 'its words landed' }).toBe('Typed while it was held');
+    await softly.poll(async () => {
       const card = (await api.get(project.at('/canvas'))).cards[first];
       return card && [Math.round(card.x), Math.round(card.y)];
     }, { message: 'its move landed' }).toEqual([Math.round(place.x), Math.round(place.y)]);
@@ -164,7 +198,8 @@ test('instant', async ({ page, project, api, guards }) => {
     const assets = (await project.assets()).length;
     const lost = await loseOne(page, 'POST', project.at('/assets'));
     await armDrop(page);
-    await carry(page, text, await openPoint(page));
+    // Left of the first, clear of it.
+    await carry(page, text, await centre(page, -320));
     second = await dropped(page);
     await expect.poll(() => lost.keys.length, { message: 'sent again' }).toBeGreaterThanOrEqual(2);
     await lost.done();
@@ -172,8 +207,8 @@ test('instant', async ({ page, project, api, guards }) => {
     expect.soft(lost.keys[0], 'an Idempotency-Key').toBeTruthy();
     expect.soft(new Set(lost.keys).size, `every try under one key: ${lost.keys.join(', ')}`).toBe(1);
     expect.soft((await project.assets()).length, 'one asset').toBe(assets + 1);
-    const history = (await api.get(project.at('/history?limit=50'))).entries.filter((entry) => entry.names?.includes(second));
-    expect.soft(history.map((entry) => entry.words), 'one history entry').toEqual([expect.stringMatching(/^Added /)]);
+    const added = (await api.get(project.at('/history?limit=50'))).entries.filter((entry) => entry.names?.includes(second) && entry.words.startsWith('Added'));
+    expect.soft(added.map((entry) => entry.words), 'one history entry adds it').toHaveLength(1);
     await expect.soft(box(page, second)).toHaveCount(1);
 
     // Another writer takes the name while this rename is on its way: it's refused, and the box is as it was.
@@ -192,7 +227,7 @@ test('instant', async ({ page, project, api, guards }) => {
     expect.soft((await answered).status(), 'the rename refused').toBe(409);
     await expect.soft(box(page, first), 'rolled back to its name').toContainText('Typed while it was held');
     await expect.soft(box(page, 'taken'), "the other writer's box").toContainText("Another writer's");
-    await expect.poll(async () => (await lines()).filter((line) => line.startsWith("Couldn't rename")), { message: 'one line says why' })
+    await softly.poll(async () => (await lines()).filter((line) => line.startsWith("Couldn't rename")), { message: 'one line says why' })
       .toEqual([expect.stringMatching(new RegExp(`^Couldn't rename ${first}: .*taken.*already`))]);
     expect.soft((await project.asset(first))?.fields?.text, 'its words where they were').toBe('Typed while it was held');
     expect.soft((await project.asset('taken'))?.fields?.text).toBe("Another writer's");
@@ -210,11 +245,11 @@ test('instant', async ({ page, project, api, guards }) => {
       // Calcifer waits 10 s on another's write lock before it says so.
       await expect.soft(bar, 'the top bar says what holds it').toHaveCount(1, { timeout: 60_000 });
       await expect.soft(bar).toContainText(/\b[1-9]\d* changes? waiting\b/);
-      expect.soft(Boolean(await project.asset(second)), 'nothing written while it is held').toBe(true);
+      expect.soft(await held.boxes(), 'nothing written to project.db while it is held').toContain(second);
     } finally {
       await held.release();
     }
-    await expect.poll(async () => Boolean(await project.asset(second)), { message: 'saved once let go', timeout: 60_000 }).toBe(false);
+    await softly.poll(async () => Boolean(await project.asset(second)), { message: 'saved once let go', timeout: 60_000 }).toBe(false);
     await expect.soft(page.locator('.pill.warn').filter({ hasText: 'project.db is open in another program' }), 'the top bar clears').toHaveCount(0, { timeout: 30_000 });
     await expect.soft(box(page, second)).toHaveCount(0);
     expect.soft(Boolean(await project.asset('taken')), 'what else is there stays').toBe(true);

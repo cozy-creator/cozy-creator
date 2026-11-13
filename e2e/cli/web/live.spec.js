@@ -6,6 +6,9 @@
 const { mkdirSync, writeFileSync } = require('fs');
 const { test, expect, box, canvasIdle, focus, fixtureTool, png } = require('./fixtures');
 
+/** Polls whose miss leaves the cell going, as `expect.soft` does. */
+const softly = expect.configure({ soft: true });
+
 /** From a command's return to the canvas showing it ("about a second"). */
 const LIVE_MS = 1200;
 const SLOW = fixtureTool('tool.py/slow');
@@ -101,8 +104,10 @@ test('live', async ({ page, context, project, api, cli, signIn }, testInfo) => {
     other = was === 2 ? 1 : 2;
     await timed(page, `API: take ${other} approved`, { name: 'api_pic', label: `v${other}` }, () => api.post(project.at('/approve'), { name: 'api_pic', version: String(other) }));
     expect.soft((await project.asset('api_pic')).approved, 'the API approved it').toBe(other);
-    const row = (await api.get(project.at('/canvas'))).cards.api_b;
-    const to = { x: Math.round(row.x + 60), y: Math.round(row.y + 40) };
+    // Somewhere clear, right of every box: one let go on another's room gives way, by the page's own rule, which no-overlap's to judge.
+    const { cards } = await api.get(project.at('/canvas'));
+    const right = Math.max(...Object.values(cards).map((held) => held.x + (held.w ?? 240)));
+    const to = { x: Math.round(right + 160), y: Math.round(cards.api_b.y + 40) };
     await timed(page, 'API: a move', { name: 'api_b', at: to }, () => api.patch(project.at('/canvas'), { cards: { api_b: to } }));
 
     // Words being typed in cli_a meanwhile: the CLI sets its description and the API renames it, and every typed character stays.
@@ -118,7 +123,7 @@ test('live', async ({ page, context, project, api, cli, signIn }, testInfo) => {
     await expect.soft(open.getByRole('textbox', { name: 'Text', exact: true }), 'what was typed, kept through both').toHaveText('Second CLI words TYPED-MEANWHILE');
     await open.getByRole('button', { name: 'Back to canvas' }).click();
     await canvasIdle(page);
-    await expect.poll(async () => (await project.asset('cli_typed'))?.fields, { message: "the typed words saved beside the CLI's description" })
+    await softly.poll(async () => (await project.asset('cli_typed'))?.fields, { message: "the typed words saved beside the CLI's description" })
       .toMatchObject({ text: 'Second CLI words TYPED-MEANWHILE', description: 'Said by the CLI meanwhile' });
     expect.soft(await page.evaluate(() => window.notReloaded), 'the canvas was never reloaded').toBe(true);
   });
@@ -143,7 +148,7 @@ test('live', async ({ page, context, project, api, cli, signIn }, testInfo) => {
     await rowOf(run.number).getByRole('link').click();
     await expect(drawer.locator('.drawer-head')).toContainText(`Run ${run.number}`);
     await expect(head).toContainText('running', { timeout: 120_000 });
-    await expect(head, 'its end, live').toContainText('completed', { timeout: 120_000 });
+    await expect.soft(head, 'its end, live').toContainText('completed', { timeout: 120_000 });
     await expect.soft(log, 'its log, to its end').toContainText('completed');
     expect.soft((await first).code, 'the CLI followed it to its end').toBe(0);
     expect.soft((await api.get(project.at(`/runs/${encodeURIComponent(run.id)}`))).status).toBe('completed');
@@ -169,8 +174,8 @@ test('live', async ({ page, context, project, api, cli, signIn }, testInfo) => {
       await expect.soft(head).toContainText('running');
       await cancel.click();
       await asking.getByRole('button', { name: 'Cancel it' }).click();
-      await expect(head, 'canceled, live').toContainText('canceled', { timeout: 60_000 });
-      await expect.poll(async () => (await status()).status, { message: 'the run canceled' }).toBe('canceled');
+      await expect.soft(head, 'canceled, live').toContainText('canceled', { timeout: 60_000 });
+      await softly.poll(async () => (await status()).status, { message: 'the run canceled' }).toBe('canceled');
       await second;
     } finally {
       // A run left going holds this job's local machine for the cells after.
@@ -182,7 +187,7 @@ test('live', async ({ page, context, project, api, cli, signIn }, testInfo) => {
     await expect(drawer.locator('.drawer-head')).toContainText('Machines');
     const listed = (await cli.json('machine', 'ls')).machines.filter((machine) => machine.state !== 'ended').map((machine) => machine.name).sort();
     expect.soft(listed.length, 'cozy machine ls lists a machine').toBeGreaterThan(0);
-    await expect.poll(async () => (await drawer.locator('li.runrow.machine').evaluateAll((rows) => rows.map((row) => row.dataset.machine))).sort(), { message: 'Machines lists what cozy machine ls does' }).toEqual(listed);
+    await softly.poll(async () => (await drawer.locator('li.runrow.machine').evaluateAll((rows) => rows.map((row) => row.dataset.machine))).sort(), { message: 'Machines lists what cozy machine ls does' }).toEqual(listed);
     expect.soft(await page.evaluate(() => window.notReloaded), 'never reloaded').toBe(true);
   });
 
@@ -204,7 +209,7 @@ test('live', async ({ page, context, project, api, cli, signIn }, testInfo) => {
     // The first closes: the second takes the stream on, says what it shows, and changes still arrive.
     const shown = tab.waitForResponse((answer) => answer.request().method() === 'PUT' && new URL(answer.url()).pathname.startsWith('/v1/events/'));
     await page.close();
-    await expect.poll(() => its.length, { message: 'the second tab opens the one stream' }).toBe(1);
+    await softly.poll(() => its.length, { message: 'the second tab opens the one stream' }).toBe(1);
     expect.soft((await shown).ok(), 'it tells Calcifer what it shows').toBe(true);
     await api.patch(project.at('/assets/tab_a'), { fields: { text: 'After the first tab closed' } });
     await expect.soft(box(tab, 'tab_a'), 'changes keep arriving').toContainText('After the first tab closed');

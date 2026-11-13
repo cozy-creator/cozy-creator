@@ -1,5 +1,5 @@
-// takes (cl-973 core cell 12): a click on a take previews it and approves nothing; a double-click approves it, marked current, and Undo and
-// Redo take that back and forth. Picking take 2 of a box whose words say <self.1> makes them <self.2> (Paul 11-06), and a mention of an
+// takes (cl-973 core cell 12): a click on a take previews it and approves nothing; a double-click approves it, marked current, and Undo puts
+// back what was approved before (the first file a box is given is approved), Redo the double-click. Picking take 2 of a box whose words say <self.1> makes them <self.2> (Paul 11-06), and a mention of an
 // approved box reads its approved take, not its newest. A take's discard is a trash can, and Undo brings it back with its file. A new take
 // leaves the approval alone and is "Not looked at yet" until it's seen; a reload keeps all of it, and the takes column is never empty. An
 // empty box offers no New; on an H3 box with a take, New makes a draft.
@@ -65,17 +65,20 @@ test('takes', async ({ page, project, api }) => {
 
   await test.step('click take 2, double-click take 3, press Ctrl+Z', async () => {
     const region = await focus(page, 'a');
+    // The first file joined is approved (format::can_initialize_approval): take 1, not 3.
+    const was = approval(await project.asset('a'));
+    expect(was.approved, 'take 3 not approved yet').not.toBe(3);
     await tile(region, 'version', 2).click();
     await expect.soft(tile(region, 'version', 2), 'the click previews it').toHaveAttribute('aria-pressed', 'true');
     await expect.soft(region.getByLabel('Take', { exact: true })).toHaveText('v2');
-    expect.soft(approval(await project.asset('a')), 'and approves nothing').toEqual({ pinned: false, approved: null });
+    expect.soft(approval(await project.asset('a')), 'and approves nothing').toEqual(was);
     await tile(region, 'version', 3).dblclick();
     await expect.poll(async () => approval(await project.asset('a')), { message: 'the double-click approves take 3' }).toEqual({ pinned: true, approved: 3 });
     expect.soft((await project.asset('a')).version, 'its state is take 3').toBe(3);
     await expect.soft(tile(region, 'version', 3), 'marked current').toHaveAttribute('aria-current', 'true');
     await page.keyboard.press('ControlOrMeta+z');
-    // Back to nothing approved, not to take 2: the click approved nothing.
-    await expect.poll(async () => approval(await project.asset('a')), { message: 'Undo' }).toEqual({ pinned: false, approved: null });
+    // Back to what was approved before, not to take 2: the click approved nothing.
+    await expect.poll(async () => approval(await project.asset('a')), { message: 'Undo' }).toEqual(was);
     await expect.soft(tile(region, 'version', 3)).not.toHaveAttribute('aria-current', 'true');
     await page.keyboard.press('ControlOrMeta+Shift+z');
     await expect.poll(async () => approval(await project.asset('a')), { message: 'Redo' }).toEqual({ pinned: true, approved: 3 });

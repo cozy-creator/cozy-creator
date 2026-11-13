@@ -8,7 +8,8 @@ const redeeming = (answer) => answer.request().method() === 'POST' && new URL(an
 const streaming = (request) => request.method() === 'GET' && new URL(request.url()).pathname === '/v1/events';
 /** Signed in at `project`: its tab, the open one, over the canvas. */
 const signedIn = (page, project) => page.getByRole('navigation', { name: 'Projects' }).getByRole('link', { name: project.name, exact: true });
-const gate = (page) => page.getByRole('heading', { name: "This page isn't signed in" });
+/** No session, however the page found out (cl-980's one state): it says so, and how to open one. */
+const gate = (page) => page.getByRole('heading', { name: 'No project open here' });
 
 test('open', { tag: '@engines' }, async ({ context, newContext, project, api, signIn, guards, removeAfter }) => {
   const page = await context.newPage();
