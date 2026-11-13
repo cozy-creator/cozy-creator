@@ -330,7 +330,8 @@ async fn put_in(storage: Arc<Store>, name: String, headers: HeaderMap, body: Bod
     }
 }
 
-/// Whether Calcifer holds `name`: `200` with its length and media type, else `404`. `Cozy-Held` says which bytes either way.
+/// Whether Calcifer holds `name`: `200` with its length and media type, else `204`, an answer and not an error, so a browser logs none for
+/// each file it's about to send. `Cozy-Held` says which bytes either way.
 pub(crate) async fn project_head(State(api): State<Arc<Api>>, Query(scope): Query<UploadScope>, UrlPath(name): UrlPath<String>) -> Result<Response, Refusal> {
     if scope.project.is_none() { return Err(Refusal(Error::new(Kind::Usage, "project_upload_scope", "a project upload must name its project"))); }
     let _admission = crate::project::vault::admit_project(&api, scope.project.as_deref().expect("checked scope")).await.map_err(Refusal)?;
@@ -363,8 +364,7 @@ async fn head_in(storage: Arc<Store>, name: String) -> Result<Response, Refusal>
         None => vec![],
     };
     let Some(path) = held_in(&storage, &digest) else {
-        let refusal = Refusal(Error::new(Kind::NotFound, "file_not_found", format!("Calcifer holds no file {digest}")));
-        return Ok((StatusCode::NOT_FOUND, [held_header(&ranges)], refusal).into_response());
+        return Ok((StatusCode::NO_CONTENT, [held_header(&ranges)]).into_response());
     };
     let held = file(digest, &path)?;
     let mut headers = HeaderMap::new();

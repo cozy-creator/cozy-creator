@@ -313,9 +313,10 @@ export class Client {
   /** `true` when held whole, else the ranges held, `[first, last]` inclusive. */
   async held(digest: string, signal: AbortSignal, onAttempt?: (attempt: number) => void, projectId?: string): Promise<true | [number, number][]> {
     const response = projectId === undefined
-      ? await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
-      : await this.send(`/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "HEAD", signal }, { accept: [404], onAttempt })
-    if (response.ok) return true
+      ? await this.send(`/v1/files/${digest}`, { method: "HEAD", signal }, { onAttempt })
+      : await this.send(`/v1/project-files/${digest}?project=${encodeURIComponent(projectId)}`, { method: "HEAD", signal }, { onAttempt })
+    // 200: held whole. 204: none of it, or the ranges `Cozy-Held` says.
+    if (response.status === 200) return true
     // A pod's `Cozy-*` headers are hostile too: read as numbers, and a nonsense range is no range.
     const ranges: [number, number][] = []
     for (const part of (response.headers.get("Cozy-Held") ?? "").split(",")) {

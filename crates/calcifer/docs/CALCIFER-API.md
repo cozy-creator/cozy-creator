@@ -233,7 +233,7 @@ a spec.
   `{digest, length, media_type}`. With `Content-Range: bytes a-b/len`, one part: `204` with `Cozy-Held: a-b,c-d` until it is whole and
   verified, then as above. Parts land in any order, side by side, and what a body carried before it broke is held. A whole `PUT` carries
   its `Content-Length` (`400 file_length_required`); `400 file_digest_mismatch` drops the bytes; `409 file_length_conflict` when it is
-  being written at another length. `HEAD`: `200` held whole, else `404`, with `Cozy-Held` either way; a client sends only what it lacks. A held file or part unused for a day
+  being written at another length. `HEAD`: `200` held whole, else `204` (none of it or part: an answer, not an error), with `Cozy-Held` either way; a client sends only what it lacks. A held file or part unused for a day
   is dropped, and a `HEAD` that finds it is a use.
 - `GET /v1/runs` (`status`, `package`, `machine`, `project`, `before`, `limit`): `{runs, older, machine?, unreadable?}`. `project` is an id or name (`404 project_unknown`), or a folder of this computer's:
   that project's runs. Each run names its `project`, the project's name, and `project_id`.
