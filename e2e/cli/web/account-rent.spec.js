@@ -165,9 +165,9 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await cliSignIn(email, project.path);
       const who = await cli.json('whoami');
       expect(who, 'cozy login signed this computer in').toMatchObject({ logged_in: true, email });
-      // On purpose, and Chrome says each: Calcifer refusing a second code to the email inside the Hub's 30 s spacing (answered 503
-      // `rate_limited`, run 43401337115, though it's the client's to wait: a 429), and the wrong code (400 `code_wrong`).
-      guards.allow(/status of (429 \(Too Many Requests\)|503 \(Service Unavailable\)) http:\/\/\S+\/v1\/account\/codes$/, /status of 400 \(Bad Request\) http:\/\/\S+\/v1\/account\/codes\/code-[0-9a-f]+$/);
+      // On purpose, and Chrome says it: the wrong code (400 `code_wrong`). A second code asked inside the Hub's 30 s spacing is no
+      // refusal on the wire (th-374): the console stays clean of it.
+      guards.allow(/status of 400 \(Bad Request\) http:\/\/\S+\/v1\/account\/codes\/code-[0-9a-f]+$/);
 
       await menu('Account');
       await expect(account(email), 'the account, signed in').toBeVisible();
@@ -187,8 +187,10 @@ test('account-rent', { tag: '@solo' }, async ({ page, project, api, cli, calcife
       await address.fill(email);
       const asked = page.waitForResponse((answer) => answer.request().method() === 'POST' && new URL(answer.url()).pathname === '/v1/account/codes');
       await drawer.getByRole('button', { name: 'Continue', exact: true }).click();
-      // Too soon is the client's to wait out: a 429 with how long, never a 503 (run 43401337115 answered 503 `rate_limited`).
-      expect.soft((await asked).status(), 'a code asked for too soon').toBe(429);
+      // Too soon is an answer, the Hub's wait to count down: nothing sent, and when it will (th-374; run 43401337115 answered 503).
+      const early = await asked;
+      const said = await early.json();
+      expect.soft({ status: early.status(), id: said.id ?? null, wait: said.retry_after_s > 0 }, 'a code asked for too soon').toEqual({ status: 200, id: null, wait: true });
       const field = drawer.getByLabel('Verification code', { exact: true });
       await expect(field).toBeVisible();
       // cozy login's code went out moments ago, and the Hub spaces codes to one email: the page says how long, and Resend opens once it
