@@ -160,7 +160,15 @@ test('timeline', async ({ page, project }) => {
 
   await test.step('a full-size player over the timeline, its versions beside them', async () => {
     const viewport = page.viewportSize();
-    const [player, timeline, side] = [await region.locator('.tl-player').boundingBox(), await region.locator('.tl').boundingBox(), await region.locator('.here-side').boundingBox()];
+    // Measured once Focus has fitted its frame to the room it has: the same size two looks running.
+    let last = '';
+    await expect.poll(async () => {
+      const now = JSON.stringify(await region.locator('.tl-player').boundingBox());
+      const still = now === last;
+      last = now;
+      return still;
+    }, { message: 'the player at rest' }).toBe(true);
+    const [player, timeline, side] = [JSON.parse(last), await region.locator('.tl').boundingBox(), await region.locator('.here-side').boundingBox()];
     expect.soft(player.width, 'the player, px wide').toBeGreaterThanOrEqual(viewport.width * 0.45);
     expect.soft(player.height, 'the player, px high').toBeGreaterThanOrEqual(viewport.height * 0.35);
     expect.soft(timeline.y, 'the timeline under the player').toBeGreaterThanOrEqual(player.y + player.height - 1);
@@ -227,8 +235,11 @@ test('timeline', async ({ page, project }) => {
     const assets = await project.assets();
     const file = (name) => assets.find((asset) => asset.name === name).path;
     const entry = (clip) => (clip.name === 'title' ? `title:0:${clip.frames}:${file('title')}:still` : `${clip.name}:${clip.in}:${clip.out}:${file(clip.name)}`);
-    const otio = spawnSync('uv', ['run', '-q', '--no-project', '--with', 'opentimelineio==0.17.0', 'python', '-I', join(__dirname, '..', 'project', 'otio_check.py'), join(project.path, `${edit}.otio`), String(FPS), ...cut.map(entry)], { encoding: 'utf8' });
-    expect.soft(`${otio.stdout}${otio.stderr}`.slice(-1500), 'OpenTimelineIO reads it back as the cut').toMatch(/otio PASS/);
-    expect.soft(otio.status, 'otio_check.py').toBe(0);
+    // Written as the cut is: read back until it's this one, or what it last said.
+    let otio;
+    await expect.configure({ soft: true }).poll(() => {
+      otio = spawnSync('uv', ['run', '-q', '--no-project', '--with', 'opentimelineio==0.17.0', 'python', '-I', join(__dirname, '..', 'project', 'otio_check.py'), join(project.path, `${edit}.otio`), String(FPS), ...cut.map(entry)], { encoding: 'utf8' });
+      return otio.status === 0 && /otio PASS/.test(otio.stdout) ? 'otio PASS' : `${otio.stdout}${otio.stderr}`.slice(-1500);
+    }, { message: 'OpenTimelineIO reads it back as the cut', timeout: JOIN_MS }).toBe('otio PASS');
   });
 });
