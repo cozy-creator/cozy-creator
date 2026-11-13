@@ -78,6 +78,37 @@ function caretAt(box: HTMLElement, offset: number) {
   selection?.collapse(box, box.childNodes.length)
 }
 
+/** A place in the words: a node, and an offset in it. */
+interface Place {
+  node: globalThis.Node
+  offset: number
+}
+
+/** The caret's place under the point, as the browser finds it. */
+function caretFromPoint(x: number, y: number): Place | null {
+  const found = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: globalThis.Node; offset: number } | null
+    caretRangeFromPoint?: (x: number, y: number) => Range | null
+  }
+  const position = found.caretPositionFromPoint?.(x, y)
+  if (position) return { node: position.offsetNode, offset: position.offset }
+  const range = found.caretRangeFromPoint?.(x, y)
+  return range ? { node: range.startContainer, offset: range.startOffset } : null
+}
+
+/** Where in `box`'s words the point is: there, else, off them, their nearer end; on a name, just after it. */
+function placeIn(box: HTMLElement, x: number, y: number): Place {
+  const rect = box.getBoundingClientRect()
+  const [start, end] = [{ node: box, offset: 0 }, { node: box, offset: box.childNodes.length }]
+  if (y > rect.bottom || (y >= rect.top && x > rect.right)) return end
+  if (y < rect.top || x < rect.left) return start
+  const at = caretFromPoint(x, y)
+  if (!at || !box.contains(at.node)) return end
+  const name = (at.node instanceof Element ? at.node : at.node.parentElement)?.closest("[data-mention]")
+  if (name?.parentNode && box.contains(name)) return { node: name.parentNode, offset: [...name.parentNode.childNodes].indexOf(name) + 1 }
+  return at
+}
+
 /** Where `at`, in `from`, falls in `to`: moved by what changed before it, and to the end of what changed if it was in it. */
 function carried(from: string, to: string, at: number): number {
   let prefix = 0
@@ -303,6 +334,39 @@ export function MentionText({
     if (selection?.rangeCount) caret.current = selection.getRangeAt(0).cloneRange()
   }
 
+  /**
+   * A press in the words, dragged, selects from where it was pressed to where the pointer is, out past the words too, as in any text. The
+   * page does this, not the browser: with a name in its words, Chrome put the caret at the pointer on every move of a drag and selected
+   * nothing, with no script or change of the words between (cl-973). A double or triple click, Shift, a press on a name or on words already
+   * selected (to drag them) stay the browser's.
+   */
+  const pressWords = (event: MouseEvent) => {
+    const el = box.current
+    if (!el || event.button !== 0 || event.detail > 1 || event.shiftKey || event.altKey || event.metaKey || event.ctrlKey) return
+    if ((event.target as Element).closest("[data-mention]")) return
+    const selection = document.getSelection()
+    const from = placeIn(el, event.clientX, event.clientY)
+    if (selection && !selection.isCollapsed && selection.rangeCount && selection.getRangeAt(0).isPointInRange(from.node, from.offset)) return
+    event.preventDefault()
+    el.focus({ preventScroll: true })
+    selection?.collapse(from.node, from.offset)
+    const move = (moved: globalThis.MouseEvent) => {
+      if (!(moved.buttons & 1)) return end()
+      // Past the top or the bottom of words that scroll, they scroll on, as a selection dragged there does.
+      const rect = el.getBoundingClientRect()
+      if (moved.clientY > rect.bottom) el.scrollTop += moved.clientY - rect.bottom
+      else if (moved.clientY < rect.top) el.scrollTop -= rect.top - moved.clientY
+      const to = placeIn(el, moved.clientX, moved.clientY)
+      document.getSelection()?.setBaseAndExtent(from.node, from.offset, to.node, to.offset)
+    }
+    const end = () => {
+      window.removeEventListener("mousemove", move, true)
+      window.removeEventListener("mouseup", end, true)
+    }
+    window.addEventListener("mousemove", move, true)
+    window.addEventListener("mouseup", end, true)
+  }
+
   /** After each keystroke: `<name>` finished by hand is a chip, and a `<` being typed offers names. */
   const look = () => {
     const selection = document.getSelection()
@@ -448,6 +512,7 @@ export function MentionText({
         }}
         onFocus={() => typedIn(asset, place)}
         onKeyDown={keys}
+        onMouseDown={pressWords}
         onClick={clickName}
         onCopy={copy}
         onCut={cut}
