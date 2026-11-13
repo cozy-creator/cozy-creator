@@ -349,20 +349,21 @@ async function placedInView(page, expected) {
     const lay = {};
     const left = Math.max(...Object.values(rows(folder)).map((row) => row.x)) + 1500;
     const put = (name, x, y, w) => { lay[name] = { x: left + x, y, w }; };
-    // Rows of the grid meant to touch: a picture 300 wide (its name 32, the picture 169, its row 40) and the room it keeps under it, 92
-    // (shown.ts heightFor and underOf). That room has changed with the box three times; where the page keeps more, it gives way and the
-    // layout is the one it settles to (`laid`, below), which every drop and pull is judged against.
-    const ROW = 32 + 169 + 40 + 92;
+    // Rows of the grid meant to touch: a picture 300 wide (its name 32, the picture 169, its row 40) and the room it keeps under it, 94: its
+    // shape's line and the rise of a far name at the body size to 25% (shown.ts heightFor and underOf, Paul 11-13). That room has changed
+    // with the box four times; where the page keeps more, it gives way and the layout is the one it settles to (`laid`, below), which
+    // every drop and pull is judged against.
+    const ROW = 32 + 169 + 40 + 94;
     for (const [i, j] of [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1], [0, 2], [1, 2], [2, 2]]) put(`grid_${i}_${j}`, 320 * i, ROW * j, 300);
-    // The chain beside the grid and the rest under it, each clear of the one above as laid out (a 240 picture keeps 299, the crowded 360 one
-    // 367): fitted, it all shows at a zoom of 0.2 or more, where a box has its corner (CanvasHost's far band; all under the grid, 0.197).
+    // The chain beside the grid and the rest under it, each clear of the one above as laid out (a 240 picture keeps 301, the crowded 360 one
+    // 369): fitted, it all shows at a zoom of 0.2 or more, where a box has its corner (CanvasHost's far band; all under the grid, 0.197).
     const BELOW = 3 * ROW + 14;
     put('crowded', 290, BELOW, 360);
     put('beside', 0, BELOW + 400, 240);
-    put('free', 200, BELOW + 700, 240);
-    put('left', 0, BELOW + 1000, 240);
-    put('right', 468, BELOW + 1000, 240);
-    put('nudging', 234, BELOW + 1300, 240);
+    put('free', 200, BELOW + 704, 240);
+    put('left', 0, BELOW + 1008, 240);
+    put('right', 468, BELOW + 1008, 240);
+    put('nudging', 234, BELOW + 1312, 240);
     const CHAIN = ['chain_a', 'chain_b', 'chain_c', 'chain_d', 'chain_e'];
     CHAIN.forEach((name, i) => put(name, 1100 + 260 * i, 0, 240));
     // Two rows four long, 10 apart, with a gap 4 short of the box between them, and room beyond.
