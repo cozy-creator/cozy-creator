@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["cozy-runtime[media]>=0.43.1", "msgspec>=0.19"]
 # ///
-"""web/ignored.js's functions, which say what they got: `pictures` a prompt of pictures, `words` words only (cl-944)."""
+"""commands.sh's ignored_inputs' functions, which say what they got: `pictures` a prompt of pictures, `words` words only (cl-944)."""
 
 import msgspec
 from cozy_runtime.author import App

@@ -5,11 +5,12 @@
 # BiRefNet removal on the CPU from a YAML request, run ls/show, a second executor (the machine restarted)
 # with an --file input, a stuck Calcifer that cozy doctor restarts, and removal as the README says. Where the OS
 # runs no models itself (macOS, Windows: lib.sh's LOCAL), what needs no machine, every local verb refused, and the
-# rest of that list but the machine. On every OS, the page Calcifer serves (web.sh).
+# rest of that list but the machine. On every OS, the page Calcifer serves (page_http, and web.sh's suite in its own shards).
 # A broken step is recorded and the suite goes on, so one run reports all of them.
 # --shard runs one of `shards` below after the same start, each on its own runner: e2e.yaml checks coverage over
 # all their calls. Whole, the suite checks it itself.
-#   e2e/cli/run.sh --out DIR [--shard NAME]: NAME is a case below, or web-<cell> / projectdb-<cell> for web/<cell>.js alone
+#   e2e/cli/run.sh --out DIR [--shard NAME]: NAME is a case below, or web-<cell> for web/<cell>.spec.js alone (else a web/<cell>.js
+#                  outside the suite, by hand)
 #                  [--tensord F|V] [--tensorfs F|V] [--runtime F|V] [--packages DIR]
 . "$(dirname "$0")/../lib.sh"
 parse "$@"
@@ -67,10 +68,10 @@ step status; fixture_calcifer | tee "$OUT/status.json"
 step candidates; candidates
 [ "$SHARD" != commands ] || { kept_calcifer; explicit_restart; idle_restart; }
 step doctor; cozy --json doctor > "$OUT/doctor.json" || check "cozy doctor is not healthy: $(grep -o '"state": *"PROBLEM[^"]*"' "$OUT/doctor.json" | head -3)"
-case $SHARD in projectvault | plan | web-core) calcifer_diagnostics ;; esac
+case $SHARD in projectvault | plan) calcifer_diagnostics ;; esac
 }
 
-# A vault failure, or a web-core cell's, names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings
+# A vault failure names its reason: Calcifer started again with config.toml's calcifer.diagnostics (tests only), its warnings
 # in calcifer/diagnostics.log, which the job collects with the other logs.
 calcifer_diagnostics() {
   local config=$HOME/.cozy/config.toml pid
@@ -512,8 +513,10 @@ case $SHARD in
     writes_once
     project_stream
     agent_render
-    web_serves
-    page_resend
+    agent_api
+    ignored_inputs
+    orbit_metadata
+    page_http
     queued_download
     machines
     local_idle
@@ -521,8 +524,8 @@ case $SHARD in
     fall_back
     coming_machine
     slow_runs
-    prepares
     completions
+    install_retries
     calcifer_faults
     calcifer_restarts
     update
@@ -576,76 +579,24 @@ case $SHARD in
     machine_show_runs
     writes_once
     project_stream
+    agent_api
+    ignored_inputs
+    orbit_metadata
+    page_http
+    install_retries
     logs
   " ;;
-  # Its own runner: under `set -e` a cell that dies ends its shard, and a page's proofs shouldn't go with it.
-  web) parts="tools_read web_serves page_resend logs" ;;
   project-stream) parts="project_stream logs" ;;
-  # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path, the page too.
+  # A run is never silently slow (cl-913): a hot host's recorded GPU readings through the real path.
   slow) parts="slow_runs logs" ;;
-  project-stream-web) DB_WEB="drawers activity versions timeline"; parts="tools_read db_existing_web logs" ;;
-  # A box from Render to its take, each phase of its face kept as a picture (cl-921).
-  web-activity) export DB_WEB=activity; parts="tools_read db_existing_web logs" ;;
   web-1) web_cells=(${WEB_1[@]+"${WEB_1[@]}"}); parts="web_lane logs" ;;
   web-2) web_cells=(${WEB_2[@]+"${WEB_2[@]}"}); parts="web_lane logs" ;;
   web-3) web_cells=(${WEB_3[@]+"${WEB_3[@]}"}); parts="web_lane logs" ;;
   web-engines) web_cells=(${WEB_ENGINES[@]+"${WEB_ENGINES[@]}"}); parts="web_lane logs" ;;
   web-solo) web_cells=(${WEB_SOLO[@]+"${WEB_SOLO[@]}"}); parts="web_lane logs" ;;
   web-native) web_cells=(${WEB_NATIVE[@]+"${WEB_NATIVE[@]}"}); parts="web_lane logs" ;;
-  web-core) parts="tools_read web_core page_resend logs" ;;
-  web-firefox) parts="tools_read web_firefox logs" ;;
-  # The palette against a Hub holding every first-party package (e2e/isolated.sh), and with none (cl-896).
-  web-palette) export DB_WEB=palette; parts="tools_read db_existing_web logs" ;;
-  # The canvas where it was after Focus (cl-931).
-  web-refocus) export DB_WEB=refocus; parts="tools_read db_existing_web logs" ;;
-  # A pulled shape snapping to a ratio its tool makes (cl-936).
-  web-aspect) export DB_WEB=aspect; parts="tools_read db_existing_web logs" ;;
-  # A video scrubbed in Focus (cl-933).
-  web-scrub) export DB_WEB=scrub; parts="tools_read db_existing_web logs" ;;
-  # One Models & LoRAs picker for every tool; H3's fields unfolded (cl-934). Its Hub holds an H3 LoRA (isolated.sh).
-  web-models) export DB_WEB=models; parts="tools_read db_existing_web logs" ;;
-  # One editing view for a picture and a video: the frame holds the prompt sections, Render and the fields under it (cl-938).
-  web-frame) export DB_WEB=frame; parts="tools_read db_existing_web logs" ;;
-  # Deleting by a trash can (cl-939).
-  web-trash) export DB_WEB=trash; parts="tools_read db_existing_web logs" ;;
-  # The tool beside a box's name (cl-927).
-  web-toolword) export DB_WEB=toolword; parts="tools_read db_existing_web logs" ;;
-  # The right-side panel closed by a click off it (cl-929).
-  web-drawer) export DB_WEB=drawer; parts="tools_read db_existing_web logs" ;;
-  # No New on an empty box (cl-925).
-  web-empty) export DB_WEB=empty; parts="tools_read db_existing_web logs" ;;
-  # A press from inside never dismisses (cl-923).
-  web-dismiss) export DB_WEB=dismiss; parts="tools_read db_existing_web logs" ;;
-  # Typed words over a picture (cl-901).
-  web-legible) export DB_WEB=legible; parts="tools_read db_existing_web logs" ;;
-  # A Shot's beats laid out (cl-903).
-  web-beats) export DB_WEB=beats; parts="tools_read db_existing_web logs" ;;
-  # Pasted mentions (cl-902).
-  web-paste) export DB_WEB=paste; parts="tools_read db_existing_web logs" ;;
-  # A run says one thing at most: no note of a completed run's warnings, one note of a failure that stays (cl-921).
-  web-toasts) export DB_WEB=toasts; parts="tools_read db_existing_web logs" ;;
-  # A rendering box at rest, and new takes not looked at (cl-928).
-  web-newtakes) export DB_WEB=newtakes; parts="tools_read db_existing_web logs" ;;
-  # A box at rest as Paul drew it: name, picture, tool and shape, its render with Cancel (cl-932); and cl-928's dots and wave on it.
-  web-tiles) export DB_WEB="tiles newtakes"; parts="tools_read db_existing_web logs" ;;
-  # The take looked at in Focus is the one drawn when it finishes (cl-942).
-  web-focusfinish) export DB_WEB=focusfinish; parts="tools_read db_existing_web logs" ;;
-  # A take is one id from Render to its version, listed at once and never off, through a slow Calcifer and a reload (cl-945), with cl-942's.
-  web-takeids) export DB_WEB="takeids focusfinish"; parts="tools_read db_existing_web logs" ;;
-  # A take that fails stays in its column, red, its error to read and copy, through a reload, until its trash deletes it (cl-954).
-  web-failedtakes) export DB_WEB=failedtakes; parts="tools_read db_existing_web logs" ;;
   # A project cozy 0.24.0 made keeps every take under this cozy, and a take asked by id lands as that version (cl-945).
   old-takes) parts="old_takes logs" ;;
-  web-scale) export DB_WEB=scale; parts="tools_read db_existing_web logs" ;;
-  web-canvas) export DB_WEB=canvas; parts="tools_read db_existing_web logs" ;;
-  # Files dropped: twenty pictures at once, each drawn once where and as it stays (cl-918), and Place's drop, chooser, rename and moves.
-  web-dropped) export DB_WEB="dropped place"; parts="tools_read db_existing_web logs" ;;
-  # A deleted box gone from the project, its files after the undo window (cl-919): its own runner, as it waits out the window twice.
-  web-deleted) export DB_WEB=deleted; parts="tools_read db_existing_web logs" ;;
-  web-undo) export DB_WEB=undo; parts="tools_read db_existing_web logs" ;;
-  web-layout-1280) export DB_WEB=layout SIZES=1280x720; parts="tools_read db_existing_web logs" ;;
-  web-layout-1600) export DB_WEB=layout SIZES=1600x1000,1600x1000@1.25; parts="tools_read db_existing_web logs" ;;
-  web-layout-2560) export DB_WEB=layout SIZES=2560x1440@2x; parts="tools_read db_existing_web logs" ;;
   follow) parts="
     script_package
     one_name_two_paths
@@ -663,23 +614,18 @@ case $SHARD in
     logs
   " ;;
   # project.db (cl-803) and state.db (cl-818) alone, and project.db's latency against the cozy before it. A project's machines (cl-873), an idle
-  # computer placed on (cl-894), a new take never changing what's approved (cl-908), one not looked at (cl-928), the take looked at in
-  # Focus drawn when it finishes (cl-942), and a take one id from Render to its version, a 0.24.0 project's takes kept (cl-945), and a 0.24.0 project opened with nothing lost (cl-904).
+  # computer placed on (cl-894), deleted boxes' files gone after the undo window and Undo after the purge (cl-919), a project closed once
+  # nothing reads it (cl-823), a 0.24.0 project's takes kept (cl-945), and a 0.24.0 project opened with nothing lost (cl-904).
   projectdb) parts="
     projectdb
     statedb
     local_idle
     machine_set
     fall_back
-    approvals
-    newtakes
-    focusfinish
-    takeids
-    failedtakes
-    purged
-    toasts
+    db_deleted_gc
+    db_purged
+    db_closes
     old_takes
-    prepares
     db_migrate
     db_opens
     db_migrate_large
@@ -688,12 +634,13 @@ case $SHARD in
     agent_render
     logs
   " ;;
-  # A box waiting for another's take prepares at once, and shows only its own progress (cl-905).
-  projectdb-prepares) parts="prepares logs" ;;
+  # Deleted boxes' files after the undo window, Undo after the purge (cl-919), and a project closed once nothing reads it (cl-823).
+  projectdb-deleted) parts="db_deleted_gc logs" ;;
+  projectdb-purged) parts="db_purged logs" ;;
+  projectdb-closes) parts="db_closes logs" ;;
   projectvault) parts="
     projectvault
     vault_leftovers
-    vault_web
     vault_swapped
     logs
   " ;;
@@ -713,19 +660,6 @@ case $SHARD in
   # A run watched across Calcifer restarts, one whose lock record lands late (cl-885).
   follow-watch) parts="watch_restart logs" ;;
   projectdb-existing) parts="db_existing logs" ;;
-  projectdb-web) parts="tools_read db_existing_web logs" ;;
-  projectdb-palette) parts="tools_read db_existing_web logs"; DB_WEB="nodes tools" ;;
-  projectdb-focus) parts="tools_read db_existing_web logs"; DB_WEB=focused ;;
-  projectdb-select) parts="tools_read db_existing_web logs"; DB_WEB=select ;;
-  projectdb-cancel) parts="db_cancel_undo logs" ;;
-  projectdb-live) parts="tools_read db_existing_web logs"; DB_WEB=live ;;
-  projectdb-instant) parts="tools_read db_existing_web logs"; DB_WEB=instant ;;
-  projectdb-versions) parts="tools_read db_existing_web logs"; DB_WEB=versions ;;
-  projectdb-menu) parts="tools_read db_existing_web logs"; DB_WEB=menu ;;
-  projectdb-selected) parts="tools_read db_existing_web logs"; DB_WEB=selected ;;
-  projectdb-copy) parts="tools_read db_existing_web logs"; DB_WEB=copy ;;
-  projectdb-offline) parts="tools_read db_existing_web logs"; DB_WEB=offline ;;
-  projectdb-scale) parts="tools_read db_existing_web logs"; DB_WEB=scale ;;
   # Local code and every input by content (cl-817, cl-820): the CLI in a folder Calcifer can't see,
   # edits timed, a published cozy package called from local code (cl-871) and from an account's package (cl-872), a child
   # result's Latents in another package's caller (cr-276), a host path refused, a dev home's first-party packages from its
@@ -753,19 +687,18 @@ case $SHARD in
   control) parts="
     machine_show_runs
     writes_once
-    page_resend
     hub_away
     broken_answers
     logs
   " ;;
-  # Any other web-<cell> runs web/<cell>.spec.js alone, else web/<cell>.js, as projectdb-<cell> does, so a new cell takes no line here. A
-  # list above is one cell a line: cells added by two changes never share a line.
-  web-* | projectdb-*)
-    if [[ $SHARD == web-* ]] && [ -f "$(dirname "$0")/web/${SHARD#web-}.spec.js" ]; then
+  # Any other web-<cell> runs web/<cell>.spec.js alone, so a new cell takes no line here, else a web/<cell>.js outside the suite (web.sh's
+  # web_alone). A list above is one cell a line: cells added by two changes never share a line.
+  web-*)
+    if [ -f "$(dirname "$0")/web/${SHARD#web-}.spec.js" ]; then
       web_cells=("${SHARD#web-}"); parts="web_lane logs"
     else
-      [ -f "$(dirname "$0")/web/${SHARD#*-}.js" ] || { echo "no cli shard $SHARD" >&2; exit 2; }
-      export DB_WEB=${SHARD#*-}; parts="tools_read db_existing_web logs"
+      [ -f "$(dirname "$0")/web/${SHARD#web-}.js" ] || { echo "no cli shard $SHARD" >&2; exit 2; }
+      WEB_ALONE_CELL=${SHARD#web-}; parts="tools_read web_alone logs"
     fi ;;
   *) echo "no cli shard $SHARD" >&2; exit 2 ;;
 esac
@@ -775,21 +708,11 @@ esac
 if [ -z "$LOCAL" ] && [ "$parts" != "web_lane logs" ]; then
   case $SHARD in
     entrypoints | projectvault) ;;
-    web-layout-* | web-scale | web-canvas) parts="db_existing_web logs" ;;
-    web-core) parts="
-      entrypoints
-      refusals
-      web_native
-      completions
-      homebrew
-      calcifer_faults
-      update
-      remove
-    " ;;
+    web-*) parts="web_alone logs" ;;
     *) parts="
       entrypoints
       refusals
-      web_serves
+      page_http
       completions
       homebrew
       calcifer_faults

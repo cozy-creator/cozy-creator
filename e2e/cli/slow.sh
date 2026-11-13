@@ -1,9 +1,8 @@
 # e2e/cli/slow.sh: a run is never silently slow (cl-913), on this computer's machine with no GPU. The machine reads recorded GPU
 # readings in place of NVML's (`machine.gpu_samples`: slow/hot-host.jsonl, rabou's two H100s as run 46678's driver record measured
 # them, GPU 0 held back for heat 98% of its busy time at 89 °C), through the real path: a run that loads it 20 s warns
-# `gpu_throttled` as it goes, `cozy machine show` and the page mark the machine red, and a run far past what its function took
-# before warns `slow_run` naming the heat, on its record, live in `cozy run` and on its box (web/slow.js). Then the machine goes back
-# to its own readings and is no longer marked.
+# `gpu_throttled` as it goes, `cozy machine show` marks the machine slow, and a run far past what its function took before warns
+# `slow_run` naming the heat, on its record and live in `cozy run`. Then the machine goes back to its own readings and is no longer marked.
 
 # slow_config <config.toml> <samples, or empty>: config.toml with `machine.gpu_samples` set, or taken out.
 slow_config() {
@@ -63,23 +62,9 @@ grep -qE '^slow +GPU 0 ran throttled for heat 98% of its last run \(89 °C, [0-9
   || check "slow: machine show local does not say it is slow: $(head -c 600 "$OUT/slow-machine.txt")"
 grep -qE '^state +ready · slow' "$OUT/slow-machine.txt" || check "slow: machine show local's state is not marked slow"
 
-slow_web
-
 step "slow: back on its own readings, the machine is no longer marked"
 slow_config "$config" ''
 slow_machine
 cozy --json machine show local > "$OUT/slow-machine-after.json" 2>&1 || true
 J '(.status.heat // []) | length == 0' "$OUT/slow-machine-after.json" || check "slow: the machine is still marked hot: $(jq -c .status.heat "$OUT/slow-machine-after.json")"
-}
-
-# The page while the machine is hot: its chip red top right, its flyout and drawer saying why, and a box's run there saying it on the box.
-slow_web() {
-local pw=$OUT/playwright chrome
-chrome=$(web_chrome)
-[ -n "$chrome" ] && [ -x "$chrome" ] || { check "slow-web: no Google Chrome (${chrome:-none})"; return; }
-npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "slow-web: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
-step "web-slow: the hot machine red on the page, and a box's slow run said on the box"
-# Its box runs in the project whose history holds the bar: run history is the project's own.
-SLOW_PROJECT=$(web_path "$RUN_PROJECT"); export SLOW_PROJECT
-web_proof slow "$chrome" "$pw" ''
 }

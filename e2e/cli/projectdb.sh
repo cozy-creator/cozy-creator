@@ -7,6 +7,9 @@
 #   db_migrate      a project 0.24.0 made opens here with nothing lost: its takes, files and words, ids and history
 #   db_migrate_large  a 5,000-box project of schema 3 opens here as $SCHEMA with nothing lost, and its rows read
 #   db_waits        project.db held by another program while a `cozy run` begins: waited out within Calcifer's wait and past it
+#   db_deleted_gc   a deleted box resolves nowhere; Undo in the window; its files and thumbnails gone after it, across a stopped Calcifer too
+#   db_purged       Undo past the 3-hour purge brings each box back where it was without its files, saying so
+#   db_closes       a project closes once no call, stream or render reads it; Calcifer's heap comes back; a reopen is as quick
 # Uses project.sh's `api`, `status`, `held` and `sha`.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # project.db's schema (db.rs VERSION): what a project this cozy opens holds, and what its copy before a migration is named after.
@@ -33,63 +36,311 @@ kill9() {
 }
 tiny() { base64 -d > "$1" <<< 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='; }
 
-# The cells project.db changes most: its first open and a crash, and the page's tools, versions, nodes, place, undo, live, layout,
-# offline and held.
+# The cells project.db changes most: its first open and a crash.
 db_existing() {
 tools_read
 db_first_open
 db_crash
-db_existing_web
 }
 
-db_existing_web() {
-local lock=$HOME/.cozy/calcifer/calcifer.lock.holder pw=$OUT/playwright chrome restart name
-chrome=$(web_chrome)
-[ -n "$chrome" ] && [ -x "$chrome" ] || { check "web: no Google Chrome (${chrome:-none})"; return; }
-npm install -s --prefix "$(web_path "$pw")" playwright-core@1.55.0 > "$OUT/web-npm.log" 2>&1 || { check "web: npm install playwright-core failed: $(tail -c 300 "$OUT/web-npm.log")"; return; }
-restart=$(web_restart "$lock")
-for name in ${DB_WEB:-place nodes versions tools live layout undo offline held}; do
-  step "web-$name"
-  case $name in
-    instant) web_proof "$name" "$chrome" "$pw" "$restart" ;;
-    stays) web_proof "$name" "$chrome" "$pw" "$restart" ;;
-    palette) CATALOG=1 NO_HUB=$(web_restart "$lock" http://127.0.0.1:9) web_proof "$name" "$chrome" "$pw" "$restart" ;;
-    undo | offline) STOP=$(web_halt "$lock") START=$(web_start) web_proof "$name" "$chrome" "$pw" "$restart" ;;
-    # As web-core runs them (web.sh): see also on a Hub nothing answers, localfit on the GPU-selling stand-in.
-    see) NO_HUB=$(web_restart "$lock" http://127.0.0.1:9) web_proof "$name" "$chrome" "$pw" "$restart" ;;
-    localfit) HUB_RESTART=$(web_restart "$lock" @HUB@) web_proof "$name" "$chrome" "$pw" "$restart" ;;
-    held) web_held "$chrome" "$pw" ;;
-    deleted) web_deleted "$chrome" "$pw" "$lock" ;;
-    *) web_proof "$name" "$chrome" "$pw" '' ;;
-  esac
-  [ "$name" != scale ] || web_scale_said
+# undo_window <lock> <seconds, or empty> [command]: Calcifer started again with config.toml's calcifer.undo_seconds at that, else none:
+# the old one gone first, so the new one reads it. The command runs while it's stopped.
+undo_window() {
+  local config=$HOME/.cozy/config.toml
+  awk -v n="$2" '/^undo_seconds *=/ { next } { print } /^\[calcifer\]/ && n != "" { print "undo_seconds = " n; put = 1 } END { if (n != "" && !put) printf "\n[calcifer]\nundo_seconds = %s\n", n }' "$config" > "$config.next" && mv "$config.next" "$config"
+  calcifer_halt || true
+  [ -z "${3:-}" ] || "$3"
+  cozy --json machine ls > /dev/null 2>&1 || true
+}
+
+# calcifer_halt: Calcifer stopped as a service manager stops it (SIGTERM, a clean exit, which systemd's on-failure doesn't restart), and
+# gone. One still running 120 s on is a failure, not a hang.
+calcifer_halt() {
+  local pid waited=0
+  pid=$(jq -r .pid < "$HOME/.cozy/calcifer/calcifer.lock.holder")
+  kill -TERM "$pid" 2> /dev/null || true
+  while kill -0 "$pid" 2> /dev/null; do
+    [ "$waited" -lt 600 ] || { check "Calcifer $pid still runs 120 s after SIGTERM"; kill -9 "$pid" 2> /dev/null; return 1; }
+    sleep 0.2; waited=$((waited + 1))
+  done
+}
+# in_files <project> <sha256:hex or hex>: a file of that hash is in the project's files/.
+in_files() { local hex=${2#sha256:}; find "$1/files" -name "$hex*" 2> /dev/null | grep -q .; }
+# derived <project> <sha256:hex or hex>: what Calcifer made of that file and keeps by its hash (thumbnails, posters, clips), wherever.
+derived() { local hex=${2#sha256:}; find "$HOME/.cozy/cache" "$1/.vault-calcifer" \( -name "$hex-*" -o -name "$hex.*" \) 2> /dev/null; }
+# entry_of <project> <words>: the newest history entry with those words, not undone.
+entry_of() { project_api "$1" '/history?limit=50' | jq -r --arg w "$2" '[.entries[] | select(.words == $w and (.undone | not))][0].id // empty'; }
+# place_of <project> <box>: where its card is, `x,y`.
+place_of() { sql "$1" "SELECT x, y FROM canvas WHERE name = '$2'" | jq -r 'map(round | tostring) | join(",")'; }
+# asset_of <project> <box>: the box as `GET …/assets/<box>` answers it (`.asset`), else nothing.
+asset_of() { held "$1" "$2" 2> /dev/null | jq -c '.asset // empty' 2> /dev/null; }
+# box_kept <project> <box>: it's there again, with no file and no take.
+box_kept() { asset_of "$1" "$2" | J '(.sha256 // null) == null and ((.versions // []) | length) == 0'; }
+
+# cl-919 (Paul, 11-12: "When I delete a node, the image should be gone from the project"), with no page: a deleted box resolves nowhere,
+# Undo brings it back within the window (config.toml's calcifer.undo_seconds, cut to 40 s), and once the window ends its file and what
+# Calcifer made of it leave the project, unless another box holds the same file; Undo then brings the box back without them, saying so.
+# One deleted while Calcifer is stopped across its window is gone once Calcifer starts. The page's own half is the delete-undo cell.
+db_deleted_gc() {
+step "deleted boxes: resolve nowhere, Undo in the window, their files gone after it, across a stopped Calcifer too (cl-919)"
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder P=$OUT/deleted-gc window=40 pic twin late entry began code=0 said='' before after c
+undo_window "$lock" "$window"
+run_project "$P" > "$OUT/deleted-gc-new.log" 2>&1 || { check "deleted gc: no project: $(tail -c 300 "$OUT/deleted-gc-new.log")"; undo_window "$lock" ''; return; }
+for c in red blue green; do ffmpeg -v error -y -f lavfi -i "color=c=$c:size=64x48" -frames:v 1 "$OUT/deleted-gc-$c.png"; done
+project_import "$P" "$OUT/deleted-gc-red.png" pic > /dev/null && project_import "$P" "$OUT/deleted-gc-blue.png" twin_a > /dev/null \
+  && project_import "$P" "$OUT/deleted-gc-blue.png" twin_b > /dev/null \
+  && project_api "$P" /assets -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg t "$here/project/draw.py/draw" '{tool: $t, kind: "image", name: "reader", exact: true, fields: {instructions: "a hat on <pic>"}}')" > /dev/null \
+  || { check "deleted gc: the boxes weren't made"; undo_window "$lock" ''; return; }
+pic=$(asset_of "$P" pic | jq -r .sha256) twin=$(asset_of "$P" twin_b | jq -r .sha256)
+in_files "$P" "$pic" && in_files "$P" "$twin" || check "deleted gc: the imports aren't in files/"
+# A thumbnail made, as the page asks one: its going is checked below.
+project_api "$P" "/thumbs/${pic#sha256:}" -o /dev/null || check "deleted gc: no thumbnail of pic"
+[ -n "$(derived "$P" "$pic")" ] || check "deleted gc: pic's thumbnail isn't kept by its hash, so its going proves nothing"
+
+# Deleted: it resolves nowhere. A render of what mentions it, and the CLI's run of it, fail free, naming it.
+project_api "$P" /assets/pic -X DELETE > /dev/null || check "deleted gc: delete pic"
+[ -z "$(asset_of "$P" pic)" ] || check "deleted gc: pic is still there after its delete"
+before=$(project_api "$P" '/runs?limit=100' | jq -c '[.runs[] | select(.kind == "call") | .number]')
+project_api "$P" /runs -X POST -H 'Content-Type: application/json' -d '{"names": ["reader"], "on": ["local"]}' > "$OUT/deleted-gc-render.json" 2>&1 || true
+for _ in $(seq 100); do said=$(asset_of "$P" reader | jq -r '.failure.message // empty'); [ -z "$said" ] || break; sleep 0.2; done
+[[ $said == *'<pic> was deleted'* ]] || check "deleted gc: a render of reader wasn't refused naming <pic> deleted: ${said:-nothing}"
+after=$(project_api "$P" '/runs?limit=100' | jq -c '[.runs[] | select(.kind == "call") | .number]')
+[ "$before" = "$after" ] || check "deleted gc: the refused render made a run: $before, then $after"
+in_project "$P" run "$here/project/draw.py/draw" 'instructions=a hat on <pic>' --on local > "$OUT/deleted-gc-run.txt" 2>&1 || code=$?
+[ "$code" != 0 ] && grep -q '<pic> was deleted' "$OUT/deleted-gc-run.txt" \
+  || check "deleted gc: cozy run of <pic> wasn't refused naming it deleted (exit $code): $(tail -c 300 "$OUT/deleted-gc-run.txt")"
+
+# Undo in the window: back, with its file.
+entry=$(entry_of "$P" 'Deleted pic')
+project_history_step "$P" undo "${entry:-0}" > "$OUT/deleted-gc-undo.json" 2>&1 || check "deleted gc: Undo in the window: $(tail -c 300 "$OUT/deleted-gc-undo.json")"
+[ "$(asset_of "$P" pic | jq -r .sha256)" = "$pic" ] || check "deleted gc: Undo in the window didn't bring pic back with its file: $(asset_of "$P" pic | jq -c '{name, sha256}')"
+
+# Deleted again, and a box holding the same file as another: past the window, their files leave unless a box holds them.
+project_api "$P" /assets/pic -X DELETE > /dev/null && project_api "$P" /assets/twin_a -X DELETE > /dev/null || check "deleted gc: delete pic, twin_a"
+began=$SECONDS
+for _ in $(seq $((window + 60))); do in_files "$P" "$pic" || break; sleep 1; done
+! in_files "$P" "$pic" || check "deleted gc: pic's file is still in files/ $((window + 60)) s after its delete"
+[ $((SECONDS - began)) -ge $((window - 2)) ] || check "deleted gc: pic's file went $((SECONDS - began)) s after its delete, inside the $window s window"
+for _ in $(seq 50); do [ -n "$(derived "$P" "$pic")" ] || break; sleep 0.2; done
+[ -z "$(derived "$P" "$pic")" ] || check "deleted gc: what Calcifer made of pic is kept: $(derived "$P" "$pic" | head -3 | tr '\n' ' ')"
+[ "$(sql1 "$P" "SELECT count(*) FROM lock_files WHERE sha256 = '$pic'")" = 0 ] || check "deleted gc: project.db still records pic's file"
+in_files "$P" "$twin" || check "deleted gc: twin_b's file went with twin_a's delete"
+! project_api "$P" "/thumbs/${pic#sha256:}" -o /dev/null 2> /dev/null || check "deleted gc: pic's thumbnail is still served"
+
+# Undo past the window: the box back without its files, saying so.
+entry=$(entry_of "$P" 'Deleted pic')
+project_history_step "$P" undo "${entry:-0}" > "$OUT/deleted-gc-bare.json" 2>&1 || true
+J '(.lost // []) | any(startswith("pic'"'"'s files were removed (deleted more than "))' "$OUT/deleted-gc-bare.json" \
+  || check "deleted gc: Undo past the window doesn't say pic's files were removed: $(head -c 400 "$OUT/deleted-gc-bare.json")"
+box_kept "$P" pic || check "deleted gc: Undo past the window: not pic back without its file: $(asset_of "$P" pic | jq -c '{name, sha256, versions}')"
+! in_files "$P" "$pic" || check "deleted gc: Undo brought pic's file back"
+entry=$(entry_of "$P" 'Deleted twin_a')
+project_history_step "$P" undo "${entry:-0}" > "$OUT/deleted-gc-twin.json" 2>&1 || true
+J '(.lost // []) | any(startswith("twin_a'"'"'s files were removed"))' "$OUT/deleted-gc-twin.json" \
+  || check "deleted gc: twin_a's Undo doesn't say its files were removed: $(head -c 400 "$OUT/deleted-gc-twin.json")"
+
+# Deleted with Calcifer stopped across its window: gone once it starts.
+project_import "$P" "$OUT/deleted-gc-green.png" late > /dev/null || check "deleted gc: import late"
+late=$(asset_of "$P" late | jq -r .sha256)
+project_api "$P" /assets/late -X DELETE > /dev/null || check "deleted gc: delete late"
+calcifer_halt
+sleep $((window + 3))
+in_files "$P" "$late" || check "deleted gc: late's file went with Calcifer stopped"
+cozy --json machine ls > /dev/null || check "deleted gc: Calcifer didn't start again"
+for _ in $(seq 150); do in_files "$P" "$late" || break; sleep 0.2; done
+! in_files "$P" "$late" || check "deleted gc: late's file is still there 30 s after Calcifer started past its window"
+undo_window "$lock" ''
+rm -rf "$P"
+}
+
+# cl-919: Undo after the real 3-hour window. Two boxes deleted, a tool's box with its words and a take, and a picture; Calcifer stopped,
+# and every delete and history entry of the project dated 3 h 1 min back, as if that long had gone; started again, its open purges both
+# boxes' files. Undo then brings each back where it was without them, its tool and words kept, saying so; Redo deletes the bare box again,
+# and Undo brings it back again. A picture no one deleted keeps its file.
+db_purged() {
+step "Undo after the 3-hour purge: each box back without its files, saying so (cl-919)"
+local P=$OUT/purged hero pic stays aged rows ops at_hero at_pic prompt='a red hat on a cat' c
+run_project "$P" > "$OUT/purged-new.log" 2>&1 || { check "purged: no project: $(tail -c 300 "$OUT/purged-new.log")"; return; }
+for c in red blue green; do ffmpeg -v error -y -f lavfi -i "color=c=$c:size=64x48" -frames:v 1 "$OUT/purged-$c.png"; done
+project_api "$P" /assets -X POST -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg t "$here/project/draw.py/draw" --arg p "$prompt" '{tool: $t, kind: "image", name: "hero", exact: true, fields: {instructions: $p}, at: {x: 480, y: 120}}')" > /dev/null \
+  && project_api "$P" /assets/hero/versions -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg s "$(project_upload "$P" "$OUT/purged-red.png")" '{source: $s}')" > /dev/null \
+  && project_import "$P" "$OUT/purged-blue.png" pic > /dev/null && project_import "$P" "$OUT/purged-green.png" stays > /dev/null \
+  || { check "purged: the boxes weren't made"; return; }
+hero=$(asset_of "$P" hero | jq -r .sha256) pic=$(asset_of "$P" pic | jq -r .sha256) stays=$(asset_of "$P" stays | jq -r .sha256)
+at_hero=$(place_of "$P" hero) at_pic=$(place_of "$P" pic)
+in_files "$P" "$hero" && in_files "$P" "$pic" && in_files "$P" "$stays" || { check "purged: a take isn't in files/"; return; }
+project_api "$P" /assets/hero -X DELETE > /dev/null && project_api "$P" /assets/pic -X DELETE > /dev/null || check "purged: the deletes"
+in_files "$P" "$hero" && in_files "$P" "$pic" || check "purged: a file went inside the window"
+calcifer_halt || return
+aged=$(python3 -I - "$P/project.db" $(((3 * 60 + 1) * 60 * 1000)) <<'PY'
+import sqlite3, sys
+db, ago = sqlite3.connect(sys.argv[1]), int(sys.argv[2])
+rows = db.execute("UPDATE lock_assets SET record = json_set(record, '$.deleted_ms', json_extract(record, '$.deleted_ms') - ?) WHERE json_extract(record, '$.deleted_ms') IS NOT NULL", (ago,)).rowcount
+ops = db.execute("UPDATE ops SET at_ms = at_ms - ?", (ago,)).rowcount
+db.commit()
+print(rows, ops)
+PY
+) || check "purged: project.db couldn't be dated back"
+cozy --json machine ls > /dev/null || check "purged: Calcifer didn't start again"
+read -r rows ops <<< "$aged"
+[ "${rows:-0}" = 2 ] && [ "${ops:-0}" -ge 5 ] || check "purged: not both deletes and the history dated back: ${aged:-nothing}"
+status "$P" > /dev/null
+for _ in $(seq 150); do in_files "$P" "$hero" || in_files "$P" "$pic" || break; sleep 0.2; done
+! in_files "$P" "$hero" && ! in_files "$P" "$pic" || check "purged: the open past the window kept a deleted box's file"
+in_files "$P" "$stays" || check "purged: the purge took the file of a box no one deleted"
+[ -n "$(entry_of "$P" 'Deleted pic')" ] && [ -n "$(entry_of "$P" 'Deleted hero')" ] || check "purged: the history no longer lists both deletes"
+
+# Undo, newest first: pic, then hero.
+project_api "$P" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/purged-pic.json" 2>&1 || true
+J '(.lost // []) | any(contains("pic'"'"'s files were removed (deleted more than 3 hours ago)"))' "$OUT/purged-pic.json" \
+  || check "purged: Undo doesn't say pic's files were removed: $(head -c 400 "$OUT/purged-pic.json")"
+box_kept "$P" pic || check "purged: not pic back without its file: $(asset_of "$P" pic | jq -c '{name, sha256, versions}')"
+[ "$(place_of "$P" pic)" = "$at_pic" ] || check "purged: pic back at $(place_of "$P" pic), not $at_pic"
+project_api "$P" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > "$OUT/purged-hero.json" 2>&1 || true
+J '(.lost // []) | any(contains("hero'"'"'s files were removed (deleted more than 3 hours ago)"))' "$OUT/purged-hero.json" \
+  || check "purged: Undo doesn't say hero's files were removed: $(head -c 400 "$OUT/purged-hero.json")"
+box_kept "$P" hero && asset_of "$P" hero | J --arg p "$prompt" '.fields.instructions == $p and (.tool | test("draw"))' \
+  || check "purged: hero not back with its tool and words and no take: $(asset_of "$P" hero | jq -c '{tool, fields, sha256, versions}')"
+[ "$(place_of "$P" hero)" = "$at_hero" ] || check "purged: hero back at $(place_of "$P" hero), not $at_hero"
+
+# Redo deletes the bare box again; Undo brings it back again.
+project_api "$P" /history/redo -X POST -H 'Content-Type: application/json' -d '{}' > /dev/null 2>&1 || true
+[ -z "$(asset_of "$P" hero)" ] || check "purged: Redo didn't delete hero again"
+project_api "$P" /history/undo -X POST -H 'Content-Type: application/json' -d '{}' > /dev/null 2>&1 || true
+asset_of "$P" hero | J --arg p "$prompt" '.fields.instructions == $p' || check "purged: a second Undo didn't bring hero back"
+! in_files "$P" "$hero" && ! in_files "$P" "$pic" || check "purged: a file came back"
+rm -rf "$P"
+}
+
+# cl-823: Calcifer closes a project nothing reads. Projects of 200 boxes each, made by `cozy apply`, opened by the CLI and shown by a
+# page's stream (`PUT /v1/events/{stream}`): each is open while a call or a stream holds it (its project.db among Calcifer's open files),
+# and closes once the call has answered and once the stream shows another. Calcifer's heap is back within a tenth of where it stood after
+# two projects went the same way; a reopen is as quick as the first open; a render keeps its project open while it goes, one waiting for
+# its machine too, and closes once it has landed.
+db_closes() {
+step "projects closed once nothing reads them: by the CLI and a page's stream, memory back, a reopen as quick, a render holding its own (cl-823)"
+[ "${RUNNER_OS:-}" = Linux ] || { echo "closes: Calcifer's open files are read on Linux"; return 0; }
+CLOSES=$OUT/closes CLOSES_PREV='' CLOSES_OPENS=() CLOSES_REOPENS=() CLOSES_OPEN=() CLOSES_HELD=()
+local lock=$HOME/.cozy/calcifer/calcifer.lock.holder n=12 start later code pid first second update run_first look queued=0 held_first=0 held_second=0 P
+mkdir -p "$CLOSES"
+ffmpeg -v error -y -f lavfi -i 'color=c=gray:size=32x18' -frames:v 1 "$CLOSES/seed.png"
+code=$(curl -fsS -X POST -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/session-codes" | jq -r .code) \
+  && CLOSES_SESSION=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$(jq -n --arg c "$code" '{code: $c}')" "http://$(jq -r .address "$lock")/v1/session" | jq -r .token) \
+  || { check "closes: no page session"; return; }
+curl -sSN -H "Authorization: Bearer $CLOSES_SESSION" -H 'cozy-project-storage: 3' -H 'Accept: text/event-stream' "http://$(jq -r .address "$lock")/v1/events" > "$CLOSES/page.sse" 2>&1 & pid=$!
+for _ in $(seq 100); do CLOSES_STREAM=$(sse "$CLOSES/page.sse" | jq -r 'select(.type == "hello") | .stream' | head -1) && [ -n "$CLOSES_STREAM" ] && break; sleep 0.1; done
+[ -n "$CLOSES_STREAM" ] || { check "closes: the page's stream said no hello: $(head -c 300 "$CLOSES/page.sse")"; kill "$pid"; return; }
+closes_pass 1 2 || { kill "$pid"; return; }
+closes_show '' > /dev/null; closes_shut "$CLOSES/p$CLOSES_PREV" || CLOSES_OPEN+=("stream:$CLOSES_PREV"); CLOSES_PREV=''
+sleep 15
+start=$(closes_heap)
+CLOSES_OPENS=() CLOSES_REOPENS=()
+closes_pass 3 $((n + 2)) || { kill "$pid"; return; }
+closes_show '' > /dev/null; closes_shut "$CLOSES/p$CLOSES_PREV" || CLOSES_OPEN+=("stream:$CLOSES_PREV")
+kill "$pid" 2> /dev/null
+sleep 60
+later=$(closes_heap)
+local open_median reopen_median
+open_median=$(printf '%s\n' "${CLOSES_OPENS[@]}" | sort -n | awk '{ a[NR] = $1 } END { print a[int((NR + 1) / 2)] }')
+reopen_median=$(printf '%s\n' "${CLOSES_REOPENS[@]}" | sort -n | awk '{ a[NR] = $1 } END { print a[int((NR + 1) / 2)] }')
+echo "closes: $n projects of 200 boxes; heap $start MiB after two, $later MiB after all; open $open_median s, reopen $reopen_median s (medians)"
+[ ${#CLOSES_HELD[@]} = 0 ] || check "closes: a project the stream shows isn't open: ${CLOSES_HELD[*]}"
+[ ${#CLOSES_OPEN[@]} = 0 ] || check "closes: still open once nothing read it: ${CLOSES_OPEN[*]}"
+awk -v a="$later" -v b="$start" 'BEGIN { exit !(a != "" && b != "" && a <= b * 1.1) }' || check "closes: Calcifer's heap $later MiB, past a tenth over $start MiB after two projects"
+awk -v r="$reopen_median" -v o="$open_median" 'BEGIN { exit !(r != "" && o != "" && r <= o * 1.25 + 0.05) }' || check "closes: a reopen ($reopen_median s) slower than the first open ($open_median s)"
+
+# A render keeps its project open with nothing else on it, one waiting for its machine too; each closes once it has landed.
+first=$CLOSES/first second=$CLOSES/second
+for P in "$first" "$second"; do cozy --json new --unencrypted "$P" > /dev/null 2>&1 || { check "closes: a render's project"; return; }; done
+for P in "$first:20" "$second:1"; do
+  project_api "${P%:*}" /assets -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg t "$here/project/waits.py/wait" --argjson s "${P##*:}" '{tool: $t, name: "waits", exact: true, fields: {instructions: "waits \($s)", seconds: $s}}')" > /dev/null \
+    || { check "closes: a render's box"; return; }
 done
+closes_shut "$first" && closes_shut "$second" || check "closes: a render's project open before its render"
+project_api "$first" /runs -X POST -H 'Content-Type: application/json' -d '{"names": ["waits"], "on": ["local"]}' > /dev/null || { check "closes: the first render refused"; return; }
+for _ in $(seq 300); do
+  run_first=$(project_api "$first" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | select(.status == "in_progress" and .machine_state == "running") | .number')
+  [ -z "$run_first" ] || break; sleep 1
+done
+[ -n "$run_first" ] || { check "closes: the first render never ran"; return; }
+# The machine's update waits for it to end (lifetime.sh's update_waiting), and the second render queues behind both.
+(cozy --json machine update local --gpu-memory-limit off -y > "$CLOSES/update.json" 2>&1; echo $? > "$CLOSES/update.code") & update=$!
+for _ in $(seq 120); do cozy --json machine show local | J '.status.update // "" | test("^waiting for (other work|run [0-9]+) to end$")' && break; sleep 0.5; done
+cozy --json machine show local | J '.status.update // "" | test("^waiting for (other work|run [0-9]+) to end$")' \
+  || check "closes: the machine's update never waited for the first render: $(cozy --json machine show local | jq -c .status.update)"
+project_api "$second" /runs -X POST -H 'Content-Type: application/json' -d '{"names": ["waits"], "on": ["local"]}' > /dev/null || check "closes: the second render refused"
+for _ in $(seq 240); do
+  look=$(project_api "$second" /runs | jq -r '[.runs[] | select(.kind == "call")][0] // empty | "\(.status)/\(.machine_state // "")"')
+  [[ $look != *queued* ]] || { queued=1; ! closes_open "$second" || held_second=1; }
+  ! closes_open "$first" || held_first=1
+  fixture_projects | J --arg a "$(id_of "$first")" --arg b "$(id_of "$second")" 'any(.projects[]; (.id == $a or .id == $b) and .busy == true)' || break
+  sleep 0.5
+done
+[ "$queued" = 1 ] || check "closes: the second render never queued behind the first"
+[ "$held_first" = 1 ] || check "closes: a render going didn't hold its project open"
+[ "$held_second" = 1 ] || check "closes: a render waiting for its machine didn't hold its project open"
+for _ in $(seq 300); do kill -0 "$update" 2> /dev/null || break; sleep 1; done
+kill "$update" 2> /dev/null || true; wait "$update" 2> /dev/null || true
+[ "$(cat "$CLOSES/update.code" 2> /dev/null)" = 0 ] || check "closes: the machine's update did not succeed: $(tail -c 300 "$CLOSES/update.json")"
+machine_ready
+closes_shut "$first" && closes_shut "$second" || check "closes: a render's project still open once it landed"
+rm -rf "$CLOSES"
 }
-
-# A new take never changes what's approved (cl-908): the page's double tap, its Render, a mention's real run (web/approvals.js).
-approvals() { DB_WEB=approvals db_existing_web; }
-
-# A rendering box at rest breathes around its edge; a take landing beside an approved one is unseen until looked at (cl-928): web/newtakes.js.
-newtakes() { DB_WEB=newtakes db_existing_web; }
-
-# The take looked at in Focus is the one drawn when it finishes, with Focus left and opened again while it's made, and from the toast's View (cl-942):
-# web/focusfinish.js.
-focusfinish() { DB_WEB=focusfinish db_existing_web; }
-
-# A take is one id from Render to its version: listed at once, never off, through a slow Calcifer, a reload and a Cancel (cl-945):
-# web/takeids.js.
-takeids() { DB_WEB=takeids db_existing_web; }
-
-# A take that fails stays in its column under its id, red, its own error with Copy when picked, through a reload, until its trash deletes
-# it (cl-954): web/failedtakes.js.
-failedtakes() { DB_WEB=failedtakes db_existing_web; }
-
-# Undo of a delete past the real 3-hour window, the clock moved on: each box back without its files, saying so (cl-919): web/purged.js.
-purged() { DB_WEB=purged db_existing_web; }
-
-# A run says one thing at most: none of a completed run's warnings, that it finished with its picture and View, nothing of a take landing
-# while looked at, and one note of a failure that stays (cl-921, cl-937): web/toasts.js.
-toasts() { DB_WEB=toasts db_existing_web; }
+# closes_heap: Calcifer's heap, MiB, as its status says.
+closes_heap() { local lock=$HOME/.cozy/calcifer/calcifer.lock.holder; curl -fsS -H "Authorization: Bearer $(jq -r .token "$lock")" "http://$(jq -r .address "$lock")/v1/status" | jq '.heap_bytes / 1048576 * 10 | round / 10'; }
+# closes_open <project>: Calcifer has its project.db open. Calcifer is nondumpable: its file descriptors read as root.
+closes_open() { sudo -n find "/proc/$(jq -r .pid "$HOME/.cozy/calcifer/calcifer.lock.holder")/fd" -lname "$(realpath "$1")/project.db" 2> /dev/null | grep -q .; }
+# closes_shut <project>: it closes within 10 s.
+closes_shut() { local _; for _ in $(seq 50); do closes_open "$1" || return 0; sleep 0.2; done; return 1; }
+# closes_show <id, or nothing>: what the page on the stream shows now.
+closes_show() {
+  local lock=$HOME/.cozy/calcifer/calcifer.lock.holder
+  curl -fsS -X PUT -H "Authorization: Bearer $CLOSES_SESSION" -H 'cozy-project-storage: 3' -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg id "$1" '{projects: (if $id == "" then [] else [$id] end)}')" "http://$(jq -r .address "$lock")/v1/events/$CLOSES_STREAM"
+}
+# closes_made <i>: project i, 50 pictures of one file and 150 boxes mentioning them, by one `cozy apply`.
+closes_made() {
+  local P=$CLOSES/p$1 k
+  cozy --json new --unencrypted "$P" > "$CLOSES/new-$1.json" 2>&1 || return 1
+  cp "$CLOSES/seed.png" "$P/seed.png"
+  { for k in $(seq 0 49); do printf 'pic_%s:\n  kind: image\n  takes:\n    - file: seed.png\n' "$k"; done
+    for k in $(seq 0 149); do
+      printf 'shot_%s:\n  %s:\n    instructions: The colossal blue whale rises through a storm, lit from below, <pic_%s> and <pic_%s>.\n' "$k" "$here/project/draw.py/draw" $((k % 50)) $((k * 7 % 50))
+    done
+  } > "$P/boxes.yaml"
+  in_project "$P" apply -f boxes.yaml > "$CLOSES/apply-$1.txt" 2>&1
+}
+# closes_status <i>: `cozy status` in project i; its seconds.
+closes_status() {
+  local t0 t1
+  t0=$(date +%s%N); in_project "$CLOSES/p$1" --json status > /dev/null || return 1; t1=$(date +%s%N)
+  awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.3f\n", (b - a) / 1e9 }'
+}
+# closes_pass <first> <last>: each project made, read by the CLI, shown by the stream, which then shows the next, and read again.
+closes_pass() {
+  local i P id t
+  for i in $(seq "$1" "$2"); do
+    P=$CLOSES/p$i
+    closes_made "$i" || { check "closes: project $i not made: $(tail -c 300 "$CLOSES/apply-$i.txt" "$CLOSES/new-$i.json" 2> /dev/null)"; return 1; }
+    closes_shut "$P" || CLOSES_OPEN+=("apply:$i")
+    t=$(closes_status "$i") && CLOSES_OPENS+=("$t")
+    closes_shut "$P" || CLOSES_OPEN+=("status:$i")
+    id=$(id_of "$P")
+    closes_shut "$P" || CLOSES_OPEN+=("status:$i")
+    closes_show "$id" > "$CLOSES/show-$i.json" || { check "closes: the stream couldn't show project $i: $(cat "$CLOSES/show-$i.json")"; return 1; }
+    J --arg id "$id" '.held | index($id)' "$CLOSES/show-$i.json" || check "closes: the stream doesn't hold project $i: $(cat "$CLOSES/show-$i.json")"
+    closes_open "$P" || CLOSES_HELD+=("$i")
+    if [ -n "$CLOSES_PREV" ]; then
+      closes_shut "$CLOSES/p$CLOSES_PREV" || CLOSES_OPEN+=("stream:$CLOSES_PREV")
+      t=$(closes_status "$CLOSES_PREV") && CLOSES_REOPENS+=("$t")
+      closes_shut "$CLOSES/p$CLOSES_PREV" || CLOSES_OPEN+=("reopen:$CLOSES_PREV")
+    fi
+    CLOSES_PREV=$i
+  done
+}
 
 db_cancel_undo() {
 [ -n "$LOCAL" ] || return
@@ -136,10 +387,10 @@ png(sys.argv[1], (200, 40, 40)); png(sys.argv[2], (40, 40, 200))
 PNG
 a=$(sha "$OUT/db-024-kept.png") b=$(sha "$OUT/db-024-gone.png")
 db_024_made || made=$?
-web_undo_window "$lock" "$undo" db_024_back
+undo_window "$lock" "$undo" db_024_back
 db_calcifer
-[ "$made" = 0 ] || { web_undo_window "$lock" ''; return; }
-[ "$(cozy --version)" = "$("$OUT/cozy-now" --version)" ] || { check "0.24 deletes: this cozy back in its place: $(cozy --version)"; web_undo_window "$lock" ''; return; }
+[ "$made" = 0 ] || { undo_window "$lock" ''; return; }
+[ "$(cozy --version)" = "$("$OUT/cozy-now" --version)" ] || { check "0.24 deletes: this cozy back in its place: $(cozy --version)"; undo_window "$lock" ''; return; }
 project_api "$DB024" '' > /dev/null || check "0.24 deletes: first open"
 sleep 5
 held_024 "$a" || check "0.24 deletes: the first 0.25 open deleted kept_024's file"
@@ -159,7 +410,7 @@ fi
 for _ in $(seq 1 $((undo + 60))); do held_024 "$b" || break; sleep 1; done
 ! held_024 "$b" || check "0.24 deletes: gone_024's file is still in files/ $((undo + 60)) s after the first open"
 [ -z "$entry" ] || held_024 "$a" || check "0.24 deletes: the purge took kept_024's file, which a box holds again"
-web_undo_window "$lock" ''
+undo_window "$lock" ''
 }
 # held_024 <hex>: a file of that sha256 is in the cell's project's files/.
 held_024() { find "$DB024/files" -type f -exec sha256sum {} + 2> /dev/null | grep -q "^$1 "; }
@@ -178,7 +429,7 @@ db_024_made() {
   held_024 "$a" && held_024 "$b" || { check "0.24 deletes: 0.24.0 deleted a deleted box's file"; return 1; }
   [ "$(sql1 "$DB024" 'PRAGMA user_version')" = 2 ] || { check "0.24 deletes: 0.24.0 made schema $(sql1 "$DB024" 'PRAGMA user_version'), not 2"; return 1; }
 }
-# This cozy back in its place, as an update puts it, while no Calcifer runs (web_undo_window's restart).
+# This cozy back in its place, as an update puts it, while no Calcifer runs (undo_window's restart).
 db_024_back() { state_back && cp "$OUT/cozy-now" "$COZY.new" && chmod +x "$COZY.new" && mv -f "$COZY.new" "$COZY"; }
 # cozy_0240: the path of 0.24.0's cozy, from its release archive, fetched once.
 cozy_0240() {
