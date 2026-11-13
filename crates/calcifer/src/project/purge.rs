@@ -85,6 +85,7 @@ pub(crate) fn start(api: Arc<Api>) {
         loop {
             let now = now_ms();
             let ready: Vec<(String, i64)> = DUE.lock().expect("purge due lock").iter().filter(|(_, at)| **at <= now).map(|(id, at)| (id.clone(), *at)).collect();
+            let took = crate::took::Took::new("purge");
             for (id, was) in ready {
                 let next = match api.calcifer.store().known_project(&id) {
                     Ok(Some(project)) => {
@@ -96,6 +97,7 @@ pub(crate) fn start(api: Arc<Api>) {
                 };
                 settled(&id, was, next);
             }
+            drop(took);
             let next = DUE.lock().expect("purge due lock").values().min().copied();
             let wait = next.map_or(Duration::from_secs(24 * 60 * 60), |at| Duration::from_millis((at - now_ms()).max(0) as u64));
             let _ = tokio::time::timeout(wait, WAKE.notified()).await;
