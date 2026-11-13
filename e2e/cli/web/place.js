@@ -539,11 +539,13 @@ async function placedInView(page, expected) {
       await page.click('button[aria-label="Zoom out"]');
       await settled(page);
     }
-    const [over, carriedName] = ['grid_0_0', 'free'];
+    // A picture on screen there, the grid's far corner, carried over the name of the one at its other corner.
+    const [over, carriedName] = ['grid_0_0', 'grid_2_2'];
     const beforeLabel = rows(folder);
     const label = await element(page, over).locator('.head .nm').boundingBox();
     const media = await element(page, carriedName).locator('.media').first().boundingBox();
     const grab = { x: media.x + media.width / 2, y: media.y + media.height / 2 };
+    const onScreen = await page.evaluate(({ x, y }) => x > 0 && y > 0 && x < innerWidth && y < innerHeight, grab);
     const onLabel = { x: label.x + Math.min(label.width / 2, 12), y: label.y + label.height / 2 };
     await page.mouse.move(grab.x, grab.y);
     await page.mouse.down();
@@ -564,8 +566,10 @@ async function placedInView(page, expected) {
     const afterLabel = await until(`${carriedName} let go over ${over}'s name`, () => Promise.resolve(rows(folder)), (now) => !now[carriedName] || now[carriedName].x !== beforeLabel[carriedName].x || now[carriedName].y !== beforeLabel[carriedName].y).catch(() => rows(folder));
     await settled(page);
     const stillThere = assetsOf(folder).some((asset) => asset.name === carriedName);
-    seen.over_a_name = { zoom: await zoomNow(), label, offered, heldAt, before: beforeLabel[carriedName], after: afterLabel[carriedName] ?? null, still_there: stillThere };
-    check('held_over_a_name_it_is_on_the_name', offered.on_its_name && label.height >= 8, seen.over_a_name);
+    seen.over_a_name = { zoom: await zoomNow(), label, grab, on_screen: onScreen, offered, heldAt, before: beforeLabel[carriedName], after: afterLabel[carriedName] ?? null, still_there: stillThere };
+    // Held: picked up on screen, and carried there, not left where it was.
+    const carried = Math.hypot(heldAt.x - beforeLabel[carriedName].x, heldAt.y - beforeLabel[carriedName].y);
+    check('held_over_a_name_it_is_on_the_name', onScreen && carried > 100 && offered.on_its_name && label.height >= 8, { carried, ...seen.over_a_name });
     check('a_name_offers_nothing', !offered.offering && !offered.hot.includes(over), seen.over_a_name);
     check('let_go_over_a_name_nothing_joins', stillThere && Boolean(afterLabel[carriedName]), seen.over_a_name);
     check('let_go_over_a_name_it_lands_there', Boolean(afterLabel[carriedName]) && Math.abs(afterLabel[carriedName].x - heldAt.x) <= 3 && Math.abs(afterLabel[carriedName].y - heldAt.y) <= 3, seen.over_a_name);
