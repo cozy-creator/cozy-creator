@@ -370,6 +370,26 @@ impl Engine {
         let scoped = crate::private_io::within(Some(scope.clone()), || crate::private_io::resource_key(actor));
         self.journal.lock().unwrap().legacy_bindings(actor, &scoped, scope, requests)
     }
+    /// A project's legacy runs leave the machine once Calcifer holds their history in the project (cl-984): their journal
+    /// rows, result copies, spools, triage bundles and the objects only they named.
+    pub(crate) fn retire_legacy(&self, ids: &[u64]) -> io::Result<()> {
+        if self.owned.lock().unwrap().iter().any(|id| ids.iter().any(|retired| retired.to_string() == *id)) {
+            return Err(io::Error::new(io::ErrorKind::ResourceBusy, "a legacy run is still executing"));
+        }
+        let (objects, subjects) = self.journal.lock().unwrap().retire_executions(ids)?;
+        for id in ids {
+            for dir in ["results", "staging"] {
+                let _ = fs::remove_dir_all(self.root.join(dir).join(id.to_string()));
+            }
+        }
+        for subject in subjects.iter().filter(|subject| subject.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) {
+            let _ = fs::remove_file(self.root.join("triage").join(format!("{subject}.json")));
+        }
+        if !objects.is_empty() {
+            self.store.retire_objects(&objects, &[], &[]).map_err(crate::storage::io_error)?;
+        }
+        Ok(())
+    }
     pub(crate) fn with_journal<T>(&self, f: impl FnOnce(&mut Journal) -> io::Result<T>) -> io::Result<T> {
         f(&mut self.journal.lock().unwrap())
     }

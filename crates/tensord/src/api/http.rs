@@ -173,41 +173,65 @@ async fn project_bindings_request(m: State<Machine>, Path(project): Path<String>
 }
 
 /// Calcifer's import of a project's legacy history asks which of its requests this worker accepted (`migration-bindings`),
-/// then has them covered (`migrate`). One machine journal holds every run, so nothing moves: an acceptance is looked up
-/// where it is, and what was looked up and adopted for the project is its coverage while this machine runs.
+/// then has them covered (`migrate`). One machine journal holds every run: a covered acceptance is verified there, kept in
+/// the project's own receipt (`legacy-custody.json` in its machine area), then retired from the machine, its rows,
+/// copies and objects gone (cl-984). A lookup answers from the journal, else from that receipt.
 async fn legacy_custody(m: Machine, descriptor: v1::LocalPrivateStorage, migrate: bool, request: Request<Body>) -> Response {
-    static COVERED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Vec<v1::ProjectExecutionMigrationBinding>>>> =
-        std::sync::LazyLock::new(Default::default);
     let actor = match m.caller(request.headers()) { Ok(caller) => actor_id(caller.actor), Err(error) => return Refusal::from(error).into_response() };
     let reading = request.method() == axum::http::Method::GET;
     if !(request.method() == axum::http::Method::POST || (migrate && reading)) {
         return Refusal::from(Error::validation("method_not_allowed", "Legacy custody uses POST; coverage uses GET.")).into_response();
     }
-    let project = descriptor.project_id.clone();
-    if migrate && reading {
-        let bindings = COVERED.lock().unwrap().get(&project).cloned().unwrap_or_default();
-        return Json(v1::ProjectExecutionMigrationReceipt { bindings }).into_response();
-    }
     let bytes = match axum::body::to_bytes(request.into_body(), 65536).await { Ok(bytes) => bytes, Err(_) => return Refusal::from(Error::validation("invalid_request", "Legacy custody exceeds its protocol bound.")).into_response() };
+    let conflict = |code: &'static str| move |error: std::io::Error| Error::conflict(code, error.to_string());
+    let receipt_path = move |scope: &v1::LocalPrivateStorage| crate::private_io::root(scope).map(|root| root.join("legacy-custody.json"));
+    let kept = |path: &std::path::Path| -> Vec<v1::ProjectExecutionLegacyBinding> {
+        std::fs::read(path).ok().and_then(|raw| serde_json::from_slice(&raw).ok()).unwrap_or_default()
+    };
     let same = |a: &v1::ProjectExecutionMigrationBinding, b: &v1::ProjectExecutionMigrationBinding|
         a.request_id == b.request_id && a.source_workspace_id == b.source_workspace_id && a.invocation_spec_digest == b.invocation_spec_digest;
+    if migrate && reading {
+        let answered = m.call(move |_| {
+            let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
+            Ok(v1::ProjectExecutionMigrationReceipt { bindings: kept(&path).into_iter().map(|kept| kept.binding).collect() })
+        }).await;
+        return match answered { Ok(receipt) => Json(receipt).into_response(), Err(error) => Refusal::from(error).into_response() };
+    }
     if migrate {
         let adoption: v1::ProjectExecutionMigrationRequest = if bytes.is_empty() { Default::default() } else { match serde_json::from_slice(&bytes) { Ok(adoption) => adoption, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid verified legacy binding adoption.")).into_response() } };
-        let ids: Vec<String> = adoption.legacy_requests.iter().map(|binding| binding.request_id.clone()).collect();
-        let found = m.call(move |runs| runs.service.engine.legacy_bindings(&actor, &descriptor, &ids)
-            .map_err(|error| Error::conflict("project_storage_migration_conflict", error.to_string()))).await;
-        return match found {
-            Ok(found) if adoption.legacy_requests.iter().all(|wanted| found.bindings.iter().any(|actual| same(&actual.binding, wanted))) => {
-                COVERED.lock().unwrap().entry(project).or_default().extend(adoption.legacy_requests);
-                StatusCode::NO_CONTENT.into_response()
+        let retired = m.call(move |runs| {
+            let engine = &runs.service.engine;
+            let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
+            let mut receipt = kept(&path);
+            let fresh: Vec<_> = adoption.legacy_requests.iter().filter(|wanted| !receipt.iter().any(|kept| same(&kept.binding, wanted))).cloned().collect();
+            let ids: Vec<String> = fresh.iter().map(|binding| binding.request_id.clone()).collect();
+            let found = if ids.is_empty() { Default::default() } else {
+                engine.legacy_bindings(&actor, &descriptor, &ids).map_err(conflict("project_storage_migration_conflict"))?
+            };
+            if !fresh.iter().all(|binding| found.bindings.iter().any(|actual| same(&actual.binding, binding))) {
+                return Err(Error::conflict("project_storage_migration_conflict", "a legacy binding differs from this worker's acceptance"));
             }
-            Ok(_) => Refusal::from(Error::conflict("project_storage_migration_conflict", "a legacy binding differs from this worker's acceptance")).into_response(),
-            Err(error) => Refusal::from(error).into_response(),
-        };
+            // The receipt first: a crash after it retires again at the next adoption, never loses coverage.
+            receipt.extend(found.bindings);
+            let staged = path.with_extension("json.next");
+            std::fs::write(&staged, serde_json::to_vec(&receipt).map_err(std::io::Error::other).map_err(conflict("project_storage_migration_pending"))?)
+                .and_then(|()| std::fs::rename(&staged, &path)).map_err(conflict("project_storage_migration_pending"))?;
+            let numbers: Vec<u64> = receipt.iter().map(|kept| kept.source_number).collect();
+            engine.retire_legacy(&numbers).map_err(conflict("project_storage_migration_busy"))
+        }).await;
+        return match retired { Ok(()) => StatusCode::NO_CONTENT.into_response(), Err(error) => Refusal::from(error).into_response() };
     }
     let query: v1::ProjectExecutionLegacyLookup = match serde_json::from_slice(&bytes) { Ok(query) => query, Err(_) => return Refusal::from(Error::validation("invalid_request", "Invalid legacy lookup request.")).into_response() };
-    let looked = m.call(move |runs| runs.service.engine.legacy_bindings(&actor, &descriptor, &query.request_ids)
-        .map_err(|error| Error::conflict("project_storage_migration_pending", error.to_string()))).await;
+    let looked = m.call(move |runs| {
+        let path = receipt_path(&descriptor).map_err(conflict("project_storage_migration_pending"))?;
+        let receipt = kept(&path);
+        let unretired: Vec<String> = query.request_ids.iter().filter(|id| !receipt.iter().any(|kept| kept.binding.request_id == **id)).cloned().collect();
+        let mut answer = if unretired.is_empty() { Default::default() } else {
+            runs.service.engine.legacy_bindings(&actor, &descriptor, &unretired).map_err(conflict("project_storage_migration_pending"))?
+        };
+        answer.bindings.extend(receipt.into_iter().filter(|kept| query.request_ids.contains(&kept.binding.request_id)));
+        Ok(answer)
+    }).await;
     match looked { Ok(answer) => Json(answer).into_response(), Err(error) => Refusal::from(error).into_response() }
 }
 

@@ -829,6 +829,33 @@ impl Journal {
         Ok(answer)
     }
 
+    /// Deletes `ids`' executions and every row of theirs, their pages overwritten (cl-984): a project's legacy worker
+    /// history once Calcifer imported it into the project. Answers the objects only they named, and their triage subjects.
+    pub(crate) fn retire_executions(&mut self, ids: &[u64]) -> io::Result<(Vec<tensorfs::format::ObjectRef>, Vec<String>)> {
+        const OWNED: [&str; 13] = ["public_terminals", "run_products", "run_measurements", "run_logs", "attention_applied", "run_log_lengths",
+            "package_log_dropped", "run_calls", "triage", "run_objects", "run_specs", "root_times", "cold_times"];
+        self.connection.execute_batch("PRAGMA secure_delete=ON").map_err(db_error)?;
+        let tx = self.connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_error)?;
+        let (mut objects, mut subjects) = (vec![], vec![]);
+        for id in ids {
+            {
+                let mut only = tx.prepare("SELECT sha256,length FROM run_objects WHERE execution=?1 AND sha256 NOT IN (SELECT sha256 FROM run_objects WHERE execution<>?1)").map_err(db_error)?;
+                let rows = only.query_map([id], |row| Ok(tensorfs::format::ObjectRef { sha256: row.get(0)?, length: row.get(1)? })).map_err(db_error)?;
+                for row in rows { objects.push(row.map_err(db_error)?); }
+            }
+            let triage: Option<String> = tx.query_row("SELECT record FROM triage WHERE execution=?1", [id], |row| row.get(0)).optional().map_err(db_error)?;
+            subjects.extend(triage.and_then(|record| serde_json::from_str::<Value>(&record).ok()?.get("subject_id")?.as_str().map(String::from)));
+            for table in OWNED {
+                tx.execute(&format!("DELETE FROM {table} WHERE execution=?1"), [id]).map_err(db_error)?;
+            }
+            tx.execute("DELETE FROM executions WHERE id=?1", [id]).map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)?;
+        // Freed pages are zeroed (`secure_delete`); the WAL's older copies of them go, and the file is rewritten.
+        self.connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);").map_err(db_error)?;
+        Ok((objects, subjects))
+    }
+
     pub(crate) fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
