@@ -1181,9 +1181,9 @@ impl Calcifer {
     /// The items of `items` Calcifer's own runs set on `machine`. `held_back` stays: TensorD's fixed reason why an item holds
     /// less, which names nothing of a project.
     pub(crate) fn maintenance_warm(&self,machine:&str,items:Vec<v1::WarmItem>)->Vec<v1::WarmItem> {
-        match self.maintenance_store().holdings(machine) {
-            Ok(ours) => ours.warm(items),
-            Err(e) => { warn!("reading what this controller's runs put on a machine: {e}"); vec![] }
+        match self.maintenance_store().warm_items(machine) {
+            Ok(ours) => items.into_iter().filter(|item| ours.iter().any(|known| same_warm(known, item))).collect(),
+            Err(e) => { warn!("reading the warm items this controller's runs set: {e}"); vec![] }
         }
     }
 
