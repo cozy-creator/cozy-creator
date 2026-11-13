@@ -36,6 +36,7 @@ parse "$@"
 . "$(dirname "$0")/plan.sh"
 . "$(dirname "$0")/render.sh"
 . "$(dirname "$0")/source.sh"
+. "$(dirname "$0")/envcost.sh"
 
 # This proof owns its foreground Calcifer/private observation pipe. Keep it out
 # of the ordinary raw-log/body collectors and never emit its private CLI data.
@@ -498,6 +499,8 @@ case $SHARD in
   lines) parts="machine_lines logs" ;;
   # An idle Calcifer and TensorD, CPU time and wakeups (xs-189): by dispatch, as it measures for minutes.
   idle) parts="idle_cost logs" ;;
+  # A second project's first install against the first's (cl-984): by dispatch, as it builds six environments.
+  env-cost) parts="env_cost logs" ;;
   # What a call may read on demand, on a cold machine (cl-966).
   ondemand) parts="ondemand_ahead logs" ;;
   # Calcifer's quotes from what its machines push, against what happens (cl-967): by dispatch, as BiRefNet runs minutes.
