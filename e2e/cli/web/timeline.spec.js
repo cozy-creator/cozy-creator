@@ -5,7 +5,7 @@
 const { spawnSync } = require('child_process');
 const { readFileSync } = require('fs');
 const { join } = require('path');
-const { test, expect, box, canvasIdle, focus, middle, openPoint, png } = require('./fixtures');
+const { test, expect, box, focus, middle, openPoint, png } = require('./fixtures');
 const { carry, ffmpeg, fit, toolRow } = require('./hands');
 
 const FPS = 24;
@@ -34,7 +34,9 @@ function film(path, frames = []) {
   };
 }
 
-test('timeline', async ({ page, project }) => {
+test('timeline', async ({ page, project, guards }) => {
+  // The page asks whether Calcifer holds a file's bytes before it sends them: "no" is a 404, which Chrome logs as an error.
+  guards.allow(/status of 404\b.*\/v1\/project-files\/sha256:[0-9a-f]{64}\?project=/);
   const red = plate(test.info().outputPath('red.mp4'), 'red', 2, 440);
   const blue = plate(test.info().outputPath('blue.mp4'), 'blue', 3, 880);
   const title = png(0, 400, 400, false, () => GREEN);
@@ -139,10 +141,11 @@ test('timeline', async ({ page, project }) => {
     await expect.poll(async () => (edit = (await project.assets()).find((asset) => asset.tool === 'cozy/edit' && !before.has(asset.name))?.name), { message: 'its box' }).toBeTruthy();
     await expect(box(page, edit)).toBeVisible();
     await expect(page.locator('.card.landing')).toHaveCount(0);
+    // Let go where there was room, it may stand partly out of view: both in view to carry one onto the other.
+    await fit(page);
   });
 
   await test.step('three clips: a box let go on it, and two files on its timeline', async () => {
-    await canvasIdle(page);
     await carry(page, await middle(box(page, 'red').locator('.nm')), await middle(box(page, edit).locator('.media')));
     await expect.poll(async () => JSON.stringify((await project.asset(edit)).fields?.timeline ?? null), { message: 'red on its timeline' }).toContain('<red>');
     await focus(page, edit);

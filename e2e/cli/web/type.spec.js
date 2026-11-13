@@ -47,7 +47,8 @@ test('type', { tag: '@engines' }, async ({ page, context, project, api, signIn }
   const qwen = (await api.get(`/v1/tools?project=${encodeURIComponent(project.id)}&q=qwen`)).tools.find((tool) => tool.package === 'qwen-image-2' && tool.makes === 'image');
   const prompt = qwen?.fields.find((field) => field.type === 'prompt')?.field;
   expect(prompt, 'the Hub lists Qwen Image 2 with a prompt').toBeTruthy();
-  await project.add({ name: 'note', kind: 'text', at: { x: 0, y: 0 } });
+  // As the palette's Text makes one: no words yet.
+  await project.add({ name: 'note', kind: 'text', fields: { text: '', node_kind: 'text' }, at: { x: 0, y: 0 } });
   await project.add({ name: 'ask', tool: qwen.id, kind: 'image', at: { x: 420, y: 0 } });
   await project.add({ name: 'shared', kind: 'text', fields: { text: 'What Calcifer held.' }, at: { x: 840, y: 0 } });
   await project.add({ name: 'scene', tool: 'minimax-h3/generate', kind: 'video', at: { x: 0, y: 420 } });

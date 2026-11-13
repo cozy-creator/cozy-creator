@@ -143,12 +143,18 @@ test('fields', async ({ page, project, api, cli }) => {
       return { x: Math.round((right + 24 - at.e) / at.a), y: Math.round((innerHeight / 2 - at.f) / at.a) };
     });
     await project.api.patch(project.at('/canvas'), { cards: { walk: strip } });
+    const stood = async () => {
+      const row = (await project.api.get(project.at('/canvas'))).cards.walk;
+      return { x: row?.x, y: row?.y };
+    };
+    await expect.poll(stood).toEqual(strip);
     let from;
     await expect.poll(async () => (from = await reach(page, 'walk')), { message: 'walk in reach beside Focus' }).toBeTruthy();
     const said = await carry(page, from, await middle(slot), async () => ({ refuses: /\brefuses\b/.test(await slot.getAttribute('class')), why: await slot.locator('.refusal').textContent() }));
     expect.soft(said, 'said as it is carried over').toMatchObject({ refuses: true, why: expect.stringContaining('takes a picture') });
     await expect.soft(page.locator('.notes .note .line', { hasText: 'takes a picture' }), 'and said once let go').toHaveCount(1);
     expect.soft(await fieldsOf('every'), 'refused').not.toHaveProperty('first_frame');
+    expect.soft(await stood(), 'refused, walk stays where it was: a drop is no move').toEqual(strip);
 
     const corner = region.locator('.corner').first();
     const media = await region.locator('.focus-image-transform > .media').first().boundingBox();
@@ -167,6 +173,7 @@ test('fields', async ({ page, project, api, cli }) => {
 
   await test.step('H3: Models & LoRAs: the base model once, a LoRA, its strength, the model replaced in place', async () => {
     await leave(page);
+    await fit(page);
     await focus(page, 'scene');
     await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
     const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
@@ -205,6 +212,7 @@ test('fields', async ({ page, project, api, cli }) => {
 
   await test.step("Qwen Image 2's VAE slot lists the seeded VAE", async () => {
     await leave(page);
+    await fit(page);
     await focus(page, 'still');
     await region.getByRole('button', { name: 'Models and LoRAs', exact: true }).click();
     const picker = page.getByRole('dialog', { name: 'Models and LoRAs', exact: true });
