@@ -47,6 +47,31 @@ pub(crate) fn checkpoint(store: &Store, id: &str) -> io::Result<Checkpoint> {
     storage::checkpoint(store, id)
 }
 
+/// What a call reads of each model it waits on (`Fetch::ahead`'s `selected`), as a quote of its function counts its download
+/// anywhere (cl-967): its header, repository, those components and their bytes. One named whole, or not pulled from a Hub, is left
+/// out.
+pub(crate) fn reads(store: &Store, selected: &[(String, Vec<String>)]) -> Vec<crate::journal::FunctionRead> {
+    (selected.iter().filter(|(_, components)| !components.is_empty()))
+        .filter_map(|(header, components)| {
+            let checkpoint = checkpoint(store, header).ok()?;
+            let model = Pulled::of(store, checkpoint.id()).ok().flatten()?.model;
+            let bytes = storage::chunks(&checkpoint, components).iter().map(|o| o.length).sum();
+            Some(crate::journal::FunctionRead { checkpoint: header.clone(), model, components: components.clone(), bytes })
+        })
+        .collect()
+}
+
+/// Of what `read` names, the bytes not here now: all of them once its header is gone.
+pub(crate) fn missing(store: &Store, read: &crate::journal::FunctionRead) -> u64 {
+    if whole(store, &read.checkpoint, &read.components) {
+        return 0;
+    }
+    match checkpoint(store, &read.checkpoint) {
+        Ok(checkpoint) => storage::chunks(&checkpoint, &read.components).iter().filter(|o| !store.holds(o)).map(|o| o.length).sum(),
+        Err(_) => read.bytes,
+    }
+}
+
 /// Whether every chunk of `components` of `header` is here (`downloaded`). Once true it is
 /// remembered (Status asks every second) until the store next evicts, in any process.
 pub(crate) fn whole(store: &Store, header: &str, components: &[String]) -> bool {

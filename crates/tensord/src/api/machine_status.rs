@@ -181,9 +181,22 @@ async fn held_now(identity: &Arc<MachineIdentity>, runs: &Arc<Runs>, actor: Veri
                 ..root.queued
             })
             .collect();
+        let mut times = service.engine.all_run_times(api::estimate::HISTORY).map_err(problem)?;
+        // What each function's newest run here read, and of it what isn't here now (cl-967).
+        for (function, read) in service.engine.function_reads().map_err(problem)? {
+            let missing = crate::access::missing(&service.engine.store, &read);
+            let at = match times.iter().position(|timed| timed.function == function) {
+                Some(at) => at,
+                None => {
+                    times.push(v1::Timed { function, ..Default::default() });
+                    times.len() - 1
+                }
+            };
+            times[at].reads.push(v1::Read { model: read.model, checkpoint: read.checkpoint, bytes: read.bytes, missing });
+        }
         Ok(Held {
             queue,
-            times: service.engine.all_run_times(api::estimate::HISTORY).map_err(problem)?,
+            times,
             link: crate::estimate::link(service),
             serving: service.pool().map_or(0, |pool| pool.serving_width() as u32),
             nvlink: service.pool().is_some_and(|pool| pool.hardware_class().1),

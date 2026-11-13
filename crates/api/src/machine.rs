@@ -910,6 +910,10 @@ pub struct ModelRef {
     /// Its repository (`org/name`): a queued run fetching it (`Queued::models`) brings it for this job too.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub model: String,
+    /// What a run of the job's function read of it on another machine (`Read::bytes`): what one that holds none of it fetches. Zero:
+    /// unknown.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub reads: u64,
 }
 
 /// What a job makes, in the units a function's time scales with; each unknown one is absent.
@@ -975,6 +979,9 @@ pub struct Quote {
     /// Its time is the function's warm one there: the model held, its plan compiled.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub warm: bool,
+    /// Its weights' bytes it downloads there first (cl-967).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub fetch_bytes: u64,
 }
 
 /// What a quote's run time stands on.
@@ -1140,6 +1147,21 @@ pub struct Timed {
     /// `<package>/<function>`, any release.
     pub function: String,
     pub runs: Vec<TimedRun>,
+    /// What its newest run here read of each model (cl-967): what a job of it fetches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<Read>,
+}
+
+/// Of one model, the components a function's run read: their bytes, and of them those this machine lacks now.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Read {
+    /// Its repository (`org/name`).
+    pub model: String,
+    /// `sha256:<hex>` of the header read.
+    pub checkpoint: String,
+    pub bytes: u64,
+    pub missing: u64,
 }
 
 /// What one completed root took: its width, its size as its input said, its compute, and what it spent putting weights on its
