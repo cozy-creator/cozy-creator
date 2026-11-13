@@ -3587,10 +3587,10 @@ impl Walk {
         let (source, inputs) = match &renderer.local {
             None => (v1::Source::Release(v1::Release { package: renderer.package.clone(), release: renderer.release.clone() }), vec![]),
             Some(path) => {
-                // A fetch-ahead run stages its files outside any project: an encrypted project's code waits for the run that calls it.
-                // An unencrypted one's storage scope is ordinary, its code fetched ahead as on the RC.
-                if crate::private_io::of_path(&self.folder().dir)?.is_some_and(|scope| !scope.storage.ordinary) { return Ok(()); }
-                let prepared = self.host.ready(path, &placed, &hub).await?;
+                // Staged in its project's storage scope, as its call's are; an encrypted project's code waits for the run that calls it.
+                let scope = crate::private_io::of_path(&self.folder().dir)?;
+                if scope.as_ref().is_some_and(|scope| !scope.storage.ordinary) { return Ok(()); }
+                let prepared = crate::private_io::context(scope, self.host.ready(path, &placed, &hub)).await?;
                 (v1::Source::Local(prepared.source), prepared.files)
             }
         };
