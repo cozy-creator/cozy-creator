@@ -135,14 +135,18 @@ export function faceOf(seen: Seen): Face {
   return face("work", run.machine_state === "preparing" ? "Preparing" : "Starting")
 }
 
-/** How far the whole job is, by line 1's numbers: what's passed of what it has taken and has left. None until there's an estimate; it
- *  never goes back while it's the same run. */
+/** How far the whole job is, by line 1's numbers: first what's passed of what it has taken and has left, then each moment moves it that
+ *  moment's share of the time left over what it has still to go. It never goes back while it's the same run, a longer estimate slows it,
+ *  and one that was too short never pins it near its end: it reaches the end as the estimate does. None until there's an estimate; no
+ *  time left while it still runs (it ran past what was expected) says nothing, and it holds. */
 function useWhole(run: Run | undefined, since: number | undefined, left: number | undefined): number | undefined {
-  const held = useRef<{ run: number; fraction: number } | null>(null)
+  const held = useRef<{ run: number; fraction: number; since: number } | null>(null)
   if (!run || since === undefined || left === undefined) return undefined
-  const fraction = Math.min(0.99, since / Math.max(1, since + left))
-  const was = held.current?.run === run.number ? held.current.fraction : 0
-  held.current = { run: run.number, fraction: Math.max(was, fraction) }
+  const was = held.current?.run === run.number ? held.current : null
+  if (!was && left <= 0) return undefined
+  const passed = was ? Math.max(0, since - was.since) : 0
+  const fraction = !was ? Math.max(0, since) / (Math.max(0, since) + left) : left > 0 ? was.fraction + ((1 - was.fraction) * passed) / (passed + left) : was.fraction
+  held.current = { run: run.number, fraction: Math.min(0.99, fraction), since }
   return held.current.fraction
 }
 
