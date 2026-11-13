@@ -3482,11 +3482,14 @@ a.tab:hover {
   white-space: nowrap;
 }
 /* A first-party package from the dev home's packages checkout (xs-195). */
-.tool-source,
 .image-tool-source {
   flex: none;
   color: var(--mute);
   white-space: nowrap;
+}
+.tools p.tool-source {
+  font-size: calc(var(--t-body) * var(--ui));
+  overflow-wrap: anywhere;
 }
 .tool-off {
   flex: none;
