@@ -1,8 +1,9 @@
 // gone (cl-980, Paul 11-13: a tab went back and forth between "This project can't be opened yet" and / once its folder was deleted): a
-// project's folder deleted under its open tab is said where the tab stands, once, in plain words ("This project's folder is gone: <path>");
-// the tab stays there and the index lets the project go; a reload says the same, and stays. Its own cell, off the native lane: Windows can't
-// delete a folder Calcifer holds open.
-const { rmSync } = require('fs');
+// project's folder deleted under its open tab, as a file manager deletes one (to the trash, then emptied), is said where the tab stands,
+// once, in plain words ("This project's folder is gone: <path>"), with no read of it refused: Calcifer says it, and the page asks nothing
+// more. The tab stays there and the index lets the project go; a reload says the same, and stays. Its own cell, off the native lane:
+// Windows can't move a folder Calcifer holds open.
+const { renameSync, rmSync } = require('fs');
 const { test, expect, canvasIdle, recordAddress, stays } = require('./fixtures');
 const { camera, sameCamera } = require('./geometry');
 
@@ -25,7 +26,9 @@ test('gone', async ({ context, project, api, signIn }) => {
   const here = { path: `/p/${project.code}`, moves: [] };
 
   await test.step('its folder deleted under the open tab: said in place, once, and the tab stays', async () => {
-    rmSync(project.path, { recursive: true, force: true });
+    const trash = `${project.path}-trash`;
+    renameSync(project.path, trash);
+    rmSync(trash, { recursive: true, force: true });
     await expect(page.locator('.unread h2', { hasText: said })).toBeVisible();
     expect.soft(await stays(page), 'it stays where it is').toEqual(here);
     await expect.soft(page.locator('.unread'), 'said once').toHaveCount(1);
