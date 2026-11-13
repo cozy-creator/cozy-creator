@@ -1,10 +1,11 @@
-// What a person's hands do in the words and media cells (cl-973): files let go on the canvas, a box carried, the canvas fitted, Focus left,
-// a tool taken from the palette, a pointer at rest, Calcifer's ffmpeg.
+// What a person's hands do in the words and media cells (cl-973): files let go on the canvas, a box carried onto another and back, the
+// canvas fitted, Focus left, a tool taken from the palette, a pointer at rest, Calcifer's ffmpeg. A carry itself is geometry.js's.
 const { execFileSync } = require('child_process');
 const { readdirSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
 const { expect, box, canvasIdle, middle } = require('./fixtures');
+const { carry } = require('./geometry');
 
 /** Files from the computer let go at `at` (a point of the screen) on `target`, as a browser hands a drop over: `[{name, type, bytes}]`. */
 async function dropFiles(page, files, at, target = '.stage') {
@@ -15,17 +16,6 @@ async function dropFiles(page, files, at, target = '.stage') {
   }, files.map((file) => ({ name: file.name, type: file.type, b64: Buffer.from(file.bytes).toString('base64') })));
   for (const type of ['dragenter', 'dragover', 'drop']) await page.dispatchEvent(target, type, { dataTransfer: transfer, clientX: at.x, clientY: at.y });
   await transfer.dispose();
-}
-
-/** A press at `from`, leant 12 px across (a carry, not a click or a scroll), carried to `to` and let go there. `during` looks while it's held. */
-async function carry(page, from, to, during) {
-  await page.mouse.move(from.x, from.y);
-  await page.mouse.down();
-  await page.mouse.move(from.x + 12 * (Math.sign(to.x - from.x) || 1), from.y, { steps: 3 });
-  await page.mouse.move(to.x, to.y, { steps: 10 });
-  const said = during ? await during() : undefined;
-  await page.mouse.up();
-  return said;
 }
 
 /** Where each box of `names` stands, by name, once none is gliding or animating: else 'moving'. */
@@ -116,4 +106,4 @@ function ffmpeg(tool) {
   return (...args) => execFileSync(own, args, { encoding: tool === 'ffprobe' ? 'utf8' : 'buffer', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26 });
 }
 
-module.exports = { backAfter, carry, carryBox, dropFiles, ffmpeg, fit, leave, rest, spread, toolRow };
+module.exports = { backAfter, carryBox, dropFiles, ffmpeg, fit, leave, rest, spread, toolRow };

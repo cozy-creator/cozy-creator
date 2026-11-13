@@ -6,7 +6,8 @@ const { spawnSync } = require('child_process');
 const { readFileSync } = require('fs');
 const { join } = require('path');
 const { test, expect, box, focus, middle, openPoint, png } = require('./fixtures');
-const { carry, carryBox, ffmpeg, fit, toolRow } = require('./hands');
+const { carry } = require('./geometry');
+const { carryBox, ffmpeg, fit, toolRow } = require('./hands');
 
 const FPS = 24;
 // A cut joined a moment after it stops changing; the first also fetches what joins it.

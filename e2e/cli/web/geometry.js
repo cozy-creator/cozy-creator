@@ -49,15 +49,18 @@ async function lying(page, project) {
   return said;
 }
 
-/** Carried out of a list as a hand carries it: pressed, leant 12 px across the list (a carry, not a scroll), then let go at `to`. */
-async function carry(page, from, to) {
-  const at = await from.boundingBox();
-  const start = { x: at.x + at.width / 2, y: at.y + at.height / 2 };
+/** Carried as a hand carries it: pressed at `from` (a point, or the middle of a locator), leant 12 px across (a carry, not a click or a
+ *  scroll), then let go at `to`. `during` looks while it's still held: what it says is what this returns. */
+async function carry(page, from, to, during) {
+  const at = typeof from.boundingBox === 'function' ? await from.boundingBox() : null;
+  const start = at ? { x: at.x + at.width / 2, y: at.y + at.height / 2 } : from;
   await page.mouse.move(start.x, start.y);
   await page.mouse.down();
   await page.mouse.move(start.x + 12 * (Math.sign(to.x - start.x) || 1), start.y, { steps: 3 });
-  await page.mouse.move(to.x, to.y, { steps: 8 });
+  await page.mouse.move(to.x, to.y, { steps: 10 });
+  const said = during ? await during() : undefined;
   await page.mouse.up();
+  return said;
 }
 
 /** A press at `from` dragged to `to` and let go there, with `modifier` held throughout. */

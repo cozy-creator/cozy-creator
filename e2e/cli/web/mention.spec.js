@@ -4,7 +4,8 @@
 // field's; a selection of three let go on it appends three. Rendered, its prompt holds Amy's file and only Walk's name, and `cozy run watch`
 // says so once.
 const { test, expect, box, focus, middle, fixtureTool, MP4, png } = require('./fixtures');
-const { backAfter, carry, carryBox, fit, leave } = require('./hands');
+const { carry } = require('./geometry');
+const { backAfter, carryBox, fit, leave } = require('./hands');
 
 const STILL = fixtureTool('tool.py/still');
 const RUN_MS = 120_000;

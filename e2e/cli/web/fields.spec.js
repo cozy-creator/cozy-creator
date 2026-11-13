@@ -5,7 +5,8 @@
 // to 1237:689 lands on 16:9. On H3, Models & LoRAs: its base model listed once, a LoRA added with its trigger appended once and drawn, its
 // strength kept as the model is replaced in place. Qwen Image 2's VAE slot lists the seeded VAE. No control lacks a declared field.
 const { test, expect, box, focus, middle, fixtureTool, MP4, png } = require('./fixtures');
-const { carry, fit, leave } = require('./hands');
+const { carry } = require('./geometry');
+const { fit, leave } = require('./hands');
 
 const EVERY = fixtureTool('boxes.py/shot');
 const WHEN = fixtureTool('when.py/image');
