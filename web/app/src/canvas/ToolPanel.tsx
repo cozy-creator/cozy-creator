@@ -25,7 +25,7 @@ function ToolGroup({ entry, open, toggle }: { entry: PaletteEntry; open: boolean
         <b>{entry.label}</b><span aria-hidden="true">{open ? "⌄" : "›"}</span>
       </button>
       {open && <ul className="tool-implementations">
-        {entry.variants.map((tool) => <li key={tool.id} className="tool tool-implementation" data-implementation="" data-tool={tool.id} data-tool-operation={entry.key} data-kind={tool.makes} title={[tool.description || modelLabel(tool), tool.source && `From source: ${tool.source}`].filter(Boolean).join("\n")}><b>{modelLabel(tool)}</b>{tool.source && <span className="tool-source">from source</span>}</li>)}
+        {entry.variants.map((tool) => <li key={tool.id} className="tool tool-implementation" data-implementation="" data-tool={tool.id} data-tool-operation={entry.key} data-kind={tool.makes} title={[tool.description || modelLabel(tool), tool.source && `From source: ${tool.source}`].filter(Boolean).join("\n")}><b>{modelLabel(tool)}</b></li>)}
       </ul>}
     </li>
   )
@@ -42,6 +42,8 @@ export function ToolPanel({ project, machine, waiting, shut, setShut }: { projec
     store.addTools(data && !isPlaceholderData ? [TEXT_TOOL, ...data.tools.filter((tool) => tool.id !== VIDEO_EDIT_TOOL.id), VIDEO_EDIT_TOOL] : [TEXT_TOOL, VIDEO_EDIT_TOOL])
   }, [store, data, isPlaceholderData])
   const entries = paletteEntries(data?.tools ?? [])
+  // A dev home's first-party tools come from its packages checkout (xs-195): said once, over the list.
+  const source = data?.tools.find((tool) => tool.source)?.source
   const list = useDragScroll({
     lift(pressed) {
       const from = pressed.closest<HTMLElement>("li[data-node], li[data-implementation]")
@@ -77,6 +79,7 @@ export function ToolPanel({ project, machine, waiting, shut, setShut }: { projec
           </section>
           <section data-palette="tools">
             <h4>Tools</h4>
+            {source && <p className="muted tool-source">First-party tools from source: {source}</p>}
             {error ? <p className="warn">{error instanceof Error ? error.message : String(error)}</p> : null}
             <ul>{entries.map((entry) => <ToolGroup key={entry.key} entry={entry} open={open === entry.key} toggle={() => setOpen(open === entry.key ? null : entry.key)} />)}</ul>
             {data?.note && <p className="muted">{data.note}</p>}

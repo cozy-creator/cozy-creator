@@ -631,7 +631,7 @@ function Under({ view, name, lite }: { view: ElementView; name: string; lite: bo
     <div className="tile-under">
       {line && (
         <div className="tile-line">
-          {named && <span className="node-tool" title={asset.tool!}>{named}</span>}
+          {named && <span className="node-tool" title={tool?.source ? `${asset.tool}, from source: ${tool.source}` : asset.tool!}>{named}</span>}
           {source && <span className="continues-rest" title={`Continues ${made!.take}`}>from {source}</span>}
           <span className="sp" />
           {shape && <span className="ratio-rest">{shape}</span>}
