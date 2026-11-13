@@ -420,34 +420,34 @@ WEB_1=(
   # render
   # upload
   # mention
-  # box-actions
+  box-actions
   # timeline
   open
 )
 WEB_2=(
   # fields
-  # layout
+  layout
   # type
   # live
-  # delete-undo
-  # canvas-nav
+  delete-undo
+  canvas-nav
 )
 WEB_3=(
   # package-ui
-  # focus
-  # create
+  focus
+  create
   # takes
-  # no-overlap
+  no-overlap
   # instant
   select
-  # move
+  move
 )
 # The `@engines` cells in Firefox, and the vault (`@vault`), which needs the filesystem driver.
 WEB_ENGINES=(
   # upload
   # type
-  # create
-  # move
+  create
+  move
   open
   # vault
 )
@@ -458,12 +458,12 @@ WEB_SOLO=(
 )
 # macOS and Windows (the nightly): the `@engines` cells, WebKit's too on a Mac, layout and offline.
 WEB_NATIVE=(
-  # layout
+  layout
   # offline
   # upload
   # type
-  # create
-  # move
+  create
+  move
   open
 )
 web_cells=()
