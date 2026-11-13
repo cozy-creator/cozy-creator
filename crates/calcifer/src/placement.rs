@@ -301,12 +301,30 @@ async fn picture(api: &Arc<Api>, on: &On, update: bool) -> Result<Picture, Strin
     Ok(Picture { on: on.clone(), name: row.name, frame, ready_at_ms: None, ahead: vec![] })
 }
 
-/// `frame`, the machine's own Status, with what a project's own engine there holds of its own: its store's models, its installs and
-/// its warm set. Its queue, times and residents are the machine's, which `frame` has already.
+/// `frame`, the machine's own Status, with what a project's own engine there said of itself: its store's models, its installs, warm
+/// set, queue and measured times. Its residents are the machine's pool's, listed once.
 fn with_own(mut frame: v1::StatusFrame, own: v1::StatusFrame) -> v1::StatusFrame {
     frame.models.extend(own.models);
     frame.environments.extend(own.environments);
     frame.warm.extend(own.warm);
+    for resident in own.resident {
+        if !frame.resident.contains(&resident) {
+            frame.resident.push(resident);
+        }
+    }
+    if let Some(queued) = own.queue {
+        frame.queue.get_or_insert_with(Vec::new).extend(queued);
+    }
+    for timed in own.times.into_iter().flatten() {
+        let times = frame.times.get_or_insert_with(Vec::new);
+        match times.iter_mut().find(|held| held.function == timed.function) {
+            Some(held) => held.runs.extend(timed.runs),
+            None => times.push(timed),
+        }
+    }
+    if frame.link_bytes_per_s <= 0.0 {
+        frame.link_bytes_per_s = own.link_bytes_per_s;
+    }
     frame
 }
 

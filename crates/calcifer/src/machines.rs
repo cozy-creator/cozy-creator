@@ -336,7 +336,10 @@ impl Machines {
                 let Ok(view) = crate::project::vault::resolve_path(&entry.path) else { continue };
                 // Only a project that has run here has an engine of its own to ask: asking makes none.
                 if !view.join(".vault-machine").exists() { continue; }
-                let Ok(scope) = crate::private_io::scope_for_project(&entry.id, &entry.path) else { continue };
+                let scope = match crate::private_io::scope_for_project(&entry.id, &entry.path) {
+                    Ok(scope) => scope,
+                    Err(error) => { warn!("a project's own engine on local is unread: {}", error.message); continue }
+                };
                 match link.with_private(scope).status().await {
                     Ok(frame) => {
                         models.extend(frame.models.iter().map(|m| m.model.clone()));
