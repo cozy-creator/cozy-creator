@@ -198,9 +198,10 @@ impl Endpoint {
         if !hardware.gpus.is_empty() {
             query("gpus", &hardware.gpus.join(","));
             hardware.free_vram.into_iter().for_each(|free| query("free_vram", &free.to_string()));
-            if !hardware.components.is_empty() {
-                query("components", &hardware.components.join(","));
-            }
+        }
+        // What the consumer reads also chooses an unversioned release (xs-192: a part for its slot), on a CPU too.
+        if !hardware.components.is_empty() {
+            query("components", &hardware.components.join(","));
         }
         if hardware.plain {
             query("plain", "true");
