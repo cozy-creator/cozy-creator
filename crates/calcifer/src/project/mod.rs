@@ -3270,9 +3270,8 @@ impl Walk {
         if gone.is_empty() || gone.len() < on.len() {
             return on.iter().filter(|on| !matches!(on, On::Machine(name) if api.machines.gone(name).is_some())).cloned().collect();
         }
-        // Placement retries retain this project's storage policy before any
-        // pricing or upload; a departed machine never opens a global fallback.
-        let automatic = crate::private_io::check_project_placement(&self.project.id,&self.project.root,&[On::Any]).unwrap_or_default();
+        // The set a render naming none takes, under this project's storage policy. `any` alone is a rental, which never comes uninvited.
+        let automatic = crate::private_io::check_project_placement(&self.project.id, &self.project.root, &api.machines.automatic()).unwrap_or_default();
         if self.fell_back.lock().expect("fell back lock").insert(ask.to_owned()) {
             let set = automatic.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
             self.say(Told::Warning { message: format!("{}: it goes where it finishes soonest of {set}", gone.join("; ")), name: None });
