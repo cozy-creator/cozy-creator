@@ -17,6 +17,10 @@ listed() {
   jq -e --arg r "$1" '.machines[] | select((.rental_id == $r or .name == $r) and .state != "ended")' <<<"$j" > /dev/null
 }
 
+# own [cli]: what this computer's Calcifer ordered and has not ended, a line each: its rental id, else (an order its Hub
+# has not answered) its name. On a fresh runner that is what this job ordered: another client's rentals read `ordered: false`.
+own() { machines_json "${1:-cozy}" | jq -r '.machines[] | select(.kind == "rental" and .ordered and .state != "ended") | .rental_id // .name'; }
+
 # run_stands <machine> [cli]: where each running run says it stands, a line each: number, stage, steps done of steps, and
 # for a download its bytes. A bare clock moves on any event, so a run can crawl for an hour inside one stage (41904557331).
 run_stands() {
