@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::project::vault;
+mod holdings;
 mod migration;
 use api::{
     calcifer::{Agreed, Call, Event, ItemStatus, Kind, Machine, MachineKind, MachineState, Memo, OutputItem, Reason, Run, Status, Warning},
@@ -928,6 +929,7 @@ pub(crate) struct Store {
     writer: Mutex<Connection>,
     reader: Mutex<Connection>,
     durable: Durable,
+    holdings: Mutex<holdings::Fold>,
 }
 
 /// Group commit. A commit only writes the WAL, under the writer lock; one flush of the WAL then
@@ -994,7 +996,8 @@ macro_rules! journal_methods {
     pub(crate) fn working(&self, machine: &str) -> Result<u32> {
         self.read(|conn| {
             let going = conn.query_row(
-                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND kind <> 'update' AND state IN ('sent', 'accepted') AND (?2 IS NULL OR owner=?2) AND custody='owned'",
+                // `state <> 'settled'` reads `runs_owed`, not every run.
+                "SELECT COUNT(*) FROM runs WHERE machine = ?1 AND state <> 'settled' AND kind <> 'update' AND state IN ('sent', 'accepted') AND (?2 IS NULL OR owner=?2) AND custody='owned'",
                 params![machine,self.owner_id()],
                 |r| r.get(0),
             )?;
@@ -1382,7 +1385,8 @@ macro_rules! journal_methods {
     /// The machines' runs not yet settled, oldest first: what a starting Calcifer drives.
     pub(crate) fn unsettled(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY number")?;
+            // `+number`: ordered after reading `runs_owed`, never by walking every run in number order.
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind <> 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY +number")?;
             let ids = statement
                 .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1395,7 +1399,7 @@ macro_rules! journal_methods {
     /// Calcifer's own runs not yet settled: those an earlier Calcifer stopped under, or that are going now.
     pub(crate) fn unsettled_here(&self) -> Result<Vec<RunId>> {
         self.read(|conn| {
-            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY number")?;
+            let mut statement = conn.prepare("SELECT id FROM runs WHERE state <> 'settled' AND kind = 'here' AND (?1 IS NULL OR owner=?1) AND custody='owned' ORDER BY +number")?;
             let ids = statement
                 .query_map([self.owner_id()], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2106,7 +2110,27 @@ impl Store {
             writer: Mutex::new(writer),
             reader: Mutex::new(reader),
             durable: Durable { wal: wal.then(|| journal.into()), ..Durable::sqlite() },
+            holdings: Mutex::default(),
         })
+    }
+
+    /// What this journal's runs put on `machine` (`holdings`): read from what was committed since it was last asked.
+    pub(crate) fn holdings(&self, machine: &str) -> Result<holdings::Held> {
+        let held = || {
+            let mut fold = self.holdings.lock().unwrap_or_else(|e| e.into_inner());
+            fold.refresh(self)?;
+            Ok(fold.of(machine))
+        };
+        // Its first read folds the whole journal: off the runtime's workers, as `read` is.
+        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(held),
+            _ => held(),
+        }
+    }
+
+    /// A machine's runs moved to another name: what they put on it is folded again.
+    fn machines_moved(&self) {
+        *self.holdings.lock().unwrap_or_else(|e| e.into_inner()) = holdings::Fold::default();
     }
 
     pub(crate) fn migration_required(&self) -> Result<bool> {
@@ -2631,6 +2655,7 @@ impl Store {
             move_machine(tx, old, new, Some(old))?;
             Ok(true)
         })
+        .inspect(|renamed| if *renamed { self.machines_moved() })
     }
 
     /// Records a rental another client of the account ordered, under its name; an ended machine that
@@ -2644,7 +2669,7 @@ impl Store {
                 |r| r.get(0),
             )?;
             if known {
-                return Ok(None);
+                return Ok((None, false));
             }
             let mut row = machine.clone();
             let holder: Option<(String, i64)> = tx
@@ -2652,13 +2677,25 @@ impl Store {
                     Ok((r.get(0)?, r.get(1)?))
                 })
                 .optional()?;
-            match holder {
-                Some((state, at)) if state == "ended" => move_machine(tx, &row.name, &format!("{}@{at}", row.name), None)?,
-                Some(_) => row.name = row.rental_id.clone().unwrap_or_default().to_ascii_lowercase(),
-                None => {}
-            }
+            let moved = match holder {
+                Some((state, at)) if state == "ended" => {
+                    move_machine(tx, &row.name, &format!("{}@{at}", row.name), None)?;
+                    true
+                }
+                Some(_) => {
+                    row.name = row.rental_id.clone().unwrap_or_default().to_ascii_lowercase();
+                    false
+                }
+                None => false,
+            };
             put_machine_in(tx, &row)?;
-            Ok(Some(row))
+            Ok((Some(row), moved))
+        })
+        .map(|(row, moved)| {
+            if moved {
+                self.machines_moved();
+            }
+            row
         })
     }
 
@@ -2901,7 +2938,8 @@ fn run_list_indexes(conn: &Connection) -> Result<()> {
     let private = private_run_target();
     conn.execute_batch(&format!(
         "CREATE INDEX IF NOT EXISTS runs_private_targets ON runs(number) WHERE {private};
-         CREATE INDEX IF NOT EXISTS runs_list_metadata ON runs(number,target,state,status,machine,out_dir,id,{private});"
+         CREATE INDEX IF NOT EXISTS runs_list_metadata ON runs(number,target,state,status,machine,out_dir,id,{private});
+         CREATE INDEX IF NOT EXISTS runs_settled_at ON runs(settled_at);"
     ))?;
     Ok(())
 }

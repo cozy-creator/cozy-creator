@@ -444,7 +444,11 @@ async fn drop_old_measurements(calcifer: Arc<Calcifer>) {
     loop {
         let began = Instant::now();
         let before_ms = crate::store::now_ms() - MEASURED_FOR.as_millis() as i64;
-        match calcifer.store().drop_measurements(after, before_ms) {
+        let dropped = {
+            let _took = crate::took::Took::new("drop_measurements");
+            calcifer.store().drop_measurements(after, before_ms)
+        };
+        match dropped {
             Ok(Some(next)) => {
                 after = next;
                 tokio::time::sleep(began.elapsed()).await;

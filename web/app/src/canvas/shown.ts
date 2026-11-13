@@ -57,10 +57,11 @@ const RISE = Math.ceil(Math.max(TITLE_LINE, CLOSE) * HANG - (HEAD - 24))
 const RUN = 12.5 * 1.35 * 1.35 + 28 + 6
 
 /** The room a box keeps clear under it (cl-932): its tool and shape, and if it renders, how its render goes, then the room the name of a box
- *  below it rises into. */
+ *  below it rises into. A file dropped keeps its line from its drop, as its picture's row (`isPicture`): what it keeps never grows as it
+ *  lands, so nothing it was laid out beside is pushed then. */
 export function underOf(view: ElementView): number {
-  const asset = view.asset
-  const line = asset && (asset.tool || asset.kind !== "text") ? RING + BODY_LINE + 2 : 0
+  const kind = view.asset?.kind ?? view.placing?.media ?? view.landed?.field
+  const line = view.asset?.tool || (kind && kind !== "text") ? RING + BODY_LINE + 2 : 0
   return Math.ceil((line + (makes(view) ? RUN : 0)) * HANG) + RISE
 }
 

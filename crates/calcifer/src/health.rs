@@ -1,5 +1,5 @@
-//! The only persistent daemon diagnostics: closed health events, never project detail. A test's
-//! config can add its warnings (`calcifer.diagnostics`), which may name projects.
+//! The only persistent daemon diagnostics: closed health events and what took a second or more (`took`), never project detail.
+//! A test's config can add its warnings (`calcifer.diagnostics`), which may name projects.
 use std::{fs::OpenOptions, sync::Mutex};
 use platform::{durable, paths::Home};
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _, util::SubscriberInitExt as _};
@@ -29,7 +29,7 @@ pub(crate) fn install(home: &Home, diagnostics: bool) -> Result<(), ::api::error
         .with_ansi(false)
         .with_target(false)
         .with_writer(Mutex::new(open(home.calcifer_health())?))
-        .with_filter(tracing_subscriber::filter::filter_fn(|meta| meta.target() == "cozy.service_health"));
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| matches!(meta.target(), "cozy.service_health" | crate::took::TARGET)));
     let warnings = diagnostics.then(|| open(home.calcifer().join("diagnostics.log"))).transpose()?.map(|file| {
         tracing_subscriber::fmt::layer()
             .with_ansi(false)

@@ -135,6 +135,7 @@ pub(crate) fn tell(api: Arc<Api>) {
             let stirred = std::mem::take(&mut *PROJECTS.stirred.lock().expect("stirred lock"));
             // With no one listening there is no one to tell: whoever comes next reads it whole.
             if PROJECTS.said.receiver_count() > 0 {
+                let _took = crate::took::Took::new("look_projects");
                 looking.projects.look(&stirred);
             }
         }
@@ -144,6 +145,7 @@ pub(crate) fn tell(api: Arc<Api>) {
         loop {
             PROJECTS.wake.notified().await;
             let began = Instant::now();
+            let took = crate::took::Took::new("tell_projects");
             let owed = std::mem::take(&mut *PROJECTS.owed.lock().expect("owed lock"));
             for (id, (dir, settled)) in owed {
                 if PROJECTS.said.receiver_count() == 0 {
@@ -165,6 +167,7 @@ pub(crate) fn tell(api: Arc<Api>) {
                 }
                 let _ = PROJECTS.said.send(event);
             }
+            drop(took);
             // As long again before the next: however big a project, telling of it doesn't keep a core busy.
             tokio::time::sleep(began.elapsed()).await;
         }
@@ -532,6 +535,7 @@ impl Watch {
 
     /// Owes each machine that differs from the list as last told, and each that left it.
     async fn list_machines(&mut self) {
+        let _took = crate::took::Took::new("events_machines");
         // What a machine does for the projects this page shows, unlocked, is theirs to see: never another's.
         let projects: Vec<String> = self.showing.as_ref().map(Showing::projects).unwrap_or_default().into_iter()
             .filter(|id| self.api.calcifer.store().known_project(id).ok().flatten().is_some_and(|known| project::vault::require_path(&known.path).is_ok()))
